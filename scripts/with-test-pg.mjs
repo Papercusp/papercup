@@ -401,6 +401,16 @@ if (runtimeRoot && runtimeId) {
     ...(process.env.CLAUDE_CODE_EXECPATH ? [process.env.CLAUDE_CODE_EXECPATH] : []),
     ...(originalHome ? [join(originalHome, '.local/bin/claude')] : []),
   ]);
+  // Rustup shims depend on HOME/settings.toml. Capture the selected installed
+  // executable while the caller's toolchain configuration is still available;
+  // only its binary directory crosses into the private runtime, like rg above.
+  const rustupAsset = await resolveExecutable((process.env.PATH ?? '').split(delimiter)
+    .filter(Boolean).map(dir => resolve(ROOT, dir, 'rustup')));
+  const cargoSelection = rustupAsset ? spawnSync(rustupAsset, ['which', 'cargo'], {
+    cwd: ROOT, env: process.env, encoding: 'utf8', timeout: 5000,
+  }) : null;
+  const cargoAsset = cargoSelection?.status === 0
+    ? await resolveExecutable([cargoSelection.stdout.trim()]) : undefined;
   const home = join(runtimeRoot, 'home');
   const papercuspHome = join(home, '.papercusp');
   const workspacesRoot = join(runtimeRoot, 'workspaces');
@@ -427,6 +437,7 @@ if (runtimeRoot && runtimeId) {
     ...runtimeEnv,
     ...(rgAsset ? { PAPERCUSP_RG: rgAsset } : {}),
     ...(claudeAsset ? { CLAUDE_CODE_EXECPATH: claudeAsset } : {}),
+    ...(cargoAsset ? { PAPERCUSP_TEST_CARGO: cargoAsset, PATH: dirname(cargoAsset) + delimiter + (process.env.PATH ?? '') } : {}),
     HOME: home,
     PAPERCUSP_HOME: papercuspHome,
     // The mutex coordinates mutations against the shared checkout and host

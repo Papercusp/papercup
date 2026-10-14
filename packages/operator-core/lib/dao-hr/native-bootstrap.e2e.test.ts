@@ -112,7 +112,8 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       } finally { closeSync(fd); }
       expect(code, 'Native boot/journey log: ' + logPath).toBe(0);
       const result = JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
-      expect(result).toMatchObject({ hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true });
+      expect(result).toMatchObject({ hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true,
+        capTableVerified: true, myEquityVerified: true, nonBindingVisible: true });
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
       console.log('DAO_HR_NATIVE_RESULT=' + JSON.stringify(result));
     } finally {

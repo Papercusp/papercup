@@ -385,12 +385,16 @@ it('rejects an incomplete API graph before private allocation and reuses only th
     mkdirSync(bin, { recursive: true }); mkdirSync(prepare, { recursive: true });
     symlinkSync(resolve(import.meta.dirname, '../../../node_modules'), join(root, 'node_modules'), 'dir');
     // The same executable build boundary, with a tiny real esbuild graph.
-    writeFileSync(join(bin, 'bundle-host.sh'), `cd "$(dirname "$0")/.."\nnode -e 'require("esbuild").buildSync({entryPoints:[process.argv[1]],outfile:process.argv[2],bundle:true,platform:"node",format:"esm"})' "$1" "$2"\n`);
+    writeFileSync(join(bin, 'bundle-host.sh'), `cd "$(dirname "$0")/.."\necho compiler-started\necho census-diagnostic >&2\nnode -e 'require("esbuild").buildSync({entryPoints:[process.argv[1]],outfile:process.argv[2],bundle:true,platform:"node",format:"esm"})' "$1" "$2"\n`);
     writeFileSync(join(bin, 'hono-host.ts'), 'export { ready } from "./missing.ts";\n');
     expect(() => preparePrivateOperatorApiBundle(root, prepare)).toThrow();
     expect(readFileSync(join(prepare, 'operator-api-build.log'), 'utf8')).toContain('Could not resolve');
+    expect(readFileSync(join(prepare, 'operator-api-build.log'), 'utf8')).toContain('compiler-started');
+    expect(readFileSync(join(prepare, 'operator-api-build.log'), 'utf8')).toContain('census-diagnostic');
     writeFileSync(join(bin, 'missing.ts'), 'export const ready = true;\n');
     const artifact = preparePrivateOperatorApiBundle(root, prepare);
+    expect(resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + artifact.sha256,
+      '--prepared-receipt-sha=' + artifact.receiptSha256], execute)).toBe(artifact.path);
     expect(resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + artifact.sha256], execute)).toBe(artifact.path);
     expect(resolvePreparedPrivateApiBundle([], execute)).toBeUndefined();
     expect(() => resolvePreparedPrivateApiBundle(['--prepared-api-sha=' + artifact.sha256,

@@ -772,6 +772,7 @@ _pc_heavy_internal_preempt_run() {
   # than reporting it as a clean, unqualified red. Never reset mid-admission: a freeze earlier in
   # a multi-group run must still be visible to a later group's post-hoc check.
   local _psi_frozen_total_ms=0 _psi_frozen_episodes=0
+  local _psi_measurement='unavailable' _psi_terminal_emitted=0
   local _psi_next_sample=0 _psi_last_undetermined=''
   local _psi_finalization_seen_at='' _psi_finalization_expired=0
   local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
@@ -1093,12 +1094,41 @@ _pc_heavy_internal_preempt_run() {
   }
 
   _psi_remove_record() {
+    # The live record is intentionally ephemeral. Keep a final snapshot on the
+    # existing diagnostic stream BEFORE removing it, including a freeze still
+    # in progress on abort. Never let missing/disabled accounting look like zero.
+    if [ "${_psi_terminal_emitted:-0}" = 0 ]; then
+      _psi_terminal_emitted=1
+      _psi_emit "${1:-aborted}" cleanup unavailable 0
+    fi
     [ -n "${_psi_record_file:-}" ] && rm -f "${_psi_record_file:-}" 2>/dev/null || true
   }
 
   _psi_emit() {
     local _status="$1" _reason="$2" _sample="${3:-unavailable}" _total="${4:-0}"
-    _preempt_notify "PC_HEAVY_ADMISSION status=$_status reason=$_reason priority=${_psi_priority:-unknown} psiFullAvg10=$_sample admittedCgroupMiB=$_total admissionId=${_psi_admission_id:-unknown} retryHandle=${_psi_retry_handle:-unknown}"
+    local _measurement="${_psi_measurement:-unavailable}"
+    local _frozen_total='unknown' _episodes='unknown' _ongoing='unknown' _clock=''
+    if [ "$_measurement" = measured ]; then
+      _frozen_total="${_psi_frozen_total_ms:-0}"
+      _episodes="${_psi_frozen_episodes:-0}"
+      _ongoing=0
+      if [ "${_psi_state:-}" = frozen ]; then
+        # Same millisecond clock as the freeze/thaw writer. This is a snapshot,
+        # not a completed episode: leave the live counters untouched.
+        _clock="${EPOCHREALTIME:-}"
+        _clock="${_clock//[!0-9]/}"
+        if [ -n "$_clock" ] && [ "${_psi_frozen_since_ms:-0}" -gt 0 ]; then
+          _clock=$(( _clock / 1000 ))
+          _ongoing=$(( _clock > _psi_frozen_since_ms ? _clock - _psi_frozen_since_ms : 1 ))
+          _frozen_total=$(( _frozen_total + _ongoing ))
+          _episodes=$(( _episodes + 1 ))
+        else
+          _measurement=unavailable
+          _frozen_total=unknown _episodes=unknown _ongoing=unknown
+        fi
+      fi
+    fi
+    _preempt_notify "PC_HEAVY_ADMISSION status=$_status reason=$_reason priority=${_psi_priority:-unknown} psiFullAvg10=$_sample admittedCgroupMiB=$_total admissionId=${_psi_admission_id:-unknown} retryHandle=${_psi_retry_handle:-unknown} freezeMeasurement=$_measurement frozenTotalMs=$_frozen_total frozenEpisodes=$_episodes frozenOngoingMs=$_ongoing"
   }
 
   # Validate every persisted identity before it participates in election. A
@@ -1361,7 +1391,7 @@ _pc_heavy_internal_preempt_run() {
   }
 
   _psi_init() {
-    case "$_psi_enabled" in 0|off|OFF|false|FALSE|no|NO) _psi_enabled=0; return 0 ;; *) _psi_enabled=1 ;; esac
+    case "$_psi_enabled" in 0|off|OFF|false|FALSE|no|NO) _psi_enabled=0; _psi_measurement=disabled; return 0 ;; *) _psi_enabled=1 ;; esac
     case "$_psi_high" in ''|*[!0-9]*) _psi_high=5 ;; esac
     case "$_psi_recover" in ''|*[!0-9]*) _psi_recover=2 ;; esac
     case "$_psi_recovery_sec" in ''|*[!0-9]*) _psi_recovery_sec=30 ;; esac
@@ -1396,10 +1426,12 @@ _pc_heavy_internal_preempt_run() {
     # supported Linux horizon, so Bash integer comparisons stay exact.
     _psi_admitted_at=$(date +%s%N)
     _psi_next_sample=0
-    _psi_write_record active || {
+    if _psi_write_record active; then
+      _psi_measurement=measured
+    else
       _psi_emit undetermined record-unavailable unavailable 0
       _psi_enabled=0
-    }
+    fi
   }
 
   # NOTE (EI-21348799817176368): every expansion in the functions reachable from
@@ -1651,7 +1683,7 @@ _pc_heavy_internal_preempt_run() {
   local _rc=$?
   _peak_record "$_rc"
   rm -f "$_preempt_pid_file" 2>/dev/null || true
-  _psi_remove_record
+  _psi_remove_record completed
   _preempt_cleanup_ready_marker
   _preempt_cleanup_finalization_marker
   trap - EXIT TERM INT HUP

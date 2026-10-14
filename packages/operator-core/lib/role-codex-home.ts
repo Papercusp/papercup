@@ -209,12 +209,13 @@ function shellSingleQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Workspace root the lock hooks scope to — the parent of the harness
- *  worktrees. Honors PAPERCUSP_WORKSPACE_ROOT (matches the installer's
- *  explicit set); else 4 dirs up from this module (apps/operator/lib →
- *  …/papercupai-workspace), which is also the hook script's own default. */
+/** Workspace root the lock hooks scope to — the parent of the declared
+ * canonical edit tree. The serving module can live in a release/candidate
+ * checkout, so its location cannot define an agent's edit scope. */
 function resolveWorkspaceRoot(): string {
-  return process.env.PAPERCUSP_WORKSPACE_ROOT || resolve(__dirname, '..', '..', '..', '..');
+  const canonical = process.env.PAPERCUSP_CANONICAL_TREE?.trim();
+  if (canonical && isAbsolute(canonical)) return __esmDirname(canonical);
+  return process.env.PAPERCUSP_WORKSPACE_ROOT?.trim() || join(homedir(), 'papercupai-workspace');
 }
 
 /** Rebuild generated launch state, retaining native transcript custody.
@@ -1184,6 +1185,23 @@ function repairSuCodexHomeIdentityImpl(
   const hooksMatch = hooksExpected
     ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
     : hookOwners.length === 0;
+  const hookWorkspaceMatches = (() => {
+    if (!hooksExpected) return true;
+    try {
+      const parsed = JSON.parse(hooksText) as {
+        hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+      };
+      const expected = `PAPERCUSP_WORKSPACE_ROOT=${shellSingleQuote(resolveWorkspaceRoot())}`;
+      return [
+        ['PreToolUse', 'pretooluse-locks-acquire.sh'],
+        ['PostToolUse', 'posttooluse-locks-release.sh'],
+      ].every(([event, script]) => parsed.hooks?.[event]?.some((group) =>
+        group.hooks?.some((hook) => hook.command?.includes(script) && hook.command.includes(expected)),
+      ) === true);
+    } catch {
+      return false;
+    }
+  })();
   const diagnosticsMatch = diagnostics.lockOwnerSid === sid;
   const priorSid = ownerSidIo ? ownerSidIo.priorSid : existingCodexHomeOwnerSid(codexHome);
   const sentinelMatches = priorSid === sid;
@@ -1291,6 +1309,7 @@ function repairSuCodexHomeIdentityImpl(
   })();
   if (
     hooksMatch &&
+    hookWorkspaceMatches &&
     diagnosticsMatch &&
     sentinelMatches &&
     lifecycleHooksMatch &&

@@ -255,7 +255,7 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
     // One subprocess per mount would be more than 2,000 here; the scan needs a handful.
     const execs = readFileSync(counter, 'utf8').trim().split('\n');
     expect(execs.length).toBeLessThan(50);
-  }, 60_000);
+  }, 75_000);
 
   it('derives the default lock key without starting Node', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));

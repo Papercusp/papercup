@@ -304,6 +304,27 @@ const nativeBatchInput = (
 });
 
 describe("cc PreToolUse hook — operator decision rendering (stub operator)", () => {
+  it("a serving-candidate workspace root skips canonical edits; the canonical workspace reaches arbitration (EI-25920487778813638)", async () => {
+    const candidate = join(ws, 'papercusp-staging.generations', '.candidate-test');
+    fs.mkdirSync(candidate, { recursive: true });
+    const input = {
+      tool_name: 'apply_patch',
+      tool_input: { command: '*** Begin Patch\n*** Update File: sub/scope.ts\n@@\n-old\n+new\n*** End Patch' },
+      tool_use_id: 'scope-counterfactual', session_id: 'scope-owner', cwd: repo,
+    };
+    const identity = { PAPERCUSP_SID: 'scope-owner', PAPERCUSP_LOCK_SID: 'scope-owner' };
+    const outside = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: candidate });
+    expect(outside).toEqual({ status: 0, stdout: '' });
+    expect(requests.filter((request) => request.body.params?.name)).toEqual([]);
+    expect(fs.existsSync(join(cache, 'owner-scope-owner-last-decision.json'))).toBe(false);
+
+    const coordinated = await run(input, { ...identity, PAPERCUSP_WORKSPACE_ROOT: ws });
+    expect(coordinated.status).toBe(0);
+    expect(lastRequest?.body.params.name).toBe('locks:acquire');
+    expect(lastRequest?.body.params.arguments.paths).toEqual(['sub/scope.ts']);
+    expect(fs.existsSync(join(cache, 'owner-scope-owner-last-decision.json'))).toBe(true);
+  });
+
   it("grant (ok:true) → allow (exit 0, no decision) and CACHES the lock_id for release", async () => {
     nextInner = { ok: true, lock_id: "lock-xyz" };
     const r = await run(editOf("sub/grant.ts", "tu-grant"));

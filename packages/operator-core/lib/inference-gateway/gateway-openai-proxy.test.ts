@@ -1099,6 +1099,41 @@ describe('proxyOpenAi — a streaming response does not hold the provider admiss
     expect(after.codexAdmission).toMatchObject({ running: 0, queued: 0 });
     expect(upstreamCalls).toBe(2);
   });
+
+  // R-3 falsifier (3): the slot paces UPLOADS, so it must not be released before the
+  // request body has finished uploading. The stub upstream only runs its reply callback
+  // once the whole body has arrived, and then withholds every response byte. Until the
+  // first byte the slot must still be held. An implementation that freed the slot at
+  // admission (no upload pacing at all) reads running:0 here.
+  it('holds the Codex slot through the upload until the upstream sends its first response byte', async () => {
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    let bodyArrived!: (body: string) => void;
+    const arrived = new Promise<string>((resolve) => {
+      bodyArrived = resolve;
+    });
+    await bootCodex((req, res, body) => {
+      bodyArrived(body);
+      void answered.then(() => ok(req, res));
+    });
+
+    const payload = 'x'.repeat(256 * 1024);
+    const pending = postResponses({ model: 'gpt-5.6-sol', input: payload });
+    const uploaded = await arrived;
+    expect(uploaded.length, 'the upstream received the whole body').toBeGreaterThan(payload.length);
+
+    const held = (await (await ask('/stats')).json()) as { codexAdmission: { running: number } };
+    expect(held.codexAdmission.running, 'slot still held: upload done, no response byte yet').toBe(1);
+
+    answer();
+    const res = await pending;
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { ok?: boolean }).toMatchObject({ ok: true });
+    const after = (await (await ask('/stats')).json()) as { codexAdmission: { running: number; queued: number } };
+    expect(after.codexAdmission).toMatchObject({ running: 0, queued: 0 });
+  });
 });
 
 describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {

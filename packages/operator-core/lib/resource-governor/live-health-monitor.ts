@@ -11,6 +11,7 @@ import { appendFile, mkdir, open, readFile, readdir, rename, stat, statfs, unlin
 import { arch, cpus, freemem, homedir, platform, release, tmpdir, totalmem } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { getResourceProfile, type ResourceProfile } from '@papercusp/resource-profile';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
@@ -23,6 +24,8 @@ import {
   emptyLiveHealthSignals,
   isLiveHealthFragment,
   isLiveHealthSnapshot,
+  isLiveHealthStorage,
+  isLiveHealthWriter,
   liveHealthWindow,
   measuredLiveHealthReading,
   mergeLiveHealthFragments,
@@ -103,6 +106,35 @@ interface LiveHealthHistoryTail {
   readonly needsRewrite: boolean;
 }
 
+export const LIVE_HEALTH_STORAGE_HISTORY_SCHEMA = 'live-health-storage-history-v1' as const;
+/** Storage observations only; this never represents a complete fleet snapshot. */
+export interface LiveHealthStorageHistorySample {
+  readonly schemaVersion: typeof LIVE_HEALTH_STORAGE_HISTORY_SCHEMA;
+  readonly sequence: number;
+  readonly sampledAtMs: number;
+  readonly cadenceMs: number;
+  readonly writer: LiveHealthWriter;
+  readonly storage: LiveHealthStorageSample;
+}
+
+function isStorageHistorySample(value: unknown): value is LiveHealthStorageHistorySample {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as LiveHealthStorageHistorySample;
+  return row.schemaVersion === LIVE_HEALTH_STORAGE_HISTORY_SCHEMA &&
+    Number.isSafeInteger(row.sequence) && row.sequence > 0 &&
+    Number.isFinite(row.sampledAtMs) && Number.isFinite(row.cadenceMs) && row.cadenceMs > 0 &&
+    isLiveHealthWriter(row.writer) && row.writer.kind === 'monitor' && row.writer.startedAtMs <= row.sampledAtMs &&
+    isLiveHealthStorage(row.storage) && row.storage.startedAtMs >= row.sampledAtMs;
+}
+
+export function liveHealthStorageHistorySample(snapshot: LiveHealthSnapshot): LiveHealthStorageHistorySample | null {
+  const writer = Object.values(snapshot.writers).find((row) =>
+    row.kind === 'monitor' && row.startedAtMs === snapshot.monitorStartedAtMs && row.id === `monitor.host:${row.pid}`);
+  if (!snapshot.storage || !writer) return null;
+  return { schemaVersion: LIVE_HEALTH_STORAGE_HISTORY_SCHEMA, sequence: snapshot.sequence,
+    sampledAtMs: snapshot.sampledAtMs, cadenceMs: snapshot.cadenceMs, writer, storage: snapshot.storage };
+}
+
 const HISTORY_ENCODING = 'live-health-history-gzip-v1';
 const HISTORY_MAX_DECODED_BYTES = 32 * 1024 * 1024;
 interface EncodedHistoryPart {
@@ -123,11 +155,10 @@ function historyPart(value: unknown): value is EncodedHistoryPart {
     Number.isSafeInteger(p.part) && p.part >= 0 && p.part < p.parts && typeof p.data === 'string';
 }
 
-/** Decode one complete history sample, including legacy unencoded snapshots. */
-export function decodeLiveHealthHistorySnapshot(rows: readonly string[]): LiveHealthSnapshot | null {
+function decodeHistoryValue(rows: readonly string[]): unknown {
   try {
     const values: unknown[] = rows.map((row) => JSON.parse(row));
-    if (values.length === 1 && isLiveHealthSnapshot(values[0])) return values[0];
+    if (values.length === 1 && (isLiveHealthSnapshot(values[0]) || isStorageHistorySample(values[0]))) return values[0];
     const first = values[0];
     if (!historyPart(first) || first.part !== 0 || values.length !== first.parts) return null;
     if (!values.every((p, index) => historyPart(p) && p.part === index && p.parts === first.parts &&
@@ -137,14 +168,24 @@ export function decodeLiveHealthHistorySnapshot(rows: readonly string[]): LiveHe
     if (compressed.toString('base64') !== encoded) return null;
     const raw = gunzipSync(compressed, { maxOutputLength: first.sourceBytes });
     if (raw.length !== first.sourceBytes || createHash('sha256').update(raw).digest('hex') !== first.sha256) return null;
-    const snapshot: unknown = JSON.parse(raw.toString('utf8'));
-    return isLiveHealthSnapshot(snapshot) ? snapshot : null;
+    return JSON.parse(raw.toString('utf8'));
   } catch {
     return null;
   }
 }
 
-function encodeHistorySnapshot(snapshot: LiveHealthSnapshot, maxRecordBytes: number): string[] | null {
+/** Decode one complete history sample, including legacy unencoded snapshots. */
+export function decodeLiveHealthHistorySnapshot(rows: readonly string[]): LiveHealthSnapshot | null {
+  const value = decodeHistoryValue(rows);
+  return isLiveHealthSnapshot(value) ? value : null;
+}
+
+export function decodeLiveHealthStorageHistorySample(rows: readonly string[]): LiveHealthStorageHistorySample | null {
+  const value = decodeHistoryValue(rows);
+  return isStorageHistorySample(value) ? value : null;
+}
+
+function encodeHistorySnapshot(snapshot: LiveHealthSnapshot | LiveHealthStorageHistorySample, maxRecordBytes: number): string[] | null {
   const raw = Buffer.from(JSON.stringify(snapshot));
   if (raw.length + 1 <= maxRecordBytes) return [raw.toString('utf8')];
   if (raw.length > HISTORY_MAX_DECODED_BYTES) return null;
@@ -187,7 +228,7 @@ export class LiveHealthHistoryWriter {
     );
   }
 
-  append(snapshot: LiveHealthSnapshot): Promise<boolean> {
+  append(snapshot: LiveHealthSnapshot | LiveHealthStorageHistorySample): Promise<boolean> {
     const result = this.pending.then(() => this.appendSerial(snapshot));
     this.pending = result.then(() => {}, () => {});
     return result;
@@ -230,7 +271,7 @@ export class LiveHealthHistoryWriter {
         if (historyPart(value)) {
           if (value.part !== 0 || value.parts > rows.length - index) continue;
           const frame = rows.slice(index, index + value.parts);
-          if (!decodeLiveHealthHistorySnapshot(frame)) continue;
+          if (!decodeLiveHealthHistorySnapshot(frame) && !decodeLiveHealthStorageHistorySample(frame)) continue;
           frames.push(frame);
           index += value.parts - 1;
         } else if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -277,7 +318,7 @@ export class LiveHealthHistoryWriter {
     }
   }
 
-  private async appendSerial(snapshot: LiveHealthSnapshot): Promise<boolean> {
+  private async appendSerial(snapshot: LiveHealthSnapshot | LiveHealthStorageHistorySample): Promise<boolean> {
     const rows = encodeHistorySnapshot(snapshot, this.maxRecordBytes);
     if (!rows) return false;
     const row = rows.join('\n') + '\n';
@@ -528,7 +569,7 @@ export async function collectHostLiveHealthCounters(
   const fs = await statfs(paths.rootDir).catch(() => null);
   const diskFreeBytes = fs ? Number(fs.bavail) * Number(fs.bsize) : null;
   const storage = await collectLiveHealthStorage([
-    '/', paths.rootDir, tmpdir(), ...(currentPlatform === 'linux' ? ['/mnt/data'] : []),
+    '/', paths.rootDir, tmpdir(), ...(currentPlatform === 'linux' ? ['/mnt/data', '/tmp/pcv'] : []),
     process.cwd(),
     ...(process.env.PAPERCUSP_DISK_ALARM_PATHS ?? '').split(',').map((path) => path.trim()).filter(Boolean),
   ]);
@@ -781,6 +822,11 @@ export class LiveHealthMonitor {
   private previous: HostLiveHealthCounters | null = null;
   private sequence = 0;
   private timer: ManagedHandle | null = null;
+  private lifecycle = 0;
+  private sampleInFlight: {
+    ready: Promise<LiveHealthSnapshot>;
+    complete: Promise<LiveHealthSnapshot>;
+  } | null = null;
 
   constructor(options: LiveHealthMonitorOptions = {}) {
     this.paths = options.paths ?? resolveLiveHealthPaths();
@@ -791,7 +837,21 @@ export class LiveHealthMonitor {
     this.writeSnapshot = options.writeSnapshot ?? writeLiveHealthJson;
     this.log = options.log ?? ((message) => console.warn(message));
     const history = new LiveHealthHistoryWriter(join(this.paths.rootDir, 'live-health-history.jsonl'));
+    // Fleet-sized observations cannot consume the storage interval's byte budget.
+    // Reuse the same bounded writer/codec, with an explicit storage-only schema.
+    const storageHistory = new LiveHealthHistoryWriter(join(this.paths.rootDir, 'live-health-storage-history.jsonl'));
     this.writeHistory = options.writeHistory ?? (async (snapshot) => {
+      const storage = liveHealthStorageHistorySample(snapshot);
+      if (storage) {
+        try {
+          if (!(await storageHistory.append(storage))) {
+            this.log('[resource-governor-health] storage history row exceeded its configured cap; skipped');
+          }
+        } catch (error) {
+          this.log('[resource-governor-health] storage history write failed: ' +
+            (error instanceof Error ? error.message : String(error)));
+        }
+      }
       if (!(await history.append(snapshot))) {
         this.log('[resource-governor-health] history row exceeded its configured cap; skipped');
       }
@@ -808,7 +868,32 @@ export class LiveHealthMonitor {
     this.profile = liveHealthProfile(options.resourceProfile ?? getResourceProfile());
   }
 
-  async sampleOnce(): Promise<LiveHealthSnapshot> {
+  sampleOnce(): Promise<LiveHealthSnapshot> {
+    return this.beginSample().complete;
+  }
+
+  private beginSample(): NonNullable<LiveHealthMonitor['sampleInFlight']> {
+    if (this.sampleInFlight) return this.sampleInFlight;
+    let published!: (snapshot: LiveHealthSnapshot) => void;
+    let failed!: (error: unknown) => void;
+    const ready = new Promise<LiveHealthSnapshot>((resolve, reject) => {
+      published = resolve;
+      failed = reject;
+    });
+    // sampleOnce callers await complete; start callers await ready. Observe the
+    // optional readiness rejection without hiding the complete operation's error.
+    void ready.catch(() => {});
+    const complete = this.sampleSerial(published);
+    const sample = { ready, complete };
+    this.sampleInFlight = sample;
+    const clear = () => {
+      if (this.sampleInFlight === sample) this.sampleInFlight = null;
+    };
+    void complete.then(clear, (error) => { failed(error); clear(); });
+    return sample;
+  }
+
+  private async sampleSerial(published: (snapshot: LiveHealthSnapshot) => void): Promise<LiveHealthSnapshot> {
     const started = performance.now();
     const sampledAtMs = this.now();
     const current = await this.collectHost(sampledAtMs, this.paths, this.profile.platform);
@@ -846,6 +931,11 @@ export class LiveHealthMonitor {
     };
     await this.writeSnapshot(this.paths.snapshotPath, snapshot);
     this.previous = current;
+    published(snapshot);
+    // READY describes a complete atomic snapshot. Let the main entry emit it
+    // before synchronous history compression/validation begins. Keep this whole
+    // operation in flight through persistence so timer ticks cannot queue samples.
+    await yieldToEventLoop();
     try {
       await this.writeHistory(snapshot);
     } catch (error) {
@@ -859,11 +949,13 @@ export class LiveHealthMonitor {
 
   async start(): Promise<LiveHealthSnapshot> {
     if (this.timer) return this.sampleOnce();
-    const first = await this.sampleOnce();
-    this.timer = managedSetInterval(
+    const lifecycle = this.lifecycle;
+    const first = await this.beginSample().ready;
+    if (!this.timer && lifecycle === this.lifecycle) this.timer = managedSetInterval(
       'resource-governor-live-health-monitor',
       this.cadenceMs,
       async () => {
+        if (this.sampleInFlight) return;
         try {
           await this.sampleOnce();
         } catch (error) {
@@ -877,8 +969,13 @@ export class LiveHealthMonitor {
     return first;
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.lifecycle += 1;
     this.timer?.stop();
     this.timer = null;
+    // Normal parent shutdown must preserve the sample whose READY was already
+    // emitted, including its archival write. A failed sample is already surfaced
+    // to its caller; it must not prevent stopping the process.
+    await this.sampleInFlight?.complete.catch(() => {});
   }
 }

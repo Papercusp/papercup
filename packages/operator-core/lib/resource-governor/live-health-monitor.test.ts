@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { ResourceProfile } from '@papercusp/resource-profile';
 import {
   LiveHealthHistoryWriter,
@@ -9,6 +10,8 @@ import {
   applyHostLiveHealthReadings,
   collectLiveHealthStorage,
   decodeLiveHealthHistorySnapshot,
+  decodeLiveHealthStorageHistorySample,
+  liveHealthStorageHistorySample,
   parseCloseWaitCount,
   parseMemoryKernel,
   parseNetworkCounters,
@@ -73,6 +76,70 @@ function historySnapshot(sequence: number): LiveHealthSnapshot {
     signals: emptyLiveHealthSignals(sampledAtMs),
   };
 }
+
+describe('compact storage interval history', () => {
+  it.each([false, true])('preserves full producer history when compact storage persistence fails: %s', async (failCompact) => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-storage-producer-'));
+    try {
+      const storage = await collectLiveHealthStorage(['/', '/mnt/data', '/tmp/pcv'], () => 2_000, {
+        filesystem: async () => ({ dev: 1, totalBytes: 100, availableBytes: 90, totalInodes: 100, freeInodes: 90 }),
+        reservations: () => ({ state: 'measured', deviceKey: 'dev-1', reservedBytes: 0, knownReservedBytes: 0, issues: [] }),
+      });
+      if (failCompact) await mkdir(join(root, 'live-health-storage-history.jsonl'));
+      const log = vi.fn();
+      const monitor = new LiveHealthMonitor({ paths: { rootDir: root, fragmentsDir: join(root, 'fragments'),
+        snapshotPath: join(root, 'live-health.json') }, now: () => 2_000,
+        collectHost: async () => counters({ storage }), readFragments: async () => [], log });
+      const actual = await monitor.sampleOnce();
+      const full = decodeLiveHealthHistorySnapshot((await readFile(join(root, 'live-health-history.jsonl'), 'utf8')).trim().split('\n'))!;
+      expect(full.observations).toEqual(actual.observations);
+      if (failCompact) {
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('storage history write failed:'));
+        return;
+      }
+      const compact = decodeLiveHealthStorageHistorySample((await readFile(join(root, 'live-health-storage-history.jsonl'), 'utf8')).trim().split('\n'))!;
+      expect(compact).toMatchObject({ writer: monitor.writer, sequence: actual.sequence, sampledAtMs: actual.sampledAtMs });
+      expect(compact.storage).toEqual(actual.storage);
+      expect(compact).not.toHaveProperty('observations');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('retains an hour across bounded compaction and restart independently of fleet snapshot size', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-storage-history-'));
+    try {
+      const storage = await collectLiveHealthStorage(['/', '/mnt/data', '/tmp/pcv'], () => 2_000, {
+        filesystem: async () => ({ dev: 1, totalBytes: 100, availableBytes: 90, totalInodes: 100, freeInodes: 90 }),
+        reservations: () => ({ state: 'unknown', deviceKey: 'dev-1', reservedBytes: null, knownReservedBytes: 0, issues: ['unreadable'] }),
+      });
+      const snapshot = historySnapshot(1);
+      const monitor = { id: 'monitor.host:1', kind: 'monitor' as const, instanceId: 'native-fixture',
+        pid: 1, platform: 'linux' as const, startedAtMs: 2_000 };
+      const fleet = { ...snapshot, storage, writers: { [monitor.id]: monitor },
+        unrelatedFleetPayload: 'fleet-observations'.repeat(100_000) };
+      const row = liveHealthStorageHistorySample(fleet)!;
+      expect(JSON.stringify(row).length).toBeLessThan(4_096);
+      expect(row).not.toHaveProperty('unrelatedFleetPayload');
+      const path = join(root, 'storage.jsonl');
+      let writer = new LiveHealthHistoryWriter(path);
+      for (let sequence = 1; sequence <= 3_601; sequence += 1) {
+        const at = sequence * 2_000;
+        if (sequence === 2_000) writer = new LiveHealthHistoryWriter(path);
+        expect(await writer.append({ ...row, sequence, sampledAtMs: at,
+          storage: { ...storage, startedAtMs: at, collectedAtMs: at } })).toBe(true);
+      }
+      const rows = (await readFile(path, 'utf8')).trim().split('\n');
+      const decoded = rows.map((line) => decodeLiveHealthStorageHistorySample([line])!);
+      expect(decoded.every(Boolean)).toBe(true);
+      expect(decoded.at(-1)!.sampledAtMs - decoded[0]!.sampledAtMs).toBeGreaterThanOrEqual(3_600_000);
+      expect((await stat(path)).size).toBeLessThanOrEqual(writer.maxBytes);
+      expect(decoded.at(-1)!.storage.snapshots[0]).toMatchObject({ reservationState: 'unknown', reservedBytes: null });
+      expect(decodeLiveHealthHistorySnapshot([rows[0]!])).toBeNull();
+      const invalid = structuredClone(decoded[0]!);
+      (invalid.storage.snapshots[0] as { reservedBytes: number | null }).reservedBytes = 0;
+      expect(decodeLiveHealthStorageHistorySample([JSON.stringify(invalid)])).toBeNull();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 30_000);
+});
 
 describe('live-health host parsers', () => {
   it('parses PSI, scheduler, swap, network, and socket counters with unknown-preserving failures', () => {
@@ -246,6 +313,90 @@ describe('live-health host parsers', () => {
 });
 
 describe('LiveHealthMonitor composition', () => {
+  it.each([false, true])('publishes readiness before stalled history and coalesces ticks until persistence settles: %s', async (failHistory) => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let settleHistory!: () => void;
+    const gate = new Promise<void>((resolve, reject) => {
+      settleHistory = failHistory ? () => reject(new Error('history unavailable')) : resolve;
+    });
+    const collectHost = vi.fn(async () => counters());
+    const writeSnapshot = vi.fn(async () => {});
+    const writeHistory = vi.fn(async () => gate);
+    const log = vi.fn();
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000, cadenceMs: 250,
+      collectHost, readFragments: async () => [], writeSnapshot, writeHistory, log });
+    try {
+      const [first, concurrentStart] = await Promise.all([monitor.start(), monitor.start()]);
+      expect(concurrentStart).toBe(first);
+      expect(writeSnapshot).toHaveBeenCalledWith(PATHS.snapshotPath, first);
+      await yieldToEventLoop();
+      expect(writeHistory).toHaveBeenCalledExactlyOnceWith(first);
+      const pendingSample = monitor.sampleOnce();
+      let completed = false;
+      void pendingSample.then(() => { completed = true; });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(completed).toBe(false);
+      expect(collectHost).toHaveBeenCalledTimes(1);
+      expect(writeSnapshot).toHaveBeenCalledTimes(1);
+      expect(writeHistory).toHaveBeenCalledTimes(1);
+      let stopped = false;
+      const stopping = monitor.stop().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      settleHistory();
+      expect(await pendingSample).toBe(first);
+      await stopping;
+      expect(stopped).toBe(true);
+      expect(log.mock.calls).toEqual(failHistory
+        ? [['[resource-governor-health] history write failed: history unavailable']] : []);
+      const second = await monitor.sampleOnce();
+      expect(second.sequence).toBe(2);
+      expect(collectHost).toHaveBeenCalledTimes(2);
+      expect(writeHistory).toHaveBeenCalledTimes(2);
+    } finally {
+      settleHistory();
+      await monitor.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses readiness when atomic publication fails and permits a fresh sample after recovery', async () => {
+    const writeHistory = vi.fn(async () => {});
+    const writeSnapshot = vi.fn().mockRejectedValueOnce(new Error('snapshot unavailable')).mockResolvedValue(undefined);
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000,
+      collectHost: async () => counters(), readFragments: async () => [], writeSnapshot, writeHistory });
+    try {
+      await expect(monitor.start()).rejects.toThrow('snapshot unavailable');
+      expect(writeHistory).not.toHaveBeenCalled();
+      const recovered = await monitor.start();
+      expect(recovered.sequence).toBe(2);
+      await monitor.sampleOnce();
+      expect(writeHistory).toHaveBeenCalledExactlyOnceWith(recovered);
+    } finally { await monitor.stop(); }
+  });
+
+  it('does not arm cadence after shutdown while the first collection is pending', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let releaseCollection!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseCollection = resolve; });
+    const collectHost = vi.fn(async () => { await gate; return counters(); });
+    const monitor = new LiveHealthMonitor({ paths: PATHS, now: () => 2_000, cadenceMs: 250,
+      collectHost, readFragments: async () => [], writeSnapshot: async () => {}, writeHistory: async () => {} });
+    try {
+      const starting = monitor.start();
+      const stopping = monitor.stop();
+      releaseCollection();
+      await starting;
+      await stopping;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(collectHost).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseCollection();
+      await monitor.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it('records byte/inode counters and one reservation budget per physical device, retaining failed paths', async () => {
     const reservations = vi.fn((path: string) => ({ state: 'measured' as const, deviceKey: `dev-${path === '/' ? 1 : 2}`,
       reservedBytes: path === '/' ? 10 : 20, knownReservedBytes: path === '/' ? 10 : 20, issues: [] }));

@@ -170,7 +170,7 @@ describe('mcp-call connection recovery', () => {
   it('retries a refused explicit-port connection and returns the eventual response', async () => {
     let calls = 0;
     const retries: Array<{ attempt: number; delayMs: number }> = [];
-    const response = { ok: true };
+    const response = Response.json({ ok: true });
 
     const result = await fetchWithConnectionRecovery(
       'http://localhost:3170/api/mcp',

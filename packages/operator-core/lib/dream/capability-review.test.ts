@@ -1068,6 +1068,17 @@ describe('production capability and Blender source adapter', () => {
     await writeFile(join(a.f.root, 'fixtures/A.ts'), 'different implementation');
     await expect(a.sources.readCurrent(p)).rejects.toThrow('Source changed');
   });
+  it('retains the study verifier on independently reread source packets', async () => {
+    const a = await adapterFixture();
+    const p = (await a.sources.search(a.request)).matches.find(row => row.ref === 'code:capability:A:implementation')!;
+    const verifyPacket = vi.fn(async () => ({ fresh: false as const, reason: 'captured compiler refusal' }));
+    const sources = buildCapabilityReviewSources({ sql: {} as Sql, scope, rootPath: a.f.root,
+      manifest: a.f.options.manifest, packets: [a.f.options.selection.a.packet, a.f.options.selection.b.packet],
+      verifyPacket }, a.deps);
+    await expect(sources.readCurrent(p)).rejects.toThrow('captured compiler refusal');
+    expect(verifyPacket).toHaveBeenCalledWith(a.f.options.selection.a.packet,
+      expect.objectContaining({ rootPath: a.f.root, unit: a.f.options.manifest.units[0] }));
+  });
   it('uses fresh stored proposal identity for exact duplicates', async () => {
     const a = await adapterFixture();
     a.run.outcome = { insight: { capability: a.f.options.candidate } };

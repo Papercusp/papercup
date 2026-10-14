@@ -81,6 +81,8 @@ import {
   fireSessionCompactedEvent,
   hostThroughPty,
   prepareCodexSqliteHome,
+  nativeSessionIdFromLaunchArgs,
+  applyNativeSessionEnv,
   resolveLinuxCodexStartupPid,
   fleetOscFromEnv,
   findLiveHostFor,
@@ -3736,32 +3738,9 @@ export async function recoverOutOfWindowTrackedSession(
  *      deliberately skipped.
  * Pure — exported for tests.
  */
-export function nativeSessionIdFromLaunchArgs(args = []) {
-  const argStrs = args.map((a) => String(a ?? ""));
-  for (let i = 0; i < argStrs.length; i++) {
-    const a = argStrs[i];
-    if (a === "--session-id" && UUID_RE.test(argStrs[i + 1] ?? ""))
-      return argStrs[i + 1];
-    if (a.startsWith("--session-id=")) {
-      const v = a.slice("--session-id=".length);
-      if (UUID_RE.test(v)) return v;
-    }
-  }
-  if (argStrs.includes("--fork-session")) return null;
-  for (let i = 0; i < argStrs.length; i++) {
-    const a = argStrs[i];
-    if (
-      (a === "--resume" || a === "resume") &&
-      UUID_RE.test(argStrs[i + 1] ?? "")
-    )
-      return argStrs[i + 1];
-    if (a.startsWith("--resume=")) {
-      const v = a.slice("--resume=".length);
-      if (UUID_RE.test(v)) return v;
-    }
-  }
-  return null;
-}
+// Share this parser with the child-spawn boundary without importing bootstrap
+// side effects into the PTY host. Preserve the launcher's public export.
+export { nativeSessionIdFromLaunchArgs };
 
 /**
  * WI-1980: build the argv for a cold-loop RECYCLE respawn.
@@ -4072,6 +4051,29 @@ export function mintParkResumeArgs(liveArgs = [], { agent = null, nativeId: over
   if (!resumeId) return null;
   out.push("--resume", resumeId);
   return { args: out, nativeId: resumeId };
+}
+
+/** A quota wall changes credentials, never the conversation. Reuse Codex's
+ * exact native UUID, dropping the old kickoff/resume target while retaining
+ * model, effort and other launch options.
+ * @param {string[]} liveArgs
+ * @param {{nativeId?: string|null}} options
+ */
+export function mintCodexQuotaResumeArgs(liveArgs = [], { nativeId = null } = {}) {
+  if (typeof nativeId !== "string" || !UUID_RE.test(nativeId)) return null;
+  const out = [];
+  const valueFlags = new Set(["-c", "--config", "-m", "--model", "-p", "--profile", "--add-dir", "--cd", "-C", "--enable", "--disable", "-a", "--ask-for-approval", "-s", "--sandbox", "-i", "--image"]);
+  for (let i = 0; i < liveArgs.length; i++) {
+    const arg = String(liveArgs[i]);
+    if (arg === "resume" || arg === "fork" || arg === "--") break;
+    if (!arg.startsWith("-")) break; // fresh launch's positional kickoff
+    out.push(arg);
+    if (valueFlags.has(arg)) {
+      if (i + 1 >= liveArgs.length) return null;
+      out.push(String(liveArgs[++i]));
+    }
+  }
+  return { args: [...out, "resume", nativeId], nativeId };
 }
 
 /**
@@ -7353,6 +7355,16 @@ export async function preflightCodexAutoPool({
   env = process.env,
 } = {}) {
   if (!isCodexAutoRoute(agent, model, account)) return true;
+  // This host-issued route carries its own metering/admission controller. The
+  // ambient gateway pool is not the transport this native process will use.
+  // Validate an explicit binding before returning; malformed routes must never
+  // fall through to the shared pool's fail-open preflight.
+  const scoped = env[SCOPED_INFERENCE_GATEWAY_ENV];
+  if (scoped !== undefined) {
+    try { snapshotScopedInferenceGateway(JSON.parse(scoped)); }
+    catch { throw new Error("Invalid scoped inference gateway envelope"); }
+    return true;
+  }
   const envPort = Number(env.PAPERCUSP_GATEWAY_PORT);
   const gatewayPort =
     Number.isFinite(port) && port > 0
@@ -7671,6 +7683,34 @@ export function applyCodexGatewayRoute(
     }),
     { mode: 0o600 },
   );
+}
+
+/** Last-mile route enforcement. Materializing a home can rewrite its root
+ * selector, and a profile/old -c can override the file. Apply the selected
+ * gateway route immediately before each native child and pin its selector in
+ * argv, without changing model or reasoning effort.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string[]} args
+ */
+export function prepareCodexGatewayLaunch(env, args = []) {
+  if (env.PAPERCUSP_AGENT !== "codex") return args;
+  const mode = env[ACCOUNT_ROUTING_MODE_ENV];
+  if (mode !== "auto" && mode !== "pin") return args;
+  if (!env.CODEX_HOME || (mode === "pin" && !env.PAPERCUSP_ACCOUNT_ID))
+    throw new Error("Codex gateway launch requires its selected route and isolated home");
+  const scoped = env[SCOPED_INFERENCE_GATEWAY_ENV];
+  applyCodexGatewayRoute(env.CODEX_HOME, {
+    mode, id: mode === "pin" ? env.PAPERCUSP_ACCOUNT_ID : null,
+    ownerId: env.PAPERCUSP_SID, priority: env.PAPERCUSP_AGENT_ROLE || "su",
+    ...(scoped !== undefined ? { gateway: snapshotScopedInferenceGateway(JSON.parse(scoped)) } : {}),
+  });
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === "-c" || args[i] === "--config") && /^\s*model_provider\s*=/.test(args[i + 1] ?? "")) { i++; continue; }
+    if (/^--config=\s*model_provider\s*=/.test(args[i])) continue;
+    out.push(args[i]);
+  }
+  return ["-c", `model_provider="${CODEX_GATEWAY_PROVIDER_ID}"`, ...out];
 }
 
 /** Apply the private route after bootstrap/carry materialization and BEFORE
@@ -12358,6 +12398,9 @@ export function runWrapper(options) {
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  // Derive from this child's argv, never an inherited parent or stale envelope.
+  // Use our HTTP carrier without restoring Claude's ancestry marker.
+  applyNativeSessionEnv(env, args);
   // Consume the host's per-process envelope after the independence sanitizer.
   // The native child retains it for managed carry; unrelated launches strip it.
   const scopedGateway = envelopeEnv?.[SCOPED_INFERENCE_GATEWAY_ENV] ?? process.env[SCOPED_INFERENCE_GATEWAY_ENV];
@@ -12599,6 +12642,7 @@ export function runWrapper(options) {
     );
   }
   const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
+  args = prepareCodexGatewayLaunch(env, args);
   if (env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined && !managedPtyEnabled) {
     void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
     throw new Error("Scoped native launch requires its managed PTY boundary; refusing plain execution");
@@ -12698,6 +12742,8 @@ export function runWrapper(options) {
         // stays launcher-agnostic; without it the host never parks.
         mintParkResumeArgs: (a, o = {}) =>
           mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT, nativeId: o.nativeId ?? null }),
+        mintQuotaResumeArgs: (a, o = {}) => mintCodexQuotaResumeArgs(a, o),
+        prepareChildArgs: (a) => prepareCodexGatewayLaunch(env, a),
         ensureCodexHome: (options = {}) =>
           ensureCodexHomeViaOperator(
             ownerId,
@@ -13024,6 +13070,33 @@ export function codexThreadWriterStatErrorCode(error) {
 
 const readProcLocksText = () => readFileSync("/proc/locks", "utf8");
 
+/** Read the exact process's held locks without the global locks_start semaphore
+ * used by /proc/locks, which stalled live PTY hosts on identity refresh.
+ * Kernel fdinfo exposes the same records for the existing device/inode parser.
+ * @param {number} pid
+ * @param {{listFdInfo?: (path:string)=>string[], readFdInfo?: (path:string, encoding:'utf8')=>string}} [options]
+ */
+export function readLinuxProcessFlockText(pid, {
+  listFdInfo = readdirSync,
+  readFdInfo = readFileSync,
+} = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("invalid lock-holder pid");
+  const root = `/proc/${pid}/fdinfo`;
+  const rows = [];
+  for (const entry of listFdInfo(root)) {
+    const fd = String(entry);
+    if (!/^\d+$/.test(fd)) continue;
+    let text;
+    try { text = String(readFdInfo(join(root, fd), "utf8")); }
+    catch { continue; } // a descriptor can close between the directory/read
+    for (const line of text.split("\n")) {
+      const lock = /^lock:\s*(.+)$/.exec(line);
+      if (lock) rows.push(lock[1]);
+    }
+  }
+  return rows.join("\n");
+}
+
 /**
  * Is a codex thread currently open by a live writer?
  * `{ held, pid, lockPath, sessionId, reason, statErrorCodes? }` — fail-open on every error path.
@@ -13038,14 +13111,14 @@ const readProcLocksText = () => readFileSync("/proc/locks", "utf8");
  * Pure apart from the injected readers — exported for tests.
  * @param {string | null | undefined} codexHome
  * @param {string | null} sessionId
- * @param {{readProcLocks?: () => string, statFile?: typeof statSync,
+ * @param {{readProcLocks?: () => string, statFile?: (path:string)=>{dev:number|bigint, ino:number|bigint},
  * listDir?: typeof safeReaddir, holderPid?: number | null}} [options]
  */
 export function codexThreadWriterHolder(
   codexHome,
   sessionId,
   {
-    readProcLocks = readProcLocksText,
+    readProcLocks = null,
     statFile = statSync,
     listDir = safeReaddir,
     holderPid = null,
@@ -13062,7 +13135,11 @@ export function codexThreadWriterHolder(
   if (!codexHome) return miss("no-home");
   let procLocks;
   try {
-    procLocks = readProcLocks();
+    // Periodic native identity already knows its exact native PID. Read only
+    // that process; the one-shot resume guard still uses the global oracle.
+    const readLocks = readProcLocks ?? (holderPid == null
+      ? readProcLocksText : () => readLinuxProcessFlockText(holderPid));
+    procLocks = readLocks();
   } catch {
     return miss("no-proc-locks");
   }

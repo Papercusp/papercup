@@ -4532,17 +4532,24 @@ export function healDeadOperatorPin(env: EnvironmentMap, { fetchImpl, timeoutMs 
     route?: undefined;
 } | null>;
 /**
- * D-424 (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22, P-326): the process the pty
- * actually runs for the agent child.
- *
- * With no {@link AGENT_IDENTITY_SPEC_ENV} in the child env (desktop, dev — every launch that is
- * not a hosted workspace host) this is exactly `command args env`, unchanged. On a hosted host
- * the operator sets that spec: psu stays the service-user supervisor and only the agent CLI
- * crosses to the customer workspace account — staged over a non-TTY hop, then run under a
- * remote TTY (`ssh -tt`) so the TUI, ^C and window resizes behave as they do locally. The spec
- * env var itself never crosses (the stage's env allowlist excludes it). A staging failure throws
- * a NAMED refusal; there is deliberately no fall back to running the agent as the service user.
- *
+ * Native ID identified by this child's argv. Forced IDs win over the resumed
+ * source; an unforced fork's new ID is unknown. Shared with the launcher so
+ * each carry/recycle/park spawn follows the same identity precedence.
+ * @param {string[]} [args]
+ * @returns {string|null}
+ */
+export function nativeSessionIdFromLaunchArgs(args?: string[]): string | null;
+/** Recompute the explicit HTTP carrier without stamping Claude ancestry.
+ * @param {EnvironmentMap} env
+ * @param {string[]} args
+ * @returns {EnvironmentMap}
+ */
+export function applyNativeSessionEnv(env: EnvironmentMap, args: string[]): EnvironmentMap;
+/**
+ * D-424: select the PTY child and stage a hosted identity when configured.
+ * Without a hosted spec, command/args remain unchanged. The cloned environment
+ * carries this spawn's native ID and discards stale operator-host hints.
+ * Staging failures propagate without falling back to the service user.
  * @param {{command: string, args: string[], env: Record<string,string|undefined>, cwd?: string}} target
  * @param {{stage?: typeof stageAgentIdentityTty}} [deps]
  * @returns {{command: string, args: string[], env: Record<string,string|undefined>}}
@@ -4595,6 +4602,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }: {
  * @param {(args:string[], options:{agent?:string, personaFile?:string|null})=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
+ * @param {(args:string[], options:{nativeId:string|null})=>({args:string[], nativeId:string}|null)} [o.mintQuotaResumeArgs]
+ * @param {(args:string[])=>string[]} [o.prepareChildArgs]
  *   mint the argv that resumes a parked child (null = not resumable, never park)
  * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
@@ -4657,6 +4666,13 @@ export function hostThroughPty(o: {
         args: string[];
         nativeId: string;
     } | null)) | undefined;
+    mintQuotaResumeArgs?: ((args: string[], options: {
+        nativeId: string | null;
+    }) => ({
+        args: string[];
+        nativeId: string;
+    } | null)) | undefined;
+    prepareChildArgs?: ((args: string[]) => string[]) | undefined;
     ensureCodexHome?: ((options?: {
         routeMode?: "auto";
     }) => Promise<any>) | undefined;

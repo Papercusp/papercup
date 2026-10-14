@@ -1,12 +1,12 @@
 ---
 rel_path: "audits/held-agent-resumption-2026-10-12/successor-brief-reconciled-2026-10-13.json"
-updated_at: 1791926800566
+updated_at: 1791940102007
 _body: "content"
 ---
 
 {
   "owner": "su-0353474c-1a6f-456e-bb47-647a146050e1",
-  "savedAt": "2026-10-13T21:26:35.497Z",
+  "savedAt": "2026-10-14T01:08:21.998Z",
   "parent": "WI-6554700010009267",
   "rootIssue": "EI-25858658863255291",
   "currentVerifiedCounts": {
@@ -117,9 +117,9 @@ _body: "content"
     "latestHydrationQualification": "audits/held-agent-resumption-2026-10-12/hydration-adoption-qualification-2026-10-13.json"
   },
   "report": {
-    "id": "rpt_4c748f3d-a52f-4f3f-b1a6-db03e3738013",
-    "path": "/reports?sel=rpt_4c748f3d-a52f-4f3f-b1a6-db03e3738013",
-    "source": "audits/held-agent-resumption-2026-10-12/reconciled-recovery-status-2026-10-13.md",
+    "id": "rpt_0f082224-05f9-42e9-bb19-31bafdaafc9a",
+    "path": "/reports?sel=rpt_0f082224-05f9-42e9-bb19-31bafdaafc9a",
+    "source": "audits/held-agent-resumption-2026-10-12/recovery-qualified-status-2026-10-13.md",
     "completeMarkdown": true,
     "visibility": "owner"
   },
@@ -143,5 +143,49 @@ _body: "content"
     "Earlier dated report URLs preserved."
   ],
   "pendingSupplementalProofs": [],
-  "rootIssueStatus": "Fix qualified; structured completion remains pending"
+  "rootIssueStatus": "done: authoritative work_items:get; source fix qualified and structured completion committed",
+  "rootIssueDisposition": {
+    "id": "EI-25858658863255291",
+    "state": "done",
+    "completionAuthority": "committed",
+    "terminalOwner": "su-0353474c-1a6f-456e-bb47-647a146050e1",
+    "terminalCompletionRef": null,
+    "closedAt": "2026-10-13T21:44:55.864Z"
+  },
+  "priorReports": [
+    {
+      "id": "rpt_4c748f3d-a52f-4f3f-b1a6-db03e3738013",
+      "path": "/reports?sel=rpt_4c748f3d-a52f-4f3f-b1a6-db03e3738013",
+      "source": "audits/held-agent-resumption-2026-10-12/reconciled-recovery-status-2026-10-13.md",
+      "completeMarkdown": true,
+      "visibility": "owner"
+    },
+    {
+      "id": "rpt_a143037b-a8fb-40a0-8495-862520dbfff0",
+      "path": "/reports?sel=rpt_a143037b-a8fb-40a0-8495-862520dbfff0",
+      "source": "audits/held-agent-resumption-2026-10-12/hydration-fix-status-2026-10-13.md"
+    },
+    {
+      "id": "rpt_e448e456-48cd-4851-8270-3638a446c4e1",
+      "path": "/reports?sel=rpt_e448e456-48cd-4851-8270-3638a446c4e1",
+      "source": "audits/held-agent-resumption-2026-10-12/continuation-status-2026-10-13.md"
+    }
+  ],
+  "replayReconciliation": {
+    "carryNonce": "854586159131adb0",
+    "wakeDeliveryIds": [
+      768377,
+      768378
+    ],
+    "alreadyHandled": true,
+    "parentStillOpen": true,
+    "ownHeldItems": 5,
+    "noNewPeerReplyObserved": true,
+    "limits": [
+      "Do not replay handled 10203 pickup or leader055 answer.",
+      "Do not reclaim completed EI-25858658863255291.",
+      "1e14 active writer and missing launch provenance prohibit replacement; no fork/shutdown/release/relaunch or independent monitor.",
+      "Current-brief path remains unverified; this reconciled path is authoritative with parent checkpoint."
+    ]
+  }
 }

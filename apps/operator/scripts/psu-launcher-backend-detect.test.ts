@@ -84,6 +84,42 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
 
 describe('packaged backend launchers cannot recursively launch psu', () => {
   it.each([
+    { args: ['--resume', '11111111-1111-4111-8111-111111111111', '--fork-session', '--session-id', '22222222-2222-4222-8222-222222222222'], expected: '22222222-2222-4222-8222-222222222222' },
+    { args: ['--resume', '11111111-1111-4111-8111-111111111111', '--fork-session'], expected: '' },
+  ])('derives the ordinary child MCP identity from argv without restoring Claude ancestry: $expected', ({ args, expected }) => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-native-carrier-'));
+    try {
+      const nativeDir = join(root, 'native');
+      mkdirSync(nativeDir, { recursive: true });
+      writeFileSync(join(nativeDir, 'claude'), '#!/bin/sh\nprintf "CARRIER:%s\\nANCESTRY:%s\\n" "$PAPERCUSP_NATIVE_SESSION_ID" "$CLAUDE_CODE_SESSION_ID"\n', { mode: 0o755 });
+      const launcherUrl = process.env.PROBE_SUBJECT
+        ? pathToFileURL(process.env.PROBE_SUBJECT).href
+        : new URL('./psu-launcher.mjs', import.meta.url).href;
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+        import { runWrapper } from ${JSON.stringify(launcherUrl)};
+        runWrapper({
+          wrapperBin: 'claude', args: ${JSON.stringify(args)}, cwd: ${JSON.stringify(root)},
+          preserveCwd: true,
+          envelopeEnv: { PAPERCUSP_AGENT: 'claude', PAPERCUSP_PSU_NO_PTY: '1',
+            PAPERCUSP_NATIVE_SESSION_ID: '11111111-1111-4111-8111-111111111111' },
+          reportSessionEndedImpl: async () => {},
+        });
+      `], {
+        encoding: 'utf8', timeout: 15_000,
+        env: { HOME: root, NODE_ENV: 'test', PATH: [nativeDir, process.env.PATH].join(':'),
+          PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY: '0',
+          CLAUDE_CODE_SESSION_ID: '11111111-1111-4111-8111-111111111111' },
+      });
+      expect(result.error, JSON.stringify({ status: result.status, signal: result.signal,
+        stdout: result.stdout, stderr: result.stderr })).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe(`CARRIER:${expected}\nANCESTRY:\n`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     { operation: 'launch', args: ['--help'] },
     { operation: 'resume', args: ['resume', 'test-thread'] },
     { operation: 'owner-reported flags', args: [

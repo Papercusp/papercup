@@ -15,6 +15,7 @@
  * this is a formatting choice.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   findCommitBlockingSecrets,
   findCommitBlockingSecretsSliced,
@@ -54,6 +55,12 @@ describe('findCommitBlockingSecrets', () => {
 
   it('reports clean text as clean', () => {
     expect(findCommitBlockingSecrets('a/b.ts', "const NEVER_EMIT_MARKER = 'never-emit-me';\n", NO_EXEMPTIONS)).toEqual([]);
+  });
+
+  it('keeps the mobile HTTP audit fixtures committable without a secrets exemption', () => {
+    const path = 'packages/operator-core/lib/owner-sessions/device-actions.integration.test.ts';
+    const text = readFileSync(new URL('../owner-sessions/device-actions.integration.test.ts', import.meta.url), 'utf8');
+    expect(findCommitBlockingSecrets(path, text, NO_EXEMPTIONS)).toEqual([]);
   });
 
   it('skips a STATIC fixture file (isFixtureFile) so the scanner cannot wedge its own suite', () => {

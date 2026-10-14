@@ -1,5 +1,6 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync as nativeSpawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   linkSync,
@@ -14,6 +15,7 @@ import {
   symlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -37,6 +39,45 @@ const SCRIPT =
   join(REPO_ROOT, 'apps/operator/bin/release/dependency-generation.sh');
 
 const roots: string[] = [];
+
+// A synchronous child blocks Vitest's worker and its case-timeout callback.
+// Emit directly to the worker's stderr before entering that child so the file
+// watchdog can identify the exact case/phase even when the child never returns.
+function spawnSync(
+  command: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding = { encoding: 'utf8' },
+) {
+  const started = Date.now();
+  const subject = {
+    test: expect.getState().currentTestName,
+    command,
+    args: args.map((arg) => arg.slice(0, 240)),
+  };
+  const emit = (phase: string, fields: Record<string, unknown>) => {
+    const line = `DEPENDENCY_GENERATION_SHELL_${phase} ${JSON.stringify(fields)}\n`;
+    // The router buffers stderr until finalization. A task-level kill can end
+    // the router too, so an explicitly requested diagnostic file must be
+    // written synchronously before the child starts, outside that buffer.
+    const traceFile = process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE;
+    if (traceFile) appendFileSync(traceFile, line);
+    writeSync(2, line);
+  };
+  emit('START', subject);
+  const result = nativeSpawnSync(command, args, {
+    ...options,
+    timeout: options.timeout ?? NATIVE_SHELL_TIMEOUT_MS,
+    killSignal: options.killSignal ?? 'SIGKILL',
+  });
+  emit('END', {
+    ...subject,
+    durationMs: Date.now() - started,
+    status: result.status,
+    signal: result.signal,
+    error: result.error?.message,
+  });
+  return result;
+}
 
 interface ShellResult {
   status: number | null;
@@ -347,6 +388,37 @@ function commitAllFixture(integration: string, message: string): string {
 }
 
 describe('dependency source checkout boundaries', () => {
+  it('bounds a blocked synchronous child and preserves its diagnostic phase outside router buffers', () => {
+    const integration = makeIntegration();
+    const trace = join(dirname(integration), 'shell-trace.log');
+    const previous = process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE;
+    process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE = trace;
+    try {
+      const result = spawnSync(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        encoding: 'utf8', timeout: 100,
+      });
+      expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
+      expect(result.signal).toBe('SIGKILL');
+      const records = readFileSync(trace, 'utf8').trim().split('\n');
+      expect(records).toHaveLength(2);
+      expect(records[0]).toContain('DEPENDENCY_GENERATION_SHELL_START');
+      expect(records[0]).toContain('bounds a blocked synchronous child');
+      expect(records[1]).toContain('DEPENDENCY_GENERATION_SHELL_END');
+      expect(records[1]).toContain('ETIMEDOUT');
+    } finally {
+      if (previous === undefined) delete process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE;
+      else process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE = previous;
+    }
+  });
+
+  it('preserves the termination signal selected by a bounded-child caller', () => {
+    const result = spawnSync(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      encoding: 'utf8', timeout: 100, killSignal: 'SIGTERM',
+    });
+    expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
+    expect(result.signal).toBe('SIGTERM');
+  });
+
   it('excludes generated Next standalone outputs from full and selected captures', () => {
     const integration = makeIntegration();
     const sourceCommit = commitFixture(integration, 'seed source inputs');
@@ -1928,7 +2000,7 @@ exec /bin/cp "$@"
       identity,
     );
     expect(selected.status, selected.stderr).toBe(0);
-  });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('fully revalidates a changed incumbent and reuses a valid concurrent winner', () => {
     const integration = makeIntegration();
@@ -3262,6 +3334,7 @@ describe('dependency-generation publish-lock waiter', () => {
     const result = spawnSync('bash', ['-c', wrapper], {
       encoding: 'utf8',
       timeout: timeoutMs,
+      killSignal: 'SIGTERM',
       env: { ...process.env, SCRIPT, ROOT: root, SCENARIO: scenario, ...env },
     });
     return {

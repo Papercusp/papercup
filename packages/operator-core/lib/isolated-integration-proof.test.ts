@@ -1,10 +1,32 @@
 import { expect, it, vi } from 'vitest';
-import { fork } from 'node:child_process';
+import { fork, spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { captureIsolatedWorker, recordIsolatedIntegrationProof } from '../test/isolated-integration-proof';
+import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
+
+it('preserves failure progress and verifies a real reaped signal without certifying success', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-progress-'));
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+  try {
+    await once(child, 'spawn');
+    expect(() => assertIsolatedWorkerReaped(child, { runtimeRemoved: true, pgDataRemoved: true })).toThrow(/reaped/);
+    retainIsolatedWorkerProgress(evidenceDir, 'launch-returned', { agentStarted: null });
+    retainIsolatedWorkerProgress(evidenceDir, 'task-observed', { state: 'pending' });
+    const closed = once(child, 'close'); child.kill('SIGTERM'); await closed;
+    expect(child.exitCode).toBeNull(); expect(child.signalCode).toBe('SIGTERM');
+    expect(() => assertIsolatedWorkerReaped(child, { runtimeRemoved: false, pgDataRemoved: true })).toThrow(/cleanup/);
+    expect(() => assertIsolatedWorkerReaped(child, { runtimeRemoved: true, pgDataRemoved: true })).not.toThrow();
+    const rows = readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8').trim().split('\n').map(row => JSON.parse(row));
+    expect(rows).toEqual([
+      { stage: 'launch-returned', observedAt: expect.any(String), agentStarted: null },
+      { stage: 'task-observed', observedAt: expect.any(String), state: 'pending' },
+    ]);
+    expect(rows.every(row => Number.isFinite(Date.parse(row.observedAt)))).toBe(true);
+  } finally { child.kill('SIGKILL'); rmSync(evidenceDir, { recursive: true, force: true }); }
+});
 
 // Only the parent's telemetry database is substituted. The proof writer,
 // worker IPC, kernel process identities, receipt retention and pruning are real.

@@ -53,6 +53,8 @@ const {
   reconcileCodexSystemAuth,
   isCodexHomeLaunchReady,
   codexHomeLaunchReadiness,
+  prepareCodexGatewayLaunch,
+  mintCodexQuotaResumeArgs,
 } = launcher;
 
 let dir: string;
@@ -70,6 +72,43 @@ beforeEach(() => {
   // nothing. Materializing a real home here is what makes both arms test what
   // they claim; do not drop it to "simplify" the fixture.
   writeFileSync(join(dir, 'AGENTS.md'), '# papercusp su\n');
+});
+
+describe('selected Codex route at the actual child boundary', () => {
+  it.each(['auto', 'pin'])('reapplies %s after home refresh and overrides stale provider argv', (mode) => {
+    writeFileSync(join(dir, 'config.toml'), 'model_provider = "openai"\nmodel = "gpt-6.1-sol"\nmodel_reasoning_effort = "xhigh"\n');
+    const env = { PAPERCUSP_AGENT: 'codex', CODEX_HOME: dir, PAPERCUSP_SID: 'su-route',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: mode, PAPERCUSP_ACCOUNT_ID: 'pool-a' };
+    const id = '12345678-1234-1234-1234-123456789abc';
+    const args = prepareCodexGatewayLaunch(env, ['-c', 'model_provider="openai"', '-m', 'gpt-6.1-sol',
+      '-c', 'model_reasoning_effort="xhigh"', 'resume', id]);
+    expect(args).toEqual(['-c', 'model_provider="papercusp-codex-gateway"', '-m', 'gpt-6.1-sol',
+      '-c', 'model_reasoning_effort="xhigh"', 'resume', id]);
+    const config = readFileSync(join(dir, 'config.toml'), 'utf8');
+    expect(config).toContain('model_provider = "papercusp-codex-gateway"');
+    expect(config).toContain('"x-papercusp-owner" = "su-route"');
+    expect(config.includes('"x-papercusp-account" = "pool-a"')).toBe(mode === 'pin');
+    expect(config).toContain('model_reasoning_effort = "xhigh"');
+    expect(prepareCodexGatewayLaunch(env, args)).toEqual(args);
+  });
+
+  it('keeps deliberate system routing and refuses an incomplete named pin', () => {
+    const args = ['-m', 'gpt-6.1-sol'];
+    expect(prepareCodexGatewayLaunch({ PAPERCUSP_AGENT: 'codex', PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }, args)).toBe(args);
+    expect(() => prepareCodexGatewayLaunch({ PAPERCUSP_AGENT: 'codex', CODEX_HOME: dir,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin' }, args)).toThrow(/selected route/);
+  });
+
+  it.each([
+    ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'old kickoff'],
+    ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'resume', '--last', 'old kickoff'],
+    ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'fork', 'old-native'],
+  ])('quota recovery resumes the exact conversation without replaying kickoff (%j)', (...args) => {
+    const id = '12345678-1234-1234-1234-123456789abc';
+    expect(mintCodexQuotaResumeArgs(args, { nativeId: id })).toEqual({ nativeId: id,
+      args: ['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="xhigh"', 'resume', id] });
+    expect(mintCodexQuotaResumeArgs(args, { nativeId: null })).toBeNull();
+  });
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });

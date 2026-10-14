@@ -14731,7 +14731,7 @@
           "POST"
         ]
       },
-      "description": "Inherited organization > department > workspace policy over models, tools, plugins, egress, dataUse and actions. get = chain + layers + version history; explain = the verdict the enforcement seat would reach for a request, and which layer decided; simulate = before/after verdicts for a proposed layer (writes nothing); set = write a layer version (actor + reason); add-exception = append an expiring exception. A lower layer can never widen an ancestor.",
+      "description": "Inherited organization > department > workspace policy over models, tools, plugins, egress, dataUse and actions. get = chain + layers + version history; explain = the verdict the enforcement seat would reach for a request, and which layer decided; simulate = before/after verdicts for a proposed layer (writes nothing); set = write a layer version (actor + reason); add-exception = append an expiring exception. A lower layer can never widen an ancestor. Org/department changes are sensitive: prepare (simulates), a distinct human admin approves in the admin pane, then apply (once, 15 min); authority = delegations + open requests.",
       "capabilities": [
         "operator:write"
       ],

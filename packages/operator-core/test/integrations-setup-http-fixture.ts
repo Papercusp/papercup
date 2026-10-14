@@ -30,6 +30,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSyn
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import postgres from 'postgres';
 import { readProcessIdentity } from '../lib/process-identity';
+import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 const PROVIDER = 'integrations-setup-chat';
 const PACK = 'integrations-setup-triage';
@@ -122,24 +123,14 @@ async function main() {
   }
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
 
-  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  const hostEnv = privateBundleRuntimeEnv(e);
+  host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity required');
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
-  let health: any;
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    assert.equal(host.exitCode, null, 'private host exited before readiness');
-    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
-    try {
-      const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
-      if (response.ok) { health = await response.json(); break; }
-    } catch { /* bounded readiness convergence; journey requests never retry */ }
-    await new Promise(done => setTimeout(done, 250));
-  }
-  assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
+  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('INTEGRATIONS_SETUP_PHASE request-ready');
 
   // ── The journey. Every request goes through `call`, which admits only the routes the page uses.

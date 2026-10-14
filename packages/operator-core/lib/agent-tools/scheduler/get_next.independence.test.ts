@@ -31,6 +31,9 @@ vi.mock('../../work-item-claim-lease-wiring', () => ({
 
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: vi.fn(async () => new Map()),
+  // get_next's preflight reads fetchContextPressureReadings; without it the preflight
+  // degrades to its fallback and this success-path test sees no claim (red since 2026-10-13).
+  fetchContextPressureReadings: vi.fn(async () => new Map()),
 }));
 
 vi.mock('../locks/live-lock-paths', () => ({

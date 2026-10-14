@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
+import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { writeSharedSnapshot } from '../lib/derived-reads/shared-snapshot';
 import { createPrivateHealthSnapshot } from './private-http-workspace-preflight';
 import type { AgentStrandHealth } from '../lib/system-health/agent-strand-census';
@@ -72,29 +73,18 @@ async function main() {
   // remain default. The supervisor owns a private DB, HOME, workspace and ports.
   const intervalMs = 500;
   async function startHost() {
+    const hostEnv = privateBundleRuntimeEnv({ ...e,
+      PAPERCUSP_INFRA_LIVENESS_ALARM: '1', PAPERCUSP_INFRA_LIVENESS_ALARM_MS: String(intervalMs) });
     host = spawn(process.execPath, [bundle], { cwd: root,
-      env: { ...e, PAPERCUSP_INFRA_LIVENESS_ALARM: '1', PAPERCUSP_INFRA_LIVENESS_ALARM_MS: String(intervalMs) },
+      env: hostEnv,
       stdio: ['ignore', 'pipe', 'pipe'] });
     host.stdout!.on('data', chunk => process.stdout.write(chunk));
     host.stderr!.on('data', chunk => process.stderr.write(chunk));
     hostIdentity = readProcessIdentity(host.pid!);
     assert.ok(hostIdentity, 'private host kernel identity required');
-    const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline) {
-      assert.equal(host.exitCode, null, 'private host exited before readiness');
-      assert.equal(host.signalCode, null, 'private host was signaled before readiness');
-      try {
-        const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
-        if (response.ok) {
-          const health = await response.json();
-          assert.equal(health.service, 'papercusp-operator');
-          assert.ok(health.sha, 'loaded bundle identity is required');
-          return { pid: host.pid!, identity: hostIdentity, health };
-        }
-      } catch { /* bounded readiness convergence only */ }
-      await new Promise(done => setTimeout(done, 250));
-    }
-    throw new Error('private alarm operator never became ready');
+    const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
+    assert.ok(health.sha, 'loaded bundle identity is required');
+    return { pid: host.pid!, identity: hostIdentity, health };
   }
   const { sql } = getOrgPg();
   async function snapshot(wedged: number | null) {

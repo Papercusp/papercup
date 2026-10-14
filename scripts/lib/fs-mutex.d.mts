@@ -42,12 +42,13 @@ export function resolveFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
  * production callers use the platform defaults.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
  */
 export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     platform?: NodeJS.Platform;
     homeDir?: string;
     legacyRoot?: string;
+    phaseTimingsMs?: Record<string, number>;
 }): Promise<string>;
 /**
  * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex

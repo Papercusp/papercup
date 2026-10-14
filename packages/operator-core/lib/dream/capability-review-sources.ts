@@ -111,6 +111,7 @@ const defaultDeps: CapabilityReviewSourceDeps = {
   readCode: readCapabilitySource,
 };
 export interface BuildCapabilityReviewSourcesInput {
+  verifyPacket?: CapabilityReviewSourceDeps['verifyPacket'];
   sql: Sql;
   scope: Scope;
   rootPath: string;
@@ -256,7 +257,7 @@ export function buildCapabilityReviewSources(
   async function fresh(packet: CapabilityPacket) {
     const unit = input.manifest.units.find((u) => u.id === packet.unit.id);
     if (!unit) throw new Error('Catalogue unit is absent from the current manifest.');
-    const result = await deps.verifyPacket(packet, {
+    const result = await (input.verifyPacket ?? deps.verifyPacket)(packet, {
       rootPath: input.rootPath,
       scope,
       unit,

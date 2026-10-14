@@ -7,6 +7,7 @@ import { loadAccountPool } from '../deployment/account-pool-store';
 import { accountsForProvider, isSpawnEligible } from '../deployment/account-pool';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(240_000);
@@ -22,11 +23,13 @@ it('records the exact real primary blueprint request on its private spawn row', 
   // Transfer only maintained credential references; never read/export credential bytes.
   const accounts = eligible.map(account => ({ ...account, boundTo: [], softPin: [],
     credentialRef: account.credentialRef.replace(/~/g, homedir()) }));
+  let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/blueprint/launch-blueprint-account-route.e2e.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
       'packages/operator-core/test/blueprint-account-route-http-scenario.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/lib/blueprint/launch-blueprint.ts',
       'packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts',
       'packages/operator-core/lib/harness-invoke-once.ts',
@@ -36,8 +39,16 @@ it('records the exact real primary blueprint request on its private spawn row', 
       'packages/operator-core/lib/fleet/spawn-tree.ts',
       'libs/papercusp/packages/orchestrator/src/invoke.ts',
       'libs/papercusp/packages/orchestrator/src/spawn-mcp.ts'],
-    retainedArtifacts: ['phases/execute/account-route.json'],
+    retainedArtifacts: ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-build.log',
+      'phases/execute/account-route.json', 'phases/execute/account-route-preflight.json',
+      'phases/execute/worker.log'],
+    prepare: evidenceDir => {
+      // Compilation and its real restricted-write census run before allocating
+      // a private PG or starting the bounded provider/request journey.
+      prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+    },
     execute: async (observe, evidenceDir) => {
+      expect(prepared, 'private API preparation must finish before runtime allocation').toBeTruthy();
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const referenceFile = join(evidenceDir, 'account-pool-references.json');
@@ -50,7 +61,8 @@ it('records the exact real primary blueprint request on its private spawn row', 
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/staging-first-http-fixture.ts'),
+        `--prepared-api-sha=${prepared!.sha256}`, `--prepared-receipt-sha=${prepared!.receiptSha256}`],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => {
@@ -74,6 +86,7 @@ it('records the exact real primary blueprint request on its private spawn row', 
       expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
       expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
       expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(receipt.runtimeInputs.invoke).toBe(join(root, 'libs/papercusp/packages/orchestrator/bin/invoke-once.ts'));
       console.info('BLUEPRINT_ACCOUNT_ROUTE_VERIFIED ' + JSON.stringify(receipt));
     },
   });

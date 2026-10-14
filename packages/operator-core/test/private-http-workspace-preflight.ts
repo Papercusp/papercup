@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -592,14 +592,13 @@ function assertPrivatePreparationEvidence() {
 
 function buildPrivateOperatorApiBundle(root: string, evidenceDir: string) {
   const path = join(evidenceDir, 'hono-host.mjs');
+  // Write both streams directly to retained evidence: a timeout, signal or
+  // parent failure must not erase the compiler/census's original diagnostics.
+  const log = openSync(join(evidenceDir, 'operator-api-build.log'), 'w', 0o600);
   try {
-    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
-      { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000 });
-    writeFileSync(join(evidenceDir, 'operator-api-build.log'), output);
-  } catch (error: any) {
-    writeFileSync(join(evidenceDir, 'operator-api-build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
-    throw error;
-  }
+    execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
+      { cwd: root, env: process.env, stdio: ['ignore', log, log], timeout: 240_000 });
+  } finally { closeSync(log); }
   return { path, sha256: digestBytes(readFileSync(path)) };
 }
 

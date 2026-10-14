@@ -86,17 +86,66 @@ export async function writeReclaimAudit(sql: ReclaimSql, workspaceId: string, ru
   );
 }
 
-async function scanRetentionHolders(paths: readonly string[]): Promise<OpenWriterScan> {
-  const status = await readFile('/proc/self/status', 'utf8').catch(() => '');
+const RETENTION_HOLDER_SCAN_MS = 30_000;
+const incompleteHolders = (): OpenWriterScan => ({ complete: false, byPath: new Map() });
+
+/** The existing async scanner needs host-wide read access before it can prove absence. */
+export async function scanRetentionHolders(paths: readonly string[], deps: {
+  readStatus?: () => Promise<string>;
+  uid?: () => number;
+  scan?: typeof openWriterPidsMany;
+  privileged?: (paths: readonly string[], control: string) => Promise<OpenWriterScan>;
+} = {}): Promise<OpenWriterScan> {
+  const status = await (deps.readStatus ?? (() => readFile('/proc/self/status', 'utf8')))().catch(() => '');
   const ids = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
   // A nested PID namespace cannot prove a host tree unused.
-  if (!ids || ids.length !== 1) return { complete: false, byPath: new Map() };
+  if (!ids || ids.length !== 1) return incompleteHolders();
   const control = process.cwd();
-  const scan = await openWriterPidsMany([...new Set([...paths, control])], {
-    descendants: true, includeCwd: true, failClosed: true, deadlineMs: Date.now() + 30_000,
-  });
+  const wanted = [...new Set([...paths, control])];
+  const scan = (deps.uid ?? (() => process.getuid?.() ?? -1))() === 0
+    ? await (deps.scan ?? openWriterPidsMany)(wanted, {
+      descendants: true, includeCwd: true, failClosed: true, deadlineMs: RETENTION_HOLDER_SCAN_MS,
+    })
+    : await (deps.privileged ?? scanPrivilegedRetentionHolders)(wanted, control).catch(incompleteHolders);
   if (!scan.byPath.get(control)?.includes(String(process.pid))) scan.complete = false;
   return scan;
+}
+
+async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string): Promise<OpenWriterScan> {
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
+  const require = createRequire(join(repoRoot, 'package.json'));
+  // Reuse the scanner from canonical source; the elevated child only reads /proc.
+  // Both namespaces and the ORIGINAL caller's PID are positive controls.
+  const worker = `
+    import { readFile } from 'node:fs/promises';
+    const paths = JSON.parse(process.argv[1]);
+    const status = await readFile('/proc/self/status', 'utf8');
+    const ids = /^NSpid:\\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\\s+/);
+    if (!ids || ids.length !== 1) process.exit(2);
+    const { openWriterPidsMany } = await import(process.argv[2]);
+    const result = await openWriterPidsMany(paths, {
+      descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
+    });
+    process.stdout.write(JSON.stringify({ complete: result.complete, byPath: [...result.byPath] }));
+  `;
+  const result = await nativeRetentionCommand(repoRoot, '/usr/bin/sudo', [
+    '-n', process.execPath, '--import', require.resolve('tsx/esm'), '--input-type=module', '-e', worker,
+    '--', JSON.stringify(paths), join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts'),
+  ], { stdoutOnly: true, outputLimit: 1024 * 1024, timeoutMs: RETENTION_HOLDER_SCAN_MS + 1_000 });
+  if (!result.ok || !result.detail || typeof result.detail !== 'object' ||
+      !('output' in result.detail) || typeof result.detail.output !== 'string') return incompleteHolders();
+  try {
+    const parsed: unknown = JSON.parse(result.detail.output);
+    if (!parsed || typeof parsed !== 'object' || !('complete' in parsed) || typeof parsed.complete !== 'boolean' ||
+        !('byPath' in parsed) || !Array.isArray(parsed.byPath)) return incompleteHolders();
+    const byPath = new Map<string, string[]>();
+    for (const row of parsed.byPath) {
+      if (!Array.isArray(row) || row.length !== 2 || typeof row[0] !== 'string' || !paths.includes(row[0]) ||
+          !Array.isArray(row[1]) || !row[1].every((pid: unknown) => typeof pid === 'string' && /^\d+$/.test(pid))) return incompleteHolders();
+      byPath.set(row[0], row[1]);
+    }
+    return { complete: parsed.complete && byPath.get(control)?.includes(String(process.pid)) === true, byPath };
+  } catch { return incompleteHolders(); }
 }
 
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
@@ -305,11 +354,16 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
 }
 
 /** Bounded, enrolled execution of an existing native cleaner. */
-export async function nativeRetentionCommand(repoRoot: string, command: string, args: string[]) {
+export async function nativeRetentionCommand(repoRoot: string, command: string, args: string[], options: {
+  stdoutOnly?: boolean; outputLimit?: number; timeoutMs?: number;
+} = {}) {
   const { managedSpawn } = await import('../task-manager/managed-spawn');
   let finish!: (result: { ok: boolean; detail: unknown }) => void;
   const observed = new Promise<{ ok: boolean; detail: unknown }>((resolve) => { finish = resolve; });
   let output = '', taskId: string | null = null, settled = false;
+  let outputTruncated = false;
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const outputLimit = options.outputLimit ?? 4000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const done = (ok: boolean, detail: unknown) => {
     if (settled) return;
@@ -319,7 +373,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
     await managedSpawn(command, args, {
       class: 'other', title: 'scheduled disk retention delegate', argv: [command, ...args],
       launchedBy: 'system:disk-retention', planSlug: 'disk-headroom-standing-reclaim-2026-10-12',
-      runtimeMaxSec: 120, detail: { subsystem: 'storage', operation: 'retention-delegate' },
+      runtimeMaxSec: Math.ceil(timeoutMs / 1000), detail: { subsystem: 'storage', operation: 'retention-delegate' },
     }, {
       spawnOptions: { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] },
       onSpawn: (child, id) => {
@@ -327,12 +381,17 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
         timer = setTimeout(() => {
           done(false, { error: 'delegate timeout', taskId, output });
           child.kill('SIGKILL');
-        }, 120_000);
+        }, timeoutMs);
         timer.unref();
-        const append = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-4000); };
-        child.stdout?.on('data', append); child.stderr?.on('data', append);
+        const append = (chunk: Buffer) => {
+          const combined = output + chunk.toString();
+          outputTruncated ||= combined.length > outputLimit;
+          output = combined.slice(-outputLimit);
+        };
+        child.stdout?.on('data', append);
+        if (!options.stdoutOnly) child.stderr?.on('data', append);
         child.once('error', (error) => done(false, { error: message(error), taskId, output }));
-        child.once('close', (code, signal) => done(code === 0, { code, signal, taskId, output }));
+        child.once('close', (code, signal) => done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output }));
       },
     });
   } catch (error) { done(false, { error: message(error), taskId, output }); }

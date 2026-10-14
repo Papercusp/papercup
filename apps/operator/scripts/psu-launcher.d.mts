@@ -969,22 +969,6 @@ export function recoverOutOfWindowTrackedSession(untracked: any, { apiImpl, home
     reasons: any[];
 }>;
 /**
- * The native session id a launch argv identifies AS THIS SESSION, or null.
- * Precedence matters because a fork's argv names TWO sessions:
- *   1. `--session-id <uuid>` wins — it declares the launched session's OWN id
- *      (fresh launches force it; a tracked claude fork emits
- *      `--resume <orig> --fork-session --session-id <forkId>`, and binding the
- *      ORIGINAL's id to the fork's fresh SID would poison the index).
- *   2. `--fork-session` with no forced id → null: the fork's new native id is
- *      minted by claude at runtime and unknowable here. Codex forks
- *      (`codex fork <uuid>`) likewise match nothing.
- *   3. Else `--resume <uuid>` (claude) / `resume <uuid>` subcommand (codex) —
- *      a plain resume IS the named session. OMP threads are non-UUID names,
- *      deliberately skipped.
- * Pure — exported for tests.
- */
-export function nativeSessionIdFromLaunchArgs(args?: any[]): string | null;
-/**
  * Drop the trailing KICKOFF POSITIONAL from a launch argv.
  *
  * WI-37939: `kickoffPositionalArgs` seeds a scripted launch's first turn as a
@@ -1060,6 +1044,18 @@ export function mintRecycleArgs(args?: string[], { mintId, agent, personaFile, m
  */
 export function mintParkResumeArgs(liveArgs?: string[], { agent, nativeId: overrideId }?: {
     agent?: string | null;
+    nativeId?: string | null;
+}): {
+    args: string[];
+    nativeId: string;
+} | null;
+/** A quota wall changes credentials, never the conversation. Reuse Codex's
+ * exact native UUID, dropping the old kickoff/resume target while retaining
+ * model, effort and other launch options.
+ * @param {string[]} liveArgs
+ * @param {{nativeId?: string|null}} options
+ */
+export function mintCodexQuotaResumeArgs(liveArgs?: string[], { nativeId }?: {
     nativeId?: string | null;
 }): {
     args: string[];
@@ -2120,6 +2116,14 @@ export function applyCodexGatewayRoute(codexHome: string, { mode, id, ownerId, p
         token: string;
     };
 }): void;
+/** Last-mile route enforcement. Materializing a home can rewrite its root
+ * selector, and a profile/old -c can override the file. Apply the selected
+ * gateway route immediately before each native child and pin its selector in
+ * argv, without changing model or reasoning effort.
+ * @param {NodeJS.ProcessEnv} env
+ * @param {string[]} args
+ */
+export function prepareCodexGatewayLaunch(env: NodeJS.ProcessEnv, args?: string[]): string[];
 /** Apply the private route after bootstrap/carry materialization and BEFORE
  * native execution. Unsupported backends or invalid envelopes fail closed.
  * @param {NodeJS.ProcessEnv} env
@@ -3447,6 +3451,16 @@ export function findFlockWriteHolderPid(procLocksText: any, { major, minor, inod
 /** `<CODEX_HOME>/thread-writer-locks/<uuid>.lock`. Pure — exported for tests. */
 export function codexThreadWriterLockPath(codexHome: any, sessionId: any): string | null;
 export function codexThreadWriterStatErrorCode(error: any): any;
+/** Read the exact process's held locks without the global locks_start semaphore
+ * used by /proc/locks, which stalled live PTY hosts on identity refresh.
+ * Kernel fdinfo exposes the same records for the existing device/inode parser.
+ * @param {number} pid
+ * @param {{listFdInfo?: (path:string)=>string[], readFdInfo?: (path:string, encoding:'utf8')=>string}} [options]
+ */
+export function readLinuxProcessFlockText(pid: number, { listFdInfo, readFdInfo, }?: {
+    listFdInfo?: (path: string) => string[];
+    readFdInfo?: (path: string, encoding: "utf8") => string;
+}): string;
 /**
  * Is a codex thread currently open by a live writer?
  * `{ held, pid, lockPath, sessionId, reason, statErrorCodes? }` — fail-open on every error path.
@@ -3461,12 +3475,15 @@ export function codexThreadWriterStatErrorCode(error: any): any;
  * Pure apart from the injected readers — exported for tests.
  * @param {string | null | undefined} codexHome
  * @param {string | null} sessionId
- * @param {{readProcLocks?: () => string, statFile?: typeof statSync,
+ * @param {{readProcLocks?: () => string, statFile?: (path:string)=>{dev:number|bigint, ino:number|bigint},
  * listDir?: typeof safeReaddir, holderPid?: number | null}} [options]
  */
 export function codexThreadWriterHolder(codexHome: string | null | undefined, sessionId: string | null, { readProcLocks, statFile, listDir, holderPid, }?: {
     readProcLocks?: () => string;
-    statFile?: typeof statSync;
+    statFile?: (path: string) => {
+        dev: number | bigint;
+        ino: number | bigint;
+    };
     listDir?: typeof safeReaddir;
     holderPid?: number | null;
 }): {
@@ -4386,7 +4403,6 @@ export function setupReminderLines(stage: any): string[] | null;
  * preflight refusal into an exception so launchSessionPort can finalize the
  * already-prepared row before the process exits. */
 export function sessionPortLaunchAbortError(args: any, failure: any, stage: any): Error | null;
-export { readClaudeLaunchSettings };
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */
 export const PUI_TUI_ORIGIN: "pui";
@@ -5136,7 +5152,6 @@ declare function slowRequestNoticeOncePerLaunch({ url }: {
 }): Promise<string | null>;
 import { appendHostEvent } from "./psu-pty-host.mjs";
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
-import { statSync } from "node:fs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];
@@ -5148,3 +5163,5 @@ declare function launchResolvedResume(source: any, args: any, { tracked }: {
     tracked: any;
 }): Promise<void>;
 import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";
+import { nativeSessionIdFromLaunchArgs } from "./psu-pty-host.mjs";
+export { readClaudeLaunchSettings, nativeSessionIdFromLaunchArgs };

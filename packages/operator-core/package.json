@@ -247,7 +247,7 @@
     "mailparser": "^3.9.31",
     "minimatch": "^10.2.4",
     "nanoid": "^5.1.11",
-    "next": "^16.2.7",
+    "next": "^16.4.0",
     "nodemailer": "^10.0.12",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.4.299",

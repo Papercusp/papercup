@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { nativeRetentionCommand, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
+import { nativeRetentionCommand, scanRetentionHolders, selectRetentionEntries, type RetentionEntry } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -33,6 +33,80 @@ describe('scheduled retention selection', () => {
   it('fails closed when the declared class differs from the authoritative selector', () => {
     expect(selectRetentionEntries([entry('/dumps/old', 'scratch', 90)], compiled, now)).toEqual([]);
   });
+});
+
+describe('retention holder evidence', () => {
+  afterEach(() => { delegateSpawn.mockReset(); });
+
+  it('passes a duration to the existing privileged scanner and requires the caller control', async () => {
+    const scan = vi.fn().mockResolvedValue({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['123']]]) });
+    const result = await scanRetentionHolders(['/scratch/held'], {
+      uid: () => 0, readStatus: async () => `NSpid:\t${process.pid}\n`, scan,
+    });
+    expect(scan).toHaveBeenCalledWith(['/scratch/held', process.cwd()], {
+      descendants: true, includeCwd: true, failClosed: true, deadlineMs: 30_000,
+    });
+    expect(result.complete).toBe(true);
+    expect(result.byPath.get('/scratch/held')).toEqual(['123']);
+    scan.mockResolvedValueOnce({ complete: true, byPath: new Map() });
+    expect((await scanRetentionHolders([], { uid: () => 0, readStatus: async () => 'NSpid:\t1\n', scan })).complete).toBe(false);
+  });
+
+  it('uses host-readable evidence for an ordinary operator while preserving live holders', async () => {
+    const privileged = vi.fn().mockResolvedValue({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['999']]]) });
+    const scan = vi.fn();
+    const result = await scanRetentionHolders(['/scratch/held'], {
+      uid: () => 1000, readStatus: async () => 'NSpid:\t1\n', scan, privileged,
+    });
+    expect(scan).not.toHaveBeenCalled();
+    expect(privileged).toHaveBeenCalledWith(['/scratch/held', process.cwd()], process.cwd());
+    expect(result).toEqual({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['999']]]) });
+  });
+
+  it('preserves full JSON stdout separately from scope diagnostics and refuses truncated evidence', async () => {
+    const holderPids = Array.from({ length: 1000 }, (_, i) => String(i + 1));
+    const byPath = [[process.cwd(), [String(process.pid)]], ['/scratch', holderPids]];
+    const deps = { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' };
+    const launch = (output: string) => delegateSpawn.mockImplementationOnce(async (_command, _args, spec, options) => {
+      expect(spec.runtimeMaxSec).toBe(31);
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      options.onSpawn(child as unknown as ChildProcess, 'holder-read-task');
+      child.stderr.write('Running as unit: holder-read-task.scope\n');
+      child.stdout.write(output); child.emit('close', 0, null);
+      return { child, taskId: 'holder-read-task' };
+    });
+    launch(JSON.stringify({ complete: true, byPath }));
+    const result = await scanRetentionHolders(['/scratch'], deps);
+    expect(result.complete).toBe(true);
+    expect(result.byPath.get('/scratch')).toEqual(holderPids);
+    launch(' '.repeat(1024 * 1024) + JSON.stringify({ complete: true, byPath }));
+    expect((await scanRetentionHolders(['/scratch'], deps)).complete).toBe(false);
+  });
+
+  it('refuses missing privilege, partial evidence and nested PID namespaces', async () => {
+    const privileged = vi.fn().mockRejectedValue(new Error('sudo denied'));
+    const deps = { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n', privileged };
+    expect((await scanRetentionHolders(['/scratch'], deps)).complete).toBe(false);
+    privileged.mockResolvedValueOnce({ complete: false, byPath: new Map([[process.cwd(), [String(process.pid)]]]) });
+    expect((await scanRetentionHolders(['/scratch'], deps)).complete).toBe(false);
+    privileged.mockClear();
+    expect((await scanRetentionHolders(['/scratch'], { ...deps, readStatus: async () => 'NSpid:\t1\t2\n' })).complete).toBe(false);
+    expect(privileged).not.toHaveBeenCalled();
+  });
+
+  it.each(['not-json', JSON.stringify({ complete: true, byPath: [] }), JSON.stringify({ complete: true, byPath: [['/foreign', ['1']]] })])(
+    'rejects privileged output without valid, caller-controlled evidence: %s', async (output) => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
+        expect(command).toBe('/usr/bin/sudo');
+        expect(args.slice(0, 2)).toEqual(['-n', process.execPath]);
+        options.onSpawn(child as unknown as ChildProcess, 'holder-read-task');
+        child.stdout.write(output); child.emit('close', 0, null);
+        return { child, taskId: 'holder-read-task' };
+      });
+      expect((await scanRetentionHolders(['/scratch'], { uid: () => 1000, readStatus: async () => 'NSpid:\t1\n' })).complete).toBe(false);
+    },
+  );
 });
 
 describe('native retention completion', () => {

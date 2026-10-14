@@ -70,6 +70,20 @@ export function isolatedWorkerFailureDetail(output: string): string {
   return fatal >= 0 ? lines.slice(fatal, fatal + 12).join('\n').slice(0, 4_000) : output.slice(-4_000);
 }
 
+/** Persist at the observation boundary, before a timeout can erase private state. */
+export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string, evidence: Record<string, unknown> = {}) {
+  appendFileSync(join(evidenceDir, 'worker-progress.ndjson'), JSON.stringify({
+    stage, observedAt: new Date().toISOString(), ...evidence,
+  }) + '\n');
+}
+
+/** A reaped signal termination proves cleanup, while the execute verdict stays failed. */
+export function assertIsolatedWorkerReaped(child: Pick<ChildProcess, 'exitCode' | 'signalCode'>,
+  ended: { runtimeRemoved?: boolean; pgDataRemoved?: boolean } | undefined) {
+  assert.ok(child.exitCode !== null || child.signalCode !== null, 'original supervisor must be reaped');
+  assert.ok(ended?.runtimeRemoved && ended.pgDataRemoved, 'original private runtime and database cleanup required');
+}
+
 type WorkerPhase = 'bootstrap' | 'execute' | 'teardown';
 type WorkerDeadlines = { bootstrapMs: number; bootstrapMaxMs?: number; executeMs: number; teardownMs: number; teardownMaxMs?: number; executeMaxMs?: number };
 
@@ -510,7 +524,8 @@ export async function recordIsolatedIntegrationProof(options: {
           assert.ok(!lifecycle && !ended);
           return { ok: true };
         }
-        assert.ok(lifecycle && ended && observedChild?.exitCode !== null);
+        assert.ok(lifecycle && ended);
+        assertIsolatedWorkerReaped(observedChild, ended);
         assert.ok(!existsSync(lifecycle.runtimeRoot) && !existsSync(lifecycle.dataDir));
       }
       return { ok: true };
@@ -531,6 +546,7 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
   return ['phases/prepare/operator-api-preflight.json', 'phases/prepare/operator-api-inputs.json',
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
     'phases/execute/lifecycle-observation.json',
+    'phases/execute/worker-progress.ndjson',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
     'phases/execute/browser-inputs.json'].filter(path => existsSync(join(runDir, path)));
 }

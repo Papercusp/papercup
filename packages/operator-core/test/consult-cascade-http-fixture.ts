@@ -7,6 +7,7 @@ import { createServer, type Server } from 'node:http';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
+import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -98,26 +99,17 @@ async function main() {
   const embedAddress = embedServer.address();
   assert.ok(embedAddress && typeof embedAddress !== 'string');
   const controlledSidecar = `http://127.0.0.1:${embedAddress.port}`;
+  const hostEnv = privateBundleRuntimeEnv({ ...e,
+    PAPERCUSP_MEMORY_EMBEDDER: 'gemma', PAPERCUSP_EMBED_SIDECAR_URL: controlledSidecar });
   host = spawn(process.execPath, [bundle], { cwd: root,
-    env: { ...e, PAPERCUSP_MEMORY_EMBEDDER: 'gemma', PAPERCUSP_EMBED_SIDECAR_URL: controlledSidecar },
+    env: hostEnv,
     stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity required');
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
-  let health: any;
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    assert.equal(host.exitCode, null, 'private host exited before readiness');
-    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
-    try {
-      const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2000) });
-      if (response.ok) { health = await response.json(); break; }
-    } catch { /* bounded readiness convergence */ }
-    await new Promise(done => setTimeout(done, 250));
-  }
-  assert.equal(health?.service, 'papercusp-operator');
+  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   async function call(name: string, args: Record<string, unknown>) {
     const response = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST', headers,
       body: JSON.stringify({ name, args, harness: workspace, callerSid: 'private-cascade-fixture' }),

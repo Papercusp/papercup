@@ -6153,6 +6153,24 @@ describe("psu-launcher arg parsing", () => {
     expect(stale.message).not.toContain("REFUSING");
   });
 
+  it("preflightCodexAutoPool: a valid scoped route never reads the unrelated ambient pool", async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, json: async () => ({
+      codexHealthyAccounts: 0, codexTotalAccounts: 8, codexEarliestRecoveryAt: Date.now() + 60_000,
+    }) })) as unknown as typeof fetch;
+    await expect(preflightCodexAutoPool({ agent: "codex", account: "auto", fetchImpl,
+      env: { PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: "http://127.0.0.1:32101", token: "a".repeat(64) }) },
+    })).resolves.toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each(['{"token":"secret-value', JSON.stringify({ baseURL: "https://example.com", token: "a".repeat(64) }),
+    JSON.stringify({ baseURL: "http://127.0.0.1:32101", token: "short" })])(
+    "preflightCodexAutoPool: invalid scoped binding refuses before ambient fallback", async encoded => {
+      const fetchImpl = vi.fn();
+      await expect(preflightCodexAutoPool({ agent: "codex", account: "auto", fetchImpl,
+        env: { PAPERCUSP_SCOPED_INFERENCE_GATEWAY: encoded },
+      })).rejects.toThrow("Invalid scoped inference gateway envelope");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
   it("preflightCodexAutoPool: ABORTS a provably-walled launch, and fails open for healthy, legacy, unreachable, and timed-out responses", async () => {
     const allWalledFetch = vi.fn(async () => ({
       ok: true,

@@ -109,6 +109,19 @@ export function publicManualHostedRuntimeEnvironment(environment: NodeJS.Process
     throw new Error('hosted_fixture_operator_source_mismatch');
   if (!environment.PAPERCUSP_SID) throw new Error('hosted_fixture_session_required');
   assertPublicManualHostedRuntimeBudget([environment.PAPERCUSP_TEST_HOSTED_RUNTIME_DEADLINE_EPOCH_MS]);
+  // A private native model acceptance must exercise the account pool. Its
+  // disposable HOME can still borrow an exhausted default CLI login, so
+  // private filesystem/PG custody alone does not establish inference routing.
+  // Keep no-model readiness available without creating an inference mission.
+  if (environment.PAPERCUSP_TEST_PUBLIC_CHAT === '1') {
+    if (environment.PAPERCUSP_CODEX_GATEWAY !== '1')
+      throw new Error('hosted_fixture_model_gateway_required');
+    if (environment.PAPERCUSP_ACCOUNT_ID?.trim())
+      throw new Error('hosted_fixture_model_account_pool_required');
+    const port = environment.PAPERCUSP_GATEWAY_PORT;
+    if (port !== undefined && (!/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535))
+      throw new Error('hosted_fixture_model_gateway_port_invalid');
+  }
   return { ...environment, ...bindings,
     PAPERCUSP_WORKSPACES_ROOT: environment.PAPERCUSP_WORKSPACES_ROOT ?? bindings.PAPERCUSP_WORKSPACES_ROOT,
     PAPERCUSP_WORKSPACE_ID: workspace,

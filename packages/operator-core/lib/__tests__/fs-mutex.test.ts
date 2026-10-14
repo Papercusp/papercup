@@ -83,6 +83,7 @@ describe('resolveFsMutexLockRoot', () => {
     const accountHome = join(temp, 'account-home');
     const accountRoot = join(accountHome, '.papercusp', 'fs-mutex-locks');
     const legacyRoot = join(temp, 'legacy', 'fs-mutex-locks');
+    const phaseTimingsMs: Record<string, number> = {};
     const originalHome = process.env.HOME;
 
     await mkdir(privateHome, { recursive: true });
@@ -94,8 +95,13 @@ describe('resolveFsMutexLockRoot', () => {
     osState.userHome = accountHome;
 
     try {
-      await expect(ensureFsMutexLockRoot(undefined, { platform: 'linux', legacyRoot }))
+      await expect(ensureFsMutexLockRoot(undefined, { platform: 'linux', legacyRoot, phaseTimingsMs }))
         .resolves.toBe(accountRoot);
+      expect(phaseTimingsMs).toEqual(expect.objectContaining({
+        'lock-root.legacy-lstat': expect.any(Number),
+        'lock-root.legacy-alias-check': expect.any(Number),
+        'lock-root.mkdir': expect.any(Number),
+      }));
     } finally {
       osState.userHome = null;
       if (originalHome === undefined) delete process.env.HOME;
@@ -111,6 +117,7 @@ describe('ensureFsMutexLockRoot migration', () => {
     const homeDir = join(temp, 'home');
     const legacyRoot = join(temp, 'legacy-locks');
     const lockDir = join(legacyRoot, 'package-manager-cache.lock');
+    const phaseTimingsMs: Record<string, number> = {};
     await mkdir(lockDir, { recursive: true });
     await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
       pid: process.pid,
@@ -119,8 +126,9 @@ describe('ensureFsMutexLockRoot migration', () => {
     }));
 
     try {
-      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot, phaseTimingsMs }))
         .resolves.toBe(legacyRoot);
+      expect(phaseTimingsMs).toHaveProperty('lock-root.legacy-census');
       await expect(readdir(join(homeDir, '.papercusp', 'fs-mutex-locks')))
         .rejects.toHaveProperty('code', 'ENOENT');
     } finally {
@@ -320,6 +328,8 @@ describe('withFsMutex', () => {
       expect(await waiter).toBe('done');
       expect(admission.waitedMs).toBeGreaterThan(0);
       expect(admission.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'lock-root.ensure': expect.any(Number),
+        'lock-root.mkdir': expect.any(Number),
         'root-mkdir': expect.any(Number),
         'queue-root-mkdir': expect.any(Number),
         'ticket-mkdir': expect.any(Number),

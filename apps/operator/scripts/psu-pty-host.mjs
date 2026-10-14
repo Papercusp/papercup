@@ -9583,17 +9583,54 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
 }
 
 /**
- * D-424 (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22, P-326): the process the pty
- * actually runs for the agent child.
- *
- * With no {@link AGENT_IDENTITY_SPEC_ENV} in the child env (desktop, dev — every launch that is
- * not a hosted workspace host) this is exactly `command args env`, unchanged. On a hosted host
- * the operator sets that spec: psu stays the service-user supervisor and only the agent CLI
- * crosses to the customer workspace account — staged over a non-TTY hop, then run under a
- * remote TTY (`ssh -tt`) so the TUI, ^C and window resizes behave as they do locally. The spec
- * env var itself never crosses (the stage's env allowlist excludes it). A staging failure throws
- * a NAMED refusal; there is deliberately no fall back to running the agent as the service user.
- *
+ * Native ID identified by this child's argv. Forced IDs win over the resumed
+ * source; an unforced fork's new ID is unknown. Shared with the launcher so
+ * each carry/recycle/park spawn follows the same identity precedence.
+ * @param {string[]} [args]
+ * @returns {string|null}
+ */
+export function nativeSessionIdFromLaunchArgs(args = []) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const argStrs = args.map((a) => String(a ?? ""));
+  for (let i = 0; i < argStrs.length; i++) {
+    const a = argStrs[i];
+    if (a === "--session-id" && uuid.test(argStrs[i + 1] ?? ""))
+      return argStrs[i + 1];
+    if (a.startsWith("--session-id=")) {
+      const v = a.slice("--session-id=".length);
+      if (uuid.test(v)) return v;
+    }
+  }
+  if (argStrs.includes("--fork-session")) return null;
+  for (let i = 0; i < argStrs.length; i++) {
+    const a = argStrs[i];
+    if ((a === "--resume" || a === "resume") && uuid.test(argStrs[i + 1] ?? ""))
+      return argStrs[i + 1];
+    if (a.startsWith("--resume=")) {
+      const v = a.slice("--resume=".length);
+      if (uuid.test(v)) return v;
+    }
+  }
+  return null;
+}
+
+/** Recompute the explicit HTTP carrier without stamping Claude ancestry.
+ * @param {EnvironmentMap} env
+ * @param {string[]} args
+ * @returns {EnvironmentMap}
+ */
+export function applyNativeSessionEnv(env, args) {
+  const nativeId = nativeSessionIdFromLaunchArgs(args);
+  if (nativeId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeId;
+  else delete env.PAPERCUSP_NATIVE_SESSION_ID;
+  return env;
+}
+
+/**
+ * D-424: select the PTY child and stage a hosted identity when configured.
+ * Without a hosted spec, command/args remain unchanged. The cloned environment
+ * carries this spawn's native ID and discards stale operator-host hints.
+ * Staging failures propagate without falling back to the service user.
  * @param {{command: string, args: string[], env: Record<string,string|undefined>, cwd?: string}} target
  * @param {{stage?: typeof stageAgentIdentityTty}} [deps]
  * @returns {{command: string, args: string[], env: Record<string,string|undefined>}}
@@ -9604,6 +9641,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
   // hint over the operator URL explicitly handed to that child. Keep the host
   // environment untouched and sanitize on EVERY child spawn, including recycle.
   const childEnv = { ...env };
+  // args is the actual new child argv, including carry/recycle/park rotations.
+  applyNativeSessionEnv(childEnv, args);
   if (childEnv.PAPERCUSP_OPERATOR_URL) {
     delete childEnv.PAPERCUSP_OPERATOR_BASE;
     delete childEnv.PAPERCUSP_HONO_PORT;
@@ -9651,6 +9690,8 @@ export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
  * @param {(args:string[], options:{agent?:string, personaFile?:string|null})=>any} [o.mintRecycleArgs] mint argv for an ordinary recycle
  * @param {(args:string[], options:{systemPromptAddendum:string, ownerId:string, agent?:string, personaFile?:string|null, codexHome?:string})=>any} [o.mintCarryRespawnArgs] mint argv for a carry respawn
  * @param {(args:string[], options:{agent?:string})=>({args:string[], nativeId:string}|null)} [o.mintParkResumeArgs]
+ * @param {(args:string[], options:{nativeId:string|null})=>({args:string[], nativeId:string}|null)} [o.mintQuotaResumeArgs]
+ * @param {(args:string[])=>string[]} [o.prepareChildArgs]
  *   mint the argv that resumes a parked child (null = not resumable, never park)
  * @param {(options?: {routeMode?: 'auto'})=>Promise<any>} [o.ensureCodexHome] repair the per-session Codex home before a carry mint or quota recovery
  * @param {()=>Promise<any>} [o.refreshPersonaFile] refresh the rendered persona before respawn
@@ -9686,6 +9727,9 @@ export function hostThroughPty(o) {
     // returns null, i.e. "not resumable", so a host the launcher did not wire
     // never parks.
     mintParkResumeArgs = () => null,
+    // Quota changes credentials, not the native conversation.
+    mintQuotaResumeArgs = null,
+    prepareChildArgs = (a) => a,
     // The launcher owns the authenticated operator repair route. Invoke it at
     // the carry boundary so an archived Codex home cannot make every successor
     // attempt fail before minting its AGENTS.md prompt.
@@ -9928,6 +9972,7 @@ export function hostThroughPty(o) {
     rows: sanePtyDim(stdout.rows, 24, 500),
   });
   const spawnChild = (spawnArgs = args) => {
+    spawnArgs = prepareChildArgs(spawnArgs);
     // WI-10008156: every managed Codex child skips the startup update check.
     // liveChildArgs below keeps the caller's argv, so park/recycle mints never
     // see (or duplicate) this host-owned override.
@@ -10263,7 +10308,8 @@ export function hostThroughPty(o) {
     // 'auth-recovery' (parked-agent-census P-004): this host publishes
     // authBlocked and resets it on recycle, so the operator may recycle a
     // headless child whose in-memory login is dead.
-    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel'],
+    caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+      ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
     // bootstrap-su re-exports it as PAPERCUSP_LAUNCHED_BY. An owner-typed `psu` never
@@ -10371,6 +10417,7 @@ export function hostThroughPty(o) {
   // exists; a no-op until then.
   let parkTick = () => {};
   let pendingSubmissionTick = () => {};
+  let quotaRecoveryTick = () => {};
   const activityTimer = setInterval(() => {
     let ownKey = true;
     try {
@@ -10383,6 +10430,7 @@ export function hostThroughPty(o) {
       lastPersisted = snap.lastActivityAt ?? 0;
       writeMeta();
       pendingSubmissionTick();
+      quotaRecoveryTick();
     }
     try {
       parkTick();
@@ -14866,6 +14914,14 @@ export function hostThroughPty(o) {
         freshChildOnly = false,
       } = {},
     ) => {
+      const resumeQuotaConversation = quotaRecovery?.cause !== 'auth' && Boolean(quotaRecovery) &&
+        env.PAPERCUSP_AGENT === 'codex' && typeof mintQuotaResumeArgs === 'function';
+      const recoveryChild = child;
+      const recoveryOwnerInputGeneration = ownerInputGeneration;
+      const quotaOwnerBoundary = () => resumeQuotaConversation &&
+        (child !== recoveryChild || ownerInputGeneration !== recoveryOwnerInputGeneration ||
+          ownerComposerGate.hasPending() || ownerStopRequested ||
+          nativeExecutionBlocksInjection(currentNativeExecution()));
       const settleQuotaRecovery = (delivered, reason, extra = {}) => {
         if (quotaRecovery) {
           appendHostEvent(
@@ -14884,6 +14940,7 @@ export function hostThroughPty(o) {
         return { delivered, reason };
       };
       if (recycling) return settleQuotaRecovery(false, 'recycle-already-running');
+      if (quotaOwnerBoundary()) return settleQuotaRecovery(false, 'owner-input-or-native-work');
       recycling = true;
       // WI-5075 observability: the drill-only rows below made a WATCHDOG-initiated
       // carry-respawn (no drillId) completely invisible in the per-owner event log
@@ -15076,17 +15133,33 @@ export function hostThroughPty(o) {
       let launchContextPath = null;
       let freshChildOwnerInputGeneration = null;
       try {
+        // Route/persona refresh can yield to a real owner keystroke. Recheck
+        // before minting a replacement, then again before stopping the writer.
+        if (quotaOwnerBoundary()) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'owner-input-or-native-work');
+        }
         if (
           systemPromptAddendum &&
           String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
         ) {
           try {
-            await ensureCodexHome();
+            const repaired = await ensureCodexHome();
+            if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') && repaired?.ok !== true)
+              throw new Error('Codex selected route could not be restored before carry');
           } catch {
-            /* mintCarryRespawnArgs remains the final fail-soft fallback */
+            if (env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') {
+              recycling = false;
+              appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable' });
+              return settleQuotaRecovery(false, 'codex-route-unavailable');
+            }
           }
         }
-        const minted = systemPromptAddendum
+        const minted = resumeQuotaConversation
+          ? mintQuotaResumeArgs(liveChildArgs, {
+              nativeId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+            })
+          : systemPromptAddendum
           ? mintCarryRespawnArgs(args, {
               systemPromptAddendum,
               ownerId,
@@ -15095,7 +15168,8 @@ export function hostThroughPty(o) {
               codexHome: env.CODEX_HOME,
             })
           : mintRecycleArgs(args, { agent: env.PAPERCUSP_AGENT, personaFile });
-        recycleArgs = minted.args;
+        if (!minted) throw new Error('quota recovery requires the exact native conversation');
+        recycleArgs = prepareChildArgs(minted.args);
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
         // Codex's carry mint adds a visible, non-user-authored lineage marker.
@@ -15278,6 +15352,10 @@ export function hostThroughPty(o) {
         // Persona/argv preparation above may have accepted a newer owner turn.
         const ownerInputRefusal = preserveNewerOwnerInput();
         if (ownerInputRefusal) return ownerInputRefusal;
+        if (quotaOwnerBoundary()) {
+          recycling = false;
+          return settleQuotaRecovery(false, 'owner-input-or-native-work');
+        }
         stopStartupTrace('recycle');
         const predecessorPid = child.pid;
         const predecessorStopStartedAt = Date.now();
@@ -15606,6 +15684,10 @@ export function hostThroughPty(o) {
         ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
         : null;
       if (!carryText) {
+        if (resumeQuotaConversation) {
+          appendHostEvent(ownerId, 'quota-recovery-resumed', { nativeId, cause: 'quota' });
+          return { delivered: false, spawned: true, reason: 'conversation-resumed' };
+        }
         if (drillId) {
           const dropExtra = {
             drillId,
@@ -15905,6 +15987,54 @@ export function hostThroughPty(o) {
           attempts: carryResult.attempts,
         },
       );
+    };
+
+    // A visible auto-routed Codex TUI does not need a fleet wake to recover.
+    // Reuse the discovery tick, inject mutex, native-work and composer gates.
+    // Resume once per child, bounded to two attempts per hour; a still-walled
+    // pool remains visible rather than becoming a respawn loop.
+    let automaticQuotaRecoveryActive = false;
+    let quotaRecoveryWindowAt = 0;
+    let quotaRecoveryAttempts = 0;
+    let quotaRecoveryAttemptedChild = null;
+    quotaRecoveryTick = () => {
+      if (automaticQuotaRecoveryActive || hostCleanedUp || shuttingDown || recycling || parked ||
+          deliveriesInFlight > 0 || env.PAPERCUSP_AGENT !== 'codex' ||
+          env.PAPERCUSP_ACCOUNT_ROUTING_MODE !== 'auto' || !mintQuotaResumeArgs ||
+          !quotaBlockDetector.isBlocked() || quotaRecoveryAttemptedChild === child ||
+          ownerComposerGate.hasPending() || ownerStopRequested) return;
+      const now = Date.now();
+      if (now - quotaRecoveryWindowAt >= 3_600_000) {
+        quotaRecoveryWindowAt = now;
+        quotaRecoveryAttempts = 0;
+      }
+      if (quotaRecoveryAttempts >= 2 || !currentNativeSessionId(child.pid, resolveRespawnNativeId)) return;
+      automaticQuotaRecoveryActive = true;
+      const target = child;
+      const generation = ownerInputGeneration;
+      void (async () => {
+        const release = await injectMutex.acquire();
+        try {
+          const boundary = await agentBusyGate.waitAtPrompt();
+          if (boundary.deferred || child !== target || generation !== ownerInputGeneration ||
+              ownerComposerGate.hasPending() || ownerStopRequested ||
+              !quotaBlockDetector.isBlocked() || deliveriesInFlight > 0 || hostCleanedUp) return;
+          quotaRecoveryAttempts++;
+          quotaRecoveryAttemptedChild = target;
+          const operationId = `quota-resume-${now}-${childGeneration}`;
+          appendHostEvent(ownerId, 'quota-recovery-started', {
+            operationId, recoveryOwnerId: ownerId, startedAtMs: now,
+            cause: 'quota', accountRoutingMode: 'auto', automatic: true,
+          });
+          await recycleChild('', { quotaRecovery: { operationId, ownerId, startedAtMs: now, cause: 'quota' } });
+        } catch (error) {
+          appendHostEvent(ownerId, 'quota-recovery-dropped', { cause: 'quota', automatic: true,
+            reason: 'resume-failed', detail: String(error?.message ?? error).slice(0, 200) });
+        } finally {
+          release();
+          automaticQuotaRecoveryActive = false;
+        }
+      })();
     };
 
     // Raw-mode keyboard Ctrl-C remains a byte forwarded to the target. A real

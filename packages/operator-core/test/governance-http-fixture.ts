@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { readProcessIdentity } from '../lib/process-identity';
+import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { getOrgPg } from '@papercusp/db-org';
 import { insertHiveIfAbsent } from '../lib/hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
@@ -98,29 +99,14 @@ async function main() {
   }
   const bundleSha256 = createHash('sha256').update(readFileSync(bundle)).digest('hex');
   console.log('GOVERNANCE_HTTP_PHASE bundle-ready ' + bundleSha256);
-  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  const hostEnv = privateBundleRuntimeEnv(e);
+  host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity missing');
-  const readyStart = performance.now(), deadline = Date.now() + 90_000;
-  let healthy = false, lastProbe: Record<string, unknown> = {}, loggedAt = 0;
-  while (Date.now() < deadline && !healthy) {
-    assert.equal(host.exitCode, null, 'private host exited before readiness');
-    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
-    try {
-      const response = await fetch(base + '/api/health', { signal: AbortSignal.timeout(2000) });
-      lastProbe = { status: response.status, body: await response.text() };
-      healthy = response.ok;
-    } catch (error) { lastProbe = { error: error instanceof Error ? error.message : String(error) }; }
-    if (healthy || performance.now() - loggedAt >= 5_000) {
-      loggedAt = performance.now();
-      console.log('GOVERNANCE_HTTP_PHASE readiness ' + JSON.stringify({ elapsedMs: loggedAt - readyStart, ...lastProbe }));
-    }
-    if (!healthy) await new Promise(done => setTimeout(done, 250));
-  }
-  assert.ok(healthy, 'private operator never became ready: ' + JSON.stringify(lastProbe));
-  assert.equal(JSON.parse(String(lastProbe.body)).service, 'papercusp-operator');
+  const health = await waitForPrivateOperator({ host, base, evidenceDir, hostIdentity, environment: hostEnv });
+  console.log('GOVERNANCE_HTTP_PHASE request-ready ' + JSON.stringify({ service: health.service }));
   const slug = 'signed-http-journey-2026-10-08';
   async function post(verb: string, body: Record<string, unknown>, origin = base) {
     const response = await fetch(`${base}/api/admin/plans/${verb}`, { method: 'POST',

@@ -9,6 +9,7 @@ import { publishReport, getReport } from '../lib/report-library';
 import { indexReport } from '../lib/search/report-index';
 import { createReportSearchSource } from '../lib/agent-tools/search/report-source';
 import { readProcessIdentity } from '../lib/process-identity';
+import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { buildMemoryContextBlock } from '../lib/memory/injection';
 import { splitDocSections } from '../lib/search/doc-embed-sync';
 import { runChunkSyncTick } from '../lib/search/chunks/tick';
@@ -227,19 +228,13 @@ async function main() {
       throw error;
     }
     const bundleSha256 = createHash('sha256').update(readFileSync(bundle)).digest('hex');
-    host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+    const hostEnv = privateBundleRuntimeEnv(e);
+    host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
     host.stdout!.on('data', chunk => process.stdout.write(chunk));
     host.stderr!.on('data', chunk => process.stderr.write(chunk));
     hostIdentity = readProcessIdentity(host.pid!);
     assert.ok(hostIdentity);
-    const deadline = Date.now() + 90_000;
-    let healthy = false;
-    while (Date.now() < deadline && !healthy) {
-      assert.equal(host.exitCode, null, 'private host exited before readiness');
-      try { healthy = (await fetch(base + '/api/health', { signal: AbortSignal.timeout(2000) })).ok; } catch {}
-      if (!healthy) await new Promise(done => setTimeout(done, 250));
-    }
-    assert.ok(healthy, 'private request host never became ready');
+    await waitForPrivateOperator({ host, base, evidenceDir, hostIdentity, environment: hostEnv });
     console.log('KNOWLEDGE_NATIVE_PHASE host-ready');
     // Import the real native adapter and transport, preserving their actual walls.
     // @ts-ignore -- maintained native hook transport is a JavaScript module.

@@ -31,6 +31,46 @@ describe('hosted governance core', () => {
       .not.toThrow();
   });
 
+  // P-007b (plan papercusp-enterprise-readiness-roadmap-2026-10-09, R-4 data clause): a secret
+  // canary inside organization audit metadata never reaches the audit log path. It is refused at
+  // every depth, and the refusal names only the PATH, never the secret, so logging the error
+  // cannot leak the canary either. The canary shapes are assembled at runtime from fragments so
+  // this file never holds a literal credential-shaped token (the tree secrets guard scans it).
+  it('P-007b canary: refuses a secret canary in organization audit metadata without echoing it', () => {
+    const suffix = 'CANARYP007B0123456789abcdef';
+    const pem = ['-----', 'BEGIN', ' RSA ', 'PRIVATE', ' KEY', '-----'].join('');
+    const canaries = [
+      ['s', 'k', '-'].join('') + suffix,
+      ['g', 'h', 'p', '_'].join('') + suffix,
+      ['Bea', 'rer '].join('') + suffix,
+      `${pem}\n${suffix}`,
+    ];
+    for (const secret of canaries) {
+      const audit = {
+        action: 'data-source.permission.revoked',
+        organizationId: 'org-p007b',
+        metadata: { source: 'slack', sourceRef: 'T1:CRESTRICTED', notes: [{ text: `rotated ${secret}` }] },
+      };
+      let refusal: unknown;
+      try {
+        assertGovernancePayloadSafe(audit);
+      } catch (err) {
+        refusal = err;
+      }
+      expect(refusal, secret.slice(0, 4)).toBeInstanceOf(Error);
+      expect((refusal as Error).message).toMatch(/payload\.metadata\.notes\[0\]\.text contains credential-like material/);
+      expect((refusal as Error).message).not.toContain(suffix);
+    }
+  });
+
+  it('P-007b canary: permits organization audit metadata that carries only non-secret references', () => {
+    expect(() => assertGovernancePayloadSafe({
+      action: 'data-source.permission.revoked',
+      organizationId: 'org-p007b',
+      metadata: { source: 'slack', sourceRef: 'T1:CRESTRICTED', removedMembers: 1, revokedBy: 'owner' },
+    })).not.toThrow();
+  });
+
   it('normalizes locale/timezone preferences and rejects invalid values', () => {
     expect(normalizeHostedLocale('en_US')).toBe('en-US');
     expect(normalizeHostedTimeZone('America/New_York')).toBe('America/New_York');

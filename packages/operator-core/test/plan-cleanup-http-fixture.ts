@@ -1,11 +1,12 @@
 /** Disposable current-build HTTP proof. This worker never uses the shared operator or database. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
+import { privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -40,38 +41,20 @@ async function main() {
   assert.ok(evidenceDir, 'retained evidence directory required');
   const sourcePath = 'packages/operator-core/lib/plan-cleanup/action-dispatch.ts';
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
-  const bundle = join(evidenceDir, 'hono-host.mjs');
-  console.log('PLAN_CLEANUP_HTTP_PHASE bundle-start');
-  try {
-    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-    writeFileSync(join(evidenceDir, 'build.log'), output);
-  } catch (error) {
-    const failure = error as { stdout?: unknown; stderr?: unknown };
-    writeFileSync(join(evidenceDir, 'build.log'), String(failure.stdout ?? '') + String(failure.stderr ?? ''));
-    throw error;
-  }
+  const bundle = resolvePreparedPrivateApiBundle(process.argv.slice(2), evidenceDir);
+  assert.ok(bundle, 'private cleanup request worker requires its original prepared pinned API');
+  console.log('PLAN_CLEANUP_HTTP_PHASE prepared-bundle-verified');
   const bundleBytes = readFileSync(bundle);
   assert.ok(bundleBytes.includes(Buffer.from('plan-cleanup/action-dispatch.ts')), 'canonical action dispatcher missing from executed bundle');
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');
-  host = spawn(process.execPath, [bundle], { cwd: root, env: e, stdio: ['ignore', 'pipe', 'pipe'] });
+  const hostEnv = privateBundleRuntimeEnv(e);
+  host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
   assert.ok(hostIdentity, 'private host kernel identity required');
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
-  let health: { service?: string } | undefined;
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    assert.equal(host.exitCode, null, 'private host exited before readiness');
-    assert.equal(host.signalCode, null, 'private host was signaled before readiness');
-    try {
-      const response = await fetch(base + '/api/health', { headers, signal: AbortSignal.timeout(2_000) });
-      if (response.ok) { health = await response.json(); break; }
-    } catch { /* Only readiness converges; operation assertions never retry. */ }
-    await new Promise(done => setTimeout(done, 250));
-  }
-  assert.equal(health?.service, 'papercusp-operator', 'private operator never became ready');
+  const health = await waitForPrivateOperator({ host, base, headers, evidenceDir, hostIdentity, environment: hostEnv });
   console.log('PLAN_CLEANUP_HTTP_PHASE request-ready');
   async function tool(name: string, args: Record<string, unknown>) {
     const response = await fetch(base + '/api/agent-mcp/run-tool', { method: 'POST', headers,

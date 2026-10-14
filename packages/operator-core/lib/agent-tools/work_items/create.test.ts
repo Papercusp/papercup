@@ -64,6 +64,7 @@ vi.mock('../coordination/presence', () => ({
 }));
 
 import { createOneWorkItem, type CreateOneWorkItemResult } from './_create-core';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import type { WorkItem } from '../../work-items';
 import { assessIssueAdmissionPressure } from '../../issue-occurrence-ledger';
 const createM = vi.mocked(createOneWorkItem);
@@ -648,7 +649,7 @@ describe('work_items:create handler (keyed-array)', () => {
 
     it('does not notify the leader about an item that failed to persist', async () => {
       fleetAdmission.decision = { ...outOfScope, code: 'fleet_scope_missing' };
-      createM.mockResolvedValueOnce({ ok: false, error: 'invalid', message: 'fixture refusal' } as never);
+      mockResolvedOnceTyped(createM, { ok: false, error: 'invalid', message: 'fixture refusal' });
       const result = await body({ kind: 'task', title: 'append refused', assign_to: 'bee-7' });
       expect(result.results[0].ok).toBe(false);
       expect(fleetAdmission.notify).not.toHaveBeenCalled();

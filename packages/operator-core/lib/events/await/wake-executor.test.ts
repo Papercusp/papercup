@@ -126,6 +126,20 @@ describe('bounded quota recovery contract (measured-agent-productivity P-004)', 
     caps: ['quota-recovery'],
   };
 
+  it('admits a guarded conversation-preserving interactive auto host, including a human launch', () => {
+    const interactive = { ...host, bridgeTty: true, launchedBy: null,
+      caps: ['quota-recovery', 'quota-recovery-resume'] };
+    expect(decideQuotaWakeRecovery({ host: interactive, subscriberId: 'su-quota',
+      deliveryId: '901', accountMode: 'auto' })).toMatchObject({ eligible: true });
+    for (const accountMode of ['default', 'pin']) {
+      expect(decideQuotaWakeRecovery({ host: interactive, subscriberId: 'su-quota',
+        deliveryId: '901', accountMode })).toMatchObject({ eligible: false, reason: 'route-not-auto' });
+    }
+    expect(decideQuotaWakeRecovery({ host: { ...interactive, caps: ['quota-recovery'] },
+      subscriberId: 'su-quota', deliveryId: '901', accountMode: 'auto' }))
+      .toMatchObject({ eligible: false, reason: 'not-headless' });
+  });
+
   it('admits only the same-owner, headless, agent-launched auto route on a capable blocked host', () => {
     expect(decideQuotaWakeRecovery({
       host,

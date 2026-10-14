@@ -24,7 +24,7 @@
  * provider is silence for that source, never an error for the whole read.
  */
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
 import {
   PROVIDER_SEARCH_LIVE_CAPABILITY,
   providerLiveSearchResultIssue,
@@ -53,7 +53,7 @@ export interface LiveSourceRecord {
   workspaceId: string;
   kind: string;
   credentialRef: string | null;
-  config: Record<string, unknown>;
+  config: Record<string, JSONValue>;
 }
 
 export interface LiveSearchInput {
@@ -237,7 +237,7 @@ export const LIVE_SEARCH_EXCLUDED_STATUSES = ['unconfigured', 'disabled'] as con
 /** Configured, enabled organization data sources that serve live search. */
 export async function listLiveSources(sql: Sql, workspaceId: string): Promise<LiveSourceRecord[]> {
   const rows = await sql<Array<{
-    id: string; workspace_id: string; kind: string; credential_ref: string | null; config: Record<string, unknown> | null;
+    id: string; workspace_id: string; kind: string; credential_ref: string | null; config: Record<string, JSONValue> | null;
   }>>`
     SELECT id::text, workspace_id, kind, credential_ref, config
       FROM harness_shared.data_sources

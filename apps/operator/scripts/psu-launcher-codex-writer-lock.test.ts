@@ -44,6 +44,7 @@ import {
   codexThreadWriterLockPath,
   codexThreadWriterHolder,
   codexNativeIdForPty,
+  readLinuxProcessFlockText,
   codexThreadWriterStatErrorCode,
   codexResumeHome,
   codexActiveWriterMessage,
@@ -96,6 +97,38 @@ const PROC_LOCKS = [
 
 /** dev 66307 / inode 36177832 — the observed values behind row 995. */
 const HELD = { dev: 66307, ino: 36177832 };
+
+describe('process-local writer-lock evidence (WI-10007670)', () => {
+  it('reads only the exact process fdinfo and reuses holder parsing', () => {
+    const reads: string[] = [];
+    const text = readLinuxProcessFlockText(42, {
+      listFdInfo: () => ['0', '5', '9', '../locks'],
+      readFdInfo: (path: string) => {
+        reads.push(path);
+        if (path.endsWith('/9')) throw new Error('descriptor closed');
+        return path.endsWith('/5')
+          ? 'pos:\t0\nlock:\t1: FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n'
+          : 'pos:\t0\nflags:\t0100000\n';
+      },
+    });
+    expect(reads).toEqual(['/proc/42/fdinfo/0', '/proc/42/fdinfo/5', '/proc/42/fdinfo/9']);
+    expect(findFlockWriteHolderPid(text, { major: 259, minor: 3, inode: 36177832 })).toBe(42);
+    expect(findFlockWriteHolderPid(text, { major: 259, minor: 3, inode: 999999 })).toBeNull();
+    expect(() => readLinuxProcessFlockText(0)).toThrow('invalid');
+  });
+
+  it('does not accept a waiter or sibling as the current process writer', () => {
+    const text = readLinuxProcessFlockText(42, {
+      listFdInfo: () => ['5'],
+      readFdInfo: () => 'lock:\t1: -> FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n',
+    });
+    expect(findFlockWriteHolderPid(text, { major: 259, minor: 3, inode: 36177832 })).toBeNull();
+    expect(codexThreadWriterHolder(dir, LIVE_THREAD, {
+      holderPid: 42, readProcLocks: () => '1: FLOCK ADVISORY WRITE 43 103:03:36177832 0 EOF',
+      statFile: () => ({ dev: 66307, ino: 36177832 }),
+    }).held).toBe(false);
+  });
+});
 
 describe('devMajorMinor', () => {
   it('decodes the dev_t behind the observed 103:03 lock row', () => {
@@ -360,6 +393,17 @@ describe('calibration: a real flock is visible through the real /proc/locks', ()
         if (pid === null) await new Promise((r) => setTimeout(r, 20));
       }
       expect(pid).not.toBeNull();
+
+      // Periodic identity must see the same real flock through process-local
+      // evidence without reading the global lock table.
+      let localHolder = null;
+      for (let i = 0; i < 50 && localHolder === null; i++) {
+        localHolder = findFlockWriteHolderPid(readLinuxProcessFlockText(holder.pid!), {
+          major, minor, inode: Number(st.ino),
+        });
+        if (localHolder === null) await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(localHolder).toBe(pid);
 
       // NEGATIVE CONTROL, same instrument: an inode nobody locked must read as free.
       // Without this, a parser that returned the first WRITE row it saw would pass above.

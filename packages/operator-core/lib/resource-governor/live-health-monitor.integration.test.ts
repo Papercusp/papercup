@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createTextCollector } from '../child-output';
 import { LIVE_HEALTH_MONITOR_READY_PREFIX } from './live-health-monitor-main';
+import { LIVE_HEALTH_MONITOR_READY_TIMEOUT_MS } from './live-health-supervisor';
 import {
   decodeLiveHealthHistorySnapshot,
   LIVE_HEALTH_HISTORY_MAX_BYTES,
@@ -32,7 +33,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-function waitForReady(child: ChildProcess, timeoutMs = 20_000): Promise<string> {
+function waitForReady(child: ChildProcess, timeoutMs = LIVE_HEALTH_MONITOR_READY_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     // Boundary-safe incremental read — see createTextCollector.peek().
     const collector = createTextCollector();
@@ -214,13 +215,14 @@ describe('resource-governor live-health out-of-process monitor', () => {
       expect(row.freeInodes).toBeLessThanOrEqual(row.totalInodes!);
       expect(row.reservationState).toBe('measured');
     }
+    // READY precedes archival work. Closing the parent's lifetime pipe must
+    // drain that same sample rather than lose the first retained observation.
+    child.stdin?.end();
+    await waitForExit(child);
     const historyRows = (await readFile(join(root, 'live-health-history.jsonl'), 'utf8')).trim().split('\n');
     const first = JSON.parse(historyRows[0]!);
     const retained = decodeLiveHealthHistorySnapshot(historyRows.slice(0, first.parts ?? 1));
     expect(retained?.storage).toEqual(snapshot.storage);
-
-    child.stdin?.end();
-    await waitForExit(child);
     children.delete(child);
   }, 30_000);
 });

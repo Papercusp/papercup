@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm } from 'node:fs/pr
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
@@ -76,9 +77,15 @@ describe('retention on a real fixture tree', () => {
     await writeFile(join(fixture, '.cargo', 'config.toml'), `[build]\ntarget-dir = ${JSON.stringify(shared)}\n`);
     await writeFile(join(fixture, 'src-tauri', 'Cargo.toml'), '[package]\nname = "retention-native-fixture"\nversion = "0.1.0"\nedition = "2021"\n');
     await writeFile(join(fixture, 'src-tauri', 'src', 'lib.rs'), '');
+    // Resolve the selected installed binary before removing HOME/settings.toml.
+    // Cargo metadata must work even with an empty rustup home; the runner also
+    // supplies this binary directory before the shim directory under isolation.
+    const cargo = process.env.PAPERCUSP_TEST_CARGO ?? execFileSync('rustup', ['which', 'cargo'], { encoding: 'utf8', timeout: 5000 }).trim();
+    expect(cargo).toMatch(/\/bin\/cargo$/);
     const args = [
       '-u', 'CARGO_BUILD_TARGET_DIR', `HOME=${fixture}`, 'CARGO_TARGET_DIR=',
-      `CARGO_HOME=${join(fixture, '.cargo')}`, `RUSTUP_HOME=${process.env.RUSTUP_HOME ?? join(homedir(), '.rustup')}`,
+      `CARGO_HOME=${join(fixture, '.cargo')}`, `RUSTUP_HOME=${join(fixture, 'empty-rustup')}`,
+      `PATH=${dirname(cargo)}:${process.env.PATH ?? ''}`,
       `PAPERCUSP_DESKTOP_TARGET_ROOT=${fixture}`,
       `PAPERCUSP_RELEASE_RETENTION_ROOT=${join(fixture, 'retention')}`,
       '/bin/bash', join(repoRoot, 'papercusp-desktop/bin/reap-private-target-slots.sh'),

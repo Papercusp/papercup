@@ -514,6 +514,66 @@ describe('writeRoleCodexHome', () => {
     expect(JSON.stringify(hooks)).not.toContain('posttooluse-objective-title.sh');
   });
 
+  it('uses the declared canonical workspace for hooks instead of a serving candidate (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    const workspace = join(fakeHome, 'workspace');
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', join(workspace, 'papercusp'));
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', join(workspace, 'papercusp-staging.generations', '.candidate-test'));
+    try {
+      const writeRoleCodexHome = await load();
+      const out = writeRoleCodexHome({ sessionKey: 'canonical-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+      const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+      for (const event of ['PreToolUse', 'PostToolUse']) {
+        expect(hooks.hooks[event][0].hooks[0].command).toContain(`PAPERCUSP_WORKSPACE_ROOT='${workspace}'`);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('uses the hook home default when no workspace is declared (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '');
+    vi.stubEnv('PAPERCUSP_WORKSPACE_ROOT', '');
+    try {
+      const writeRoleCodexHome = await load();
+      const out = writeRoleCodexHome({ sessionKey: 'default-hook-scope', mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P' });
+      const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+      expect(hooks.hooks.PreToolUse[0].hooks[0].command).toContain(`PAPERCUSP_WORKSPACE_ROOT='${join(fakeHome, 'papercupai-workspace')}'`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('repairs a same-owner candidate hook scope once while preserving native history (EI-25920487778813638)', async () => {
+    await installFakeHooks();
+    const workspace = join(fakeHome, 'workspace');
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', join(workspace, 'papercusp'));
+    try {
+      const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+      const opts = { sessionKey: 'repair-hook-scope', sid: 'su-scope-repair', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'PRESERVE' };
+      const home = writeSuCodexHome(opts);
+      const hooksPath = join(home.codexHome, 'hooks.json');
+      const stale = readFileSync(hooksPath, 'utf8').replaceAll(
+        `PAPERCUSP_WORKSPACE_ROOT='${workspace}'`,
+        `PAPERCUSP_WORKSPACE_ROOT='${join(workspace, 'papercusp-staging.generations', '.candidate-test')}'`,
+      );
+      writeFileSync(hooksPath, stale);
+      mkdirSync(join(home.codexHome, 'sessions'));
+      const transcript = join(home.codexHome, 'sessions', 'original.jsonl');
+      writeFileSync(transcript, 'native history');
+      expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ identityRepaired: true });
+      expect(readFileSync(transcript, 'utf8')).toBe('native history');
+      expect(readFileSync(home.agentsPath, 'utf8')).toContain('PRESERVE');
+      expect(readFileSync(hooksPath, 'utf8')).not.toContain('.candidate-test');
+      const repaired = readFileSync(hooksPath, 'utf8');
+      expect(ensureSuCodexHomeConfig(opts)).toMatchObject({ identityRepaired: false });
+      expect(readFileSync(hooksPath, 'utf8')).toBe(repaired);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('matches canonical code-mode parent calls for lock release (EI-25920487778813638)', async () => {
     await installFakeHooks();
     const writeRoleCodexHome = await load();

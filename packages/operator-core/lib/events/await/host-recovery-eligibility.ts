@@ -79,8 +79,9 @@ export function recentAuthRecoveryCount(
  * this path. A quota recycle is useful only when gateway auto-routing can choose
  * a different credential. An auth recycle (P-004) is useful on any route: the
  * fresh child re-reads the shared login the old child holds a spent copy of.
- * Both are safe only for a headless agent-owned host carrying the
- * operation/dedup contract. */
+ * Legacy hosts require headless agent provenance. A host advertising
+ * quota-recovery-resume preserves the native Codex conversation and enforces
+ * owner-input/native-work guards at its own mutation boundary. */
 export function decideQuotaWakeRecovery(input: {
   host: RecoveryHostView;
   subscriberId: string;
@@ -106,8 +107,9 @@ export function decideQuotaWakeRecovery(input: {
     return { ...auth, eligible: true, reason: 'eligible' };
   }
   if (input.host.quotaBlocked !== true) return { ...base, eligible: false, reason: 'not-quota-blocked' };
-  if (input.host.bridgeTty !== false) return { ...base, eligible: false, reason: 'not-headless' };
-  if (!hostIsAgentLaunched(input.host as PsuPtyHost)) {
+  const preservesConversation = hostSupports(input.host as PsuPtyHost, 'quota-recovery-resume');
+  if (!preservesConversation && input.host.bridgeTty !== false) return { ...base, eligible: false, reason: 'not-headless' };
+  if (!preservesConversation && !hostIsAgentLaunched(input.host as PsuPtyHost)) {
     return { ...base, eligible: false, reason: 'not-agent-launched' };
   }
   if (input.accountMode !== 'auto') return { ...base, eligible: false, reason: 'route-not-auto' };

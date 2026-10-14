@@ -71,6 +71,30 @@ let originalFixtureFaq: string | undefined;
 const publicCanary = 'PUBLIC-ORCHARD-CONTROL-7391';
 const privateCanary = 'PRIVATE_ORCHARD_CANARY_8462';
 
+const remoteWorkContinues = /not\b.{0,45}\bstop|continue|keep\b.{0,30}\b(?:work|run)|\b(?:doesn|won)['’]t\b.{0,30}\bstop/i;
+
+describe('canonical FAQ continuation wording oracle', () => {
+  it.each([
+    'Yes. Closing this tab won’t stop remote work. Local work still needs its computer on and connected; pause or stop explicitly if needed.',
+    "Closing this tab won't stop remote work.",
+    'Closing this tab will not stop remote work.',
+    "Closing the browser doesn't stop agents on your remote workspace.",
+    'Closing the browser doesn’t stop agents on your remote workspace.',
+    'Remote agents continue working when you close the browser tab.',
+    'They keep running when you close the tab.',
+  ])('accepts an explicit continuation statement: %s', answer => {
+    expect(answer).toMatch(remoteWorkContinues);
+  });
+  it.each([
+    'Closing this tab will stop remote work.',
+    'Closing the browser does stop agents on your remote workspace.',
+    'I do not know whether closing this tab affects remote agents.',
+    'Check the FAQ for details.',
+  ])('rejects stopped or unspecified remote work: %s', answer => {
+    expect(answer).not.toMatch(remoteWorkContinues);
+  });
+});
+
 function fixtureFaq(marker: string, extra = '') {
   return `---\ntitle: Public fixture FAQ\n---\n\n## How do I check the orchard workspace?\n\nAlso asked as: How do I inspect the orchard workspace? What is the orchard recovery marker?\n\nThe orchard recovery marker is ${marker}. View the workspace status before attempting recovery.\n\n${extra}\n`;
 }
@@ -1418,6 +1442,39 @@ describe('public manual selected private runtime preflight', () => {
     expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
   });
 
+  it.each([undefined, '', '0'])(
+    'refuses native model acceptance through a default login (%s) before token creation', gateway => {
+      expect(() => publicManualHostedRuntimeEnvironment({ ...environment,
+        PAPERCUSP_TEST_PUBLIC_CHAT: '1', PAPERCUSP_CODEX_GATEWAY: gateway }))
+        .toThrow('hosted_fixture_model_gateway_required');
+      expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+    });
+
+  it('refuses an inherited account pin instead of mistaking it for the automatic pool', () => {
+    expect(() => publicManualHostedRuntimeEnvironment({ ...environment,
+      PAPERCUSP_TEST_PUBLIC_CHAT: '1', PAPERCUSP_CODEX_GATEWAY: '1',
+      PAPERCUSP_ACCOUNT_ID: 'exhausted-default-login' }))
+      .toThrow('hosted_fixture_model_account_pool_required');
+    expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+  });
+
+  it.each(['', '8788/path', '0', '65536'])(
+    'refuses a malformed native model gateway port (%s)', port => {
+      expect(() => publicManualHostedRuntimeEnvironment({ ...environment,
+        PAPERCUSP_TEST_PUBLIC_CHAT: '1', PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: port }))
+        .toThrow('hosted_fixture_model_gateway_port_invalid');
+    });
+
+  it('preserves explicit automatic gateway routing without mutating the caller', () => {
+    const selected = { ...environment, PAPERCUSP_TEST_PUBLIC_CHAT: '1',
+      PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: '8788' };
+    expect(publicManualHostedRuntimeEnvironment(selected)).toMatchObject({
+      PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: '8788' });
+    expect(publicManualHostedRuntimeEnvironment(selected).PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    expect(selected.PAPERCUSP_HOME).toBeUndefined();
+    expect(existsSync(join(root, 'home/.papercusp/superuser-token'))).toBe(false);
+  });
+
   it.each(['HOME', 'TMPDIR', 'PAPERCUSP_HOME', 'PAPERCUSP_WORKSPACES_ROOT', 'PAPERCUSP_INTEGRATION_ROOT'])(
     'rejects a mismatched %s before token creation or admission', key => {
       const conflicting = { ...environment, [key]: root };
@@ -2702,7 +2759,7 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       expect(answer.text).toMatch(/\/docs\/faq/);
       if (canonicalQuestion) {
         expect(answer.text).toMatch(/browser|tab/i);
-        expect(answer.text).toMatch(/not\b.{0,45}\bstop|continue|keep\b.{0,30}\b(?:work|run)|doesn.t\b.{0,30}\bstop/i);
+        expect(answer.text).toMatch(remoteWorkContinues);
         expect(answer.text).toMatch(/ask\b.{0,70}\b(?:pause|stop)|computer\b.{0,70}\b(?:on|connect)|check\b.{0,70}\b(?:status|state)/i);
         await page.locator('a[href*="/docs/faq"]').first().waitFor({ state: 'visible', timeout: 15_000 });
         // Content and runtime identity must still match after the paid turn.

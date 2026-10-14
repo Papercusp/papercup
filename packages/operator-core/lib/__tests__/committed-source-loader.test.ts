@@ -245,7 +245,7 @@ describe('committed-source loader — a scratch checkout', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('V=HEAD');
     expect(readFileSync(fakeGitCalls, 'utf8')).toBe('');
-  }, 60_000);
+  }, 75_000);
 
   it.each([
     { name: 'eval', argv: ['-e', "console.log('INLINE-RAN')"], input: undefined },

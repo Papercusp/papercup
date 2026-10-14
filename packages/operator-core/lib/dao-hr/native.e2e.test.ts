@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { chromium } from 'playwright-core';
-import { stringToHex } from 'viem';
+import { decodeFunctionResult, encodeFunctionData, stringToHex, type Address, type Hex } from 'viem';
 import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
@@ -20,6 +20,8 @@ import { grantDaoHrAdmin, installSampleTemplates } from './contract-templates';
 import { saveWorkProfile, linkMemberIdentity } from './work-profile';
 import { updateEquityPolicy } from './equity-policy';
 import { getContractExecution } from './contracts-esign';
+import type { DaoCapTable, DaoWorkspaceView } from '../dao-workspace-types';
+import type { EquityArtifacts } from '../equity/compile';
 
 describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.env.DAO_HR_NATIVE_CONFIG)('P012 actual native hiring journey', () => {
   it('creates, approves, signs, votes, accepts and admits one candidate, then reads People, org and cap table', async () => {
@@ -54,6 +56,22 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const rpc = async (method: string, params: unknown[] = []) => {
       const r = await fetch(config.rpc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
       const result = await r.json(); if (result.error) throw new Error('Test wallet RPC: ' + result.error.message); return result.result;
+    };
+    const equityAbi = (JSON.parse(readFileSync(new URL('../equity/artifacts.json', import.meta.url), 'utf8')) as EquityArtifacts).contracts.PapercuspEquityV2.abi;
+    const equitySnapshot = (title: 'Cap table' | 'My equity') => {
+      const section = 'document.querySelector(' + JSON.stringify('section[aria-label="' + title + '"]') + ')';
+      wait('!!' + section + '?.querySelector(\'[role="table"]\')');
+      return value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>("(()=>{const section=" + section + ";const rows=[...section.querySelectorAll('[role=table] [role=row]')];return {marker:section.querySelector('[role=note]')?.innerText,blockNumber:section.innerText.match(/block (\\d+)/)?.[1],headings:[...rows[0].children].map(cell=>cell.innerText.trim()),rows:rows.slice(1).map(row=>[...row.firstElementChild.children].map(cell=>cell.innerText.trim()))}})()");
+    };
+    const workspaceDto = () => {
+      const url = '/api/discovery/pots?potId=' + encodeURIComponent(slug) + '&includeLocalViews=true';
+      ev("(()=>{window.__DAO_HR_WORKSPACE_DTO__=null;fetch(" + JSON.stringify(url) + ").then(async r=>{window.__DAO_HR_WORKSPACE_DTO__={status:r.status,body:await r.json()}}).catch(e=>{window.__DAO_HR_WORKSPACE_DTO__={error:String(e)}});return true})()");
+      wait('window.__DAO_HR_WORKSPACE_DTO__!==null');
+      const result = value<{ status: number; body: { workspace: DaoWorkspaceView } }>('window.__DAO_HR_WORKSPACE_DTO__');
+      expect(result.status).toBe(200);
+      expect(result.body.workspace.directoryId).toBe(slug);
+      expect(result.body.workspace.capTable?.status).toBe('ready');
+      return (result.body.workspace.capTable as { status: 'ready'; value: DaoCapTable }).value;
     };
     const confirmations = async () => { await rpc('evm_mine'); await rpc('evm_mine'); };
     const signWallet = async (tx: any) => {
@@ -162,10 +180,41 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       expect(member?.admitted_at).toBeTruthy();
       reload(); navigate({ peopleTab: 'directory' }); textHas('Native candidate'); click('Native candidate'); textHas('Native engineer');
       expect(value("document.body.innerText.includes('5000')")).toBe(true);
-      actor('admin'); navigate({ peopleTab: 'org' }); textHas('Native candidate');
-      navigate({ peopleTab: 'cap' }); textHas('1000');
+      actor('admin'); reload(); navigate({ peopleTab: 'org' }); textHas('Native candidate');
+      navigate({ peopleTab: 'cap' });
+      const cap = equitySnapshot('Cap table'), capDto = workspaceDto();
+      expect(cap.marker).toBe('test chain - non-binding');
+      expect(capDto.nonBinding).toBe(true);
+      expect(cap.headings).toEqual(['Holder', 'Wallet', 'Shares owned', 'Grants committed', 'Grants earned', 'Grants claimed',
+        'Grants unvested', 'Return entitlements', 'Returns unclaimed', '% owned', '% fully diluted']);
+      expect(cap.blockNumber).toBe(capDto.blockNumber);
+      expect(cap.rows.map(row => row[1].toLowerCase()).sort()).toEqual(config.accounts.slice(0, 2).map((address: string) => address.toLowerCase()).sort());
+      expect(cap.rows).toHaveLength(capDto.positions.length);
+      const balances = [];
+      for (const row of cap.rows) {
+        const wallet = row[1] as Address;
+        const result = await rpc('eth_call', [{ to: config.equity, data: encodeFunctionData({ abi: equityAbi, functionName: 'balanceOf', args: [wallet] }) },
+          '0x' + BigInt(cap.blockNumber).toString(16)]) as Hex;
+        const shares = String(decodeFunctionResult({ abi: equityAbi, functionName: 'balanceOf', data: result }));
+        expect(row[2], 'Displayed shares at block ' + cap.blockNumber + ' for ' + wallet).toBe(shares);
+        const position = capDto.positions.find(position => position.wallet.toLowerCase() === wallet.toLowerCase())!;
+        expect(position, 'Public DTO holder for ' + wallet).toBeTruthy();
+        expect(row).toEqual([position.displayName, position.wallet, position.shares, position.committed, position.earned, position.claimed,
+          position.unvested, position.returnEntitlements, position.unclaimedReturns, position.ownershipPercent + '%', position.fullyDilutedPercent + '%']);
+        balances.push({ wallet, displayed: row[2], chain: shares });
+      }
+      const candidatePosition = capDto.positions.find(position => position.wallet.toLowerCase() === config.accounts[1].toLowerCase())!;
+      expect(candidatePosition).toMatchObject({ personId: 'PER-native-candidate', displayName: 'Native candidate', committed: '1000' });
+      actor('candidate'); reload(); navigate({ peopleTab: 'my' });
+      const mine = equitySnapshot('My equity'), myDto = workspaceDto();
+      expect(mine.marker).toBe('test chain - non-binding');
+      expect(myDto.positions.filter(position => position.isSelf).map(position => position.wallet.toLowerCase())).toEqual([config.accounts[1].toLowerCase()]);
+      expect(mine.rows).toEqual(cap.rows.filter(row => row[1].toLowerCase() === config.accounts[1].toLowerCase()));
+      expect(mine.rows).toHaveLength(1);
       const final = { sourceCommit: receipt.sourceCommit, workspaceId: ws, offerId, contractId: contract.contract_id,
-        hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true, proposalHash, executionHash, acceptanceHash };
+        hireExecuted: true, acceptanceVerified: true, memberAdmitted: true, nonBinding: true, proposalHash, executionHash, acceptanceHash,
+        capTableVerified: true, myEquityVerified: true, nonBindingVisible: true,
+        equityObservation: { blockNumber: cap.blockNumber, balances, capRows: cap.rows, myRows: mine.rows, capDto, myDto } };
       writeFileSync(config.resultPath, JSON.stringify(final), { mode: 0o600 });
     } finally { await browser.close(); await sql.end(); }
   }, 600_000);

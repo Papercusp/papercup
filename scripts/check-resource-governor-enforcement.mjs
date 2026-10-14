@@ -649,6 +649,20 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
   {
+    path: "scripts/cloud-prod/provision-cloud-sql.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/cloud-prod/provision-cloud-sql.ts (plan cloud-portal-public-release-2026-10-13 P-004, WI-6554700010011217): an operator-run infrastructure-as-code CLI (plan | up | verify | status) that provisions the production Cloud SQL instance in GCP. It is not a runtime lane and nothing imports it at boot. Its only start is realGcloud: ONE `execFile('gcloud', args, { maxBuffer: 32 MiB, timeout: GCLOUD_TIMEOUT_MS })` per call, awaited to completion before the next call. It retains only that call's captured stdout/stderr, detaches nothing and holds no resident queue, so it adds no residency after it exits. The capacity it creates lives in Google Cloud, not on this host. Gating it behind Governor.admit would make the production database unprovisionable or unverifiable while the dev box is under load, which is a category error. Pinned by matchesSource to that one timeout-bounded start: a second start in this file falls out of the exemption.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(/g)].length === 1 &&
+        /\btimeout:\s*GCLOUD_TIMEOUT_MS\b/.test(code) &&
+        !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
+        !hasCalledResourceStartAlias(code);
+    },
+  },
+  {
     path: "scripts/lib/committed-source-loader.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",

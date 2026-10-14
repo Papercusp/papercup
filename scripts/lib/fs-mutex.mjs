@@ -273,6 +273,21 @@ async function restoreLegacyRoot(quarantineRoot, legacyRoot) {
   await rename(quarantineRoot, legacyRoot).catch(() => {});
 }
 
+function measureFsMutexOperation(phaseTimingsMs, phase, operation) {
+  if (!phaseTimingsMs) return operation();
+  const startedAt = performance.now();
+  const record = () => {
+    phaseTimingsMs[phase] =
+      (phaseTimingsMs[phase] ?? 0) + Math.max(0, performance.now() - startedAt);
+  };
+  try {
+    return Promise.resolve(operation()).finally(record);
+  } catch (error) {
+    record();
+    throw error;
+  }
+}
+
 /**
  * Prepare the resolved mutex root and preserve the old lock identity across the
  * migration. A legacy root is moved aside only after a complete read-only
@@ -285,9 +300,14 @@ async function restoreLegacyRoot(quarantineRoot, legacyRoot) {
  * production callers use the platform defaults.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
  */
 export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
+  const measure = (phase, operation) => measureFsMutexOperation(
+    options.phaseTimingsMs,
+    `lock-root.${phase}`,
+    operation,
+  );
   const platform = options.platform ?? process.platform;
   const root = resolveFsMutexLockRoot(env, options);
   const hasOverride =
@@ -297,19 +317,19 @@ export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
     options.legacyRoot ?? (platform === "win32" ? null : LEGACY_FS_MUTEX_LOCK_ROOT);
 
   if (hasOverride || legacyRootValue === null) {
-    await mkdir(root, { recursive: true });
+    await measure("mkdir", () => mkdir(root, { recursive: true }));
     return root;
   }
 
   const legacyRoot = resolve(legacyRootValue);
   if (legacyRoot === root) {
-    await mkdir(root, { recursive: true });
+    await measure("mkdir", () => mkdir(root, { recursive: true }));
     return root;
   }
 
   let legacyStat = null;
   try {
-    legacyStat = await lstat(legacyRoot);
+    legacyStat = await measure("legacy-lstat", () => lstat(legacyRoot));
   } catch (error) {
     if (error?.code !== "ENOENT") {
       throw legacyRootError(
@@ -322,14 +342,14 @@ export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
   }
 
   if (legacyStat?.isSymbolicLink()) {
-    if (!(await legacyAliasPointsTo(legacyRoot, root))) {
+    if (!(await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root)))) {
       throw legacyRootError(
         "ELEGACYFSLOCKBUSY",
         "Refusing fs-mutex root migration because the legacy path is an unexpected symlink: " + legacyRoot,
         { ...emptyLegacyCensus(), otherUnknown: 1 },
       );
     }
-    await mkdir(root, { recursive: true });
+    await measure("mkdir", () => mkdir(root, { recursive: true }));
     return root;
   }
 
@@ -343,7 +363,10 @@ export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
         census,
       );
     }
-    census = await censusLegacyFsMutexRoot(legacyRoot, staleMsFromEnv(env));
+    census = await measure(
+      "legacy-census",
+      () => censusLegacyFsMutexRoot(legacyRoot, staleMsFromEnv(env)),
+    );
     const active = totalLegacyCensus(census, "active");
     const unknown = totalLegacyCensus(census, "unknown");
     if (!census.complete || unknown > 0) {
@@ -359,15 +382,15 @@ export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
     if (active > 0) return legacyRoot;
   }
 
-  await mkdir(root, { recursive: true });
+  await measure("mkdir", () => mkdir(root, { recursive: true }));
   let quarantineRoot = null;
   if (legacyStat) {
     quarantineRoot =
       legacyRoot + ".legacy-" + Date.now() + "-" + process.pid + "-" + randomUUID();
     try {
-      await rename(legacyRoot, quarantineRoot);
+      await measure("legacy-quarantine-rename", () => rename(legacyRoot, quarantineRoot));
     } catch (error) {
-      if (await legacyAliasPointsTo(legacyRoot, root)) return root;
+      if (await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root))) return root;
       if (error?.code !== "ENOENT") {
         throw legacyRootError(
           "ELEGACYFSALIASFAILED",
@@ -380,16 +403,16 @@ export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
   }
 
   try {
-    await mkdir(dirname(legacyRoot), { recursive: true });
-    await symlink(root, legacyRoot, "dir");
+    await measure("legacy-parent-mkdir", () => mkdir(dirname(legacyRoot), { recursive: true }));
+    await measure("legacy-symlink", () => symlink(root, legacyRoot, "dir"));
   } catch (error) {
-    if (await legacyAliasPointsTo(legacyRoot, root)) return root;
+    if (await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root))) return root;
     try {
-      if ((await lstat(legacyRoot)).isDirectory()) return legacyRoot;
+      if ((await measure("legacy-final-lstat", () => lstat(legacyRoot))).isDirectory()) return legacyRoot;
     } catch {
       // Preserve the original failure when neither the alias nor root is usable.
     }
-    await restoreLegacyRoot(quarantineRoot, legacyRoot);
+    await measure("legacy-restore", () => restoreLegacyRoot(quarantineRoot, legacyRoot));
     throw legacyRootError(
       "ELEGACYFSALIASFAILED",
       "Could not alias the legacy mutex path to the canonical root: " + legacyRoot,
@@ -672,15 +695,6 @@ export async function withFsMutex(name, fn, opts = {}) {
     return fn();
   }
 
-  const root = await ensureFsMutexLockRoot();
-  const lockDir = join(root, `${safeName(name)}.lock`);
-  const readersDir = readerRoot(root, name);
-  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
-  const staleMs =
-    opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
-  const retryMs =
-    opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
-  const startedAt = Date.now();
   const admissionSubphaseTimingsMs = typeof opts.onAcquired === "function" ? {} : undefined;
   const measureAdmissionSubphase = admissionSubphaseTimingsMs
     ? async (name, operation) => {
@@ -693,6 +707,23 @@ export async function withFsMutex(name, fn, opts = {}) {
       }
     }
     : (_name, operation) => operation();
+  // Root resolution is outside the mutex's timeout budget, but remains visible in
+  // caller timing maps. The nested `lock-root.*` phases intentionally overlap
+  // `lock-root.ensure`; they identify which root-resolution operation consumed time.
+  const root = await measureAdmissionSubphase(
+    "lock-root.ensure",
+    () => ensureFsMutexLockRoot(undefined, admissionSubphaseTimingsMs
+      ? { phaseTimingsMs: admissionSubphaseTimingsMs }
+      : undefined),
+  );
+  const lockDir = join(root, `${safeName(name)}.lock`);
+  const readersDir = readerRoot(root, name);
+  const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
+  const staleMs =
+    opts.staleMs ?? intEnv("PAPERCUSP_FS_MUTEX_STALE_MS", DEFAULT_STALE_MS);
+  const retryMs =
+    opts.retryMs ?? intEnv("PAPERCUSP_FS_MUTEX_RETRY_MS", DEFAULT_RETRY_MS);
+  const startedAt = Date.now();
   // Nested under its own key rather than merged: a caller can then never shadow `pid` /
   // `host` / `startedAt`, which are the fields the reclaim path and every waiter trust.
   const intent = sanitizeIntent(opts.intent);
