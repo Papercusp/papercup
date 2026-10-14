@@ -16,6 +16,7 @@ import {
   playwrightOwnedTest,
   pruneWithExecutedMap,
   resolveRelatedWidenThreshold,
+  prepareRelatedTestSelection,
   selectRelatedTests,
   staticImportClosure,
   transitiveDeps,
@@ -1234,6 +1235,33 @@ describe('selectRelatedTests — executed-source pruning (P-002)', () => {
     executed: new Set([self, ...executed]),
   });
   const fresh = () => () => [] as string[];
+
+  it('exposes static candidates from one prebuilt index for a scoped map read', () => {
+    const baseFs = hubFs();
+    let listCalls = 0;
+    const fs = {
+      ...baseFs,
+      list(root: string) {
+        listCalls += 1;
+        return baseFs.list(root);
+      },
+    };
+    const prepared = prepareRelatedTestSelection({ rootDir: ROOT, changedPaths: [leaf], fs });
+    const candidates = [...prepared.selection.selected].sort();
+    expect(candidates).toEqual(tests);
+    expect(listCalls).toBe(1);
+
+    const result = selectRelatedTests({
+      rootDir: ROOT,
+      changedPaths: [leaf],
+      prepared,
+      executedMap: new Map([[a, entry(a, [hub, other])]]),
+      judgedSha: JUDGED,
+      changedBetween: fresh(),
+    });
+    expect(result.selected).toEqual([b, c, d, e]);
+    expect(listCalls).toBe(1);
+  });
 
   it('prunes a test whose current map never executed the change and keeps one whose map did', () => {
     const executedMap = new Map([
