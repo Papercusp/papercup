@@ -43,6 +43,10 @@ export interface DiskReclaimReceipt {
   delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
   errors: string[];
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
+  effects?: Array<{
+    root: string; selected: number; processed: number; remaining: number;
+    nextPath: string | null; elapsedMs: number; stopped: boolean;
+  }>;
 }
 export interface DiskReclaimOptions {
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
@@ -50,6 +54,8 @@ export interface DiskReclaimOptions {
   roots?: Array<{ path: string; classId: string }>;
   /** Inspection bounds apply independently to each policy root; an incomplete root cannot starve another. */
   nowMs?: number; maxEntries?: number; budgetMs?: number;
+  /** Per-root wall time for holder checks, audit waits and removals. In-flight operations finish safely. */
+  effectBudgetMs?: number;
   sample?: () => Promise<DiskSnapshot[]>;
   scanHolders?: (paths: readonly string[]) => Promise<OpenWriterScan>;
   registeredWorkspaces?: () => string[];
@@ -388,17 +394,44 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (budgetStopped) continue;
         const selected = selectRetentionEntries(entries, policy, started);
         if (!selected.length) continue;
+        const effectStarted = Date.now();
+        const effectDeadline = effectStarted + (options.effectBudgetMs ?? 60_000);
+        const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
+          nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false };
+        (receipt.effects ??= []).push(effect);
+        let lastProgressAt = effectStarted;
+        const recordProgress = async () => {
+          effect.remaining = selected.length - effect.processed;
+          effect.nextPath = selected[effect.processed]?.path ?? null;
+          effect.elapsedMs = Math.max(0, Date.now() - effectStarted);
+          await outsideInspectionBudget(async () => options.record?.('progress', { ...effect }));
+          lastProgressAt = Date.now();
+        };
+        const stopEffects = () => {
+          if (Date.now() < effectDeadline) return false;
+          effect.stopped = true;
+          receipt.errors.push(`incomplete retention effects:${root.path}: effect budget exhausted; resume with a fresh policy census`);
+          return true;
+        };
+        await recordProgress();
+        if (stopEffects()) { await recordProgress(); continue; }
         const holders = await outsideInspectionBudget(() => scan(selected.map((e) => e.path)));
-        if (!holders.complete) { receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`); continue; }
+        if (!holders.complete) {
+          receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
+          await recordProgress(); continue;
+        }
         for (const entry of selected) {
           if (budgetExpired()) { stopAtBudget(root.path); break; }
+          if (stopEffects()) break;
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
-          if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
+          let deferred = false;
           try {
+            if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
             // Write the intent before the last identity/holder checks, so a
             // slow database round trip cannot widen the check-to-effect window.
             if (!receipt.dryRun) await outsideInspectionBudget(async () => options.record?.('remove-intent', entry));
+            if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             // Rescan write activity + identity and process holders immediately before the effect.
             let fresh: RetentionEntry | null;
             if (options.inspectTrees && retainAfterMs !== undefined) {
@@ -410,12 +443,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             } else fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
               (reason) => { outcome.reason = reason; });
             if (!fresh) continue;
+            if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             const freshHolders = await outsideInspectionBudget(() => scan([entry.path]));
             if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
               outcome.reason = 'process evidence unavailable or held';
               if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
               continue;
             }
+            if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
             if (receipt.dryRun) { outcome.status = 'would-remove'; continue; }
             await outsideInspectionBudget(() => rm(entry.path, { recursive: true, force: false }));
@@ -426,8 +461,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             outcome.status = 'failed'; outcome.reason = message(err);
             if (budgetExpired()) { stopAtBudget(root.path); break; }
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);
+          } finally {
+            if (!deferred) effect.processed++;
+            // Do not race or cancel a running safety check or removal. Record
+            // progress between effects, after the final holder-to-unlink window.
+            if (Date.now() - lastProgressAt >= 10_000) await recordProgress();
           }
         }
+        await recordProgress();
       }
       for (const delegate of options.delegates ?? []) {
         try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
