@@ -1,6 +1,7 @@
 /**
- * Written retention policy for disk consumers on `/` and `/mnt/data`
- * (plan disk-headroom-standing-reclaim-2026-10-12, P-003 / R-2).
+ * Written retention policy for disk consumers on `/`, `/mnt/data` and `/mnt/backup`
+ * (plan disk-headroom-standing-reclaim-2026-10-12, P-003 / R-2; `/mnt/backup`
+ * classes added for WI-6554700010011387, all keep or review).
  *
  * WHAT THIS IS: the single source that says, for every class of thing the disk
  * census (`disk-consumer-census.ts`) reports, who made it, how long it is kept,
@@ -473,6 +474,59 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
       '~/.cache/pui-acceptance-root-*',
     ],
     keep: { kind: 'review', reason: 'one-off copies whose consumers are not recorded' },
+    enforcers: [{ kind: 'none' }],
+  },
+  // ── /mnt/backup (WI-6554700010011387) ────────────────────────────────────
+  // Protected first: nothing under /mnt/backup is deletable until the owner
+  // rules on it (WI-6554700010010388). The agent trees are classified so the
+  // census reports their size, but every class here is keep or review.
+  {
+    id: 'owner-macos-vm',
+    title: 'The macOS VM: OSX-KVM disk, recovery images and the ~/macos-vm backup source',
+    origin: 'owner',
+    roots: ['/mnt/backup/offload/macos-vm', '~/macos-vm'],
+    keep: {
+      kind: 'keep',
+      reason: 'owner-protected VM and kopia backup source (owner 2026-09-20); ~/macos-vm/OSX-KVM links into /mnt/backup/offload/macos-vm',
+    },
+    enforcers: [{ kind: 'none' }],
+    note: 'A running trial VM may open a copy elsewhere (/mnt/data/offload/macos-vm-*); that does not make this one disposable. Only the owner decides (precedent WI-39360).',
+  },
+  {
+    id: 'db-dumps',
+    title: 'Papercusp database dumps on /mnt/backup/db-dumps',
+    origin: 'system',
+    roots: ['/mnt/backup/db-dumps'],
+    keep: { kind: 'keep', reason: 'the db-backup job writes and rotates these; it is the only writer' },
+    enforcers: [{ kind: 'none' }],
+  },
+  {
+    id: 'backup-offload-other',
+    title: 'Other /mnt/backup/offload entries (home-dir copies, audit inputs)',
+    origin: 'agent',
+    roots: ['/mnt/backup/offload'],
+    keep: { kind: 'review', reason: 'offloads with symlinks pointing back into / and /mnt/data; consumers must be vetted per entry' },
+    enforcers: [{ kind: 'none' }],
+  },
+  {
+    id: 'backup-agent-trees',
+    title: 'Agent build, test and evidence trees on /mnt/backup',
+    origin: 'agent',
+    roots: [
+      '/mnt/backup/cloud-e2e-*',
+      '/mnt/backup/p012-*',
+      '/mnt/backup/pui-*',
+      '/mnt/backup/portable-server-*',
+      '/mnt/backup/customer-terminal-native-target.*',
+      '/mnt/backup/woe-native-cargo-*',
+      '/mnt/backup/papercusp-lint-as-committed-*',
+      '/mnt/backup/papercusp-agent-evidence',
+      '/mnt/backup/papercusp-verification',
+    ],
+    keep: {
+      kind: 'review',
+      reason: 'some are evidence for open work items or targets of live symlinks; deletion awaits the owner ruling on WI-6554700010010388',
+    },
     enforcers: [{ kind: 'none' }],
   },
 ];

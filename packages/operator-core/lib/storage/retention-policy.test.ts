@@ -56,6 +56,51 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     expect(del(`${HOME}/papercupai-workspace/papercusp-relcut-0026/x`)).toBe('release-cut-worktrees');
   });
 
+  it('protects the owner macOS VM and deletes nothing on /mnt/backup (WI-6554700010011387)', () => {
+    // The owner-protected VM: the OSX-KVM disk, its recovery images and the backup-source link.
+    for (const p of [
+      '/mnt/backup/offload/macos-vm/OSX-KVM/mac_hdd_ng.img',
+      '/mnt/backup/offload/macos-vm/recovery-EI-25726196477154042/attempt-2/builddata-20260820-160g.qcow2',
+      `${HOME}/macos-vm/OSX-KVM`,
+    ]) {
+      expect(del(p), p).toBeNull();
+      expect(classifyPath(p, policy), p).toMatchObject({ classId: 'owner-macos-vm' });
+    }
+    // The more specific protected root wins over the generic offload review class.
+    expect(classifyPath('/mnt/backup/offload/WI-2146953/x', policy)).toMatchObject({ classId: 'backup-offload-other' });
+    expect(classifyPath('/mnt/backup/db-dumps/papercusp-state.dump', policy)).toMatchObject({ classId: 'db-dumps' });
+    expect(classifyPath('/mnt/backup/cloud-e2e-workspace-host-20261009r2/source/x', policy)).toMatchObject({
+      classId: 'backup-agent-trees',
+    });
+    // Until the owner rules (WI-6554700010010388), no /mnt/backup class may delete.
+    const backupClasses = RETENTION_POLICY.filter((c) => c.roots.some((r) => r.startsWith('/mnt/backup')));
+    expect(backupClasses.map((c) => c.id).sort()).toEqual(
+      ['backup-agent-trees', 'backup-offload-other', 'db-dumps', 'owner-macos-vm'].sort(),
+    );
+    for (const cls of backupClasses) expect(isDeletableRule(cls.keep), cls.id).toBe(false);
+    for (const p of [
+      '/mnt/backup/customer-terminal-native-target.PfNyjp/debug/a',
+      '/mnt/backup/p012-bake-fire105/x',
+      '/mnt/backup/offload/papercusp-audit-inputs/a.qcow2',
+    ]) {
+      expect(del(p), p).toBeNull();
+    }
+  });
+
+  it('a deletable class can never reach under the owner macOS VM root (D-002 validator)', () => {
+    const rogue: RetentionClass = {
+      id: 'rogue-macos-reclaim',
+      title: 'would delete the VM disk',
+      origin: 'agent',
+      roots: ['/mnt/backup/offload/macos-vm/OSX-KVM'],
+      keep: { kind: 'max-age', maxAgeHours: 24 },
+      enforcers: [{ kind: 'standing-reclaim' }],
+    };
+    expect(validatePolicy([...RETENTION_POLICY, rogue], HOME)).toContain(
+      'rogue-macos-reclaim: deletable root /mnt/backup/offload/macos-vm/OSX-KVM lies under owner root /mnt/backup/offload/macos-vm',
+    );
+  });
+
   it('only work-item-named offload entries are deletable; VM disks are review', () => {
     expect(del('/mnt/data/offload/wi4480-rollback70/payload.tar.zst')).toBe('offload-work-copies');
     expect(del('/mnt/data/offload/wi-10006692-retained-bench-2026-10-08/a')).toBe('offload-work-copies');
