@@ -22,8 +22,9 @@
  * Persistence: the current state lives in `routines.metadata.gate_invariants` on the
  * green-checkpoint row (overwritten per evaluation); history lives in `pipeline_events` under its
  * own kind `gate_invariants` (migration 1425), appended on any status transition and at least
- * hourly. A transition INTO breach files (or refreshes) one work-item per invariant through
- * `upsertConditionWorkItem`, keyed `gate-invariant:<install>:<name>`.
+ * hourly. Each breach episode files (or refreshes) one work-item per invariant through
+ * `upsertConditionWorkItem`, keyed `gate-invariant:<install>:<name>`. Failed filings retry on
+ * the next lease-eligible evaluation until a work-item id has been stored.
  */
 import type { Sql } from 'postgres';
 import { frozenRepairLatency, type FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
@@ -711,7 +712,8 @@ export interface RecordGateInvariantsDeps {
   installSlug: string;
   nowMs: number;
   results: readonly GateInvariantResult[];
-  appendEvent: (status: GateInvariantStatus, detail: Record<string, unknown>) => Promise<void>;
+  /** Required append on the supplied transaction: failure must roll back its evaluation lease. */
+  appendEvent: (status: GateInvariantStatus, detail: Record<string, unknown>, transactionSql: Sql) => Promise<void>;
   fileBreach: (result: GateInvariantResult) => Promise<string | null>;
 }
 
@@ -731,6 +733,13 @@ export async function recordGateLiveInvariants(deps: RecordGateInvariantsDeps): 
     const prev = parseGateInvariantsState(rows[0]?.state);
     if (prev && nowMs - prev.evaluatedAtMs < GATE_INVARIANT_LEASE_MS) return null;
     const out = foldGateInvariants(prev, results, nowMs);
+    if (out.emit) {
+      await deps.appendEvent(overallGateInvariantStatus(results), {
+        evaluatedAtMs: nowMs,
+        results: results.map((r) => ({ name: r.name, status: r.status, observed: r.observed })),
+        transitions: out.transitions,
+      }, tx as unknown as Sql);
+    }
     await tx`
       UPDATE harness_shared.routines
          SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), ${[GATE_INVARIANTS_METADATA_KEY]}, ${tx.json(out.next as never)})
@@ -740,35 +749,42 @@ export async function recordGateLiveInvariants(deps: RecordGateInvariantsDeps): 
   if (!folded) return { recorded: false, transitions: [], emitted: false, filed: [] };
 
   const filed: { name: GateInvariantName; id: string }[] = [];
-  for (const t of folded.transitions) {
-    if (t.to !== 'breach') continue;
-    const result = results.find((r) => r.name === t.name);
-    if (!result) continue;
+  for (const result of results) {
+    // The state transition is committed before filing. A failed condition
+    // upsert must remain eligible when the next tick sees the same breach.
+    if (result.status !== 'breach' || folded.next.invariants[result.name]?.filedItemId) continue;
     const id = await deps.fileBreach(result).catch(() => null);
-    if (id) filed.push({ name: t.name, id });
+    if (id) filed.push({ name: result.name, id });
   }
+  let emitted = folded.emit;
   if (filed.length > 0) {
-    // Record the filed ids on the stored state (best effort; the condition key already dedups).
+    // The condition upsert is outside the lease transaction. Store its receipt
+    // with history atomically, only while this evaluation is still current.
+    // If it fails, the next eligible tick retries through the same condition key.
+    folded.next.lastEmittedAtMs = nowMs;
     for (const f of filed) {
       const entry = folded.next.invariants[f.name];
       if (entry) entry.filedItemId = f.id;
     }
-    await sql`
-      UPDATE harness_shared.routines
-         SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), ${[GATE_INVARIANTS_METADATA_KEY]}, ${sql.json(folded.next as never)})
-       WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = 'green-checkpoint'
-         AND (metadata->${GATE_INVARIANTS_METADATA_KEY}->>'evaluatedAtMs')::bigint = ${nowMs}`.catch(() => undefined);
-  }
-  if (folded.emit) {
-    await deps
-      .appendEvent(overallGateInvariantStatus(results), {
+    const receiptEmitted = await sql.begin(async (tx) => {
+      const rows = await tx`
+        UPDATE harness_shared.routines
+           SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), ${[GATE_INVARIANTS_METADATA_KEY]}, ${tx.json(folded.next as never)})
+         WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = 'green-checkpoint'
+           AND (metadata->${GATE_INVARIANTS_METADATA_KEY}->>'evaluatedAtMs')::bigint = ${nowMs}
+         RETURNING name`;
+      if (!rows.length) return false;
+      await deps.appendEvent(overallGateInvariantStatus(results), {
+        evaluatedAtMs: nowMs,
         results: results.map((r) => ({ name: r.name, status: r.status, observed: r.observed })),
         transitions: folded.transitions,
-        ...(filed.length > 0 ? { filed } : {}),
-      })
-      .catch(() => undefined);
+        filed,
+      }, tx as unknown as Sql);
+      return true;
+    });
+    emitted ||= receiptEmitted;
   }
-  return { recorded: true, transitions: folded.transitions, emitted: folded.emit, filed };
+  return { recorded: true, transitions: folded.transitions, emitted, filed };
 }
 
 const WATCHDOG_ACTOR = 'system-watchdog';
@@ -814,8 +830,8 @@ export async function checkGateLiveInvariants(
       installSlug,
       nowMs,
       results,
-      appendEvent: (status, detail) =>
-        appendPipelineEvent({ workspaceId, installSlug, kind: 'gate_invariants', status, detail }, sql),
+      appendEvent: (status, detail, transactionSql) =>
+        appendPipelineEvent({ workspaceId, installSlug, kind: 'gate_invariants', status, detail }, transactionSql, { required: true }),
       fileBreach: async (r) => {
         const res = await upsertConditionWorkItem(gateInvariantConditionKey(installSlug, r.name), {
           kind: 'bug',

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { GATE_INVARIANT_NAMES, readGateInvariantWindow, evaluateGateInvariantWindow,
-  GATE_INVARIANT_ACCEPTANCE_WINDOW_MS, GATE_INVARIANT_HEARTBEAT_MS } from './gate-live-invariants';
+  GATE_INVARIANT_ACCEPTANCE_WINDOW_MS, GATE_INVARIANT_HEARTBEAT_MS, GATE_INVARIANT_LEASE_MS,
+  recordGateLiveInvariants, type GateInvariantResult } from './gate-live-invariants';
 import { readGreenMainRecoveryWindow, evaluateGreenMainRecoveryWindow, readGreenMainRepairRoundWindow, evaluateGreenMainRepairRoundWindow } from './green-main-slo';
 
 describe('historical invariant acceptance (real PG)', () => {
@@ -142,5 +143,133 @@ describe('historical invariant acceptance (real PG)', () => {
         id bigserial PRIMARY KEY, workspace_id text NOT NULL, install_slug text NOT NULL,
         kind text NOT NULL, status text NOT NULL, detail jsonb NOT NULL, created_at timestamptz NOT NULL)`;
     }
+  });
+});
+
+describe('invariant breach delivery (real PG)', () => {
+  let db: FreshPgDb;
+  const start = Date.parse('2026-10-01T21:56:00Z');
+  const scope = { workspaceId: 'alarm-workspace', installSlug: 'alarm-install' };
+  const breach: GateInvariantResult = { name: 'no-verdict-rate', status: 'breach', observed: 'three failed verdicts' };
+  const pass: GateInvariantResult = { ...breach, status: 'pass', observed: 'verdicts recovered' };
+  beforeAll(async () => {
+    db = await createFreshPgDb();
+    await db.sql`CREATE TABLE harness_shared.routines (
+      workspace_id text NOT NULL, install_slug text NOT NULL, name text NOT NULL,
+      metadata jsonb NOT NULL DEFAULT '{}', PRIMARY KEY (workspace_id, install_slug, name))`;
+  }, 120_000);
+  afterAll(async () => { await db?.cleanup(); });
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.routines`;
+    await db.sql`INSERT INTO harness_shared.routines (workspace_id, install_slug, name)
+      VALUES (${scope.workspaceId}, ${scope.installSlug}, 'green-checkpoint')`;
+  });
+  const record = (nowMs: number, results: GateInvariantResult[], fileBreach: (result: GateInvariantResult) => Promise<string | null>) =>
+    recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs, results, fileBreach, appendEvent: async () => {} });
+  const entry = async () => {
+    const rows = await db.sql`SELECT metadata->'gate_invariants'->'invariants'->'no-verdict-rate' AS entry
+      FROM harness_shared.routines WHERE workspace_id = ${scope.workspaceId} AND install_slug = ${scope.installSlug}`;
+    return rows[0]!.entry;
+  };
+
+  it.each(['throw', 'null'] as const)('retries an unchanged breach after a %s filing failure, then deduplicates', async failure => {
+    let calls = 0;
+    const file = async () => {
+      calls++;
+      if (calls === 1) {
+        if (failure === 'throw') throw new Error('condition store unavailable');
+        return null;
+      }
+      return 'WI-alarm';
+    };
+    expect(await record(start, [breach], file)).toMatchObject({ recorded: true, filed: [] });
+    expect(await entry()).toMatchObject({ status: 'breach', sinceMs: start, evaluations: 1 });
+    expect(await record(start + GATE_INVARIANT_LEASE_MS - 1, [breach], file)).toMatchObject({ recorded: false });
+    expect(calls).toBe(1);
+    expect(await record(start + GATE_INVARIANT_LEASE_MS, [breach], file))
+      .toMatchObject({ recorded: true, transitions: [], filed: [{ name: breach.name, id: 'WI-alarm' }] });
+    expect(await entry()).toMatchObject({ status: 'breach', sinceMs: start, evaluations: 2, filedItemId: 'WI-alarm' });
+    await record(start + 2 * GATE_INVARIANT_LEASE_MS, [breach], file);
+    expect(calls).toBe(2);
+  });
+
+  it('does not file recovered or unknown results, and permits a new breach episode', async () => {
+    let calls = 0;
+    const file = async () => `WI-${++calls}`;
+    await record(start, [breach], file);
+    await record(start + GATE_INVARIANT_LEASE_MS, [pass], file);
+    await record(start + 2 * GATE_INVARIANT_LEASE_MS, [{ ...pass, status: 'unknown' }], file);
+    expect(calls).toBe(1);
+    expect(await record(start + 3 * GATE_INVARIANT_LEASE_MS, [breach], file))
+      .toMatchObject({ filed: [{ name: breach.name, id: 'WI-2' }] });
+    expect(await entry()).toMatchObject({ sinceMs: start + 3 * GATE_INVARIANT_LEASE_MS, filedItemId: 'WI-2' });
+  });
+
+  it('appends the successful retry receipt even without a status transition or heartbeat', async () => {
+    await record(start, [breach], async () => null);
+    const events: { status: string; detail: Record<string, unknown> }[] = [];
+    const outcome = await recordGateLiveInvariants({ sql: db.sql, ...scope,
+      nowMs: start + GATE_INVARIANT_LEASE_MS, results: [breach], fileBreach: async () => 'WI-retry',
+      appendEvent: async (status, detail) => { events.push({ status, detail }); } });
+    expect(outcome).toMatchObject({ transitions: [], emitted: true });
+    expect(events).toEqual([{ status: 'breach', detail: { evaluatedAtMs: start + GATE_INVARIANT_LEASE_MS, results: [breach], transitions: [],
+      filed: [{ name: breach.name, id: 'WI-retry' }] } }]);
+  });
+
+  it('rolls back a failed required history append so the next unchanged observation retries', async () => {
+    const events: Record<string, unknown>[] = [];
+    const appendEvent = async (_status: unknown, detail: Record<string, unknown>) => {
+      throw new Error('history store unavailable');
+    };
+    const attempt = recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: start,
+      results: [breach], fileBreach: async () => 'WI-history', appendEvent });
+    await expect(attempt).rejects.toThrow('history store unavailable');
+    expect(await entry()).toBeNull();
+    const retry = await recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: start + GATE_INVARIANT_LEASE_MS,
+      results: [breach], fileBreach: async () => 'WI-history',
+      appendEvent: async (_status, detail) => { events.push(detail); } });
+    expect(retry).toMatchObject({ recorded: true, emitted: true });
+    expect(events[0]).toMatchObject({ transitions: [{ name: breach.name, from: null, to: 'breach' }] });
+    expect(await entry()).toMatchObject({ status: 'breach', sinceMs: start + GATE_INVARIANT_LEASE_MS });
+  });
+
+  it('does not store a filed id when its delivery history receipt fails, then retries the same condition', async () => {
+    await record(start, [breach], async () => null);
+    let calls = 0;
+    const fileBreach = async () => { calls++; return 'WI-existing-condition'; };
+    await expect(recordGateLiveInvariants({ sql: db.sql, ...scope, nowMs: start + GATE_INVARIANT_LEASE_MS,
+      results: [breach], fileBreach, appendEvent: async () => { throw new Error('receipt unavailable'); } }))
+      .rejects.toThrow('receipt unavailable');
+    expect(await entry()).toMatchObject({ status: 'breach', sinceMs: start });
+    expect((await entry()).filedItemId).toBeUndefined();
+    const retry = await record(start + 2 * GATE_INVARIANT_LEASE_MS, [breach], fileBreach);
+    expect(retry).toMatchObject({ emitted: true, filed: [{ name: breach.name, id: 'WI-existing-condition' }] });
+    expect(calls).toBe(2);
+    expect(await entry()).toMatchObject({ sinceMs: start, filedItemId: 'WI-existing-condition' });
+  });
+
+  it('serializes two hosts at the same lease boundary into one retry', async () => {
+    await record(start, [breach], async () => null);
+    let calls = 0;
+    const file = async () => { calls++; return 'WI-concurrent'; };
+    const outcomes = await Promise.all([record(start + GATE_INVARIANT_LEASE_MS, [breach], file),
+      record(start + GATE_INVARIANT_LEASE_MS, [breach], file)]);
+    expect(outcomes.filter(outcome => outcome.recorded)).toHaveLength(1);
+    expect(calls).toBe(1);
+    expect(await entry()).toMatchObject({ sinceMs: start, filedItemId: 'WI-concurrent' });
+  });
+
+  it('a delayed filing receipt cannot overwrite a newer recovered state', async () => {
+    let started!: () => void;
+    const pending = new Promise<void>(resolve => { started = resolve; });
+    let finish!: (id: string) => void;
+    const receipt = new Promise<string>(resolve => { finish = resolve; });
+    const first = record(start, [breach], async () => { started(); return receipt; });
+    await pending;
+    await record(start + GATE_INVARIANT_LEASE_MS, [pass], async () => { throw new Error('must not file pass'); });
+    finish('WI-late');
+    await first;
+    expect(await entry()).toMatchObject({ status: 'pass', sinceMs: start + GATE_INVARIANT_LEASE_MS });
+    expect((await entry()).filedItemId).toBeUndefined();
   });
 });
