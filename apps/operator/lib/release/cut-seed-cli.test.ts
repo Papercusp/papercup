@@ -841,6 +841,12 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
     const run = vi.fn(async (transaction: unknown) => {
       expect(transaction).toBe(tx);
       expect(transactionOpen).toBe(true);
+      // The refresh performs multiple awaited PG reads. The singleton must still
+      // own its transaction when the callback resumes, not just when it starts.
+      // Two turns let an incorrectly returned array-of-promises commit first.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(transactionOpen).toBe(true);
       return 'cut-opened';
     });
 
@@ -849,6 +855,38 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
     ).resolves.toBe('cut-opened');
     expect(transactionOpen).toBe(false);
     expect(run).toHaveBeenCalledWith(tx);
+  });
+
+  it('rolls back when the cut callback fails after an asynchronous pause', async () => {
+    const tx = vi.fn(async () => [{ acquired: true }]) as never;
+    const events: string[] = [];
+    const failure = new Error('backfill failed');
+    const pg = {
+      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
+        try {
+          const result = await run(tx);
+          events.push('commit');
+          return result;
+        } catch (error) {
+          events.push('rollback');
+          throw error;
+        }
+      }),
+    } as never;
+
+    await expect(withCutSeedSingleton({
+      pg,
+      workspaceId: 'ws-1',
+      hive: 'papercusp',
+      run: async () => {
+        events.push('started');
+        await Promise.resolve();
+        await Promise.resolve();
+        events.push('failed');
+        throw failure;
+      },
+    })).rejects.toBe(failure);
+    expect(events).toEqual(['started', 'failed', 'rollback']);
   });
 });
 
