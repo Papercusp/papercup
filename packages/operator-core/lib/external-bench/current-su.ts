@@ -1526,17 +1526,31 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
           ? ports.launchNative({ handle, task, context: rereadContext })
           : ports.launch(currentBenchLaunchRequest(opts, handle, task.problemStatement, rereadContext))));
         record.launchReceipt = receipt;
-        const tasks = receipt.tasks as Array<{ taskId?: string }> | undefined;
-        if (receipt.agentStarted !== true || tasks?.length !== 1 || !tasks[0]?.taskId) throw new Error('Native benchmark launch has no verified single-agent start.');
-        const taskId = tasks[0].taskId;
+        const tasks = receipt.tasks as Array<{ taskId?: string; ownerId?: string; label?: string;
+          kickoffProof?: { persisted?: boolean; nativeRef?: string } }> | undefined;
+        const launchEvidence = receipt.launchEvidence as { processOpened?: number; sessionRegistered?: number; firstTurn?: boolean | null } | undefined;
+        const launched = Array.isArray(tasks) && tasks.length === 1 ? tasks[0] : undefined;
+        // The maintained launcher can register a native kickoff before observing
+        // its first turn. Admit that evidenced pending state into this same bounded
+        // loop; only a runtime measurement can later verify successful generation.
+        const pendingStart = receipt.agentStarted === null && receipt.opened === 1 && receipt.failed === 0 && receipt.partial === false &&
+          launchEvidence?.processOpened === 1 && launchEvidence.sessionRegistered === 1 && launchEvidence.firstTurn === null &&
+          typeof launched?.ownerId === 'string' && !!launched.ownerId.trim() && launched.label === `${labelPrefix}solver` &&
+          launched.kickoffProof?.persisted === true && typeof launched.kickoffProof.nativeRef === 'string' && !!launched.kickoffProof.nativeRef.trim();
+        if ((receipt.agentStarted !== true && !pendingStart) || typeof launched?.taskId !== 'string' || !launched.taskId.trim())
+          throw new Error('Native benchmark launch has no verified single-agent start.');
+        const taskId = launched.taskId;
+        record.nativeStart = { status: pendingStart ? 'pending' : 'observed', taskId, ownerId: launched.ownerId ?? null };
         for (;;) {
           const task = await ports.getTask(taskId);
-          if (!task || task.workspaceId !== workspaceId || task.detail.label !== `${labelPrefix}solver`) throw new Error('Native benchmark task identity/scope could not be verified.');
+          if (!task || task.taskId !== taskId || task.workspaceId !== workspaceId || task.detail.label !== `${labelPrefix}solver` ||
+              pendingStart && task.detail.coordOwnerId !== launched.ownerId) throw new Error('Native benchmark task identity/scope could not be verified.');
           if (typeof task.detail.nativeStreamError === 'string') throw new Error(task.detail.nativeStreamError);
           record.terminalReceipt = task;
           const identity = measuredIdentity(await ports.readIdentity(task));
           record.measured = identity;
           record.identityStatus = identity ? 'measured' : 'unknown';
+          record.nativeStart = { status: identity ? 'measured' : pendingStart ? 'pending' : 'observed', taskId, ownerId: launched.ownerId ?? null };
           // Compare actual request exposure, including the post-confinement
           // tool catalog, to the committed pins on every observed turn. A prior
           // matching observation cannot fill a missing completion measurement.

@@ -1671,6 +1671,59 @@ describe('current native benchmark execution', () => {
     expect((await f.run()).telemetry.generationError).toMatch(/no verified single-agent start/);
     expect(f.ports.killTask).toHaveBeenCalledWith('task-own');
   });
+  function pendingLaunch(f: ReturnType<typeof fixture>) {
+    f.row.detail.coordOwnerId = 'su-native';
+    return { agentStarted: null, opened: 1, failed: 0, partial: false,
+      launchEvidence: { processOpened: 1, sessionRegistered: 1, firstTurn: null },
+      tasks: [{ taskId: f.row.taskId, ownerId: 'su-native', label: f.row.detail.label,
+        kickoffProof: { persisted: true, nativeRef: '/private/native/rollout.jsonl' } }] };
+  }
+  it('waits for measured identity after a registered pending native kickoff', async () => {
+    const f = fixture(); f.row.state = 'pending'; f.row.exitCode = null;
+    vi.mocked(f.ports.launch).mockResolvedValue(pendingLaunch(f));
+    vi.mocked(f.ports.readIdentity).mockResolvedValueOnce(null).mockResolvedValue(identity);
+    f.ports.sleep = vi.fn(async () => { f.row.state = 'exited'; f.row.exitCode = 0; });
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('done');
+    expect(f.ports.sleep).toHaveBeenCalledOnce();
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+      launchReceipt: { agentStarted: null }, nativeStart: { status: 'measured' }, identityStatus: 'measured',
+      retiredTaskIds: [f.row.taskId],
+    });
+  });
+  it.each(['missing-proof', 'missing-ref', 'unregistered', 'multiple', 'explicit-failure', 'missing-verdict'])(
+    'refuses invalid pending native kickoff evidence: %s', async invalid => {
+      const f = fixture(); const receipt = pendingLaunch(f);
+      if (invalid === 'missing-proof') receipt.tasks[0].kickoffProof.persisted = false;
+      if (invalid === 'missing-ref') receipt.tasks[0].kickoffProof.nativeRef = '';
+      if (invalid === 'unregistered') receipt.launchEvidence.sessionRegistered = 0;
+      if (invalid === 'multiple') receipt.tasks.push({ ...receipt.tasks[0], taskId: 'peer' });
+      const reply = { ...receipt, agentStarted: invalid === 'explicit-failure' ? false : invalid === 'missing-verdict' ? undefined : null };
+      vi.mocked(f.ports.launch).mockResolvedValue(reply);
+      expect((await f.run()).telemetry.generationError).toMatch(/no verified single-agent start/);
+      expect(f.ports.readIdentity).not.toHaveBeenCalled();
+      expect(f.ports.killTask).toHaveBeenCalledWith(f.row.taskId);
+    });
+  it.each(['owner', 'workspace', 'label'])('refuses pending native kickoff with wrong task %s', async invalid => {
+    const f = fixture(); const receipt = pendingLaunch(f);
+    if (invalid === 'owner') f.row.detail.coordOwnerId = 'su-peer';
+    if (invalid === 'workspace') f.row.workspaceId = 'peer-workspace';
+    if (invalid === 'label') f.row.detail.label = 'peer-label';
+    vi.mocked(f.ports.launch).mockResolvedValue(receipt);
+    expect((await f.run()).telemetry.generationError).toMatch(/identity\/scope/);
+    expect(f.ports.readIdentity).not.toHaveBeenCalled();
+  });
+  it('bounds pending native kickoff with the existing wall-clock deadline and retires it', async () => {
+    const f = fixture(); f.row.state = 'pending'; f.row.exitCode = null;
+    vi.mocked(f.ports.launch).mockResolvedValue(pendingLaunch(f));
+    vi.mocked(f.ports.readIdentity).mockResolvedValue(null);
+    const result = await f.run();
+    expect(result.telemetry.stopReason).toBe('timeout');
+    expect(result.telemetry.armMeta?.currentExecution).toMatchObject({
+      nativeStart: { status: 'pending' }, identityStatus: 'unknown', retiredTaskIds: [f.row.taskId],
+    });
+    expect(f.ports.sleep).toHaveBeenCalled();
+  });
   it('does not claim successful generation when process cleanup fails', async () => {
     const f = fixture();
     vi.mocked(f.ports.killTask).mockResolvedValue({ ok: false, taskId: 'task-own', action: 'kill', error: 'not_live' });
