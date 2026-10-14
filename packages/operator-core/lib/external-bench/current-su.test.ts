@@ -1823,12 +1823,13 @@ describe('current benchmark restart and live binding', () => {
       const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
       await ports.launch(args);
       const forwarded = native.launch.mock.calls.at(-1)![1];
-      const override = forwarded[Symbol.for('benchmark-test-backend-bin')] as Record<string, string>;
+      const override = forwarded[Symbol.for('benchmark-test-backend-bin')] as Record<string, { kind: string; command: string; sha256: string }>;
       expect(Object.keys(override)).toEqual(['codex']);
-      const wrapper = readFileSync(override.codex, 'utf8');
+      expect(override.codex).toMatchObject({ kind: 'docker-exec', sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+      const wrapper = readFileSync(override.codex.command, 'utf8');
       expect(wrapper).toContain('fswe-task-1');
       expect(wrapper).toContain('/opt/papercusp/codex');
-      expect(statSync(override.codex).mode & 0o111).not.toBe(0);
+      expect(statSync(override.codex.command).mode & 0o111).not.toBe(0);
       // The in-container launch keeps the private gateway route and the session ceiling.
       expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
       expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({ denyAmbientContext: true });
@@ -1836,10 +1837,10 @@ describe('current benchmark restart and live binding', () => {
       await ports.launch(args);
       expect(native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')]).toEqual({ codex: override.codex });
       // A swept temp file is re-materialized rather than handed to psu as a dead path.
-      rmSync(override.codex);
+      rmSync(override.codex.command);
       await ports.launch(args);
-      const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as Record<string, string>;
-      expect(readFileSync(again.codex, 'utf8')).toContain('fswe-task-1');
+      const again = native.launch.mock.calls.at(-1)![1][Symbol.for('benchmark-test-backend-bin')] as typeof override;
+      expect(readFileSync(again.codex.command, 'utf8')).toContain('fswe-task-1');
     } finally { await hosted.stop(); rmSync(snapshotRoot, { recursive: true, force: true }); }
   });
   it('refuses an unsupported native client before starting a service', async () => {

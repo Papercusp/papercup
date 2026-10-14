@@ -218,7 +218,6 @@ import {
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 import {
-  CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
   hasEnumeratedVerificationCoverage,
 } from '../../coord-lifecycle/records';
@@ -1178,8 +1177,8 @@ describe('work_items:complete (keyed-array)', () => {
     expect(carried).toContain('checkpointProseSnapshot');
   });
 
-  it('carries a bounded prose checkpoint snapshot before terminal cleanup', async () => {
-    const prose = `## Did\nnamed prose survives the clear\n\n## Baseline\nbaseline prose survives the clear\n${'x'.repeat(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS + 200)}`;
+  it('retains complete long checkpoint prose before terminal cleanup', async () => {
+    const prose = `## Did\n${'x'.repeat(26_950)}\n\n## Rollback\nrestore from the verified backup\n\n## Final evidence\nsource sha=0123456789abcdef`;
     getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
     getWorkItemCheckpoint.mockResolvedValue(prose);
 
@@ -1191,11 +1190,9 @@ describe('work_items:complete (keyed-array)', () => {
       { completionEvidence?: Record<string, unknown> },
     ];
     const snapshot = options.completionEvidence?.checkpointProseSnapshot;
-    expect(snapshot).toEqual(expect.stringContaining('named prose survives the clear'));
-    expect(snapshot).toEqual(expect.stringContaining('baseline prose survives the clear'));
-    expect(typeof snapshot).toBe('string');
-    expect((snapshot as string).length).toBe(CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS);
-    expect((snapshot as string).endsWith('…[truncated]')).toBe(true);
+    expect(snapshot).toBe(prose);
+    expect(snapshot).toEqual(expect.stringContaining('restore from the verified backup'));
+    expect(snapshot).toEqual(expect.stringContaining('source sha=0123456789abcdef'));
   });
 
   it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {

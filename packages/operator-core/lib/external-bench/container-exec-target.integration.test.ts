@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from '@papercusp/orchestrator/fleet-srt-spawn';
 
 import { backendBinOverrideEnvKey, resolveBackendLaunch } from '../backend-bin-resolve.mjs';
 import {
@@ -52,12 +53,24 @@ async function startContainer(extra: string[] = []): Promise<string> {
   // before the call, so afterAll can clean a partial create without a returned id.
   const name = `container-exec-proof-${randomUUID()}`;
   containers.push(name);
-  const result = await command('docker', ['run', '-d', '--name', name, '--network', 'none', ...extra, 'alpine', 'sleep', '300']);
-  expect(result.status, JSON.stringify(result)).toBe(0);
-  const id = result.stdout.trim();
-  expect(id).toMatch(/^[a-f0-9]{64}$/);
-  containers[containers.indexOf(name)] = id;
-  return id;
+  try {
+    // Separate allocation from runtime startup so a deadline identifies the
+    // engine operation that stalled. A combined run -d hid that distinction.
+    const created = await command('docker', ['create', '--name', name, '--network', 'none', ...extra, 'alpine', 'sleep', '300']);
+    expect(created.status, JSON.stringify(created)).toBe(0);
+    const id = created.stdout.trim();
+    expect(id).toMatch(/^[a-f0-9]{64}$/);
+    containers[containers.indexOf(name)] = id;
+    const started = await command('docker', ['start', id]);
+    expect(started.status, JSON.stringify(started)).toBe(0);
+    return id;
+  } catch (error) {
+    // Preserve the exact resource state before afterAll removes a partial
+    // allocation. No credentials/config are included in this diagnostic.
+    const inspected = await command('docker', ['inspect', '--format', '{{json .State}}', name]);
+    console.info('CONTAINER_EXEC_ALLOCATION_FAILURE', JSON.stringify({ name, inspected }));
+    throw error;
+  }
 }
 
 async function removeContainer(id: string, primaryError?: unknown): Promise<void> {
@@ -153,6 +166,42 @@ describe('container exec target against a live container', () => {
     finally { await removeContainer(cid, primaryError); }
   });
 
+  it.runIf(process.platform === 'linux')('distinguishes a session mountpoint from a writable parent during relocation', () => {
+    for (const mode of ['session-mount', 'parent-mount', 'typed-boundary']) {
+      const base = mkdtempSync(join(root, 'mountpoint-'));
+      const homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
+      const home = join(homes, 'session-7');
+      mkdirSync(home, { recursive: true });
+      mkdirSync(perHomes);
+      writeFileSync(join(home, 'config.toml'), 'model = "fixture"\n');
+      const { wrapperPath, nativeBoundary } = materializeDockerExecWrapper({ kind: 'docker-exec',
+        containerId: 'namespace-proof', workdir: '/app', binPath: '/bin/echo',
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } },
+      { dir: mkdtempSync(join(root, 'mount-wrapper-')), dockerBin: '/bin/echo' });
+      // The scoped native boundary grants CODEX_HOME itself. Both controls have
+      // writable parents; only the first makes the rename source a mountpoint.
+      const env = { PATH: process.env.PATH, CODEX_HOME: home, PAPERCUSP_AGENT: 'codex',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:32002',
+        PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) }),
+        PAPERCUSP_BACKEND_BIN_CODEX: wrapperPath, [NATIVE_CONTAINER_EXEC_ENV]: JSON.stringify(nativeBoundary) };
+      const mounted = mode === 'session-mount' ? home : base;
+      const result = mode === 'typed-boundary'
+        ? createScopedNativeSandboxSpawn({ cwd: base, env, srtBin: null })!(wrapperPath, [], { cwd: base, env },
+          (bin, args, options) => spawnSync(bin, args, { ...options, encoding: 'utf8', timeout: 10_000 }))
+        : spawnSync('bwrap', ['--bind', '/', '/', '--bind', mounted, mounted, '--', wrapperPath],
+          { encoding: 'utf8', timeout: 10_000, env });
+      expect(result.error).toBeUndefined();
+      if (mode === 'session-mount') {
+        expect(result.status, result.stderr).toBe(126);
+        expect(result.stderr).toMatch(/EBUSY.*rename/);
+        expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe('model = "fixture"\n');
+      } else {
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(join(perHomes, 'session-7', 'config.toml'), 'utf8')).toBe('model = "fixture"\n');
+      }
+    }
+  });
+
   it('relocated session home: the container reads and writes it through a same-path per-task mount and sees no other session', async () => {
     const base = mkdtempSync(join(root, 'reloc-'));
     const homes = join(base, 'su-codex-homes'), perHomes = join(base, 'task-homes');
@@ -164,14 +213,19 @@ describe('container exec target against a live container', () => {
     const cid = await startContainer(['-v', `${perHomes}:${homes}`, '-v', `${perSqlite}:${sqlite}`]);
     let primaryError: unknown;
     try {
-    const { wrapperPath } = materializeDockerExecWrapper(
+    const { wrapperPath, nativeBoundary } = materializeDockerExecWrapper(
       { kind: 'docker-exec', containerId: cid, workdir: '/', binPath: '/bin/sh',
         sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }, { hostRoot: sqlite, perTaskDir: perSqlite }] } },
       { dir: mkdtempSync(join(root, 'r-')) },
     );
     const script = 'cat "$CODEX_HOME/config.toml"; ls "$(dirname "$CODEX_HOME")"; echo from-container > "$CODEX_HOME/rollout.jsonl"';
-    const r = await command(wrapperPath, ['-c', script],
-      { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7') });
+    const env = { PATH: process.env.PATH ?? '', CODEX_HOME: join(homes, 'session-7'), PAPERCUSP_AGENT: 'codex',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:32002',
+      PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({ baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) }),
+      PAPERCUSP_BACKEND_BIN_CODEX: wrapperPath, [NATIVE_CONTAINER_EXEC_ENV]: JSON.stringify(nativeBoundary) };
+    const boundary = createScopedNativeSandboxSpawn({ cwd: base, env })!;
+    const r = await boundary(wrapperPath, ['-c', script], { cwd: base, env },
+      (bin, args, options) => command(bin, args, options.env));
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('model = "frozen"');
     // Only this session is visible inside the container; session-8 and its token stay on the host.

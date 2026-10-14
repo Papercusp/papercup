@@ -314,7 +314,7 @@ describe('managed-pty integration evidence isolation', () => {
     const { captured, io } = fakeIo();
     const signalSource = new EventEmitter();
     const initialOutput = phase === 'native binding'
-      ? 'model: GPT-6.1-Sol medium\nReady · GPT-6.1-Sol medium · Context 100% left\n'
+      ? '\x1b[6nmodel: GPT-6.1-Sol medium\nReady · GPT-6.1-Sol medium · Context 100% left\n'
       : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
     const done = hostThroughPty({
       command: execPath,
@@ -341,7 +341,8 @@ describe('managed-pty integration evidence isolation', () => {
         expect(events).toContainEqual(expect.objectContaining({
           kind: phase === 'native binding' ? 'respawn-binding-unconfirmed' : 'startup-turn-dropped', reason,
         }));
-        const snapshot = events.find(event => event.kind === 'codex-starting-stuck-snapshot');
+        const snapshot = events.find(event => event.kind === 'codex-starting-stuck-snapshot' &&
+          event.label === label && event.reason === reason);
         expect(snapshot).toMatchObject({
           label, reason,
           log: { present: true, tail: ['isolated startup phase did not assign a native id'] },
@@ -501,7 +502,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let wire='',composer='',submitted=false,paint;const start='\x1b[200~',end='\x1b[201~';",
-      "process.stdout.write('\x1b[?2004hmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
+      "process.stdout.write('\x1b[?2004h\x1b[6nmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
       "function repaint(){clearTimeout(paint);paint=setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+composer.slice(-160)+'\\n'),30);}",
       "function publishNative(){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
       "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);if(process.env.NATIVE_PUBLICATION==='gated'){const gate=setInterval(()=>{if(fs.existsSync(process.env.NATIVE_RELEASE_FILE)){clearInterval(gate);publishNative();}},5);}else publishNative();}",
@@ -661,7 +662,7 @@ describe('plain launch kickoff turn-start proof', () => {
       "const fs=require('fs'),path=require('path');",
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let markerEchoed=false;process.stdin.on('data',d=>{if(!markerEchoed&&d.includes('⟧')){markerEchoed=true;echoScheduled=true;process.stdout.write('COMPOSER_ECHO:'+d+'\\n');}});",
-      "let input='',seen=0,echoScheduled=false;process.stdout.write('62% context left\\n');",
+      "let input='',seen=0,echoScheduled=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "const printKickoffCount=seen=>{const emit=()=>process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');const delay=Number(process.env.KICKOFF_COUNT_STDOUT_DELAY_MS);if(delay>0)setTimeout(emit,delay);else emit();};",
       "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');printKickoffCount(seen);}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
     ].join('');
@@ -750,7 +751,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "const appendNative=fs.appendFileSync;let padded=false;fs.appendFileSync=(file,data,...args)=>{if(!padded&&file===process.env.NATIVE_FILE&&String(data).includes('task_started')){padded=true;appendNative(file,JSON.stringify({type:'system',payload:{text:'x'.repeat(300*1024)}})+'\\n');}return appendNative(file,data,...args);};",
-      "let input='',pending='',submitted=0,echoed=false;process.stdout.write('62% context left\\n');",
+      "let input='',pending='',submitted=0,echoed=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;pending+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
       "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){",
       "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');",
@@ -817,7 +818,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const { captured, io } = fakeIo();
     const childCode = [
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-      "let input='',echoed=false;process.stdout.write('62% context left\\n');",
+      "let input='',echoed=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input.slice(34)+'\\n');}if(d.includes('\\r')){require('fs').appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),2000);',
     ].join('');
@@ -878,7 +879,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const { captured, io } = fakeIo();
     const childCode = [
       "const fs=require('fs');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-      "let input='',echoScheduled=false;process.stdout.write('62% context left\\n');",
+      "let input='',echoScheduled=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;if(!echoScheduled&&input.includes('⟧')){echoScheduled=true;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+input+'\\n'),2500);}if(d.includes('\\r')){fs.appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),7000);',
     ].join('');
@@ -2379,7 +2380,7 @@ describe('hostThroughPty real round-trip', () => {
       const childCode = [
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-        "let b='',echoed=false;process.stdout.write('62% context left\\n');",
+        "let b='',echoed=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\n');",
         "process.stdin.on('data',d=>{b+=d;if(!b.includes('⟧'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const row={type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:process.env.KICKOFF_MARKER}]}};fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify(row)+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
         'setTimeout(()=>process.exit(2),5000);',
       ].join('');
@@ -2510,7 +2511,8 @@ describe('hostThroughPty real round-trip', () => {
             PI_CODING_AGENT_DIR: agentDir,
             CODEX_HOME: agentDir,
             CLAUDE_CONFIG_DIR: agentDir,
-            PORT_READY_OUTPUT: agent === 'claude' ? '❯\n' : agent === 'codex' ? '62% context left\n' : 'omp v16.3.3\nREADY\n',
+            PORT_READY_OUTPUT: agent === 'claude' ? '❯\n' : agent === 'codex'
+              ? '\x1b[6nmodel: GPT-6.1-Sol xhigh\n62% context left\n' : 'omp v16.3.3\nREADY\n',
             PORT_MARKER: marker,
             PORT_NATIVE_FILE: nativeFile,
             [KICKOFF_PROOF_PATH_ENV]: proofPath,
@@ -3548,6 +3550,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
 
       const reexecs: number[] = [];
+      const signalSource = new EventEmitter();
       let done: Promise<void> | undefined;
       try {
         done = hostThroughPty({
@@ -3558,6 +3561,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
           ownerId,
           io,
           bridgeTty: true,
+          signalSource,
           hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
           healOperatorPin: async () => {
             const from = env.PAPERCUSP_OPERATOR_URL;
@@ -3570,8 +3574,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
           onExit: () => {},
         });
 
-        await sleep(600);
-        expect(captured()).toContain('BOOT:');
+        await vi.waitFor(() => expect(captured()).toContain('BOOT:'), { timeout: 5_000 });
         await controlInject(sock, 'recycle', '');
 
         const deadline = Date.now() + 8_000;
@@ -3610,7 +3613,7 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
         expect(eventLogText).not.toContain('DESTINATION-TOKEN');
         expect(eventLogText).not.toContain('UNRELATED-PRIVATE-VALUE');
       } finally {
-        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        signalSource.emit('SIGTERM');
         if (done) await done;
       }
     },
@@ -3893,7 +3896,7 @@ describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () =>
     const { captured, io } = fakeIo();
     const childCode = [
       "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-      "let input='',echoed=false,submitted=false;process.stdout.write('62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "let input='',echoed=false,submitted=false;process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
       "process.stdin.on('data',d=>{if(d.includes('\\x04'))process.exit(0);input+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}if(!submitted&&input.includes(process.env.TURN_MARKER)&&input.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:process.env.TURN_MARKER}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'adopted-drill-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('KICKOFF_SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),12000);',
     ].join('');
@@ -3970,7 +3973,7 @@ describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () =>
     const { captured, io } = fakeIo();
     const childCode = [
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);let input='';",
-      "process.stdout.write('62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+      "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n62% context left\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
       "process.stdin.on('data',d=>{if(d.includes('\\x04')||d.includes('QUIT'))process.exit(0);input+=d;if(input.includes('UNVERIFIED_ADOPTED_CARRY'))process.stdout.write('COMPOSER_ECHO:'+input+'\\n');});",
       'setTimeout(()=>process.exit(0),12000);',
     ].join('');
@@ -4570,6 +4573,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const ownerId = `su-adopt-noshim-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const { captured, io } = fakeIo();
+      const signalSource = new EventEmitter();
       const env = { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
@@ -4583,17 +4587,22 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         ownerId,
         io,
         bridgeTty: false,
+        signalSource,
         hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
         mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
         onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
         onExit: () => {},
       });
 
-      await sleep(600);
-      expect([...captured().matchAll(/BOOT:/g)].length).toBe(1);
+      try {
+      await vi.waitFor(() => expect([...captured().matchAll(/BOOT:/g)]).toHaveLength(1), { timeout: 5_000 });
 
       await controlInject(sock, 'recycle', '');
-      await sleep(2500);
+      await vi.waitFor(() => {
+        expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+          .toContain('"kind":"respawn-predecessor-stop-finished"');
+      }, { timeout: 8_000 });
+      await vi.waitFor(() => expect([...captured().matchAll(/BOOT:/g)]).toHaveLength(2), { timeout: 5_000 });
 
       // Respawned in place, exactly as before WI-38292 — a stale host, but a live
       // session — and the re-exec door was never opened.
@@ -4625,6 +4634,10 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
 
       await rawInject(sock, 'QUIT\n');
       await done;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+      }
     },
     25_000,
   );

@@ -2487,18 +2487,18 @@ export function liveCurrentSuBenchPorts(
   const accounting = observations.nativeAccountingBinding === undefined ? undefined : Object.freeze({ ...observations.nativeAccountingBinding });
   const containerExec = observations.containerExec === undefined ? undefined : Object.freeze({ ...observations.containerExec });
   if (containerExec) validateDockerExecTarget(containerExec);
-  let containerWrapperPath: string | null = null;
+  let containerWrapper: ReturnType<typeof materializeDockerExecWrapper> | undefined;
   /** The `{ codex: wrapper }` override for an in-container launch; undefined for a host launch. */
-  const containerExecWrapper = (args: LaunchArgs): Readonly<Record<string, string>> | undefined => {
+  const containerExecWrapper = (args: LaunchArgs): import('../agent-tools/capability/launch-agent').InternalBackendBinOverride | undefined => {
     if (!containerExec) return undefined;
     const members = args.members ?? [];
     if (members.length !== 1 || members[0]?.agent !== 'codex')
       throw new Error('An in-container benchmark launch runs exactly one Codex member.');
     // Re-materialize if the temp file vanished: a missing override fails the launch closed,
     // so this only matters for a long run whose temp dir was swept between resumes.
-    if (!containerWrapperPath || !existsSync(containerWrapperPath))
-      containerWrapperPath = materializeDockerExecWrapper(containerExec).wrapperPath;
-    return Object.freeze({ codex: containerWrapperPath });
+    if (!containerWrapper || !existsSync(containerWrapper.wrapperPath))
+      containerWrapper = materializeDockerExecWrapper(containerExec);
+    return Object.freeze({ codex: containerWrapper.nativeBoundary });
   };
   const requireBinding = () => {
     return requireCurrentBenchHostBinding(observations, opts);

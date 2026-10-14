@@ -97,6 +97,23 @@ describe('PR bypass falsifier against real upstream Git', () => {
     expect(await inspectPrDeliveryRow(row, project, { host: null }))
       .toMatchObject({ verdict: 'fail', fixSha: fix });
   });
+  it('bounds concurrent history blob reads and still detects a reverted direct fix', async () => {
+    git(repo, 'push', 'origin', 'HEAD:main');
+    git(repo, 'revert', '--no-edit', fix);
+    git(repo, 'push', 'origin', 'HEAD:main');
+    let active = 0, maximum = 0;
+    const result = await inspectPrDeliveryRow(row, project, {
+      host: null,
+      blobs: async (path, commit, paths) => {
+        active++; maximum = Math.max(maximum, active);
+        try { return await completionHeadBlobMap(path, commit, paths); }
+        finally { active--; }
+      },
+    });
+    expect(result).toMatchObject({ verdict: 'fail', fixSha: fix });
+    expect(maximum).toBeGreaterThan(1);
+    expect(maximum).toBeLessThanOrEqual(4);
+  });
   it('does not claim a bypass while the fix remains on the working copy', async () => {
     expect(await inspectPrDeliveryRow(row, project, { host: null })).toMatchObject({ verdict: 'pass', upstreamSha: base });
   });

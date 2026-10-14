@@ -91,7 +91,6 @@ import {
   residueCitations,
   unownedResidueRefs,
   stripNulBytesDeep,
-  CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS,
   type CompletionCoverage,
   type CompletionRecord,
   type CompletionTreeStamp,
@@ -139,6 +138,10 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     },
     { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
     { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
+    {
+      key: 'conformance-review-independence',
+      description: 'A conformance-review work-item is not closed by its plan implementer.',
+    },
   ],
 } as const;
 type CompletionContractRequirementKey = (typeof WORK_ITEMS_COMPLETION_CONTRACT.requirements)[number]['key'];
@@ -271,6 +274,7 @@ import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { isGitTrackedPath, repoRelativePathUnderRoot, type GitTrackednessProbe } from '../../git-trackedness';
 import { getOrgPg } from '@papercusp/db-org';
+import { conformanceReviewClosureRefusal, conformanceReviewFromPayload } from '../../spec-conformance/conformance-review';
 import {
   itemIsArmB,
   judgeSelfReview,
@@ -2713,24 +2717,16 @@ export function completionEvidenceFromRecord(
   return Object.keys(evidence).length > 0 ? evidence : undefined;
 }
 
-const CHECKPOINT_PROSE_SNAPSHOT_TRUNCATION_MARKER = '…[truncated]';
-
 /**
- * Preserve the narrative portion of a checkpoint before terminal cleanup clears
- * its replace-on-write note. Structured checks are carried separately, so this
- * snapshot is the prose surface an evidence citation can still resolve against.
- * Truncate explicitly rather than allowing a large checkpoint to inflate every
- * terminal completion read.
+ * Preserve the complete narrative portion of a checkpoint before terminal cleanup
+ * clears its replace-on-write note. Structured checks are carried separately, so
+ * this snapshot is the prose surface an evidence citation can still resolve against.
+ * Keep it complete: once the source checkpoint is cleared, a truncated tail cannot
+ * be recovered from the completion record.
  */
-function boundedCheckpointProseSnapshot(note: string | null | undefined): string | undefined {
+function completeCheckpointProseSnapshot(note: string | null | undefined): string | undefined {
   const prose = splitCarryNoteWalls(splitCarryNoteChecks(note).body).body.trim();
-  if (!prose) return undefined;
-  if (prose.length <= CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS) return prose;
-  const contentLength = Math.max(
-    0,
-    CHECKPOINT_PROSE_SNAPSHOT_MAX_CHARS - CHECKPOINT_PROSE_SNAPSHOT_TRUNCATION_MARKER.length,
-  );
-  return `${prose.slice(0, contentLength)}${CHECKPOINT_PROSE_SNAPSHOT_TRUNCATION_MARKER}`;
+  return prose || undefined;
 }
 
 /**
@@ -4178,6 +4174,32 @@ async function completeOne(
     );
   }
 
+  // ---- R-21 (spec-driven-tooling-integration-2026-10-05 P-030) ----------------------
+  // A conformance-review item exists so someone who did NOT build the plan checks it
+  // against its spec. A successful close by a plan implementer — or anyone in their
+  // spawn/rebind lineage — is refused; an unreadable population refuses too (fail-closed).
+  // Drop/discard closes stay open to anyone: they assert no review happened.
+  {
+    const review = conformanceReviewFromPayload(existing.payload);
+    const applicable = Boolean(review) && closeIntentRequested && !isAbandonedClose;
+    let reviewError: string | undefined;
+    if (review && applicable) {
+      const refusal = await conformanceReviewClosureRefusal({ itemId: it.id, review, closer: ident.ownerId });
+      if (refusal) {
+        reviewError = refusal.error;
+        refuseGate(refusal.error, {
+          conformanceReviewRefusal: {
+            code: refusal.code,
+            reason: refusal.reason,
+            planSlug: refusal.planSlug,
+            conflicts: refusal.conflicts,
+          },
+        });
+      }
+    }
+    setContractRequirement('conformance-review-independence', applicable, reviewError);
+  }
+
   // ---- ONE refusal naming every unmet gate (EI-20286699547467039) -------------------
   // The last contract gate is above; emit the accumulated verdict here, still BEFORE any
   // completion record or state write. That preserves the atomicity each individual gate
@@ -4260,7 +4282,7 @@ async function completeOne(
     });
     if (priorCheckpoint) {
       const { checks } = splitCarryNoteChecks(priorCheckpoint);
-      checkpointProseSnapshot = boundedCheckpointProseSnapshot(priorCheckpoint);
+      checkpointProseSnapshot = completeCheckpointProseSnapshot(priorCheckpoint);
       if (checks.length > 0) {
         checkpointChecksCarried = checks.map((c) => ({
           claim: c.claim,

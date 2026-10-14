@@ -77,6 +77,12 @@ export interface BudgetedTaskCommandPreparationPins {
     nativeEvent?: { sessionId: string; eventId: string };
     logs: Record<"stdout" | "stderr" | "beforeStdout" | "afterStdout", { ref: string; sha256: string }> &
       Partial<Record<"beforeStderr" | "afterStderr", { ref: string; sha256: string }>> }>;
+  /** ORIGINAL parent binds all lifecycle/test occurrences; standalone passes cannot qualify a chain. */
+  chains?: Array<{ task: string; receipt: { ref: string; sha256: string };
+    steps: Array<{ phase: "pre" | "test" | "post"; step: number | null;
+      format: "command-preparation" | "node-test" | "vitest-json";
+      receipt: { ref: string; sha256: string };
+      logs?: Record<"stdout" | "stderr" | "report", { ref: string; sha256: string }> }> }>;
 }
 export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
   pins: BudgetedTaskCommandPreparationPins): Promise<{ mode: "command-preparation";
@@ -84,11 +90,16 @@ export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
       kind: "command-check" | "npm-lifecycle"; check?: string; script?: string; command: string;
       inputs: Array<{ path: string; sha256: string }>; fileOccurrences: unknown[];
       receipt: { ref: string; sha256: string }; childWallMs: number | null; scriptsExecuted: number;
+      startedAtMs: number; finishedAtMs: number;
       scriptOrder: string[]; diagnostics?: { filesChecked: number; errors: number; warnings: number; hints: number };
       nativeEvent?: { sessionId: string; eventId: string }; nativeExecutionWallMs?: number;
       durationScope?: "discovery-and-command"; voiceResult?: { clientTools: number } }>;
     originalArtifactsResolved: true; currentDeclaredInputsMatched: true;
-    orderedChainQualified: false; runtimeClosure: "unmeasured";
+    chains: Array<{ task: string; receipt: { ref: string; sha256: string }; steps: unknown[];
+      startedAtMs: number; finishedAtMs: number; orderedOccurrencesQualified: true }>;
+    orderedChainQualified: boolean;
+    orderedChainCoverage: { population: string[]; qualified: string[]; missing: string[] };
+    runtimeClosure: "unmeasured";
     operationalAcceptance: false; populationSha256: string }>;
 export function readBudgetedTaskComparisonArtifacts(evidenceRoot: string,
   pins: BudgetedTaskComparisonArtifactPins): Promise<{ manifest: BudgetedTaskComparisonManifest;

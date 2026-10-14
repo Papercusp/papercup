@@ -153,10 +153,16 @@ export async function inspectPrDeliveryRow(
     ...tips.map(t => t.sha), '--', ...paths]);
   if (history.code !== 0) return answer('unknown', 'Upstream objects are not available in the maintained working copy.', { upstreamSha });
   const commits = [...new Set([...tips.map(t => t.sha), ...history.stdout.split('\n').filter(Boolean)])];
+  // History tree reads are independent. Keep the mapper bounded so a large
+  // first-parent census cannot fan out unbounded Git subprocesses, while
+  // avoiding a serial 100-commit × blob-read deadline on the API path.
+  const historyMatches = await mapWithConcurrency(
+    commits.slice(0, HISTORY_MAX), 4,
+    async (commit) => ({ commit, match: await matches(commit) }),
+  );
   let fixSha: string | undefined;
   const matchingCommits: string[] = [];
-  for (const commit of commits.slice(0, HISTORY_MAX)) {
-    const match = await matches(commit);
+  for (const { commit, match } of historyMatches) {
     if (match === null) return answer('unknown', 'An upstream tree could not be read.', { upstreamSha });
     if (match) {
       if (!validReceipt) return answer('fail', 'Fix reached upstream without a valid standing PR receipt.',
