@@ -9,14 +9,14 @@
     ".papercusp/scratch/cpr/signup-delta.mts"
   ],
   "exitCode": 1,
-  "startedAt": "2026-10-14T00:07:51.140Z",
-  "finishedAt": "2026-10-14T00:12:42.109Z",
-  "summary": "One real hosted TEST signup (attempt p001-datamap-56a11cb1) and its cleanup, run against the live dev Postgres between 6 journey-free baseline windows on each side (20s each). pg_stat_user_tables write deltas were judged by the committed instrument packages/operator-core/lib/auth/hosted/customer-data-map-write-delta.ts: a written table falsifies SPEC-P-001 if the data map does not name it and it is either in the papercusp_auth customer schema or never written in a baseline window. Verdict: FAIL; falsifying tables: 4. Limits: attribution outside papercusp_auth is by time window on a fleet-shared database whose writers all use one role, so it can miss a hosted-path write to a non-customer table that the fleet also writes during the baselines.",
+  "startedAt": "2026-10-14T00:24:02.013Z",
+  "finishedAt": "2026-10-14T00:28:56.145Z",
+  "summary": "One real hosted TEST signup (attempt p001-datamap-dd5c74d9) and its cleanup, run against the live dev Postgres between 6 journey-free baseline windows on each side (20s each). pg_stat_user_tables write deltas were judged by the committed instrument packages/operator-core/lib/auth/hosted/customer-data-map-write-delta.ts: a written table falsifies SPEC-P-001 if the data map does not name it and it is either in the papercusp_auth customer schema, or neither written in a baseline window nor row-attributed to a declared fleet writer (every row the probe sees written in the journey window must match that writer). Verdict: FAIL; falsifying tables: 2; first-pass candidates 2, row-attributed 0. Limits: outside papercusp_auth, attribution is by time window plus per-writer row probes on a fleet-shared database whose writers all use one role. It can miss a hosted-path write to a non-customer table that the fleet also writes during the baselines. The per-transaction admission check in customer-data-map.integration.test.ts covers that path precisely.",
   "assertions": [
     {
       "id": "journey-completed",
       "passed": true,
-      "evidence": "papercusp_auth.hosted_signup_attempts row for p001-datamap-56a11cb1: p001-datamap-56a11cb1\tcompleted"
+      "evidence": "papercusp_auth.hosted_signup_attempts row for p001-datamap-dd5c74d9: p001-datamap-dd5c74d9\tcompleted"
     },
     {
       "id": "cleanup-clean",
@@ -26,7 +26,7 @@
     {
       "id": "no-foreign-signups-in-window",
       "passed": true,
-      "evidence": "0 other hosted_signup_attempts rows created between 2026-10-14T00:07:51.141Z and 2026-10-14T00:12:42.109Z, so customer-schema writes in the journey windows are this journey's"
+      "evidence": "0 other hosted_signup_attempts rows created between 2026-10-14T00:24:02.013Z and 2026-10-14T00:28:56.145Z, so customer-schema writes in the journey windows are this journey's"
     },
     {
       "id": "journey-wrote-customer-schema",
@@ -36,7 +36,7 @@
     {
       "id": "map-names-every-attributable-write",
       "passed": false,
-      "evidence": "signup window wrote 74 tables, cleanup window 74; 12 journey-free baseline windows of 20000 ms wrote 116 distinct tables. Falsifying (unnamed, and either in papercusp_auth or never written in a baseline): harness_shared.agent_usage_samples, harness_shared.backup_events, harness_shared.backup_snapshots, harness_shared.interactive_usage_files. Unnamed but excused as fleet noise (non-customer schema, also written in a baseline window): 74."
+      "evidence": "signup window wrote 61 tables, cleanup window 54; 12 journey-free baseline windows of 20000 ms wrote 114 distinct tables. Falsifying (unnamed, and either in papercusp_auth or never written in a baseline): harness_shared.event_wake_attempts, harness_shared.memory_anchors. Unnamed but excused as fleet noise (non-customer schema, also written in a baseline window): 49. First pass (time windows only) flagged 2: harness_shared.event_wake_attempts, harness_shared.memory_anchors. Excused by row-level attribution (every row written in the journey window matched a declared fleet writer): none. Rejected attributions: 0."
     }
   ],
   "provenance": {
@@ -46,7 +46,7 @@
     "instrument": {
       "path": "packages/operator-core/lib/auth/hosted/customer-data-map-write-delta.ts",
       "testPath": "packages/operator-core/lib/auth/hosted/customer-data-map-write-delta.test.ts",
-      "sha256": "6245e5ddf6e88a2c15f7f17d04f9c444b7acf4e0230e2768b491ee2debbf2720"
+      "sha256": "e123d0fb5694b43ab5b47c48c31d27ee0f215d31d586e5b72baa04588136a4fa"
     },
     "dataMap": {
       "path": "packages/operator-core/lib/auth/hosted/customer-data-map.ts",
@@ -54,48 +54,40 @@
     },
     "runner": {
       "path": ".papercusp/scratch/cpr/signup-delta.mts",
-      "sha256": "435e303b666e8c2a9ffcd92b1da063d34e9c9aa46ef33ba200c4c3b38ad1b944"
+      "sha256": "3add11fac9bd886caa05e6af4502dad97778a922f219706eae207f57d4109f42"
     },
-    "repoHead": "3c814836d02f3e5f9c6aaffdbc029f98b0f0c95e",
+    "repoHead": "e59747ed19e2a6ed6f3f58325170ae8025a9ddd2",
     "marks": {
-      "pre0": "2026-10-14T00:07:51.141Z",
-      "pre1": "2026-10-14T00:08:11.268Z",
-      "pre2": "2026-10-14T00:08:31.364Z",
-      "pre3": "2026-10-14T00:08:51.496Z",
-      "pre4": "2026-10-14T00:09:11.620Z",
-      "pre5": "2026-10-14T00:09:31.745Z",
-      "pre6": "2026-10-14T00:09:54.097Z",
-      "journeyStart": "2026-10-14T00:09:54.209Z",
-      "journeyStarted": "2026-10-14T00:09:59.807Z",
-      "signupSnapshot": "2026-10-14T00:10:19.817Z",
-      "cleanupEnd": "2026-10-14T00:10:20.494Z",
-      "cleanupSnapshot": "2026-10-14T00:10:40.504Z",
-      "post1": "2026-10-14T00:11:00.641Z",
-      "post2": "2026-10-14T00:11:21.542Z",
-      "post3": "2026-10-14T00:11:41.664Z",
-      "post4": "2026-10-14T00:12:01.814Z",
-      "post5": "2026-10-14T00:12:21.929Z",
-      "post6": "2026-10-14T00:12:42.022Z"
+      "pre0": "2026-10-14T00:24:02.013Z",
+      "pre1": "2026-10-14T00:24:22.314Z",
+      "pre2": "2026-10-14T00:24:42.559Z",
+      "pre3": "2026-10-14T00:25:02.777Z",
+      "pre4": "2026-10-14T00:25:22.985Z",
+      "pre5": "2026-10-14T00:25:43.163Z",
+      "pre6": "2026-10-14T00:26:07.645Z",
+      "journeyStart": "2026-10-14T00:26:07.824Z",
+      "journeyStarted": "2026-10-14T00:26:13.975Z",
+      "signupSnapshot": "2026-10-14T00:26:33.988Z",
+      "cleanupEnd": "2026-10-14T00:26:34.618Z",
+      "cleanupSnapshot": "2026-10-14T00:26:54.628Z",
+      "post1": "2026-10-14T00:27:14.839Z",
+      "post2": "2026-10-14T00:27:35.080Z",
+      "post3": "2026-10-14T00:27:55.314Z",
+      "post4": "2026-10-14T00:28:15.553Z",
+      "post5": "2026-10-14T00:28:35.787Z",
+      "post6": "2026-10-14T00:28:55.988Z"
     },
-    "organizationId": "1c26e5ec-9454-4217-8df3-2d15ed7c49a3",
+    "organizationId": "4a94233b-41a5-46d8-975d-54fd28997f4b",
     "falsifyingTables": [
-      "harness_shared.agent_usage_samples",
-      "harness_shared.backup_events",
-      "harness_shared.backup_snapshots",
-      "harness_shared.interactive_usage_files"
+      "harness_shared.event_wake_attempts",
+      "harness_shared.memory_anchors"
     ],
     "excusedAsNoise": [
-      "dbos.event_dispatch_kv",
-      "dbos.operation_outputs",
-      "dbos.workflow_status",
       "harness_shared.agent_activity",
       "harness_shared.agent_facts",
-      "harness_shared.attention_notifications",
-      "harness_shared.autoloop_state",
       "harness_shared.bash_tool_substitution_fires",
       "harness_shared.bash_tool_substitutions",
       "harness_shared.carry_notes",
-      "harness_shared.code_recipe_runs",
       "harness_shared.code_run_nudge_fires",
       "harness_shared.context_injection_coverage",
       "harness_shared.coord_entity_subscriptions",
@@ -106,60 +98,48 @@
       "harness_shared.coord_read_cursors",
       "harness_shared.coord_watermarks",
       "harness_shared.corpus_session_surfaced",
-      "harness_shared.data_sources",
       "harness_shared.decision_ledger",
       "harness_shared.derived_read_snapshots",
-      "harness_shared.event_awaits",
       "harness_shared.event_key_fires",
       "harness_shared.event_wake_deliveries",
       "harness_shared.fallback_observations",
       "harness_shared.gateway_payload_blobs",
       "harness_shared.gateway_payload_chunks",
-      "harness_shared.goals",
-      "harness_shared.harness_escalations",
-      "harness_shared.host_kernel_memory_samples",
       "harness_shared.identity_hook_turns",
       "harness_shared.mcp_tool_results",
       "harness_shared.memory_canonical",
       "harness_shared.memory_recall_query_text",
       "harness_shared.memory_recall_stats",
-      "harness_shared.memory_session_epochs",
       "harness_shared.memory_session_surfaced",
+      "harness_shared.memory_vec_harrier",
+      "harness_shared.memory_write_journal",
       "harness_shared.operator_account_pool",
-      "harness_shared.operator_curation_log",
-      "harness_shared.operator_curation_state",
       "harness_shared.operator_liveness_flap_state",
-      "harness_shared.operator_supervision_pause_state",
-      "harness_shared.operator_turns",
       "harness_shared.orientation_class_reach",
       "harness_shared.orientation_obligation_action",
-      "harness_shared.periodic_sweep_runs",
-      "harness_shared.personal_sync_state",
-      "harness_shared.pg_query_advisory_fires",
-      "harness_shared.pipeline_events",
-      "harness_shared.plan_item_claims",
+      "harness_shared.owner_activity",
+      "harness_shared.plan_closure_observations",
       "harness_shared.predicate_watches",
       "harness_shared.resource_governor_admissions",
-      "harness_shared.routine_loop_transitions",
-      "harness_shared.routines",
-      "harness_shared.scout_signal_accumulator",
       "harness_shared.session_briefs",
-      "harness_shared.session_gate_watcher_files",
-      "harness_shared.session_turn_chunks",
+      "harness_shared.session_ingest_state",
       "harness_shared.session_turn_journal",
-      "harness_shared.spawned_agents",
-      "harness_shared.substrate_booted_handles_status",
-      "harness_shared.substrate_merge_cursor",
+      "harness_shared.session_turn_parts",
+      "harness_shared.session_turn_windows",
+      "harness_shared.session_turns",
       "harness_shared.substrate_outbox",
-      "harness_shared.system_health_ticks",
       "harness_shared.task_ledger",
-      "harness_shared.test_case_runs",
-      "harness_shared.test_runs",
-      "harness_shared.text_chunks",
       "harness_shared.ui_clients",
       "harness_shared.work_item_occurrences",
       "harness_shared.work_items"
     ],
+    "firstPassFalsifying": [
+      "harness_shared.event_wake_attempts",
+      "harness_shared.memory_anchors"
+    ],
+    "attributedToFleetWriter": [],
+    "rejectedAttributions": [],
+    "probes": [],
     "customerSchemaTablesWritten": [
       "papercusp_auth.external_identities",
       "papercusp_auth.hosted_entitlements",
