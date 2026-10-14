@@ -79,7 +79,10 @@ export function zramSwapShellLines(marker: string): readonly string[] {
     '  if [[ -e "$conf" ]] && ! grep -qF "$marker" "$conf" 2>/dev/null; then',
     // dpkg's recorded conffile checksum distinguishes Ubuntu's freshly installed default from
     // a customer's config. Do not infer ownership merely from a plausible-looking body.
-    `    packaged_md5="$(dpkg-query -W -f='\${Conffiles}\\n' ${ZRAM_GENERATOR_APT_PACKAGE} 2>/dev/null | awk -v conf="$conf" '$1 == conf { print $2 }' || true)"`,
+    // Query dpkg's conffile ledger through `--status` rather than embedding its `${Conffiles}`
+    // format token: the latter looks like an unassigned shell expansion to bootstrap's static
+    // set-u lint even though dpkg, not bash, owns that syntax.
+    `    packaged_md5="$(dpkg-query -s ${ZRAM_GENERATOR_APT_PACKAGE} 2>/dev/null | awk -v conf="$conf" '$1 == conf { print $2 }' || true)"`,
     '    actual_md5="$(md5sum -- "$conf" 2>/dev/null | cut -d " " -f 1 || true)"',
     '    if [[ ! "$packaged_md5" =~ ^[a-f0-9]{32}$ || "$actual_md5" != "$packaged_md5" ]]; then',
     `      ${status('status=skipped reason=foreign-generator-config path=$conf')}`,

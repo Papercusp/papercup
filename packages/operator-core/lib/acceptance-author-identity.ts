@@ -15,6 +15,12 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { parseWorkedByHistory } from './work-item-prior-work';
+import { boundedPgReadTxn } from './pg-read-query';
+
+// Admin pools also serve migrations and deliberately have no statement timeout.
+// Interactive lineage readers must not leave a backend running after its caller
+// or host disappears. An injected SQL client belongs to its caller's transaction.
+const LINEAGE_READ_TIMEOUT_MS = 5_000;
 
 export interface AcceptanceAuthorIdentityOpts {
   sql?: Sql;
@@ -154,6 +160,10 @@ export async function areAcceptanceLineageRelated(
   const second = secondId?.trim() ?? '';
   if (!first || !second) return false;
   if (first === second) return true;
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => areAcceptanceLineageRelated(first, second, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
@@ -198,6 +208,10 @@ export async function acceptanceLineageClosure(
 ): Promise<Set<string>> {
   const self = id?.trim() ?? '';
   if (!self) return new Set();
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => acceptanceLineageClosure(self, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ node: string }>>`
@@ -245,6 +259,10 @@ export async function acceptanceLineageAncestors(
 ): Promise<Set<string>> {
   const self = id?.trim() ?? '';
   if (!self) return new Set();
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => acceptanceLineageAncestors(self, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await sql<Array<{ node: string }>>`
@@ -283,6 +301,14 @@ export async function isAcceptanceAuthorIdentity(
   const candidate = candidateId?.trim() ?? '';
   if (!author || !candidate) return false;
   if (author === candidate) return true;
+  if (!opts.sql) {
+    try {
+      return await boundedPgReadTxn((sql) => isAcceptanceAuthorIdentity(author, candidate, { ...opts, sql }),
+        { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+    } catch {
+      return false;
+    }
+  }
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   try {
@@ -439,6 +465,10 @@ export async function lineagePartyKeys(
   }
   const keys = new Map<string, string>(ordered.map((id) => [id, id]));
   if (ordered.length < 2) return keys;
+  if (!opts.sql) {
+    return boundedPgReadTxn((sql) => lineagePartyKeys(ordered, { ...opts, sql }),
+      { timeoutMs: LINEAGE_READ_TIMEOUT_MS });
+  }
 
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const sql = opts.sql ?? getOrgPg().sql;

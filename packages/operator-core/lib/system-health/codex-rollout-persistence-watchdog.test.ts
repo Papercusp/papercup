@@ -29,7 +29,66 @@ vi.mock('../work-item-lease-release', () => ({
 vi.mock('../attention-notify', () => ({ notifyAttention: lifecycleMocks.notifyAttention }));
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: lifecycleMocks.broadcast }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
-  computeConditionStates: () => [], readConditionEnvelopes: async () => [],
+  computeConditionStates: (envelopes: Array<Record<string, unknown>>) => {
+    type FixtureState = {
+      condition_key: string; open: boolean; open_since: string | null; first_seen: string;
+      last_seen: string; alarm_count: number; one_shot: boolean; resolved_at: string | null;
+    };
+    const states = new Map<string, FixtureState>();
+    for (const envelope of envelopes) {
+      const ts = typeof envelope.ts === 'string' ? envelope.ts : null;
+      if (!ts) continue;
+      const resolveKeys = new Set<string>();
+      if (typeof envelope.resolves_condition === 'string' && envelope.resolves_condition) {
+        resolveKeys.add(envelope.resolves_condition);
+      }
+      if (Array.isArray(envelope.resolves_conditions)) {
+        for (const conditionKey of envelope.resolves_conditions) {
+          if (typeof conditionKey === 'string' && conditionKey) resolveKeys.add(conditionKey);
+        }
+      }
+      if (resolveKeys.size > 0) {
+        for (const conditionKey of resolveKeys) {
+          const state = states.get(conditionKey);
+          if (!state) {
+            states.set(conditionKey, { condition_key: conditionKey, open: false, open_since: null,
+              first_seen: ts, last_seen: ts, alarm_count: 0, one_shot: false, resolved_at: ts });
+          } else if (!state.resolved_at || ts > state.resolved_at) {
+            state.resolved_at = ts;
+            if (state.open_since !== null && ts >= state.open_since) state.open_since = null;
+          }
+        }
+        continue;
+      }
+
+      const conditionKey = envelope.condition_key;
+      if (typeof conditionKey !== 'string' || !conditionKey) continue;
+      const state = states.get(conditionKey);
+      if (!state) {
+        states.set(conditionKey, { condition_key: conditionKey, open: true, open_since: ts,
+          first_seen: ts, last_seen: ts, alarm_count: 1, one_shot: envelope.one_shot === true,
+          resolved_at: null });
+      } else {
+        state.alarm_count += 1;
+        if (state.open_since === null) state.open_since = ts;
+        if (ts >= state.last_seen) {
+          state.last_seen = ts;
+          state.one_shot = envelope.one_shot === true;
+        }
+      }
+    }
+    return [...states.values()].map((state) => {
+      state.open = state.alarm_count > 0 && (!state.resolved_at || state.last_seen > state.resolved_at);
+      if (!state.open) state.open_since = null;
+      else if (state.open_since === null) state.open_since = state.last_seen;
+      return state;
+    });
+  },
+  readConditionEnvelopes: async () => [],
+}));
+vi.mock('../agent-tools/coordination/log', () => ({
+  coordScopeReady: async () => undefined,
+  coordScopeWorkspace: () => 'workspace:1',
 }));
 
 import {
@@ -89,6 +148,9 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
   let legacyFailure: boolean;
   let coalesced: boolean;
   let endedSessionIds: number[];
+  let conditionEvents: Array<{ body: unknown }>;
+  let conditionQuerySeen: boolean;
+  let conditionQueryText: string | null;
   const broadcast = vi.fn(async (_event: { conditionKey?: string; oneShot?: boolean }) => true);
   const resolve = vi.fn(async (_event: { conditionKey: string }) => true);
   let opts: CodexRolloutPersistenceWatchdogOptions;
@@ -98,6 +160,11 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
     if (query.includes('SELECT id, coord_owner_id AS owner_id')) return rows;
     if (query.includes('SELECT id') && query.includes('ended_at IS NOT NULL')) {
       return endedSessionIds.map(id => ({ id }));
+    }
+    if (query.includes('FROM harness_shared.coord_event_log') && query.includes('ORDER BY id ASC')) {
+      conditionQuerySeen = true;
+      conditionQueryText = query;
+      return conditionEvents;
     }
     if (query.includes('INSERT INTO harness_shared.harness_escalations')) {
       expect(broadcast).toHaveBeenCalled();
@@ -123,6 +190,7 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
     vi.clearAllMocks();
     now = Date.now() + 1000;
     rows = [{ ...row }]; open = []; updates = []; legacyFailure = false; coalesced = true; endedSessionIds = [];
+    conditionEvents = []; conditionQuerySeen = false; conditionQueryText = null;
     broadcast.mockResolvedValue(true); resolve.mockResolvedValue(true);
     root = await mkdtemp(join(tmpdir(), 'codex-condition-'));
     previousHome = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
@@ -188,6 +256,53 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
     expect(updates).toHaveLength(1);
     expect(lifecycleMocks.endSession).not.toHaveBeenCalled();
     expect(lifecycleMocks.releaseWorkItems).not.toHaveBeenCalled();
+  });
+
+  it('finds an ended one-shot episode outside the generic 25k condition window', async () => {
+    const providerKey = key('provider');
+    rows = [];
+    endedSessionIds = [42];
+    conditionEvents = [
+      { body: { ts: new Date(now - 4_000).toISOString(), condition_key: providerKey,
+        one_shot: true, summary: 'Codex provider failures repeated' } },
+    ];
+    opts = { ...opts, readOpenConditions: undefined };
+
+    const result = await pass();
+
+    expect(conditionQuerySeen).toBe(true);
+    expect(conditionQueryText).toContain("body ? 'resolves_conditions'");
+    const { computeConditionStates } = await import('../agent-tools/coordination/tools/conditions');
+    expect(computeConditionStates(conditionEvents.map((event) => event.body as Record<string, unknown>)))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ condition_key: providerKey, open: true })]));
+    expect(resolve).toHaveBeenCalledWith({
+      conditionKey: providerKey,
+      summary: 'codex-rollout-watchdog recovered',
+    });
+    expect(result.providerRecovered).toEqual(['42']);
+  });
+
+  it('includes batch-resolution envelopes when folding Codex condition episodes', async () => {
+    const providerKey = key('provider');
+    rows = [];
+    endedSessionIds = [42];
+    conditionEvents = [
+      { body: { ts: new Date(now - 8_000).toISOString(), condition_key: providerKey,
+        one_shot: true, summary: 'Codex provider failures repeated' } },
+      { body: { ts: new Date(now - 4_000).toISOString(), resolves_conditions: [providerKey],
+        summary: 'Codex provider failure resolved' } },
+    ];
+    opts = { ...opts, readOpenConditions: undefined };
+
+    const result = await pass();
+
+    expect(conditionQuerySeen).toBe(true);
+    expect(conditionQueryText).toContain("body ? 'resolves_conditions'");
+    const { computeConditionStates } = await import('../agent-tools/coordination/tools/conditions');
+    expect(computeConditionStates(conditionEvents.map((event) => event.body as Record<string, unknown>)))
+      .toEqual(expect.arrayContaining([expect.objectContaining({ condition_key: providerKey, open: false })]));
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result.providerRecovered).toEqual([]);
   });
 
   it.each(['missing-history', 'missing-rollout', 'partial-directory', 'dead-pid', 'idle-history', 'future-mtime', 'failed-episodes'])(

@@ -323,8 +323,10 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
     const result = await createHostedFirstWorkspace(deps).run(REQUEST);
     expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
     expect(deps.onboardDelegation).not.toHaveBeenCalled();
-    // The response carries no cause, so the log is the only place an operator can find it.
-    expect(logged).toHaveBeenCalledWith(expect.stringContaining('delegation bind failed'), expect.any(Error));
+    // Keep the failure observable without copying an upstream exception or row data.
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('delegation bind failed'), {
+      code: 'provisioning_failure', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     logged.mockRestore();
   });
 
@@ -582,14 +584,17 @@ describe('hosted first-workspace in the customer\'s own AWS account (aws-byoc-gc
   it('fails retryably, admitting nothing, when the stack cannot be read', async () => {
     const { deps, ensureProvisioned } = harness({
       discoverAwsHostInfrastructure: vi.fn(async () => {
-        throw new Error('hosted_aws_host_infrastructure_ambiguous:private-subnet');
+        throw new Error('hosted_aws_host_infrastructure_ambiguous: log-canary@example.test opaque-credential-canary');
       }),
     });
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     const result = await createHostedFirstWorkspace(deps).run(AWS_REQUEST);
     expect(result).toMatchObject({ ok: false, code: 'delegation_source_unavailable', status: 503, retryable: true });
     expect(ensureProvisioned).not.toHaveBeenCalled();
-    expect(logged).toHaveBeenCalledWith(expect.stringContaining('AWS host infrastructure lookup failed'), expect.any(Error));
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining('AWS host infrastructure lookup failed'), {
+      code: 'provisioning_failure', fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(logged.mock.calls)).not.toMatch(/log-canary|opaque-credential/);
     logged.mockRestore();
   });
 

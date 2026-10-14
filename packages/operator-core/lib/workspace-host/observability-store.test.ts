@@ -56,7 +56,11 @@ describe('workspace-host observability store', () => {
     H.rows.set('FROM harness_shared.workspace_host_connections connection', [{ connected: '1', degraded: '1' }]);
     H.rows.set('FROM harness_shared.route_invocations', [{ samples: '5', errors: '1', p95_ms: 25 }]);
     H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [{ active: '2', lost: '1' }]);
-    H.rows.set('FROM owned', [{ estimated_usd_cents: 2400, estimates: '3', unpriced: '1', breached_budgets: '1' }]);
+    // Match the cost projection, not its nested lifecycle FROM clause. fakeTx
+    // selects the longest matching SQL fragment so independent slices stay distinct.
+    H.rows.set("SELECT sum(estimated_cost_cents) FILTER (WHERE cost_currency = 'USD') AS estimated_usd_cents", [
+      { estimated_usd_cents: 2400, estimates: '3', unpriced: '1', breached_budgets: '1' },
+    ]);
     const snapshot = await readWorkspaceHostReliability('ws-A', 3_600_000);
     expect(H.withWorkspace).toHaveBeenCalledWith('ws-A', expect.any(Function), {
       bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500,

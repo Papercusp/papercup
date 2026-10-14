@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { coordScopeReady, coordScopeWorkspace } from '../agent-tools/coordination/log';
+import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-log-gc';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 
@@ -26,6 +28,7 @@ const DEFAULT_PROVIDER_FAILURE_FRESH_MS = 2 * 60 * 60_000;
 export const CODEX_PROVIDER_ERROR_TAIL_BYTES = 512 * 1024;
 const PHASE_PREFIX = 'codex-rollout-stall:';
 const PROVIDER_FAILURE_PHASE_PREFIX = 'codex-provider-failure:';
+const CODEX_ROLLOUT_CONDITION_PREFIX = 'alarm:codex-rollout-';
 const PROVIDER_ERROR_EVIDENCE_LIMIT = 6;
 const PROVIDER_ERROR_TEXT_LIMIT = 500;
 
@@ -650,10 +653,48 @@ function measuredTime(value: unknown, now: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= now;
 }
 
-async function readOpenCodexConditions(): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
-  const { computeConditionStates, readConditionEnvelopes } = await import('../agent-tools/coordination/tools/conditions');
-  return computeConditionStates(await readConditionEnvelopes())
-    .filter(condition => condition.open && condition.condition_key.startsWith('alarm:codex-rollout-'))
+async function readOpenCodexConditions(
+  sql: Sql,
+  now: number,
+): Promise<Array<{ conditionKey: string; openedAtMs: number }>> {
+  // The generic conditions reader is deliberately capped at the newest 25k
+  // condition envelopes across every subsystem. Codex rollout alarms are
+  // one-shot, so an old open key can fall out of that window without any new
+  // signal to pull it back in. That made the ended-session cleanup below miss
+  // durable adv_sessions end markers. Query this small family directly while
+  // keeping the same 30-day horizon as message-log GC; unrelated condition
+  // traffic can no longer hide a Codex episode from its lifecycle resolver.
+  const sinceBound = new Date(now - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+  const keyPattern = `${CODEX_ROLLOUT_CONDITION_PREFIX}%`;
+  await coordScopeReady();
+  const workspaceId = coordScopeWorkspace();
+  const rows = await sql<Array<{ body: unknown }>>`
+    SELECT body
+      FROM harness_shared.coord_event_log
+     WHERE workspace_id = ${workspaceId}
+       AND surface = 'messages'
+       AND ts >= ${sinceBound}
+       AND (body ? 'condition_key' OR body ? 'resolves_condition' OR body ? 'resolves_conditions')
+       AND (
+         body->>'condition_key' LIKE ${keyPattern}
+         OR body->>'resolves_condition' LIKE ${keyPattern}
+         OR EXISTS (
+           SELECT 1
+             FROM jsonb_array_elements_text(
+               CASE WHEN jsonb_typeof(body->'resolves_conditions') = 'array'
+                 THEN body->'resolves_conditions' ELSE '[]'::jsonb END
+             ) AS resolved(condition_key)
+            WHERE resolved.condition_key LIKE ${keyPattern}
+         )
+       )
+     ORDER BY id ASC
+  `;
+  const { computeConditionStates } = await import('../agent-tools/coordination/tools/conditions');
+  const envelopes = rows.map((row) =>
+    (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as Record<string, unknown>,
+  );
+  return computeConditionStates(envelopes)
+    .filter(condition => condition.open && condition.condition_key.startsWith(CODEX_ROLLOUT_CONDITION_PREFIX))
     .map(condition => ({ conditionKey: condition.condition_key,
       openedAtMs: condition.open_since ? Date.parse(condition.open_since) : Number.NaN }));
 }
@@ -685,7 +726,9 @@ export async function checkCodexRolloutPersistence(
     let episodes: Array<{ conditionKey: string; openedAtMs: number }> = [];
     let episodesKnown = false;
     try {
-      episodes = await (opts.readOpenConditions ?? readOpenCodexConditions)();
+      episodes = opts.readOpenConditions
+        ? await opts.readOpenConditions()
+        : await readOpenCodexConditions(sql, now);
       episodesKnown = true;
     } catch { /* Unknown state cannot prove an old condition recovered. */ }
     const healthyPersistencePhases = new Set<string>();

@@ -272,7 +272,10 @@ describe('deriveBindingFromTestRun', () => {
 
   it('derives a MUTATION binding from a mutation-probe mutant row: a failed mutant is caught, a passing one survived', () => {
     const mutant = (status: string) =>
-      run({ status, source: 'mutation-probe', execution_details: JSON.stringify({ mutationPhase: 'mutant' }) });
+      run({ status, source: 'mutation-probe', execution_details: JSON.stringify({
+        mutationPhase: 'mutant', failed: status === 'fail' ? 1 : 0, collectionFailed: false,
+        failedCaseTitles: status === 'fail' ? ['suite > fails'] : undefined,
+      }) });
     const caught = deriveBindingFromTestRun(input(), mutant('fail'), root, 'run');
     expect(caught).toMatchObject({
       ok: true,
@@ -283,6 +286,15 @@ describe('deriveBindingFromTestRun', () => {
       ok: true,
       binding: { details: { adequacy: { outcome: 'survived' } } },
     });
+    // A failed probe can be a launcher/collection crash whose output_tail only
+    // contains session hook or environment noise. Without measured assertion
+    // identities it cannot establish that the mutant was caught.
+    expect(deriveBindingFromTestRun(
+      input(),
+      run({ status: 'fail', source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } }),
+      root,
+      'run',
+    )).toMatchObject({ ok: true, binding: { details: { adequacy: { outcome: 'unknown' } } } });
     // WI-10004591: a caller-declared mutation binding over a row that is NOT a raw mutant run
     // (a testing:record-run operational record of a whole probe invocation) carries the probe's
     // VERDICT — a passing record is a CAUGHT mutant, never `survived`.
