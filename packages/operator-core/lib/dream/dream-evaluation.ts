@@ -365,6 +365,88 @@ export function summarizeDreamComparison(input: {
   };
 }
 
+/** The graph ablation uses two treatments of structured-pair, not four new arms.
+ * Failed attempts remain in the denominator; missing labels never mean rejection. */
+export function summarizeDreamGraphComparison(input: {
+  protocol: unknown;
+  attempts: readonly {
+    runId: string; treatment: 'graph' | 'control'; pairIndex: number;
+    sourceSnapshot: string | null; inputHash: string | null; unitIds: readonly string[];
+    candidateCaseId: string | null; accountedUsd: number; unknownCostCalls: number;
+  }[];
+  independent: null | {
+    ref: string;
+    labels: readonly { caseId: string; verdict: 'accept' | 'reject' | 'unverified';
+      family: string; novelty: 'duplicate' | 'refinement' | 'unknown' | 'scoped-novel';
+      qualified: boolean | null }[];
+  };
+}) {
+  const protocol = DreamEvaluationProtocolSchema.parse(input.protocol);
+  const comparison = protocol.comparison;
+  const ablation = comparison?.graphAblation;
+  if (!comparison || !ablation) throw new Error('Missing registered graph comparison');
+  const identities = new Set<string>(), assignments = new Set<string>(), candidates = new Set<string>();
+  for (const row of input.attempts) {
+    const assignment = row.treatment + ':' + row.pairIndex;
+    if (!row.runId.trim() || identities.has(row.runId) || assignments.has(assignment) ||
+        !ablation.treatments.includes(row.treatment) || !Number.isInteger(row.pairIndex) ||
+        row.pairIndex < 0 || row.pairIndex >= ablation.attemptsPerTreatment)
+      throw new Error('Duplicate or invalid graph trial identity');
+    if (!Number.isFinite(row.accountedUsd) || row.accountedUsd < 0 ||
+        !Number.isInteger(row.unknownCostCalls) || row.unknownCostCalls < 0)
+      throw new Error('Invalid graph trial accounting');
+    identities.add(row.runId); assignments.add(assignment);
+    if (row.candidateCaseId) {
+      if (candidates.has(row.candidateCaseId)) throw new Error('Duplicate candidate case');
+      candidates.add(row.candidateCaseId);
+    }
+  }
+  const labels = new Map(input.independent?.labels.map(label => [label.caseId, label]) ?? []);
+  if (input.independent && (!input.independent.ref.trim() || labels.size !== input.independent.labels.length ||
+      [...labels.values()].some(label => !candidates.has(label.caseId) || !label.family.trim() ||
+        (label.qualified === true && (label.verdict !== 'accept' || label.novelty !== 'scoped-novel')))))
+    throw new Error('Invalid independent graph assessment');
+  const treatments = ablation.treatments.map(treatment => {
+    const rows = input.attempts.filter(row => row.treatment === treatment);
+    const cases = rows.filter(row => row.candidateCaseId !== null);
+    const assessed = cases.flatMap(row => labels.has(row.candidateCaseId!) ? [labels.get(row.candidateCaseId!)!] : []);
+    const complete = assessed.length === cases.length && input.independent !== null;
+    const qualified = complete && assessed.every(label => label.qualified !== null)
+      ? new Set(assessed.filter(label => label.qualified).map(label => label.family)).size : null;
+    const duplicates = assessed.filter(label => label.novelty === 'duplicate').length;
+    const refinements = assessed.filter(label => label.novelty === 'refinement').length;
+    const accountedUsd = rows.reduce((sum, row) => sum + row.accountedUsd, 0);
+    return { treatment, attempts: rows.length, plannedAttempts: ablation.attemptsPerTreatment,
+      spendCapUsd: ablation.usdPerTreatment, accountedUsd, withinSpendCap: accountedUsd <= ablation.usdPerTreatment,
+      candidateCount: cases.length, noCandidateAttempts: rows.length - cases.length,
+      independentLabels: assessed.length, missingLabels: cases.length - assessed.length,
+      duplicateCandidates: duplicates, refinementCandidates: refinements,
+      noveltyUnknownCandidates: assessed.filter(label => label.novelty === 'unknown').length,
+      duplicateRate: complete && cases.length ? duplicates / cases.length : null,
+      refinementRate: complete && cases.length ? refinements / cases.length : null,
+      qualifiedFamilies: qualified,
+      unknownCostCalls: rows.reduce((sum, row) => sum + row.unknownCostCalls, 0) };
+  });
+  const matchedPairs = Array.from({ length: ablation.attemptsPerTreatment }, (_, pairIndex) => {
+    const graph = input.attempts.find(row => row.treatment === 'graph' && row.pairIndex === pairIndex);
+    const control = input.attempts.find(row => row.treatment === 'control' && row.pairIndex === pairIndex);
+    return { pairIndex, graphRunId: graph?.runId ?? null, controlRunId: control?.runId ?? null,
+      complete: !!graph && !!control,
+      sameUnits: !!graph && !!control && graph.unitIds.length >= 2 &&
+        JSON.stringify(graph.unitIds) === JSON.stringify(control.unitIds) };
+  });
+  return { treatments, matchedPairs,
+    completeAttempts: treatments.every(row => row.attempts === row.plannedAttempts),
+    commonInput: input.attempts.length > 0 && input.attempts.every(row =>
+      row.sourceSnapshot === protocol.sourceSnapshot && row.inputHash === comparison.inputHash),
+    equalSpendCaps: true,
+    independentRef: input.independent?.ref ?? null,
+    // Local compute and engineering time are not priced by the Dream provider ledger.
+    fullyAttributedCost: false,
+    usefulOutcomesPerDollar: null,
+    verdict: 'inconclusive' as const };
+}
+
 export type DreamBenchmarkVerdict = 'accept' | 'reject' | 'unverified';
 export interface DreamBenchmarkLabel {
   id: string;

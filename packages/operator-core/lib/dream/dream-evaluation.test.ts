@@ -16,6 +16,7 @@ import {
   requireDreamPilotProtocol,
   summarizeDreamEvaluationCosts,
   summarizeDreamComparison,
+  summarizeDreamGraphComparison,
   dreamComparisonInputHash,
   applyDreamGraphTreatment,
   type DreamEvaluationCost,
@@ -88,6 +89,41 @@ describe('frozen Dream evaluation protocol — P017', () => {
       problemContext: { ...common.problemContext, evidence: [{ ...evidence, text: 'changed without a matching hash' }] } })).toThrow('invalid or foreign');
     expect(dreamEvaluationProtocolHash(original.protocol)).toBe(original.pin);
     expect(original.protocol.comparison).toBeUndefined();
+  });
+  it('keeps failed graph trials, missing judgments and unknown cost out of benefit claims', () => {
+    const original = frozen();
+    const common = { manifestRevision: 'v2', scope: { workspaceId: 'ws', potSlug: 'pot' },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen.' } };
+    const protocol = freezeDreamEvaluationProtocol({ ...original.protocol,
+      comparison: { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: current.sourceSnapshot }),
+        graphAblation: { treatments: ['graph', 'control'], populationIds: ['a', 'b'], samplerHash: 'b'.repeat(64),
+          attemptsPerTreatment: 2, usdPerTreatment: 2, outcomeAssessment: 'blinded-independent-executed-benefit' } } }).protocol;
+    const attempts = (['graph', 'control'] as const).flatMap(treatment => [0, 1].map(pairIndex => ({
+      runId: treatment + pairIndex, treatment, pairIndex, sourceSnapshot: protocol.sourceSnapshot,
+      inputHash: protocol.comparison!.inputHash, unitIds: ['a', 'b'],
+      candidateCaseId: treatment === 'control' ? 'case' + pairIndex : null,
+      accountedUsd: treatment === 'control' ? 0.4 : 0, unknownCostCalls: 0,
+    })));
+    const missing = summarizeDreamGraphComparison({ protocol, attempts, independent: null });
+    expect(missing).toMatchObject({ completeAttempts: true, commonInput: true, fullyAttributedCost: false,
+      usefulOutcomesPerDollar: null, verdict: 'inconclusive' });
+    expect(missing.treatments[0]).toMatchObject({ attempts: 2, candidateCount: 0, noCandidateAttempts: 2,
+      qualifiedFamilies: null, duplicateRate: null });
+    expect(missing.treatments[1]).toMatchObject({ missingLabels: 2, qualifiedFamilies: null, duplicateRate: null });
+    const independent = { ref: 'frozen-review', labels: [0, 1].map(i => ({ caseId: 'case' + i,
+      verdict: 'reject' as const, family: 'same-family', novelty: 'refinement' as const, qualified: false })) };
+    const assessed = summarizeDreamGraphComparison({ protocol, attempts, independent });
+    expect(assessed.treatments[1]).toMatchObject({ qualifiedFamilies: 0, refinementRate: 1, accountedUsd: 0.8 });
+    expect(assessed.treatments[0]!.duplicateRate).toBeNull();
+    expect(assessed.matchedPairs.every(pair => pair.sameUnits)).toBe(true);
+    expect(() => summarizeDreamGraphComparison({ protocol, attempts: [...attempts, attempts[0]!], independent })).toThrow('identity');
+    expect(() => summarizeDreamGraphComparison({ protocol, attempts, independent: { ref: 'bad',
+      labels: [{ ...independent.labels[0]!, qualified: true }] } })).toThrow('assessment');
+    const unknown = attempts.map((row, i) => i ? row : { ...row, inputHash: null, unknownCostCalls: 1, unitIds: ['other', 'b'] });
+    const incomplete = summarizeDreamGraphComparison({ protocol, attempts: unknown.slice(0, 3), independent: null });
+    expect(incomplete).toMatchObject({ commonInput: false, completeAttempts: false, usefulOutcomesPerDollar: null });
+    expect(incomplete.treatments[0]!.unknownCostCalls).toBe(1);
+    expect(incomplete.matchedPairs[0]!.sameUnits).toBe(false);
   });
   it('DREAM-COMPARABLE: reports missing human calibration, input/spend mismatch and unknown effort honestly', () => {
     const inputHash = 'c'.repeat(64);
