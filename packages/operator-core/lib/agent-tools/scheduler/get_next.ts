@@ -2089,16 +2089,25 @@ export default defineTool({
     //     on the path a saturated fleet hits most often.
     // Fails SOFT (a read error leaves `res` null and the ordinary miss reporting stands): a
     // diagnosis must never become a new way for the claim path to fail.
+    // WI-6554700010011595: every await from here to the payload runs inside a NAMED phase.
+    // Before this, phases ended at get_next:arbitrate and the tail (miss diagnosis, post-claim
+    // enrichment, declare-intent) was unattributed — ~35% of get_next wall time on :3170,
+    // 11-13 s on slow calls — so a slow get_next could not be traced to a phase (plan
+    // papercusp-performance-audit-2026-10-12 R-1). A new await below needs its own phase.
     if (!res) {
-      const capRec = await getClaimSpecRecord({
-        cupId: ident.ownerId,
-        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-      }).catch(() => null);
-      const capped = await readClaimConcurrency({
-        cupId: ident.ownerId,
-        workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-        maxConcurrentClaims: capRec?.spec.limits?.maxConcurrentClaims,
-      }).catch(() => null);
+      const capRec = await trackPhase(ctx.phases, 'get_next:capacityCheck', () =>
+        getClaimSpecRecord({
+          cupId: ident.ownerId,
+          workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+        }).catch(() => null),
+      );
+      const capped = await trackPhase(ctx.phases, 'get_next:capacityCheck', () =>
+        readClaimConcurrency({
+          cupId: ident.ownerId,
+          workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+          maxConcurrentClaims: capRec?.spec.limits?.maxConcurrentClaims,
+        }).catch(() => null),
+      );
       if (capped?.blocked) {
         return recordNoClaim({
           content: [
@@ -2119,20 +2128,27 @@ export default defineTool({
       const boundPlan =
         specOn && !reconciliation.scope && capRec?.source === 'cup' ? plansStartExactPlanBinding(capRec.spec) : null;
       if (boundPlan && capRec?.revision !== null && capRec?.revision !== undefined) {
-        const terminality = await import('../plans/source')
-          .then((m) =>
-            m.planTerminalityInWorkspace(
-              resolveClaimSpecWorkspace(ident.workspaceId) ?? DEFAULT_COORD_WORKSPACE,
-              boundPlan,
-            ),
-          )
-          .catch(() => null);
+        const terminality = await trackPhase(ctx.phases, 'get_next:retiredPlanSpec', () =>
+          import('../plans/source')
+            .then((m) =>
+              m.planTerminalityInWorkspace(
+                resolveClaimSpecWorkspace(ident.workspaceId) ?? DEFAULT_COORD_WORKSPACE,
+                boundPlan,
+              ),
+            )
+            .catch(() => null),
+        );
         if (terminality?.status === 'shipped' || terminality?.status === 'superseded') {
-          const cleared = await clearClaimSpec({
-            cupId: ident.ownerId,
-            workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-            expectedHead: { specId: capRec.spec.specId, revision: capRec.revision },
-          }).catch(() => null);
+          // Built outside the phase closure: the revision null-check above does not narrow
+          // capRec.revision inside a callback.
+          const expectedHead = { specId: capRec.spec.specId, revision: capRec.revision };
+          const cleared = await trackPhase(ctx.phases, 'get_next:retiredPlanSpec', () =>
+            clearClaimSpec({
+              cupId: ident.ownerId,
+              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+              expectedHead,
+            }).catch(() => null),
+          );
           if (cleared) {
             retiredSoloPlanSpec = {
               planSlug: boundPlan,
@@ -2145,29 +2161,34 @@ export default defineTool({
             // we inspected is no longer authoritative, and the new/default spec may
             // have work immediately available.
             const retryBudgetMs = remainingBudgetMs();
-            const retry = await withBoundedTimeout(
-              (signal) =>
-                getNextForBee({
-                  cupId: ident.ownerId,
-                  onPlanLaneBlocked,
-                  useDedicatedClaimPool: true,
-                  workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-                  harness: args.harness,
-                  heldPaths: args.heldPaths,
-                  contendedPaths,
-                  states: args.states,
-                  rigAvailable: args.rigAvailable,
-                  checkIdleDrainOnMiss: true,
-                  signal,
-                }),
-              {
-                fallback: null,
-                timeoutMs: retryBudgetMs,
-                label: 'scheduler:get_next:retiredSoloPlanRetry',
-                signal: ctx.signal,
-              },
+            const retry = await trackPhase(ctx.phases, 'get_next:retiredPlanRetry', () =>
+              withBoundedTimeout(
+                (signal) =>
+                  getNextForBee({
+                    cupId: ident.ownerId,
+                    onPlanLaneBlocked,
+                    useDedicatedClaimPool: true,
+                    workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                    harness: args.harness,
+                    heldPaths: args.heldPaths,
+                    contendedPaths,
+                    states: args.states,
+                    rigAvailable: args.rigAvailable,
+                    checkIdleDrainOnMiss: true,
+                    signal,
+                  }),
+                {
+                  fallback: null,
+                  timeoutMs: retryBudgetMs,
+                  label: 'scheduler:get_next:retiredSoloPlanRetry',
+                  signal: ctx.signal,
+                },
+              ),
             );
-            if (!retry.degraded && retry.value) res = await arbitrateSchedulerClaim(retry.value);
+            if (!retry.degraded && retry.value) {
+              const retried = retry.value;
+              res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(retried));
+            }
           }
         }
       }
@@ -2209,20 +2230,22 @@ export default defineTool({
     let leaderLiveness: boolean | null = null;
     const diagnoseIssueFloorMissWithinBudget = async () => {
       const budgetMs = remainingBudgetMs(GET_NEXT_ISSUE_DIAG_BUDGET_MS);
-      const diagnosis = await withBoundedTimeout(
-        diagnoseFleetScopeIssueFloorMiss({
-          scope: reconciliation.scope!,
-          harness: args.harness,
-          workspaceId: ident.workspaceId,
-          states: args.states,
-          rigAvailable: args.rigAvailable,
-          totalBudgetMs: budgetMs,
-        }),
-        {
-          fallback: null,
-          timeoutMs: budgetMs,
-          label: 'scheduler:get_next:issueFloorMiss',
-        },
+      const diagnosis = await trackPhase(ctx.phases, 'get_next:missIssueBreakdown', () =>
+        withBoundedTimeout(
+          diagnoseFleetScopeIssueFloorMiss({
+            scope: reconciliation.scope!,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+            totalBudgetMs: budgetMs,
+          }),
+          {
+            fallback: null,
+            timeoutMs: budgetMs,
+            label: 'scheduler:get_next:issueFloorMiss',
+          },
+        ),
       );
       return diagnosis.value;
     };
@@ -2230,80 +2253,15 @@ export default defineTool({
       issueBreakdown = await diagnoseIssueFloorMissWithinBudget();
       if (issueBreakdown && issueBreakdown.claimable > 0) {
         const divergenceBudgetMs = remainingBudgetMs();
-        const retry = await withBoundedTimeout(
-          (signal) =>
-            getNextForBee({
-              cupId: ident.ownerId,
-              onPlanLaneBlocked,
-              // EI-22708243422971631: retries are still claim-path work. Keep them on the
-              // scheduler-only pool too; otherwise miss diagnosis can move the second claim
-              // onto the contended process-wide pool and consume the remaining handler budget.
-              useDedicatedClaimPool: true,
-              workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
-              harness: args.harness,
-              heldPaths: args.heldPaths,
-              contendedPaths,
-              states: args.states,
-              rigAvailable: args.rigAvailable,
-              ignoreStoredSpec: !specOn && !reconciliation.scope,
-              checkIdleDrainOnMiss: true,
-              signal,
-            }),
-          {
-            fallback: null,
-            timeoutMs: divergenceBudgetMs,
-            label: 'scheduler:get_next:divergenceRecheck',
-            signal: ctx.signal,
-          },
-        );
-        // A degraded retry (timeout/error) proves nothing either way — leave the original
-        // breakdown in place and let the miss report itself exactly as it would have.
-        if (!retry.degraded && retry.value) {
-          res = await arbitrateSchedulerClaim(retry.value);
-          divergenceRecheck = 'resolved-by-retry';
-        } else if (!retry.degraded) {
-          // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
-          // on (the racing row is now taken), this collapses to an ordinary floor-gated miss.
-          const recheck = await diagnoseIssueFloorMissWithinBudget();
-          if (recheck) issueBreakdown = recheck;
-          if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
-        }
-      } else if (issueBreakdown && issueBreakdown.matchedByFilter === 0) {
-        // WI-7151: the issue-family breakdown reports a confident zero — but it is
-        // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
-        // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
-        // spec whose promoted items are feature-family, per D-009).
-        [featureBreakdown, terminalExhaustion, planTerminality, leaderLiveness] = await Promise.all([
-          diagnoseFleetScopeFeatureFamilyExclusions({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-            states: args.states,
-            rigAvailable: args.rigAvailable,
-          }),
-          diagnoseFleetScopeTerminalExhaustion({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-          }),
-          diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope }),
-          diagnoseFleetScopeLeaderLiveness({
-            scope: reconciliation.scope,
-            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
-          }),
-        ]);
-        if (featureBreakdown && featureBreakdown.claimable > 0) {
-          // A genuine tier-1 candidate exists even though the claim (which just queried
-          // this exact table) missed moments ago — retry once, same shape as the
-          // claimable>0 divergence recheck above.
-          const featureRecheckBudgetMs = remainingBudgetMs();
-          const retry = await withBoundedTimeout(
+        const retry = await trackPhase(ctx.phases, 'get_next:divergenceRecheck', () =>
+          withBoundedTimeout(
             (signal) =>
               getNextForBee({
                 cupId: ident.ownerId,
                 onPlanLaneBlocked,
-                // EI-22708243422971631: the feature-family retry has the same claim-path
-                // contention risk as the divergence retry above.
+                // EI-22708243422971631: retries are still claim-path work. Keep them on the
+                // scheduler-only pool too; otherwise miss diagnosis can move the second claim
+                // onto the contended process-wide pool and consume the remaining handler budget.
                 useDedicatedClaimPool: true,
                 workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
                 harness: args.harness,
@@ -2317,13 +2275,85 @@ export default defineTool({
               }),
             {
               fallback: null,
-              timeoutMs: featureRecheckBudgetMs,
-              label: 'scheduler:get_next:featureFamilyRecheck',
+              timeoutMs: divergenceBudgetMs,
+              label: 'scheduler:get_next:divergenceRecheck',
               signal: ctx.signal,
             },
+          ),
+        );
+        // A degraded retry (timeout/error) proves nothing either way — leave the original
+        // breakdown in place and let the miss report itself exactly as it would have.
+        if (!retry.degraded && retry.value) {
+          const retried = retry.value;
+          res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(retried));
+          divergenceRecheck = 'resolved-by-retry';
+        } else if (!retry.degraded) {
+          // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
+          // on (the racing row is now taken), this collapses to an ordinary floor-gated miss.
+          const recheck = await diagnoseIssueFloorMissWithinBudget();
+          if (recheck) issueBreakdown = recheck;
+          if (recheck && recheck.claimable > 0) divergenceRecheck = 'confirmed-twice';
+        }
+      } else if (issueBreakdown && issueBreakdown.matchedByFilter === 0) {
+        // WI-7151: the issue-family breakdown reports a confident zero — but it is
+        // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
+        // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
+        // spec whose promoted items are feature-family, per D-009).
+        const scope = reconciliation.scope;
+        [featureBreakdown, terminalExhaustion, planTerminality, leaderLiveness] = await trackPhase(ctx.phases, 'get_next:missFeatureDiagnosis', () => Promise.all([
+          diagnoseFleetScopeFeatureFamilyExclusions({
+            scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+          }),
+          diagnoseFleetScopeTerminalExhaustion({
+            scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+          }),
+          diagnoseFleetScopePlanTerminality({ scope }),
+          diagnoseFleetScopeLeaderLiveness({
+            scope,
+            ...(reconciliation.fleetAssignmentRows ? { fleetAssignmentRows: reconciliation.fleetAssignmentRows } : {}),
+          }),
+        ]));
+        if (featureBreakdown && featureBreakdown.claimable > 0) {
+          // A genuine tier-1 candidate exists even though the claim (which just queried
+          // this exact table) missed moments ago — retry once, same shape as the
+          // claimable>0 divergence recheck above.
+          const featureRecheckBudgetMs = remainingBudgetMs();
+          const retry = await trackPhase(ctx.phases, 'get_next:featureFamilyRecheck', () =>
+            withBoundedTimeout(
+              (signal) =>
+                getNextForBee({
+                  cupId: ident.ownerId,
+                  onPlanLaneBlocked,
+                  // EI-22708243422971631: the feature-family retry has the same claim-path
+                  // contention risk as the divergence retry above.
+                  useDedicatedClaimPool: true,
+                  workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
+                  harness: args.harness,
+                  heldPaths: args.heldPaths,
+                  contendedPaths,
+                  states: args.states,
+                  rigAvailable: args.rigAvailable,
+                  ignoreStoredSpec: !specOn && !reconciliation.scope,
+                  checkIdleDrainOnMiss: true,
+                  signal,
+                }),
+              {
+                fallback: null,
+                timeoutMs: featureRecheckBudgetMs,
+                label: 'scheduler:get_next:featureFamilyRecheck',
+                signal: ctx.signal,
+              },
+            ),
           );
           if (!retry.degraded && retry.value) {
-            res = await arbitrateSchedulerClaim(retry.value);
+            const retried = retry.value;
+            res = await trackPhase(ctx.phases, 'get_next:arbitrate', () => arbitrateSchedulerClaim(retried));
             featureBreakdown = null; // claimed on retry — nothing left to explain
           }
         }
@@ -2343,7 +2373,10 @@ export default defineTool({
         // other diagnosis in this block, so a caller with no plan predicate (or a
         // further-degraded read) pays one cheap extra query for nothing worse than today's
         // behavior.
-        planTerminality = await diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope });
+        const scope = reconciliation.scope;
+        planTerminality = await trackPhase(ctx.phases, 'get_next:missPlanTerminality', () =>
+          diagnoseFleetScopePlanTerminality({ scope }),
+        );
       }
     }
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
@@ -2482,11 +2515,13 @@ export default defineTool({
       // matters most. Dynamic import keeps the memory chain off the static graph.
       if (res?.workItem) {
         const wi = res.workItem as { id?: string; title?: string; summary?: string; harness?: string | null };
-        memory = await import('../../memory/claim-port')
-          .then((m) =>
-            m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }),
-          )
-          .catch(() => null);
+        memory = await trackPhase(ctx.phases, 'get_next:enrich:memory', () =>
+          import('../../memory/claim-port')
+            .then((m) =>
+              m.buildClaimRecallBlock({ sessionId: ident.ownerId, workspaceId: ident.workspaceId, items: [wi] }),
+            )
+            .catch(() => null),
+        );
       }
       // EI-529: this is the primary self-pull surface (every fleet member / cup claims
       // through it) — surface a prior holder's checkpoint AT CLAIM TIME so a re-dispatch
@@ -2494,18 +2529,20 @@ export default defineTool({
       // Omitted entirely when null (the common case: no prior holder ever checkpointed).
       if (res?.workItem) {
         const wi = res.workItem as { id: string; harness?: string | null };
-        checkpointHint = await import('../../work-item-checkpoint')
-          .then((m) =>
-            m.getClaimTimeCheckpointHint({
-              harness: wi.harness ?? null,
-              workItemId: wi.id,
-              workspaceId: ident.workspaceId ?? undefined,
+        checkpointHint = await trackPhase(ctx.phases, 'get_next:enrich:checkpoint', () =>
+          import('../../work-item-checkpoint')
+            .then((m) =>
+              m.getClaimTimeCheckpointHint({
+                harness: wi.harness ?? null,
+                workItemId: wi.id,
+                workspaceId: ident.workspaceId ?? undefined,
+              }),
+            )
+            .catch(() => {
+              checkpointReadFailed = true;
+              return null;
             }),
-          )
-          .catch(() => {
-            checkpointReadFailed = true;
-            return null;
-          });
+        );
       }
       // P-001/P-004 (fleet-leadership-continuity-and-actuation-2026-08-01): the prior-work banner,
       // wired here too. P-001 named THREE surfaces — work_items:claim, work_items:get and THIS one —
@@ -2518,7 +2555,7 @@ export default defineTool({
       // can catch. Fail-soft + omitted entirely when null, exactly like the checkpoint hint above.
       if (res?.workItem) {
         const wi = res.workItem as { id: string; harness?: string | null };
-        priorWorkHint = await import('../../work-item-prior-work')
+        priorWorkHint = await trackPhase(ctx.phases, 'get_next:enrich:priorWork', () => import('../../work-item-prior-work')
           .then(async (m) => {
             const raw = await m.getClaimTimePriorWorkHint({
               harness: wi.harness ?? null,
@@ -2535,7 +2572,7 @@ export default defineTool({
             const warning = m.priorWorkWarning(priorWork);
             return warning ? { priorWork, priorWorkWarning: warning } : null;
           })
-          .catch(() => null);
+          .catch(() => null));
       }
       // EI-18654296679612119: a SEPARATE, CONDITIONAL warning — only when the checkpoint text
       // itself cites a background job/task as evidence — rather than growing the EI-529
@@ -2545,9 +2582,11 @@ export default defineTool({
       if (checkpointHint) {
         Object.assign(
           bgJobWarning,
-          await import('../../checkpoint-bg-job-claim')
-            .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
-            .catch(() => ({ detected: false as const })),
+          await trackPhase(ctx.phases, 'get_next:enrich:bgJob', () =>
+            import('../../checkpoint-bg-job-claim')
+              .then((m) => m.detectBgJobCheckpointClaim(checkpointHint!.checkpoint))
+              .catch(() => ({ detected: false as const })),
+          ),
         );
       }
       // agent-trap-guards-2026-07-26 P-003b: this is the primary self-pull surface, so
@@ -2584,7 +2623,9 @@ export default defineTool({
           independenceHint,
           sourceGenerationSignal,
         ] = await Promise.all([
-          import('../../plan-decisions-claim-port')
+          // Each claim-time hint is its own phase (concurrent intervals; attribution is their
+          // union), so a slow hint is named in tool_invocations rather than lumped together.
+          trackPhase(ctx.phases, 'get_next:hint:planDecisions', () => import('../../plan-decisions-claim-port')
             .then(async (m) => {
               const brief = await m.getClaimTimePlanDecisions({
                 workItem: { payload: wi.payload },
@@ -2593,8 +2634,8 @@ export default defineTool({
               });
               return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
             })
-            .catch(() => [null, null] as const),
-          import('../../prior-attempt-context')
+            .catch(() => [null, null] as const)),
+          trackPhase(ctx.phases, 'get_next:hint:priorAttempt', () => import('../../prior-attempt-context')
             .then((m) =>
               m.getClaimTimePriorAttemptBrief({
                 workItem: {
@@ -2607,8 +2648,8 @@ export default defineTool({
                 harness: wi.harness ?? args.harness,
               }),
             )
-            .catch(() => null),
-          import('../../premises-claim-port')
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:premises', () => import('../../premises-claim-port')
             .then((m) =>
               m.getClaimTimePremises({
                 workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
@@ -2616,11 +2657,11 @@ export default defineTool({
                 workspaceId: ident.workspaceId,
               }),
             )
-            .catch(() => null),
-          getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:retraction', () => getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
             .then((advisory) => advisory?.retractionWarning ?? null)
-            .catch(() => null),
-          import('../../work-item-prior-work')
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:authorshipRevalidation', () => import('../../work-item-prior-work')
             .then(async (m) => {
               const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
                 harness: wi.harness ?? args.harness,
@@ -2632,8 +2673,8 @@ export default defineTool({
                 ? { authorshipRevalidation, authorshipRevalidationWarning }
                 : null;
             })
-            .catch(() => null),
-          import('../../work-item-plan-contradiction')
+            .catch(() => null)),
+          trackPhase(ctx.phases, 'get_next:hint:planContradiction', () => import('../../work-item-plan-contradiction')
             .then(async (m) => {
               const hint = await m.getClaimTimePlanItemContradiction({
                 workItemId: wi.id ?? '',
@@ -2642,9 +2683,9 @@ export default defineTool({
               const warning = m.planItemContradictionWarning(hint, wi.id ?? '');
               return hint && warning ? { planItemContradiction: hint, planItemContradictionWarning: warning } : null;
             })
-            .catch(() => null),
+            .catch(() => null)),
           wi.id
-            ? import('../../behavior-contract-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:behaviorContract', () => import('../../behavior-contract-claim-port')
                 .then((m) =>
                   m.getClaimTimeBehaviorContract(
                     {
@@ -2657,17 +2698,17 @@ export default defineTool({
                     wi.harness ?? args.harness,
                   ),
                 )
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           wi.payload || wi.title || wi.summary
-            ? import('../../stale-path-hints-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:stalePaths', () => import('../../stale-path-hints-claim-port')
                 .then(async (m) => {
                   return m.getClaimTimeStalePathAdvisory({ workItem: wi });
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           wi.id
-            ? import('../../work-item-plan-item-landed')
+            ? trackPhase(ctx.phases, 'get_next:hint:planItemLanded', () => import('../../work-item-plan-item-landed')
                 .then(async (m) => {
                   const hint = await m.getClaimTimePlanItemLanded({
                     workItemId: wi.id as string,
@@ -2679,7 +2720,7 @@ export default defineTool({
                   const warning = m.planItemLandedWarning(hint, wi.id as string);
                   return hint && warning ? { planItemLanded: hint, planItemLandedWarning: warning } : null;
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           // EI-19329513980117751: a DIFFERENT work-item shares this one's stored paths
           // and has already landed. Reaches the sibling WITHOUT a plan, unlike every
@@ -2687,7 +2728,7 @@ export default defineTool({
           // are all plan-less, so those legs are structurally silent for exactly the
           // population that suffers this. Same fail-soft seam as every leg above.
           wi?.id
-            ? import('../../sibling-path-overlap-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:siblingPathOverlap', () => import('../../sibling-path-overlap-claim-port')
                 .then(async (m) => {
                   const hint = await m.getClaimTimeSiblingPathOverlap({
                     workItemId: wi.id as string,
@@ -2697,13 +2738,13 @@ export default defineTool({
                   const warning = m.siblingPathOverlapWarning(hint, wi.id as string);
                   return hint && warning ? { siblingPathOverlap: hint, siblingPathOverlapWarning: warning } : null;
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           // EI-19418245218824265: the only leg that reads the TREE. Needs nothing but
           // the id, so it still fires for an item implemented by an agent who never
           // claimed the row — the shape all ten row-based legs are silent for.
           wi?.id
-            ? import('../../source-citation-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:sourceCitation', () => import('../../source-citation-claim-port')
                 .then(async (m) => {
                   const hint = await m.getClaimTimeSourceCitation({
                     workItemId: wi.id as string,
@@ -2714,18 +2755,18 @@ export default defineTool({
                   const warning = m.sourceCitationWarning(hint, wi.id as string);
                   return hint && warning ? { sourceCitation: hint, sourceCitationWarning: warning } : null;
                 })
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
-          import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
+          trackPhase(ctx.phases, 'get_next:hint:taskBrief', () => import('../../code-intelligence/task-brief').then(m => m.getClaimTimeTaskBrief({
             workItem: wi, harness: wi?.harness ?? args.harness, workspaceId: ident.workspaceId,
-          })).catch(() => null),
+          })).catch(() => null)),
           // EI-22344661292350991: preserve an explicit independence marker on the
           // successful claim response and add a warning only when the claimant is
           // actually in the recorded contributor lineage (including descendants /
           // predecessors). This is intentionally the last row-based advisory leg:
           // it is fully fail-soft and never participates in claim eligibility.
           wi?.id
-            ? import('../../independence-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:independence', () => import('../../independence-claim-port')
                 .then((m) =>
                   m.getClaimTimeIndependenceAdvisory({
                     workItem: {
@@ -2739,7 +2780,7 @@ export default defineTool({
                     workspaceId: ident.workspaceId ?? undefined,
                   }),
                 )
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
           // EI-22283949842250645: measure the freshness verdict's source axis —
           // "do this item's own paths carry commits newer than the generation it
@@ -2765,9 +2806,9 @@ export default defineTool({
           // is stated above and applies to `bug` identically, so it was never a
           // kind distinction.
           isFreshnessTrackedKind(wi?.kind)
-            ? import('../../source-generation-claim-port')
+            ? trackPhase(ctx.phases, 'get_next:hint:sourceGeneration', () => import('../../source-generation-claim-port')
                 .then((m) => m.getClaimTimeSourceGenerationSignal({ workItem: wi }))
-                .catch(() => null)
+                .catch(() => null))
             : Promise.resolve(null),
         ]);
       }
@@ -2775,12 +2816,16 @@ export default defineTool({
       // pending one-shot claimable wake (e.g. left by a leader-fed spec bump); reusable standing
       // watches remain armed for the next claimable transition. Best-effort + subscriber-scoped:
       // a cancel failure must never break the already-committed claim path.
-      await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
+      await trackPhase(ctx.phases, 'get_next:enrich:cancelAwaits', () =>
+        cancelClaimableAwaits(ident.ownerId).catch(() => 0),
+      );
       // EI-20099413453852234: the same idle -> working transition also makes the caller's
       // DECLARED INTENT stale, which peers read as "this holder isn't really working it".
       // Declared here rather than left to the agent, for the reasons on the helper. Same
       // fail-soft posture as the cancel above — the claim is already committed.
-      await declareIntentForClaim(ident, res?.workItem, args.harness).catch(() => {});
+      await trackPhase(ctx.phases, 'get_next:enrich:declareIntent', () =>
+        declareIntentForClaim(ident, res?.workItem, args.harness).catch(() => {}),
+      );
     };
     if (res?.workItem) {
       await withBoundedTimeout(enrichSuccessfulClaim, {
@@ -2815,13 +2860,15 @@ export default defineTool({
     // extra read. Cached (loadHarnessRegistry); a read hiccup fails OPEN — "can't
     // verify" must never block/mis-report a claim path it's only annotating.
     const invalidHarnessKnownSlugs = !res
-      ? await loadHarnessRegistry(ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined)
-          .then((registry) =>
-            registry.projects.some((p) => p.slug === args.harness)
-              ? null
-              : registry.projects.map((p) => p.slug).slice(0, 30),
-          )
-          .catch(() => null)
+      ? await trackPhase(ctx.phases, 'get_next:missHarnessRegistry', () =>
+          loadHarnessRegistry(ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined)
+            .then((registry) =>
+              registry.projects.some((p) => p.slug === args.harness)
+                ? null
+                : registry.projects.map((p) => p.slug).slice(0, 30),
+            )
+            .catch(() => null),
+        )
       : null;
     // WI-4413: a MISS must explain itself. `work_items:claim_next` has run diagnoseClaimNextMiss
     // on a miss since EI-5803 — but THIS path (the one every fleet member self-pulls through, and
@@ -2840,23 +2887,25 @@ export default defineTool({
           // too so a pool stall HERE can't reproduce the 300s hang. buildMissDiagnosis already
           // fails soft to the STATIC message, so the timeout fallback is exactly that static miss.
           (
-            await withBoundedTimeout(
-              buildMissDiagnosis({
-                ownerId: ident.ownerId,
-                workspaceId: ident.workspaceId,
-                harness: args.harness,
-                states: args.states,
-                rigAvailable: args.rigAvailable,
-              }),
-              {
-                fallback: {
-                  error: 'no claimable work-item matched your spec within the floors',
-                  diagnosis: undefined,
-                  floors: undefined,
+            await trackPhase(ctx.phases, 'get_next:missDiagnosis', () =>
+              withBoundedTimeout(
+                buildMissDiagnosis({
+                  ownerId: ident.ownerId,
+                  workspaceId: ident.workspaceId,
+                  harness: args.harness,
+                  states: args.states,
+                  rigAvailable: args.rigAvailable,
+                }),
+                {
+                  fallback: {
+                    error: 'no claimable work-item matched your spec within the floors',
+                    diagnosis: undefined,
+                    floors: undefined,
+                  },
+                  timeoutMs: remainingBudgetMs(15_000),
+                  label: 'scheduler:get_next:missDiagnosis',
                 },
-                timeoutMs: remainingBudgetMs(15_000),
-                label: 'scheduler:get_next:missDiagnosis',
-              },
+              ),
             )
           ).value;
     // EI-13520: a genuine (non-paused) scoped miss may be a release-cooldown artifact,
@@ -2864,14 +2913,17 @@ export default defineTool({
     // the caller (and the leader they'd otherwise flag a false spec bug to) gets the
     // true cause. Only reached when reconciliation.scope is set AND res is null AND we
     // did not already return early on the paused/default-source branches above.
+    const cooldownScope = reconciliation.scope;
     const cooldownDiag =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs
-        ? await diagnoseFleetScopeCooldownMiss({
-            scope: reconciliation.scope,
-            harness: args.harness,
-            workspaceId: ident.workspaceId,
-            states: args.states,
-          })
+      !res && cooldownScope && !invalidHarnessKnownSlugs
+        ? await trackPhase(ctx.phases, 'get_next:missCooldown', () =>
+            diagnoseFleetScopeCooldownMiss({
+              scope: cooldownScope,
+              harness: args.harness,
+              workspaceId: ident.workspaceId,
+              states: args.states,
+            }),
+          )
         : null;
     // WI-5561: the issue-family floor-breakdown sibling of cooldownDiag above — surfaces WHY a
     // fleet-scoped miss happened (federation-detector / owner-action / claim-hold / … floors)

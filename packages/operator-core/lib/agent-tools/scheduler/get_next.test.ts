@@ -161,6 +161,16 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({ sql: () => { throw new Error('Unexpected SQL in scheduler handler unit tests'); } }),
 }));
+// WI-6554700010011595: real claim-time enrichment modules fail soft against the throwing
+// getOrgPg above and record fallback observations. Their buffer flushes on a real 2 s timer
+// through that same throwing SQL, and the flush's console.warn fails whichever test is
+// running (vitest-fail-on-console) — measured: a cold run of one success-path test took
+// 10.97 s and went red on the warn; a 2,182 ms full-file run went red on an unrelated test.
+// No test here asserts fallback telemetry, so record nothing.
+vi.mock('../../degradation/fallback-observations', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  observeFallback: vi.fn(() => true),
+}));
 // The work-scope gate is a pure allow/deny decision for this scheduler suite. Mocking the
 // dynamically imported module keeps its pot-control-policy sync listener (and its real PG
 // connection) out of fake-timer tests, so a missing local database cannot become an unrelated
@@ -1629,6 +1639,49 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
         contendedPaths: ['packages/operator-core/lib/hot.ts'],
       }),
     );
+  });
+
+  // WI-6554700010011595 (plan papercusp-performance-audit-2026-10-12 R-1): every await after
+  // get_next:arbitrate used to run outside a named phase, so ~35% of get_next wall time on
+  // :3170 (11-13 s on slow calls) was unattributable. A slow post-claim leg must now land in
+  // a NAMED phase. Old code: the 300 ms leg is unattributed, so coverage is ~0.1.
+  it('attributes a slow post-claim enrichment leg to a named phase', async () => {
+    const { createPhaseTracker } = await import('@papercusp/tooldef');
+    const tracker = createPhaseTracker();
+    buildClaimRecallBlockM.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return null;
+    });
+    await getNextTool.handler({ harness: 'papercusp' } as never, { phases: tracker } as never);
+    const meta = tracker.toMetadata();
+    expect(meta).not.toBeNull();
+    const names = meta!.phases.map((p) => p.phase);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'get_next:claim',
+        'get_next:arbitrate',
+        'get_next:enrich:memory',
+        'get_next:enrich:checkpoint',
+        'get_next:enrich:cancelAwaits',
+        'get_next:enrich:declareIntent',
+        'get_next:hint:planDecisions',
+      ]),
+    );
+    const memoryPhase = meta!.phases.find((p) => p.phase === 'get_next:enrich:memory');
+    expect(memoryPhase!.durationMs).toBeGreaterThanOrEqual(250);
+    expect(meta!.attributedMs / meta!.elapsedMs).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('records named phases on the miss path too', async () => {
+    const { createPhaseTracker } = await import('@papercusp/tooldef');
+    const tracker = createPhaseTracker();
+    getNextM.mockResolvedValue(null);
+    await getNextTool.handler({ harness: 'papercusp' } as never, { phases: tracker } as never);
+    const names = tracker.toMetadata()!.phases.map((p) => p.phase);
+    expect(names).toEqual(
+      expect.arrayContaining(['get_next:capacityCheck', 'get_next:missHarnessRegistry', 'get_next:missDiagnosis']),
+    );
+    expect(names.some((n) => n.startsWith('get_next:enrich:'))).toBe(false);
   });
 
   it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {
