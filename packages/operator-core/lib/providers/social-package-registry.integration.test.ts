@@ -35,7 +35,8 @@ describe('installed social packages use the generic Integrations model', () => {
       ref: 'facebook', configured: false, clientId: null, hasClientSecret: false,
       redirectUri: 'https://operator.example/api/oauth/callback', savedAt: null,
     });
-    expect(model).toMatchObject({ id, tracksTickets: false, capabilities: ['social.post', 'social.reply', 'social.delete'] });
+    expect(model).toMatchObject({ id, tracksTickets: false });
+    expect(model.capabilities).toEqual(entry.descriptor.capabilities);
     expect(model.displayName).toBe(id === 'facebook-pages' ? 'Facebook Pages' : 'Instagram');
     expect(model.requiredConfig).toEqual([id === 'facebook-pages' ? 'pageId' : 'igUserId']);
     expect(new URL(model.connectHref!, 'https://operator.example').searchParams.get('plugin')).toContain(id);
@@ -47,6 +48,12 @@ describe('installed social packages use the generic Integrations model', () => {
       expect(triggerPack.triggerPack.bindings.map((b: { source: { sourceKind: string }; eventPattern: string }) => [b.source.sourceKind, b.eventPattern])).toEqual([
         [id, `ext:${id}:post`], [id, `ext:${id}:comment`], [id, `ext:${id}:reply`],
       ]);
+    } else {
+      const triggerPack = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins/social-instagram/papercusp.json'), 'utf8'));
+      expect(triggerPack.triggerPack.bindings.map((b: { eventPattern: string }) => b.eventPattern)).toEqual([
+        'ext:instagram:mention', 'ext:instagram:comment', 'ext:instagram:reply',
+      ]);
+      expect(entry.descriptor.push).toMatchObject({ delivery: 'normalize', signature: { header: 'x-hub-signature-256', prefix: 'sha256=' } });
     }
   });
 });
