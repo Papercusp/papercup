@@ -630,6 +630,26 @@ vi.mock('../../capability-envelope/session-confinement-store', async original =>
 const scopedCeiling = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint'],
   imposedBy: 'benchmark-host', reason: 'one metered gateway' };
 describe('internal launch context provenance', () => {
+  it('carries a typed Docker boundary only from the private metered controller context', async () => {
+    const binding = { kind: 'docker-exec', command: '/tmp/private-current-container/codex', sha256: 'a'.repeat(64) };
+    const privateCtx = { workspaceId: 'ws-test', role: 'su',
+      [INTERNAL_SCOPED_INFERENCE_GATEWAY]: { baseURL: 'http://127.0.0.1:32101', token: 'b'.repeat(64) },
+      [INTERNAL_SCOPED_SESSION_CONFINEMENT]: scopedCeiling,
+      [INTERNAL_BACKEND_BIN_OVERRIDE]: { codex: binding } } as never;
+    const result = await launchAgent.handler({ brief: 'Container task', harness: 'papercusp', agent: 'codex', headless: true }, privateCtx);
+    expect(isError(result)).toBe(false);
+    const env = spawnedEnv(spawnHeadlessMock);
+    expect(env.PAPERCUSP_BACKEND_BIN_CODEX).toBe(binding.command);
+    expect(JSON.parse(env.PAPERCUSP_NATIVE_CONTAINER_EXEC)).toEqual(binding);
+  });
+  it('refuses container authority without a private metered controller before opening a process', async () => {
+    const result = await launchAgent.handler({ brief: 'Container task', harness: 'papercusp', agent: 'codex', headless: true },
+      { workspaceId: 'ws-test', role: 'su', [INTERNAL_BACKEND_BIN_OVERRIDE]: {
+        codex: { kind: 'docker-exec', command: '/tmp/codex', sha256: 'a'.repeat(64) } } } as never);
+    expect(isError(result)).toBe(true);
+    expect(JSON.stringify(result)).toMatch(/private metered Codex/);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
   it('threads the private controller route only through a fresh supported host context', async () => {
     const gateway = { baseURL: 'http://127.0.0.1:32101', token: 'a'.repeat(64) };
     const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]: gateway,
@@ -675,6 +695,7 @@ describe('internal launch context provenance', () => {
     );
     expect(isError(res)).toBe(false);
     expect(Object.keys(spawnedEnv(spawnHeadlessMock)).filter((k) => k.startsWith('PAPERCUSP_BACKEND_BIN_'))).toEqual([]);
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_NATIVE_CONTAINER_EXEC).toBeUndefined();
   });
   it('refuses missing or failed durable server tool confinement before opening a process', async () => {
     const privateCtx = { workspaceId: 'ws-test', role: 'su', [INTERNAL_SCOPED_INFERENCE_GATEWAY]:

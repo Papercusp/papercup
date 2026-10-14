@@ -95,6 +95,7 @@ import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
 import { BACKEND_AGENTS, backendBinOverrideEnvKey, preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
+import { NATIVE_CONTAINER_EXEC_ENV, type NativeContainerExecBinding } from '@papercusp/orchestrator/fleet-srt-spawn';
 import { describeSessionEndTime, hasAdvSessionTerminalEvidence, markAdvSessionEnded } from '../../adv-sessions';
 import { resolveSessionStates } from '../coordination/liveness-oracle';
 import type { ColorScheme } from '../../console-color-schemes';
@@ -134,6 +135,7 @@ export const INTERNAL_SCOPED_SESSION_CONFINEMENT: unique symbol = Symbol('intern
  * so no MCP caller can set it; only the server-side bench runner does.
  */
 export const INTERNAL_BACKEND_BIN_OVERRIDE: unique symbol = Symbol('internal-backend-bin-override');
+export type InternalBackendBinOverride = Readonly<Record<string, string | NativeContainerExecBinding>>;
 
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
@@ -799,19 +801,26 @@ export default defineTool({
       return err('Scoped inference gateway requires a fresh single native launch.');
     }
     const backendBinOverride = (ctx as typeof ctx & {
-      [INTERNAL_BACKEND_BIN_OVERRIDE]?: Readonly<Record<string, string>>;
+      [INTERNAL_BACKEND_BIN_OVERRIDE]?: InternalBackendBinOverride;
     })[INTERNAL_BACKEND_BIN_OVERRIDE];
     const backendBinOverrideEnv: Record<string, string> = {};
     if (backendBinOverride !== undefined) {
       if (args.resume || args.successor || args.fork || args.headless !== true) {
         return err('A backend binary override requires a fresh headless launch.');
       }
-      for (const [agentName, binPath] of Object.entries(backendBinOverride)) {
+      for (const [agentName, override] of Object.entries(backendBinOverride)) {
         if (!(BACKEND_AGENTS as readonly string[]).includes(agentName)) {
           return err(`A backend binary override names an unknown agent: ${agentName}.`);
         }
+        const binPath = typeof override === 'string' ? override : override?.command;
         if (typeof binPath !== 'string' || !isAbsolute(binPath)) {
           return err(`A backend binary override for ${agentName} must be an absolute path.`);
+        }
+        if (typeof override !== 'string') {
+          if (!scopedGateway || !privateConfinement || agentName !== 'codex' || override.kind !== 'docker-exec' ||
+              !/^[a-f0-9]{64}$/.test(override.sha256) || Object.keys(override).sort().join(',') !== 'command,kind,sha256')
+            return err('A native container binding requires the private metered Codex launch and an exact wrapper digest.');
+          backendBinOverrideEnv[NATIVE_CONTAINER_EXEC_ENV] = JSON.stringify(override);
         }
         backendBinOverrideEnv[backendBinOverrideEnvKey(agentName)] = binPath;
       }
@@ -2322,6 +2331,9 @@ export default defineTool({
           ...(args.originalRouting ? { [ORIGINAL_CODEX_ROUTING_ENV]: JSON.stringify(args.originalRouting) } : {}),
           ...backendBinOverrideEnv,
         };
+        // Never inherit a prior assignment's host-boundary authority.
+        if (backendBinOverrideEnv[NATIVE_CONTAINER_EXEC_ENV] === undefined)
+          delete (env as Record<string, string | undefined>)[NATIVE_CONTAINER_EXEC_ENV];
         const memberLabel = memberLabels[i];
         const targetOwnerId = memberOwnerIds[i];
         // Any scripted brief is a real first-turn obligation. Ask the headless
