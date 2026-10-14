@@ -18,7 +18,7 @@
  *    and a missing embedder degrades honestly while exposing only an explicit
  *    lexical fallback path (never semantic qualification).
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DISCLOSURE_LEDGER_FIXTURE_DDL } from '../../test/_disclosure-ledger-fixture';
 import { D006_TRANSCRIPT_RULE } from '../personal-vault/transcript-exclusion';
 import postgres, { type Sql } from 'postgres';
@@ -658,6 +658,17 @@ describe('routeConsult — routing + blend', () => {
       routeDeps,
     );
     expect(scoped.qualified.map((candidate) => candidate.ownerId)).toEqual(['reviewer-on-target-rubric']);
+
+    // A decision id used as a trial tag is still an exact corpus predicate.
+    // An empty filtered trial does not exercise subject scoring.
+    const scoreUnusedFilter = vi.fn(async (_subject: string, texts: string[]) => texts.map(() => 0.9));
+    const unusedFilter = await routeConsult(
+      { workspaceId: WS, requesterId: 'review-requester', question, subjectRef: 'D-029' },
+      { ...routeDeps, scoreSubjectEvidence: scoreUnusedFilter },
+    );
+    expect(unusedFilter.snapshot.candidates).toEqual([]);
+    expect(unusedFilter.snapshot.subjectValidation).toBeUndefined();
+    expect(scoreUnusedFilter).not.toHaveBeenCalled();
 
     const lexicalScoped = await routeConsult(
       {
