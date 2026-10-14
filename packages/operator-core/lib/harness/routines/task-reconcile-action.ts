@@ -33,6 +33,7 @@ import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded, residueTaskId } from '../../task-manager/store';
 import { archiveReapTail } from '../../task-manager/reap-archive';
+import { sidecarOrphanForPass } from '../../task-manager/sidecar-orphan-probe';
 import {
   consultAnswerFacts,
   consultSettlement,
@@ -658,7 +659,11 @@ async function reapAgentSessionResidue(
     if (!on) return;
 
     const workspaceId = ctx.workspaceId ?? undefined;
-    const live = (await listLiveTasks(workspaceId)).filter((r) => r.class === 'agent-session');
+    const liveAll = await listLiveTasks(workspaceId);
+    const live = liveAll.filter((r) => r.class === 'agent-session');
+    // WI-6554700010011963: live sidecars are judged only by the orphaned-sidecar
+    // class (declared parent gone), never by the agent-session classes.
+    const liveSidecars = liveAll.filter((r) => r.class === 'sidecar');
     const dayAgoMs = Date.now() - 24 * 3600_000;
     const terminal = (
       await listTasks({
@@ -683,8 +688,8 @@ async function reapAgentSessionResidue(
       logPath: fileBackedStdoutLogPath(candidate.pids),
     }));
 
-    const scopePidCountForUnit = (scopeUnit: string): number | null => {
-      const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, 'agent-session', scopeUnit));
+    const scopePidCountForUnit = (scopeUnit: string, taskClass: TaskRow['class'] = 'agent-session'): number | null => {
+      const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, taskClass, scopeUnit));
       if (!nodeCgroupFs.isDir(abs)) return 0; // scope absent — a real zero
       return walkCgroupTree(abs, nodeCgroupFs).reduce((s, g) => s + g.pids.length, 0);
     };
@@ -710,7 +715,7 @@ async function reapAgentSessionResidue(
     const consultStates = await readConsultStatesForReaper(live);
 
     const verdict = decideReaps({
-      rows: [...live, ...terminal],
+      rows: [...live, ...terminal, ...liveSidecars],
       managedResidue,
       census:
         freshOwners === null
@@ -723,9 +728,10 @@ async function reapAgentSessionResidue(
         // service), which is what made an earlier pass count the operator's
         // processes as survivors.
         if (!row.scopeUnit) return null;
-        return scopePidCountForUnit(row.scopeUnit);
+        return scopePidCountForUnit(row.scopeUnit, row.class);
       },
-      scopePidCountForScope: scopePidCountForUnit,
+      scopePidCountForScope: (scopeUnit) => scopePidCountForUnit(scopeUnit),
+      sidecarOrphanFor: sidecarOrphanForPass(liveSidecars, Date.now()),
       // A no-row scope whose spawner is still alive belongs to that spawner, which
       // is how an isolated store's operator looks from here (readScopeHolder).
       scopeHolderForScope: (scopeUnit) => {
