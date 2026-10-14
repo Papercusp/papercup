@@ -20,6 +20,8 @@ import {
   instanceCreateArgs,
   instanceDrift,
   jsonCells,
+  judgeLogin,
+  loginTargets,
   makeCtx,
   ownerRoleSql,
   judgeTlsProbe,
@@ -138,6 +140,56 @@ suite('ownerRoleSql', () => {
   });
 });
 
+suite('judgeLogin', () => {
+  const owner = { role: 'portal_owner', db: 'portal', createRole: false };
+  const admin = { role: 'harness_admin', db: 'papercusp_hosted', createRole: true };
+  const clean = (role: string, db: string, createrole: boolean, selfgrant = '') => ({
+    user: role,
+    db,
+    super: false,
+    createrole,
+    replication: false,
+    bypassrls: false,
+    cloudsqlsuperuser: false,
+    selfgrant,
+  });
+
+  it('passes a conforming owner and a conforming migration role', () => {
+    expect(judgeLogin(clean('portal_owner', 'portal', false), owner)).toEqual([]);
+    expect(judgeLogin(clean('harness_admin', 'papercusp_hosted', true, 'set, inherit'), admin)).toEqual([]);
+  });
+  // upsertRoleSql cannot reset these on an existing role, so verify is the only check on them.
+  it.each(['super', 'replication', 'bypassrls', 'cloudsqlsuperuser'])('flags %s=true as over-privileged', (attr) => {
+    expect(judgeLogin({ ...clean('portal_owner', 'portal', false), [attr]: true }, owner)).toEqual([
+      expect.stringMatching(/^portal_owner is over-privileged/),
+    ]);
+  });
+  it('flags a CREATEROLE owner and a migration role without CREATEROLE', () => {
+    expect(judgeLogin(clean('portal_owner', 'portal', true), owner)).toEqual(['portal_owner has createrole=true, want false']);
+    expect(judgeLogin(clean('harness_admin', 'papercusp_hosted', false, 'set, inherit'), admin)).toEqual([
+      'harness_admin has createrole=false, want true',
+    ]);
+  });
+  // Without it, migration 978 cannot SET ROLE to the hosted_* roles it just created (D-010).
+  it('flags a migration role missing the createrole_self_grant setting', () => {
+    expect(judgeLogin(clean('harness_admin', 'papercusp_hosted', true, ''), admin)).toEqual([
+      'harness_admin has createrole_self_grant="", want "set, inherit"',
+    ]);
+  });
+  it('flags a probe that ran as someone else or in another database', () => {
+    expect(judgeLogin(clean('postgres', 'portal', false), owner)[0]).toMatch(/unexpected identity/);
+  });
+  it('probes every owner and both hosted login roles, each with its own password secret', () => {
+    expect(loginTargets(PROD_SPEC).map((t) => `${t.role}@${t.db}:${t.from}:${t.createRole}`)).toEqual([
+      'papercusp_hosted_owner@papercusp_hosted:cloudsql-papercusp-hosted-owner-password:false',
+      'portal_owner@portal:cloudsql-portal-owner-password:false',
+      'dbos_system_owner@dbos_system:cloudsql-dbos-system-owner-password:false',
+      'harness_admin@papercusp_hosted:cloudsql-harness-admin-password:true',
+      'harness_app@papercusp_hosted:cloudsql-harness-app-password:false',
+    ]);
+  });
+});
+
 suite('scramSha256Verifier', () => {
   it('produces a verifier that pg’s independent SCRAM client authenticates against', async () => {
     const sasl = require('pg/lib/crypto/sasl.js') as {
@@ -230,6 +282,11 @@ suite('up --dry-run (plan)', () => {
       '--data-api-access=ALLOW_DATA_API',
       'secrets create cloudsql-portal-owner-password',
       'secrets create cloudsql-portal-url',
+      'secrets create cloudsql-harness-admin-password',
+      'secrets create cloudsql-harness-app-password',
+      'execute-sql as postgres: create/alter roles harness_admin, harness_app, harness_zero',
+      'secrets create cloudsql-harness-admin-url',
+      'secrets create cloudsql-harness-app-url',
     ]) {
       expect(plan).toContain(step);
     }

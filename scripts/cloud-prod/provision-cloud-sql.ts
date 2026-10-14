@@ -1,15 +1,17 @@
 #!/usr/bin/env -S npx tsx
 /**
  * Production Postgres for the hosted control plane and portal, as code
- * (plan cloud-portal-public-release-2026-10-13, P-004; shape = D-004, project = D-007).
+ * (plan cloud-portal-public-release-2026-10-13, P-004; shape = D-004, project = D-007;
+ * hosted control plane roles = P-005 / D-010, SQL in role-sql.ts).
  *
  *   plan     print every mutation `up` would make, change nothing
  *   up       idempotently create the project, network, private services access,
- *            secrets, Cloud SQL instance, databases and per-database owner roles,
- *            then verify. Safe to re-run: existing resources are left alone.
+ *            secrets, Cloud SQL instance, databases, per-database owner roles and the
+ *            hosted roles (harness_admin, harness_app, harness_zero), then verify.
+ *            Safe to re-run: existing resources are left alone.
  *   verify   check the live instance against the spec (drift = non-zero exit).
- *            `verify --logins` also proves each owner role can log in to its own
- *            database and NOT to the others (briefly enables the Data API).
+ *            `verify --logins` also proves each owner and hosted role can log in to its
+ *            own database and NOT to the others (briefly enables the Data API).
  *   probe-tls  from a throwaway VM inside the VPC, prove the instance refuses a plaintext
  *            (sslmode=disable) connection before authentication; the VM is always deleted.
  *   status   one-line instance summary
@@ -25,6 +27,16 @@
  */
 import { execFile } from 'node:child_process';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import {
+  assertIdent,
+  assertScramVerifier,
+  HOSTED_DATABASE,
+  HOSTED_ROLES,
+  hostedPasswordSecret,
+  hostedUrlSecret,
+  productionRoleSql,
+  upsertRoleSql,
+} from './role-sql';
 import { generatePassword, scramSha256Verifier } from './scram';
 
 export interface CloudSqlProdSpec {
@@ -331,16 +343,16 @@ export function instanceDrift(inst: Json, spec: CloudSqlProdSpec): string[] {
   return checks.filter(([, ok]) => !ok).map(([name]) => name);
 }
 
-/** Bootstrap SQL for one database's owner role. Contains a SCRAM verifier, never a password. */
+/**
+ * Bootstrap SQL for one database's owner role. Contains a SCRAM verifier, never a password.
+ * Re-runnable as Cloud SQL's non-superuser `postgres`: see upsertRoleSql (role-sql.ts).
+ */
 export function ownerRoleSql(db: string, verifier: string): { inPostgres: string; inDatabase: string } {
-  if (!/^[a-z_][a-z0-9_]*$/.test(db)) throw new Error(`unsafe database name: ${db}`);
-  if (!/^SCRAM-SHA-256\$\d+:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/.test(verifier)) {
-    throw new Error('ownerRoleSql: refusing a value that is not a SCRAM-SHA-256 verifier');
-  }
+  assertIdent('database', db);
+  assertScramVerifier('ownerRoleSql', verifier);
   const role = ownerRole(db);
-  const attrs = `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 100 PASSWORD '${verifier}'`;
   const inPostgres = [
-    `DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${role}') THEN CREATE ROLE ${role} ${attrs}; ELSE ALTER ROLE ${role} ${attrs}; END IF; END $$;`,
+    upsertRoleSql({ name: role, login: true, connectionLimit: 100, verifier }),
     `REVOKE ALL ON DATABASE ${db} FROM PUBLIC;`,
     `GRANT CONNECT, CREATE, TEMPORARY ON DATABASE ${db} TO ${role};`,
   ].join('\n');
@@ -568,23 +580,49 @@ async function ensureOwnerRoles(ctx: Ctx, rootPassword: string): Promise<void> {
         if (r.code !== 0) throw new Error(`bootstrap SQL for ${db} failed: ${firstLine(r.stderr)}`);
       }
     }
-    await ensureUrlSecret(ctx, db, password);
+    await ensureUrlSecret(ctx, urlSecret(db), ownerRole(db), db, password);
   }
   void rootPassword;
 }
 
-async function ensureUrlSecret(ctx: Ctx, db: string, password: string): Promise<void> {
+/**
+ * D-010: the hosted control plane's migration role (harness_admin), runtime role (harness_app)
+ * and the NOLOGIN harness_zero the migrations name, plus the extensions harness_admin cannot
+ * create itself. The two URL secrets are what P-007 delivers as the D-009 env vars.
+ */
+async function ensureHostedRoles(ctx: Ctx): Promise<void> {
+  const { admin, app, zero } = HOSTED_ROLES;
+  const adminPassword = await ensureSecret(ctx, hostedPasswordSecret(admin), () => generatePassword());
+  const appPassword = await ensureSecret(ctx, hostedPasswordSecret(app), () => generatePassword());
+  const sql = productionRoleSql({
+    adminVerifier: scramSha256Verifier(adminPassword),
+    appVerifier: scramSha256Verifier(appPassword),
+  });
+  ctx.mutations.push(
+    `execute-sql as postgres: create/alter roles ${admin}, ${app}, ${zero}; privileges and extensions on ${HOSTED_DATABASE}`,
+  );
+  if (!ctx.dryRun) {
+    for (const [database, text] of [
+      ['postgres', sql.inPostgres],
+      [HOSTED_DATABASE, sql.inDatabase],
+      [HOSTED_DATABASE, sql.extensions],
+    ] as const) {
+      const r = await executeSql(ctx, 'postgres', ROOT_SECRET, database, text);
+      if (r.code !== 0) throw new Error(`hosted role bootstrap failed in ${database}: ${firstLine(r.stderr)}`);
+    }
+  }
+  await ensureUrlSecret(ctx, hostedUrlSecret(admin), admin, HOSTED_DATABASE, adminPassword);
+  await ensureUrlSecret(ctx, hostedUrlSecret(app), app, HOSTED_DATABASE, appPassword);
+}
+
+async function ensureUrlSecret(ctx: Ctx, secret: string, role: string, db: string, password: string): Promise<void> {
   const { spec } = ctx;
   let ip = '<private-ip>';
   if (!ctx.dryRun) {
     const inst = await describe(ctx, ['sql', 'instances', 'describe', spec.instance, ...proj(ctx)]);
     ip = privateIp(inst ?? {});
   }
-  await ensureSecret(
-    ctx,
-    urlSecret(db),
-    () => `postgresql://${ownerRole(db)}:${encodeURIComponent(password)}@${ip}:5432/${db}?sslmode=require`,
-  );
+  await ensureSecret(ctx, secret, () => `postgresql://${role}:${encodeURIComponent(password)}@${ip}:5432/${db}?sslmode=require`);
 }
 
 // ── verification ─────────────────────────────────────────────────────────────
@@ -617,34 +655,76 @@ export async function verify(ctx: Ctx, opts: { logins: boolean }): Promise<Verif
     (await run(ctx, ['sql', 'databases', 'list', `--instance=${spec.instance}`, ...proj(ctx), '--format=json'])).stdout || '[]',
   ) as Array<{ name?: string }>;
   report.missingDatabases = spec.databases.filter((d) => !dbs.some((x) => x.name === d));
-  const secrets = [ROOT_SECRET, ...spec.databases.flatMap((d) => [ownerPasswordSecret(d), urlSecret(d)])];
+  const secrets = [
+    ROOT_SECRET,
+    ...spec.databases.flatMap((d) => [ownerPasswordSecret(d), urlSecret(d)]),
+    ...[HOSTED_ROLES.admin, HOSTED_ROLES.app].flatMap((r) => [hostedPasswordSecret(r), hostedUrlSecret(r)]),
+  ];
   for (const s of secrets) {
     if (!(await describe(ctx, ['secrets', 'describe', s, `--location=${spec.region}`, ...proj(ctx)]))) report.missingSecrets.push(s);
   }
   return report;
 }
 
-/** Each owner logs in to its own database, is not a superuser, and is refused elsewhere. */
+/** What one login probe saw; ExecuteSql returns it as a single JSON cell. */
+export interface LoginProbe {
+  user?: unknown;
+  db?: unknown;
+  super?: unknown;
+  createrole?: unknown;
+  replication?: unknown;
+  bypassrls?: unknown;
+  cloudsqlsuperuser?: unknown;
+  selfgrant?: unknown;
+}
+
+export const LOGIN_PROBE_SQL =
+  "SELECT json_build_object('user', current_user, 'db', current_database(), 'super', r.rolsuper, 'createrole', r.rolcreaterole, 'replication', r.rolreplication, 'bypassrls', r.rolbypassrls, 'cloudsqlsuperuser', pg_has_role(current_user, 'cloudsqlsuperuser', 'MEMBER'), 'selfgrant', current_setting('createrole_self_grant'))::text AS j FROM pg_roles r WHERE r.rolname = current_user";
+
+/**
+ * Judge one login probe. The attributes upsertRoleSql cannot reset on an existing role
+ * (superuser, replication, bypassrls) are checked here instead; `createRole` is what the role
+ * should hold, and a CREATEROLE role must carry D-010's self-grant setting.
+ */
+export function judgeLogin(cell: LoginProbe, want: { role: string; db: string; createRole: boolean }): string[] {
+  const failures: string[] = [];
+  const seen = JSON.stringify(cell);
+  if (cell.user !== want.role || cell.db !== want.db) failures.push(`${want.role}@${want.db}: unexpected identity ${seen}`);
+  if (cell.super !== false || cell.replication !== false || cell.bypassrls !== false || cell.cloudsqlsuperuser !== false) {
+    failures.push(`${want.role} is over-privileged: ${seen}`);
+  }
+  if (cell.createrole !== want.createRole) failures.push(`${want.role} has createrole=${String(cell.createrole)}, want ${want.createRole}`);
+  if (want.createRole && cell.selfgrant !== 'set, inherit') {
+    failures.push(`${want.role} has createrole_self_grant=${JSON.stringify(cell.selfgrant)}, want "set, inherit"`);
+  }
+  return failures;
+}
+
+/** Every login `verify --logins` exercises: the owners, then the hosted roles (D-010). */
+export function loginTargets(spec: CloudSqlProdSpec): Array<{ role: string; from: string; db: string; createRole: boolean }> {
+  const hosted = (role: string, createRole: boolean) => ({ role, from: hostedPasswordSecret(role), db: HOSTED_DATABASE, createRole });
+  return [
+    ...spec.databases.map((db) => ({ role: ownerRole(db), from: ownerPasswordSecret(db), db, createRole: false })),
+    hosted(HOSTED_ROLES.admin, true),
+    hosted(HOSTED_ROLES.app, false),
+  ];
+}
+
+/** Each role logs in to its own database, is not over-privileged, and is refused elsewhere. */
 async function verifyLogins(ctx: Ctx): Promise<string[]> {
   const { spec } = ctx;
   const failures: string[] = [];
-  const probe =
-    "SELECT json_build_object('user', current_user, 'db', current_database(), 'super', r.rolsuper, 'createrole', r.rolcreaterole, 'cloudsqlsuperuser', pg_has_role(current_user, 'cloudsqlsuperuser', 'MEMBER'))::text AS j FROM pg_roles r WHERE r.rolname = current_user";
-  for (const db of spec.databases) {
-    const role = ownerRole(db);
-    const r = await executeSql(ctx, role, ownerPasswordSecret(db), db, probe);
+  for (const { role, from, db, createRole } of loginTargets(spec)) {
+    const r = await executeSql(ctx, role, from, db, LOGIN_PROBE_SQL);
     const cell = jsonCells(r.stdout)[0];
     if (r.code !== 0 || !cell) {
       failures.push(`${role} cannot log in to ${db}: ${firstLine(r.stderr) || 'no result'}`);
       continue;
     }
-    if (cell.user !== role || cell.db !== db) failures.push(`${role}@${db}: unexpected identity ${JSON.stringify(cell)}`);
-    if (cell.super !== false || cell.createrole !== false || cell.cloudsqlsuperuser !== false) {
-      failures.push(`${role} is over-privileged: ${JSON.stringify(cell)}`);
-    }
+    failures.push(...judgeLogin(cell, { role, db, createRole }));
     const other = spec.databases.find((d) => d !== db);
     if (other) {
-      const x = await executeSql(ctx, role, ownerPasswordSecret(db), other, 'SELECT 1');
+      const x = await executeSql(ctx, role, from, other, 'SELECT 1');
       if (x.code === 0 && !/permission denied|not permitted|denied/i.test(x.stdout + x.stderr)) {
         failures.push(`${role} could connect to ${other} (CONNECT not restricted)`);
       }
@@ -680,13 +760,17 @@ export async function up(ctx: Ctx): Promise<VerifyReport | null> {
   const rootPassword = await ensureSecret(ctx, ROOT_SECRET, () => generatePassword());
   await ensureInstance(ctx, rootPassword);
   await ensureDatabases(ctx);
+  const bootstrapRoles = async () => {
+    await ensureOwnerRoles(ctx, rootPassword);
+    await ensureHostedRoles(ctx);
+  };
   if (ctx.dryRun) {
     await setDataApi(ctx, true);
-    await ensureOwnerRoles(ctx, rootPassword);
+    await bootstrapRoles();
     await setDataApi(ctx, false);
     return null;
   }
-  await withDataApi(ctx, () => ensureOwnerRoles(ctx, rootPassword));
+  await withDataApi(ctx, bootstrapRoles);
   return verify(ctx, { logins: true });
 }
 
