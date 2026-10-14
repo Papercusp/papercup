@@ -178,32 +178,66 @@ export interface EnforceInheritedPolicyDeps {
   now?: () => Date;
 }
 
-export async function enforceInheritedPolicy(
-  request: KernelEnforcementRequest,
+/** Judges one subject against a workspace's loaded chain: `null` allows, a result refuses. */
+export type WorkspacePolicyJudge = (subject: GovernedRequest) => KernelEnforcementResult | null;
+
+/**
+ * Load a workspace's inherited policy chain ONCE and return a judge for any number of
+ * subjects. This is the dispatch seat's own loader, cache and fail-closed semantics, exported
+ * so seats that are not a tool dispatch — the agent session's launch-time model/provider and
+ * the turn-start granted-sources injection (WI-6554700010011633) — are judged identically.
+ *
+ * Returns `null` (nothing governs) when no loader is installed or the workspace has no chain.
+ * An unreadable or malformed chain returns a judge that refuses EVERY subject. Never throws.
+ */
+export async function workspacePolicyJudge(
+  workspaceId: string,
   deps: EnforceInheritedPolicyDeps = {},
-): Promise<KernelEnforcementResult | null> {
+): Promise<WorkspacePolicyJudge | null> {
   const loader = deps.loadChain ?? state.loader;
-  if (!loader) return null;
+  if (!loader || !workspaceId) return null;
   try {
-    const workspaceId = request.ctx?.workspaceId;
-    if (!workspaceId) return null;
-    const subject = governedRequestOf(request);
-    if (subject.tools?.some((t) => isGovernanceAdminTool(t))) return null;
     const now = deps.now?.() ?? new Date();
     const load = deps.loadChain
       ? await deps.loadChain(workspaceId).catch((err: unknown) => ({ status: 'unavailable' as const, reason: err instanceof Error ? err.message : String(err) }))
       : await chainFor(workspaceId, loader, now.getTime());
     if (load.status === 'none') return null;
     if (load.status === 'unavailable') {
-      return deny('unavailable', `the governing policy for workspace ${workspaceId} cannot be read (${load.reason}); no effect authorized`);
+      const refusal = deny('unavailable', `the governing policy for workspace ${workspaceId} cannot be read (${load.reason}); no effect authorized`);
+      return () => refusal;
     }
     if (load.status === 'malformed') {
-      return deny('malformed', `the governing policy chain for workspace ${workspaceId} is malformed (${load.reason})`);
+      const refusal = deny('malformed', `the governing policy chain for workspace ${workspaceId} is malformed (${load.reason})`);
+      return () => refusal;
     }
-    const verdict = evaluateInheritedPolicy(load.chain, subject, now);
-    if (verdict.allow) return null;
-    const revision = load.chain.map((l) => `${l.layerId}@v${l.version}`).join('>');
-    return deny(verdict.code, verdict.reason, revision);
+    const chain = load.chain;
+    const revision = chain.map((l) => `${l.layerId}@v${l.version}`).join('>');
+    return (subject) => {
+      try {
+        const verdict = evaluateInheritedPolicy(chain, subject, now);
+        return verdict.allow ? null : deny(verdict.code, verdict.reason, revision);
+      } catch (err) {
+        return deny('unavailable', `policy check failed (${err instanceof Error ? err.message : String(err)}); no effect authorized`);
+      }
+    };
+  } catch (err) {
+    const refusal = deny('unavailable', `policy check failed (${err instanceof Error ? err.message : String(err)}); no effect authorized`);
+    return () => refusal;
+  }
+}
+
+export async function enforceInheritedPolicy(
+  request: KernelEnforcementRequest,
+  deps: EnforceInheritedPolicyDeps = {},
+): Promise<KernelEnforcementResult | null> {
+  if (!(deps.loadChain ?? state.loader)) return null;
+  try {
+    const workspaceId = request.ctx?.workspaceId;
+    if (!workspaceId) return null;
+    const subject = governedRequestOf(request);
+    if (subject.tools?.some((t) => isGovernanceAdminTool(t))) return null;
+    const judge = await workspacePolicyJudge(workspaceId, deps);
+    return judge ? judge(subject) : null;
   } catch (err) {
     return deny('unavailable', `policy check failed (${err instanceof Error ? err.message : String(err)}); no effect authorized`);
   }
