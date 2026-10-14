@@ -373,6 +373,28 @@ describe('native hook operation fence', () => {
     expect(proofs.size).toBe(0); expect(grants.size).toBe(0);
   });
 
+  it.each(['exec', 'functions.exec', 'functions__exec'])('failed Codex %s text-block result cancels only its granted patch scope', async toolName => {
+    await hook('pretooluse-locks-acquire.sh', payload());
+    const saved = record();
+    await hook('pretooluse-locks-acquire.sh', payload('unrelated', ['sub/unrelated.ts']));
+    const unrelated = record('unrelated');
+    explicit.add('sub/explicit.ts');
+    // Native code-mode failures return text blocks, without an exit_code field.
+    // This is the shape retained for the failed 2026-10-14 baseline patch.
+    const response = [
+      { type: 'input_text', text: 'Script failed\nWall time 2.9 seconds\nOutput:\n' },
+      { type: 'input_text', text: 'Script error:\napply_patch verification failed: Failed to find expected lines' },
+    ];
+    await hook('posttooluse-locks-release.sh', { ...parent(response), tool_name: toolName });
+    expect(mutations.get(saved.operation.id)?.state).toBe('cancelled');
+    expect(grants.has('sub/one.ts')).toBe(false);
+    expect(proofs.size).toBe(0);
+    expect(grants.has('sub/unrelated.ts')).toBe(true);
+    expect(record('unrelated').operation).toEqual(unrelated.operation);
+    expect(record('unrelated')).not.toHaveProperty('terminal');
+    expect(explicit.has('sub/explicit.ts')).toBe(true);
+  });
+
   it('foreign native continuation cannot finish a cached operation', async () => {
     await hook('pretooluse-locks-acquire.sh', payload());
     await hook('posttooluse-locks-release.sh', { ...success(), session_id: 'foreign-native-session' });

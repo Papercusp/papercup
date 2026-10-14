@@ -96,6 +96,42 @@ function expandSelectionCommands(scripts, script, seen = new Set()) {
   ];
 }
 
+// A command's maintained discovery route measures source inputs, never its
+// verdict. Re-read every named byte at the selector boundary; claims of prior
+// execution or malformed censuses cannot erase a command obligation.
+function commandSelectionInputs(root, wsRoot, executable, args) {
+  const output = execFileSync(executable, args, { cwd: wsRoot, encoding: 'utf8', timeout: 10_000 });
+  const marker = 'COMMAND_CHECK_SELECTION=';
+  const lines = output.split(/\r?\n/).filter(line => line.startsWith(marker));
+  const receipt = lines.length === 1 && JSON.parse(lines[0].slice(marker.length));
+  const validPath = file => typeof file === 'string' && file && !path.isAbsolute(file) &&
+    !file.includes('\\') && file.split('/').every(part => part && part !== '.' && part !== '..');
+  if (receipt?.schemaVersion !== 1 || receipt.kind !== 'command-check-inputs' ||
+      typeof receipt.check !== 'string' || !receipt.check || receipt.executed !== false ||
+      receipt.runtimeClosure !== 'unmeasured' || receipt.operationalAcceptance !== false ||
+      !Array.isArray(receipt.files) || !receipt.files.every(validPath) ||
+      new Set(receipt.files).size !== receipt.files.length ||
+      !Array.isArray(receipt.inputs) || !receipt.inputs.length ||
+      !receipt.inputs.every(input => validPath(input.path) && /^[a-f0-9]{64}$/.test(input.sha256) &&
+        createHash('sha256').update(readFileSync(path.resolve(root, input.path))).digest('hex') === input.sha256) ||
+      new Set(receipt.inputs.map(input => input.path)).size !== receipt.inputs.length ||
+      !receipt.files.every(file => receipt.inputs.some(input => input.path === file)))
+    throw new Error('invalid-command-check-discovery');
+  return receipt;
+}
+
+function lifecycleSelection(task, step, root, wsRoot) {
+  const obligation = { kind: 'npm-lifecycle', ...step, inputs: null, executed: false };
+  if (task.workspace === '@bug-drill/fixture' && step.command === 'node scripts/build.mjs') {
+    const discovery = commandSelectionInputs(root, wsRoot, process.execPath,
+      ['scripts/build.mjs', '--print-selection', '--repository-root', root]);
+    if (discovery.check !== 'fixture-build' || discovery.files.length !== 0 ||
+        discovery.dependencyClosure !== 'unmeasured') throw new Error('invalid-fixture-build-discovery');
+    return { ...obligation, inputs: discovery.inputs, discovery };
+  }
+  return obligation;
+}
+
 /** Preparation only: enumerate the maintained selector's actual task configs, never executions.
  * Unsupported commands and failed config reads remain named residue, even with relatedFiles.
  * @param {Array<object>} tasks
@@ -131,8 +167,8 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
         if (steps.length < 2 || steps.some(step => step.command.includes('&&')))
           throw new Error('unsupported-task-command');
         const prepared = steps.map(step => {
-          if (step.lifecycle) return { ...step, files: [], commandObligations: [{
-            kind: 'npm-lifecycle', command: step.command, inputs: null, executed: false }],
+          if (step.lifecycle) return { ...step, files: [], commandObligations: [
+            lifecycleSelection(task, step, root, wsRoot)],
             unenumerated: [{ reason: 'unexecuted-lifecycle-command' }] };
           const leaf = enumerateAffectedTaskSelection([{ ...t, script: step.script,
             ws: { ...t.ws, scripts: { [step.script]: step.command } } }], { root, filterDir, runResolver, syncAstro });
@@ -170,23 +206,7 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
         ['/bin/bash', ['bin/lib/run-selftests.sh', '--print-selection']] : null;
     if (discoveryCommand) {
       try {
-        const output = execFileSync(discoveryCommand[0], discoveryCommand[1], {
-          cwd: wsRoot, encoding: 'utf8', timeout: 10_000 });
-        const marker = 'COMMAND_CHECK_SELECTION=';
-        const line = output.split(/\r?\n/).find(line => line.startsWith(marker));
-        const receipt = line && JSON.parse(line.slice(marker.length));
-        const validPath = file => typeof file === 'string' && file && !path.isAbsolute(file) &&
-          !file.includes('\\') && file.split('/').every(part => part && part !== '.' && part !== '..');
-        if (receipt?.kind !== 'command-check-inputs' || receipt.executed !== false ||
-            receipt.runtimeClosure !== 'unmeasured' || receipt.operationalAcceptance !== false ||
-            !Array.isArray(receipt.files) || !receipt.files.every(validPath) ||
-            new Set(receipt.files).size !== receipt.files.length ||
-            !Array.isArray(receipt.inputs) || !receipt.inputs.length ||
-            !receipt.inputs.every(input => validPath(input.path) && /^[a-f0-9]{64}$/.test(input.sha256) &&
-              createHash('sha256').update(readFileSync(path.resolve(root, input.path))).digest('hex') === input.sha256) ||
-            new Set(receipt.inputs.map(input => input.path)).size !== receipt.inputs.length ||
-            !receipt.files.every(file => receipt.inputs.some(input => input.path === file)))
-          throw new Error('invalid-command-check-discovery');
+        const receipt = commandSelectionInputs(root, wsRoot, discoveryCommand[0], discoveryCommand[1]);
         const commandObligations = [{ kind: 'command-check', command: resolvedCommand,
           check: receipt.check, inputs: receipt.inputs, discovery: receipt, executed: false }];
         entries.push({ ...task, runner: 'command-check', files: receipt.files.slice().sort(), commandObligations });
@@ -312,9 +332,14 @@ export function enumerateAffectedTaskSelection(tasks, { root, filterDir, runReso
   }
   for (const task of entries) {
     if (task.runner === 'command-chain' || !task.lifecycleCommands.length) continue;
-    task.commandObligations = [...(task.commandObligations ?? []), ...task.lifecycleCommands.map(step => ({
-      kind: 'npm-lifecycle', ...step, inputs: null, executed: false,
-    }))];
+    const lifecycle = task.lifecycleCommands.map(step => {
+      try { return lifecycleSelection(task, step, root, path.resolve(root, task.dir)); }
+      catch (error) {
+        unenumerated.push({ task: task.id, reason: error.message, command: step.command });
+        return { kind: 'npm-lifecycle', ...step, inputs: null, executed: false };
+      }
+    });
+    task.commandObligations = [...(task.commandObligations ?? []), ...lifecycle];
     unenumerated.push({ task: task.id, reason: 'unexecuted-lifecycle-command', command: task.command });
   }
   entries.sort((a, b) => tasks.findIndex(t => `${t.ws.name} :: ${t.script}` === a.id) -

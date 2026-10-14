@@ -136,6 +136,31 @@ describe('ensureFsMutexLockRoot migration', () => {
     }
   });
 
+  // EI-25835785788432904: reader acquisition must continue on the legacy root
+  // while the migration waits for existing reader leases to drain.
+  it('keeps callers on the legacy root while active legacy reader leases drain', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-active-reader-migration-'));
+    const homeDir = join(temp, 'home');
+    const legacyRoot = join(temp, 'legacy-locks');
+    const readersDir = join(legacyRoot, 'package-manager-cache.readers');
+    const readerDir = join(readersDir, `${process.pid}-reader.lock`);
+    await mkdir(readerDir, { recursive: true });
+    await writeFile(join(readerDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      startedAt: new Date().toISOString(),
+    }));
+
+    try {
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+        .resolves.toBe(legacyRoot);
+      await expect(readdir(join(homeDir, '.papercusp', 'fs-mutex-locks')))
+        .rejects.toHaveProperty('code', 'ENOENT');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it('fails closed when a legacy lease owner cannot be identified', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-unknown-migration-'));
     const homeDir = join(temp, 'home');

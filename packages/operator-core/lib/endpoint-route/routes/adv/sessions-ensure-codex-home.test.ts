@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   presenceRows: vi.fn(),
   fleetMemberships: vi.fn(),
   resumableSessions: vi.fn(),
+  archiveStamp: vi.fn(),
 }));
 
 const OWNER = 'su-p006-pinned-codex';
@@ -40,6 +41,9 @@ vi.mock('../../../adv-sessions', async (original) => ({
   getAdvSession: mocks.sessionRow,
   recordSuLaunchSpec: mocks.recordLaunchSpec,
   listResumableSessions: mocks.resumableSessions,
+}));
+vi.mock('../../../session-archive', () => ({
+  pgSessionArchiveStore: () => ({ readStamp: mocks.archiveStamp }),
 }));
 vi.mock('../../../agent-tools/coordination/presence', async (original) => ({
   ...(await original<typeof import('../../../agent-tools/coordination/presence')>()),
@@ -119,6 +123,7 @@ beforeEach(() => {
   mocks.presenceRows.mockResolvedValue([]);
   mocks.fleetMemberships.mockResolvedValue(new Map());
   mocks.resumableSessions.mockResolvedValue([]);
+  mocks.archiveStamp.mockResolvedValue(null);
 });
 
 async function call(model?: string, extra: { requireGatewayProvider?: boolean } = {}) {
@@ -126,6 +131,41 @@ async function call(model?: string, extra: { requireGatewayProvider?: boolean } 
     method: 'POST', body: JSON.stringify({ owner: OWNER, advSessionId: ADV_SESSION_ID, model, ...extra }),
   }));
 }
+
+describe('resumable archived backend identity', () => {
+  const nativeId = '01a133bc-e525-75a1-885d-ea1cd5d4a1e5';
+
+  it('finds an archived OMP thread when the tracked row has no session_id', async () => {
+    mocks.resumableSessions.mockResolvedValue([
+      { id: ADV_SESSION_ID, agent: 'omp', sessionId: null, ompThreadId: nativeId, workspaceId: 'papercusp-workspace' },
+    ]);
+    mocks.archiveStamp.mockResolvedValue({ sourceKind: 'omp', sessionId: nativeId });
+
+    const response = await resumableSessions(new Request('http://localhost:3170/api/adv/sessions/resumable'));
+    expect(response.status).toBe(200);
+    expect((await response.json()).sessions).toEqual([
+      expect.objectContaining({ agent: 'omp', sessionId: null, ompThreadId: nativeId, hasArchive: true }),
+    ]);
+    expect(mocks.archiveStamp).toHaveBeenCalledExactlyOnceWith('omp', nativeId);
+  });
+
+  it('does not lend one backend archive to another backend with the same native id', async () => {
+    mocks.resumableSessions.mockResolvedValue([
+      { id: ADV_SESSION_ID, agent: 'omp', sessionId: null, ompThreadId: nativeId },
+      { id: ADV_SESSION_ID + 1, agent: 'claude', sessionId: nativeId, ompThreadId: null },
+    ]);
+    mocks.archiveStamp.mockImplementation(async (agent: string) => agent === 'omp' ? { sourceKind: 'omp', sessionId: nativeId } : null);
+
+    const response = await resumableSessions(new Request('http://localhost:3170/api/adv/sessions/resumable'));
+    expect((await response.json()).sessions).toEqual([
+      expect.objectContaining({ agent: 'omp', hasArchive: true }),
+      expect.objectContaining({ agent: 'claude', hasArchive: false }),
+    ]);
+    expect(mocks.archiveStamp).toHaveBeenCalledWith('omp', nativeId);
+    expect(mocks.archiveStamp).toHaveBeenCalledWith('claude', nativeId);
+    expect(mocks.archiveStamp).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('ensure-codex-home pinned-source recovery', () => {
   it('retains a later owner budget when repairing a home with an older launch flag', async () => {
