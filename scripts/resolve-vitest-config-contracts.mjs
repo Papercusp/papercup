@@ -7,7 +7,7 @@
  * machine-readable line the caller consumes.
  */
 
-import { resolveConfig } from 'vitest/node';
+import { createVitest, resolveConfig } from 'vitest/node';
 import { glob } from 'tinyglobby';
 import { resolve, relative, isAbsolute } from 'node:path';
 
@@ -25,14 +25,14 @@ const results = [];
 
 for (const request of requests) {
   const cwd = process.cwd();
-  const keys = ['PC_TEST_LANE', 'PC_TEST_FILTER_LIST', 'PC_TEST_REUSE_SKIP_LIST'];
+  const keys = ['PC_TEST_LANE', 'PC_TEST_FILTER_LIST', 'PC_TEST_REUSE_SKIP_LIST', 'TEMPLATE_CHECKS_CONFIG'];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   try {
     if (request.enumerateFiles) {
       // Configs derive lane membership from cwd, exactly as npm's workspace child does.
       process.chdir(request.root);
       for (const key of keys) delete process.env[key];
-      for (const key of keys.slice(0, 2)) {
+      for (const key of keys.filter(key => key !== 'PC_TEST_REUSE_SKIP_LIST')) {
         if (request.env?.[key] !== undefined) process.env[key] = request.env[key];
       }
     }
@@ -40,11 +40,23 @@ for (const request of requests) {
       root: request.root,
       config: request.config,
     });
-    let files, repositoryFiles;
+    let files, repositoryFiles, projects;
     if (request.enumerateFiles) {
-      // These shapes require additional runner semantics; unknown is never an empty set.
-      if (vitestConfig.includeSource?.length || vitestConfig.typecheck?.enabled ||
-          vitestConfig.projects?.length) throw new Error('unsupported source/typecheck/project population');
+      // Project inheritance, in-source detection and typecheck pools belong to
+      // Vitest itself. Its specification glob does not collect or execute tests.
+      if (vitestConfig.includeSource?.length || vitestConfig.typecheck?.enabled || vitestConfig.projects?.length) {
+        let context;
+        try {
+          context = await createVitest('test', { root: request.root, config: request.config, watch: false });
+          const specifications = await context.globTestSpecifications();
+          projects = specifications.map(spec => ({ name: spec.project.name, pool: spec.pool,
+            file: relative(request.repositoryRoot ?? request.root, spec.moduleId).replaceAll('\\', '/') }));
+          const absoluteFiles = [...new Set(specifications.map(spec => spec.moduleId))];
+          files = absoluteFiles.map(file => relative(request.root, file).replaceAll('\\', '/')).sort();
+          if (request.repositoryRoot) repositoryFiles = absoluteFiles.map(file =>
+            relative(request.repositoryRoot, file).replaceAll('\\', '/')).sort();
+        } finally { await context?.close(); }
+      } else {
       const base = vitestConfig.dir || vitestConfig.root;
       // Same glob engine and options as Vitest's TestProject.globFiles, without collection.
       const absoluteFiles = (await glob(vitestConfig.include, {
@@ -55,6 +67,7 @@ for (const request of requests) {
         // Template suites deliberately own files outside their package, inside the repo.
         repositoryFiles = absoluteFiles.map(file => relative(request.repositoryRoot, file).replaceAll('\\', '/')).sort();
       }
+      }
       if ((repositoryFiles ?? files).some(file => isAbsolute(file) || file === '..' || file.startsWith('../')))
         throw new Error('resolved test population escapes workspace');
     }
@@ -62,6 +75,7 @@ for (const request of requests) {
       ok: true,
       ...(files ? { files, enumerated: true } : {}),
       ...(repositoryFiles ? { repositoryFiles } : {}),
+      ...(projects ? { projects } : {}),
       config: {
         root: vitestConfig.root,
         ...(vitestConfig.dir ? { dir: vitestConfig.dir } : {}),
