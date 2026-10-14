@@ -21,7 +21,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as nativeAdoption from './code-intelligence/native-adoption';
-import { rescoreRubric } from './harness/routines/rubric-rescore-action';
+import { rescoreRubric, type RubricRescoreDeps } from './harness/routines/rubric-rescore-action';
 import { fillRatingsFromLedger } from './scorecard-ledger-fill';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import type { OrgTestDb } from '../test/_org-test-db';
@@ -94,7 +94,7 @@ describe('R-6 — every executed probe or instrument check writes one row to the
   it('scheduled adoption measures the real activity ledger, records regression, and grades from the stored result', async () => {
     const rubricRef = 'acceptance-scheduled-native-fixture';
     const at = '2026-10-13T04:00:00.000Z';
-    const criteria = [{ key: 'r-31', check: { kind: 'instrument', instrumentKey: nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS.goodUse } }];
+    const criteria = [{ key: 'r-31', check: { kind: 'instrument' as const, instrumentKey: nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS.goodUse } }];
     await db.adminSql`
       INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, tool_name, phase, detail, created_at)
       SELECT ${WS}, 'fixture-' || n, 'tool', 'Bash', 'post',
@@ -108,8 +108,10 @@ describe('R-6 — every executed probe or instrument check writes one row to the
     const measureFromDb = nativeAdoption.measureNativeAdoptionWindow;
     const measure = vi.spyOn(nativeAdoption, 'measureNativeAdoptionWindow')
       .mockImplementation(window => measureFromDb(window, db.adminSql));
-    const emit = vi.fn(async () => undefined);
-    const deps = {
+    const emit = vi.fn<NonNullable<RubricRescoreDeps['emit']>>(async opts => ({
+      ok: true, key: opts.key, woken: 0, notified: [], msgId: null, waiters: 0,
+    }));
+    const deps: RubricRescoreDeps = {
       getRubric: async () => ({ rubricId: rubricRef, workspaceId: WS, criteria }),
       readLatest: (input: Parameters<typeof readLatestRubricCheckResults>[0]) => readLatestRubricCheckResults(input, sql()),
       record: (results: ReadonlyArray<RubricCheckResult>, scope: Parameters<typeof recordRubricCheckResults>[1]) =>
