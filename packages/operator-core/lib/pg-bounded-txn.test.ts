@@ -741,7 +741,7 @@ describe('boundedOrgTxn', () => {
 
     const sample = await sampleCandidateWaitOnce(client, 42, new Date(), controller.signal);
 
-    expect(sample).toEqual({ status: 'unavailable', targetPid: 42, reason: 'cancelled' });
+    expect(sample).toEqual({ status: 'unavailable', targetPid: 42, reason: 'cancelled', phase: 'sample' });
     expect(cancel).toHaveBeenCalledOnce();
   });
 
@@ -751,9 +751,56 @@ describe('boundedOrgTxn', () => {
       const client = { begin: () => new Promise<never>(() => {}) } as never;
       const sample = sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal);
       await vi.advanceTimersByTimeAsync(101);
-      await expect(sample).resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline' });
+      await expect(sample).resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'acquire' });
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('distinguishes timeout setup from connection acquisition under the same 100 ms bound', async () => {
+    vi.useFakeTimers();
+    try {
+      const statements: string[] = [];
+      const client = {
+        begin: async (cb: (tx: unknown) => Promise<unknown>) => cb((strings: TemplateStringsArray) => {
+          statements.push(strings.join('?'));
+          return new Promise<never>(() => {});
+        }),
+      } as never;
+      const sample = sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(101);
+      await expect(sample).resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'setup' });
+      expect(statements).toHaveLength(1);
+      expect(statements[0]).toContain('set_config');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['57014', 'deadline'],
+    ['55P03', 'deadline'],
+    ['XX000', 'query-error'],
+  ])('attributes observer SQL failure %s to the sample instead of acquisition', async (code, reason) => {
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => cb((strings: TemplateStringsArray) => {
+        return strings.join('?').includes('set_config')
+          ? Promise.resolve([])
+          : Promise.reject(pgError(code));
+      }),
+    } as never;
+    await expect(sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal))
+      .resolves.toEqual({ status: 'unavailable', targetPid: 42, reason, phase: 'sample' });
+  });
+
+  it('retains settlement failure after a successful sample instead of reporting a wait observation', async () => {
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+        await cb(() => Promise.resolve([]));
+        throw pgError('57014');
+      },
+    } as never;
+    await expect(sampleCandidateWaitOnce(client, 42, new Date(), new AbortController().signal))
+      .resolves.toEqual({ status: 'unavailable', targetPid: 42, reason: 'deadline', phase: 'settle' });
   });
 });

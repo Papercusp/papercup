@@ -173,6 +173,8 @@ export type CandidateWaitSample =
       status: 'unavailable';
       targetPid?: number;
       reason: 'cancelled' | 'deadline' | 'query-error';
+      /** Where this observer failed; absent on historical diagnostic packets. */
+      phase?: 'acquire' | 'setup' | 'sample' | 'settle';
     };
 
 export type CandidateWaitSnapshot = CandidateWaitSample & {
@@ -198,6 +200,7 @@ export async function sampleCandidateWaitOnce(
     waitEvent: string | null;
     blockingPids: number[];
   };
+  let phase: 'acquire' | 'setup' | 'sample' | 'settle' = 'acquire';
 
   try {
     const rows = await withAcquisitionDeadline(
@@ -209,11 +212,13 @@ export async function sampleCandidateWaitOnce(
           const cancellation = cancellableTransaction(rawTx as unknown as OrgSql, signal);
           try {
             cancellation.assertNotAborted();
+            phase = 'setup';
             await cancellation.tx`SELECT set_config('lock_timeout', ${`${CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS}ms`}, true),
                                         set_config('statement_timeout', ${`${CANDIDATE_WAIT_OBSERVER_TIMEOUT_MS}ms`}, true)`;
             if (expired()) throw new Error('candidate wait observer acquisition deadline expired');
             cancellation.assertNotAborted();
             disarm();
+            phase = 'sample';
             const query = cancellation.tx<WaitRow[]>`
               SELECT a.wait_event_type AS "waitEventType",
                      a.wait_event AS "waitEvent",
@@ -224,7 +229,9 @@ export async function sampleCandidateWaitOnce(
                  AND a.query_start >= ${targetQueryStartedAfter}
                  AND a.state = 'active'
                LIMIT 1`;
-            return await (cancellation.abort ? Promise.race([query, cancellation.abort]) : query);
+            const rows = await (cancellation.abort ? Promise.race([query, cancellation.abort]) : query);
+            phase = 'settle';
+            return rows;
           } finally {
             cancellation.cleanup();
           }
@@ -248,6 +255,7 @@ export async function sampleCandidateWaitOnce(
     return {
       status: 'unavailable',
       targetPid,
+      phase,
       reason: signal.aborted
         ? 'cancelled'
         : error instanceof DbCallDeadlineError || code === '57014' || code === '55P03'
