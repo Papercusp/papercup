@@ -14,7 +14,7 @@ import {
 } from '../../providers/connector-runtime';
 import { formatConnectorPushLog, reconcileConnectorPush, type ConnectorPushResult } from '../../providers/connector-push';
 import { runPendingParticipantBackfills } from '../../relationship-graph/participant-backfill';
-import { runChatRollupPass } from '../../data-sources/chat-retrieval-units';
+import { runChatRollupPass, type ChatRollupFailure } from '../../data-sources/chat-retrieval-units';
 import type { Sql } from 'postgres';
 import {
   isGoogleWorkspaceTerminalAuthError,
@@ -137,7 +137,10 @@ export interface ConnectorSyncActionDeps {
   runConnectorSync?: typeof runConnectorSync;
   runParticipantBackfills?: typeof runPendingParticipantBackfills;
   runGoogleContacts?: (ctx: SystemActionCtx, sql: Sql) => Promise<GoogleContactsPersonalVaultPollResult>;
-  runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{ buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; legacyMigrated: number }>;
+  runChatRollup?: (sql: Sql, opts: { workspaceId: string }) => Promise<{
+    buckets: number; unitsWritten: number; unitsRemoved: number; expired: number; legacyMigrated: number;
+    failed: number; failures: ChatRollupFailure[];
+  }>;
 }
 
 /** The registered one-minute connector runner, exported as a deterministic test seam. */
@@ -190,11 +193,12 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
   const backfillFailed = backfills.filter((b) => b.outcome === 'failed');
   // D-016: render the chat messages this tick (and earlier ones) stored into their thread/window
   // units, after retention. Independent of the sync outcome; a failure is reported, never a
-  // failed pass, and its uncommitted batch stays queued for the next tick.
+  // failed pass, and its uncommitted batch stays queued for the next tick. A single bucket that
+  // fails is re-queued with a delay by the pass itself and reported here per bucket.
   let chatRollupError: string | null = null;
   const chat = await (provided.runChatRollup ?? runChatRollupPass)(sql, { workspaceId: ctx.workspaceId }).catch((cause: unknown) => {
     chatRollupError = errorText(cause);
-    return { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0 };
+    return { buckets: 0, unitsWritten: 0, unitsRemoved: 0, expired: 0, legacyMigrated: 0, failed: 0, failures: [] };
   });
   if (chat.buckets > 0 || chat.expired > 0 || chat.legacyMigrated > 0) {
     console.log(
@@ -216,6 +220,10 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       ? [`push subscribe: ${pushFailed.length} source(s) failed: ${pushFailed.map((s) => `${s.sourceId}:${s.error ?? 'failed'}`).join('; ')}`]
       : []),
     ...(chatRollupError ? [`chat rollup failed: ${chatRollupError}`] : []),
+    ...(chat.failed > 0
+      ? [`chat rollup: ${chat.failed} bucket(s) failed and were re-queued: ${chat.failures
+        .map((f) => `${f.dataSourceId}/${f.channelId}/${f.bucketKind}:${f.bucketKey}:${f.error}`).join('; ')}`]
+      : []),
   ];
   return {
     diagnostics: {
@@ -240,6 +248,7 @@ export async function runConnectorSyncAction(ctx: SystemActionCtx, provided: Con
       chatExpired: chat.expired,
       chatLegacyMigrated: chat.legacyMigrated,
       chatRollupFailed: chatRollupError ? 1 : 0,
+      chatBucketsFailed: chat.failed,
     },
     ...(softErrors.length > 0 ? { softError: softErrors.join(' | ').slice(0, 1000) } : {}),
   };

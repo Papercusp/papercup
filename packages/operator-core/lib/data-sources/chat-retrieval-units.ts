@@ -45,6 +45,11 @@
  * can destroy held content.
  *
  * Run each call inside the caller's transaction when its writes must commit together.
+ *
+ * A bucket that fails to render is rolled back on its own (a savepoint inside the caller's
+ * transaction, else a transaction of its own) and re-queued after a retry delay, so one
+ * always-failing bucket cannot stop the rest of the queue (WI-6554700010011913). Failures are
+ * returned in ChatRollupResult.failures for the caller to report.
  */
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -60,6 +65,10 @@ import { upsertOrganizationDocuments, type OrganizationDocumentInput } from './d
 export const DEFAULT_WINDOW_GAP_MINUTES = 30;
 export const DEFAULT_CHAT_MESSAGE_DATATYPE = 'chat-message';
 const DEFAULT_ROLLUP_BATCH = 200;
+/** How long a bucket whose render failed waits before it is dequeued again. */
+export const DEFAULT_ROLLUP_RETRY_DELAY_SECONDS = 300;
+/** Failures listed in a result; `failed` still counts every one. */
+const MAX_REPORTED_ROLLUP_FAILURES = 20;
 
 export type ChatUnitKind = 'thread' | 'window';
 type BucketKind = 'thread' | 'day';
@@ -442,26 +451,72 @@ export interface ChatRollupResult {
   documentsWritten: number;
   /** Buckets whose source routes no corpus row, by reason. */
   corpusSkipped: Partial<Record<CorpusSkipReason, number>>;
+  /** Buckets whose render threw. Each was rolled back on its own and re-queued after the retry delay. */
+  failed: number;
+  /** The first failures (at most MAX_REPORTED_ROLLUP_FAILURES), for the caller to report. */
+  failures: ChatRollupFailure[];
+}
+
+export interface ChatRollupFailure {
+  dataSourceId: string;
+  channelId: string;
+  bucketKind: 'thread' | 'day';
+  bucketKey: string;
+  error: string;
+}
+
+interface QueuedBucket {
+  data_source_id: string;
+  channel_id: string;
+  bucket_kind: BucketKind;
+  bucket_key: string;
+}
+
+type ResolvedSource = { source: SourceRow; route: CorpusRoute };
+type BucketCounts = Pick<ChatRollupResult, 'unitsWritten' | 'unitsUnchanged' | 'unitsRemoved' | 'documentsWritten'> & {
+  skipReason: CorpusSkipReason | null;
+};
+type ScopeFn = (fn: (inner: unknown) => Promise<unknown>) => Promise<unknown>;
+
+/**
+ * Run `fn` so that its failure undoes only its own writes: a savepoint inside the caller's
+ * transaction, else a transaction of its own. A handle with neither runs `fn` directly.
+ */
+function isolated<T>(sql: Sql, fn: (inner: Sql) => Promise<T>): Promise<T> {
+  const handle = sql as unknown as { savepoint?: ScopeFn; begin?: ScopeFn };
+  const scope = typeof handle.savepoint === 'function' ? handle.savepoint : handle.begin;
+  if (typeof scope !== 'function') return fn(sql);
+  return scope.call(handle, (inner) => fn(inner as Sql)) as Promise<T>;
+}
+
+function rollupErrorText(cause: unknown): string {
+  const text = cause instanceof Error ? cause.message : String(cause);
+  return text.length > 500 ? `${text.slice(0, 500)}…` : text;
 }
 
 /**
- * Re-render up to `limit` queued buckets. Dequeue and re-render happen in the
- * caller's statement sequence; run inside a transaction so a failure re-queues.
+ * Re-render up to `limit` due buckets. Each bucket renders in its own savepoint (or
+ * transaction): a bucket that throws is rolled back alone and re-queued `retryDelaySeconds`
+ * later, and the rest of the batch still commits. Run inside a transaction so a failure of the
+ * dequeue itself, or a lost connection, re-queues the whole batch.
  */
 export async function rollupChatUnits(
   sql: Sql,
   workspaceId: string,
-  opts: { dataSourceId?: string; limit?: number; gapMinutes?: number } = {},
+  opts: { dataSourceId?: string; limit?: number; gapMinutes?: number; retryDelaySeconds?: number } = {},
 ): Promise<ChatRollupResult> {
   const limit = Math.max(1, Math.min(1000, opts.limit ?? DEFAULT_ROLLUP_BATCH));
   const gapMs = Math.max(1, opts.gapMinutes ?? DEFAULT_WINDOW_GAP_MINUTES) * 60_000;
+  const retryDelaySeconds = Math.max(0, opts.retryDelaySeconds ?? DEFAULT_ROLLUP_RETRY_DELAY_SECONDS);
   const sourceFilter = opts.dataSourceId ? sql`AND data_source_id = ${opts.dataSourceId}::uuid` : sql``;
-  const buckets = await sql<Array<{ data_source_id: string; channel_id: string; bucket_kind: BucketKind; bucket_key: string }>>`
+  // Only due buckets: a bucket that failed waits out its retry delay (queued_at in the future).
+  const buckets = await sql<QueuedBucket[]>`
     DELETE FROM harness_shared.chat_rollup_queue q
      WHERE (q.workspace_id, q.data_source_id, q.channel_id, q.bucket_kind, q.bucket_key) IN (
        SELECT workspace_id, data_source_id, channel_id, bucket_kind, bucket_key
          FROM harness_shared.chat_rollup_queue
         WHERE workspace_id = ${workspaceId} ${sourceFilter}
+          AND queued_at <= now()
         ORDER BY queued_at
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED)
@@ -469,9 +524,54 @@ export async function rollupChatUnits(
 
   const result: ChatRollupResult = {
     buckets: buckets.length, unitsWritten: 0, unitsUnchanged: 0, unitsRemoved: 0, documentsWritten: 0, corpusSkipped: {},
+    failed: 0, failures: [],
   };
-  const sources = new Map<string, { source: SourceRow; route: CorpusRoute }>();
+  const sources = new Map<string, ResolvedSource>();
   for (const bucket of buckets) {
+    let counts: BucketCounts;
+    try {
+      counts = await isolated(sql, (inner) => rollupBucket(inner, workspaceId, bucket, sources, gapMs));
+    } catch (cause) {
+      result.failed += 1;
+      if (result.failures.length < MAX_REPORTED_ROLLUP_FAILURES) {
+        result.failures.push({
+          dataSourceId: bucket.data_source_id,
+          channelId: bucket.channel_id,
+          bucketKind: bucket.bucket_kind,
+          bucketKey: bucket.bucket_key,
+          error: rollupErrorText(cause),
+        });
+      }
+      // A source deleted meanwhile has nothing left to render, so only a live source re-queues.
+      await sql`
+        INSERT INTO harness_shared.chat_rollup_queue
+          (workspace_id, data_source_id, channel_id, bucket_kind, bucket_key, queued_at)
+        SELECT ${workspaceId}, ${bucket.data_source_id}::uuid, ${bucket.channel_id}, ${bucket.bucket_kind},
+               ${bucket.bucket_key}, now() + make_interval(secs => ${retryDelaySeconds}::double precision)
+         WHERE EXISTS (SELECT 1 FROM harness_shared.data_sources
+                        WHERE workspace_id = ${workspaceId} AND id = ${bucket.data_source_id}::uuid)
+        ON CONFLICT DO NOTHING`;
+      continue;
+    }
+    result.unitsWritten += counts.unitsWritten;
+    result.unitsUnchanged += counts.unitsUnchanged;
+    result.unitsRemoved += counts.unitsRemoved;
+    result.documentsWritten += counts.documentsWritten;
+    if (counts.skipReason) result.corpusSkipped[counts.skipReason] = (result.corpusSkipped[counts.skipReason] ?? 0) + 1;
+  }
+  return result;
+}
+
+/** Re-render one dequeued bucket from its live messages. Throws on any write failure. */
+async function rollupBucket(
+  sql: Sql,
+  workspaceId: string,
+  bucket: QueuedBucket,
+  sources: Map<string, ResolvedSource>,
+  gapMs: number,
+): Promise<BucketCounts> {
+  const result: BucketCounts = { unitsWritten: 0, unitsUnchanged: 0, unitsRemoved: 0, documentsWritten: 0, skipReason: null };
+  {
     let resolved = sources.get(bucket.data_source_id);
     if (!resolved) {
       const rows = await sql<SourceRow[]>`
@@ -479,7 +579,7 @@ export async function rollupChatUnits(
                datatype_mappings, destination_policy, permission_mapping
           FROM harness_shared.data_sources
          WHERE workspace_id = ${workspaceId} AND id = ${bucket.data_source_id}::uuid`;
-      if (!rows[0]) continue;
+      if (!rows[0]) return result;
       let route = corpusRouteFor(rows[0]);
       // A disabled vault takes no writes (upsertPersonalDocuments would throw and re-queue forever).
       if (route.write && route.scope === 'personal' && !(await isPersonalVaultEnabled(sql, workspaceId, route.userId))) {
@@ -490,7 +590,7 @@ export async function rollupChatUnits(
     }
     const { source, route } = resolved;
     const corpusSource = normalizePersonalSource(source.kind);
-    if (!route.write) result.corpusSkipped[route.reason] = (result.corpusSkipped[route.reason] ?? 0) + 1;
+    if (!route.write) result.skipReason = route.reason;
 
     const unitKind: ChatUnitKind = bucket.bucket_kind === 'thread' ? 'thread' : 'window';
     const messageFilter = bucket.bucket_kind === 'thread'
@@ -769,12 +869,15 @@ export interface ChatRollupPassResult extends ChatRollupResult {
 
 /**
  * One driver pass (D-016): retention first (its deletes re-queue buckets), then the legacy
- * cut-over, then up to `maxBatches` rollup batches. Each step commits in its own transaction, so
- * a failed batch re-queues only its own buckets; the error propagates to the caller.
+ * cut-over, then up to `maxBatches` rollup batches. Each step commits in its own transaction.
+ * A bucket that fails to render is re-queued after the retry delay and reported in `failures`
+ * while the rest of its batch commits; any other failure rolls back its step and propagates.
  */
 export async function runChatRollupPass(
   sql: Sql,
-  opts: { workspaceId: string; maxBatches?: number; batchSize?: number; gapMinutes?: number; now?: Date },
+  opts: {
+    workspaceId: string; maxBatches?: number; batchSize?: number; gapMinutes?: number; retryDelaySeconds?: number; now?: Date;
+  },
 ): Promise<ChatRollupPassResult> {
   const { workspaceId } = opts;
   const batchSize = Math.max(1, Math.min(1000, opts.batchSize ?? DEFAULT_ROLLUP_BATCH));
@@ -793,15 +896,21 @@ export async function runChatRollupPass(
     unitsRemoved: 0,
     documentsWritten: 0,
     corpusSkipped: {},
+    failed: 0,
+    failures: [],
   };
   for (let i = 0; i < maxBatches; i += 1) {
-    const batch = await tx((inner) => rollupChatUnits(inner, workspaceId, { limit: batchSize, gapMinutes: opts.gapMinutes }));
+    const batch = await tx((inner) => rollupChatUnits(inner, workspaceId, {
+      limit: batchSize, gapMinutes: opts.gapMinutes, retryDelaySeconds: opts.retryDelaySeconds,
+    }));
     result.batches += 1;
     result.buckets += batch.buckets;
     result.unitsWritten += batch.unitsWritten;
     result.unitsUnchanged += batch.unitsUnchanged;
     result.unitsRemoved += batch.unitsRemoved;
     result.documentsWritten += batch.documentsWritten;
+    result.failed += batch.failed;
+    result.failures.push(...batch.failures.slice(0, MAX_REPORTED_ROLLUP_FAILURES - result.failures.length));
     for (const [reason, count] of Object.entries(batch.corpusSkipped) as Array<[CorpusSkipReason, number]>) {
       result.corpusSkipped[reason] = (result.corpusSkipped[reason] ?? 0) + count;
     }
