@@ -477,3 +477,85 @@ describe('live search through provider packages (D-026)', () => {
     expect(invokes).toEqual([]);
   });
 });
+
+/**
+ * Plan papercusp-enterprise-readiness-roadmap-2026-10-09 P-007b (WI-6554700010011594,
+ * bar R-4 data clause). A live source enforces content ACLs at the provider, so the
+ * platform's obligation is to query only AS the person's mapped identity and to stop
+ * querying the moment that mapping is revoked. The fake provider below returns the
+ * canary only to the Slack identity that may read it, as a real provider would.
+ */
+describe('P-007b restricted-content canary and revocation journeys (live search)', () => {
+  const ACCESS_CLOSURE_BOUND_MS = 60_000;
+  const SLACK_BOB = { provider: 'slack', providerUserId: 'T1:UBOB' };
+  const READER = SLACK_ALICE.providerUserId;
+  let canaryToken = '';
+  let aclCalls: LiveSearchInput[] = [];
+  const aclEnforcingSlack: LiveSearchAdapter = {
+    kind: 'slack',
+    async search(input) {
+      aclCalls.push(input);
+      if (input.providerUserId !== READER) return [];
+      return [{ ...HIT, externalId: `T1:CPRIVATE:${canaryToken}`, title: '#private', text: `restricted ${canaryToken}` }];
+    },
+  };
+  const aclAdapters: ReadonlyMap<string, LiveSearchAdapter> = new Map([['slack', aclEnforcingSlack]]);
+
+  function canaryDeps(): GrantedSourcesDeps {
+    return {
+      ...deps(),
+      searchLive: (db, ctx, params) => searchLiveSources(db, ctx, { ...params, adapters: aclAdapters }),
+    };
+  }
+
+  async function injected(userId: string): Promise<string> {
+    const block = await buildGrantedSourcesContextBlock(
+      { ownerId: AGENT, userId, workspaceId: WS, query: 'restricted' }, canaryDeps(),
+    );
+    return block ?? '';
+  }
+
+  async function direct(userId: string): Promise<string> {
+    const outcome = await searchLiveSources(org.adminSql, { workspaceId: WS, role: AGENT_ROLE }, {
+      workspaceId: WS, principalUserId: userId, agentOwnerId: AGENT, query: 'restricted', adapters: aclAdapters,
+    });
+    return JSON.stringify(outcome);
+  }
+
+  beforeEach(() => {
+    canaryToken = `P007B-LIVE-CANARY-${Math.random().toString(36).slice(2, 10)}`;
+    aclCalls = [];
+  });
+
+  it('permitted: the mapped reader receives the canary, fenced, through both live search and injection', async () => {
+    expect(await direct(alice)).toContain(canaryToken);
+    const block = await injected(alice);
+    expect(block).toContain(`<${UNTRUSTED_FENCE_TAG} scope="live" source="slack"`);
+    expect(block).toContain(canaryToken);
+    expect(aclCalls.every((call) => call.providerUserId === READER)).toBe(true);
+  });
+
+  it('denied: a granted person mapped to another provider identity is queried as that identity and never receives the canary', async () => {
+    await mapProviderIdentity(org.adminSql, WS, { ...SLACK_BOB, userId: bob, mappedBy: 'owner' });
+    expect(await direct(bob)).not.toContain(canaryToken);
+    expect(await injected(bob)).not.toContain(canaryToken);
+    expect(aclCalls.length).toBeGreaterThan(0);
+    expect(aclCalls.every((call) => call.principalUserId === bob && call.providerUserId === SLACK_BOB.providerUserId)).toBe(true);
+  });
+
+  it('denied: revoking the provider identity mapping stops the next read before any provider call, inside the 60s bound', async () => {
+    expect(await injected(alice)).toContain(canaryToken);
+    aclCalls = [];
+
+    const started = performance.now();
+    await revokeProviderIdentityMapping(org.adminSql, WS, { ...SLACK_ALICE, revokedBy: 'owner' });
+    const after = await injected(alice);
+    const elapsedMs = performance.now() - started;
+
+    expect(after).not.toContain(canaryToken);
+    expect(await direct(alice)).not.toContain(canaryToken);
+    expect(aclCalls).toHaveLength(0);
+    expect(elapsedMs).toBeLessThan(ACCESS_CLOSURE_BOUND_MS);
+    console.info(`P007B_ACCESS_CLOSURE path=live-search revocation=provider-identity-mapping elapsedMs=${elapsedMs.toFixed(1)} boundMs=${ACCESS_CLOSURE_BOUND_MS}`);
+  });
+});

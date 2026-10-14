@@ -183,6 +183,33 @@ describe('granted-sources injection (R-11)', () => {
     expect(await build(alice)).toContain('source="slack"');
   });
 
+  // P-007b (plan papercusp-enterprise-readiness-roadmap-2026-10-09, R-4 data clause, A-8): a
+  // restricted-content canary on the agent-context injection path. The permitted principal's
+  // block is the positive control, so the denied assertions cannot pass vacuously.
+  it('P-007b canary: restricted content reaches the agent context only for a principal on the source ACL', async () => {
+    const token = `CANARY-P007B-${Math.random().toString(36).slice(2, 10)}`;
+    await seedSource('slack', 'T1:CRESTRICTED', '#restricted', `Restricted cobalt roadmap figures ${token}.`, [SLACK_ALICE]);
+    await subscribeSource(org.adminSql, WS, { subjectKind: 'pot', subjectRef: POT, source: 'slack', createdBy: 'owner' });
+    expect(await build(alice)).toContain(token);
+    expect(String(await build(bob))).not.toContain(token);
+  });
+
+  it('P-007b revocation: removing the member drops the canary from the next context block, inside the 60s bound', async () => {
+    const token = `CANARY-P007B-${Math.random().toString(36).slice(2, 10)}`;
+    await seedSource('slack', 'T1:CRESTRICTED', '#restricted', `Restricted cobalt roadmap figures ${token}.`, [SLACK_ALICE]);
+    await subscribeSource(org.adminSql, WS, { subjectKind: 'pot', subjectRef: POT, source: 'slack', createdBy: 'owner' });
+    expect(await build(alice)).toContain(token);
+
+    const list = await upsertPermissionList(org.adminSql, WS, { source: 'slack', sourceRef: 'T1:CRESTRICTED', title: '#restricted' });
+    const started = performance.now();
+    await replacePermissionListMembers(org.adminSql, WS, list.id, []);
+    const after = await build(alice);
+    const elapsedMs = performance.now() - started;
+    expect(String(after)).not.toContain(token);
+    expect(elapsedMs).toBeLessThan(60_000);
+    console.info(`P007B_ACCESS_CLOSURE path=granted-sources-injection revocation=permission-list-member elapsedMs=${elapsedMs.toFixed(1)} boundMs=60000`);
+  });
+
   it('source text that tries to close or forge the fence stays escaped inside it', async () => {
     await seedSource(
       'slack', 'T1:CATTACK', '#general',
