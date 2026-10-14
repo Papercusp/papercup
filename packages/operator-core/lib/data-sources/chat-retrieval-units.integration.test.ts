@@ -188,6 +188,25 @@ describe('chat retrieval units (P-015)', () => {
     expect(await docs()).toEqual([]);
   });
 
+  it('a delete that arrives before the message is stored still wins over a later stale copy', async () => {
+    // A live delete can beat the backfill that would first store the message.
+    expect(await tombstoneChatMessage(org.adminSql, WS, sourceId, {
+      channelId: CH, providerMessageId: '4.9', deletedAt: '2026-09-30T10:05:00Z', postedAt: '2026-09-30T10:00:00Z',
+    })).toEqual({ tombstoned: true, held: false });
+    expect(await upsertChatMessages(org.adminSql, WS, sourceId, [msg('4.9', '2026-09-30T10:00:00Z', 'leaked secret')]))
+      .toEqual({ written: 0, unchanged: 1 });
+    const rows = await org.adminSql<{ body: string | null; raw: unknown; deleted_at: Date | null }[]>`
+      SELECT body, raw, deleted_at FROM harness_shared.chat_messages WHERE workspace_id = ${WS} AND provider_message_id = '4.9'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ body: null, raw: null });
+    expect(rows[0]!.deleted_at?.toISOString()).toBe('2026-09-30T10:05:00.000Z');
+    await rollupChatUnits(org.adminSql, WS);
+    expect(await docs()).toEqual([]);
+    // A second delete of the same message is a no-op, not a second tombstone.
+    expect(await tombstoneChatMessage(org.adminSql, WS, sourceId, { channelId: CH, providerMessageId: '4.9' }))
+      .toEqual({ tombstoned: false, held: false });
+  });
+
   // Spec AUTO-BAR-R-9-P-015: search over ingested chat returns thread rollups, never
   // raw message rows, and edited or deleted text is not retrievable through search.
   it('search returns the thread rollup, not message rows; edited and deleted text is not searchable', async () => {

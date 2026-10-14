@@ -120,7 +120,18 @@ os.waitpid(pid,0)
       await closed;
       expect(child.signalCode).toBe('SIGKILL');
       expect(alive(child.pid!)).toBe(false);
-      expect(messages).toHaveLength(1);
+      const deadlineReports = messages.filter(message => message.startsWith('process-group exit deadline evidence: '));
+      expect(deadlineReports).toHaveLength(1);
+      // libuv may reap the child after the fence observes its kernel exit.
+      // That additional receipt is valid only when every group member is dead.
+      for (const message of messages.filter(message => !deadlineReports.includes(message))) {
+        const prefix = 'process-group dead members exit evidence: ';
+        expect(message.startsWith(prefix)).toBe(true);
+        const evidence = JSON.parse(message.slice(prefix.length));
+        expect(evidence).toMatchObject({ group: child.pid, unreadable: 0, omitted: 0, liveMembers: 0 });
+        expect(evidence.members.length).toBeGreaterThan(0);
+        for (const member of evidence.members) expect(member.state).toMatch(/^[ZX]$/);
+      }
     } finally {
       lifetime.signal('SIGKILL');
       await closed;

@@ -2,9 +2,10 @@
 
 // Shared implementation of the operator's existing browser consent boundary.
 // An unavailable host endpoint drops events; it never implies consent.
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { useOperatorWorkspaceLocation, type OperatorWorkspaceLocation } from './seam';
+import { cloudTelemetryEventSchema, cloudTelemetryConsentSchema, CLOUD_MONITORING_DISCLOSURE_VERSION, type CloudTelemetryConsent } from '@papercusp/operator-core/lib/telemetry-kinds';
 
 interface TelemetryConfig {
   enabled: boolean;
@@ -29,7 +30,7 @@ async function consentedClient(cancelled: () => boolean = () => false) {
     const client = module.default;
     client.init(config.project_key!, {
       api_host: config.host, person_profiles: 'identified_only',
-      capture_pageview: true, capture_pageleave: true, autocapture: true,
+      capture_pageview: false, capture_pageleave: false, autocapture: false,
       disable_session_recording: true,
       loaded: value => value.identify(config.distinct_id ?? config.workspace_id ?? 'default'),
     });
@@ -41,9 +42,19 @@ async function consentedClient(cancelled: () => boolean = () => false) {
 
 /** Recheck consent for every explicit event. No queue, opt-in or replay change. */
 export async function captureBrowserTelemetry(event: string, properties: Record<string, string | number | boolean>, location: OperatorWorkspaceLocation = 'local'): Promise<void> {
-  // Hosted accounts have no desktop telemetry consent endpoint. Absence of
-  // that host capability cannot establish consent or justify a probe.
-  if (location === 'cloud') return;
+  if (location === 'cloud') {
+    // Hosted capture is an explicit authenticated request. It never loads the
+    // vendor SDK, accepts arbitrary properties, or infers desktop consent.
+    if (event === 'cloud_tutorial' && (properties.action === 'complete' ||
+      ['agent', 'task', 'result', 'revision', 'practice'].includes(String(properties.step)))) return;
+    const parsed = cloudTelemetryEventSchema.safeParse({ event, operation_id: crypto.randomUUID(), properties });
+    if (!parsed.success || ['cloud_workspace_provisioning', 'cloud_diagnostic_aggregate'].includes(parsed.data.event)) return;
+    try {
+      await fetch('/api/hosted/browser/monitoring/event', { method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify(parsed.data), keepalive: true });
+    } catch { /* Optional analytics cannot interrupt the product. */ }
+    return;
+  }
   try {
     const client = await consentedClient();
     client?.capture(event, properties);
@@ -60,4 +71,59 @@ export function PostHogProvider({ children }: { children: ReactNode }) {
     return () => { cancelled = true; };
   }, [workspaceLocation]);
   return <>{children}</>;
+}
+
+/** Uses the canonical Settings page and authenticated hosted preference route.
+ * Unavailable preferences remain unknown; never turn a failed read into opt-in. */
+export function CloudMonitoringPreferences() {
+  const location = useOperatorWorkspaceLocation();
+  return location === 'cloud' ? <HostedMonitoringPreferences /> : null;
+}
+
+function HostedMonitoringPreferences() {
+  const id = useId();
+  const [consent, setConsent] = useState<CloudTelemetryConsent | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch('/api/hosted/browser/monitoring', { credentials: 'include', cache: 'no-store' })
+      .then(async response => {
+        if (!response.ok) throw new Error('unavailable');
+        const data = await response.json();
+        const parsed = cloudTelemetryConsentSchema.parse(data.consent);
+        if (!cancelled) setConsent(parsed);
+      }).catch(() => { if (!cancelled) setError('Monitoring choices are unavailable. No choice has been changed.'); });
+    return () => { cancelled = true; };
+  }, []);
+  const update = async (category: 'analytics' | 'diagnostics', enabled: boolean) => {
+    setSaving(true); setError(null);
+    try {
+      const response = await fetch('/api/hosted/browser/monitoring', { method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ disclosure_version: CLOUD_MONITORING_DISCLOSURE_VERSION, [category]: enabled }) });
+      if (!response.ok) throw new Error('unavailable');
+      const data = await response.json();
+      setConsent(cloudTelemetryConsentSchema.parse(data.consent));
+    } catch { setError('The choice could not be saved. Your last saved choice still applies.'); }
+    finally { setSaving(false); }
+  };
+  return <section aria-labelledby={id}>
+    <h2 id={id}>Cloud monitoring and privacy</h2>
+    <p>Both choices start off. Papercusp collects only the metadata described here when you enable them.</p>
+    <label><input type="checkbox" checked={consent?.analytics.enabled ?? false} disabled={!consent || saving}
+      onChange={event => { void update('analytics', event.target.checked); }} /> Share portal analytics</label>
+    <p>Sign-in and return visits, setup and public guide steps, feature choices, confirmed provisioning status, and safe error codes.
+      Identity is pseudonymous and separated by organization and environment.</p>
+    <label><input type="checkbox" checked={consent?.diagnostics.enabled ?? false} disabled={!consent || saving}
+      onChange={event => { void update('diagnostics', event.target.checked); }} /> Allow aggregate diagnostic export</label>
+    <p>Only counts of calls, input/output/cache tokens, and reported or estimated model cost for a selected time window.
+      Customer prompts, code, documents, terminal output, private tasks and logs, provider account details, host metrics and cloud bills stay local.</p>
+    <p>Destination: Papercusp’s PostHog at flags.papercuspai.com, for product reliability and adoption.
+      Its current project has no enforced event-deletion limit. Turning a choice off stops future delivery; it does not delete previously delivered events.
+      Re-enabling starts a new consent window and does not backfill older activity.</p>
+    {!consent && !error && <p role="status">Loading monitoring choices…</p>}
+    {saving && <p role="status">Saving choice…</p>}
+    {error && <p role="alert">{error}</p>}
+  </section>;
 }

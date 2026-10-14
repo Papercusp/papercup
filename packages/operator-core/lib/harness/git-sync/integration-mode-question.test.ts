@@ -38,11 +38,12 @@ describe('integrationModeQuestion (P-017, D-007 wording)', () => {
     expect(q.options.find((o) => o.value === 'direct')!.available).toBe(true);
   });
 
-  it('WI-10006107: makes the working copy unavailable, with a reason, when the repo uses submodules', () => {
+  it('P-014 / D-017 (WI-10006416): offers the working copy for a repo that uses submodules', () => {
+    // Submodules are supported: choosing the working copy forks every submodule too.
     const q = integrationModeQuestion({ repoLabel: 'acme/widgets', hasTestSuite: true, hasSubmodules: true });
     const review = q.options.find((o) => o.value === 'review')!;
-    expect(review.available).toBe(false);
-    expect(review.unavailableReason).toMatch(/submodules/);
+    expect(review.available).toBe(true);
+    expect(review.unavailableReason).toBeUndefined();
     expect(q.defaultValue).toBe('direct');
     expect(q.blocked).toBeUndefined();
   });

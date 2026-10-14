@@ -456,10 +456,28 @@ describe('setPotIntegrationMode (P-015 guard)', () => {
     });
     expect(store.deleteHiveSetting).toHaveBeenCalledWith('ws', 'pot', 'hiveGit.integration', undefined);
   });
-  it('WI-10006107: refuses working-copy mode for a repo with submodules, even with a suite and a fork', async () => {
-    const r = await setPotIntegrationMode({ ...base, mode: 'review', greenCmd: 'npm test', forkRemote: FORK, hasSubmodules: true });
-    expect(r).toMatchObject({ ok: false, error: 'submodules_unsupported' });
+  it('D-017: a repo with submodules needs a recorded fork for EVERY submodule (unknown list fails closed)', async () => {
+    const review = { ...base, mode: 'review' as const, greenCmd: 'npm test', forkRemote: FORK, hasSubmodules: true };
+    // No submodule list at all: nothing proves every submodule has a fork.
+    expect(await setPotIntegrationMode(review)).toMatchObject({ ok: false, error: 'submodule_forks_required' });
+    // One submodule without a fork: refused, naming it.
+    const partial = await setPotIntegrationMode({
+      ...review,
+      submodulePaths: ['libs/a', 'libs/b'],
+      submoduleForks: { 'libs/a': 'https://github.com/bot/a.git' },
+    });
+    expect(partial).toMatchObject({ ok: false, error: 'submodule_forks_required' });
+    expect(partial.ok ? '' : partial.message).toContain('libs/b');
     expect(store.setHiveSetting).not.toHaveBeenCalled();
+    // Every submodule has its fork: the working copy is allowed.
+    expect(
+      await setPotIntegrationMode({
+        ...review,
+        submodulePaths: ['libs/a', 'libs/b'],
+        submoduleForks: { 'libs/a': 'https://github.com/bot/a.git', 'libs/b': 'https://github.com/bot/b.git' },
+      }),
+    ).toEqual({ ok: true, mode: 'review' });
+    store.setHiveSetting.mockClear();
     // Straight in stays available for that repo, and an unknown answer does not block.
     expect(await setPotIntegrationMode({ ...base, mode: 'direct', greenCmd: null, forkRemote: null, hasSubmodules: true }))
       .toEqual({ ok: true, mode: 'direct' });
@@ -505,13 +523,45 @@ describe('choosePotIntegrationMode (P-014: choosing working-copy mode creates th
     expect(d.setMode).toHaveBeenCalledWith(expect.objectContaining({ mode: 'review', forkRemote: FORK }));
   });
 
-  it('WI-10006107: a repo with submodules is refused BEFORE any fork is created', async () => {
-    const d = deps();
-    const r = await choosePotIntegrationMode(input({ hasSubmodules: true }), d);
-    expect(r).toMatchObject({ ok: false, error: 'submodules_unsupported' });
+  it('D-017: a repo with submodules gets a fork of every submodule, recorded before the mode is set', async () => {
+    const forks = { 'libs/a': 'https://github.com/acme-bot/a.git' };
+    const d = {
+      ...deps(),
+      createSubmoduleForks: vi.fn().mockResolvedValue({ ok: true, forks, created: ['libs/a'] }),
+      recordSubmoduleForks: vi.fn().mockResolvedValue(undefined),
+    };
+    const r = await choosePotIntegrationMode(input({ hasSubmodules: true, checkoutPath: '/pot' }), d);
+    expect(r).toEqual({ ok: true, mode: 'review', fork: { url: FORK, created: true } });
+    expect(d.recordSubmoduleForks).toHaveBeenCalledWith('ws', 'pot', forks);
+    expect(d.setMode).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'review', forkRemote: FORK, submodulePaths: ['libs/a'], submoduleForks: forks }),
+    );
+    expect(d.recordSubmoduleForks.mock.invocationCallOrder[0]).toBeLessThan(d.setMode.mock.invocationCallOrder[0]!);
+  });
+
+  it('D-017: a submodule that cannot be forked is refused BEFORE the superproject fork is created', async () => {
+    const d = {
+      ...deps(),
+      createSubmoduleForks: vi
+        .fn()
+        .mockResolvedValue({ ok: false, error: 'submodule_not_github', message: "submodule 'libs/x' is not on GitHub" }),
+      recordSubmoduleForks: vi.fn(),
+    };
+    const r = await choosePotIntegrationMode(input({ hasSubmodules: true, checkoutPath: '/pot' }), d);
+    expect(r).toMatchObject({ ok: false, error: 'submodule_not_github' });
     expect(d.ensureFork).not.toHaveBeenCalled();
     expect(d.setForkRemote).not.toHaveBeenCalled();
+    expect(d.recordSubmoduleForks).not.toHaveBeenCalled();
     expect(d.setMode).not.toHaveBeenCalled();
+  });
+
+  it('D-017: no test command means no fork of anything (submodules included)', async () => {
+    const d = { ...deps(), createSubmoduleForks: vi.fn(), recordSubmoduleForks: vi.fn() };
+    d.setMode.mockResolvedValue({ ok: false, error: 'green_cmd_required', message: 'needs tests' });
+    const r = await choosePotIntegrationMode(input({ hasSubmodules: true, checkoutPath: '/pot', greenCmd: null }), d);
+    expect(r).toMatchObject({ ok: false, error: 'green_cmd_required' });
+    expect(d.createSubmoduleForks).not.toHaveBeenCalled();
+    expect(d.ensureFork).not.toHaveBeenCalled();
   });
 
   it('a fork already recorded is reused: no fork is created', async () => {

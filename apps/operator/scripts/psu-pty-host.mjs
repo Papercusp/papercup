@@ -15372,14 +15372,17 @@ export function hostThroughPty(o) {
           systemPromptAddendum &&
           String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
         ) {
+          let homeEnsureFailure = null;
           try {
             const repaired = await ensureCodexHome();
+            homeEnsureFailure = repaired?.failure ?? null;
             if ((env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') && repaired?.ok !== true)
               throw new Error('Codex selected route could not be restored before carry');
           } catch {
             if (env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'auto' || env.PAPERCUSP_ACCOUNT_ROUTING_MODE === 'pin') {
               recycling = false;
-              appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable' });
+              appendHostEvent(ownerId, 'respawn-failed', { mode: respawnMode, reason: 'codex-route-unavailable',
+                ...(homeEnsureFailure ? { homeEnsureFailure } : {}) });
               return settleQuotaRecovery(false, 'codex-route-unavailable');
             }
           }

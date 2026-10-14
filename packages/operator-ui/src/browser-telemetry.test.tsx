@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { OperatorWorkspaceLocationProvider } from './seam';
-import { captureBrowserTelemetry, PostHogProvider } from './browser-telemetry';
+import { captureBrowserTelemetry, CloudMonitoringPreferences, PostHogProvider } from './browser-telemetry';
+import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '@papercusp/operator-core/lib/telemetry-kinds';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -24,10 +25,58 @@ describe('browser telemetry host consent boundary', () => {
     expect(consentFetch).toHaveBeenCalledWith('/api/desktop/telemetry-config', { cache: 'no-store' });
   });
 
+  it('uses only authenticated explicit hosted metadata, without desktop consent or a vendor SDK', async () => {
+    const captureFetch = vi.fn(async () => new Response('{}', { status: 202 }));
+    vi.stubGlobal('fetch', captureFetch);
+    await captureBrowserTelemetry('cloud_portal_session', { action: 'returned' }, 'cloud');
+    expect(captureFetch).toHaveBeenCalledTimes(1);
+    const [path, options] = captureFetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(path).toBe('/api/hosted/browser/monitoring/event');
+    expect(options.credentials).toBe('include');
+    const body = JSON.parse(String(options.body));
+    expect(body.properties).toEqual({ action: 'returned' });
+    expect(body.operation_id).toMatch(/^[a-f0-9-]{36}$/);
+    for (const [event, properties] of [
+      ['cloud_portal_session', { action: 'returned', prompt: 'secret' }],
+      ['cloud_tutorial', { lesson_id: 'first-cloud-agent', lesson_version: 1, action: 'step_confirmed', step: 'task' }],
+      ['cloud_tutorial', { lesson_id: 'first-cloud-agent', lesson_version: 1, action: 'complete' }],
+    ] as const) await captureBrowserTelemetry(event, properties, 'cloud');
+    expect(captureFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('retains the local provider consent check', () => {
     const consentFetch = vi.fn(async () => new Response('', { status: 403 }));
     vi.stubGlobal('fetch', consentFetch);
     render(<PostHogProvider><p>Desktop</p></PostHogProvider>);
     expect(consentFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('discloses separate opt-in choices and saves a server-confirmed choice without local consent probes', async () => {
+    const consentFetch = vi.fn(async (_url, options?: RequestInit) => new Response(JSON.stringify({ consent: options?.method === 'POST'
+      ? { ...DEFAULT_CLOUD_TELEMETRY_CONSENT, analytics: { enabled: true, since: '2026-10-14T00:00:00Z' } }
+      : DEFAULT_CLOUD_TELEMETRY_CONSENT }), { status: 200 }));
+    vi.stubGlobal('fetch', consentFetch);
+    render(<OperatorWorkspaceLocationProvider location="cloud"><CloudMonitoringPreferences /></OperatorWorkspaceLocationProvider>);
+    const analytics = screen.getByRole('checkbox', { name: 'Share portal analytics' }) as HTMLInputElement;
+    const diagnostics = screen.getByRole('checkbox', { name: 'Allow aggregate diagnostic export' }) as HTMLInputElement;
+    await waitFor(() => expect(analytics.disabled).toBe(false));
+    expect(analytics.checked).toBe(false); expect(diagnostics.checked).toBe(false);
+    fireEvent.click(analytics);
+    await waitFor(() => expect(analytics.checked).toBe(true));
+    expect(diagnostics.checked).toBe(false);
+    const options = consentFetch.mock.calls[1][1];
+    expect(JSON.parse(String(options?.body))).toEqual({ disclosure_version: DEFAULT_CLOUD_TELEMETRY_CONSENT.disclosure_version, analytics: true });
+    expect(screen.getByText(/no enforced event-deletion limit/)).toBeTruthy();
+    expect(consentFetch.mock.calls.every(([url]) => url === '/api/hosted/browser/monitoring')).toBe(true);
+  });
+
+  it('keeps failed preference reads unknown and never renders hosted choices locally', async () => {
+    const consentFetch = vi.fn(async () => new Response('{}', { status: 503 }));
+    vi.stubGlobal('fetch', consentFetch);
+    const view = render(<CloudMonitoringPreferences />);
+    expect(consentFetch).not.toHaveBeenCalled();
+    view.rerender(<OperatorWorkspaceLocationProvider location="cloud"><CloudMonitoringPreferences /></OperatorWorkspaceLocationProvider>);
+    await screen.findByRole('alert');
+    expect((screen.getByRole('checkbox', { name: 'Share portal analytics' }) as HTMLInputElement).disabled).toBe(true);
   });
 });

@@ -31,6 +31,17 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { deliverCloudTelemetry, type CloudTelemetryContext } from './record-telemetry';
 
+/** Existing capture ingress is separate from the flag/admin API. A healthy
+ * project listing cannot prove that events can enter the ingestion pipeline. */
+export async function readCloudCaptureHealth(): Promise<{ healthy: boolean; status: number | null }> {
+  const config = getPosthogConfigWithSource().config ?? POSTHOG_PUBLIC_DEFAULTS;
+  try {
+    const response = await fetch(`${config.host.replace(/\/+$/, '')}/batch/`, { signal: AbortSignal.timeout(2_000) });
+    // The maintained capture server rejects a missing payload with 400.
+    return { healthy: response.status === 400, status: response.status };
+  } catch { return { healthy: false, status: null }; }
+}
+
 /** Strict cloud delivery shares the maintained PostHog configuration and batch
  * transport. Unlike local crash archives it never has an internal-build bypass
  * or a backlog: every delivery rechecks the customer's current scoped choice. */

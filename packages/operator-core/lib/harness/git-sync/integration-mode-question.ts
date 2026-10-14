@@ -92,11 +92,8 @@ export function integrationModeQuestion(input: IntegrationModeQuestionInput): In
       opt.unavailableReason =
         'This repository has no test suite, so a PR could not show the work passed tests. Add a test command first.';
     }
-    if (value === 'review' && input.hasSubmodules === true) {
-      opt.available = false;
-      opt.unavailableReason =
-        'This repository uses submodules, which a working copy cannot carry yet. Keep the work going straight in.';
-    }
+    // D-017 (WI-10006416): a repository with submodules can have a working copy now —
+    // choosing it also forks every submodule, so the option stays available.
     const rec = input.recommendation;
     if (rec) {
       if (rec.recommended === value) opt.recommended = true;

@@ -12753,8 +12753,9 @@ export function runWrapper(options) {
           mintParkResumeArgs(a, { agent: o.agent ?? env.PAPERCUSP_AGENT, nativeId: o.nativeId ?? null }),
         mintQuotaResumeArgs: (a, o = {}) => mintCodexQuotaResumeArgs(a, o),
         prepareChildArgs: (a) => prepareCodexGatewayLaunch(env, a),
-        ensureCodexHome: (options = {}) =>
-          ensureCodexHomeViaOperator(
+        ensureCodexHome: async (options = {}) => {
+          let failure = null;
+          const result = await ensureCodexHomeViaOperator(
             ownerId,
             env.CODEX_HOME || null,
             env.PAPERCUSP_ADV_SESSION_ID || null,
@@ -12774,8 +12775,11 @@ export function runWrapper(options) {
               priority: env.PAPERCUSP_AGENT_ROLE || "su",
               headless: env.PAPERCUSP_PSU_HEADLESS === "1",
               env,
+              onFailure: (detail) => { failure = detail; },
             },
-          ),
+          );
+          return result ?? { ok: false, failure };
+        },
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
         // re-render the base persona instead of inheriting the predecessor's file,
         // or every prompt fix stops at the session's FIRST launch. Injected like the
@@ -16165,7 +16169,7 @@ export function codexForkMcpUrlForOwner(codexHome, ownerId) {
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string}) => void, token?: string | null, timeoutMs?: number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -16186,11 +16190,22 @@ export async function ensureCodexHomeViaOperator(
     env = process.env,
     probe = probeOmpOperatorMcp,
     onRecovery,
+    onFailure,
     token = null,
     timeoutMs = 10_000,
   } = {},
 ) {
-  if (!owner || !codexHome || advSessionId == null) return null;
+  let stage = 'scope';
+  let status = null;
+  // Preserve the null-return contract without losing the cause at the PTY
+  // boundary. Never include response bodies, URLs, credentials or error text.
+  const failed = (reason, err = null) => {
+    const errorName = ['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'].includes(err?.name)
+      ? err.name : undefined;
+    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}) }); } catch { /* diagnostics cannot block recovery */ }
+    return null;
+  };
+  if (!owner || !codexHome || advSessionId == null) return failed('missing-scope');
   // The server keys the home by ADV SESSION ID, so it can only ensure the
   // conventional path. A resume pointed at a relocated/foreign home would
   // otherwise have a DIFFERENT home rebuilt behind its back while the one it
@@ -16200,8 +16215,9 @@ export async function ensureCodexHomeViaOperator(
   // Hard-coding ~/.papercusp/su-codex-homes here skipped the repair for every
   // home under an overridden root, so a damaged config.toml reached the
   // readiness check unrepaired (WI-10006770).
-  if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return null;
+  if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return failed('foreign-home');
   try {
+    stage = 'operator-route';
     const resolvedOperatorUrl =
       operatorUrl ??
       (await resolveOmpOperatorUrl(undefined, {
@@ -16210,6 +16226,7 @@ export async function ensureCodexHomeViaOperator(
         onRecovery,
       }));
     const tok = token ?? readToken();
+    stage = 'request';
     const res = await fetchImpl(
       resolvedOperatorUrl + "/api/adv/sessions/ensure-codex-home",
       {
@@ -16228,12 +16245,17 @@ export async function ensureCodexHomeViaOperator(
         }),
       },
     );
+    status = Number.isInteger(res.status) ? res.status : null;
+    stage = 'response';
+    if (res.ok === false) return failed('http-error');
     const r = await res.json().catch(() => null);
-    if (!r?.ok) return null;
+    if (!r || typeof r !== 'object') return failed('invalid-response');
+    if (r.ok !== true) return failed('operator-refused');
     // The canonical writer refreshes config.toml and may remove the launch's
     // gateway selector. Reapply the explicit route after every carry refresh.
     // Default/unspecified launches keep their existing provider semantics.
     if (routeMode === "auto" || routeMode === "pin" || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined) {
+      stage = 'home-route';
       if (routeMode === "pin" && !accountId)
         throw new Error("Codex carry cannot restore a pin without an account id");
       applyCodexGatewayRoute(codexHome, {
@@ -16252,8 +16274,9 @@ export async function ensureCodexHomeViaOperator(
       );
     }
     return r;
-  } catch {
-    return null;
+  } catch (err) {
+    return failed(stage === 'home-route' ? 'route-restore-failed'
+      : stage === 'operator-route' ? 'operator-route-failed' : 'request-failed', err);
   }
 }
 

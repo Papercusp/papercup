@@ -150,10 +150,23 @@ describe('redacted render crash persistence (real PG)', () => {
 
   it.runIf(process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true')('confirms synthetic opt-in ingestion and absent default/hostile/revoked exports in configured PostHog', async () => {
     const { getPosthogConfigWithSource } = await import('./posthog-config');
-    const { deliverCloudPosthog } = await import('./telemetry-flush');
+    const { deliverCloudPosthog, readCloudCaptureHealth } = await import('./telemetry-flush');
     const config = getPosthogConfigWithSource().config;
     expect(config).not.toBeNull();
     if (!config) throw new Error('configured PostHog required');
+    expect(await readCloudCaptureHealth(), 'PostHog capture ingress must be available before measuring privacy').toEqual({ healthy: true, status: 400 });
+    const request = async (path: string, body?: unknown) => {
+      const response = await fetch(config.host.replace(/\/+$/, '') + path, { headers: {
+        authorization: `Bearer ${config.personalApiKey}`, 'content-type': 'application/json' },
+        ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(10_000) });
+      expect(response.status, `PostHog ${path} request`).toBe(200);
+      return response.json();
+    };
+    const projects = await request('/api/projects/');
+    const project = projects.results.find((value: { api_token: string }) => value.api_token === config.projectKey);
+    expect(project).toBeDefined();
+    const probe = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query: 'SELECT 1' } });
+    expect(probe.results, 'query permission preflight').toEqual([[1]]);
     const organization = randomUUID(), user = randomUUID();
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: organization,
       userId: user, selectedWorkspaceId: randomUUID(), sessionId: randomUUID(), sessionVersion: 1, permissions: ['workspace:view'] });
@@ -185,20 +198,11 @@ describe('redacted render crash persistence (real PG)', () => {
       .toMatchObject({ delivered: false, code: 'invalid_cloud_event' });
     await scoped(tx => writeCloudTelemetryConsent(tx, principal, { disclosure_version: granted.disclosure_version, diagnostics: false }));
     expect(await deliverCloudPosthog(revoked, context, readConsent)).toMatchObject({ delivered: false, code: 'consent_disabled' });
-    const request = async (path: string, body?: unknown) => {
-      const response = await fetch(config.host.replace(/\/+$/, '') + path, { headers: {
-        authorization: `Bearer ${config.personalApiKey}`, 'content-type': 'application/json' },
-        ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(10_000) });
-      expect(response.ok).toBe(true);
-      return response.json();
-    };
-    const projects = await request('/api/projects/');
-    const project = projects.results.find((value: { api_token: string }) => value.api_token === config.projectKey);
-    expect(project).toBeDefined();
     const query = `SELECT properties.operation_id, count() FROM events WHERE event = 'cloud_diagnostic_aggregate' AND properties.operation_id IN (${identities.map(id => `'${id}'`).join(',')}) GROUP BY properties.operation_id`;
     let rows: Array<[string, number]> = [];
     for (let attempt = 0; attempt < 12; attempt++) {
-      const result = await request(`/api/projects/${project.id}/query/`, { query: { kind: 'HogQLQuery', query } });
+      const result = await request(`/api/projects/${project.id}/query/`, { refresh: 'force_blocking', query: { kind: 'HogQLQuery', query } });
+      expect(result.is_cached, 'privacy ingestion proof must use a fresh query').toBe(false);
       rows = result.results;
       if (rows.some(([id]) => id === identities[1])) break;
       await new Promise(resolve => setTimeout(resolve, 2_000));

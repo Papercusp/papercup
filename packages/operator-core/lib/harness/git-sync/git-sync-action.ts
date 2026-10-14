@@ -82,6 +82,7 @@ import {
   resolveIntegrationPushRemote,
   type IntegrationPushDecision,
 } from './pot-integration-mode';
+import { readSubmoduleForks } from './submodule-forks';
 import { fileSyncBackConflict, makeSyncBackConflictFilingDeps } from './sync-back';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
@@ -3538,6 +3539,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           ? resolveIntegrationPushRemote({
               read: integrationRead,
               ...(entry?.fork_remote ? { forkRemote: entry.fork_remote } : {}),
+              // D-017: a working copy with submodules pushes them to the pot's per-submodule forks.
+              ...(integrationRead.mode === 'review'
+                ? { submoduleForks: await readSubmoduleForks(workspaceId, potHomeSlug) }
+                : {}),
             })
           : { kind: 'unchanged', reason: 'pot home repository — the working copy lives on a member (WI-10006333)' };
         const withIntegration = integration.kind === 'unchanged' ? {} : { integration };

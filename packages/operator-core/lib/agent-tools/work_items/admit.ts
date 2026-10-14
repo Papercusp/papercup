@@ -20,6 +20,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { getSessionUserOrDefault } from '../../auth';
 import { ADMITTED_KINDS, admitWorkItem, transitionAdmission, writeBackAdmission } from '../../work-admission/admit';
 import { TICKET_STATUS_CATEGORIES } from '../../data-sources/ticket-vocabulary';
+import { ADMISSION_DELIVERIES } from '../../work-admission/lifecycle-config';
 import { listAdmissionSourceKinds } from '../../work-admission/admission-sources';
 import {
   ADMISSION_BACKFILL_MAX,
@@ -94,10 +95,11 @@ export default defineTool({
             completeCategory: z.enum(TICKET_STATUS_CATEGORIES).optional(),
             externalClose: z.boolean().optional(),
             reopen: z.boolean().optional(),
+            delivery: z.enum(ADMISSION_DELIVERIES).optional(),
           })
           .strict()
           .optional()
-          .describe('Write-back/reaction switches; all on by default, completion moves the source to done.'),
+          .describe("Write-back/reaction switches; all on by default, completion moves the source to done. delivery:'pr' = fixes only via the target pot's fork PR; refused unless that pot is in review mode with a fork."),
       })
       .optional()
       .describe("rules-set: match is { field:{ eq|in|contains|after: value } }, all fields must match. after requires an ISO timestamp with timezone, e.g. createdAt:{after:<activation timestamp>}, so historical imports remain data."),

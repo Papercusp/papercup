@@ -566,6 +566,47 @@ describe('Codex resume reconciles project MCP servers', () => {
 
 describe('Codex managed carry keeps the selected account route', () => {
   it.each([
+    ['http', 'response', 'http-error', 503],
+    ['json', 'response', 'invalid-response', 200],
+    ['refused', 'response', 'operator-refused', 200],
+    ['throw', 'request', 'request-failed', null],
+    ['pin', 'home-route', 'route-restore-failed', 200],
+  ] as const)('reports sanitized %s failures while retaining the null repair contract', async (mode, stage, reason, status) => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-failure-home-'));
+    const env = { PAPERCUSP_SU_CODEX_HOMES_DIR: root };
+    const home = join(root, 'session-7');
+    const failures: unknown[] = [];
+    try {
+      const result = await launcher.ensureCodexHomeViaOperator('su-failure', home, 7, {
+        env, operatorUrl: 'http://operator', token: 'private-token',
+        routeMode: mode === 'pin' ? 'pin' : null,
+        onFailure: failure => { failures.push(failure); },
+        fetchImpl: async () => {
+          if (mode === 'throw') throw new TypeError('request with private-token failed');
+          return { status: mode === 'http' ? 503 : 200, ok: mode !== 'http', json: async () => {
+            if (mode === 'json') throw new SyntaxError('private response is invalid');
+            return { ok: mode !== 'refused', error: 'private-token', repaired: false };
+          } };
+        },
+      });
+      expect(result).toBeNull();
+      expect(failures).toEqual([{ stage, reason, status,
+        ...(mode === 'throw' ? { errorName: 'TypeError' } : mode === 'pin' ? { errorName: 'Error' } : {}) }]);
+      expect(JSON.stringify(failures)).not.toMatch(/private-token|http:\/\/operator|private response/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('reports a scope refusal before issuing a request, even if the observer throws', async () => {
+    const failures: unknown[] = [];
+    const fetchImpl = vi.fn();
+    expect(await launcher.ensureCodexHomeViaOperator('su-failure', '/foreign/home', 7, {
+      fetchImpl, onFailure: failure => { failures.push(failure); throw new Error('observer failed'); },
+    })).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(failures).toEqual([{ stage: 'scope', reason: 'foreign-home', status: null }]);
+  });
+
+  it.each([
     ['auto', null],
     ['pin', 'test-account'],
   ])('restores %s after the canonical home writer replaces config.toml', async (mode, id) => {

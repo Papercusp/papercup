@@ -38,6 +38,7 @@ import {
   corpusRouteFor,
   ensurePermissionList,
   removeLegacyChatMessageDocument,
+  tombstoneChatMessage,
   upsertChatMessages,
   writeCorpusDocument,
 } from './chat-retrieval-units';
@@ -319,7 +320,20 @@ export async function createDatatypeDestinationSinks(
       kind: 'data-source-chat-message',
       ref,
       async deliver(event: CanonicalExternalEvent) {
-        await upsertChatMessages(sql, source.workspaceId, source.id, [chatMessageInputFromRecord(event)]);
+        const message = chatMessageInputFromRecord(event);
+        if (event.deleted) {
+          // A provider delete erases the stored text (kept only under a legal hold) and re-queues
+          // the unit, so the next rollup renders the corpus row without it.
+          await tombstoneChatMessage(sql, source.workspaceId, source.id, {
+            channelId: message.channelId,
+            providerMessageId: message.providerMessageId,
+            postedAt: message.postedAt,
+            threadKey: message.threadKey,
+            ...(event.occurredAt ? { deletedAt: event.occurredAt } : {}),
+          });
+        } else {
+          await upsertChatMessages(sql, source.workspaceId, source.id, [message]);
+        }
         await removeLegacyChatMessageDocument(sql, source.workspaceId, {
           sourceId: source.id,
           corpusSource,

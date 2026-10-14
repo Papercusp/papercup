@@ -210,6 +210,48 @@ it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-af
   20_000,
 );
 
+it('preserves the classified Codex home failure when refusing carry before stopping the child', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-carry-route-failure-'));
+  const ownerId = uniqueOwner('CARRY-ROUTE-FAILURE');
+  const sock = socketPathFor(ownerId);
+  const log = eventLogPathForOwner(ownerId);
+  const { io, captured } = fakeIo();
+  let mints = 0;
+  const failure = { stage: 'response', reason: 'http-error', status: 503 };
+  const childCode = "process.stdin.setRawMode(true);process.stdout.write('READY\\n');" +
+    "process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);process.stdout.write('ORIGINAL-ALIVE\\n');});" +
+    "setTimeout(()=>process.exit(0),18000);";
+  const done = hostThroughPty({ command: execPath, args: ['-e', childCode], cwd: root, ownerId, io,
+    bridgeTty: false, onExit: () => {},
+    env: hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root,
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto', PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+      PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500', PAPERCUSP_PSU_PTY_REARM_CAP_MS: '1000' }),
+    ensureCodexHome: async () => ({ ok: false, failure }),
+    mintCarryRespawnArgs: () => { mints++; throw new Error('must not mint an unavailable route'); },
+  });
+  try {
+    expect(await waitForHost(ownerId)).not.toBeNull();
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    expect(await injectIntoHostWithConfirmation(sock, { mode: 'carry-respawn', ownerId,
+      data: 'saved work', systemPromptAddendum: 'saved work', deliveryId: 'classified-route-failure' }))
+      .toMatchObject({ ok: true, reason: 'accepted' });
+    const deadline = Date.now() + 6500;
+    while (Date.now() < deadline && !(existsSync(log) && readFileSync(log, 'utf8').includes('codex-route-unavailable'))) await sleep(15);
+    const events = readFileSync(log, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-failed', mode: 'carry-respawn',
+      reason: 'codex-route-unavailable', homeEnsureFailure: failure }));
+    expect(mints).toBe(0);
+    expect(events.some(event => event.kind === 'respawn-predecessor-stop-started')).toBe(false);
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: 'still here' });
+    expect(await waitForOutput(captured, 'ORIGINAL-ALIVE')).toBe(true);
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', ownerId, data: '\x04' }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(log, { force: true });
+  }
+}, 20_000);
+
 it('defers an already-admitted wake before writing when carry becomes pending', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pty-queued-carry-'));
   const ownerId = uniqueOwner('QUEUED-CARRY');

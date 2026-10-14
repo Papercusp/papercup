@@ -14912,7 +14912,7 @@ describe("launchResume wiring — claim before setup or spawn", () => {
       'if (session.agent === "codex" && env.CODEX_HOME)',
     );
     const homeRepair = body.indexOf("await ensureCodexHomeViaOperator(", codexBranch);
-    const hostRepair = src.search(/ensureCodexHome:\s*\([^)]*\)\s*=>/);
+    const hostRepair = src.search(/ensureCodexHome:\s*(?:async\s*)?\([^)]*\)\s*=>/);
     const hostHomeRepair = src.indexOf("ensureCodexHomeViaOperator(", hostRepair);
     const authGuard = body.indexOf(
       'if (accountEnv?.mode === "default")',

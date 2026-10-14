@@ -220,6 +220,19 @@ describe('publishStandingPr across forks (WI-10006271)', () => {
   });
 });
 
+describe('standingPrBody with submodule PRs (P-014 / D-017 §5)', () => {
+  it('names each submodule PR and says to merge them first; omits the section when there are none', () => {
+    const body = standingPrBody('Acme', 'abcdef0123456789', [
+      { path: 'libs/lib', sha: '0123456789abcdef', url: 'https://github.com/acme/lib/pull/3' },
+      { path: 'libs/other', sha: 'fedcba9876543210' },
+    ]);
+    expect(body).toMatch(/Merge these submodule pull requests first/);
+    expect(body).toContain('- `libs/lib` @ `0123456789ab`: https://github.com/acme/lib/pull/3');
+    expect(body).toContain('- `libs/other` @ `fedcba987654`: pull request not opened yet');
+    expect(standingPrBody('Acme', 'abcdef0123456789', [])).not.toMatch(/submodule/);
+  });
+});
+
 describe('standingPrBody', () => {
   it('asks for a merge commit, because sync-back recognises merged work by commit id (P-016)', () => {
     const body = standingPrBody('Acme', 'abcdef0123456789');

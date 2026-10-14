@@ -83,6 +83,8 @@ export function makeIntegrationModeRoutes(deps: IntegrationModeRouteDeps) {
         forkRemote: r.entry.fork_remote ?? null,
         upstreamRemote: r.entry.github_remote ?? null,
         hasSubmodules: repoHasSubmodules(r.entry.path),
+        // D-017: the guided switch forks every submodule it finds in the checkout.
+        checkoutPath: r.entry.path ?? null,
       });
       if (!result.ok) return Response.json(result, { status: 409 });
       // After the write committed: live settings sections re-read (a push failure never fails the save).

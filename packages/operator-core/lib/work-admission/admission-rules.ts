@@ -23,7 +23,8 @@ import { z } from 'zod';
 import { admitWorkItem, ADMITTED_KINDS, type AdmitDeps, type AdmitResult, type AdmittedKind } from './admit';
 import type { AdmissionDb } from './admission-sources';
 import { RECORD_SOURCE_KIND } from './record-source';
-import { parseAdmissionLifecycle, resolveAdmissionLifecycle, type AdmissionLifecycle } from './lifecycle-config';
+import { parseAdmissionLifecycle, resolveAdmissionLifecycle, type AdmissionDelivery, type AdmissionLifecycle } from './lifecycle-config';
+import { checkPrDelivery, type PrDeliveryDeps, type PrDeliveryVerdict } from './pr-delivery';
 
 export const ADMISSION_MATCH_OPS = ['eq', 'in', 'contains', 'after'] as const;
 export type AdmissionMatchOp = (typeof ADMISSION_MATCH_OPS)[number];
@@ -212,7 +213,31 @@ export interface SetAdmissionRuleInput {
   lifecycle?: unknown;
 }
 
-export async function setAdmissionRule(input: SetAdmissionRuleInput, sql: AdmissionDb = getOrgPg().sql): Promise<AdmissionRule> {
+/** Seams for the PR-delivery precondition (P-013); production reads the registry and pot_settings. */
+export interface AdmissionRuleDeps {
+  prDelivery?: PrDeliveryDeps;
+}
+
+/**
+ * Throws `<code>: <message>` when a PR-required rule's target harness cannot deliver through a
+ * PR (pr-delivery.ts). The error keeps the refusal code as its prefix, like the other
+ * `admission_rule_*` errors, so callers surface it by code.
+ */
+async function assertPrDeliveryReady(
+  workspaceId: string,
+  harness: string,
+  sql: AdmissionDb,
+  deps: AdmissionRuleDeps,
+): Promise<void> {
+  const verdict = await checkPrDelivery(workspaceId, harness, { sql: sql as never, deps: deps.prDelivery });
+  if (!verdict.ok) throw new Error(`${verdict.code}: ${verdict.message}`);
+}
+
+export async function setAdmissionRule(
+  input: SetAdmissionRuleInput,
+  sql: AdmissionDb = getOrgPg().sql,
+  deps: AdmissionRuleDeps = {},
+): Promise<AdmissionRule> {
   validateAdmissionMatch(input.match);
   const workKind = input.workKind ?? 'change';
   if (!(ADMITTED_KINDS as readonly string[]).includes(workKind)) throw new Error(`admission_rule_invalid: workKind must be one of ${ADMITTED_KINDS.join(', ')}`);
@@ -220,13 +245,27 @@ export async function setAdmissionRule(input: SetAdmissionRuleInput, sql: Admiss
   if (!title) throw new Error('admission_rule_invalid: title is required');
   // Stored as given (only the keys the caller set), so a later change to a default reaches it.
   let lifecycle: unknown = null;
+  let delivery: AdmissionDelivery = 'direct';
   if (input.lifecycle !== undefined) {
-    parseAdmissionLifecycle(input.lifecycle);
+    delivery = parseAdmissionLifecycle(input.lifecycle).delivery;
     lifecycle = input.lifecycle;
   }
   const [source] = await sql<{ id: string }[]>`
     SELECT id FROM harness_shared.data_sources WHERE workspace_id = ${input.workspaceId} AND id = ${input.dataSourceId}`;
   if (!source) throw new Error(`admission_rule_invalid: no data source '${input.dataSourceId}' in this workspace`);
+  if (input.id && lifecycle === null) {
+    // An update that leaves the lifecycle unchanged keeps the stored delivery, which still
+    // binds the (possibly new) target harness.
+    const [current] = await sql<{ lifecycle: unknown }[]>`
+      SELECT lifecycle FROM harness_shared.admission_rules
+       WHERE workspace_id = ${input.workspaceId} AND id = ${input.id} AND data_source_id = ${input.dataSourceId}`;
+    if (current) delivery = resolveAdmissionLifecycle(current.lifecycle).delivery;
+  }
+  // P-013 (D-015): a PR-required rule may only be enabled against a harness that delivers
+  // through a PR. A disabled rule admits nothing, so it may be prepared ahead of the switch.
+  if (delivery === 'pr' && (input.enabled ?? true)) {
+    await assertPrDeliveryReady(input.workspaceId, input.harness, sql, deps);
+  }
   if (input.id) {
     const [row] = await sql<RuleDbRow[]>`
       UPDATE harness_shared.admission_rules
@@ -278,13 +317,32 @@ export interface RuleEvaluation {
 }
 
 /**
+ * The dispatch-time half of P-013: before a PR-required rule admits anything, re-check that its
+ * target harness still delivers through a PR (a pot can be switched back to direct mode after
+ * the rule was saved). Memoised per harness for one evaluation pass.
+ */
+function prDeliveryGate(workspaceId: string, sql: AdmissionDb, deps: AdmissionRuleDeps) {
+  const seen = new Map<string, Promise<PrDeliveryVerdict>>();
+  return async (rule: AdmissionRule): Promise<AdmitResult | null> => {
+    if (rule.lifecycle.delivery !== 'pr') return null;
+    let verdict = seen.get(rule.harness);
+    if (!verdict) {
+      verdict = checkPrDelivery(workspaceId, rule.harness, { sql: sql as never, deps: deps.prDelivery });
+      seen.set(rule.harness, verdict);
+    }
+    const v = await verdict;
+    return v.ok ? null : { ok: false, code: v.code, message: v.message };
+  };
+}
+
+/**
  * Evaluates the enabled record rules of the record's data source and admits the record under
  * every rule that matches. Admission is idempotent on the record, so once the first matching
  * rule has admitted it, any later rule (or re-poll) returns the existing admission.
  */
 export async function evaluateAdmissionRules(
   input: { workspaceId: string; recordId: string; dataSourceId: string; payload: Record<string, unknown> },
-  deps: AdmitDeps & { sql?: AdmissionDb } = {},
+  deps: AdmitDeps & { sql?: AdmissionDb } & AdmissionRuleDeps = {},
 ): Promise<RuleEvaluation> {
   const sql = deps.sql ?? getOrgPg().sql;
   const rules = await sql<RuleDbRow[]>`
@@ -293,9 +351,18 @@ export async function evaluateAdmissionRules(
        AND source_kind = ${RECORD_SOURCE_KIND} AND enabled
      ORDER BY created_at`;
   const out: RuleEvaluation = { matched: 0, results: [] };
+  const prGate = prDeliveryGate(input.workspaceId, sql, deps);
   for (const rule of rules.map(toRule)) {
     if (!matchAdmissionRule(rule.match, input.payload)) continue;
     out.matched += 1;
+    // P-013: a PR-required rule never dispatches work into a harness that would push directly.
+    // The refusal fails this delivery (datatype-destination-sink), so the record stays DATA,
+    // the failure is visible by code, and a later retry admits it once the pot is ready.
+    const refused = await prGate(rule);
+    if (refused) {
+      out.results.push({ ruleId: rule.id, result: refused });
+      continue;
+    }
     const result = await admitWorkItem(
       {
         workspaceId: input.workspaceId,
@@ -318,7 +385,7 @@ export async function evaluateAdmissionRules(
 export async function applyAdmissionRule(
   workspaceId: string,
   ruleId: string,
-  deps: AdmitDeps & { sql?: AdmissionDb; limit?: number } = {},
+  deps: AdmitDeps & { sql?: AdmissionDb; limit?: number } & AdmissionRuleDeps = {},
 ): Promise<{
   scanned: number;
   admitted: number;
@@ -336,6 +403,9 @@ export async function applyAdmissionRule(
   if (!rule.enabled) throw new Error(`admission_rule_disabled:${ruleId}`);
   // Only record rules have held records to scan (migration 1418 pins every rule to 'record').
   if (rule.sourceKind !== RECORD_SOURCE_KIND) throw new Error(`admission_rule_backfill_unsupported:${rule.sourceKind}`);
+  // P-013: refuse the whole backfill, before scanning, when a PR-required rule's harness cannot
+  // deliver through a PR; nothing is admitted and the caller sees the named refusal.
+  if (rule.lifecycle.delivery === 'pr') await assertPrDeliveryReady(workspaceId, rule.harness, sql, deps);
   const limit = Math.min(Math.max(1, deps.limit ?? ADMISSION_BACKFILL_MAX), ADMISSION_BACKFILL_MAX);
   const records = await sql<{ feature_id: string; payload: Record<string, unknown> | null }[]>`
     SELECT feature_id, payload FROM harness_shared.work_items
@@ -380,10 +450,10 @@ export interface SetAdmissionRuleResult {
  */
 export async function setAdmissionRuleAndBackfill(
   input: SetAdmissionRuleInput,
-  deps: AdmitDeps & { sql?: AdmissionDb } = {},
+  deps: AdmitDeps & { sql?: AdmissionDb } & AdmissionRuleDeps = {},
 ): Promise<SetAdmissionRuleResult> {
   const sql = deps.sql ?? getOrgPg().sql;
-  const rule = await setAdmissionRule(input, sql);
+  const rule = await setAdmissionRule(input, sql, deps);
   if (!rule.enabled || rule.sourceKind !== RECORD_SOURCE_KIND) return { rule };
   return { rule, backfill: await applyAdmissionRule(input.workspaceId, rule.id, { ...deps, sql }) };
 }

@@ -698,6 +698,8 @@ export async function createPotFromRepo(
         forkRemote: null,
         upstreamRemote: parsed.cloneUrl,
         hasSubmodules: (await import('../../harness/git-sync/pot-integration-mode')).repoHasSubmodules(memberPath),
+        // D-017: the guided switch forks every submodule it finds in the checkout.
+        checkoutPath: memberPath,
       });
     })().catch((e) => ({
       ok: false as const,

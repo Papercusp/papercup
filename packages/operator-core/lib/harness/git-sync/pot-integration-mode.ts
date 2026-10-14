@@ -35,6 +35,14 @@ import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-se
 import { parseGithubUrl } from '../clone-github';
 import type { EnsureForkOpts, EnsureForkResult } from '../ensure-fork';
 import { resolveForkPushTarget, setForkRemote, type SetForkRemoteResult } from './fork-remote';
+// Type-only: submodule-forks imports this module at runtime, so its functions are loaded lazily below.
+import type {
+  CodeRunGit,
+  CreateSubmoduleForksResult,
+  SubmoduleForks,
+  SubmoduleForkSetupResult,
+  SubmoduleForksRead,
+} from './submodule-forks';
 
 let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
 const execFileAsync = ((...args: unknown[]) =>
@@ -90,8 +98,18 @@ export async function readPotIntegrationMode(
 export type IntegrationPushDecision =
   /** `direct` mode: the existing push logic applies, unchanged. */
   | { kind: 'unchanged'; reason: string }
-  /** `review` mode with a fork: push to the fork through the `pot-fork` remote. */
-  | { kind: 'fork'; remoteName: typeof POT_FORK_REMOTE_NAME; url: string; reason: string }
+  /**
+   * `review` mode with a fork: push to the fork through the `pot-fork` remote.
+   * `submoduleForks` (D-017) is the pot's per-submodule fork read; it matters only when
+   * the checkout has submodules, and an unusable read then makes the tick commit-only.
+   */
+  | {
+      kind: 'fork';
+      remoteName: typeof POT_FORK_REMOTE_NAME;
+      url: string;
+      reason: string;
+      submoduleForks?: SubmoduleForksRead;
+    }
   /** Commit locally, push nowhere. Never falls back to the main repository. */
   | {
       kind: 'commit-only';
@@ -103,6 +121,8 @@ export interface ResolveIntegrationPushInput {
   read: PotIntegrationModeRead;
   /** The pot's fork remote URL (registry `fork_remote`), when configured. */
   forkRemote?: string;
+  /** D-017: the pot's per-submodule forks (hiveGit.submoduleForks), carried onto a `fork` decision. */
+  submoduleForks?: SubmoduleForksRead;
 }
 
 /** PURE: decide this tick's push target from the mode read and the fork URL. */
@@ -150,6 +170,7 @@ export function resolveIntegrationPushRemote(input: ResolveIntegrationPushInput)
     remoteName: POT_FORK_REMOTE_NAME,
     url: target.remote,
     reason: 'working-copy mode — git-sync pushes the pot’s own fork, never the main repository (D-006)',
+    ...(input.submoduleForks ? { submoduleForks: input.submoduleForks } : {}),
   };
 }
 
@@ -378,22 +399,52 @@ export type IntegrationCommitOnlyReason =
   | 'working_copy_no_repo_path'
   | 'working_copy_fork_remote_setup_failed'
   | 'working_copy_branch_layout_conflict'
-  | 'working_copy_fork_branch_seed_failed';
+  | 'working_copy_fork_branch_seed_failed'
+  | 'working_copy_submodule_forks_unreadable'
+  | Extract<SubmoduleForkSetupResult, { ok: false }>['reason'];
 
 /** Seams for {@link applyIntegrationPushTarget}; the defaults run real git. */
 export interface ApplyIntegrationPushDeps {
   ensureRemote?: (repoPath: string, url: string) => Promise<unknown>;
   ensureBranch?: (repoPath: string) => Promise<IntegrationBranchLayout>;
   ensureForkBranch?: (repoPath: string) => Promise<ForkBranchSeed>;
+  /** D-017: does the checkout use submodules? Default: {@link repoHasSubmodules}. */
+  hasSubmodules?: (repoPath: string) => boolean | undefined;
+  /** D-017: point every submodule at its fork. Default: submodule-forks' applySubmoduleForkRemotes. */
+  setupSubmodules?: (repoPath: string, forks: SubmoduleForks) => Promise<SubmoduleForkSetupResult>;
+}
+
+/** Code-returning git for the submodule leg (git-sync's own convention). */
+const defaultCodeRunGit: CodeRunGit = async (args, cwd) => {
+  try {
+    const { stdout, stderr } = await execFileAsync('git', args, { cwd, encoding: 'utf8' });
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    const e = err as { code?: unknown; stdout?: string; stderr?: string; message?: string };
+    return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? '' };
+  }
+};
+
+async function defaultSetupSubmodules(repoPath: string, forks: SubmoduleForks): Promise<SubmoduleForkSetupResult> {
+  const { applySubmoduleForkRemotes } = await import('./submodule-forks');
+  return applySubmoduleForkRemotes(repoPath, forks, {
+    runGit: defaultRunGit,
+    codeRunGit: defaultCodeRunGit,
+    log: (line) => console.log(`[git-sync] ${line}`),
+  });
 }
 
 /**
  * pot-review-integration-mode P-014: apply this tick's working-copy push target
  * to the git-sync config, in place.
  *
- * `fork` points the `pot-fork` remote at the fork and pushes there; submodule
- * origins are NOT pushed (they are the main repositories' submodules — pushing
- * them would leak unreviewed work past the PR). `commit-only`, or a fork remote
+ * `fork` points the `pot-fork` remote at the fork and pushes there. Submodule
+ * `origin`s are NEVER pushed (they are the submodules' main repositories — pushing
+ * them would leak unreviewed work past the PR). D-017: a checkout WITH submodules
+ * points each submodule's own `pot-fork` remote at the pot's fork of that submodule
+ * and pushes submodules there (git-sync pushes every repo through the one `remote`
+ * name); a submodule without a usable fork makes the whole tick commit-only, since
+ * the superproject's gitlinks would otherwise resolve nowhere. `commit-only`, or a fork remote
  * that cannot be set up, commits locally and pushes nowhere. Never falls back to
  * the main repository. Returns the commit-only reason, or null when it pushes.
  *
@@ -425,6 +476,29 @@ export async function applyIntegrationPushTarget(
   if (!repoPath) {
     console.log(`[git-sync] ${slug}: working-copy mode but no checkout path — committing locally, pushing nowhere`);
     return commitOnly('working_copy_no_repo_path');
+  }
+  // D-017: submodules push to the pot's fork of each submodule, or nothing pushes.
+  // Decided FIRST, so a missing or unreadable submodule fork refuses the tick before
+  // the superproject's fork remote or fork branch is touched.
+  let pushSubmodules = false;
+  if ((deps.hasSubmodules ?? repoHasSubmodules)(repoPath) === true) {
+    const read = decision.submoduleForks;
+    if (read && (read.source === 'error' || read.source === 'malformed')) {
+      console.log(
+        `[git-sync] ${slug}: ⚠ could not read the working copy's submodule forks (${read.source}) — ` +
+          'committing locally, pushing nowhere',
+      );
+      return commitOnly('working_copy_submodule_forks_unreadable');
+    }
+    const setup = await (deps.setupSubmodules ?? defaultSetupSubmodules)(repoPath, read?.forks ?? {});
+    if (!setup.ok) {
+      console.log(
+        `[git-sync] ${slug}: ⚠ submodule '${setup.path}' cannot push to a fork — ${setup.message}. ` +
+          'Committing locally, pushing nowhere, so no gitlink is published that its fork cannot resolve.',
+      );
+      return commitOnly(setup.reason);
+    }
+    pushSubmodules = true;
   }
   try {
     await ensureRemote(repoPath, decision.url);
@@ -468,31 +542,37 @@ export async function applyIntegrationPushTarget(
   // fork — sync-back fetches upstream from it and merges into the copy's staging.
   cfg.syncBack = { upstreamRemote: cfg.remote ?? 'origin', upstreamBranch: SYNC_BACK_UPSTREAM_BRANCH };
   cfg.remote = decision.remoteName;
-  cfg.pushSubmoduleOrigins = false;
+  // True only after every submodule's `pot-fork` remote was pointed at ITS fork above:
+  // git-sync then pushes each submodule through `pot-fork`, never through its origin.
+  cfg.pushSubmoduleOrigins = pushSubmodules;
   console.log(`[git-sync] ${slug}: ${decision.reason}`);
   return null;
 }
 
 export type SetPotIntegrationModeResult =
   | { ok: true; mode: PotIntegrationMode | null }
-  | { ok: false; error: 'green_cmd_required' | 'fork_required' | 'submodules_unsupported'; message: string };
+  | { ok: false; error: 'green_cmd_required' | 'fork_required' | 'submodule_forks_required'; message: string };
 
 /**
- * WI-10006107: does the pot's checkout use git submodules? Working-copy mode cannot
- * carry them yet: submodule commits are deliberately never pushed to the main
- * repository's submodules (that would leak unreviewed work), and no per-submodule
- * fork exists, so the copy's gitlinks would point at commits that exist nowhere
- * remote. `undefined` when the checkout path is unknown.
+ * Does the pot's checkout use git submodules? A working copy of such a repo needs a
+ * fork of every submodule too (D-017): submodule commits are never pushed to the
+ * submodules' main repositories, so without those forks the copy's gitlinks would
+ * point at commits that exist nowhere remote. `undefined` when the path is unknown.
  */
 export function repoHasSubmodules(checkoutPath: string | null | undefined): boolean | undefined {
   if (!checkoutPath) return undefined;
   return existsSync(join(checkoutPath, '.gitmodules'));
 }
 
-/** The plain refusal shown when a repo with submodules asks for a working copy (WI-10006107). */
-export const SUBMODULES_UNSUPPORTED_MESSAGE =
-  'working-copy mode does not support repositories with submodules yet: their submodule commits would have ' +
-  'nowhere reviewable to go, so the working copy and its PR could not be checked out. Keep this pot straight in.';
+/** The refusal shown when a repo with submodules lacks a fork for some of them (D-017). */
+export function submoduleForksRequiredMessage(missing: readonly string[] | null): string {
+  const which = missing && missing.length ? ` (missing: ${missing.join(', ')})` : '';
+  return (
+    'working-copy mode for a repository with submodules needs the pot’s own fork of every submodule, so the ' +
+    `submodules’ commits have somewhere reviewable to go${which}. Choose the working copy through the guided ` +
+    'switch, which creates them.'
+  );
+}
 
 export interface SetPotIntegrationModeInput {
   workspaceId: string;
@@ -503,8 +583,12 @@ export interface SetPotIntegrationModeInput {
   greenCmd: string | null | undefined;
   /** The pot's fork remote URL, if one is configured. */
   forkRemote: string | null | undefined;
-  /** WI-10006107: the pot's checkout has git submodules ({@link repoHasSubmodules}). */
+  /** The pot's checkout has git submodules ({@link repoHasSubmodules}). */
   hasSubmodules?: boolean;
+  /** D-017: every submodule path of the checkout (recursive), when it has submodules. */
+  submodulePaths?: readonly string[];
+  /** D-017: the pot's recorded fork per submodule path (hiveGit.submoduleForks). */
+  submoduleForks?: SubmoduleForks;
   sql?: Sql;
 }
 
@@ -527,7 +611,11 @@ export async function setPotIntegrationMode(input: SetPotIntegrationModeInput): 
   }
   if (mode === 'review') {
     if (input.hasSubmodules === true) {
-      return { ok: false, error: 'submodules_unsupported', message: SUBMODULES_UNSUPPORTED_MESSAGE };
+      // Fail closed: an unknown submodule list cannot prove every submodule has a fork.
+      const missing = input.submodulePaths ? input.submodulePaths.filter((p) => !input.submoduleForks?.[p]) : null;
+      if (!missing || missing.length > 0) {
+        return { ok: false, error: 'submodule_forks_required', message: submoduleForksRequiredMessage(missing) };
+      }
     }
     if (!input.greenCmd || !input.greenCmd.trim()) {
       return {
@@ -563,7 +651,9 @@ export type ChoosePotIntegrationModeResult =
         | 'fork_record_failed'
         | 'standing_pr_open'
         | 'standing_pr_unknown'
-        | 'submodules_unsupported';
+        | 'submodule_forks_required'
+        | 'submodule_forks_record_failed'
+        | Extract<CreateSubmoduleForksResult, { ok: false }>['error'];
       message: string;
     };
 
@@ -577,6 +667,8 @@ export interface ChoosePotIntegrationModeInput extends SetPotIntegrationModeInpu
   harnessSlug: string;
   /** The main repository (registry `github_remote`) the fork is made from. */
   upstreamRemote: string | null | undefined;
+  /** D-017: the pot's checkout, read for its submodules when it has any. */
+  checkoutPath?: string | null;
 }
 
 export interface ChoosePotIntegrationModeDeps {
@@ -591,6 +683,30 @@ export interface ChoosePotIntegrationModeDeps {
    * head lives in this pot's fork, so another pot's PR from the same branch name never counts.
    */
   findOpenStandingPr?: (upstreamRemote: string, forkRepo?: string) => Promise<OpenStandingPrLookup>;
+  /** D-017: create/find the pot's fork of every submodule. Default: submodule-forks' createSubmoduleForks. */
+  createSubmoduleForks?: (input: ChoosePotIntegrationModeInput) => Promise<CreateSubmoduleForksResult>;
+  /** D-017: record the submodule forks (hiveGit.submoduleForks). */
+  recordSubmoduleForks?: (workspaceId: string, potHomeSlug: string, forks: SubmoduleForks) => Promise<void>;
+}
+
+async function defaultCreateSubmoduleForks(
+  input: ChoosePotIntegrationModeInput,
+  deps: ChoosePotIntegrationModeDeps,
+): Promise<CreateSubmoduleForksResult> {
+  if (!input.checkoutPath) {
+    return { ok: false, error: 'submodules_unreadable', message: 'the pot’s checkout path is unknown, so its submodules cannot be listed' };
+  }
+  const forks = await import('./submodule-forks');
+  const existing = await forks.readSubmoduleForks(input.workspaceId, input.potHomeSlug, input.sql);
+  if (existing.source === 'error' || existing.source === 'malformed') {
+    return { ok: false, error: 'submodules_unreadable', message: `the pot’s recorded submodule forks are unreadable (${existing.source})` };
+  }
+  return forks.createSubmoduleForks({
+    checkoutPath: input.checkoutPath,
+    existing: existing.forks,
+    ensureFork: deps.ensureFork ?? (async (o: EnsureForkOpts) => (await import('../ensure-fork')).ensureFork(o)),
+    codeRunGit: defaultCodeRunGit,
+  });
 }
 
 async function defaultFindOpenStandingPr(upstreamRemote: string, forkRepo?: string): Promise<OpenStandingPrLookup> {
@@ -671,18 +787,48 @@ export async function choosePotIntegrationMode(
   const setMode = deps.setMode ?? setPotIntegrationMode;
   const refused = await guardLeavingWorkingCopy(input, deps);
   if (refused) return refused;
-  if (input.mode !== 'review' || input.forkRemote) {
+  if (input.mode !== 'review') {
     const r = await setMode(input);
     return r.ok ? { ok: true, mode: r.mode, fork: null } : r;
   }
-  if (input.hasSubmodules === true) {
-    // Refuse before ensureFork, so a refused switch never creates a fork (WI-10006107).
-    return { ok: false, error: 'submodules_unsupported', message: SUBMODULES_UNSUPPORTED_MESSAGE };
-  }
+  // The test-command check runs first, so a refused switch never creates a fork.
   if (!input.greenCmd || !input.greenCmd.trim()) {
     return setMode(input) as Promise<ChoosePotIntegrationModeResult>;
   }
   const upstream = input.upstreamRemote ? parseGithubUrl(input.upstreamRemote) : null;
+  if (!input.forkRemote && !upstream) {
+    return {
+      ok: false,
+      error: 'upstream_remote_required',
+      message: 'working-copy mode needs the pot’s main repository on GitHub, to fork it',
+    };
+  }
+  // D-017: a repo with submodules needs the pot's fork of each submodule as well.
+  let withSubmodules: SetPotIntegrationModeInput = input;
+  if (input.hasSubmodules === true) {
+    const made = await (deps.createSubmoduleForks ?? ((i) => defaultCreateSubmoduleForks(i, deps)))(input);
+    if (!made.ok) return made;
+    try {
+      await (deps.recordSubmoduleForks ??
+        (async (w: string, p: string, f: SubmoduleForks) =>
+          (await import('./submodule-forks')).recordSubmoduleForks(w, p, f, input.sql)))(
+        input.workspaceId,
+        input.potHomeSlug,
+        made.forks,
+      );
+    } catch (err) {
+      return {
+        ok: false,
+        error: 'submodule_forks_record_failed',
+        message: `could not record the submodule forks: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    withSubmodules = { ...input, submodulePaths: Object.keys(made.forks), submoduleForks: made.forks };
+  }
+  if (input.forkRemote) {
+    const r = await setMode(withSubmodules);
+    return r.ok ? { ok: true, mode: r.mode, fork: null } : r;
+  }
   if (!upstream) {
     return {
       ok: false,
@@ -723,6 +869,6 @@ export async function choosePotIntegrationMode(
       message: recorded.ok ? 'fork remote was not recorded' : recorded.message,
     };
   }
-  const r = await setMode({ ...input, forkRemote: recorded.forkRemote });
+  const r = await setMode({ ...withSubmodules, forkRemote: recorded.forkRemote });
   return r.ok ? { ok: true, mode: r.mode, fork: { url: recorded.forkRemote, created: fork.created } } : r;
 }

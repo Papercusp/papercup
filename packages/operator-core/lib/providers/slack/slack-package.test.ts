@@ -378,11 +378,110 @@ describe('ingress.normalize', () => {
     }
   });
 
-  it('ignores bot and app posts, edits and other subtypes, group DMs, and control envelopes', async () => {
+  it('records an edit as a new version of the same message that keeps its post time', async () => {
+    const original = { type: 'message', user: 'U7', text: 'The export 500s', ts: '1712345678.000200' };
+    const edit = {
+      type: 'message', subtype: 'message_changed', hidden: true, channel: 'C42', channel_type: 'channel',
+      ts: '1712345800.000100', event_ts: '1712345800.000100',
+      message: { ...original, text: 'The export 500s on staging', edited: { user: 'U7', ts: '1712345799.000000' } },
+      previous_message: original,
+    };
+    const result = await provider.normalizeEnvelope(eventsEnvelope(edit));
+    expect(result.records).toHaveLength(1);
+    const [record] = result.records;
+    // The same message (native id, readership), under its own event, so new-message workflows do not fire.
+    expect(record).toMatchObject({
+      datatype: 'chat-message', event: 'edited', nativeId: 'C42:1712345678.000200', aclRef: 'C42',
+      version: 'edited:C42:1712345678.000200:1712345799.000000:', occurredAt: '2024-04-05T19:34:38.000Z',
+    });
+    expect(record.deleted).toBeUndefined();
+    expect(record.payload).toMatchObject({
+      channelId: 'C42', sender: 'U7', text: 'The export 500s on staging', occurredAt: '2024-04-05T19:34:38.000Z',
+      editedAt: '2024-04-05T19:36:39.000Z',
+      extensions: { slack: { ts: '1712345678.000200', subtype: 'message_changed', editedTs: '1712345799.000000' } },
+    });
+    expect(validateDatatypePayload(CHAT_MESSAGE_SCHEMA, record.payload).ok).toBe(true);
+    expect(() => assertProviderRecords(result.records, { descriptor: manifest.provider })).not.toThrow();
+
+    // A second edit is a new version; a root that gains its first reply joins its thread once.
+    const [again] = (await provider.normalizeEnvelope(eventsEnvelope({
+      ...edit, message: { ...edit.message, text: 'fixed', edited: { user: 'U7', ts: '1712345900.000000' } },
+    }))).records;
+    expect(again.version).toBe('edited:C42:1712345678.000200:1712345900.000000:');
+    const threaded = { ...original, thread_ts: original.ts, reply_count: 1 };
+    const [joined] = (await provider.normalizeEnvelope(eventsEnvelope({ ...edit, message: threaded }))).records;
+    expect(joined).toMatchObject({ event: 'edited', version: 'edited:C42:1712345678.000200:1712345678.000200:1712345678.000200' });
+    expect(joined.payload.threadKey).toBe('1712345678.000200');
+    expect(joined.payload.editedAt).toBeUndefined();
+
+    // A change that alters neither text nor thread (an unfurl, a later reply count) records nothing.
+    for (const message of [
+      { ...original, attachments: [{ title: 'unfurl' }] },
+      { ...threaded, reply_count: 2 },
+    ]) {
+      const previous = 'thread_ts' in message ? threaded : original;
+      expect((await provider.normalizeEnvelope(eventsEnvelope({ ...edit, message, previous_message: previous }))).records).toEqual([]);
+    }
+    // Edits of posts this provider never records stay unrecorded: another bot, an app, a group DM.
+    for (const event of [
+      { ...edit, message: { ...edit.message, bot_id: 'B1' } },
+      { ...edit, message: { ...edit.message, app_id: 'A1' } },
+      { ...edit, channel: 'G1', channel_type: 'mpim' },
+      { ...edit, message: undefined },
+      { ...edit, message: { ...edit.message, text: '' } },
+    ]) {
+      expect((await provider.normalizeEnvelope(eventsEnvelope(event))).records).toEqual([]);
+    }
+  });
+
+  it('records a deletion, and the tombstone of a deleted thread root, as a deleted record of the message', async () => {
+    const original = { type: 'message', user: 'U7', text: 'my password is hunter2', ts: '1712345678.000200', thread_ts: '1712345600.000100' };
+    const deletion = {
+      type: 'message', subtype: 'message_deleted', hidden: true, channel: 'C42', channel_type: 'channel',
+      ts: '1712345900.000100', event_ts: '1712345900.000100', deleted_ts: original.ts, previous_message: original,
+    };
+    const result = await provider.normalizeEnvelope(eventsEnvelope(deletion));
+    expect(result.records).toHaveLength(1);
+    const [record] = result.records;
+    expect(record).toMatchObject({
+      datatype: 'chat-message', event: 'deleted', deleted: true, nativeId: 'C42:1712345678.000200', aclRef: 'C42',
+      version: 'deleted:C42:1712345678.000200', occurredAt: '2024-04-05T19:38:20.000Z',
+    });
+    // The deleted text is never carried forward.
+    expect(record.payload).toMatchObject({ channelId: 'C42', threadKey: '1712345600.000100', sender: 'U7', text: '' });
+    expect(JSON.stringify(record)).not.toContain('hunter2');
+    expect(validateDatatypePayload(CHAT_MESSAGE_SCHEMA, record.payload).ok).toBe(true);
+    expect(() => assertProviderRecords(result.records, { descriptor: manifest.provider })).not.toThrow();
+
+    // A deleted root that has replies stays as a tombstone: Slack reports it as a change.
+    const [tombstone] = (await provider.normalizeEnvelope(eventsEnvelope({
+      type: 'message', subtype: 'message_changed', hidden: true, channel: 'C42', channel_type: 'channel',
+      ts: '1712345900.000200', event_ts: '1712345900.000200',
+      message: { type: 'message', subtype: 'tombstone', text: 'This message was deleted.', user: 'USLACKBOT', ts: '1712345600.000100', thread_ts: '1712345600.000100', hidden: true },
+      previous_message: { type: 'message', user: 'U8', text: 'the root', ts: '1712345600.000100', thread_ts: '1712345600.000100' },
+    }))).records;
+    expect(tombstone).toMatchObject({ event: 'deleted', deleted: true, nativeId: 'C42:1712345600.000100', version: 'deleted:C42:1712345600.000100' });
+    expect(tombstone.payload).toMatchObject({ text: '', sender: 'U8' });
+
+    // A deletion with no previous message still removes the message; one of another bot's posts or
+    // in a group DM, which were never recorded, records nothing.
+    const [bare] = (await provider.normalizeEnvelope(eventsEnvelope({ ...deletion, previous_message: undefined }))).records;
+    expect(bare).toMatchObject({ deleted: true, nativeId: 'C42:1712345678.000200' });
+    for (const event of [
+      { ...deletion, previous_message: { ...original, bot_id: 'B1' } },
+      { ...deletion, channel: 'G1', channel_type: 'mpim' },
+      { ...deletion, deleted_ts: 'not-a-ts' },
+    ]) {
+      expect((await provider.normalizeEnvelope(eventsEnvelope(event))).records).toEqual([]);
+    }
+  });
+
+  it('ignores bot and app posts, system subtypes, group DMs, and control envelopes', async () => {
     const base = { type: 'message', channel: 'C42', user: 'U7', text: 'x', ts: '1712345678.000200' };
     for (const event of [
       { ...base, bot_id: 'B1' },
       { ...base, app_id: 'A1' },
+      // A change event with no changed message is malformed.
       { ...base, subtype: 'message_changed' },
       { ...base, subtype: 'channel_join' },
       { ...base, channel: 'G1', channel_type: 'mpim' },
@@ -661,6 +760,23 @@ describe('syncPage (organization history and channel readership, D-026)', () => 
     expect(second.records.map((r: { nativeId: string }) => r.nativeId)).toEqual(['C1:1712340000.000100']);
     expect(second.hasMore).toBe(true);
     expect(cursorState(second)).toEqual({ queue: ['G4'], seen: ['C1', 'G4'] });
+  });
+
+  it('reads a tombstone in history as a deletion and an edited message with its edit time', () => {
+    const tombstone = provider.historyRecord('C1', {
+      type: 'message', subtype: 'tombstone', text: 'This message was deleted.', user: 'USLACKBOT',
+      ts: '1712345678.000200', thread_ts: '1712345678.000200', reply_count: 2,
+    });
+    expect(tombstone).toMatchObject({
+      event: 'deleted', deleted: true, nativeId: 'C1:1712345678.000200', aclRef: 'C1', version: 'deleted:C1:1712345678.000200',
+    });
+    expect(tombstone.payload).toMatchObject({ text: '', threadKey: '1712345678.000200' });
+    expect(validateDatatypePayload(CHAT_MESSAGE_SCHEMA, tombstone.payload).ok).toBe(true);
+    expect(() => assertProviderRecords([tombstone], { descriptor: manifest.provider })).not.toThrow();
+
+    const edited = provider.historyRecord('C1', { ts: '1712345400.000100', user: 'U3', text: 'edited words', edited: { ts: '1712345450.000000' } });
+    expect(edited.payload.editedAt).toBe(new Date(1712345450_000).toISOString());
+    expect(provider.historyRecord('C1', { ts: '1712345400.000100', user: 'U3', text: 'plain' }).payload.editedAt).toBeUndefined();
   });
 
   it('finishes the backfill on the last channel, and skips a channel whose history is gone', async () => {

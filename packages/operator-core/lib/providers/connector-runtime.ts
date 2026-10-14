@@ -378,6 +378,8 @@ export async function admitConnectorRecord(
     normalize: (payload) => payload as Record<string, unknown>,
     occurredAt: record.occurredAt ?? null,
     dedupeKey: connectorRecordDedupeKey(source.id, record),
+    // The sinks need it too: a chat-message sink tombstones a deleted message instead of storing it.
+    ...(record.deleted === true ? { deleted: true } : {}),
     additionalSinks: sinks,
   });
   if (result.validationErrors?.length) return 'rejected';

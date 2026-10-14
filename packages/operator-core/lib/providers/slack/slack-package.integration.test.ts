@@ -124,7 +124,8 @@ async function pasteTokens(ownerUserId: string): Promise<string> {
   return row!.id;
 }
 
-function startManager(): ProviderSocketIngressManager {
+/** `storeSinks` keeps the production destination sinks, so chat messages land in chat_messages. */
+function startManager({ storeSinks = false } = {}): ProviderSocketIngressManager {
   manager = new ProviderSocketIngressManager({
     sql,
     workspaceId: () => WS,
@@ -139,7 +140,7 @@ function startManager(): ProviderSocketIngressManager {
           ingestExternalTriggerEvent(inner, args, {
             emit: async (event) => ({ ok: true, key: event.key, woken: 0, notified: [], msgId: null, waiters: 0 }),
           }),
-        sinksFor: async () => [],
+        ...(storeSinks ? {} : { sinksFor: async () => [] }),
       });
       admissions.push(outcome);
       return outcome;
@@ -312,6 +313,50 @@ describe('slack package on the host (P-006)', () => {
     expect(seen).not.toContain(APP_TOKEN);
     expect(seen).not.toContain(BOT_TOKEN);
     expect(logs.join('\n')).not.toContain(APP_TOKEN);
+  });
+
+  it('follows an edit and a deletion of a Slack message into the stored chat message', async () => {
+    const sourceId = await pasteTokens(await newOwner());
+    await startManager({ storeSinks: true }).reconcile();
+    const slack = await waitFor('the Socket Mode connection', () => serverSockets[0]);
+    const post = { type: 'message', user: 'U0REPORTER', text: 'my password is hunter2', ts: '1712345678.000400' };
+    const stored = async () => (await sql<Array<{ body: string | null; edited_at: Date | null; deleted_at: Date | null; posted_at: Date }>>`
+      SELECT body, edited_at, deleted_at, posted_at FROM harness_shared.chat_messages
+       WHERE workspace_id = ${WS} AND data_source_id = ${sourceId}::uuid
+         AND channel_id = 'C0BUGS' AND provider_message_id = 'C0BUGS:1712345678.000400'`)[0];
+
+    slack.send(JSON.stringify(eventsEnvelope('env-p', 'EvPost', { ...post, channel: 'C0BUGS', channel_type: 'channel' })));
+    expect((await waitFor('the post to be stored', stored)).body).toBe('my password is hunter2');
+
+    slack.send(JSON.stringify(eventsEnvelope('env-e', 'EvEdit', {
+      type: 'message', subtype: 'message_changed', hidden: true, channel: 'C0BUGS', channel_type: 'channel',
+      ts: '1712345700.000100', event_ts: '1712345700.000100',
+      message: { ...post, text: 'please rotate my password', edited: { user: 'U0REPORTER', ts: '1712345699.000000' } },
+      previous_message: post,
+    })));
+    const edited = await waitFor('the edit to be stored', async () => {
+      const row = await stored();
+      return row?.body === 'please rotate my password' ? row : null;
+    });
+    // The edit is the same message: its post time (and so its thread or time window) stays.
+    expect(edited.posted_at.toISOString()).toBe('2024-04-05T19:34:38.000Z');
+    expect(edited.edited_at?.toISOString()).toBe('2024-04-05T19:34:59.000Z');
+
+    slack.send(JSON.stringify(eventsEnvelope('env-d', 'EvDelete', {
+      type: 'message', subtype: 'message_deleted', hidden: true, channel: 'C0BUGS', channel_type: 'channel',
+      ts: '1712345800.000100', event_ts: '1712345800.000100', deleted_ts: post.ts,
+      previous_message: { ...post, text: 'please rotate my password' },
+    })));
+    const deleted = await waitFor('the deletion to be stored', async () => {
+      const row = await stored();
+      return row?.deleted_at ? row : null;
+    });
+    // With no legal hold the text is erased at once, not kept until the next retention pass.
+    expect(deleted.body).toBeNull();
+    expect(deleted.deleted_at?.toISOString()).toBe('2024-04-05T19:36:40.000Z');
+    // The outcome is recorded after the sink write, so the stored row can be visible first.
+    await waitFor('the deletion to be admitted', () => admissions.length === 3);
+    expect(admissions).toEqual(['admitted', 'admitted', 'admitted']);
   });
 
   it('lists channels for the picker and replies in the thread with the bot token injected by the host', async () => {

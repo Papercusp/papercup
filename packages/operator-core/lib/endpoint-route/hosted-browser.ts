@@ -67,6 +67,7 @@ import { createHostedTutorialProgressRoutes, HOSTED_BROWSER_TUTORIAL_PROGRESS_PA
 import { createHostedTutorialAssistanceRoutes } from './routes/hosted-tutorial-assistance-runtime';
 import { exactOriginOr403, jsonError, selectedHostedPrincipal, tenantContext, workspaceHeaderMismatch, type HostedPrincipalSelection } from './hosted-browser-context';
 import { acceptSyncTransportObservation } from './routes/desktop/telemetry-report';
+import { createHostedCloudMonitoringRoutes, HOSTED_BROWSER_MONITORING_PATH, HOSTED_BROWSER_MONITORING_EVENT_PATH } from './routes/hosted-cloud-monitoring';
 export { HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH } from './routes/hosted-tutorial-progress';
 
 export const HOSTED_BROWSER_REST_QUERY_PATH = '/hosted/browser/rest-query' as const;
@@ -96,6 +97,9 @@ export const HOSTED_BROWSER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_PROGRESS_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_HELP_PATH, access: 'session' },
   { method: 'POST', path: HOSTED_BROWSER_TUTORIAL_SPEECH_PATH, access: 'session' },
+  { method: 'GET', path: HOSTED_BROWSER_MONITORING_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_MONITORING_PATH, access: 'session' },
+  { method: 'POST', path: HOSTED_BROWSER_MONITORING_EVENT_PATH, access: 'session' },
 ] as const;
 
 const HOSTED_VIEW_AUTH = {
@@ -810,9 +814,10 @@ export function createHostedBrowserRoutes(configuration: HostedBrowserRouteConfi
   });
 
   const tutorialProgress = createHostedTutorialProgressRoutes({ origin, controlPlaneWorkspaceId, runTenant });
+  const monitoring = createHostedCloudMonitoringRoutes({ origin, controlPlaneWorkspaceId, runTenant });
   const tutorialAssistance = createHostedTutorialAssistanceRoutes({ origin, controlPlaneWorkspaceId, runTenant, dependencies: deps.tutorialAssistance });
   return {
-    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance],
+    routes: [query, sse, fallbackObservation, connection, provision, action, firstWorkspace, selectWorkspace, ...tutorialProgress, ...tutorialAssistance, ...monitoring],
     allowlist: HOSTED_BROWSER_ROUTE_ALLOWLIST,
   };
 }
