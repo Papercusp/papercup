@@ -16,6 +16,12 @@ import {
   reconcileLoopRoutines as reconcileLoopRoutinesImpl,
   classifyLoopLifecycleTurn,
   defaultEscalateLifecycleDeath,
+  defaultEscalateNoTurnWedge,
+  noTurnWedgeEscalateAfter,
+  reconcileLoopNoTurnWedgeEscalations,
+  reconcileLoopLifecycleDeathEscalations,
+  LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX,
+  LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX,
 } from './reconcile-loop-routines';
 
 // EI-18668025239634541 recurrence guard: mocked so the test below can assert on the
@@ -756,6 +762,76 @@ describe('reconcileLoopRoutines — strict per-fire loop-origin completion (EI-2
       'loop-delivered-wake-no-loop-turn',
       'error',
     );
+  });
+
+  // WI-6554700010012153: a delivered wake that never becomes a turn used to emit only a
+  // console.warn, and the backed-off circuit needed hours to open (EI-25930229050142968:
+  // six such fires over ~1h50m with no loud signal). These pin the loud escalation.
+  describe('no-turn wedge escalation (WI-6554700010012153)', () => {
+    const staleWake = () =>
+      deliveredWarmRow({ last_loop_turn_at: pgString(T0 + 500), presence_last_active_at: null });
+
+    it('escalates once the post-record failure streak reaches the threshold, naming the loop and owner', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const escalateNoTurnWedge = vi.fn(async () => {});
+      const res = await reconcile({
+        sql: fakeSql([staleWake()], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 3 }) as never),
+        escalateNoTurnWedge,
+        noTurnWedgeThreshold: 3,
+      });
+
+      expect(res.loops[0]).toMatchObject({ via: 'delivered-wake-no-loop-turn' });
+      expect(escalateNoTurnWedge).toHaveBeenCalledTimes(1);
+      expect(escalateNoTurnWedge).toHaveBeenCalledWith({
+        routineId: 'rt-loop-origin',
+        targetOwnerId: 'su-loop-origin',
+        installSlug: 'papercusp',
+        name: 'loop-su-loop-origin',
+        consecutiveErrors: 3,
+        lastWakeDeliveredAt: new Date(T0 + 1_000).toISOString(),
+      });
+    });
+
+    it('stays quiet below the threshold — one or two missed turns are the circuit’s job, not an alarm', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const escalateNoTurnWedge = vi.fn(async () => {});
+      await reconcile({
+        sql: fakeSql([staleWake()], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 2 }) as never),
+        escalateNoTurnWedge,
+        noTurnWedgeThreshold: 3,
+      });
+      expect(escalateNoTurnWedge).not.toHaveBeenCalled();
+    });
+
+    it('does not escalate on a settled loop-origin turn, however long the prior streak', async () => {
+      const escalateNoTurnWedge = vi.fn(async () => {});
+      await reconcile({
+        sql: fakeSql([deliveredWarmRow({ last_loop_turn_at: pgString(T0 + 5_000) })], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 7 }) as never),
+        escalateNoTurnWedge,
+        noTurnWedgeThreshold: 3,
+      });
+      expect(escalateNoTurnWedge).not.toHaveBeenCalled();
+    });
+
+    it('a failing escalation never aborts the re-arm it accompanies', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const res = await reconcile({
+        sql: fakeSql([staleWake()], []),
+        nowMs: T0 + 3 * 60_000,
+        readFireState: vi.fn(async () => ({ consecutiveErrors: 5 }) as never),
+        escalateNoTurnWedge: vi.fn(async () => {
+          throw new Error('coord context unavailable');
+        }),
+        noTurnWedgeThreshold: 3,
+      });
+      expect(res.rearmed).toBe(1);
+    });
   });
 
   it('uses a matching loop-origin assistant turn as the completion signal', async () => {
@@ -3969,5 +4045,126 @@ describe('reconcileLoopRoutines — looksDeadOrStuck stays bounded to the fire, 
     });
     expect(res.rearmed).toBe(1);
     expect(res.loops[0]).toMatchObject({ id: 'rt-undelivered', via: 'stuck-backstop' });
+  });
+});
+
+/**
+ * WI-6554700010012153 — the no-turn wedge escalation must coalesce (stable key, no volatile
+ * count in the summary) and must CLOSE itself once the loop recovers, or it joins the
+ * immortal-escalation class EI-19408412473830336 fixed for its two siblings.
+ */
+describe('loop no-turn wedge watchdog — dedup + auto-resolve (WI-6554700010012153)', () => {
+  const info = {
+    routineId: 'rt-wedge',
+    targetOwnerId: 'su-wedged',
+    installSlug: 'papercusp',
+    name: 'loop-su-wedged',
+    lastWakeDeliveredAt: '2026-10-14T05:05:00.000Z',
+  };
+
+  it('keys every occurrence of the same loop onto one stable conditionKey, whatever the streak', async () => {
+    const mockOpenEscalation = vi.mocked(openEscalation);
+    mockOpenEscalation.mockClear();
+    await defaultEscalateNoTurnWedge({ ...info, consecutiveErrors: 3 });
+    await defaultEscalateNoTurnWedge({ ...info, consecutiveErrors: 6 });
+
+    const args = mockOpenEscalation.mock.calls.map(
+      (c) => c[1] as { summary: string; meta?: { subjectSignature?: string }; harness_slug?: string },
+    );
+    expect(args).toHaveLength(2);
+    expect(args[0]?.meta?.subjectSignature).toBe(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-wedge`);
+    expect(args[1]?.meta?.subjectSignature).toBe(args[0]?.meta?.subjectSignature);
+    // The summary is the dedup fallback; it must not carry the volatile streak.
+    expect(args[0]?.summary).toBe(args[1]?.summary);
+    expect(args[0]?.summary).toContain('su-wedged');
+    expect(args[0]?.harness_slug).toBe('papercusp');
+  });
+
+  const openRow = (sig: string) => ({ msg_id: `m-${sig}`, subjectSignature: sig }) as never;
+  const routineSql = (rows: { id: string; active: boolean }[]) =>
+    (() =>
+      Promise.resolve(
+        rows.map((r) => ({ ...r, install_slug: 'papercusp', name: `loop-${r.id}` })),
+      )) as unknown as Sql;
+
+  it('resolves once a later fire succeeded, and leaves a still-failing loop open', async () => {
+    const resolve = vi.fn(async () => 'resolved');
+    const res = await reconcileLoopNoTurnWedgeEscalations({
+      sql: routineSql([
+        { id: 'rt-recovered', active: true },
+        { id: 'rt-still-wedged', active: true },
+      ]),
+      listOpen: async () => [
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-recovered`),
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-still-wedged`),
+      ],
+      resolve,
+      readFireState: vi.fn(async (_slug: string, name: string) =>
+        (name === 'loop-rt-recovered' ? { consecutiveErrors: 0 } : { consecutiveErrors: 4 }) as never,
+      ),
+    });
+
+    expect(res).toMatchObject({ scanned: 2, resolved: 1, stillOpen: 1, unparseable: 0 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith(
+      `m-${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-recovered`,
+      'auto-resolved',
+      expect.stringContaining('loop-no-turn-wedge watchdog'),
+    );
+  });
+
+  it('resolves when the routine is gone or was auto-paused by the stronger loop-death watchdog', async () => {
+    const resolve = vi.fn(async () => 'resolved');
+    const res = await reconcileLoopNoTurnWedgeEscalations({
+      sql: routineSql([{ id: 'rt-paused', active: false }]),
+      listOpen: async () => [
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-paused`),
+        openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-deleted`),
+      ],
+      resolve,
+      readFireState: vi.fn(async () => ({ consecutiveErrors: 9 }) as never),
+    });
+    expect(res).toMatchObject({ scanned: 2, resolved: 2, stillOpen: 0 });
+  });
+
+  it('each watchdog reads only its own prefix — a sibling signature is never resolved by the wrong leg', async () => {
+    const resolve = vi.fn(async () => 'resolved');
+    const res = await reconcileLoopLifecycleDeathEscalations({
+      sql: routineSql([{ id: 'rt-x', active: true }]),
+      listOpen: async () => [openRow(`${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:papercusp:rt-x`)],
+      resolve,
+      readFireState: vi.fn(async () => ({ consecutiveErrors: 0 }) as never),
+    });
+    expect(res).toMatchObject({ scanned: 1, resolved: 0, unparseable: 1 });
+    expect(resolve).not.toHaveBeenCalled();
+
+    // …and the shared body still serves the lifecycle leg's own rows, with its own wording.
+    const lifecycle = await reconcileLoopLifecycleDeathEscalations({
+      sql: routineSql([{ id: 'rt-x', active: true }]),
+      listOpen: async () => [openRow(`${LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX}:papercusp:rt-x`)],
+      resolve,
+      readFireState: vi.fn(async () => ({ consecutiveErrors: 0 }) as never),
+    });
+    expect(lifecycle).toMatchObject({ resolved: 1 });
+    expect(resolve).toHaveBeenLastCalledWith(
+      `m-${LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX}:papercusp:rt-x`,
+      'auto-resolved',
+      expect.stringContaining('the provider wall cleared'),
+    );
+  });
+
+  it('threshold override: a valid positive integer applies; junk or non-positive falls back to 3', () => {
+    const prev = process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER;
+    try {
+      process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER = '5';
+      expect(noTurnWedgeEscalateAfter()).toBe(5);
+      for (const bad of ['0', '-2', 'many', '']) {
+        process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER = bad;
+        expect(noTurnWedgeEscalateAfter()).toBe(3);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER;
+      else process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER = prev;
+    }
   });
 });

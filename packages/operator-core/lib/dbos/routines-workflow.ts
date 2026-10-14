@@ -1427,16 +1427,22 @@ async function routinesSweepTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { reconcileDeadLoopEscalations, reconcileLoopLifecycleDeathEscalations } =
-          await import('../harness/routines/reconcile-loop-routines');
-        const [deadLoop, lifecycleDeath] = await Promise.all([
+        const {
+          reconcileDeadLoopEscalations,
+          reconcileLoopLifecycleDeathEscalations,
+          reconcileLoopNoTurnWedgeEscalations,
+        } = await import('../harness/routines/reconcile-loop-routines');
+        // WI-6554700010012153: the no-turn wedge watchdog shares the lifecycle leg's predicate.
+        const [deadLoop, lifecycleDeath, noTurnWedge] = await Promise.all([
           reconcileDeadLoopEscalations({ sql }),
           reconcileLoopLifecycleDeathEscalations({ sql }),
+          reconcileLoopNoTurnWedgeEscalations({ sql }),
         ]);
-        if (deadLoop.resolved > 0 || lifecycleDeath.resolved > 0) {
+        if (deadLoop.resolved > 0 || lifecycleDeath.resolved > 0 || noTurnWedge.resolved > 0) {
           console.warn(
             `[loop-watchdog-escalation-reconcile] auto-resolved ${deadLoop.resolved} loop-death + ` +
-              `${lifecycleDeath.resolved} loop-lifecycle-death escalation(s) this pass`,
+              `${lifecycleDeath.resolved} loop-lifecycle-death + ${noTurnWedge.resolved} loop-no-turn-wedge ` +
+              `escalation(s) this pass`,
           );
         }
       } catch (e) {

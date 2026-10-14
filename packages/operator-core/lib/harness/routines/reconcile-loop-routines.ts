@@ -525,6 +525,74 @@ export async function defaultEscalateLifecycleDeath(info: LifecycleDeathInfo): P
   });
 }
 
+/** WI-6554700010012153: advisory identity for the no-turn wedge alert. Distinct from both
+ *  siblings above: LOOP_DEATH means "owner unreachable, loop paused"; LOOP_LIFECYCLE_DEATH
+ *  means "turns run but die on a provider wall"; this one means "wakes are marked DELIVERED,
+ *  the owner reads reachable, yet no loop-origin turn ever starts". The incident that earned it
+ *  (EI-25930229050142968): a fleet leader's loop recorded six consecutive
+ *  'delivered-wake-no-loop-turn' fires over ~1h50m while every surface reported only
+ *  consecutiveErrors / turnsStalled. The fire-gate backoff spaces those retries out, so the
+ *  failure-streak circuit (default 8) needs hours to open, and nothing loud fired before it. */
+export const LOOP_NO_TURN_WEDGE_WATCHDOG_IDENTITY: AgentIdentity = {
+  ownerId: 'system:loop-no-turn-wedge-watchdog',
+  ownerLabel: 'system · loop-no-turn-wedge-watchdog',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+/** Shares the `<prefix>:<installSlug>:<routineId>` signature convention of its siblings so
+ *  the opener and the auto-resolve reader can never drift. */
+export const LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX = 'loop-no-turn-wedge';
+
+const DEFAULT_NO_TURN_WEDGE_ESCALATE_AFTER = 3;
+
+/** Consecutive fire errors (read after a 'delivered-wake-no-loop-turn' fire recorded its own
+ *  'error') at which the wedge escalation opens. Deliberately below the circuit threshold: the
+ *  point is to be loud BEFORE the circuit's backed-off hours elapse. A non-positive or
+ *  non-numeric override falls back to the default rather than disabling the alarm. */
+export function noTurnWedgeEscalateAfter(): number {
+  const env = Number(process.env.PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER);
+  return Number.isFinite(env) && env >= 1 ? Math.floor(env) : DEFAULT_NO_TURN_WEDGE_ESCALATE_AFTER;
+}
+
+/** Diagnostics passed to the no-turn wedge escalation seam. */
+export interface NoTurnWedgeInfo {
+  routineId: string;
+  targetOwnerId: string;
+  installSlug: string;
+  name: string;
+  /** The fire-state failure streak AFTER this fire's 'error' was recorded. */
+  consecutiveErrors: number;
+  /** ISO time the latest wake was marked delivered. */
+  lastWakeDeliveredAt: string;
+}
+
+/**
+ * Loud (non-terminating) escalation for a loop whose wakes keep being marked delivered while
+ * no loop-origin turn starts. The loop is NOT paused: it keeps retrying under the existing
+ * backoff and circuit. A human or leader should see it now, not discover it hours later.
+ * Dedups on the loop identity alone (no volatile count in the summary or key), and is
+ * auto-resolved by `reconcileLoopNoTurnWedgeEscalations` once a later fire records 'ok'.
+ * May throw when the coord context is unavailable; the caller swallows it.
+ */
+export async function defaultEscalateNoTurnWedge(info: NoTurnWedgeInfo): Promise<void> {
+  await openEscalation(LOOP_NO_TURN_WEDGE_WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    meta: { subjectSignature: `${LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX}:${info.installSlug}:${info.routineId}` },
+    summary: `Loop '${info.name}' wakes are delivered but no turn starts — owner ${info.targetOwnerId} is not responding to its loop.`,
+    body:
+      `The loop no-turn wedge watchdog (WI-6554700010012153) found that loop '${info.name}' (routine ${info.routineId}, ` +
+      `harness ${info.installSlug}, owner ${info.targetOwnerId}) has ${info.consecutiveErrors} consecutive failed fires, ` +
+      `the latest a wake marked delivered at ${info.lastWakeDeliveredAt} that never became a loop-origin turn.\n\n` +
+      `The owner session reads reachable, so the loop keeps re-arming and the failure-streak circuit stays below its ` +
+      `threshold for hours while the session does no loop work. Check the owner host's events.jsonl for ` +
+      `pending-submit recovery storms or deferred native turn starts (EI-25930229050142968), or relaunch the session.\n\n` +
+      `The loop is NOT paused. This escalation auto-resolves after a later fire succeeds.`,
+    harness_slug: info.installSlug,
+  });
+}
+
 // ── EI-19408412473830336: auto-resolve leg for the two loop watchdogs ──────────────
 //
 // Both `defaultEscalateDeadLoop` and `defaultEscalateLifecycleDeath` above open an
@@ -688,12 +756,50 @@ export async function reconcileDeadLoopEscalations(
  * Fail-soft throughout, same contract as its sibling above.
  */
 export async function reconcileLoopLifecycleDeathEscalations(
-  opts: {
-    sql?: Sql;
-    listOpen?: () => Promise<EscalationRecord[]>;
-    resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
-    readFireState?: typeof defaultReadFireState;
-  } = {},
+  opts: StreakWatchdogReconcileOpts = {},
+): Promise<WatchdogEscalationReconcileResult> {
+  return reconcileStreakWatchdogEscalations(
+    {
+      identity: LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY,
+      prefix: LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX,
+      label: 'loop-lifecycle-death watchdog',
+      recoveredBecause: 'the provider wall cleared',
+    },
+    opts,
+  );
+}
+
+/**
+ * WI-6554700010012153: auto-resolve leg for LOOP_NO_TURN_WEDGE_WATCHDOG_IDENTITY escalations.
+ * Same recovery predicate as the lifecycle-death leg: the routine is gone, was auto-paused by
+ * the stronger loop-death watchdog, or a later fire recorded 'ok' (consecutive_errors back to 0).
+ */
+export async function reconcileLoopNoTurnWedgeEscalations(
+  opts: StreakWatchdogReconcileOpts = {},
+): Promise<WatchdogEscalationReconcileResult> {
+  return reconcileStreakWatchdogEscalations(
+    {
+      identity: LOOP_NO_TURN_WEDGE_WATCHDOG_IDENTITY,
+      prefix: LOOP_NO_TURN_WEDGE_SIGNATURE_PREFIX,
+      label: 'loop-no-turn-wedge watchdog',
+      recoveredBecause: 'its wakes are producing turns again',
+    },
+    opts,
+  );
+}
+
+export interface StreakWatchdogReconcileOpts {
+  sql?: Sql;
+  listOpen?: () => Promise<EscalationRecord[]>;
+  resolve?: (msg_id: string, choice: string, note: string) => Promise<unknown>;
+  readFireState?: typeof defaultReadFireState;
+}
+
+/** Shared auto-resolve body for the advisory watchdogs whose condition is "this loop's fire
+ *  streak is failing while the loop stays armed". Fail-soft throughout. */
+async function reconcileStreakWatchdogEscalations(
+  watchdog: { identity: AgentIdentity; prefix: string; label: string; recoveredBecause: string },
+  opts: StreakWatchdogReconcileOpts,
 ): Promise<WatchdogEscalationReconcileResult> {
   const db = opts.sql ?? getOrgPg().sql;
   const readFireState = opts.readFireState ?? defaultReadFireState;
@@ -702,7 +808,7 @@ export async function reconcileLoopLifecycleDeathEscalations(
     (async () => {
       const { escalations } = await listEscalationsPaginated({
         status: 'open',
-        from: LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY.ownerId,
+        from: watchdog.identity.ownerId,
         maxRecords: 500,
       });
       return escalations;
@@ -710,7 +816,7 @@ export async function reconcileLoopLifecycleDeathEscalations(
   const resolve =
     opts.resolve ??
     ((msg_id: string, choice: string, note: string) =>
-      resolveEscalation({ msg_id, choice, note, resolver: LOOP_LIFECYCLE_DEATH_WATCHDOG_IDENTITY.ownerId }));
+      resolveEscalation({ msg_id, choice, note, resolver: watchdog.identity.ownerId }));
 
   const result: WatchdogEscalationReconcileResult = { scanned: 0, resolved: 0, stillOpen: 0, unparseable: 0 };
   let open: EscalationRecord[];
@@ -724,7 +830,7 @@ export async function reconcileLoopLifecycleDeathEscalations(
 
   const parsed = open.map((rec) => {
     const sig = escalationSubjectSignature(rec);
-    return { rec, parts: sig ? parseLoopWatchdogSignature(sig, LOOP_LIFECYCLE_DEATH_SIGNATURE_PREFIX) : null };
+    return { rec, parts: sig ? parseLoopWatchdogSignature(sig, watchdog.prefix) : null };
   });
   result.unparseable = parsed.filter((p) => !p.parts).length;
   const routineIds = Array.from(new Set(parsed.map((p) => p.parts?.routineId).filter((id): id is string => !!id)));
@@ -746,17 +852,17 @@ export async function reconcileLoopLifecycleDeathEscalations(
     const routine = routineById.get(parts.routineId);
     let note: string | null = null;
     if (!routine) {
-      note = `loop-lifecycle-death watchdog: routine ${parts.routineId} no longer exists`;
+      note = `${watchdog.label}: routine ${parts.routineId} no longer exists`;
     } else if (!routine.active) {
       note =
-        `loop-lifecycle-death watchdog: routine ${parts.routineId} was subsequently auto-paused ` +
+        `${watchdog.label}: routine ${parts.routineId} was subsequently auto-paused ` +
         `(superseded by the loop-death watchdog's stronger escalation)`;
     } else {
       const fireState = await readFireState(routine.installSlug, routine.name).catch(() => null);
       if (!fireState || fireState.consecutiveErrors === 0) {
         note =
-          `loop-lifecycle-death watchdog: routine ${parts.routineId} has since fired successfully ` +
-          `(consecutive_errors reset to 0) — the provider wall cleared`;
+          `${watchdog.label}: routine ${parts.routineId} has since fired successfully ` +
+          `(consecutive_errors reset to 0) — ${watchdog.recoveredBecause}`;
       }
     }
     if (note === null) {
@@ -1302,6 +1408,12 @@ export async function reconcileLoopRoutines(
      *  'ok' lifecycle settle to a provider-kill 'error'. Default opens an advisory coord
      *  escalation. Fail-soft at the call site — never blocks the re-arm it accompanies. */
     escalateLifecycleDeath?: (info: LifecycleDeathInfo) => Promise<void>;
+    /** WI-6554700010012153: injected loud escalation once consecutive
+     *  'delivered-wake-no-loop-turn' failures reach `noTurnWedgeEscalateAfter`. Default opens a
+     *  deduped advisory coord escalation. Fail-soft at the call site. */
+    escalateNoTurnWedge?: (info: NoTurnWedgeInfo) => Promise<void>;
+    /** Test/config seam; production defaults to PAPERCUSP_LOOP_NO_TURN_ESCALATE_AFTER (3). */
+    noTurnWedgeThreshold?: number;
     /** WI-41228: canonical agent-authored tool-call evidence for the dispatched fire window. */
     countAgentToolCallsInWindow?: typeof defaultCountAgentToolCallsInWindow;
     /** Native Codex rollout evidence for a settled zero-tool fire; null means no current failure. */
@@ -1330,6 +1442,8 @@ export async function reconcileLoopRoutines(
   const escalateDeadLoop = opts.escalateDeadLoop ?? defaultEscalateDeadLoop;
   const cancelInboxWake = opts.cancelInboxWake ?? defaultCancelInboxWake;
   const escalateLifecycleDeath = opts.escalateLifecycleDeath ?? defaultEscalateLifecycleDeath;
+  const escalateNoTurnWedge = opts.escalateNoTurnWedge ?? defaultEscalateNoTurnWedge;
+  const noTurnWedgeThreshold = opts.noTurnWedgeThreshold ?? noTurnWedgeEscalateAfter();
   const countAgentToolCallsInWindow = opts.countAgentToolCallsInWindow ?? defaultCountAgentToolCallsInWindow;
   const readCodexProviderErrorAfter = opts.readCodexProviderErrorAfter ?? defaultReadCodexProviderErrorAfter;
   const recordZeroToolFireObservation = opts.recordZeroToolFireObservation ?? defaultRecordZeroToolFireObservation;
@@ -2431,6 +2545,31 @@ export async function reconcileLoopRoutines(
               `delivered at ${new Date(completedAt).toISOString()} but no loop-origin assistant turn ` +
               `was observed after the bounded grace — re-armed to retry (circuit fed 'error')`,
           );
+          // WI-6554700010012153: the warn above is the ONLY signal this path used to emit, and
+          // the backed-off circuit needs hours to open. Read the streak AFTER this fire's own
+          // 'error' landed and be loud once it reaches the wedge threshold. The escalation
+          // dedups on the loop identity, so repeat fires bump one row instead of minting new ones.
+          const streak = await runWithWorkspace(row.routine_workspace_id, () =>
+            readFireState(row.install_slug, row.name),
+          )
+            .then((s) => s?.consecutiveErrors ?? 0)
+            .catch(() => 0);
+          if (streak >= noTurnWedgeThreshold) {
+            await runWithWorkspace(row.routine_workspace_id, () =>
+              escalateNoTurnWedge({
+                routineId: row.id,
+                targetOwnerId: row.target_owner_id,
+                installSlug: row.install_slug,
+                name: row.name,
+                consecutiveErrors: streak,
+                lastWakeDeliveredAt: new Date(completedAt).toISOString(),
+              }),
+            ).catch((e) =>
+              console.warn(
+                `[loop-reconcile] escalateNoTurnWedge failed for '${row.id}': ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+          }
         }
         if (via === 'gate-backoff') {
           // WI-36792: without this line the rescue is invisible — the failure it fixes produced
