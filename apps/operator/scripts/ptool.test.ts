@@ -69,6 +69,7 @@ import {
   PTOOL_PLANS_AUDIT_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
+  PTOOL_PLANS_START_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_REPAIR_QUEUE_PREVIEW_TIMEOUT_MS,
   PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS,
@@ -76,6 +77,7 @@ import {
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_SCORECARDS_GET_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
+  PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_CREATE_TIMEOUT_MS,
   PTOOL_FLEET_WIND_DOWN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
@@ -1020,13 +1022,15 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS);
     expect(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS).toBe(610_000);
     expect(PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS).toBeGreaterThan(605_000);
-    // EI-21567372634210816: plans:start has a 60s dispatcher default while
-    // ptool's ordinary client deadline is 30s; cover both transport routes.
-    expect(timeoutForTool('plans:start')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25882027630574649: a successful plans:start took 77.763s; its
+    // declared 120s server timeout gives MCP a 125s deadline. Cover both routes.
+    expect(timeoutForTool('plans:start')).toBe(PTOOL_PLANS_START_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:start',
       args: { slug: 'fleet-worker-lifecycle-convergence-2026-08-26', harness: 'papercusp' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_PLANS_START_TIMEOUT_MS);
+    expect(PTOOL_PLANS_START_TIMEOUT_MS).toBe(130_000);
+    expect(PTOOL_PLANS_START_TIMEOUT_MS).toBeGreaterThan(125_000);
     expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
@@ -1165,15 +1169,15 @@ describe('ptool call deadlines', () => {
     // server watchdog; ptool must leave enough time for its typed timeout
     // result to cross the MCP transport instead of racing it at 30s.
     expect(timeoutForTool('scheduler:get_next')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    // EI-22722799928417577: by-id claims are idempotent writes whose claim-time
-    // advisory reads can cross the flat 30s client deadline. Cover direct and
-    // deferred calls so a slow claim returns its typed result before ptool
-    // reports outcome-unknown.
-    expect(timeoutForTool('work_items:claim')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-25882027630574649: a successful claim took 69.467s, while its new
+    // 120s server timeout gives MCP a 125s deadline. Cover direct and deferred calls.
+    expect(timeoutForTool('work_items:claim')).toBe(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'work_items:claim',
       args: { id: 'EI-22722799928417577' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS);
+    expect(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS).toBe(130_000);
+    expect(PTOOL_WORK_ITEMS_CLAIM_TIMEOUT_MS).toBeGreaterThan(125_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
