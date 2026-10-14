@@ -2416,7 +2416,13 @@ export async function getLoopStatuses(
   // Reuse an injected transaction directly. A top-level client still takes the
   // bounded READ ONLY path with its acquisition and statement deadlines.
   const rows = typeof (sql as Sql).begin === 'function'
-    ? await boundedPgReadTxn<any[]>((tx) => read(tx), { client: sql as Sql })
+    ? await boundedPgReadTxn<any[]>((tx) => read(tx), {
+        client: sql as Sql,
+        // When the client came from getOrgPg() above, it is the org-admin pool.
+        // Passing it explicitly is necessary for owner reads, but it otherwise
+        // hides the pool identity from boundedPgReadTxn's acquisition diagnostics.
+        ...(opts.sql ? {} : { acquirePool: 'org-admin' }),
+      })
     : await read(sql);
   for (const r of rows) {
     const ownerId = String(r.target_owner_id);

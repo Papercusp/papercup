@@ -11,9 +11,10 @@ import type { Sql } from 'postgres';
 // which vitest-fail-on-console turns into a hard test failure across every materializeLoop
 // case. `sqlStub` is a minimal callable tagged-template stand-in (resolves to `[]`) so
 // that internal call succeeds silently, exactly like a real (if inert) postgres client.
-const { upsertRoutineSpy, sqlStub } = vi.hoisted(() => ({
+const { upsertRoutineSpy, sqlStub, orgSqlHolder } = vi.hoisted(() => ({
   upsertRoutineSpy: vi.fn(),
   sqlStub: (_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]),
+  orgSqlHolder: { sql: null as unknown },
 }));
 
 /**
@@ -60,7 +61,7 @@ function transactionalSql(
 // file actually needs to stub.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: sqlStub }),
+  getOrgPg: () => ({ sql: orgSqlHolder.sql ?? sqlStub }),
   upsertRoutine: upsertRoutineSpy,
 }));
 
@@ -111,6 +112,32 @@ import {
   LOOP_INTERVAL_FLOOR_SEC,
   countAgentToolCallsInWindow,
 } from './loop';
+
+describe('getLoopStatuses — default client acquisition attribution (EI-25884587459468153)', () => {
+  it('labels the getOrgPg client as org-admin when its connection acquisition times out', async () => {
+    vi.useFakeTimers();
+    const { resetAcquireRegistryForTest } = await import('@papercusp/db-org');
+    resetAcquireRegistryForTest();
+    orgSqlHolder.sql = { begin: () => new Promise(() => {}) };
+    try {
+      const pending = getLoopStatuses(['su-x']).then(
+        () => null,
+        (error: unknown) => error as { pool: string | null; message: string },
+      );
+
+      await vi.advanceTimersByTimeAsync(8_001);
+      const error = await pending;
+
+      expect(error).not.toBeNull();
+      expect(error?.pool).toBe('org-admin');
+      expect(error?.message).toContain('acquirePool=org-admin');
+    } finally {
+      orgSqlHolder.sql = null;
+      resetAcquireRegistryForTest();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', () => {
   const prompt = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'do the thing' });
