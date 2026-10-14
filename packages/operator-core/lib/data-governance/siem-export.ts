@@ -178,7 +178,7 @@ const IDENTIFIER_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 /** Key names plus a KEYED digest: a plain hash of low-entropy arguments is brute-forceable. */
 export function siemArgsDigest(key: Uint8Array | string, args: unknown): SiemArgsDigest | null {
   if (args === null || args === undefined) return null;
-  let value = args;
+  let value: unknown = args;
   if (typeof value === 'string') {
     try {
       value = JSON.parse(value) as unknown;
