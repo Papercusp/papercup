@@ -1,6 +1,6 @@
 /**
  * First-party connection adapters (P-003). The OAuth routes are provider
- * neutral; what is specific to Google Workspace and Facebook lives here,
+ * neutral; what is specific to the legacy Google Workspace connection lives here,
  * behind the {@link ConnectionAdapter} contract, and is registered once.
  * Descriptor providers need no entry here: connection-lifecycle derives their
  * adapters from the provider registry.
@@ -17,19 +17,10 @@ import {
   resolveGoogleWorkspaceProviderAccount,
 } from '../external-triggers/google-workspace';
 import {
-  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
-  FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
-  assertFacebookPersonalVaultOwnerUserId,
-  facebookPersonalVaultOAuthField,
-  provisionOwnedFacebookPersonalVaultSource,
-  resolveFacebookPersonalVaultProviderAccount,
-} from '../external-triggers/facebook';
-import {
   listOwnedExternalTriggerSources,
   renameOwnedExternalTriggerSourceAccount,
 } from '../external-triggers/source-store';
 import {
-  defaultPreviousFields,
   registerConnectionAdapter,
   type ConnectionAdapter,
 } from './connection-lifecycle';
@@ -119,35 +110,6 @@ export const googleWorkspaceConnectionAdapter: ConnectionAdapter = {
   },
 };
 
-export const facebookPersonalVaultConnectionAdapter: ConnectionAdapter = {
-  oauthPlugin: FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
-  oauthProviderId: 'facebook',
-  errorPrefix: 'facebook_personal_vault',
-  returnPath: PERSONAL_VAULT_RETURN_PATH,
-  sourceKinds: FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
-  scopePolicy: 'defaults-only',
-  recordRequestedScopes: false,
-  requiresRefreshToken: () => false,
-  assertOwnerUserId: assertFacebookPersonalVaultOwnerUserId,
-  oauthField: facebookPersonalVaultOAuthField,
-  async resolveAccount(accessToken) {
-    const account = await resolveFacebookPersonalVaultProviderAccount(accessToken);
-    return { providerAccountId: account.providerAccountId, displayName: account.displayName };
-  },
-  previousFields: (sql, owner, account) =>
-    defaultPreviousFields(sql, facebookPersonalVaultConnectionAdapter, owner, account),
-  async provision(sql, input) {
-    await provisionOwnedFacebookPersonalVaultSource(sql, {
-      workspaceId: input.owner.workspaceId,
-      ownerUserId: input.owner.ownerUserId,
-      providerAccountId: input.account.providerAccountId,
-      displayName: input.account.displayName ?? input.account.providerAccountId,
-      field: input.field,
-      createdBy: input.createdBy,
-    });
-  },
-};
-
 const registered = pinModuleState('@papercusp/operator-core.integrations.builtin-connection-adapters', () => ({
   done: false,
 }));
@@ -156,6 +118,5 @@ const registered = pinModuleState('@papercusp/operator-core.integrations.builtin
 export function ensureBuiltinConnectionAdapters(): void {
   if (registered.done) return;
   registerConnectionAdapter(googleWorkspaceConnectionAdapter);
-  registerConnectionAdapter(facebookPersonalVaultConnectionAdapter);
   registered.done = true;
 }

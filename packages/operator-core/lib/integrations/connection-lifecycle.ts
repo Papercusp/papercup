@@ -421,7 +421,9 @@ export function descriptorConnectionAdapter(plugin: string): ConnectionAdapter |
     sourceKinds: members.map((entry) => entry.descriptor.id),
     scopePolicy: 'union',
     recordRequestedScopes: true,
-    requiresRefreshToken: (tokens) => tokens.expiresAt !== undefined,
+    // One member cannot weaken another member's grant in a credential group.
+    requiresRefreshToken: (tokens) => tokens.expiresAt !== undefined &&
+      !members.every((entry) => entry.descriptor.oauth?.refreshPolicy === 'reauthorize'),
     assertOwnerUserId(value) {
       const normalized = value?.trim() ?? '';
       if (!OWNER_UUID.test(normalized)) throw new Error(`${errorPrefix}_owner_user_id_invalid`);

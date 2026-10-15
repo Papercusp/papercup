@@ -55,7 +55,9 @@ import { providerRegistry } from './provider-registry';
 import {
   connectionAdapterFor,
   connectionAdapterForPlugin,
+  connectionAccessToken,
   disconnectConnection,
+  missingRefreshTokenRefusal,
   refreshConnectionCredential,
 } from './connection-lifecycle';
 
@@ -291,6 +293,42 @@ afterEach(async () => {
 });
 
 describe('descriptor credential group through the real OAuth callback', () => {
+  it('reauthorization is explicit for every group member, and expired grants stop syncing', async () => {
+    const registry = providerRegistry();
+    const originals = registry.list().filter((entry) => entry.pluginName === PROVIDER_PLUGIN_NAME);
+    const tokens = { accessToken: 'manual-access', expiresAt: Date.now() + 3600000 };
+    const owner = { workspaceId: WS, ownerUserId: userId, reconnectProviderAccountId: null };
+    const reset = async (manual: boolean) => {
+      registry.unregisterPlugin(PROVIDER_PLUGIN_NAME);
+      for (const entry of originals) {
+        const d = { ...entry.descriptor, oauth: { ...entry.descriptor.oauth!, ...(manual ? { refreshPolicy: 'reauthorize' as const } : {}) } };
+        await registry.register({ descriptor: d, adapter: adapter(d), pluginName: PROVIDER_PLUGIN_NAME });
+      }
+    };
+    try {
+      expect(missingRefreshTokenRefusal(connectionAdapterForPlugin(PLUGIN)!, owner, [], tokens)).toBe('provider_fake_suite_refresh_token_missing');
+      await reset(true);
+      expect(missingRefreshTokenRefusal(connectionAdapterForPlugin(PLUGIN)!, owner, [], tokens)).toBeNull();
+      const [source] = await sql<{ id: string }[]>`INSERT INTO harness_shared.data_sources
+        (workspace_id, kind, owner_user_id, provider_account_id, credential_ref, status)
+        VALUES (${WS}, 'fake-mail', ${userId}, 'manual-account', ${PLUGIN + ':manual'}, 'connected') RETURNING id::text`;
+      await fsTokenStorage.update(PLUGIN, HARNESS, { manual: tokens.accessToken, manual_expires_at: tokens.expiresAt });
+      await expect(connectionAccessToken(sql, { workspaceId: WS, harness: HARNESS, credentialRef: PLUGIN + ':manual' }))
+        .resolves.toEqual({ accessToken: 'manual-access' });
+      await expect(connectionAccessToken(sql, { workspaceId: WS, harness: HARNESS, credentialRef: PLUGIN + ':manual', now: tokens.expiresAt + 1 }))
+        .resolves.toMatchObject({ reconnectRequired: true, reason: 'provider_fake_suite_refresh_token_missing' });
+      const [row] = await sql<{ status: string }[]>`SELECT status FROM harness_shared.data_sources WHERE id = ${source.id}::uuid`;
+      expect(row.status).toBe('reconnect_required');
+      // Mixing a normal member into a manual group preserves the stricter contract.
+      const first = originals[0];
+      registry.unregister(first.descriptor.id);
+      await registry.register(first);
+      expect(connectionAdapterForPlugin(PLUGIN)!.requiresRefreshToken(tokens)).toBe(true);
+    } finally {
+      await reset(false);
+    }
+  });
+
   it('derives one adapter per credential group, bound to its own provider id', () => {
     const adapter = connectionAdapterForPlugin(PLUGIN);
     expect(adapter).toMatchObject({ oauthPlugin: PLUGIN, oauthProviderId: PLUGIN, errorPrefix: 'provider_fake_suite' });

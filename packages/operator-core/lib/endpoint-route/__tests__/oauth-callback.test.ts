@@ -730,7 +730,7 @@ describe('GET /api/oauth/callback', () => {
     const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=facebook.valid'));
     expect(response.status).toBe(307);
     expect(response.headers.get('location')).toBe(
-      'http://x/settings/personal-vault?oauth_connected=provider:facebook',
+      'http://x/settings/personal-vault?oauth_connected=provider%3Afacebook',
     );
     expect(sourceMocks.provisionFacebook).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',

@@ -127,6 +127,7 @@
             "tokenUrl": { "type": "string" },
             "scopes": { "type": "array", "items": { "type": "string" } },
             "scopeSeparator": { "type": "string", "enum": [" ", ","] },
+            "refreshPolicy": { "type": "string", "enum": ["refresh-token", "reauthorize"] },
             "pkce": { "type": "boolean" },
             "clientRegistrationRef": { "type": "string" },
             "credentialGroup": { "type": "string" },

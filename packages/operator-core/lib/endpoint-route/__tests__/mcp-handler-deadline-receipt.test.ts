@@ -75,6 +75,11 @@ const h = vi.hoisted(() => {
       _meta?: Record<string, unknown>;
     } | null,
     invocations: [] as unknown[],
+    telemetryGate: null as Promise<void> | null,
+    telemetryEntered: null as (() => void) | null,
+    resultDoorGate: null as Promise<void> | null,
+    resultDoorEntered: null as (() => void) | null,
+    progressCalls: 0,
     resultDoorDelayMs: 0,
     resultDoorCalls: 0,
     resultDoorRequestTraceIds: [] as Array<string | null>,
@@ -183,6 +188,8 @@ vi.mock('../../result-door', async (importOriginal) => {
     ...actual,
     applyResultDoorAsync: async (...args: unknown[]): Promise<unknown> => {
       h.resultDoorCalls += 1;
+      h.resultDoorEntered?.();
+      if (h.resultDoorGate) await h.resultDoorGate;
       if (h.resultDoorDelayMs > 0) {
         await new Promise<void>((resolve) => setTimeout(resolve, h.resultDoorDelayMs));
       }
@@ -214,6 +221,8 @@ vi.mock('../../projected-tool-deps', async (importOriginal) => {
       ...realDeps,
       recordInvocation: async (input: unknown): Promise<void> => {
         h.invocations.push(input);
+        h.telemetryEntered?.();
+        if (h.telemetryGate) await h.telemetryGate;
       },
     },
   };
@@ -339,7 +348,10 @@ registerProjectedTool({
   capabilities: [],
   agentRoles: ['scoper'],
   expose: { mcp: { name: 'deadlinetest:progress' } },
-  fn: async () => ({ content: [{ type: 'text' as const, text: 'synthetic-progress-fixture' }] }),
+  fn: async () => {
+    h.progressCalls += 1;
+    return { content: [{ type: 'text' as const, text: 'synthetic-progress-fixture' }] };
+  },
 });
 
 const SYNTHETIC_COORD_SEND_ABORT = {
@@ -441,6 +453,11 @@ beforeEach(() => {
   h.replayStores.length = 0;
   h.storedReplay = null;
   h.invocations.length = 0;
+  h.telemetryGate = null;
+  h.telemetryEntered = null;
+  h.resultDoorGate = null;
+  h.resultDoorEntered = null;
+  h.progressCalls = 0;
   h.unsafeCalls.length = 0;
   h.resultDoorDelayMs = 0;
   h.scratchWriteTimings = [];
@@ -609,6 +626,76 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     } finally {
       info.mockRestore();
     }
+  });
+
+  it.each(['telemetry', 'result-door'] as const)(
+    'distinguishes a fast handler held at %s from an unfinished handler',
+    async (phase) => {
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const traceId = phase === 'telemetry'
+        ? '48b44c43-41de-4ea0-8dd4-26a740052ab3'
+        : '27f0e4f5-e02b-4320-a498-709140695eaf';
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entry = new Promise<void>((resolve) => { entered = resolve; });
+      if (phase === 'telemetry') {
+        h.telemetryGate = gate;
+        h.telemetryEntered = entered;
+      } else {
+        h.resultDoorGate = gate;
+        h.resultDoorEntered = entered;
+      }
+      try {
+        const response = callTool(
+          'deadlinetest:progress', {},
+          superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+        );
+        await waitForSignal(entry, `${phase} entry`);
+        // The real dispatcher already ran the fast handler exactly once. The
+        // controlled barrier is later, so a deadline cannot imply handler failure.
+        expect(h.progressCalls).toBe(1);
+        expect(h.invocations).toHaveLength(1);
+        expect(h.resultDoorCalls).toBe(phase === 'telemetry' ? 0 : 1);
+        const result = await response;
+        expect(result.isError).toBe(true);
+        expect(textOf(result)).toContain('request_timeout');
+        expect(traceEvents(info.mock.calls)).toEqual(expect.arrayContaining([
+          expect.objectContaining({ traceId, stage: 'inner_dispatch_started' }),
+          expect.objectContaining({ traceId, stage: 'deadline' }),
+        ]));
+        expect(traceEvents(info.mock.calls).some((event) =>
+          event.traceId === traceId && event.stage === 'inner_dispatch_settled',
+        )).toBe(false);
+
+        release();
+        await vi.waitFor(() => {
+          const settled = traceEvents(info.mock.calls).find((event) =>
+            event.traceId === traceId && event.stage === 'inner_dispatch_settled',
+          );
+          expect(settled).toMatchObject({ outcome: 'success', afterDeadline: true });
+          const timings = settled?.phaseTimingsMs as { resultDoor?: number; postDispatchToSettlement?: number };
+          expect(timings.resultDoor).toEqual(expect.any(Number));
+          expect(timings.postDispatchToSettlement).toBeGreaterThanOrEqual(timings.resultDoor!);
+          if (phase === 'result-door') expect(timings.resultDoor).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
+          expect(h.resultDoorRequestTraceIds).toContain(traceId);
+        });
+        expect(h.progressCalls).toBe(1);
+        expect(h.invocations).toHaveLength(1);
+      } finally {
+        release();
+        info.mockRestore();
+      }
+    },
+  );
+
+  it('a fast handler completes normally without a telemetry or result-door barrier', async () => {
+    const result = await callTool('deadlinetest:progress', {}, scoped('ws-test'));
+    expect(result.isError).not.toBe(true);
+    expect(textOf(result)).toContain('synthetic-progress-fixture');
+    expect(h.progressCalls).toBe(1);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.resultDoorCalls).toBe(1);
   });
 
   it('forwards synthetic scratch progress to MCP clients that supplied a progress token', async () => {

@@ -518,9 +518,9 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: { ...process.env,") &&
         source.includes("verifyVerifierSourceSync(sourceRoot, receipt") &&
         source.includes("{ cwd: sourceRoot, stdio: 'inherit',") &&
-        // One isolation assert per phase: the native-operation phase that launches the
-        // committed test run, and the Reports fixture phase. Dropping either re-flags.
-        source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 2 &&
+        // Keep one isolation assert in each native-operation, committed-test, and Reports
+        // fixture phase. Dropping any phase's assertion re-flags the source.
+        source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 3 &&
         source.includes("assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL") &&
         source.includes("timeout: 60_000") &&
         source.includes("timeout: 90_000") &&
@@ -667,7 +667,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook makes the restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: one synchronous `execFileSync(gitExecutable, ['-C', top, ...args])` site that reads `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module), and `cat-file blob` (per differing module). The executable resolves through realpath to an absolute executable; each read has a 60 s timeout, is awaited, and leaves no resident child. The hook runs only inside the timeout-bounded restricted-hold census child, which already owns admission. The exact executable-resolution and single-read shape is pinned below.",
+      "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook makes the `spawnCensus` restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: one synchronous `execFileSync(gitExecutable, ['-C', top, ...args])` site that reads `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module), and `cat-file blob` (per differing module). The executable resolves through realpath to an absolute executable; each read has a 60 s timeout, is awaited, and leaves no resident child. The hook runs only inside the timeout-bounded restricted-hold census child, which already owns admission. The exact executable-resolution and single-read shape is pinned below.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
@@ -2292,7 +2292,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       ].length;
       const hasReadiness = /\bwaitForSandboxPostgres\b/.test(code);
       const readinessPinned = !hasReadiness || (
-        source.includes("const diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 });") &&
+        source.split("const diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 });").length - 1 === 3 &&
         source.includes("await waitForSandboxPostgres(database, { run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped });") &&
         source.includes("attempts = 31, isStopped = () => false") &&
         source.includes("for (let attempt = 0; attempt < attempts; attempt++)") &&
