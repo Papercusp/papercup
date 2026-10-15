@@ -153,10 +153,10 @@ export interface RunResult {
 export interface StockMachineResult {
   image: string;
   /**
-   * True when the host could not start a container at all (the create/start
-   * preflight refused), so the image never ran the candidate. That says
-   * nothing about the binary: it must not stop the PTY legs, which need no
-   * Docker, and the smoke is measured again after them (WI-10004247 run 7).
+   * True when the host could not complete the smoke (preflight refusal or
+   * an interrupted Docker invocation). This cannot establish a binary failure:
+   * let the Docker-independent PTY legs run, then measure the smoke again.
+   * An unmeasured smoke still refuses the final release verdict.
    */
   unmeasured?: boolean;
   status: number | null;
@@ -270,8 +270,12 @@ const STOCK_LINUX_IMAGES = ['ubuntu:24.04', 'debian:stable-slim'];
 export const DOCKER_START_PROBE_TIMEOUT_MS = 90_000;
 const DOCKER_START_PROBE_ATTEMPTS = 3;
 const PROBE_NAME_PREFIX = 'pui-release-preflight-';
-type DockerRun = (args: string[], timeout: number) => { status: number | null; stdout?: string; error?: { message: string } };
-const defaultDockerRun: DockerRun = (args, timeout) => spawnSync('docker', args, { encoding: 'utf8', timeout });
+type DockerRun = (args: string[], timeout: number) => {
+  status: number | null; stdout?: string; stderr?: string; error?: { message: string };
+};
+const defaultDockerRun: DockerRun = (args, timeout) => spawnSync('docker', args, {
+  encoding: 'utf8', timeout, maxBuffer: 8 * 1024 * 1024,
+});
 function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -383,7 +387,7 @@ export function remeasureStockMachines(
 /** The refusal a stock smoke contributes to the verdict, or null when it passed. */
 export function stockMachineRefusal(machine: StockMachineResult): string | null {
   if (machine.unmeasured) {
-    return `stock-machine smoke on ${machine.image} was not measured: the host could not start a container `
+    return `stock-machine smoke on ${machine.image} was not measured: the host could not complete the smoke `
       + `before or after the legs: ${machine.output.slice(-1_000)}`;
   }
   return machine.status === 0
@@ -393,24 +397,30 @@ export function stockMachineRefusal(machine: StockMachineResult): string | null 
 
 /** Exercise the shipped unit on stock Linux, without host libraries or network. */
 export function runStockMachineSmoke(
-  unit: string, images = STOCK_LINUX_IMAGES, probe = probeDockerCreateStart,
+  unit: string, images = STOCK_LINUX_IMAGES, probe?: () => string | null, run: DockerRun = defaultDockerRun,
 ): StockMachineResult[] {
-  const dockerProblem = probe();
+  const dockerProblem = (probe ?? (() => probeDockerCreateStart(run)))();
   if (dockerProblem) {
     return images.map((image) => ({ image, unmeasured: true, status: null, output: dockerProblem }));
   }
-  return images.map((image) => {
-    const run = spawnSync('docker', [
-      'run', '--rm', '--pull=missing', '--network=none', '--read-only',
+  return images.map((image, index) => {
+    // Reuse the preflight orphan sweep: a timed-out Docker client can leave a
+    // container in Created even after --rm and an immediate removal both race.
+    const name = `${PROBE_NAME_PREFIX}${process.pid}-${Date.now()}-smoke-${index}`;
+    const result = run([
+      'run', '--rm', '--name', name, '--pull=missing', '--network=none', '--read-only',
       '--tmpfs', '/tmp:rw,exec,mode=1777',
       '--mount', `type=bind,source=${realpathSync(unit)},target=/candidate,readonly`,
       '--env', 'HOME=/tmp/pui-home', '--env', 'TERM=dumb', '--env', 'PAPERCUSP_HONO_PORT=1',
       '--entrypoint', '/bin/sh', image, '-ec', STOCK_MACHINE_SCRIPT,
-    ], { encoding: 'utf8', timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024 });
+    ], 5 * 60_000);
+    const unmeasured = Boolean(result.error) || result.status === null;
+    if (unmeasured) run(['rm', '--force', name], DOCKER_START_PROBE_TIMEOUT_MS);
     return {
       image,
-      status: run.status,
-      output: `${run.stdout ?? ''}\n${run.stderr ?? ''}${run.error ? `\n${run.error.message}` : ''}`.slice(-8_000),
+      ...(unmeasured ? { unmeasured: true } : {}),
+      status: result.status,
+      output: `${result.stdout ?? ''}\n${result.stderr ?? ''}${result.error ? `\n${result.error.message}` : ''}`.slice(-8_000),
     };
   });
 }

@@ -45,7 +45,8 @@ import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { trackDetached } from '../../../detached-imports';
 import { resolveInvokeProjectDir } from './invoke-project-dir';
 import { observeFallback } from '../../../degradation/fallback-observations';
-import { bareModelId, resolveCodexModel } from '../../../model-context-budget.mjs';
+import { recordSpawnAccountRoute, spawnAccountRouteFromLaunch } from '../../../fleet/spawn-tree';
+import type { Db } from '../../../fleet/pg-stores';
 
 /**
  * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke
@@ -77,17 +78,42 @@ export function reconstructHiveLaunchArgv(o: {
 export function parseBlueprintInvokeRequest(value: unknown): {
   extra: string[]; spawnModelPin: string; spawnBackendPin: 'claude-code' | 'omp' | 'codex' | undefined;
   account: string | undefined;
+  requestedSpawnModel: string | undefined; requestedSpawnBackend: string | undefined;
+  spawnFallbackReason: 'capacity' | undefined;
 } {
   const body = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
   if (body.account != null && typeof body.account !== 'string') throw new TypeError('account route must be a string or null');
+  if (body.spawnFallbackReason !== undefined && body.spawnFallbackReason !== 'capacity') throw new TypeError('invalid spawn fallback reason');
+  if (body.spawnFallbackReason === 'capacity' && (typeof body.requestedSpawnModel !== 'string' || !body.requestedSpawnModel.trim()
+    || !['codex', 'claude-code', 'omp'].includes(String(body.requestedSpawnBackend)))) throw new TypeError('capacity fallback requires requested model/backend');
   const backend = body.spawnBackend;
   return {
     extra: Array.isArray(body.extra) ? body.extra.filter((entry): entry is string => typeof entry === 'string') : [],
     spawnModelPin: typeof body.spawnModel === 'string' ? body.spawnModel.trim() : '',
     spawnBackendPin: backend === 'claude-code' || backend === 'omp' || backend === 'codex' ? backend : undefined,
     account: typeof body.account === 'string' ? body.account.trim() : undefined,
+    requestedSpawnModel: typeof body.requestedSpawnModel === 'string' ? body.requestedSpawnModel.trim() : undefined,
+    requestedSpawnBackend: typeof body.requestedSpawnBackend === 'string' ? body.requestedSpawnBackend : undefined,
+    spawnFallbackReason: body.spawnFallbackReason === 'capacity' ? 'capacity' : undefined,
   };
+}
+
+/** Persist the production parser's declared route beside the actual launch.
+ * Keeping this at the invoke boundary prevents the second write from erasing
+ * the primary when capacity selected a backup before the HTTP hop. */
+export async function recordBlueprintInvokeAccountRoute(sql: Db, input: {
+  spawnId: string; ownerId: string; parsed: ReturnType<typeof parseBlueprintInvokeRequest>;
+  backend: string; model: string; effort: string | null; resolvedAccountIds: string[];
+}): Promise<void> {
+  const route = spawnAccountRouteFromLaunch({ ...input.parsed, spawnBackend: input.backend,
+    spawnModel: input.model,
+    requestedSpawnModel: input.parsed.requestedSpawnModel || input.parsed.spawnModelPin || input.model,
+    requestedSpawnBackend: input.parsed.requestedSpawnBackend ?? input.parsed.spawnBackendPin ?? input.backend,
+  }, input.ownerId);
+  if (!route) return;
+  await recordSpawnAccountRoute(sql, input.spawnId, { ...route, launchedEffort: input.effort,
+    resolvedAccountIds: input.resolvedAccountIds });
 }
 
 const launch = defineTool({
@@ -772,19 +798,9 @@ const invoke = defineTool({
       const account = parsedBody.account;
       applyExplicitSpawnAccountRoute(env, account);
       if (spawnRecordId && account && routeBackendModel.model) {
-        const { recordSpawnAccountRoute } = await import('../../../fleet/spawn-tree');
-        const spec = routeBackendModel.model;
-        const model = bareModelId(routeBackend === 'codex' ? resolveCodexModel(spec) : spec);
-        const effort = routeBackendModel.effort;
-        const requestedSpec = spawnModelPin || spec;
-        await recordSpawnAccountRoute(getOrgPg().sql, spawnRecordId, {
-          ownerId: childOwnerId, accountRoute: account,
-          requestedBackend: spawnBackendPin ?? routeBackend,
-          requestedModel: bareModelId(requestedSpec),
-          requestedEffort: bareModelId(requestedSpec) === requestedSpec ? null : requestedSpec.slice(requestedSpec.lastIndexOf(':') + 1),
-          launchedBackend: routeBackend, launchedModel: model, launchedEffort: effort,
-          resolvedAccountIds,
-        });
+        await recordBlueprintInvokeAccountRoute(getOrgPg().sql, { spawnId: spawnRecordId,
+          ownerId: childOwnerId, parsed: parsedBody, backend: routeBackend,
+          model: routeBackendModel.model, effort: routeBackendModel.effort, resolvedAccountIds });
       }
     }
     // Load the launch-row writers once per correlated invoke. Both callbacks

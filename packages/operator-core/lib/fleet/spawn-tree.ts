@@ -36,6 +36,7 @@ export interface SpawnAccountRoute {
   launchedModel: string;
   launchedEffort: string | null;
   resolvedAccountIds: string[];
+  reason?: 'capacity';
 }
 
 /** Initial declared route, before the invoke chokepoint fills the resolved account set. */
@@ -44,12 +45,15 @@ export function spawnAccountRouteFromLaunch(body: Record<string, unknown>, owner
   const spec = typeof body.spawnModel === 'string' ? body.spawnModel : '';
   const account = typeof body.account === 'string' ? body.account.trim() : '';
   if (!account || !backend || !spec) return null;
-  const requestedModel = bareModelId(spec);
-  const effort = requestedModel === spec ? null : spec.slice(spec.lastIndexOf(':') + 1);
+  const requestedSpec = typeof body.requestedSpawnModel === 'string' ? body.requestedSpawnModel : spec;
+  const requestedBackend = typeof body.requestedSpawnBackend === 'string' ? body.requestedSpawnBackend : backend;
+  const requestedModel = bareModelId(requestedSpec);
+  const effort = (value: string) => bareModelId(value) === value ? null : value.slice(value.lastIndexOf(':') + 1);
   return {
-    ownerId, accountRoute: account, requestedBackend: backend, requestedModel, requestedEffort: effort,
+    ownerId, accountRoute: account, requestedBackend, requestedModel, requestedEffort: effort(requestedSpec),
     launchedBackend: backend, launchedModel: bareModelId(backend === 'codex' ? resolveCodexModel(spec) : spec),
-    launchedEffort: effort, resolvedAccountIds: [],
+    launchedEffort: effort(spec), resolvedAccountIds: [],
+    ...(body.spawnFallbackReason === 'capacity' ? { reason: 'capacity' as const } : {}),
   };
 }
 

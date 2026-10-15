@@ -51,6 +51,9 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 import type { Db } from '../fleet/pg-stores';
 import { observeFallback } from '../degradation/fallback-observations';
+import { composeLaunchModelSpec, backendForModelSpec, type AgentBackend } from '../agent-config-constants';
+import { accountProviderForInteractiveBackend, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
+import { accountRoutingMode, resolveSpawnRouteAccounts } from '../inference-gateway/spawn-env';
 
 // The invoke route is a Hono API route on the operator's API port — derive the base from
 // the shared helper (operator-api-base.ts), never the stale `:3055` Vite SPA default.
@@ -408,6 +411,61 @@ async function resolveLaunchInput(target: LaunchTarget, input: FireLaunchInput):
   if (bodyExtra.spawnBackend == null && launch.backend) bodyExtra.spawnBackend = launch.backend;
   if (bodyExtra.account === undefined && launch.account !== null) bodyExtra.account = launch.account;
   if (launch.conflict) console.warn(`[backend-conflict] launch-blueprint role '${target.role}': ${launch.conflict.note}`);
+  // Capacity may substitute only on a measured wall. An unreadable, missing or
+  // stale account reading is unknown and keeps the candidate launchable.
+  const route = typeof bodyExtra.account === 'string' ? bodyExtra.account.trim() : '';
+  if (route && accountRoutingMode(route) !== 'default') {
+    const { accountStatus, poolVerdictByProvider } = await import('../deployment/account-pool-store');
+    const rows = await accountStatus(input.workspaceId).catch(() => []);
+    const primary = { backend: bodyExtra.spawnBackend as AgentBackend | undefined, account: route,
+      model: typeof bodyExtra.spawnModel === 'string' ? bodyExtra.spawnModel : launch.model };
+    primary.backend ??= backendForModelSpec(primary.model)?.backend;
+    const candidates = [primary, ...launch.backups.map(backup => ({ backend: backup.backend,
+      account: typeof input.bodyExtra?.account === 'string' ? input.bodyExtra.account.trim() : backup.account ?? route,
+      model: composeLaunchModelSpec(backup.model, backup.effort)! }))];
+    const walls: string[] = [];
+    let selected = -1;
+    for (const [index, candidate] of candidates.entries()) {
+      const candidateRoute = candidate.account;
+      if (!candidateRoute || accountRoutingMode(candidateRoute) === 'default') { selected = index; break; }
+      const backend = candidate.backend ?? backendForModelSpec(candidate.model)?.backend;
+      const provider = backend === 'omp'
+        ? (await import('../inference-gateway/omp-models-config')).ompGatewayModelFromSpec(candidate.model)?.accountProvider
+        : backend ? accountProviderForInteractiveBackend(interactiveBackendFromSpawnBackend(backend)) : null;
+      if (!provider || !rows.length) { selected = index; break; }
+      // An explicit pin cannot be silently moved to another provider.
+      if (accountRoutingMode(candidateRoute) === 'pin' && rows.some(row => row.id === candidateRoute && row.provider !== provider)) {
+        walls.push(`${backend}: account '${candidateRoute}' belongs to another provider`);
+        continue;
+      }
+      // A read failure supplies no evidence for skipping this candidate.
+      const accounts = await resolveSpawnRouteAccounts(input.workspaceId, provider, candidateRoute).catch(() => null);
+      if (!accounts) { selected = index; break; }
+      const ids = new Set(accounts.map(account => account.id));
+      const allowed = rows.filter(row => ids.has(row.id));
+      const verdict = poolVerdictByProvider(allowed).find(row => row.provider === provider);
+      if (allowed.length !== ids.size || !verdict?.atCapacity) { selected = index; break; }
+      walls.push(`${backend}/${candidate.model}: ${verdict.reason}`);
+    }
+    if (selected < 0) {
+      throw new Error(`Launch withheld: every declared route is unavailable. ${walls.join('; ')}`);
+    }
+    if (selected > 0) {
+      const candidate = candidates[selected]!;
+      bodyExtra.requestedSpawnBackend = primary.backend;
+      bodyExtra.requestedSpawnModel = primary.model;
+      bodyExtra.spawnBackend = candidate.backend;
+      bodyExtra.spawnModel = candidate.model;
+      bodyExtra.account = candidate.account;
+      bodyExtra.spawnFallbackReason = 'capacity';
+      observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'capacity', scope: target.role }, { workspaceId: input.workspaceId });
+      const { sendMessage } = await import('../agent-tools/coordination/messages');
+      await sendMessage({ ownerId: 'system-blueprint-launch', ownerLabel: 'blueprint-launch', source: 'principal',
+        workspaceId: input.workspaceId, userId: null }, { to: ['human'], kind: 'message', harnessSlug: input.installSlug,
+        summary: `${target.role}: capacity fallback ${primary.backend}/${primary.model} → ${candidate.backend}/${candidate.model}`,
+        body: walls.join('; '), extra: { expects: 'none', reason: 'capacity' } });
+    }
+  }
   return { ...input, bodyExtra };
 }
 
@@ -495,6 +553,7 @@ const defaultFire = async (
             parentRole: parent?.role ?? 'operator',
             parentSpawnId: parent?.spawnId ?? null,
             itemId: dispatch?.itemId ?? null,
+            accountRoute: spawnAccountRouteFromLaunch(body, `durable-spawn:${idempotencyKey}`) ?? undefined,
           },
         })
       ) {

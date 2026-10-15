@@ -340,6 +340,46 @@ describe('Docker create/start release preflight', () => {
       && output.includes('preflight timed out'))).toBe(true);
   });
 
+  it.each([null, 143, 0])('keeps a timed-out Docker smoke inconclusive even with status %s', (status) => {
+    const calls: Array<{ args: string[]; timeout: number }> = [];
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-stock-timeout-'));
+    try {
+      const machines = runStockMachineSmoke(root, ['ubuntu:24.04'], () => null, (args, timeout) => {
+        calls.push({ args, timeout });
+        return args[0] === 'run'
+          ? { status, stdout: 'partial smoke output', stderr: 'Docker interrupted', error: { message: 'spawnSync docker ETIMEDOUT' } }
+          : { status: 0 };
+      });
+      expect(machines[0]).toMatchObject({ status, unmeasured: true });
+      expect(machines[0].output).toContain('partial smoke output\nDocker interrupted\nspawnSync docker ETIMEDOUT');
+      expect(stockMachinesBlockLegs(machines)).toBe(false);
+      expect(stockMachineRefusal(machines[0])).toContain('was not measured');
+      const name = calls[0].args[calls[0].args.indexOf('--name') + 1];
+      expect(name).toMatch(/^pui-release-preflight-\d+-\d+-smoke-0$/);
+      expect(calls[0].timeout).toBe(300_000);
+      expect(calls[1]).toEqual({ args: ['rm', '--force', name], timeout: DOCKER_START_PROBE_TIMEOUT_MS });
+      const passed = [{ image: 'ubuntu:24.04', status: 0, output: 'ok' }];
+      const remeasure = vi.fn(() => passed);
+      expect(remeasureStockMachines(machines, remeasure)).toBe(passed);
+      expect(remeasure).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 1])('preserves completed smoke status %s and only blocks on actual failure', (status) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-stock-completed-'));
+    try {
+      const run = vi.fn(() => ({ status, stdout: 'finished' }));
+      const machines = runStockMachineSmoke(root, ['ubuntu:24.04'], () => null, run);
+      expect(machines[0].unmeasured).toBeUndefined();
+      expect(stockMachinesBlockLegs(machines)).toBe(status !== 0);
+      expect(run).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // WI-10004247 run 7: a Docker stall on the host (WI-10003403) refused the
   // preflight, and every PTY leg was skipped as if the binary had failed.
   it('lets the legs run past an unmeasured smoke but not past a failed one', () => {
@@ -363,7 +403,7 @@ describe('Docker create/start release preflight', () => {
 
   it('refuses an unmeasured smoke as unmeasured, a failed one as failed, a passed one not at all', () => {
     expect(stockMachineRefusal({ image: 'debian:stable-slim', unmeasured: true, status: null, output: 'stalled' }))
-      .toBe('stock-machine smoke on debian:stable-slim was not measured: the host could not start a container '
+      .toBe('stock-machine smoke on debian:stable-slim was not measured: the host could not complete the smoke '
         + 'before or after the legs: stalled');
     expect(stockMachineRefusal({ image: 'debian:stable-slim', status: 2, output: 'boom' }))
       .toBe('stock-machine smoke on debian:stable-slim failed (status 2): boom');

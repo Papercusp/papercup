@@ -109,17 +109,30 @@ const getOwnerSteering = vi.fn(async (_ws?: string, _slug?: string) => ({
 vi.mock('../owner-steering', () => ({ getOwnerSteering: (...a: unknown[]) => getOwnerSteering(...(a as [string, string])) }));
 const readAgentConfig = vi.fn(async () => ({ models: {}, tiers: [] as unknown[], tierCeilings: {} as Record<string, string> }));
 vi.mock('../agent-config', () => ({ readAgentConfig: () => readAgentConfig() }));
-const routingFixture = vi.hoisted(() => ({ enabled: false }));
+const routingFixture = vi.hoisted(() => ({ enabled: false,
+  accounts: [{ id: 'pool-a', provider: 'codex' }, { id: 'pool-b', provider: 'codex' },
+    { id: 'claude-a', provider: 'claude' }],
+  status: vi.fn(async (): Promise<import('../deployment/account-pool-store').AccountStatusRow[]> => []),
+  excluded: ['pool-b'], forced: [] as string[],
+  notice: vi.fn(async () => ({})), observation: vi.fn(),
+}));
+vi.mock('../agent-tools/coordination/messages', async original => ({
+  ...(await original<typeof import('../agent-tools/coordination/messages')>()), sendMessage: routingFixture.notice,
+}));
+vi.mock('../degradation/fallback-observations', async original => ({
+  ...(await original<typeof import('../degradation/fallback-observations')>()), observeFallback: routingFixture.observation,
+}));
 vi.mock('@papercusp/flags/server', async original => ({
   ...(await original<typeof import('@papercusp/flags/server')>()), getFlag: async () => routingFixture.enabled,
 }));
 vi.mock('../deployment/account-pool-store', async original => ({
   ...(await original<typeof import('../deployment/account-pool-store')>()),
-  loadAccountPool: async () => ({ accounts: [{ id: 'pool-a', provider: 'codex' }, { id: 'pool-b', provider: 'codex' }] }),
+  loadAccountPool: async () => ({ accounts: routingFixture.accounts }),
+  accountStatus: routingFixture.status,
 }));
 vi.mock('../deployment/account-session-override', async original => ({
   ...(await original<typeof import('../deployment/account-session-override')>()),
-  getAccountOverride: async () => ({ excludeAccounts: ['pool-b'], forcedAccounts: [] }),
+  getAccountOverride: async () => ({ excludeAccounts: routingFixture.excluded, forcedAccounts: routingFixture.forced }),
 }));
 
 // WI-269 (durable-spawn workspace-pin): resolveLaunchTarget must resolve a `*`
@@ -142,6 +155,11 @@ vi.mock('../workspace-registry', async (orig) => ({
 
 afterEach(() => {
   routingFixture.enabled = false;
+  routingFixture.status.mockReset().mockResolvedValue([]);
+  routingFixture.excluded = ['pool-b'];
+  routingFixture.forced = [];
+  routingFixture.notice.mockClear();
+  routingFixture.observation.mockClear();
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
@@ -156,6 +174,151 @@ afterEach(() => {
 });
 
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
+
+describe('blueprint ordered capacity failover (P-004 R-4)', () => {
+  function status(id: string, provider: 'codex' | 'claude', state: 'headroom' | 'wall' | 'unknown') {
+    return { id, provider, available: state !== 'wall', usageWalled: state === 'wall',
+      readingStatus: state === 'unknown' ? 'stale' : 'fresh', rate: { pausedUntil: 0 },
+      burn: { disposition: 'none' } } as import('../deployment/account-pool-store').AccountStatusRow;
+  }
+  function configure(backups: import('@papercusp/orchestrator/blueprint').BlueprintLaunchBackup[] = [
+    { backend: 'claude-code' as const, model: 'sonnet', effort: 'high' as const },
+    { backend: 'claude-code' as const, model: 'opus', effort: 'xhigh' as const },
+  ]) {
+    setLaunchBlueprintResolver(() => {
+      const bp = loadBuiltinBlueprint('release-fix').blueprint;
+      return { ...bp, roles: bp.roles.map(role => role.id === 'release-fixer'
+        ? { ...role, backend: 'codex' as const, model: 'gpt-5.4', effort: 'high' as const, account: 'auto', backups } : role) };
+    });
+  }
+  beforeEach(() => {
+    configure();
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('claude-a', 'claude', 'headroom')]);
+  });
+
+  it('issues the first usable declared backup on both direct and durable paths, preserving effort and primary evidence', async () => {
+    const fire = vi.fn();
+    setLaunchBlueprintFire(fire);
+    await fireLaunchBlueprint('release-fix', opts);
+    expect(fire.mock.calls[0]![0].bodyExtra).toMatchObject({ spawnBackend: 'claude-code', spawnModel: 'sonnet:high',
+      requestedSpawnBackend: 'codex', requestedSpawnModel: 'gpt-5.4:high', spawnFallbackReason: 'capacity', account: 'auto' });
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:first');
+    expect(request.spawnRecord?.accountRoute).toMatchObject({ requestedBackend: 'codex', requestedModel: 'gpt-5.4',
+      requestedEffort: 'high', launchedBackend: 'claude-code', launchedModel: 'sonnet', launchedEffort: 'high', reason: 'capacity' });
+    expect(routingFixture.observation).toHaveBeenCalledWith('blueprint-launch',
+      expect.objectContaining({ reason: 'capacity', applied: 0 }), expect.objectContaining({ workspaceId: opts.workspaceId }));
+    expect(routingFixture.notice).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: opts.workspaceId }),
+      expect.objectContaining({ summary: expect.stringContaining('sonnet:high'), extra: { expects: 'none', reason: 'capacity' } }));
+  });
+
+  it('skips a walled first backup and selects the second without reordering', async () => {
+    configure([{ backend: 'codex', model: 'gpt-5.4', effort: 'high' },
+      { backend: 'claude-code', model: 'opus', effort: 'xhigh' }]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:second');
+    expect(request.body).toMatchObject({ spawnBackend: 'claude-code', spawnModel: 'opus:xhigh' });
+  });
+
+  it('keeps a primary with headroom and does not record a substitution', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'headroom'), status('claude-a', 'claude', 'headroom')]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:primary');
+    expect(request.body).toMatchObject({ spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' });
+    expect(request.body.spawnFallbackReason).toBeUndefined();
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('withholds when every declared pool is measurably walled', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('claude-a', 'claude', 'wall')]);
+    const fire = vi.fn(); setLaunchBlueprintFire(fire);
+    await expect(fireLaunchBlueprint('release-fix', opts)).rejects.toThrow(/Launch withheld.*every declared route.*codex.*claude/s);
+    expect(fire).not.toHaveBeenCalled();
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('fails open on unknown backup capacity instead of skipping it', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('claude-a', 'claude', 'unknown')]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:unknown');
+    expect(request.body.spawnModel).toBe('sonnet:high');
+  });
+
+  it('keeps an unknown primary, including a failed status read, without claiming a capacity substitution', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'unknown'), status('claude-a', 'claude', 'headroom')]);
+    expect((await buildLaunchSpawnRequest('release-fix', opts, 'capacity:unknown-primary')).body.spawnBackend).toBe('codex');
+    routingFixture.status.mockRejectedValue(new Error('status unavailable'));
+    expect((await buildLaunchSpawnRequest('release-fix', opts, 'capacity:read-failed')).body.spawnBackend).toBe('codex');
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('preserves explicit direct and pinned overrides instead of switching their provider', async () => {
+    const direct = await buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 'default' } }, 'capacity:direct');
+    expect(direct.body).toMatchObject({ account: 'default', spawnBackend: 'codex' });
+    await expect(buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 'pool-a' } }, 'capacity:pin'))
+      .rejects.toThrow(/Launch withheld/);
+    expect(routingFixture.notice).not.toHaveBeenCalled();
+  });
+
+  it('honors the same account allow-list as the invoke env and ignores unrelated headroom', async () => {
+    routingFixture.status.mockResolvedValue([status('pool-a', 'codex', 'wall'), status('pool-b', 'codex', 'headroom'),
+      status('claude-a', 'claude', 'headroom')]);
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:filtered');
+    expect(request.body.spawnBackend).toBe('claude-code');
+    routingFixture.forced = ['pool-b']; routingFixture.excluded = [];
+    const allowed = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:allow');
+    expect(allowed.body.spawnBackend).toBe('codex');
+  });
+
+  it('uses a backup account declaration while preserving an explicit caller route override', async () => {
+    configure([{ backend: 'claude-code', model: 'opus', effort: 'max', account: 'claude-a' }]);
+    const declared = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:backup-account');
+    expect(declared.body).toMatchObject({ spawnBackend: 'claude-code', spawnModel: 'opus:max', account: 'claude-a' });
+    const override = await buildLaunchSpawnRequest('release-fix', { ...opts, bodyExtra: { account: 'auto' } }, 'capacity:caller-route');
+    expect(override.body.account).toBe('auto');
+  });
+
+  it('carries the backup through the actual invoke parser, metadata writer, and Claude gateway env', async () => {
+    routingFixture.enabled = true;
+    vi.stubEnv('PAPERCUSP_ACCOUNT_ID', 'ambient-pin');
+    const request = await buildLaunchSpawnRequest('release-fix', opts, 'capacity:bridge');
+    const { parseBlueprintInvokeRequest, recordBlueprintInvokeAccountRoute } = await import('../endpoint-route/routes/harness/spawn');
+    const parsed = parseBlueprintInvokeRequest(JSON.parse(JSON.stringify(request.body)));
+    const { resolveSpawnBackendModel } = await import('../harness-invoke-once');
+    const backend = resolveSpawnBackendModel('release-fixer', parsed.spawnModelPin, parsed.spawnBackendPin);
+    expect(backend).toMatchObject({ model: 'sonnet[1m]', effort: 'high' });
+    const { resolveSpawnGatewayEnv, applyExplicitSpawnAccountRoute } = await import('../inference-gateway/spawn-env');
+    let resolvedAccountIds: string[] = [];
+    const env = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-backup',
+      backend: parsed.spawnBackendPin, model: parsed.spawnModelPin, account: parsed.account,
+      onResolvedAccounts: ids => { resolvedAccountIds = ids; } });
+    applyExplicitSpawnAccountRoute(env, parsed.account);
+    expect(env.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('s-backup');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('ambient-pin');
+    expect(env.PAPERCUSP_ACCOUNT_ID).toBe('');
+    expect(resolvedAccountIds).toEqual(['claude-a']);
+    let written: unknown;
+    const sql = Object.assign(vi.fn(async () => [{ spawn_id: 's-backup' }]), { json: (value: unknown) => { written = value; return value; } });
+    await recordBlueprintInvokeAccountRoute(sql as never, { spawnId: 's-backup', ownerId: 's-backup', parsed,
+      backend: 'claude-code', model: backend.model!, effort: backend.effort, resolvedAccountIds });
+    expect(written).toMatchObject({ ownerId: 's-backup', requestedBackend: 'codex', requestedModel: 'gpt-5.4',
+      launchedBackend: 'claude-code', launchedModel: 'sonnet[1m]', launchedEffort: 'high', reason: 'capacity', resolvedAccountIds: ['claude-a'] });
+    const pinned = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-pin',
+      backend: 'claude-code', account: 'claude-a' });
+    applyExplicitSpawnAccountRoute(pinned, 'claude-a');
+    expect(pinned.PAPERCUSP_ACCOUNT_ID).toBe('claude-a');
+    expect(pinned.ANTHROPIC_CUSTOM_HEADERS).toContain('claude-a');
+    expect(() => parseBlueprintInvokeRequest({ ...request.body, requestedSpawnModel: undefined })).toThrow(/requires requested/);
+  });
+
+  it('preserves primary effort when invoke normalizes model and effort into separate command flags', async () => {
+    const { parseBlueprintInvokeRequest, recordBlueprintInvokeAccountRoute } = await import('../endpoint-route/routes/harness/spawn');
+    const parsed = parseBlueprintInvokeRequest({ account: 'auto', spawnBackend: 'codex', spawnModel: 'gpt-5.4:high' });
+    let written: unknown;
+    const sql = Object.assign(vi.fn(async () => [{ spawn_id: 's-primary' }]), { json: (value: unknown) => { written = value; return value; } });
+    await recordBlueprintInvokeAccountRoute(sql as never, { spawnId: 's-primary', ownerId: 's-primary', parsed,
+      backend: 'codex', model: 'gpt-5.4', effort: 'high', resolvedAccountIds: ['pool-a'] });
+    expect(written).toMatchObject({ requestedModel: 'gpt-5.4', requestedEffort: 'high',
+      launchedModel: 'gpt-5.4', launchedEffort: 'high' });
+  });
+});
 
 // Most tests in this file exercise launch mechanics (model routing, body shaping,
 // lineage), not the retired Queen/cup blueprints themselves. Make that distinction

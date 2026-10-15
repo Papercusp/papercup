@@ -20,7 +20,10 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
   ...(await importActual<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
 }));
-vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
+vi.mock('../fleet/spawn-tree', async original => ({
+  ...(await original<typeof import('../fleet/spawn-tree')>()),
+  recordSpawn: vi.fn(), finishSpawn: vi.fn(), recordSpawnAccountRoute: vi.fn(async () => {}),
+}));
 // Heartbeat the launch row (P-011 liveness fix) — the SPAWN_HEARTBEAT_INTERVAL_MS
 // is kept SMALL here so the interval fires within the test (the real 60s never would).
 // Release-fix also stamps its short-lived firing process until /invoke hands the row
