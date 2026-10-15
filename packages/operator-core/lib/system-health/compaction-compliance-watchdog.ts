@@ -1551,6 +1551,14 @@ async function maybeForceRespawn(
       else await broadcastSevereEvent(event);
     } catch (error) { console.warn(`[compaction-watchdog] condition delivery failed: ${String(error)}`); }
   };
+  const warnNoHostUnavailable = (reason: string) => {
+    if (noHostWarned.has(ownerId)) return;
+    noHostWarned.add(ownerId);
+    console.warn(
+      `[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold (~${est}/${limit} tokens) ` +
+        `but findLiveHost() found no live psu-pty host (EI-9982); ${reason}. Force remains unavailable.`,
+    );
+  };
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
       import('@papercusp/flags/server'),
@@ -1571,20 +1579,14 @@ async function maybeForceRespawn(
         : await (await import('../agent-launch-core')).resolveResumeTarget({ agentId: ownerId });
       if (!target.ok) {
         await failure(`No live PTY host, and the bound adv-session could not be resolved: ${target.detail}`);
-        if (!noHostWarned.has(ownerId)) {
-          noHostWarned.add(ownerId);
-          console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold without a PTY host; source resolution failed, so force remains unavailable.`);
-        }
+        warnNoHostUnavailable('bound source resolution failed');
         return false;
       }
       if (target.ownerId !== ownerId || target.workspaceId !== workspaceId ||
           !target.harnessSlug?.trim() || !target.binding ||
           target.binding.coordOwnerId !== ownerId || !target.binding.startedAt || target.live) {
         await failure('No live PTY host, and the resolved source lacks an exact matching workspace, harness, owner, incarnation, or dead-host binding.');
-        if (!noHostWarned.has(ownerId)) {
-          noHostWarned.add(ownerId);
-          console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold without a PTY host; source scope or liveness evidence was incomplete, so force remains unavailable.`);
-        }
+        warnNoHostUnavailable('source scope or liveness evidence was incomplete');
         return false;
       }
       const source: CompactionForceSuccessorInput['target'] = {
@@ -1605,10 +1607,7 @@ async function maybeForceRespawn(
           });
       if (!launch.verified) {
         await failure(`No live PTY host; capability successor refused or lacked positive launch evidence: ${launch.detail}`);
-        if (!noHostWarned.has(ownerId)) {
-          noHostWarned.add(ownerId);
-          console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold without a PTY host; capability successor was not positively verified, so force remains unavailable.`);
-        }
+        warnNoHostUnavailable('capability successor lacked positive launch evidence');
         return false;
       }
       observeFallback('compaction-force-respawn', {

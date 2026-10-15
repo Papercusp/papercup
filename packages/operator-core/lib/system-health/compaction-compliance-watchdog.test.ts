@@ -16,6 +16,8 @@ import { tmpdir } from 'node:os';
 import { hostname } from 'node:os';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { join } from 'node:path';
+import type { ResolveResumeResult } from '../agent-launch-core';
+import type { CompactionForceSuccessorInput, CompactionForceSuccessorResult } from './compaction-force-successor';
 
 const {
   estimateMock,
@@ -44,6 +46,7 @@ const {
   clearEstimateMock,
   codexProvenanceMock,
   runFlushGateMock,
+  resolveResumeTargetMock,
 } = vi.hoisted(() => ({
   clearEstimateMock: vi.fn(async () => {}),
   // EI-21595542328480968: where a codex reading came from. Default null = "not codex /
@@ -111,6 +114,13 @@ const {
   resolveSelfSessionMock: vi.fn(async () => null as null | { filePath: string; sourceKind: string }),
   writePresenceMock: vi.fn(async () => {}),
   runFlushGateMock: vi.fn(async () => ({ verdict: 'clear' as const, tripwires: [] })),
+  // The watchdog tests use fakeSql for the sweep query; keep the new hostless
+  // resolver off real PG unless a case explicitly injects its own fixture.
+  resolveResumeTargetMock: vi.fn(async (_ref: { agentId?: string | null; sessionId?: string | null }) => ({
+    ok: false as const,
+    error: 'not_found' as const,
+    detail: 'no fixture source',
+  })),
 }));
 vi.mock('../compaction-usage', () => ({
   observeHealthyClaudeTranscriptForOwner: async () => null,
@@ -130,6 +140,7 @@ vi.mock('../compaction-usage', () => ({
   codexReadingProvenanceForOwner: codexProvenanceMock,
 }));
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+vi.mock('../agent-launch-core', () => ({ resolveResumeTarget: resolveResumeTargetMock }));
 // Original-producer observation outcomes are asserted by the canonical rail cases.
 // This unit fixture must never flush incidental observations to the live database.
 vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
@@ -362,15 +373,43 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); expect(readRealPgRailBlocks().blocked).toBe(0); });
 
 describe('original compaction durable episodes', () => {
+  function forceSuccessorSource(
+    overrides: Partial<Omit<Extract<ResolveResumeResult, { ok: true }>, 'ok'>> = {},
+  ): ResolveResumeResult {
+    return {
+      ok: true,
+      sessionId: 'source-session',
+      ompThreadId: null,
+      resumeId: 'source-session',
+      ownerId: 'su-episode',
+      workspaceId: 'workspace',
+      harnessSlug: 'papercusp',
+      agent: 'claude',
+      role: null,
+      feature: null,
+      cwd: '/repo',
+      model: null,
+      modelSource: null,
+      account: null,
+      headless: false,
+      endedAt: null,
+      endedBy: null,
+      live: false,
+      advSessionId: 44,
+      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
+      ...overrides,
+    };
+  }
+
   function fixture() {
     const openedKeys: string[] = [], resolvedKeys: string[] = [];
     const open = new Map<string, number>();
     const row = { owner_id: 'su-episode', owner_label: 'episode', workspace_id: 'workspace',
       compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
-    const resolveForceSuccessorTarget = vi.fn(async (_ownerId: string) => ({
+    const resolveForceSuccessorTarget = vi.fn(async (_ownerId: string): Promise<ResolveResumeResult> => ({
       ok: false as const, error: 'not_found' as const, detail: 'no fixture source',
     }));
-    const dispatchForceSuccessor = vi.fn(async (_input: { target: unknown; brief: string }) => ({
+    const dispatchForceSuccessor = vi.fn(async (_input: CompactionForceSuccessorInput): Promise<CompactionForceSuccessorResult> => ({
       verified: false, detail: 'fixture successor was not verified',
     }));
     const deps: CompactionComplianceDeps = { readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) =>
@@ -390,28 +429,7 @@ describe('original compaction durable episodes', () => {
   it('dispatches a workspace/harness-bound capability successor and records applied only after positive launch evidence', async () => {
     const h = fixture();
     estimateMock.mockResolvedValue(150_000);
-    h.resolveForceSuccessorTarget.mockResolvedValue({
-      ok: true,
-      ownerId: 'su-episode',
-      workspaceId: 'workspace',
-      harnessSlug: 'papercusp',
-      sessionId: 'source-session',
-      ompThreadId: null,
-      resumeId: 'source-session',
-      agent: 'claude',
-      role: null,
-      feature: null,
-      cwd: '/repo',
-      model: null,
-      modelSource: null,
-      account: null,
-      headless: true,
-      endedAt: null,
-      endedBy: null,
-      live: false,
-      advSessionId: 44,
-      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
-    } as never);
+    h.resolveForceSuccessorTarget.mockResolvedValue(forceSuccessorSource({ headless: true }));
     h.dispatchForceSuccessor.mockResolvedValue({ verified: true, detail: 'first turn observed' });
 
     const result = await h.run();
@@ -432,28 +450,7 @@ describe('original compaction durable episodes', () => {
   it('keeps force-unavailable when a scoped successor refuses or lacks positive launch evidence', async () => {
     const h = fixture();
     estimateMock.mockResolvedValue(150_000);
-    h.resolveForceSuccessorTarget.mockResolvedValue({
-      ok: true,
-      ownerId: 'su-episode',
-      workspaceId: 'workspace',
-      harnessSlug: 'papercusp',
-      sessionId: 'source-session',
-      ompThreadId: null,
-      resumeId: 'source-session',
-      agent: 'claude',
-      role: null,
-      feature: null,
-      cwd: '/repo',
-      model: null,
-      modelSource: null,
-      account: null,
-      headless: false,
-      endedAt: null,
-      endedBy: null,
-      live: false,
-      advSessionId: 44,
-      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
-    } as never);
+    h.resolveForceSuccessorTarget.mockResolvedValue(forceSuccessorSource());
     h.dispatchForceSuccessor.mockResolvedValue({ verified: false, detail: 'first turn is unconfirmed' });
 
     const result = await h.run();
@@ -466,28 +463,7 @@ describe('original compaction durable episodes', () => {
   it('refuses hostless actuation when the recorded source lacks its harness binding', async () => {
     const h = fixture();
     estimateMock.mockResolvedValue(150_000);
-    h.resolveForceSuccessorTarget.mockResolvedValue({
-      ok: true,
-      ownerId: 'su-episode',
-      workspaceId: 'workspace',
-      harnessSlug: null,
-      sessionId: 'source-session',
-      ompThreadId: null,
-      resumeId: 'source-session',
-      agent: 'claude',
-      role: null,
-      feature: null,
-      cwd: '/repo',
-      model: null,
-      modelSource: null,
-      account: null,
-      headless: false,
-      endedAt: null,
-      endedBy: null,
-      live: false,
-      advSessionId: 44,
-      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
-    } as never);
+    h.resolveForceSuccessorTarget.mockResolvedValue(forceSuccessorSource({ harnessSlug: null }));
 
     const result = await h.run();
 
