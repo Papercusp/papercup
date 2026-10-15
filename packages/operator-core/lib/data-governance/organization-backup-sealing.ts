@@ -58,6 +58,27 @@ export function organizationBackupRetentionDecision(
     reason: holdIds.length ? 'legal-hold-active' : 'no-active-legal-hold' };
 }
 
+/**
+ * Host dumps contain the whole shared data plane, regardless of the workspace
+ * that owns their Kopia repo. Lock the hold table before the database-wide read
+ * so even low-level hold writers cannot place/release a hold during expiry.
+ * Keep captures/network work outside this short destructive lease.
+ */
+export async function withHostBackupRetentionLease<T>(
+  sql: Sql,
+  fn: (activeHoldIds: readonly string[]) => Promise<T>,
+): Promise<T> {
+  const result = await sql.begin(async (tx) => {
+    const t = tx as unknown as Sql;
+    await t`LOCK TABLE harness_shared.data_source_legal_holds IN SHARE MODE`;
+    const rows = await t<{ id: string }[]>`
+      SELECT id::text AS id FROM harness_shared.data_source_legal_holds
+       WHERE released_at IS NULL ORDER BY id`;
+    return { value: await fn(rows.map((r) => r.id)) };
+  });
+  return result.value;
+}
+
 type ByteSource = AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
 
 function malformed(organizationId: string, detail: string): OrganizationKeyUnavailableError {
