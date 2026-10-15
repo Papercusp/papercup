@@ -5,13 +5,12 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { getAdvSessionInWorkspace } from '../adv-sessions';
 import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
-import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
-import { findCanonicalClaudeLiveJsonl, findCanonicalNativeLiveJsonl, readStableLiveJsonl } from '../session-port/source';
+import { acquireTrackedSessionSource } from '../session-port/service';
 import { adaptNativeSessionJsonl } from '../session-port/native-adapter';
 import type { SessionBackend } from '../session-port/types';
 
@@ -46,17 +45,20 @@ async function nativeBrief(owner: string, origin: string) {
     WHERE workspace_id = 'papercusp-workspace' AND coord_owner_id = ${literal(owner)}
     ORDER BY id DESC LIMIT 1`, origin);
   if (!session) return undefined;
-  const backend = session.agent as SessionBackend;
-  const nativeSession = String(backend === 'omp' ? session.omp_thread_id ?? session.session_id : session.session_id);
-  const path = backend === 'claude'
-    ? await findCanonicalClaudeLiveJsonl(sessionClaudeConfigDir(owner), nativeSession)
-    : await findCanonicalNativeLiveJsonl(join(backend === 'codex'
-      ? codexHomeForSessionKey(Number(session.id)) : ompAgentHomeForSessionKey(Number(session.id)), 'sessions'), backend, nativeSession);
-  const snapshot = await readStableLiveJsonl(path);
+  const source = await getAdvSessionInWorkspace(Number(session.id), 'papercusp-workspace');
+  if (!source) return undefined;
+  expect(source.coordOwnerId, 'native evidence must belong to this answering session').toBe(owner);
+  expect(source.agent).toBe(session.agent);
+  const backend = source.agent as SessionBackend;
+  const nativeSession = String(backend === 'omp' ? source.ompThreadId ?? source.sessionId : source.sessionId);
+  // Answering sessions can finish and archive before acceptance is refreshed.
+  // Reuse the production reader's exact-incarnation and archive-integrity checks.
+  const snapshot = await acquireTrackedSessionSource(source);
   const first = adaptNativeSessionJsonl(backend, snapshot.bytes.toString('utf8'), nativeSession)
     .turns.find(turn => turn.role === 'user');
   const text = first?.blocks.flatMap(block => 'text' in block ? [String(block.text)] : []).join('\n') ?? '';
-  return { nativeSession, path, sha256: snapshot.sha256, text };
+  return { nativeSession, path: snapshot.fileIdentity?.path ?? null,
+    source: snapshot.source, archiveRelpath: snapshot.relpath, sha256: snapshot.sha256, text };
 }
 
 describe.skipIf(!profilePath)('consult dispatch through the current production router', () => {
@@ -146,7 +148,8 @@ describe.skipIf(!profilePath)('consult dispatch through the current production r
                 && excerpts.some(text => native!.text.includes(text)));
             }, { timeout: 120_000, interval: 5000 }).toBe(true);
             proof = { conversationId: id, sourceOwner, answeringOwner, nativeSession: native!.nativeSession };
-            observations.push({ nativeTranscriptPath: native!.path, nativeSnapshotSha256: native!.sha256 });
+            observations.push({ nativeTranscriptPath: native!.path, nativeSnapshotSha256: native!.sha256,
+              nativeSource: native!.source, nativeArchiveRelpath: native!.archiveRelpath });
             break;
           } catch (error) {
             console.info('CBP_LIVE_DISPATCH_EXCEPTION', id,
