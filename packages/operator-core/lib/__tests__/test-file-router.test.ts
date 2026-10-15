@@ -58,6 +58,7 @@ import {
   formatRouteError,
   failedAssertionsFromReport,
   groupRoutes,
+  hasVitestWorkerTerminationWarning,
   isTestFilePath,
   listedFiles,
   loadNodeTestLedger,
@@ -947,6 +948,20 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
       output: ' Test Files  5 passed (5)\n      Tests  24 passed (24)\n',
     })).toBe(false);
     expect(vitestRunFailed({ status: 1, output: 'worker crashed before summary\n' })).toBe(true);
+  });
+});
+
+describe('Vitest worker termination warning is a finalization error', () => {
+  it('recognizes pool timeout and failed-termination diagnostics but ignores ordinary output', () => {
+    expect(hasVitestWorkerTerminationWarning(
+      '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+    )).toBe(true);
+    expect(hasVitestWorkerTerminationWarning(
+      '\u001b[31m[vitest-pool]: Failed to terminate forks worker for test files x.test.ts.\u001b[39m',
+    )).toBe(true);
+    expect(hasVitestWorkerTerminationWarning(
+      'Tests 1 passed (1)\nA test title mentions Timeout terminating forks worker.\n',
+    )).toBe(false);
   });
 });
 
@@ -2588,6 +2603,37 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(errors).toContain('original settlement stack');
     expect(errors).not.toContain('TEST_FILE_ADMISSION_ERROR');
     expect(errors).not.toContain('no test file ran');
+  });
+
+  it('refuses an overall green when Vitest reports a timed-out fork worker after passing tests', async () => {
+    const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    let code: number;
+    try {
+      code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        runCapturedTestProcessImpl: async () => ({
+          status: 0,
+          signal: null,
+          stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+          stderr: '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+          error: null,
+          timedOut: false,
+        }),
+      });
+    } finally {
+      if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
+      if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+    }
+    const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(code).toBe(3);
+    expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+    expect(output).toContain('finalizationError=true');
+    expect(errors).toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
   });
 
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {

@@ -691,6 +691,18 @@ export function vitestRunFailed({ status, output }) {
 }
 
 /**
+ * A green assertion summary does not mean the Vitest child shut down cleanly.
+ * Fork-pool termination warnings are emitted after `testfileFinished` and Vitest
+ * can still exit 0, so preserve them as a runner finalization error.
+ */
+export function hasVitestWorkerTerminationWarning(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  return plain.split(/\r?\n/).some((line) =>
+    /^\[vitest-pool\]: (?:Timeout terminating|Failed to terminate) .*\bworker\b/.test(line.trim()),
+  );
+}
+
+/**
  * Combine every GROUP's outcome (one per owning cwd/config — a multi-workspace request produces
  * >1) into a single honest final verdict, isolated from I/O so it is unit-testable (EI-13535).
  *
@@ -707,8 +719,8 @@ export function vitestRunFailed({ status, output }) {
  * every group that could run, a mismatch in one group never hides another group's files, and the
  * final status is decided from the true combined outcome.
  *
- * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean, timedOut?: boolean }[]} groupResults
- * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean, anyTimedOut: boolean }}
+ * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean, finalizationError?: boolean, timedOut?: boolean }[]} groupResults
+ * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean, anyFinalizationError: boolean, anyTimedOut: boolean }}
  */
 /**
  * EI-18099113673609528: Vitest 4's default (and verbose) reporter silently drops ALL per-suite
@@ -3782,6 +3794,14 @@ export async function main(
       continue;
     }
     const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const workerTerminationWarning = hasVitestWorkerTerminationWarning(runOutput);
+    if (workerTerminationWarning) {
+      console.error(
+        'TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR — Vitest reported a worker that did not ' +
+          'terminate within teardownTimeout. Assertions may have passed, but this test process did ' +
+          'not finish cleanly; refusing an overall green result.',
+      );
+    }
     // EI-21902345477441137: a watchdog reap kills the child via signal, so `result.status` is
     // typically `null` — `null !== 0` would make vitestRunFailed() report a false FAILED verdict
     // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
@@ -3901,7 +3921,7 @@ export async function main(
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
-      finalizationError: Boolean(result.governedFinalizationError),
+      finalizationError: Boolean(result.governedFinalizationError || workerTerminationWarning),
       // EI-21902345477441137: distinct from `failed` — a reaped run produced no verdict at all,
       // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
       // silently read as a clean pass (that would hide a genuine resource-limit problem).
