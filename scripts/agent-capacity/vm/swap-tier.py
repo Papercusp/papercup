@@ -50,6 +50,7 @@ IDLE_SEC = int(os.environ.get("SWAPTIER_IDLE_SEC", "60"))
 REAL_MODEL = False
 CODEX_SESSIONS = {}
 GATEWAY_CHECK = None
+WARM_PREFIX = ""
 WAKE_TIMEOUT = float(os.environ.get("SWAPTIER_WAKE_TIMEOUT", "300"))
 
 
@@ -515,7 +516,7 @@ def warm(names, rounds, rec, concurrency=None):
             # A previous echoed prompt must never admit a retry's Enter key.
             # Keep retry identity inside the alphanumeric agent component so
             # native transcript parsing recognizes the whole unique marker.
-            marker = lambda n: f"WARM-{n}{'r' + str(attempt) if attempt else ''}-{k}"
+            marker = lambda n: f"WARM-{WARM_PREFIX}{n}{'r' + str(attempt) if attempt else ''}-{k}"
             state = {}
             for start in range(0, len(missing), width):
                 state.update(prompt_all(missing[start:start + width], marker, lambda n: (
@@ -859,8 +860,11 @@ def probe(out_path):
 # ---------------------------------------------------------------- main
 
 def run(a):
-    global REAL_MODEL, GATEWAY_CHECK
+    global REAL_MODEL, GATEWAY_CHECK, WARM_PREFIX
     REAL_MODEL = a.cli == "codex"
+    # Resumed JSONL may replay old rounds; only fresh unpredictable markers can
+    # admit this run's new verification turn.
+    WARM_PREFIX = os.urandom(6).hex() if a.resume_native else ""
     rec = Recorder(a.out)
     GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec, catalog=False)) if REAL_MODEL else None
     arms = [parse_arm(s) for s in a.arm]
