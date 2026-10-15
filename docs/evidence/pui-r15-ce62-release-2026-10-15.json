@@ -148,6 +148,8 @@
     "failure": "The clean-HOME version assertion expected pui 0.1.0 while the exact ce62 installed binary correctly reports pui 0.1.0 (ce62d173d1).",
     "fix": "The canonical test now checks the semantic version and the first ten characters of B.sourceSha, matching main.rs cli_version_line.",
     "fixWorkItem": "EI-26071220229890191",
+    "testRepairSha256": "371aec00112bc5ab074947cf5a47711aaf3b8a35cf57cd3e02d0f64fbe7bef0c",
+    "fixDisposition": "Closed with verified local regression evidence; commit settlement is automatic. This test-only repair does not change the accepted ce62 archive.",
     "focusedRegression": {
       "testRunId": 21259741,
       "status": "pass",
@@ -161,7 +163,7 @@
   "barAdequacyPreparation": {
     "status": "not-ready",
     "bindingIds": { "first": 47058, "last": 47104 },
-    "evaluatorResult": { "pass": 0, "fail": 3, "unknown": 44 },
+    "initialEvaluatorResult": { "pass": 0, "fail": 3, "unknown": 44 },
     "blockingDimensions": ["falsifiability", "plan-class-risk-floor", "correct-layer"],
     "evidencePath": "/tmp/p032-adequacy-full-9086d-20261015.json",
     "scope": "These are proof-adequacy verdicts for the selected bindings, not new installed-product failures.",
@@ -173,7 +175,36 @@
       "boundedApprovalPassed": 6,
       "liveAttachedCaseSkipped": 1,
       "bindingIds": [47208, 47209, 47210, 47211, 47212, 47213],
-      "result": "All three R-03 clauses now pass correct-layer; falsifiability and risk-floor remain unknown."
+      "result": "All three R-03 clauses pass the evaluator after the separate clean-origin controls below."
+    },
+    "r03CausalControls": {
+      "source": "packages/operator-core/lib/su-session-claude-adapter.ts",
+      "test": "packages/operator-core/lib/su-session-capability-parity.test.ts",
+      "origin": "/tmp/pcv/papercusp-lint-as-committed-ce62d173d1-xWwEFj",
+      "sourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+      "bindingIds": [47331, 47332, 47333],
+      "tools": { "baseline": 21259779, "relocatedBaseline": 21259780, "mutant": 21259781, "result": "caught" },
+      "commands": {
+        "baseline": 21259785,
+        "relocatedBaseline": 21259786,
+        "mutant": 21259798,
+        "result": "caught",
+        "relocatedBaselineCaveat": "Assertions passed, but git provenance reads timed out; that row has dirty=true and commit=null. The original baseline and mutant are clean ce62."
+      },
+      "context": {
+        "baseline": 21259799,
+        "relocatedBaseline": 21259806,
+        "mutant": 21259809,
+        "result": "caught",
+        "descriptorCaveat": "The reader health check was unreadable, so the runner withheld descriptor export. No descriptor provenance is claimed."
+      },
+      "adequacyResult": "AUTO-BAR-R-03-P-003, AUTO-BAR-R-03-P-006 and AUTO-BAR-R-03-P-008 pass with no wouldBlock reasons.",
+      "evaluatorReceipt": "/tmp/p032-r03-tasks-adequacy-final-9086d.json"
+    },
+    "taskSourceProof": {
+      "testRunId": 21258081,
+      "bindingIds": [47259, 47260, 47261, 47262, 47263, 47264, 47265, 47266, 47269],
+      "result": "The nine PUI-TASK clauses pass correct-layer using the retained real operator/PTY owner-and-agent task journey. Falsifiability and risk-floor remain unknown."
     },
     "r14CapabilityControl": {
       "status": "caught-but-not-current",
@@ -183,7 +214,19 @@
       "bindingIds": [47214, 47215],
       "probeInvocationId": "460b0657-beaa-4e3c-b1a0-1ff63492fb7a",
       "logPath": "/tmp/p032-capability-gate-mutation-9086d-20261015.log",
-      "reason": "The shared-origin test runs are marked worktreeDirty, so official freshness remains unknown despite a caught assertion. A clean-origin control is being prepared separately."
+      "reason": "The shared-origin test runs are marked worktreeDirty, so official freshness remains unknown despite a caught assertion.",
+      "cleanOriginAttempt": {
+        "status": "harness-error-before-mutant-tests",
+        "baselineTestRunId": 21259771,
+        "relocatedBaselineTestRunId": 21259774,
+        "mutantTestRunId": null,
+        "logPath": "/tmp/p032-r14-clean-mutation-9086d-20261015.log",
+        "observation": "The restricted-hold preflight child timed out before test import; no mutant receipt or caught verdict exists.",
+        "harnessFinding": "The frozen ce62 router copies receiptChildEnv before admission, so receipt-consuming children repeat the census. Current committed router moves that copy after real admission.",
+        "existingFixRegressionRunId": 21260337,
+        "existingFixRegressionResult": "Two focused admission/denial propagation cases passed; this is local working-source regression evidence.",
+        "followup": "EI-26072270863871963"
+      }
     }
   }
 }

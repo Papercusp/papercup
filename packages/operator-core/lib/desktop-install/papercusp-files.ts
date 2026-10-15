@@ -3460,7 +3460,7 @@ export async function checkHookSyntax(
  * ONE path. Best-effort + idempotent; a missing source (hooks not shipped) degrades to "nothing
  * installed" and leaves settings.json untouched. `srcDir` = the resolved sidecar/dev hooks/cc dir.
  */
-async function installClaudeHooks(
+export async function installClaudeHooks(
   home: string,
   srcDir: string,
 ): Promise<{ installed: string[]; settingsMerged: boolean }> {

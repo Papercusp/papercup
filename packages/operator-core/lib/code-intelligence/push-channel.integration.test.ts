@@ -1,0 +1,63 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { commitPushFacts, CODE_INTEL_PUSH_TURN_CHARS, type PushFact } from './push-channel';
+import { parsePushSnapshot } from './push-snapshot';
+
+let db: OrgTestDb;
+vi.mock('@papercusp/db-org', async importOriginal => ({
+  ...(await importOriginal<object>()),
+  withWorkspace: (ws: string, cb: (tx: unknown) => Promise<unknown>) => db.appSql.begin(async tx => {
+    await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+    return cb(tx);
+  }),
+}));
+const input = { workspace: 'push-integration-A', owner: 'agent-A', harness: 'papercusp', calls: [{ tool: 'Read' }] };
+const snapshot = () => parsePushSnapshot(JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
+  index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) }, generatedAt: new Date().toISOString(),
+  edges: [{ importer: 'test.ts', imported: 'target.ts', importerSha256: 'b'.repeat(64) }] }))!;
+const fact = (subject: string): PushFact => ({ leg: 'first-touch', subject, text: 'x'.repeat(550), citedPaths: ['target.ts'] });
+const deliver = (facts: PushFact[], workspace = input.workspace, budget = CODE_INTEL_PUSH_TURN_CHARS) =>
+  commitPushFacts({ ...input, workspace }, snapshot(), facts, budget, new AbortController().signal);
+
+describe('push ledger cross-worker budget, dedupe and workspace isolation', () => {
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    // Exercise the actual additive migration while it is still a draft, before arming it.
+    const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1519-code-intel-pushes.sql.DRAFT', import.meta.url), 'utf8');
+    await db.adminSql.unsafe(sql);
+  }, 120_000);
+  afterAll(async () => { await db?.cleanup(); });
+
+  it('concurrent workers cannot spend the per-turn budget more than once', async () => {
+    const texts = await Promise.all(Array.from({ length: 6 }, (_, i) => deliver([fact(`fact-${i}`)])));
+    const rows = await db.adminSql<{ chars: number }[]>`SELECT chars FROM harness_shared.code_intel_pushes WHERE workspace_id = ${input.workspace}`;
+    expect(rows.length).toBe(2);
+    expect(texts.filter(Boolean)).toHaveLength(2);
+    expect(rows.reduce((sum, row) => sum + row.chars, 0)).toBeLessThanOrEqual(CODE_INTEL_PUSH_TURN_CHARS);
+    expect(texts.filter(Boolean).every(text => text.includes('Snapshot aaaaaaaaaaaa'))).toBe(true);
+  });
+
+  it('a new turn restores spend but only compaction makes the same fact eligible again', async () => {
+    const workspace = 'push-integration-B';
+    expect(await deliver([fact('one')], workspace)).not.toBe('');
+    expect(await deliver([fact('one')], workspace)).toBe('');
+    await db.adminSql`UPDATE harness_shared.identity_hook_turns SET turn_id = 'next-turn' WHERE workspace_id = ${workspace}`;
+    expect(await deliver([fact('one')], workspace)).toBe('');
+    await db.adminSql`INSERT INTO harness_shared.memory_session_epochs (session_id, epoch) VALUES (${input.owner}, 1)
+      ON CONFLICT (session_id) DO UPDATE SET epoch = 1`;
+    expect(await deliver([fact('one')], workspace)).not.toBe('');
+  });
+
+  it('dedupes concurrent same-fact attempts and enforces RLS on the real app role', async () => {
+    const workspace = 'push-integration-C';
+    const texts = await Promise.all([deliver([fact('same')], workspace), deliver([fact('same')], workspace)]);
+    expect(texts.filter(Boolean)).toHaveLength(1);
+    const leaked = await db.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'foreign-workspace', true)`;
+      return tx`SELECT id FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}`;
+    });
+    expect(leaked).toHaveLength(0);
+    expect(await deliver([fact('too-large')], workspace, 10)).toBe('');
+  });
+});

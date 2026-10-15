@@ -65,6 +65,7 @@ import {
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_PG_HOT_QUERIES_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_AUDIT_TIMEOUT_MS,
@@ -764,6 +765,16 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it('keeps the pg_hot_queries client alive through the maximum sample on direct and deferred calls', () => {
+    const args = { windowSec: 600, limit: 10 };
+    const direct = timeoutForTool('dev:pg_hot_queries', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'dev:pg_hot_queries', args });
+
+    expect(PTOOL_PG_HOT_QUERIES_TIMEOUT_MS).toBe(670_000);
+    expect(direct).toBe(PTOOL_PG_HOT_QUERIES_TIMEOUT_MS);
+    expect(deferred).toBe(direct);
+  });
+
   it('waits for the declared graph compiler and runtime budget on direct and deferred calls', () => {
     const args = { op: 'symbol', name: 'target', runtime: 'staging-operator' };
     const direct = timeoutForTool('graph:query', args);

@@ -119,7 +119,9 @@ export async function liveLockHoldingsStrict(options: LiveLockPathReadOptions = 
   // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
   // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
   const pool = observeSyncPhase(options.onPhase, 'pool-lookup', () => getTxPool());
-  const queue = await readQueue(pool, { coordinationDomain: null }, { onPhase: options.onPhase });
+  const queue = options.onPhase
+    ? await readQueue(pool, { coordinationDomain: null }, { onPhase: options.onPhase })
+    : await readQueue(pool, { coordinationDomain: null });
   return queue.active_locks.map((l) => ({
     path: l.path,
     owner: l.owner,

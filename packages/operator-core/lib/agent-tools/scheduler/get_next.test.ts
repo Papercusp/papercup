@@ -1645,7 +1645,12 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
   it('passes live peer lock paths into the atomic placement rank, excluding its own locks', async () => {
     liveLockedPathsM.mockResolvedValueOnce(['packages/operator-core/lib/hot.ts']);
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
-    expect(liveLockedPathsM).toHaveBeenCalledWith({ excludeOwner: 'su-member' });
+    expect(liveLockedPathsM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        excludeOwner: 'su-member',
+        onPhase: expect.any(Function),
+      }),
+    );
     expect(getNextM).toHaveBeenCalledWith(
       expect.objectContaining({
         cupId: 'su-member',

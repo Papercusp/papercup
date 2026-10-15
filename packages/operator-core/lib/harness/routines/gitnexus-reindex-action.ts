@@ -102,6 +102,8 @@ import {
 } from '../../code-intelligence/contracts';
 import { SELECTIVE_ACCEPTANCE_CORPUS, SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
 import { classifyAnalyzeFailure, describeAnalyzeFailure } from '../../code-intelligence/gitnexus-analyze-failure';
+import { dependencySnapshotPath } from '../../code-intelligence/dependency-snapshot-path';
+export { dependencySnapshotPath } from '../../code-intelligence/dependency-snapshot-path';
 
 /** Registry alias this repo is indexed under (`analyze --name papercusp`). The alias
  *  disambiguates it from other checkouts on the box whose basename would collide. */
@@ -2801,11 +2803,6 @@ export interface DependencySnapshotHealth extends DependencySnapshotJudgement {
   lastProducerLine: string | null;
   /** Suppresses a re-alert on every tick until the snapshot is usable again. */
   alerted: boolean;
-}
-
-/** Mirrors `sharedSnapshotPath()` in scripts/lib/graph-dependency-suggestions.mjs (the reader). */
-export function dependencySnapshotPath(repoName: string, home: string = os.homedir()): string {
-  return path.join(home, '.papercusp', 'graph-snapshot', repoName, 'dependency-snapshot.json');
 }
 
 export function judgeDependencySnapshot(

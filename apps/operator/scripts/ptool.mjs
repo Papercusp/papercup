@@ -1681,6 +1681,11 @@ export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// dev:pg_hot_queries accepts a 600s sample and declares a 660s handler budget;
+// MCP adds 5s for settlement. Keep ptool past that deadline on direct and
+// tools:invoke-wrapped calls so its ordinary 30s cutoff cannot hide the result.
+export const PTOOL_PG_HOT_QUERIES_TIMEOUT_MS = 670_000;
+
 // EI-25882027630574649: plans:start declares timeoutSec=120, making the MCP
 // deadline 125s with its settlement buffer. A successful call took 77.763s,
 // longer than the old 60s ptool budget; leave room for the complete server
@@ -1845,6 +1850,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // tools:invoke-wrapped calls so the server's typed result wins over the
   // ordinary 30s client cutoff.
   ['dev:pg_query', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['dev:pg_hot_queries', PTOOL_PG_HOT_QUERIES_TIMEOUT_MS],
   // EI-23079930157206205: dev:service_health fans out across fixed service
   // endpoints and systemd state. Its valid read can outlive ptool's ordinary
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside

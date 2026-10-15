@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 import { DEFAULT_MAX_IN_FLIGHT } from './proxy';
 
@@ -49,14 +50,13 @@ describe('papercup-mcp-proxy production admission profile', () => {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let output = '';
-    child.stdout.on('data', data => { output += String(data); });
-    child.stderr.on('data', data => { output += String(data); });
+    const output = createTextCollector(child.stdout);
+    output.attach(child.stderr);
     const closed = once(child, 'close');
     try {
       await vi.waitFor(() => {
-        expect(child.exitCode, output).toBeNull();
-        expect(output).toContain('[mcp-proxy] listening on 127.0.0.1:0');
+        expect(child.exitCode, output.peek()).toBeNull();
+        expect(output.peek()).toContain('[mcp-proxy] listening on 127.0.0.1:0');
       }, { timeout: 10_000 });
     } finally {
       child.kill('SIGTERM');

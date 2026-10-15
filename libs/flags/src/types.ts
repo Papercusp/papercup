@@ -6,6 +6,13 @@
 export const FLAGS_CHANGED_EVENT = "flags.changed";
 
 export const FLAGS = {
+  // Native code-intelligence proactive legs (P-034/D-016). Default ON; each can be withdrawn independently.
+  CODE_INTEL_PUSH_GREP: "papercusp-code-intel-push-grep",
+  CODE_INTEL_PUSH_FIRST_TOUCH: "papercusp-code-intel-push-first-touch",
+  CODE_INTEL_PUSH_INTERFACE: "papercusp-code-intel-push-interface",
+  CODE_INTEL_PUSH_INCIDENT: "papercusp-code-intel-push-incident",
+  CODE_INTEL_PUSH_COMPLETION: "papercusp-code-intel-push-completion",
+  CODE_INTEL_PUSH_INTENT: "papercusp-code-intel-push-intent",
   // reports-library-2026-09-15 P-004: owner-facing publishing, browsing and reading.
   // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
   // tools/UI kill-switch, not a hidden rollout of otherwise finished work.
