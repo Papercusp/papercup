@@ -1,5 +1,5 @@
 /** The daemon's resource lifetime, using the packaged host's existing deadline. */
-import { runShutdownWithDeadline } from './shutdown-deadline';
+import { runShutdownWithDeadline } from './shutdown-deadline.mts';
 
 interface LspDaemonShutdownDeps {
   closeClients?: () => Promise<unknown>;
