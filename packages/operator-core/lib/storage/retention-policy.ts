@@ -102,8 +102,8 @@ const DAY = 24;
  */
 export const AGENT_MAX_AGE_HOURS = 3 * DAY;
 
-/** Default per-root ceiling for agent age/count collectors. Native/lease
- * collectors retain their owning program's admission and size limits. */
+/** Default per-root ceiling. Lease collectors keep their live/archive guards
+ * and report protected overage; native managers own their admission limits. */
 export const AGENT_ROOT_MAX_BYTES = 20 * 1024 ** 3;
 export function retentionRootSizeCap(cls: RetentionClass): number | undefined {
   return cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest')
@@ -384,6 +384,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
       '/mnt/data/tmp/papercusp-codex-sqlite-homes',
     ],
     keep: { kind: 'lease', record: 'a live or resumable session', graceHours: 2 },
+    maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [{ kind: 'existing', ref: 'papercusp/packages/operator-core/lib/session-dir-gc.ts', schedule: 'DBOS sessionDirGc (periodic)' }],
   },
   {
@@ -854,8 +855,8 @@ export function validatePolicy(policy: readonly RetentionClass[] = RETENTION_POL
     ids.add(cls.id);
     if (!cls.keep) problems.push(`${cls.id}: no keep rule`);
     if (cls.maxBytes !== undefined && (!Number.isSafeInteger(cls.maxBytes) || cls.maxBytes <= 0 ||
-        cls.origin !== 'agent' || !['max-age', 'newest'].includes(cls.keep.kind))) {
-      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count class`);
+        cls.origin !== 'agent' || !['max-age', 'newest', 'lease'].includes(cls.keep.kind))) {
+      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count/lease class`);
     }
     if (cls.roots.length === 0 && (cls.stores ?? []).length === 0) problems.push(`${cls.id}: no roots`);
     if (cls.enforcers.length === 0) problems.push(`${cls.id}: no enforcer entry`);
