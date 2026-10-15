@@ -5,7 +5,7 @@ import {
   type SuSessionEvent,
   type SuSessionIdentity,
 } from '@papercusp/chat-protocol';
-import { confirmedProviderRateLimit, throwIfProviderRateLimited } from './su-session-attached-live-rate-limit';
+import { confirmedProviderRateLimit, throwIfProviderRateLimited, throwIfProviderRefused } from './su-session-attached-live-rate-limit';
 import { pollUntil } from './pui-e2e/poll-until';
 
 const session: SuSessionIdentity<'claude'> = {
@@ -152,5 +152,50 @@ describe('live acceptance provider-capacity guard', () => {
       transcript('assistant', 'A 429 is a rate limit response.'),
       errorEvent('invalid model configuration'),
     ], 'P-005 read-explain')).not.toThrow();
+  });
+});
+
+describe('live acceptance native model refusal guard', () => {
+  const refusal = JSON.stringify({ detail: "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account." });
+  const rejected = (): SuSessionEvent => ({
+    ...base(), type: 'lifecycle', previousState: 'running', state: 'waiting-for-owner', reason: refusal,
+  } as SuSessionEvent);
+
+  it('fails before evaluating a screen predicate on the retained native lifecycle refusal', async () => {
+    let checks = 0;
+    await expect(pollUntil(() => { checks += 1; return true; }, {
+      timeoutMs: 120_000,
+      beforeCheck: () => throwIfProviderRefused([rejected()], 'Native reply'),
+    })).rejects.toThrow('Native reply cannot run: confirmed provider model rejection');
+    expect(checks).toBe(0);
+  });
+
+  it('fails an approval wait when the provider rejects the model after its first observation', async () => {
+    const events: SuSessionEvent[] = [];
+    let checks = 0;
+    await expect(pollUntil(() => {
+      checks += 1;
+      events.push(errorEvent(refusal));
+      return false;
+    }, {
+      timeoutMs: 120_000, intervalMs: 1,
+      beforeCheck: () => throwIfProviderRefused(events, 'Native tool approval'),
+    })).rejects.toThrow('Native tool approval cannot run: confirmed provider model rejection');
+    expect(checks).toBe(1);
+  });
+
+  it('does not treat assistant explanations, unrelated errors, or earlier panes as a current rejection', () => {
+    const events = [rejected()];
+    const paneStart = events.length;
+    expect(() => throwIfProviderRefused([
+      ...events.slice(paneStart), transcript('assistant', refusal), errorEvent('invalid model configuration'),
+    ], 'Current pane')).not.toThrow();
+    events.push(rejected());
+    expect(() => throwIfProviderRefused(events.slice(paneStart), 'Current pane')).toThrow('provider model rejection');
+  });
+
+  it('preserves the existing rate-limit refusal', () => {
+    expect(() => throwIfProviderRefused([errorEvent('API Error: 429')], 'Native reply'))
+      .toThrow('confirmed provider rate limit');
   });
 });
