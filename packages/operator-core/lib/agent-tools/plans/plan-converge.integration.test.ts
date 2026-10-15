@@ -31,6 +31,15 @@ vi.mock('../../rubrics', async original => ({
   getAcceptanceRubricsForPlan: async () => [{ rubricId: 'converge-acceptance', classRef: 'plan-class-feature-ship' }],
   getRetiredAcceptanceRubricsForPlan: async () => [],
 }));
+// A written spec-test-adequacy card triggers the detached grading-integrity
+// dispatcher, which launches a real auditor agent. Keep that outward effect out
+// of the disposable database test; the call itself is the observable that a
+// card was actually persisted (same seam as frozen-tests-gate.integration).
+const auditDispatch = vi.hoisted(() => ({ calls: 0 }));
+vi.mock('../../grading-integrity', async original => ({
+  ...(await original<typeof import('../../grading-integrity')>()),
+  dispatchPendingGradingAudits: async () => { auditDispatch.calls += 1; return { requestedTargetIds: [], receipts: [] }; },
+}));
 const script = readFileSync(new URL('./fixtures/plan-converge.recipe.txt', import.meta.url), 'utf8');
 const bindingSchema = JSON.parse(readFileSync(new URL('./fixtures/plan-converge.bindings.json', import.meta.url), 'utf8'));
 const auditItems = [{ itemId: 'P-003', verdict: 'implemented', citations: [
@@ -116,9 +125,21 @@ describe('converge real PostgreSQL composition', () => {
   let fx: PlanPgFixture;
   const slug = 'converge-real-pg-fixture';
   const ctx = { isSuperuser: true, uiClientId: 'su-converge-pg', ownerId: 'su-converge-pg',
-    workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp', log: () => {}, metadata: () => {} } as never;
+    workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp', log: () => {}, metadata: () => {},
+    dispatchTool: (name: string, args: Body) => replayDispatch(name, args) } as never;
   const call = async (tool: typeof evaluateTool | typeof auditTool | typeof certifyTool, args: Body) =>
     (await tool.handler(tool.args.parse(args) as never, ctx) as { data: Body }).data;
+  // Production ctx.dispatchTool re-enters the tool registry. scorecards:emit uses
+  // it to replay the evaluator before persisting any spec-test-adequacy card, and
+  // refuses the card outright without it. Route that replay to the same real
+  // evaluator handler, so the certifier's actual writer path runs end to end.
+  // Like the real dispatcher, consume transport-level args (payloadTier,
+  // projection, view) before the tool's own strict schema sees the call.
+  const replayDispatch = async (name: string, args: Body) => {
+    if (name !== 'plans:evaluate-spec-test-adequacy') throw new Error(`unexpected nested dispatch: ${name}`);
+    const { payloadTier: _tier, projection: _projection, view: _view, ...toolArgs } = args;
+    return evaluateTool.handler(evaluateTool.args.parse(toolArgs) as never, ctx);
+  };
   beforeAll(async () => {
     fx = await setupPlanPgFixture();
     // The certifier writes through scorecards:emit, which resolves its own
@@ -255,6 +276,8 @@ describe('converge real PostgreSQL composition', () => {
     expect(create).not.toHaveBeenCalled();
     const first = await execute(tools, { planSlug: slug, auditItems: reviewed, dryRun: false });
     expect(first, JSON.stringify(first)).toMatchObject({ ok: true, nonPassing: 3 });
+    // The passing clause's card went through scorecards:emit's real writer.
+    expect(auditDispatch.calls).toBeGreaterThan(0);
     expect(first.gaps.map((gap: Body) => gap.specId).sort()).toEqual(['SPEC-FAIL', 'SPEC-STALE', 'SPEC-UNBOUND']);
     expect(first.gaps.find((gap: Body) => gap.specId === 'SPEC-FAIL')).toMatchObject({ classification: 'critical' });
     expect(first.gaps.find((gap: Body) => gap.specId === 'SPEC-STALE')).toMatchObject({ classification: 'outdated' });
