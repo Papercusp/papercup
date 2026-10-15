@@ -40,6 +40,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  rename,
   realpath,
   unlink,
   utimes,
@@ -244,6 +245,111 @@ export interface SessionArchiveStore {
   stampAdvSessionArchived(advSessionId: number): Promise<void>;
   /** Capture parser compatibility before the bounded ingest-state ledger is pruned. */
   readTurnParsingOffset?(sourceKind: string, filePath: string): Promise<number | null>;
+}
+
+/** Root for the durable compressed cold copy. The mount is owner-managed and
+ * is deliberately outside the repository and PGDATA. */
+export const SESSION_ARCHIVE_COLD_ROOT =
+  process.env.PAPERCUSP_SESSION_ARCHIVE_COLD_ROOT ?? '/mnt/cold-a/Backup/session-archives';
+
+export interface ColdArchiveExportResult {
+  root: string;
+  manifestPath: string;
+  fileCount: number;
+  bytesStored: number;
+}
+
+/**
+ * Export an already complete PG archive to the cold tier, preserving the
+ * existing zstd bytes and raw SHA-256 manifest. This is intentionally a
+ * write-and-verify primitive: callers must not delete PG rows until this
+ * returns successfully. Replays are idempotent and refuse a differing file.
+ */
+export async function exportArchiveToColdTier(
+  stamp: ArchiveStampRow,
+  rows: readonly ArchiveFileRow[],
+  root: string = SESSION_ARCHIVE_COLD_ROOT,
+): Promise<ColdArchiveExportResult> {
+  if (!root || isAbsolute(root) === false) throw new Error('cold archive root must be absolute');
+  if (rows.length !== stamp.file_count || rows.length === 0) throw new Error('archive row count does not match complete stamp');
+  const byRel = new Map(rows.map((row) => [row.relpath, row]));
+  if (byRel.size !== rows.length || stamp.manifest.length !== rows.length) throw new Error('archive manifest is incomplete or duplicated');
+  const target = join(root, stamp.workspace_id, stamp.source_kind, stamp.session_id);
+  await mkdir(target, { recursive: true, mode: 0o700 });
+  const manifestRows: Array<{ relpath: string; sha256: string; bytes_raw: number; bytes_stored: number }> = [];
+  let bytesStored = 0;
+  for (const entry of stamp.manifest) {
+    if (isUnsafeArchiveRelpath(entry.relpath)) throw new Error(`unsafe archive relpath: ${entry.relpath}`);
+    const row = byRel.get(entry.relpath);
+    if (!row || row.sha256 !== entry.sha256 || row.bytes_raw !== entry.bytes_raw || row.bytes_stored !== row.blob.length) {
+      throw new Error(`archive row/manifest mismatch: ${entry.relpath}`);
+    }
+    const raw = await zstdDecompress(row.blob);
+    if (raw.length !== row.bytes_raw || sha256Hex(raw) !== row.sha256) {
+      throw new Error(`archive blob integrity mismatch: ${entry.relpath}`);
+    }
+    const blobPath = join(target, `${entry.relpath}.zst`);
+    await mkdir(dirname(blobPath), { recursive: true, mode: 0o700 });
+    try {
+      const prior = await readFile(blobPath);
+      if (!prior.equals(row.blob)) throw new Error(`cold archive differs: ${entry.relpath}`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      await writeFile(blobPath, row.blob, { mode: 0o600 });
+    }
+    manifestRows.push({ relpath: entry.relpath, sha256: row.sha256, bytes_raw: row.bytes_raw, bytes_stored: row.bytes_stored });
+    bytesStored += row.bytes_stored;
+  }
+  const manifestPath = join(target, 'MANIFEST.json');
+  const payload = JSON.stringify({ schemaVersion: 1, ...stamp, files: manifestRows }, null, 2) + '\n';
+  const temp = `${manifestPath}.tmp-${process.pid}`;
+  await writeFile(temp, payload, { mode: 0o600 });
+  await rename(temp, manifestPath);
+  // Read back the complete manifest before the caller can treat the export as durable.
+  const readback = JSON.parse(await readFile(manifestPath, 'utf8')) as { files?: unknown[] };
+  if (!Array.isArray(readback.files) || readback.files.length !== rows.length) throw new Error('cold archive manifest readback incomplete');
+  return { root, manifestPath, fileCount: rows.length, bytesStored };
+}
+
+/** Read the cold manifest used after a successful PG-row migration. */
+export async function readColdArchiveStamp(
+  sourceKind: string,
+  sessionId: string,
+  root: string = SESSION_ARCHIVE_COLD_ROOT,
+): Promise<ArchiveStampRow | null> {
+  const manifestPath = join(root, WS_DEFAULT, sourceKind, sessionId, 'MANIFEST.json');
+  try {
+    const value = JSON.parse(await readFile(manifestPath, 'utf8')) as Partial<ArchiveStampRow> & { files?: ArchiveManifestEntry[] };
+    if (value.workspace_id !== WS_DEFAULT || value.source_kind !== sourceKind || value.session_id !== sessionId ||
+        !Array.isArray(value.files) || value.files.length === 0 ||
+        value.files.some((entry) => !entry || isUnsafeArchiveRelpath(entry.relpath))) return null;
+    return {
+      workspace_id: WS_DEFAULT, source_kind: sourceKind, session_id: sessionId,
+      owner: value.owner ?? null, harness_slug: value.harness_slug ?? null, cwd: value.cwd ?? null,
+      adv_session_id: value.adv_session_id == null ? null : Number(value.adv_session_id),
+      session_root: value.session_root ?? '', file_count: value.files.length,
+      bytes_raw: Number(value.bytes_raw ?? 0), bytes_stored: Number(value.bytes_stored ?? 0),
+      manifest: value.files, archived_by: value.archived_by ?? 'cold-tier',
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function readColdArchiveFiles(
+  stamp: ArchiveStampRow,
+  root: string = SESSION_ARCHIVE_COLD_ROOT,
+): Promise<ArchiveFileRow[]> {
+  const dir = join(root, stamp.workspace_id, stamp.source_kind, stamp.session_id);
+  const rows: ArchiveFileRow[] = [];
+  for (const entry of stamp.manifest) {
+    if (isUnsafeArchiveRelpath(entry.relpath)) throw new Error(`unsafe cold archive relpath: ${entry.relpath}`);
+    const blob = await readFile(join(dir, `${entry.relpath}.zst`));
+    rows.push({ workspace_id: stamp.workspace_id, source_kind: stamp.source_kind, session_id: stamp.session_id,
+      relpath: entry.relpath, codec: 'zstd', blob, sha256: entry.sha256, bytes_raw: entry.bytes_raw,
+      bytes_stored: blob.length, mtime: null });
+  }
+  return rows;
 }
 
 const WS_DEFAULT = 'default';
@@ -891,7 +997,7 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
           FROM harness_shared.session_archives
          WHERE workspace_id = ${workspaceId} AND source_kind = ${sourceKind}
            AND session_id = ${sessionId}`;
-      if (!rows.length) return null;
+      if (!rows.length) return readColdArchiveStamp(sourceKind, sessionId);
       const r = rows[0];
       return {
         ...r,
@@ -916,6 +1022,10 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
           FROM harness_shared.session_archive_files
          WHERE workspace_id = ${workspaceId} AND source_kind = ${sourceKind}
            AND session_id = ${sessionId}`;
+      if (!rows.length) {
+        const coldStamp = await readColdArchiveStamp(sourceKind, sessionId);
+        return coldStamp ? readColdArchiveFiles(coldStamp) : [];
+      }
       return rows.map((r) => ({
         ...r,
         bytes_raw: Number(r.bytes_raw),
