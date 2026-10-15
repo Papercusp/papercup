@@ -133,7 +133,64 @@
         "approvalEnabled": true,
         "codexModel": "gpt-5.5",
         "ompModel": "unpinned per D-013",
-        "status": "running; no native result yet"
+        "status": "terminal1; OMP focused journey passed; Codex provider rejected selected gpt-5.5 model",
+        "terminalAt": "2026-10-15T14:21:47.005Z",
+        "rootExitCode": 1,
+        "verdictSha256": "455feb50041693dd7226fe7fb2cc7622c9b2a894d8c0a3e72c2c886165273c8a",
+        "releaseAccepted": false,
+        "omp": {
+          "childExitCode": 0,
+          "passed": 2,
+          "failed": 0,
+          "skipped": 96,
+          "logPath": "/tmp/pui-acceptance-7534f/run-native-focus-repair-20261015-1406/vitest-omp.log",
+          "logSha256": "c70d027313e23948ca673b074163f9a9afa1a870ad318d8c8c13d059594abec7",
+          "approvalCardReplyStatus": 200,
+          "toolCompleted": true,
+          "exactEffectVerified": true,
+          "effectSha256": "7568420c08dc999407f80d3283b546ac5b107538e4501d4d5466badebdd21a87",
+          "nativeSessionId": "01a13fef-40dd-7407-b167-c05d68f9ed87",
+          "sameIdentityAcrossRestart": true,
+          "operatorPids": [2881613, 2929177],
+          "runtimeGenerations": [0, 1],
+          "model": "papercusp-gateway/claude-sonnet-4-6",
+          "scope": "Current-build fixture repair with immutable6a0 binary; no full candidate acceptance inference"
+        },
+        "codex": {
+          "childExitCode": 1,
+          "passed": 0,
+          "failed": 2,
+          "skipped": 96,
+          "evidenceRows": 0,
+          "logPath": "/tmp/pui-acceptance-7534f/run-native-focus-repair-20261015-1406/vitest-codex.log",
+          "logSha256": "87a343d4b531017e204be7f55e16a53055ed25e1496f049e4cc6c16202fc9f90",
+          "providerRefusal": "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+          "catalogModelForNextProbe": "gpt-5.4",
+          "workItem": "EI-26056366901923516",
+          "originalMissingCardRootCause": "unconfirmed",
+          "guardRepair": {
+            "surfaceReused": "su-session-attached-live-rate-limit.ts and existing PUI native waits",
+            "testRunId": "fa10841a-eb7a-484c-83d9-978781e0d890",
+            "testRunIds": [21257274],
+            "passed": 17,
+            "failed": 0,
+            "skipped": 0
+          }
+        },
+        "followupCodex": {
+          "taskId": "0mv9na6apc778nb1sb3",
+          "rootLogPath": ".papercusp/scratch/bash-887dc509-fc6.log",
+          "deadline": "2026-10-15T15:39:24.048Z",
+          "work": "/tmp/pui-acceptance-7534f/run-codex-supported-model-20261015-1440",
+          "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-supported-model-20261015-1440.partial.acceptance.json",
+          "model": "gpt-5.4",
+          "account": "auto",
+          "mode": "auto",
+          "planEnabled": true,
+          "approvalEnabled": true,
+          "status": "running; partial/current-build release refusal expected",
+          "auditRef": "thread-post:1183327"
+        }
       }
     }
   },
