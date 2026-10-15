@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { paneContains, screenContains, screenHasAssistantReply, screenIsSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
+import { paneContains, screenContains, screenHasApprovalQuestion, screenHasAssistantReply, screenIsSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
 
 describe('composer readiness during new-session setup', () => {
   test.each(SEND_READY_MARKERS)('rejects a background %s composer while the wizard has focus', (marker) => {
@@ -131,5 +131,38 @@ describe('pane-scoped wrapped text', () => {
   });
   test('only reads the pane the title names', () => {
     expect(paneContains(frame(['PUI-E2E startup connection interrupted']), 'Plans', 'startup connection')).toBe(false);
+  });
+});
+
+describe('native approval question matching', () => {
+  const path = '/tmp/pui-acceptance/.pui-note-with-a-deliberately-long-name.txt';
+  const question = `Do you want to make this edit to ${path}?`;
+
+  test('accepts a single-row question with the immediate Yes choice', () => {
+    expect(screenHasApprovalQuestion(`${question}\n❯ 1. Yes\n  2. No`, question)).toBe(true);
+  });
+
+  test('accepts a measured soft wrap and a long-word path wrap', () => {
+    expect(screenHasApprovalQuestion(
+      `Do you want to make this edit to\n${path}?\n❯ 1. Yes`, question,
+    )).toBe(true);
+    expect(screenHasApprovalQuestion(
+      `Do you want to make this edit to /tmp/pui-acceptance/.pui-\nacceptance-note.txt?\n❯ 1. Yes`,
+      'Do you want to make this edit to /tmp/pui-acceptance/.pui-acceptance-note.txt?',
+    )).toBe(true);
+  });
+
+  test.each([
+    ['wrong target path', `${question.replace(path, '/tmp/other.txt')}\n❯ 1. Yes`],
+    ['missing choice', question],
+    ['blank between question rows', `Do you want to make this edit to\n\n${path}?\n❯ 1. Yes`],
+    ['border between question rows', `Do you want to make this edit to\n┌ Card ─────┐\n${path}?\n❯ 1. Yes`],
+    ['unrelated content before choice', `${question}\nunrelated pane text\n❯ 1. Yes`],
+    ['blank before choice', `${question}\n\n❯ 1. Yes`],
+    ['border before choice', `${question}\n┌ Another pane ──┐\n❯ 1. Yes`],
+    ['different choice label', `${question}\n❯ 1. Yes, and allow all edits`],
+    ['bordered question row', `│${question}│\n❯ 1. Yes`],
+  ])('rejects %s', (_label, frame) => {
+    expect(screenHasApprovalQuestion(frame, question)).toBe(false);
   });
 });

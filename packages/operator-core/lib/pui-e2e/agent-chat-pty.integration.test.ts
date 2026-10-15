@@ -30,15 +30,15 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
-import type { RpcFrame, SuStdioPeer, SuStdioPeerOptions } from '../su-session-stdio-peer';
+import type { RpcFrame, SuStdioPeer, SuStdioPeerOptions, SuStdioReceipt } from '../su-session-stdio-peer';
 import { _armSuClientLeaseTimersForTest, suClientLeaseDiagnostics } from '../su-session-client-lease';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
-import { paneContains, screenContains, screenHasAssistantReply, screenIsSendReady as isSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
+import { paneContains, screenContains, screenHasApprovalQuestion, screenHasAssistantReply, screenIsSendReady as isSendReady, SEND_READY_MARKERS, VtScreen } from './vt-screen';
 import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
-import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
+import { nativeProviderRequestSignal, nativeProviderTraceOrigin, nativeRpcReceiptSummary } from './native-provider-trace';
 import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
@@ -1073,6 +1073,7 @@ class PuiPane {
       commands: commandPosts.map(({ type, commandId }) => ({ type, commandId })),
       commandReplies,
       nativeFrames: nativeFrameDiagnostics,
+      nativeRpcReceipts: nativeRpcReceiptSummaries,
       engines: scriptedEngine.engines.map((engine) => {
         const descriptor = engine.adapter.host.descriptor();
         return { pid: engine.pid(), identity: descriptor.identity, lifecycle: descriptor.lifecycle,
@@ -1126,6 +1127,16 @@ class PuiPane {
         + `${describeObserverBlock(maxLateMs)}:\n` + this.screen(),
       { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
+  }
+
+  async waitForApprovalQuestion(question: string, choice: string): Promise<void> {
+    const { ok, maxLateMs } = await pollUntil(() => screenHasApprovalQuestion(this.screen(), question, choice), {
+      timeoutMs: 25_000,
+      beforeCheck: () => this.checkProviderCapacity('Waiting for the native approval question and its choice'),
+      onMiss: () => { this.settleSuToolApproval(); },
+    });
+    this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
+    if (!ok) throw new Error(`Native approval question and choice were not rendered in the same card:\n${this.screen()}`);
   }
 
   /** Wait until the composer is ready to send (see SEND_READY_MARKERS). */
@@ -1513,6 +1524,7 @@ let configurationWarnings: string[] = [];
 let intentPivotWarnings: string[] = [];
 let timeoutDegradations: string[] = [];
 let nativeFrameDiagnostics: Array<Record<string, unknown>> = [];
+let nativeRpcReceiptSummaries: Array<Record<string, unknown>> = [];
 let readOmpDiagnosticState: (() => Promise<Record<string, unknown>>) | undefined;
 let nativeProviderOrigin: string | undefined;
 const nativeProviderEvents: Array<Record<string, unknown>> = [];
@@ -1921,6 +1933,36 @@ beforeAll(async () => {
       }
       return changed;
     });
+    if (scriptedEngine.backend === 'codex') {
+      const stdio = await import('../su-session-stdio-peer');
+      const startPeer = stdio.startSuStdioPeer;
+      vi.spyOn(stdio, 'startSuStdioPeer').mockImplementation(async (options) => {
+        const receipts: SuStdioReceipt[] = [];
+        let totalObserved = 0;
+        const peer = await startPeer({ ...options, onReceipt(receipt) {
+          totalObserved += 1;
+          // Retain timing and RPC identifiers only; native prompts, tool input,
+          // results and credentials never enter the diagnostic buffer.
+          const { id, type, method, command } = receipt.frame;
+          receipts.push({ ...receipt, frame: { id, type, method, command } });
+          if (receipts.length > 50) receipts.shift();
+          options.onReceipt?.(receipt);
+        } });
+        let logged = false;
+        return { ...peer, async close() {
+          try { await peer.close(); }
+          finally {
+            if (!logged) {
+              logged = true;
+              const summary = { scope: 'parent-operator', backend: 'codex', pid: peer.pid(),
+                ...nativeRpcReceiptSummary(receipts, peer.receiptState?.(), { max: 50, totalObserved }) };
+              nativeRpcReceiptSummaries.push(summary);
+              console.info('PUI_CODEX_RPC_DIAGNOSTIC', JSON.stringify(summary));
+            }
+          }
+        } };
+      });
+    }
     if (scriptedEngine.backend === 'omp') {
       const stdio = await import('../su-session-stdio-peer');
       const startPeer = stdio.startSuStdioPeer;
@@ -2295,6 +2337,7 @@ beforeEach(async () => {
   intentPivotWarnings = [];
   timeoutDegradations = [];
   nativeFrameDiagnostics = [];
+  nativeRpcReceiptSummaries = [];
   if (scriptedEngine.real) {
     const error = console.error.bind(console);
     vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -8050,8 +8093,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         }
         const approvalIndex = approvalCard.presentation.options.findIndex((option) => option.label === approvalLabel);
         expect(approvalIndex).toBeGreaterThanOrEqual(0);
-        await pane.waitFor(approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt);
-        await pane.waitFor(`${approvalIndex + 1}. ${approvalLabel}`);
+        await pane.waitForApprovalQuestion(
+          approvalCard.approval?.question ?? approvalCard.prompt.split('\n', 1)[0] ?? approvalCard.prompt,
+          `${approvalIndex + 1}. ${approvalLabel}`,
+        );
         frames.approval = pane.screen();
         const childCardReplies = () => first.responses.filter(({ path: responsePath }) =>
           responsePath.endsWith('/card-response'));

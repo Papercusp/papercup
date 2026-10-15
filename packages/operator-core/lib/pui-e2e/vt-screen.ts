@@ -233,6 +233,58 @@ export function screenContains(screen: string, needle: string | readonly string[
   return lines.map(collapseWideCells).join('\n').includes(want);
 }
 
+function normalizedApprovalRow(row: string): string {
+  return row.replace(/\s+/g, ' ').trim();
+}
+
+function isApprovalBorderRow(row: string): boolean {
+  const trimmed = row.trim();
+  if (!trimmed) return true;
+  return trimmed.startsWith('│') || trimmed.endsWith('│')
+    || /^[┌┐└┘╭╮╰╯─━═╌]+$/.test(trimmed);
+}
+
+/**
+ * Match a native edit approval only when its question is a contiguous run of
+ * unbordered rows followed immediately by the requested choice. The terminal
+ * can wrap a long path at a character boundary, so matching advances through
+ * the normalized question by characters rather than joining arbitrary screen
+ * rows. Blank rows, borders, and unrelated text terminate the run; this keeps
+ * an answer in a neighbouring pane from authorizing the edit.
+ */
+export function screenHasApprovalQuestion(
+  screen: string,
+  question: string,
+  choice = '1. Yes',
+): boolean {
+  const wanted = normalizedApprovalRow(question);
+  if (!wanted || !choice.trim()) return false;
+  const rows = screen.split('\n');
+  const firstWord = wanted.split(' ', 1)[0];
+  for (let start = 0; start < rows.length; start++) {
+    const first = normalizedApprovalRow(rows[start]);
+    if (!first || isApprovalBorderRow(rows[start]) || !first.startsWith(firstWord)) continue;
+    let remaining = wanted;
+    let cursor = start;
+    while (cursor < rows.length) {
+      const row = rows[cursor];
+      const text = normalizedApprovalRow(row);
+      if (!text || isApprovalBorderRow(row) || /^(?:[❯›>]\s*)?\d+\.\s/.test(text)) break;
+      remaining = remaining.replace(/^\s+/, '');
+      if (!remaining.startsWith(text)) break;
+      remaining = remaining.slice(text.length);
+      cursor += 1;
+      if (!remaining) {
+        const next = normalizedApprovalRow(rows[cursor] ?? '').replace(/^[❯›>]\s*/, '');
+        if (isApprovalBorderRow(rows[cursor] ?? '')) break;
+        if (next === choice.trim()) return true;
+        break;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Whether the bordered pane whose top border starts with `title` contains
  * `needle`, reading its rows as one wrapped paragraph. A soft wrap splits a
