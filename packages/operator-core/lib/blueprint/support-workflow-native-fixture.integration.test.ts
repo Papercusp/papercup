@@ -12,7 +12,8 @@ import authMe from '../endpoint-route/routes/auth/me';
 import { principalFromCookie } from '../auth/principal/from-cookie';
 import { submitBlueprintOperation } from './operation-service';
 import { readHostedAllocationReport } from '../auth/hosted/billing/allocation-store';
-import { replacePermissionListMembers } from '../data-sources/documents-corpus';
+import { replacePermissionListMembers, searchOrganizationDocuments } from '../data-sources/documents-corpus';
+import { runWithWorkspace } from '../workspace-als';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -68,6 +69,15 @@ describe('maintained native support seed and production cookie switching', () =>
       .toMatchObject({ level: 'project', capMicros: 1_000_000 });
     await evaluate('employee');
     const principal = await principalFromCookie(new Headers({ cookie }));
+    if (!principal) throw new Error('Authenticated employee cookie principal is missing');
+    const found = await runWithWorkspace(workspaceId, () => searchOrganizationDocuments(db.adminSql,
+      { workspaceId, role: 'operator', harnessSlug: fixture.harnessSlug }, {
+        workspaceId, principalUserId: principal!.slug, agentOwnerId: principal!.slug,
+        query: fixture.query, sources: ['slack'], documentIds: [fixture.documentId], limit: 1,
+      }));
+    expect(found.allowed).toBe(true);
+    if (!found.allowed) throw new Error(`Fixture corpus access refused: ${found.reason}`);
+    expect(found.results.map(document => document.id)).toEqual([fixture.documentId]);
     const submit = (requestKey: string) => submitBlueprintOperation(db.adminSql, { workspaceId,
       harnessSlug: fixture.harnessSlug, operationId: fixture.operationId, callerId: `${principal!.slug}/employee`,
       requestKey, expectedSpecificationRevision: fixture.approvedRevision, input: fixture.input }, { principal });

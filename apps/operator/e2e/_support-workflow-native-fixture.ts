@@ -59,7 +59,7 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
     for (const actor of ['employee', 'reviewer'] as const) {
       // The operation worker and the existing GUI tool caller are independent
       // grant principals. The source ACL still restricts both to these users.
-      for (const principalId of [role, 'su']) await createPersonalGrant(client, { workspaceId,
+      for (const principalId of [role, 'operator']) await createPersonalGrant(client, { workspaceId,
         userId: actors[actor].id, principalType: 'agent-role', principalId,
         scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: actors.admin.id });
       await mapProviderIdentity(client, workspaceId, { ...identities[actor], userId: actors[actor].id,

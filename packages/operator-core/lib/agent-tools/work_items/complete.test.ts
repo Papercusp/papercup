@@ -587,6 +587,32 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(String(missingCompletion.error)).toMatch(closeShape);
   });
 
+  it('names each historically wrong-typed nested verification field', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const closeShape = /to CLOSE a work-item, pass \{ id, state, assumptions/;
+    const invalidFields = [
+      ['testsRun', { suite: 'targeted real-PostgreSQL integration tests', runs: [] }],
+      ['testResult', { total: 18, passed: 18, status: 'passed' }],
+      ['verifiedHow', { method: 'recorded real-PostgreSQL runs' }],
+    ] as const;
+
+    for (const [field, value] of invalidFields) {
+      const parsed = safeParse({
+        id: 'WI-typed',
+        state: 'done',
+        assumptions: 'none',
+        completion: { summary: 'recorded the verification result', [field]: value },
+      });
+      const diagnostic = String(parsed.error);
+
+      expect(parsed.success).toBe(false);
+      expect(diagnostic).toContain(`completion.${field}`);
+      expect(diagnostic).not.toMatch(closeShape);
+    }
+  });
+
   it('names the wrong type on the legacy top-level verification alias', () => {
     const safeParse = (
       complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }

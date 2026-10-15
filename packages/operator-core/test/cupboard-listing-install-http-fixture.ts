@@ -15,12 +15,12 @@
  * CUPBOARD_LISTING_INSTALL_FAILURE line and exits 1.
  */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { readProcessIdentity } from '../lib/process-identity';
-import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 /** The public first-party listings P-011 published. */
 const LISTINGS = [
@@ -64,16 +64,8 @@ async function main() {
   const evidenceDir = e.CUPBOARD_LISTING_INSTALL_EVIDENCE_DIR!;
   assert.ok(evidenceDir, 'retained evidence directory required');
 
-  const bundle = join(evidenceDir, 'hono-host.mjs');
   console.log('CUPBOARD_LISTING_INSTALL_PHASE bundle-start');
-  try {
-    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-    writeFileSync(join(evidenceDir, 'build.log'), output);
-  } catch (error: any) {
-    writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
-    throw error;
-  }
+  const { path: bundle } = await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
   const bundleBytes = readFileSync(bundle);
   assert.ok(bundleBytes.includes(Buffer.from('install-plugin-core.ts')), 'install core must be in the executed bundle');
   const bundleSha256 = createHash('sha256').update(bundleBytes).digest('hex');

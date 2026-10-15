@@ -29,7 +29,7 @@ import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerE
 
 let root: string;
 beforeAll(() => {
-  root = mkdtempSync(join(tmpdir(), 'hookbridge-test-'));
+  root = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'hookbridge-test-'));
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
@@ -206,6 +206,23 @@ describe('docker-exec wrapper with a hook bridge', () => {
   }
   const commandsOf = (doc: { hooks: Record<string, { hooks: { command: string }[] }[]> }) =>
     Object.values(doc.hooks).flatMap((gs) => gs.flatMap((g) => g.hooks.map((h) => h.command)));
+
+  it('pins both the hook ping and agent exec to the daemon selected before native environment sanitization', () => {
+    const l = layout();
+    const { wrapperPath } = materializeDockerExecWrapper(l.target, {
+      dir: mkdtempSync(join(l.base, 'daemon-')), dockerBin: l.docker.bin, dockerHost: 'unix:///run/docker-bench.sock',
+    });
+    const r = spawnSync(wrapperPath, ['exec', 'go'], {
+      env: { CODEX_HOME: l.home, PATH: '/usr/bin:/bin', DOCKER_HOST: 'unix:///run/other.sock' }, encoding: 'utf8',
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const calls = l.docker.calls();
+    expect(calls).toHaveLength(2);
+    for (const args of calls) expect(args.slice(0, 3)).toEqual(['--host', 'unix:///run/docker-bench.sock', 'exec']);
+    expect(calls[0].at(-1)).toBe('ping');
+    expect(calls[1].slice(-3)).toEqual([CONTAINER_CODEX_BIN_PATH, 'exec', 'go']);
+    expect(calls[1]).not.toContain('DOCKER_HOST');
+  });
 
   it('first launch: records the host commands host-only, rewrites hooks.json to shim calls, relocates, pings, then execs', () => {
     const l = layout();

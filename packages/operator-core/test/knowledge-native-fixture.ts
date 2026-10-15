@@ -1,6 +1,6 @@
 /** Native request journey. Only launched by the canonical disposable-runtime integration test. */
 import assert from 'node:assert/strict';
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -9,7 +9,7 @@ import { publishReport, getReport } from '../lib/report-library';
 import { indexReport } from '../lib/search/report-index';
 import { createReportSearchSource } from '../lib/agent-tools/search/report-source';
 import { readProcessIdentity } from '../lib/process-identity';
-import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { buildMemoryContextBlock } from '../lib/memory/injection';
 import { splitDocSections } from '../lib/search/doc-embed-sync';
 import { runChunkSyncTick } from '../lib/search/chunks/tick';
@@ -220,12 +220,9 @@ async function main() {
     const bundle = join(evidenceDir, 'hono-host.mjs');
     console.log('KNOWLEDGE_NATIVE_PHASE bundle-start');
     try {
-      const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-        { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-      writeFileSync(join(evidenceDir, 'build.log'), output);
-    } catch (error: any) {
-      writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
-      throw error;
+      await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
+    } finally {
+      writeFileSync(join(evidenceDir, 'build.log'), readFileSync(join(evidenceDir, 'operator-api-build.log')));
     }
     const bundleSha256 = createHash('sha256').update(readFileSync(bundle)).digest('hex');
     const hostEnv = privateBundleRuntimeEnv(e);

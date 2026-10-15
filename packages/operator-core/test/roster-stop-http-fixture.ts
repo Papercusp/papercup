@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import { createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
@@ -674,9 +674,8 @@ async function main() {
   if (preparedApiBundle) console.log('ROSTER_STOP_HTTP_PHASE bundle-prepared');
   else {
     console.log('ROSTER_STOP_HTTP_PHASE bundle-start');
-    try { execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-      { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 240_000 }); }
-    catch (error: any) { writeFileSync(join(evidence, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? '')); throw error; }
+    const built = await buildPrivateOperatorApiBundle(root, evidence, { timeoutMs: 240_000, maxMs: 420_000 });
+    assert.equal(built.path, bundle);
   }
   const log = (chunk: Buffer) => process.stdout.write(chunk);
   api = spawn(process.execPath, [bundle], { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });

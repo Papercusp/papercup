@@ -25,6 +25,7 @@
 #   docker-bench.sh install        render into /etc and /usr/local/sbin, add the ufw route rule, enable + start
 #   docker-bench.sh uninstall      stop + disable the unit and remove its files (the data-root is KEPT)
 #   docker-bench.sh status         unit state + `docker info` against the bench socket
+#   docker-bench.sh fixtures       copy alpine + nginx:alpine from the local main daemon, with exact image-ID checks
 #
 # Overrides (env): BENCH_DATA_ROOT, BENCH_SOCKET, BENCH_EXEC_ROOT, BENCH_BRIDGE, BENCH_BRIDGE_CIDR,
 #                  BENCH_POOL_BASE, BENCH_MOUNT, BENCH_CONTAINERD_NS
@@ -187,10 +188,45 @@ status_bench() {
     'root={{.DockerRootDir}} driver={{.Driver}} containers={{.Containers}} images={{.Images}} server={{.ServerVersion}}'
 }
 
+prepare_fixtures() {
+  # The daemon is deliberately empty after installation. Native acceptance uses
+  # these two local fixtures, not a registry pull or benchmark task image build.
+  local source_host="${BENCH_FIXTURE_SOURCE_HOST:-unix:///var/run/docker.sock}"
+  local target_host="unix://$BENCH_SOCKET"
+  local source_id target_id image current expected i
+  local images=(alpine nginx:alpine) ids=()
+  source_id="$(docker --host "$source_host" info --format '{{.ID}}')"
+  target_id="$(docker --host "$target_host" info --format '{{.ID}}')"
+  [ -n "$source_id" ] && [ -n "$target_id" ] && [ "$source_id" != "$target_id" ] \
+    || die 'fixture source and benchmark target must be distinct live daemons'
+  # Preflight the whole set before writing. Never replace a peer's existing tag.
+  for image in "${images[@]}"; do
+    expected="$(docker --host "$source_host" image inspect --format '{{.Id}}' "$image")"
+    [[ "$expected" =~ ^sha256:[a-f0-9]{64}$ ]] || die "invalid source image ID: $image"
+    ids+=("$expected")
+    if current="$(docker --host "$target_host" image inspect --format '{{.Id}}' "$image" 2>/dev/null)"; then
+      [ "$current" = "$expected" ] || die "fixture tag already names a different image on benchmark daemon: $image"
+    fi
+  done
+  for i in "${!images[@]}"; do
+    image="${images[$i]}" expected="${ids[$i]}"
+    if current="$(docker --host "$target_host" image inspect --format '{{.Id}}' "$image" 2>/dev/null)"; then
+      [ "$current" = "$expected" ] || die "fixture tag changed during preparation: $image"
+      echo "DOCKER_BENCH_FIXTURE image=$image id=$expected status=present"
+      continue
+    fi
+    docker --host "$source_host" image save "$image" | docker --host "$target_host" image load
+    current="$(docker --host "$target_host" image inspect --format '{{.Id}}' "$image")"
+    [ "$current" = "$expected" ] || die "loaded fixture ID differs from source preflight: $image"
+    echo "DOCKER_BENCH_FIXTURE image=$image id=$expected status=loaded"
+  done
+}
+
 case "${1:-}" in
   render) [ -n "${2:-}" ] || die "usage: $0 render <dir>"; render "$2" ;;
   install) install_bench ;;
   uninstall) uninstall_bench ;;
   status) status_bench ;;
-  *) die "usage: $0 render <dir> | install | uninstall | status" ;;
+  fixtures) prepare_fixtures ;;
+  *) die "usage: $0 render <dir> | install | uninstall | status | fixtures" ;;
 esac
