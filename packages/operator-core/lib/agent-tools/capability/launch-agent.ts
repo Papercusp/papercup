@@ -72,6 +72,8 @@ import {
   formatFreshLaunchEvidenceSummary,
   injectFleetArg,
   injectLaunchedByArg,
+  INTERNAL_EXPECTED_SUCCESSOR_BINDING,
+  type InternalExpectedSuccessorBinding,
   renderGoalFleetAllocation,
   isStaleHeadlessAgentHost,
   memberSpecSchema,
@@ -852,6 +854,12 @@ export default defineTool({
       (args as typeof args & { __respawnReplacesOwnerId?: string }).__respawnReplacesOwnerId?.trim() || null;
     let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
+    const expectedSuccessorBinding = (ctx as typeof ctx & {
+      [INTERNAL_EXPECTED_SUCCESSOR_BINDING]?: InternalExpectedSuccessorBinding;
+    })[INTERNAL_EXPECTED_SUCCESSOR_BINDING];
+    if (expectedSuccessorBinding && !isSuccessor) {
+      return err('An internal expected source binding requires an identity-preserving successor.');
+    }
     const sourceAction = isResume || isSuccessor;
     if (args.originalRouting && (!isResume || !args.resume?.sessionId || args.resume.agentId ||
         args.resume.sessionId !== args.originalRouting.sessionId ||
@@ -1036,6 +1044,18 @@ export default defineTool({
         sessionId: source?.sessionId ?? null,
       });
       if (!target.ok) return err(`Cannot ${isSuccessor ? 'start successor' : 'resume'}: ${target.detail}`);
+      if (expectedSuccessorBinding) {
+        const expected = expectedSuccessorBinding;
+        if (!expected.ownerId || !expected.workspaceId || !expected.harnessSlug || !expected.binding?.startedAt ||
+            workspaceId !== expected.workspaceId || slug !== expected.harnessSlug ||
+            target.ownerId !== expected.ownerId || target.advSessionId !== expected.advSessionId ||
+            target.workspaceId !== expected.workspaceId || target.harnessSlug !== expected.harnessSlug ||
+            target.binding?.coordOwnerId !== expected.binding.coordOwnerId ||
+            target.binding?.sessionId !== expected.binding.sessionId ||
+            target.binding?.startedAt !== expected.binding.startedAt) {
+          return err('Cannot start successor: the resolved source no longer matches the expected workspace, harness, and incarnation binding. No process was opened.');
+        }
+      }
       resumeSessionId = target.sessionId;
       // Native UUID verification remains nullable for tracked Codex rows that
       // resume by their adv_sessions row id through psu's isolated CODEX_HOME.
@@ -1294,7 +1314,15 @@ export default defineTool({
           if (!current.ok || current.advSessionId !== target.advSessionId ||
               current.binding?.coordOwnerId !== binding.coordOwnerId ||
               current.binding?.sessionId !== binding.sessionId ||
-              current.binding?.startedAt !== binding.startedAt) {
+              current.binding?.startedAt !== binding.startedAt ||
+              current.workspaceId !== target.workspaceId ||
+              current.harnessSlug !== target.harnessSlug ||
+              (expectedSuccessorBinding && (
+                current.ownerId !== expectedSuccessorBinding.ownerId ||
+                current.advSessionId !== expectedSuccessorBinding.advSessionId ||
+                current.workspaceId !== expectedSuccessorBinding.workspaceId ||
+                current.harnessSlug !== expectedSuccessorBinding.harnessSlug
+              ))) {
             return 'Cannot start successor: the predecessor binding changed during preparation. Re-resolve the source; no process was opened.';
           }
           if (current.live || (await findLiveHostAsync(binding.coordOwnerId))) {
@@ -1310,7 +1338,7 @@ export default defineTool({
               { hydratePerId: true },
             );
             const state = verdicts.get(binding.coordOwnerId)?.sessionState;
-            if (state !== 'ended' && state !== 'suspect') {
+            if (state !== 'ended' && !(state === 'suspect' && !expectedSuccessorBinding?.requirePositiveTerminalEvidence)) {
               return `Cannot start successor: predecessor liveness is ${state ?? 'unknown'}; positive terminal evidence is required. No process was opened.`;
             }
           }

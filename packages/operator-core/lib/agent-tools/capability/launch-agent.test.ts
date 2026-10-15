@@ -16,6 +16,7 @@ import { dispatchProjectedTool, listMcpProjections, type ProjectedTool, type Too
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 import { AGENT_LAUNCH_HANDLER_TIMEOUT_SEC, EARLY_EXIT_PROBE_MS, HEADLESS_BOOT_RECEIPT_MS, KICKOFF_PROOF_WINDOW_MS, RESUME_VERIFY_TIMEOUT_MS } from '../../agent-kickoff/launch-budgets.mjs';
+import { INTERNAL_EXPECTED_SUCCESSOR_BINDING } from '../../agent-launch-core';
 
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
@@ -2475,6 +2476,61 @@ describe('resume + fork (D-004/D-007)', () => {
       expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
       expect(resolveSessionStatesMock).not.toHaveBeenCalled();
       expect(spawnConsoleMock).not.toHaveBeenCalled();
+    });
+
+    it('requires exact workspace, harness, and positive terminal evidence for watchdog successors', async () => {
+      const scoped = { ...stale, workspaceId: 'ws-test', harnessSlug: 'papercusp' };
+      resolveResumeTargetMock.mockResolvedValue(scoped);
+      resolveSessionStatesMock.mockResolvedValue(new Map([[dead.ownerId, { sessionState: 'suspect' }]]));
+      const expected = {
+        ownerId: dead.ownerId,
+        advSessionId: dead.advSessionId,
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        binding: dead.binding,
+        requirePositiveTerminalEvidence: true,
+      };
+      const internalCtx = {
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        role: 'su',
+        [INTERNAL_EXPECTED_SUCCESSOR_BINDING]: expected,
+      } as never;
+      const res = await launchAgent.handler(
+        { successor: { agentId: dead.ownerId }, idempotencyKey: 'watchdog-positive-terminal' },
+        internalCtx,
+      );
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('predecessor liveness is suspect');
+      expect(textOf(res)).toContain('positive terminal evidence is required');
+      expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    });
+
+    it('refuses a watchdog source that moved to another workspace before dispatch', async () => {
+      resolveResumeTargetMock.mockResolvedValue({ ...stale, workspaceId: 'other-workspace', harnessSlug: 'papercusp' });
+      const internalCtx = {
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        role: 'su',
+        [INTERNAL_EXPECTED_SUCCESSOR_BINDING]: {
+          ownerId: dead.ownerId,
+          advSessionId: dead.advSessionId,
+          workspaceId: 'ws-test',
+          harnessSlug: 'papercusp',
+          binding: dead.binding,
+          requirePositiveTerminalEvidence: true,
+        },
+      } as never;
+      const res = await launchAgent.handler(
+        { successor: { agentId: dead.ownerId }, idempotencyKey: 'watchdog-workspace-binding' },
+        internalCtx,
+      );
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain('expected workspace, harness, and incarnation binding');
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
     });
   });
 

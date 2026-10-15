@@ -367,6 +367,12 @@ describe('original compaction durable episodes', () => {
     const open = new Map<string, number>();
     const row = { owner_id: 'su-episode', owner_label: 'episode', workspace_id: 'workspace',
       compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
+    const resolveForceSuccessorTarget = vi.fn(async (_ownerId: string) => ({
+      ok: false as const, error: 'not_found' as const, detail: 'no fixture source',
+    }));
+    const dispatchForceSuccessor = vi.fn(async (_input: { target: unknown; brief: string }) => ({
+      verified: false, detail: 'fixture successor was not verified',
+    }));
     const deps: CompactionComplianceDeps = { readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) =>
       ({ conditionKey, openedAtMs })), rail: {
       broadcast: async event => { expect(event.oneShot).toBe(true); expect(event.conditionKey).toBeTruthy();
@@ -374,13 +380,121 @@ describe('original compaction durable episodes', () => {
         open.set(event.conditionKey!, open.get(event.conditionKey!) ?? Date.now()); return true; },
       resolve: async event => { if (!open.delete(event.conditionKey)) return false;
         resolvedKeys.push(event.conditionKey); return true; },
-    } };
+    }, resolveForceSuccessorTarget, dispatchForceSuccessor };
     const key = (kind: Parameters<typeof compactionConditionKey>[2], subject = '') =>
       compactionConditionKey('workspace', row.owner_id, kind, subject);
-    return { deps, open, row, key, openedKeys, resolvedKeys,
+    return { deps, open, row, key, openedKeys, resolvedKeys, resolveForceSuccessorTarget, dispatchForceSuccessor,
       run: (rows = [row], sqlOpts: Parameters<typeof fakeSql>[0] = {}) =>
         checkCompactionCompliance(fakeSql({ activeSessionOwners: ['su-episode'], ...sqlOpts, seeded: rows }), deps) };
   }
+  it('dispatches a workspace/harness-bound capability successor and records applied only after positive launch evidence', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    h.resolveForceSuccessorTarget.mockResolvedValue({
+      ok: true,
+      ownerId: 'su-episode',
+      workspaceId: 'workspace',
+      harnessSlug: 'papercusp',
+      sessionId: 'source-session',
+      ompThreadId: null,
+      resumeId: 'source-session',
+      agent: 'claude',
+      role: null,
+      feature: null,
+      cwd: '/repo',
+      model: null,
+      modelSource: null,
+      account: null,
+      headless: true,
+      endedAt: null,
+      endedBy: null,
+      live: false,
+      advSessionId: 44,
+      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
+    } as never);
+    h.dispatchForceSuccessor.mockResolvedValue({ verified: true, detail: 'first turn observed' });
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual(['su-episode']);
+    expect(h.dispatchForceSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+      target: expect.objectContaining({
+        ownerId: 'su-episode',
+        workspaceId: 'workspace',
+        harnessSlug: 'papercusp',
+        advSessionId: 44,
+      }),
+      brief: expect.stringContaining('FORCE'),
+    }));
+    expect(h.open.has(h.key('force-unavailable'))).toBe(false);
+  });
+
+  it('keeps force-unavailable when a scoped successor refuses or lacks positive launch evidence', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    h.resolveForceSuccessorTarget.mockResolvedValue({
+      ok: true,
+      ownerId: 'su-episode',
+      workspaceId: 'workspace',
+      harnessSlug: 'papercusp',
+      sessionId: 'source-session',
+      ompThreadId: null,
+      resumeId: 'source-session',
+      agent: 'claude',
+      role: null,
+      feature: null,
+      cwd: '/repo',
+      model: null,
+      modelSource: null,
+      account: null,
+      headless: false,
+      endedAt: null,
+      endedBy: null,
+      live: false,
+      advSessionId: 44,
+      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
+    } as never);
+    h.dispatchForceSuccessor.mockResolvedValue({ verified: false, detail: 'first turn is unconfirmed' });
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual([]);
+    expect(h.dispatchForceSuccessor).toHaveBeenCalledTimes(1);
+    expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+  });
+
+  it('refuses hostless actuation when the recorded source lacks its harness binding', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    h.resolveForceSuccessorTarget.mockResolvedValue({
+      ok: true,
+      ownerId: 'su-episode',
+      workspaceId: 'workspace',
+      harnessSlug: null,
+      sessionId: 'source-session',
+      ompThreadId: null,
+      resumeId: 'source-session',
+      agent: 'claude',
+      role: null,
+      feature: null,
+      cwd: '/repo',
+      model: null,
+      modelSource: null,
+      account: null,
+      headless: false,
+      endedAt: null,
+      endedBy: null,
+      live: false,
+      advSessionId: 44,
+      binding: { coordOwnerId: 'su-episode', sessionId: 'source-session', startedAt: '2026-10-15 08:00:00+00' },
+    } as never);
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual([]);
+    expect(h.dispatchForceSuccessor).not.toHaveBeenCalled();
+    expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+  });
   it('opens before legacy force latches and survives restart, absence and unknown measurements', async () => {
     const h = fixture(); estimateMock.mockResolvedValue(150_000);
     await h.run(); expect(h.open.size).toBe(2);

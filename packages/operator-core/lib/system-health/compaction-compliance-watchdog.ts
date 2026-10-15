@@ -57,6 +57,11 @@ import { hostname } from 'node:os';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import { observeFallback } from '../degradation/fallback-observations';
+import type { ResolveResumeResult } from '../agent-launch-core';
+import type {
+  CompactionForceSuccessorInput,
+  CompactionForceSuccessorResult,
+} from './compaction-force-successor';
 
 type CompactionConditionKind = 'context-death' | 'tool-reference-death' | 'compaction-stranding' |
   'dark-presence' | 'dark-telemetry' | 'implausible-reading' | 'frozen-codex-reading' |
@@ -1530,7 +1535,7 @@ async function maybeForceRespawn(
   forceAt: number = limit * FORCE_COMPACT_FRACTION,
   /** Which arm produced forceAt — the note words each regime differently. */
   bound: ForceBound = 'fraction',
-  conditionDeps: CompactionConditionDeps = {},
+  conditionDeps: CompactionComplianceDeps = {},
 ): Promise<boolean> {
   // Keep the condition writer inside this original fallback producer: the
   // immutable inventory identity must remain on the rail itself.
@@ -1561,21 +1566,59 @@ async function maybeForceRespawn(
     );
     const host = await findLiveHostAsync(ownerId);
     if (!host) {
-      await failure('No live host at the measured force threshold.');
-      // EI-9982: distinguish "no live psu-pty host" from the flag-off / grace-suppressed /
-      // inject-failed silent-no-op paths — this is the dominant cause of a continuously-active
-      // session that crosses the FORCE threshold yet is never force-cut.
-      if (!noHostWarned.has(ownerId)) {
-        noHostWarned.add(ownerId);
-        console.warn(
-          `[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold (~${est}/${limit} ` +
-            `tokens) but findLiveHost() found no live psu-pty host — force-respawn silently no-ops here ` +
-            `(EI-9982). Likely a stale/missing discovery file at ~/.papercusp/psu-pty/<ownerId>.json, a ` +
-            `dead pid, or a pidIsPsuHost() identity mismatch (the EI-9748 / WI-3455 discovery-file ` +
-            `fragility class) — check that file + the recorded pid/socket for this owner.`,
-        );
+      const target = conditionDeps.resolveForceSuccessorTarget
+        ? await conditionDeps.resolveForceSuccessorTarget(ownerId)
+        : await (await import('../agent-launch-core')).resolveResumeTarget({ agentId: ownerId });
+      if (!target.ok) {
+        await failure(`No live PTY host, and the bound adv-session could not be resolved: ${target.detail}`);
+        if (!noHostWarned.has(ownerId)) {
+          noHostWarned.add(ownerId);
+          console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold without a PTY host; source resolution failed, so force remains unavailable.`);
+        }
+        return false;
       }
-      return false;
+      if (target.ownerId !== ownerId || target.workspaceId !== workspaceId ||
+          !target.harnessSlug?.trim() || !target.binding ||
+          target.binding.coordOwnerId !== ownerId || !target.binding.startedAt || target.live) {
+        await failure('No live PTY host, and the resolved source lacks an exact matching workspace, harness, owner, incarnation, or dead-host binding.');
+        if (!noHostWarned.has(ownerId)) {
+          noHostWarned.add(ownerId);
+          console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold without a PTY host; source scope or liveness evidence was incomplete, so force remains unavailable.`);
+        }
+        return false;
+      }
+      const source: CompactionForceSuccessorInput['target'] = {
+        ...target,
+        ownerId,
+        workspaceId,
+        harnessSlug: target.harnessSlug,
+        binding: target.binding,
+      };
+      const launch = conditionDeps.dispatchForceSuccessor
+        ? await conditionDeps.dispatchForceSuccessor({
+            target: source,
+            brief: forceCompactContinueNote(est, limit, forceAt, bound),
+          })
+        : await (await import('./compaction-force-successor')).dispatchCompactionForceSuccessor({
+            target: source,
+            brief: forceCompactContinueNote(est, limit, forceAt, bound),
+          });
+      if (!launch.verified) {
+        await failure(`No live PTY host; capability successor refused or lacked positive launch evidence: ${launch.detail}`);
+        if (!noHostWarned.has(ownerId)) {
+          noHostWarned.add(ownerId);
+          console.warn(`[compaction-watchdog] ${ownerLabel} (${ownerId}) crossed the FORCE threshold without a PTY host; capability successor was not positively verified, so force remains unavailable.`);
+        }
+        return false;
+      }
+      observeFallback('compaction-force-respawn', {
+        eligible: 1, applied: 1, reason: 'applied', scope: ownerId,
+      }, { workspaceId });
+      console.warn(
+        `[compaction-watchdog] FORCE-SUCCEEDED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
+          `with a positively verified capability successor (threshold ~${forceAt}).`,
+      );
+      return true;
     }
     if (!hostSupports(host, 'carry-respawn')) {
       await failure('Live host lacks carry-respawn capability.');
@@ -2398,6 +2441,9 @@ export interface CompactionComplianceResult {
 export interface CompactionComplianceDeps extends CompactionConditionDeps {
   /** Injectable D-137 side-lock reader; default reads papercusp_su. */
   readExpiredOwnerFileLocks?: CompactionStrandingLockReader;
+  /** Focused, deterministic seams for the hostless force successor path. */
+  resolveForceSuccessorTarget?: (ownerId: string) => Promise<ResolveResumeResult>;
+  dispatchForceSuccessor?: (input: CompactionForceSuccessorInput) => Promise<CompactionForceSuccessorResult>;
 }
 
 export async function checkCompactionCompliance(

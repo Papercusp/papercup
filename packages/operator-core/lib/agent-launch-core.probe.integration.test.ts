@@ -113,6 +113,39 @@ describe('resume target registration election (real PG)', () => {
       ok: true, advSessionId: 103, sessionId: 'bridged-old',
     });
   });
+
+  it('returns the exact source workspace and recorded harness for scoped successor dispatch', async () => {
+    const owner = 'su-resume-scoped-source';
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, coord_owner_id, session_id, workspace_id, agent, started_at, launch_argv)
+      VALUES (105, ${owner}, 'scoped-source-session', 'source-workspace', 'claude', now(),
+              ${JSON.stringify(['psu', '--harness=source-harness'])}::jsonb)
+    `;
+
+    await expect(resolveResumeTarget({ agentId: owner })).resolves.toMatchObject({
+      ok: true,
+      ownerId: owner,
+      workspaceId: 'source-workspace',
+      harnessSlug: 'source-harness',
+    });
+  });
+
+  it('does not infer a missing harness from ambient context', async () => {
+    const owner = 'su-resume-unscoped-source';
+    await sql`
+      INSERT INTO harness_shared.adv_sessions
+        (id, coord_owner_id, session_id, workspace_id, agent, started_at, launch_argv)
+      VALUES (106, ${owner}, 'unscoped-source-session', 'source-workspace', 'claude', now(),
+              ${JSON.stringify(['psu', '--no-picker'])}::jsonb)
+    `;
+
+    await expect(resolveResumeTarget({ agentId: owner })).resolves.toMatchObject({
+      ok: true,
+      workspaceId: 'source-workspace',
+      harnessSlug: null,
+    });
+  });
 });
 
 describe('fresh-launch tool-call attribution (real PG)', () => {
