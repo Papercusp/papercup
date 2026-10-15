@@ -9,7 +9,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
-import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
   legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, probeRoutedCodexModel, remeasureCloudDeviceStart, remeasureStockMachines,
@@ -61,6 +61,58 @@ describe('native approval terminal wait', () => {
   });
   it.each(['failed', 'ended'])('stops a %s native session without a card', (state) => {
     expect(nativeApprovalTurnSettled([event({ type: 'lifecycle', state, sequence: 12 })], 'requested-turn', false)).toBe(true);
+  });
+
+  it('does not complete at the post-effect verification card, but completes after its denial and final reply', () => {
+    const effect = event({ type: 'tool', phase: 'completed', sequence: 30, turnId: 'requested-turn', isError: false });
+    const cardIdle = event({ type: 'lifecycle', state: 'waiting-for-owner', sequence: 34 });
+    // The native trace parked at seq 34 with a second card open. It had
+    // already emitted assistant text, so lifecycle alone is not sufficient.
+    expect(nativeApprovalTurnSettled([reply, effect, cardIdle], 'requested-turn', true)).toBe(false);
+    expect(nativeApprovalTurnSettled([reply, effect, cardIdle,
+      event({ ...reply, sequence: 37 }), event({ ...idle, sequence: 38 }),
+    ], 'requested-turn', false)).toBe(true);
+  });
+});
+
+describe('native approval follow-up scope', () => {
+  const input = { turnId: 'requested-turn', afterSequence: 30, notePath: '/owned/note.txt' };
+  const followup = {
+    type: 'card', phase: 'opened', sequence: 33, turnId: input.turnId,
+    card: {
+      correlationId: 'verification', prompt: 'Read /owned/note.txt', allowDecline: true,
+      approval: { title: 'Bash(cat /owned/note.txt)', question: 'Do you want to run this command?', body: ['cat /owned/note.txt'] },
+      presentation: { kind: 'radio', options: [
+        { id: 'yes', label: 'Yes' }, { id: 'always', label: "Yes, and don't ask again" },
+        { id: 'no', label: 'No, and tell Codex what to do instead' },
+      ] },
+    },
+  };
+  const decline = (value: unknown) => nativeApprovalFollowupDecline(value as SuSessionEvent, input);
+
+  it('only selects the one-request denial, never Yes or remembered permission', () => {
+    expect(decline(followup)).toEqual({ key: '3', question: 'Do you want to run this command?',
+      label: 'No, and tell Codex what to do instead' });
+  });
+  it.each([
+    { ...followup, turnId: 'other-turn' },
+    { ...followup, sequence: 30 },
+    { ...followup, phase: 'closed' },
+    { ...followup, card: { ...followup.card, allowDecline: false } },
+    { ...followup, card: { ...followup.card, approval: undefined } },
+    { ...followup, card: { ...followup.card, presentation: { kind: 'text' } } },
+    { ...followup, card: { ...followup.card, prompt: '/other/note.txt',
+      approval: { ...followup.card.approval, body: ['/other/note.txt'] } } },
+    { ...followup, card: { ...followup.card, prompt: '/owned/note.txt.backup',
+      approval: { ...followup.card.approval, body: ['/owned/note.txt.backup'] } } },
+    { ...followup, card: { ...followup.card, prompt: '/other/owned/note.txt',
+      approval: { ...followup.card.approval, body: ['/other/owned/note.txt'] } } },
+    { ...followup, card: { ...followup.card, approval: { ...followup.card.approval,
+      title: 'papercusp-su · work items get (MCP)' } } },
+    { ...followup, card: { ...followup.card, presentation: { kind: 'radio',
+      options: followup.card.presentation.options.slice(0, 2) } } },
+  ])('leaves unrelated or unsupported card %# unanswered', (value) => {
+    expect(decline(value)).toBeUndefined();
   });
 });
 
