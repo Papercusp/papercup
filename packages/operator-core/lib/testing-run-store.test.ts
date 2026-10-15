@@ -149,6 +149,17 @@ beforeEach(async () => {
   store = await import('./testing-run-store');
 });
 
+describe('worktree provenance API', () => {
+  it('exposes async snapshots to direct testing:run callers', async () => {
+    const snapshot = { commit: 'current-commit', porcelain: '' };
+    worktreeSnapshotMocks.captureAsync.mockResolvedValue(snapshot);
+
+    expect(store.captureWorktreeSnapshotAsync).toBeTypeOf('function');
+    await expect(store.captureWorktreeSnapshotAsync('/test-checkout')).resolves.toEqual(snapshot);
+    expect(worktreeSnapshotMocks.captureAsync).toHaveBeenCalledWith('/test-checkout');
+  });
+});
+
 describe('startRun', () => {
   it('returns a running snapshot and spawns the command', () => {
     const snap = store.startRun(req());

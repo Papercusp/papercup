@@ -53,7 +53,7 @@ import { isTerminalState, type TaskSpec, type TaskState } from './task-manager/t
 import { boundedPgReadTxn } from './pg-read-query';
 import { boundedOrgTxn } from './pg-bounded-txn';
 
-export { captureWorktreeSnapshot, computeWorktreeDirty };
+export { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty };
 export type { WorktreeGitSnapshot };
 
 /** A postgres-js-like tagged-template client; injectable so persistence seams are testable. */
