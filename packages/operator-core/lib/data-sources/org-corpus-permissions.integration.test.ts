@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createPersonalGrant, searchPersonalDocuments, upsertPersonalDocuments } from '../personal-vault/store';
 import { personalVaultRefusal } from '../pg-read-query';
+import { readSelectedSupportCase } from '../blueprint/support-workflow-case';
 import {
   ORGANIZATION_CORPUS_SCOPE,
   mapProviderIdentity,
@@ -95,6 +96,39 @@ beforeEach(async () => {
 });
 
 describe('organization corpus permissions (R-8)', () => {
+  it('reads a support selection only for its verified current principal and current provider ACL', async () => {
+    const listId = await seedChannel([SLACK_ALICE]);
+    await mapProviderIdentity(org.adminSql, WS, { ...SLACK_ALICE, userId: alice, mappedBy: 'owner' });
+    const found = await search(alice);
+    if (!found.allowed) throw new Error('expected corpus permission');
+    const id = found.results[0]!.id;
+    const workflow = { harnessSlug: 'support', operationId: 'support-to-engineering', approvedRevision: 'a'.repeat(64),
+      accountableOwner: 'pilot-owner', reviewerPrincipals: ['reviewer'], allowedSources: ['slack'],
+      allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000 };
+    const input = { supportCaseId: 'case-1', approvedRevision: workflow.approvedRevision, documentIds: [id],
+      query: 'cobalt roadmap', requestedAction: 'prepare-handoff' };
+    const current = { ...ctx, principal: { kind: 'user', trust: 'verified', slug: alice, workspaceId: WS } };
+    expect((await readSelectedSupportCase(org.adminSql, current, workflow, input))).toMatchObject({
+      allowed: true, results: [{ id }],
+    });
+    await expect(readSelectedSupportCase(org.adminSql,
+      { ...current, principal: { ...current.principal, workspaceId: 'other-workspace' } }, workflow, input))
+      .rejects.toThrow(/current workspace/);
+    await expect(readSelectedSupportCase(org.adminSql,
+      { ...current, principal: { ...current.principal, trust: 'unverified' } }, workflow, input))
+      .rejects.toThrow(/verified user/);
+    await expect(readSelectedSupportCase(org.adminSql,
+      { ...current, principal: { ...current.principal, slug: bob } }, workflow, input))
+      .rejects.toThrow(/unavailable/);
+    await org.adminSql`UPDATE harness_shared.personal_grants SET revoked_at = now()
+      WHERE workspace_id = ${WS} AND user_id = ${alice}::uuid`;
+    expect(await readSelectedSupportCase(org.adminSql, current, workflow, input))
+      .toMatchObject({ allowed: false, reason: 'no_live_grant' });
+    await grantOrganization(alice);
+    await replacePermissionListMembers(org.adminSql, WS, listId, []);
+    await expect(readSelectedSupportCase(org.adminSql, current, workflow, input)).rejects.toThrow(/revoked/);
+  });
+
   it('narrows a selected support case without widening live source permissions', async () => {
     const listId = await seedChannel([SLACK_ALICE]);
     await mapProviderIdentity(org.adminSql, WS, { ...SLACK_ALICE, userId: alice, mappedBy: 'owner' });
