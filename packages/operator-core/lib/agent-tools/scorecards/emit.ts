@@ -52,6 +52,8 @@ import { readRunningGeneration } from '../../scout/generation-watermark';
 import {
   classifyGradingAuditCurrentness,
   acquireGradingAuditSubjectMutex,
+  SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS,
+  ScorecardEmitMutexWaitTimeoutError,
   auditVerdictFromRatings,
   listScorecards,
   evaluateScorecardInstrumentContract,
@@ -453,6 +455,7 @@ type ScorecardEmitMutexReservation = Awaited<ReturnType<ReturnType<typeof scorec
 async function acquireScorecardEmitMutex(
   key: string,
   phases?: PhaseTracker,
+  waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS,
 ): Promise<() => Promise<void>> {
   const reserved: ScorecardEmitMutexReservation = await trackPhase(
     phases,
@@ -461,15 +464,10 @@ async function acquireScorecardEmitMutex(
   );
   let acquired = false;
   try {
-    // The harness_admin role carries a finite lock_timeout (currently 15s), and
-    // may also acquire a statement_timeout in a future policy revision. This
-    // rendezvous is deliberately allowed to wait for an in-flight emitter: the
-    // tool itself has a 15-minute budget, while either inherited setting would
-    // abort a valid second emit long before that budget. Clear both session
-    // limits before the blocking lock, matching the backup/boot rendezvous
-    // contract. The client is dedicated to this mutex and never runs ordinary
-    // application queries.
-    await reserved`SET lock_timeout = 0`;
+    // Allow valid serialization waits beyond the role's inherited timeout, but
+    // stay below the 300s MCP caller deadline so a stuck holder becomes a
+    // retryable refusal. This client is dedicated to the mutex.
+    await reserved`SELECT set_config('lock_timeout', ${`${waitTimeoutMs}ms`}, false)`;
     await reserved`SET statement_timeout = 0`;
     await trackPhase(phases, 'scorecards:emit:mutex:dedup:advisory-lock', () =>
       reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
@@ -488,6 +486,9 @@ async function acquireScorecardEmitMutex(
     };
   } catch (error) {
     reserved.release();
+    if ((error as { code?: string } | null)?.code === '55P03') {
+      throw new ScorecardEmitMutexWaitTimeoutError('dedup', waitTimeoutMs);
+    }
     throw error;
   }
 }
@@ -1715,6 +1716,8 @@ export async function emitScorecard(
       Promise<Pick<WorkItem, 'state' | 'terminalOwner' | 'terminalCompletionRef'> | null>;
     readInteractionReviewer?: (handle: z.infer<typeof OperationHandleSchema>, callerId: string) =>
       ReturnType<typeof getBlueprintOperationTerminalWorker>;
+    /** Shortened mutex deadline seam for real-Postgres contention tests. */
+    scorecardMutexWaitTimeoutMs?: number;
   } = {},
 ) {
   // WI-10005715: a field that ENDS in the MCP result door's clip marker is a clipped
@@ -1731,6 +1734,11 @@ export async function emitScorecard(
       error: clippedScorecardTextMessage(clippedPath),
     };
   }
+  const requestedMutexWaitTimeoutMs = deps.scorecardMutexWaitTimeoutMs;
+  const scorecardMutexWaitTimeoutMs =
+    typeof requestedMutexWaitTimeoutMs === 'number' && Number.isFinite(requestedMutexWaitTimeoutMs) && requestedMutexWaitTimeoutMs > 0
+      ? Math.floor(Math.min(requestedMutexWaitTimeoutMs, SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS))
+      : SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS;
   const rubricRead = await readRubric(args.rubricRef);
   if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
   if (rubricRead.kind === 'read-failed') {
@@ -2911,7 +2919,7 @@ export async function emitScorecard(
         releaseGradingAuditSubjectMutex = await acquireGradingAuditSubjectMutex({
           workspaceId: input.workspaceId ?? activeWorkspaceId(),
           subjectIssueId: args.subject.ref,
-        }, input.phases);
+        }, input.phases, scorecardMutexWaitTimeoutMs);
       }
       const graded = await getIssue(args.subject.ref);
       const gradedRawObservation =
@@ -3344,6 +3352,7 @@ export async function emitScorecard(
           sourceHive,
         }),
         input.phases,
+        scorecardMutexWaitTimeoutMs,
       );
     }
     // The evidence fingerprint deliberately excludes subject for stored-row
@@ -4107,6 +4116,14 @@ export async function emitScorecard(
       ...(acceptanceGraderCleanup ? { acceptanceGraderCleanup } : {}),
     };
   } catch (error) {
+    if (error instanceof ScorecardEmitMutexWaitTimeoutError) {
+      return {
+        ok: false as const,
+        code: error.code,
+        error: error.message,
+        retryable: true as const,
+      };
+    }
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };
     if (error instanceof ScorecardGenerationChangedBeforePersistError) {
       return {

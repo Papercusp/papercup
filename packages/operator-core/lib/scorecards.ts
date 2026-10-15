@@ -2995,6 +2995,21 @@ const GRADING_AUDIT_SUBJECT_MUTEX_NAMESPACE = 'scorecards:grading-audit:subject'
 /** Registry label of the dedicated mutex pool; also its `pcusp:<label>:p<pid>` application_name. */
 const GRADING_AUDIT_SUBJECT_MUTEX_POOL = 'grading-audit-subject';
 
+/** Keep scorecard mutex waits below the MCP caller's 300s deadline. */
+export const SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS = 240_000;
+
+export class ScorecardEmitMutexWaitTimeoutError extends Error {
+  readonly code = 'scorecard_emit_mutex_timeout';
+
+  constructor(mutex: 'dedup' | 'grading-audit-subject', timeoutMs: number) {
+    super(
+      `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} mutex. ` +
+        'No scorecard was persisted by this attempt; retry after the current emitter settles.',
+    );
+    this.name = 'ScorecardEmitMutexWaitTimeoutError';
+  }
+}
+
 function gradingAuditSubjectMutexSql(): postgres.Sql {
   // getLongLivedAdminPool rebuilds the pool when the admin URL moves (EI-19306394439939264).
   // Its idle_timeout cannot release a held session advisory lock: postgres-js cancels a
@@ -3023,7 +3038,7 @@ function gradingAuditSubjectMutexKey(input: {
 export async function acquireGradingAuditSubjectMutex(input: {
   workspaceId: string;
   subjectIssueId: string;
-}, phases?: PhaseTracker): Promise<() => Promise<void>> {
+}, phases?: PhaseTracker, waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS): Promise<() => Promise<void>> {
   const key = gradingAuditSubjectMutexKey(input);
   const reserved = await trackPhase(
     phases,
@@ -3032,7 +3047,7 @@ export async function acquireGradingAuditSubjectMutex(input: {
   );
   let acquired = false;
   try {
-    await reserved.unsafe('SET lock_timeout = 0');
+    await reserved.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
     await reserved.unsafe('SET statement_timeout = 0');
     await trackPhase(phases, 'scorecards:emit:mutex:grading-audit-subject:advisory-lock', () =>
       reserved.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
@@ -3051,6 +3066,9 @@ export async function acquireGradingAuditSubjectMutex(input: {
     };
   } catch (error) {
     reserved.release();
+    if ((error as { code?: string } | null)?.code === '55P03') {
+      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', waitTimeoutMs);
+    }
     throw error;
   }
 }
