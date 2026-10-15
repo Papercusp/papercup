@@ -200,6 +200,27 @@
       }
     }
   },
+  "releaseStageProof": {
+    "status": "pass-scripted-production-stage-control",
+    "testRunId": 21262295,
+    "innerProductionJourneyTestRunId": 21262293,
+    "innerFakeContextJourneyTestRunId": 21262294,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 3,
+    "worktreeDirty": false,
+    "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+    "candidateSourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+    "candidateArchiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+    "bindingIds": [48125, 48126, 48127],
+    "logPath": "/tmp/p032-release-stage-pinned-clean-9086d-20261015.log",
+    "logSha256": "c279ea4fe763b0ee457636ec7f65efbde5bc50f45861950fab1378cf23d0ea66",
+    "receiptPath": "/tmp/p032-release-stage-pinned-receipt-9086d-20261015.json",
+    "receiptFormat": "JSONL containing both inner rows and the outer stage row",
+    "receiptSha256": "caaf72f9b1d7b494a29e68a8e06c902222d8e47296da6953e374defcbdd69c8c",
+    "scope": "The selected case verifies real installed PUI input through the scripted production operator, stock Ubuntu and Debian installs, and refusal of fake-operator task evidence. Its intentionally incomplete candidate verdict is refused. This passing guard test is separate from the retained complete native-provider acceptance and is not a new full product PASS, approval or publication.",
+    "fixtureObservationFollowup": "EI-26082309434961331 is owned/open for two private PostgreSQL agent_chats relation errors during the passing run; expectedness and cause remain unconfirmed."
+  },
   "barAdequacyPreparation": {
     "status": "not-ready",
     "bindingIds": { "first": 47058, "last": 47104 },
@@ -210,8 +231,22 @@
     "chatFirstApproval": "pui-chat-first-ux-2026-09-28#D-037 records Avi's R-05 approval on build 33287a0d19; P-006 still requires proof and independent grading. Exact final-candidate publication approval remains separate.",
     "editorSourceControls": [
       { "specId": "PUI-EDITOR-HISTORY", "verdict": "pass", "baselineTestRunId": 21261488, "relocatedBaselineTestRunId": 21261490, "mutantTestRunId": 21261493, "bindingIds": [47928, 47929], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-history-clean-control-9086d-20261015.log", "logSha256": "602745fce09de2280bbfcac313ad01823e479c87689b79329343f1fc390eba62" },
-      { "specId": "PUI-EDITOR-UNDO", "verdict": "pass", "baselineTestRunId": 21261498, "relocatedBaselineTestRunId": 21261501, "mutantTestRunId": 21261504, "bindingIds": [47934, 47935], "additionalFixtureBaselineBindingId": 47908, "withdrawnIncompleteFixtureBindingIds": [47896, 47897], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-undo-fixture-control-9086d-20261015.log", "logSha256": "b7e82dbababce0d178e7e47612db34918c3db6b2e7066700d4f4a27a1908309c" }
+      { "specId": "PUI-EDITOR-UNDO", "verdict": "pass", "baselineTestRunId": 21261498, "relocatedBaselineTestRunId": 21261501, "mutantTestRunId": 21261504, "bindingIds": [47934, 47935], "additionalFixtureBaselineBindingId": 47908, "withdrawnIncompleteFixtureBindingIds": [47896, 47897], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-undo-fixture-control-9086d-20261015.log", "logSha256": "b7e82dbababce0d178e7e47612db34918c3db6b2e7066700d4f4a27a1908309c" },
+      { "specId": "PUI-EDITOR-COPY", "verdict": "pass", "baselineTestRunId": 21262224, "relocatedBaselineTestRunId": 21262227, "mutantTestRunId": 21262232, "bindingIds": [48066, 48067], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/chat_copy.rs", "logPath": "/tmp/p032-editor-copy-clean-control-9086d-20261015.log", "logSha256": "53f234c2c35771d381179bb869cf823b37d9c71a8dbfde3631ce15abe707070d" },
+      { "specId": "PUI-INTERRUPT", "verdict": "pass", "baselineTestRunId": 21262260, "relocatedBaselineTestRunId": 21262262, "mutantTestRunId": 21262265, "bindingIds": [48101, 48102], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-interrupt-clean-control-v2-9086d-20261015.log", "logSha256": "4bc3ffe1e0436e1c21a9d372c52dfddf5c42280eb79d4babcf9fc2cae4cb8f73" },
+      { "specId": "PUI-APPROVAL-ALLOW", "verdict": "pass", "baselineTestRunId": 21262279, "relocatedBaselineTestRunId": 21262283, "mutantTestRunId": 21262285, "bindingIds": [48119, 48120], "additionalR09P010BindingIds": [48123, 48124], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-approval-identity-clean-controls-9086d-20261015.log", "logSha256": "c79c3eafda79a4b43b3d59579f173c6fea9f7a9bd8848df17fa42ed170ad69bd" },
+      { "specId": "PUI-APPROVAL-DENY", "verdict": "pass", "baselineTestRunId": 21262287, "relocatedBaselineTestRunId": 21262289, "mutantTestRunId": 21262291, "bindingIds": [48121, 48122], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-approval-identity-clean-controls-9086d-20261015.log", "logSha256": "c79c3eafda79a4b43b3d59579f173c6fea9f7a9bd8848df17fa42ed170ad69bd" }
     ],
+    "postQualificationProofCohort": {
+      "count": 48,
+      "verdicts": { "pass": 32, "fail": 0, "unknown": 16 },
+      "scope": "Current work-item proof adequacy; all older cohort records below are historical. Product grade, exact-candidate approval, public install and shipment remain outstanding.",
+      "readbackPath": "/tmp/p032-after-qualification-cohort-9086d-20261015.json",
+      "unknownSpecIds": ["AUTO-BAR-R-04-P-008", "AUTO-BAR-R-04-P-010", "AUTO-BAR-R-05-P-007", "AUTO-BAR-R-05-P-016", "AUTO-BAR-R-06-P-009", "AUTO-BAR-R-07-P-002", "AUTO-BAR-R-07-P-008", "AUTO-BAR-R-08-P-010", "AUTO-BAR-R-09-P-011", "P032:current-verdict", "PUI-COMMANDS", "PUI-FILE-CONTEXT", "PUI-QUESTION", "PUI-TOOLS-DIFF", "PUI-TOOL-TURN", "PUI-USAGE"],
+      "releaseQualificationControl": { "baselineTestRunId": 21262313, "relocatedBaselineTestRunId": 21262314, "mutantTestRunId": 21262317, "bindingIds": [48137, 48138, 48139, 48140, 48141, 48142, 48143, 48144], "allThreeWorktreesClean": true, "mutation": "Disable the production-operator requirement so fake-operator evidence qualifies; the advertised-combination fixture test catches it.", "logPath": "/tmp/p032-release-qualification-clean-control-9086d-20261015.log", "logSha256": "b2e9e16948b0492269f5d0b226733d7b13156bd4b38f4b11fa95afce562e781c" },
+      "remainingCurrentVerdictGap": "P032:current-verdict has only fixture-calibration unknown: older native proof bindings47032/47033/47034 have no measured fixture fingerprint. Supplemental guard fixtures cannot resolve those rows. Preserve native results; inspect their actual fixture provenance before refreshing bindings. Do not rerun native providers or merely assert fixture-free.",
+      "packageSuiteBindingIds": [48070, 48071, 48072, 48073, 48074, 48075]
+    },
     "postReaderProofCohort": {
       "count": 48,
       "verdicts": { "pass": 24, "fail": 0, "unknown": 24 },
