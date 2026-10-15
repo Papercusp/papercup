@@ -16,9 +16,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENTS,
+  chooseResumeTarget,
   resolveResumeTarget,
   resumePickerBackendsFor,
   unresumableSourceCause,
@@ -71,6 +72,56 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
           { targetAgent, modelSpec: null },
         ),
       ).toMatchObject({ operation: "port", sourceAgent, targetAgent });
+    },
+  );
+
+  it.each(CROSS_PAIRS)(
+    "the real %s→%s picker offers selectable target-specific model rows (R-22)",
+    async (sourceAgent, targetAgent) => {
+      const expectedModel = {
+        claude: "fable",
+        codex: "gpt-6.1-sol",
+        omp: "openai/gpt-6.1-sol",
+      }[targetAgent];
+      const select = vi.fn(async ({ message, choices }) => {
+        if (message === "Continue this session with which backend/model?") {
+          return choices.find((row) => row.value === "<choose-model>").value;
+        }
+        if (message === "Reasoning effort") return "high";
+        expect(message).toBe("Target backend and model");
+        for (const [backend, model] of Object.entries({
+          claude: "fable", codex: "gpt-6.1-sol", omp: "openai/gpt-6.1-sol",
+        })) {
+          expect(choices).toContainEqual(expect.objectContaining({
+            value: expect.objectContaining({ kind: "model", targetAgent: backend, model }),
+          }));
+        }
+        const row = choices.find((row) => row.value.kind === "model" &&
+          row.value.targetAgent === targetAgent && row.value.model === expectedModel);
+        expect(row).toBeDefined();
+        expect(row.name).toContain(`Port to ${targetAgent}`);
+        return row.value;
+      });
+      const readCodexModels = vi.fn(() => [{
+        id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", reasoningEfforts: ["high"],
+      }]);
+      const readOmpModels = vi.fn(async () => [{
+        selector: "openai/gpt-6.1-sol", name: "GPT-6.1 Sol", thinking: ["high"],
+      }]);
+      const target = await chooseResumeTarget(trackedSession(sourceAgent), { picker: true }, {
+        prompts: { select, input: vi.fn(), search: vi.fn() },
+        readLastActiveModel: () => null,
+        fetchPortCapabilities: async () => null,
+        readCodexModels,
+        readOmpModels,
+      });
+      expect(readCodexModels).toHaveBeenCalledOnce();
+      expect(readOmpModels).toHaveBeenCalledOnce();
+      expect(target).toMatchObject({
+        operation: "port", sourceAgent, targetAgent,
+        modelSpec: expect.stringContaining(expectedModel),
+      });
+      expect(select).toHaveBeenCalledTimes(3);
     },
   );
 

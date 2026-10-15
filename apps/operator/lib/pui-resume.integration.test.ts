@@ -22,7 +22,9 @@
  *          its recorded cwd, resuming its own native conversation id whose
  *          transcript is on disk.
  *   R-25 — a cross-backend pick that cannot be honoured exits non-zero with its
- *          cause, and no backend process is spawned.
+ *          cause, and no backend process is spawned. A resumable source also
+ *          completes the port through the real launcher and managed PTY, with
+ *          a recording operator/backend fixture, and accepts input in the pane.
  */
 import { spawn } from "node:child_process";
 import {
@@ -57,6 +59,15 @@ const OWNER = "su-pui-resume-it-owner";
 const CLAUDE_SESSION = "bb06937a-2054-4f27-945b-225b84dc3ccb";
 const CODEX_ROLLOUT = "0199c1d2-7a3b-7c44-9d55-e66f77a88b99";
 const OMP_THREAD = "pui-resume-omp-thread-01";
+const PORT_TARGET_NATIVE = "e6b4cacc-a46d-48bb-a5d6-dc627c107e59";
+const PORT_ID = "a845de83-50c8-44ef-8679-137725a3ed6b";
+const PORT_HASH = "d".repeat(64);
+const PORT_MARKER = `[PAPERCUSP SESSION PORT CHECKSUM ${PORT_HASH}]`;
+
+interface PortFixture {
+  target: "claude";
+  brokenPane?: boolean;
+}
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -162,7 +173,7 @@ interface Staged {
  * Fake backends, stub operator and a scrubbed environment for one
  * `psu --resume <id> --no-picker [...extra]` run against the fixture.
  */
-async function stagePsuResume(fx: Fixture, extra: string[]): Promise<Staged> {
+async function stagePsuResume(fx: Fixture, extra: string[], portFixture?: PortFixture): Promise<Staged> {
   const bin = join(fx.home, "fakebin");
   const launchDir = join(fx.home, "launches");
   mkdirSync(bin, { recursive: true });
@@ -192,6 +203,40 @@ async function stagePsuResume(fx: Fixture, extra: string[]): Promise<Staged> {
     chmodSync(p, 0o755);
   }
 
+  const targetConfig = join(fx.home, ".papercusp", "port-target-claude");
+  const targetTranscript = join(targetConfig, "projects", "fixture", `${PORT_TARGET_NATIVE}.jsonl`);
+  const promptFile = join(fx.home, "fixture-persona.md");
+  const seedFile = join(fx.home, "fixture-port-seed.md");
+  if (portFixture) {
+    // Only operator transport and the credentialed CLI are fixtures. The real
+    // launcher, port orchestration, managed PTY, seed persistence verifier and
+    // terminal input path all execute, with no API key or model request.
+    writeFileSync(promptFile, "Fixture persona.\n".repeat(150));
+    writeFileSync(seedFile, `hello from before\n${PORT_MARKER}\n`, { mode: 0o600 });
+    writeFileSync(join(bin, portFixture.target), [
+      `#!${process.execPath}`,
+      "const fs = require('node:fs');",
+      `fs.writeFileSync(${JSON.stringify(join(launchDir, "ported-target"))}, ['claude', process.cwd(), ...process.argv.slice(2)].join('\\n') + '\\n');`,
+      ...(portFixture.brokenPane ? ["process.stdout.write('BROKEN_PANE_CONTROL\\n'); process.exit(23);"] : [
+        "process.stdin.setRawMode?.(true); process.stdin.setEncoding('utf8');",
+        "let buffer = '', seeded = false; process.stdout.write('❯\\n');",
+        "process.stdin.on('data', chunk => { buffer += chunk;",
+        `if (!seeded && buffer.includes(${JSON.stringify(PORT_MARKER)}) && buffer.includes('\\r')) {`,
+        `  const content = buffer.slice(buffer.indexOf('⟦turn-origin:session-port'), buffer.indexOf(${JSON.stringify(PORT_MARKER)}) + ${PORT_MARKER.length});`,
+        `  fs.mkdirSync(${JSON.stringify(dirname(targetTranscript))}, {recursive:true});`,
+        `  fs.writeFileSync(${JSON.stringify(targetTranscript)}, JSON.stringify({type:'user',sessionId:${JSON.stringify(PORT_TARGET_NATIVE)},timestamp:new Date().toISOString(),message:{role:'user',content}})+'\\n');`,
+        "  seeded = true; buffer = '';",
+        `  process.stdout.write('CONVERSATION ${PORT_TARGET_NATIVE}: hello from before\\nBACKEND claude READY\\n');`,
+        "} else if (seeded && buffer.includes('\\r')) {",
+        "  process.stdout.write('TYPED ' + buffer.replace(/[\\r\\n]/g, '') + '\\n'); process.exit(0);",
+        "}});",
+        "setTimeout(() => process.exit(24), 20000);",
+      ]),
+      "",
+    ].join("\n"));
+    chmodSync(join(bin, portFixture.target), 0o755);
+  }
+
   const requests: RunResult["requests"] = [];
   const server: Server = createServer((req, res) => {
     let body = "";
@@ -202,6 +247,25 @@ async function stagePsuResume(fx: Fixture, extra: string[]): Promise<Staged> {
       res.setHeader("content-type", "application/json");
       if (path.startsWith("/api/adv/sessions/resumable")) {
         res.end(JSON.stringify({ sessions: [fx.session] }));
+      } else if (portFixture && path === "/api/adv/sessions/port/inspect") {
+        const request = JSON.parse(body);
+        res.end(JSON.stringify({ inspection: {
+          source: { nativeSessionId: request.sourceNativeSessionId, backend: fx.session.agent, sha256: PORT_HASH },
+          target: { backend: portFixture.target }, stats: {},
+        } }));
+      } else if (portFixture && path === "/api/adv/sessions/port/prepare") {
+        res.end(JSON.stringify({ portId: PORT_ID, token: `${PORT_ID}.fixture`, fidelity: "full", expiresAt: "2099-01-01T00:00:00Z" }));
+      } else if (portFixture && path === "/api/agent-mcp/console/bootstrap-su") {
+        res.end(JSON.stringify({
+          agent: portFixture.target, sessionId: 43, nativeSessionId: PORT_TARGET_NATIVE,
+          cwd: fx.cwd, promptFile,
+          envelopeEnv: { PAPERCUSP_SID: OWNER, CLAUDE_CONFIG_DIR: targetConfig },
+          sessionPortKickoffFile: seedFile,
+          sessionPort: { portId: PORT_ID, renderedHash: PORT_HASH },
+        }));
+      } else if (portFixture && path === "/api/adv/sessions/port/delivery") {
+        const request = JSON.parse(body);
+        res.end(JSON.stringify({ ok: true, status: request.status, targetAdvSessionId: 43 }));
       } else if (path.endsWith("/session-resumed")) {
         res.end(JSON.stringify({ ok: true, acquired: true, status: "acquired" }));
       } else {
@@ -234,6 +298,11 @@ async function stagePsuResume(fx: Fixture, extra: string[]): Promise<Staged> {
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
     PAPERCUSP_MCP_PROXY: "0",
+    ...(portFixture ? {
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: "100",
+      PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: "50",
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: "100",
+    } : {}),
   });
 
   const launches = () =>
@@ -277,6 +346,7 @@ interface PtyRun {
    */
   screen: string;
   launches: Launch[];
+  requests: RunResult["requests"];
 }
 
 /**
@@ -284,8 +354,8 @@ interface PtyRun {
  * `typed` is given, wait for the backend's ready marker and type it + Enter,
  * so the line only reaches the backend if the launcher handed it the terminal.
  */
-async function runPsuResumePty(fx: Fixture, extra: string[], typed?: string): Promise<PtyRun> {
-  const staged = await stagePsuResume(fx, extra);
+async function runPsuResumePty(fx: Fixture, extra: string[], typed?: string, portFixture?: PortFixture): Promise<PtyRun> {
+  const staged = await stagePsuResume(fx, extra, portFixture);
   const pty: IPty = ptySpawn(process.execPath, staged.argv, {
     name: "xterm-256color",
     cols: PTY_COLS,
@@ -326,7 +396,7 @@ async function runPsuResumePty(fx: Fixture, extra: string[], typed?: string): Pr
       setTimeout(() => reject(new Error(`pty run did not exit:\n${screen()}`)), 90_000),
     ),
   ]);
-  return { code, screen: backendFrame ?? screen(), launches: staged.launches() };
+  return { code, screen: backendFrame ?? screen(), launches: staged.launches(), requests: staged.requests };
 }
 
 /** The argv slice that names WHICH conversation the backend reopens. */
@@ -391,6 +461,36 @@ describe("PUI cross-backend resume refusal (R-25)", () => {
 });
 
 describe("PUI resume on a real terminal, as PUI's pane runs it (R-11, R-25)", () => {
+  it("a resumable cross-backend source completes into a conversation and usable PUI pane (R-25)", async () => {
+    const fx = fixture("codex");
+    const typed = `ported-input-${process.pid}`;
+    const run = await runPsuResumePty(fx, ["--agent", "claude", "--account", "default"], typed, { target: "claude" });
+    expect(run.code, run.screen).toBe(0);
+    expect(run.launches.map((l) => l.bin)).toEqual(["claude"]);
+    expect(run.launches[0].cwd).toBe(fx.cwd);
+    expect(run.screen).toContain(`CONVERSATION ${PORT_TARGET_NATIVE}: hello from before`);
+    expect(run.screen).toContain(`TYPED ${typed}`);
+    const paths = run.requests.map((r) => r.path);
+    expect(paths).toContain("/api/adv/sessions/port/inspect");
+    expect(paths).toContain("/api/adv/sessions/port/prepare");
+    const bootstrap = JSON.parse(run.requests.find((r) => r.path === "/api/agent-mcp/console/bootstrap-su")!.body);
+    expect(bootstrap.session_port_token).toBe(`${PORT_ID}.fixture`);
+    expect(bootstrap.owner_id).toBe(OWNER);
+    const delivery = JSON.parse(run.requests.find((r) => r.path === "/api/adv/sessions/port/delivery")!.body);
+    expect(delivery).toMatchObject({ status: "delivered", proof: { persisted: true, renderedHash: PORT_HASH } });
+    expect(readFileSync(delivery.proof.nativeRef, "utf8")).toContain("hello from before");
+  }, 150_000);
+
+  it("CONTROL: a port target that exits before opening its pane fails visibly and cannot pass as completion (R-25)", async () => {
+    const run = await runPsuResumePty(fixture("codex"), ["--agent", "claude", "--account", "default"], undefined, { target: "claude", brokenPane: true });
+    expect(run.code, run.screen).not.toBe(0);
+    expect(run.screen).toContain("BROKEN_PANE_CONTROL");
+    expect(run.screen).not.toContain("BACKEND claude READY");
+    const delivery = JSON.parse(run.requests.find((r) => r.path === "/api/adv/sessions/port/delivery")!.body);
+    expect(delivery).toMatchObject({ status: "failed" });
+    expect(delivery.error).toMatch(/exited|persist|seed/i);
+  }, 150_000);
+
   it.each(BACKENDS)(
     "the resumed %s backend owns the terminal: its conversation is on screen and typed input reaches it",
     async (agent) => {
