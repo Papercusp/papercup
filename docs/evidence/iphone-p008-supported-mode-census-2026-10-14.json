@@ -4,20 +4,22 @@
   "workItemId": "WI-10004735",
   "planSlug": "iphone-public-release-2026-08-11",
   "planItemId": "P-008",
-  "spec": "AUTO-BAR-R-2-P-008@2",
+  "spec": "AUTO-BAR-R-2-P-008@3",
+  "reviewedAt": "2026-10-15T00:03:00Z",
   "scope": "Current source and retained simulator subsets; this census does not close the whole R-2 live acceptance bar.",
   "source": {
     "repository": "papercup-rust-mobile",
     "commit": "b264f57cbdaaafa0f7e2c7ca7f7e547b4a2275a8",
     "dirty": false,
-    "fingerprint": "1038f28b436acd0361508fcfefa1fe8067c2bfac0faa728b5f317e5bed8bdacf"
+    "fingerprint": "1038f28b436acd0361508fcfefa1fe8067c2bfac0faa728b5f317e5bed8bdacf",
+    "scope": "Historical source census snapshot. Later native receipts below retain their own exact source identities; this is not a current whole-candidate admission."
   },
   "supportedModes": [
     {
       "mode": "Desktop operator on LAN or protected public HTTPS",
       "advertised": true,
       "evidence": "Current PairView.swift and store/LISTING.md; native visible LAN pairing/reply/relaunch and public HTTPS authorized Inbox receipts retained separately.",
-      "limit": "The public HTTPS native result does not exercise operator chat."
+      "limit": "The later native-public-chat receipt exercises actual assistant reply and ordinary Keychain relaunch through protected public HTTPS. Production hostname configuration remains separately tracked by EI-25946131547854574."
     },
     {
       "mode": "BYOC or hosted cloud workspace through advertised relay",
@@ -78,9 +80,9 @@
       "row": 3,
       "journey": "Supported public HTTPS pairing, workspace and chat",
       "status": "partial",
-      "evidence": "docs/evidence/iphone-p008-native-public-https-2026-10-14.json; testRunId 21244733; binding 44553",
-      "observed": "Actual iOS URLSession protected 404/401 boundaries, visible pairing and authorized Inbox passed.",
-      "remaining": "Actual public HTTPS operator chat and production hostname configuration EI-25946131547854574."
+      "evidence": "docs/evidence/iphone-p008-native-public-https-2026-10-14.json; docs/evidence/iphone-p008-native-public-chat-2026-10-14.json; testRunIds 21244733 and 21245578; carried-forward bindings 45314 and 45317",
+      "observed": "Actual iOS protected 404/401 boundaries, visible pairing, authorized Inbox, actual assistant reply and ordinary Keychain relaunch passed in retained selected runs.",
+      "remaining": "Production hostname configuration EI-25946131547854574; physical cellular radio remains a known simulator limit under D-026."
     },
     {
       "row": 4,
@@ -92,9 +94,10 @@
     {
       "row": 5,
       "journey": "Disconnect owned operator and automatic recovery",
-      "status": "partial",
-      "observed": "Controlled relay workspace_offline and transport failure recovered without re-pairing in native UI.",
-      "remaining": "Equivalent live owned operator stop/restore journey."
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-offline-recovery-regression-2026-10-14.json; testRunId 21247556; carried-forward binding 45322",
+      "observed": "The actual owned operator stopped and a replacement became ready with the same private database and signing identity. Native Inbox data recovered before relaunch; the HTTP 502 error cleared. Ordinary Keychain relaunch retained pairing and data. The strengthened native test passed and all 283 declared artifact hashes/sizes matched.",
+      "remaining": "Preserve exact historical source and dirty guest metadata limits. The earlier offline-recovery receipt remains a recorded false-positive detector result, not the passing regression proof."
     },
     {
       "row": 6,
@@ -108,14 +111,16 @@
       "row": 7,
       "journey": "Expired pair and device credentials",
       "status": "partial",
-      "observed": "Current integration proof 21243583/binding 44242 expires an owned pair token (401) and correctly signed device token (403 read/heartbeat/switch), then checks the unexpired positive control.",
-      "remaining": "Native visible expired-pair/device guidance and fresh pairing against the real current-build backend."
+      "evidence": "docs/evidence/iphone-p008-native-expiry-2026-10-14.json; docs/evidence/iphone-p008-native-pair-guidance-2026-10-14.json; docs/evidence/iphone-p008-native-workspace-isolation-2026-10-14.json",
+      "observed": "Retained native expired-pair guidance and fresh pairing passed against the actual disposable operator. The later guidance regression proves complete rendered text. Current integration run 21246468 expires pair/device credentials, checks read/heartbeat/switch refusal and retains positive controls.",
+      "remaining": "Actual native expired-device-token guidance is not separately established by the expired-pair case. Preserve that scope distinction; do not rerun completed expired-pair jobs to reconstruct evidence."
     },
     {
       "row": 8,
       "journey": "Unauthorized workspace isolation and supported UI switching",
       "status": "partial",
-      "observed": "Current integration proof 21243583/binding 44242 proves token workspace cannot be overridden by a header, workspace device lists are isolated, cross-workspace revocation has no effect, and unknown workspace switching is refused.",
+      "evidence": "docs/evidence/iphone-p008-native-workspace-isolation-2026-10-14.json; testRunId 21246468; carried-forward binding 45320",
+      "observed": "The later current-source integration run passed both tests and recorded 20 lifecycle/isolation checks through real HTTP and disposable PostgreSQL. Token workspace cannot be overridden by a header, device lists are isolated, cross-workspace revocation has no effect, and unknown workspace switching is refused.",
       "remaining": "Native supported UI switching and its selected workspace authorization journey."
     },
     {
@@ -136,26 +141,37 @@
     }
   ],
   "existingBackendProof": {
-    "testRunId": 21243583,
-    "bindingId": 44242,
+    "testRunId": 21246468,
+    "bindingId": 45320,
     "testPath": "packages/operator-core/lib/device-operator-api-profile.integration.test.ts",
     "status": "pass",
-    "currentness": "current",
-    "verifiedHow": "Read exact persisted test row, conventional test's positive/negative cases, and fresh server-measured plans:get-spec-evidence for binding44242; no test was rerun."
+    "currentness": "Exact retained source-bound result; no new source-currentness comparison was supplied in this census review.",
+    "verifiedHow": "Read the retained conventional integration receipt and plans:get-spec-evidence carry-forward result; no test was rerun."
   },
   "acceptanceGovernance": {
     "rubric": "acceptance-iphone-public-release-2026-08-11",
-    "revision": 3,
+    "revision": 4,
+    "criteriaHash": "c042c98a714c1fc895dc43cd018182d4595fc345b62ce877b847cc3eeb98164d",
     "vetting": "unvetted",
     "reason": "rejected-attestation: grading-audit-unsettled",
     "candidate": "EI-24782775335411324",
-    "note": "Current rubric read is authoritative; candidate work item is done but grade-the-grader audit remains reported pending. No acceptance grade was asserted."
+    "note": "The only recorded candidate attests meaning revision 3; its grade-the-grader audit is pending and stale. It cannot vet current revision 4. A current independent-review consult returned no available responder and launched nobody; a bounded review was requested from an existing iphone-release fleet member. No acceptance grade was asserted.",
+    "reviewConsult": "conv-mv8rquhz-0000-006ea3c7f1094ca8bbb524e5504be25a",
+    "clausePromotion": {
+      "fromRevision": 2,
+      "toRevision": 3,
+      "lifecycleStatus": "active",
+      "contentHash": "66c2ed74fcfb585cd35733f4b2414da43fb61a09c0e3b1208126fc5d9edd383a",
+      "evidenceCarriedForward": 9,
+      "scope": "Provenance-only activation; behavior, falsifier, required evidence/layers, sourceBar and acceptanceRef stayed unchanged. This does not assert an acceptance pass."
+    }
   },
   "disclosedGaps": [
-    "No physical cellular-radio or production APNs claim",
+    "Real cellular radio, production APNs delivery, Bluetooth hardware and battery endurance are known simulator limits under D-026",
     "No signed IPA, store submission or shipment claim",
     "No rerun of completed native jobs",
-    "Ledger binding 44553 source currentness is unknown: caller fingerprints are not independent server measurements",
-    "Owner directives 1483 and 1485 remain open"
+    "Native workspace switching, native expired-device-token guidance, production hostname configuration and accepted live hosted/BYOC target/entitlement evidence remain open",
+    "Carried-forward native bindings retain exact historical source fingerprints; this review does not assert whole-candidate currentness",
+    "Owner-directive disposition is outside this evidence census; read the authoritative directive ledger"
   ]
 }

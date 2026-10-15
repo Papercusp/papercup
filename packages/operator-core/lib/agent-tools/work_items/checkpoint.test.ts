@@ -13,6 +13,10 @@
  */
 import { describe, it, expect, expectTypeOf, vi, beforeEach, afterAll } from 'vitest';
 import { z } from 'zod';
+// Formatting assertions ignore the ID anchor; lifecycle tests below verify IDs.
+const withoutRowIds = (note: string | null | undefined) =>
+  (note ?? '').replace(/^(- (?:[✓?⚠] )?)\[#[a-z0-9_.:-]+\] /gm, '$1');
+
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/agent-mcp';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
@@ -546,7 +550,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(rowsMode).toContain('controls CHECK ROWS only');
     expect(rowsMode).toContain("append:true` + `rowsMode:'replace'");
     expect(rowsMode).toContain('`retireIds` are required');
-    for (const token of ['append:false', "rowsMode:'replace'", 'confirmShrink:true', 'confirmRetire:true']) {
+    for (const token of ['append:false', "rowsMode:'replace'", 'confirmShrink:true', 'retireIds:[...]']) {
       expect(rowsMode).toContain(token);
       expect(checkpoint.description).toContain(token.replaceAll("'", '"'));
     }
@@ -1553,7 +1557,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const stored = (await setWorkItemCheckpointWithPrior.mock.results.at(-1)?.value as { stored: string }).stored;
       expect(stored).toContain('prior narrative');
       expect(stored).toContain('new progress');
-      expect(stored).toContain('## Walls');
+      expect(withoutRowIds(stored)).toContain('## Walls');
       expect(stored.indexOf('new progress')).toBeLessThan(stored.indexOf('## Walls'));
       expect(stored).toContain('the gate remains open');
     });
@@ -2472,6 +2476,60 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     const lastStored = async (): Promise<string | null> =>
       ((await setWorkItemCheckpointWithPrior.mock.results.at(-1)!.value) as { stored: string | null }).stored;
 
+    const carriedRowIdsFor = async (claims: string[]): Promise<string[]> => {
+      const rows = splitCarryNoteChecks(await lastStored()).checks;
+      return claims.map((claim) => rows.find((row) => row.claim === claim)?.id ?? claim);
+    };
+
+    it('P-007 persists IDs for unkeyed rows and preserves identity, evidence and age across rewrites', async () => {
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'first body', checks: [
+        { claim: 'measured claim', recheck: 'probe measured', verified: 'measurement recorded' },
+        { claim: 'another claim', recheck: 'probe another' },
+      ] });
+      const first = await lastStored();
+      const rows = splitCarryNoteChecks(first).checks;
+      expect(rows.map(row => row.id)).toEqual([expect.any(String), expect.any(String)]);
+      expect(new Set(rows.map(row => row.id)).size).toBe(2);
+
+      withPrior(first);
+      await one({ id: 'WI-7', checkpoint: 'second body', rowsMode: 'replace',
+        checks: [{ id: rows[0]!.id, claim: 'measured claim with tighter wording' }] });
+      const secondRows = splitCarryNoteChecks(await lastStored()).checks;
+      expect(secondRows).toHaveLength(2);
+      expect(secondRows[0]).toMatchObject({ ...rows[0], claim: 'measured claim with tighter wording' });
+      expect(secondRows[1]).toEqual(rows[1]);
+    });
+
+    it('P-007 keyed rows require their ID to retire; claim text cannot remove them', async () => {
+      withPrior(null);
+      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'protected evidence', verified: 'observed' }] });
+      const prior = await lastStored();
+      const id = splitCarryNoteChecks(prior).checks[0]!.id!;
+      expect(id).toEqual(expect.any(String));
+
+      withPrior(prior);
+      const refused = await one({ id: 'WI-7', checks: [], rowsMode: 'replace', retireIds: ['protected evidence'] });
+      expect(refused).toMatchObject({ ok: false, errorCode: 'checkpoint_retire_ids_mismatch' });
+      withPrior(prior);
+      const retired = await one({ id: 'WI-7', checks: [], rowsMode: 'replace', retireIds: [id] });
+      expect(retired).toMatchObject({ ok: true, checks: 0 });
+      expect(await lastStored()).toBe('body');
+    });
+
+    it.each([{ clear: true }, { checkpoint: '', confirmClear: true }])(
+      'P-007 body clear %j preserves omitted check IDs and evidence', async (clearArgs) => {
+        withPrior(null);
+        await one({ id: 'WI-7', checkpoint: 'narrative to clear', checks: [{ claim: 'carried proof', verified: 'observed' }] });
+        const prior = await lastStored();
+        withPrior(prior);
+        expect(await one({ id: 'WI-7', ...clearArgs })).toMatchObject({ ok: true, checks: 1, cleared: false });
+        const stored = await lastStored();
+        expect(stored).not.toContain('narrative to clear');
+        expect(splitCarryNoteChecks(stored).checks).toEqual(splitCarryNoteChecks(prior).checks);
+      },
+    );
+
     beforeEach(() => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     });
@@ -2500,11 +2558,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
-      expect(stored).toContain('- ? true without evidence stays predicted');
-      expect(stored).toContain('- ? false stays predicted');
-      expect(stored).toContain('- ? false stays predicted even with stray evidence');
+      expect(withoutRowIds(stored)).toContain('- ? true without evidence stays predicted');
+      expect(withoutRowIds(stored)).toContain('- ? false stays predicted');
+      expect(withoutRowIds(stored)).toContain('- ? false stays predicted even with stray evidence');
       expect(stored).not.toContain('contradictory evidence must not override false');
-      expect(stored).toContain('- ✓ true with evidence becomes verified');
+      expect(withoutRowIds(stored)).toContain('- ✓ true with evidence becomes verified');
       expect(stored).toContain('evidence: observed probe C pass');
     });
 
@@ -2577,10 +2635,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       expect(r).toMatchObject({ ok: true, checks: 3 });
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ ok true with evidence is verified');
+      expect(withoutRowIds(stored)).toContain('- ✓ ok true with evidence is verified');
       expect(stored).toContain('evidence: observed probe A pass');
-      expect(stored).toContain('- ? ok false with stray evidence stays predicted');
-      expect(stored).toContain('- ? ok true without evidence stays predicted');
+      expect(withoutRowIds(stored)).toContain('- ? ok false with stray evidence stays predicted');
+      expect(withoutRowIds(stored)).toContain('- ? ok true without evidence stays predicted');
       expect(stored).not.toContain('discarded because the result was false');
     });
 
@@ -2607,10 +2665,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ labelled claim');
+      expect(withoutRowIds(stored)).toContain('- ✓ labelled claim');
       expect(stored).toContain('evidence: observed labelled claim');
-      expect(stored).toContain('- ? named claim');
-      expect(stored).toContain('- ✓ canonical claim');
+      expect(withoutRowIds(stored)).toContain('- ? named claim');
+      expect(withoutRowIds(stored)).toContain('- ✓ canonical claim');
       expect(stored).not.toContain('ignored label');
       expect(stored).not.toContain('ignored name');
       expect(r.checks).toBe(3);
@@ -2646,11 +2704,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       expect(r.ok).toBe(true);
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ probe alias true with evidence becomes verified — re-check: run probe alias A');
+      expect(withoutRowIds(stored)).toContain('- ✓ probe alias true with evidence becomes verified — re-check: run probe alias A');
       expect(stored).toContain('evidence: observed probe alias A pass');
-      expect(stored).toContain('- ? probe alias false stays predicted — re-check: run probe alias B');
+      expect(withoutRowIds(stored)).toContain('- ? probe alias false stays predicted — re-check: run probe alias B');
       expect(stored).not.toContain('contradictory probe alias evidence must be discarded');
-      expect(stored).toContain('- ✓ canonical recheck wins over probe alias — re-check: canonical recheck command');
+      expect(withoutRowIds(stored)).toContain('- ✓ canonical recheck wins over probe alias — re-check: canonical recheck command');
       expect(stored).not.toContain('ignored probe alias');
       expect(r.checks).toBe(3);
     });
@@ -2679,12 +2737,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       expect(r).toMatchObject({ ok: true, checks: 2 });
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ the checkpoint handler regression passes');
+      expect(withoutRowIds(stored)).toContain('- ✓ the checkpoint handler regression passes');
       expect(stored).toContain(
         're-check: npm run test:file -- packages/operator-core/lib/agent-tools/work_items/checkpoint.test.ts',
       );
       expect(stored).toContain('evidence: handler regression passed with the structured row intact');
-      expect(stored).toContain('- ✓ canonical claim wins');
+      expect(withoutRowIds(stored)).toContain('- ✓ canonical claim wins');
       expect(stored).toContain('re-check: canonical recheck wins');
       expect(stored).toContain('evidence: canonical evidence wins');
       expect(stored).not.toContain('ignored kind');
@@ -2710,7 +2768,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r).toMatchObject({ ok: true, checks: 1 });
       const stored = await lastStored();
       expect(splitCarryNoteChecks(stored).checks).toEqual([
-        { claim: 'gate is green', probe, sinceMs: expect.any(Number) },
+        { id: expect.any(String), claim: 'gate is green', probe, sinceMs: expect.any(Number) },
       ]);
     });
 
@@ -2728,9 +2786,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       expect(r).toMatchObject({ ok: true, checks: 3 });
       const stored = await lastStored();
-      expect(stored).toContain('- ? the checkpoint write succeeded');
-      expect(stored).toContain('- ? object rows still work beside strings — re-check: run probe S');
-      expect(stored).toContain('- ? stored note carries every rendered row');
+      expect(withoutRowIds(stored)).toContain('- ? the checkpoint write succeeded');
+      expect(withoutRowIds(stored)).toContain('- ? object rows still work beside strings — re-check: run probe S');
+      expect(withoutRowIds(stored)).toContain('- ? stored note carries every rendered row');
     });
 
     it('applies the same boolean compatibility repair inside items[]', async () => {
@@ -2745,7 +2803,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         ],
       });
       expect(out.results[0]).toMatchObject({ ok: true, id: 'WI-7' });
-      expect(await lastStored()).toContain('- ? nested row');
+      expect(withoutRowIds(await lastStored())).toContain('- ? nested row');
     });
 
     it('EI-21828094173087688: accepts boolean `ok` compatibility rows inside items[]', async () => {
@@ -2769,7 +2827,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       expect(out.results[0]).toMatchObject({ ok: true, id: 'WI-7', checks: 1 });
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ nested ok true with evidence is verified');
+      expect(withoutRowIds(stored)).toContain('- ✓ nested ok true with evidence is verified');
       expect(stored).toContain('evidence: observed nested probe A pass');
     });
 
@@ -2787,9 +2845,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const stored = await lastStored();
       expect(stored).toContain('## Checks');
       // VERIFIED carries its evidence; PREDICTED carries only its probe.
-      expect(stored).toContain('- ✓ gate is green');
+      expect(withoutRowIds(stored)).toContain('- ✓ gate is green');
       expect(stored).toContain('evidence: ran 21:30Z, 24/24 pass');
-      expect(stored).toContain('- ? the deploy will pick this up');
+      expect(withoutRowIds(stored)).toContain('- ? the deploy will pick this up');
       // The count is read back off what was STORED, not off the input.
       expect(r.checks).toBe(2);
     });
@@ -2818,7 +2876,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
-      expect(stored).toContain('- ⚠ the suite is green');
+      expect(withoutRowIds(stored)).toContain('- ⚠ the suite is green');
       expect(stored).toContain('evidence: STILL RUNNING at 09:15Z');
       // The whole point of the tier: it must NEVER read as the affirmative one.
       expect(stored).not.toContain('- ✓ the suite is green');
@@ -2839,7 +2897,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ the focused checkpoint test passes');
+      expect(withoutRowIds(stored)).toContain('- ✓ the focused checkpoint test passes');
       expect(stored).toContain('evidence: 8/8 tests passed');
     });
 
@@ -2853,14 +2911,14 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }],
       });
       const prior = await lastStored();
-      expect(prior).toContain('- ✓ X holds');
+      expect(withoutRowIds(prior)).toContain('- ✓ X holds');
 
       withPrior(prior);
       const r2 = await one({ id: 'WI-7', checkpoint: 'second body, fully rewritten' });
       const stored2 = await lastStored();
       expect(stored2).toContain('second body, fully rewritten');
       expect(stored2).not.toContain('first body');
-      expect(stored2).toContain('- ✓ X holds');
+      expect(withoutRowIds(stored2)).toContain('- ✓ X holds');
       expect(r2.checks).toBe(1);
     });
 
@@ -3091,17 +3149,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [], rowsMode: 'replace', confirmRetire: true });
+      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [], rowsMode: 'replace', confirmRetire: true, retireIds: await carriedRowIdsFor(["X holds"]) });
       const stored = await lastStored();
       expect(stored).not.toContain('## Checks');
       expect(stored).not.toContain('X holds');
       expect(r.checks).toBe(0);
     });
 
-    it('a CLEAR wipes the rows too, so completion cleanup cannot resurrect a checks-only checkpoint', async () => {
-      // Deliberate divergence from loop:checkpoint, where checks survive a note clear.
-      // work_items:complete clears the checkpoint as terminal cleanup; rows surviving
-      // that would leave a closed item carrying a checkpoint made only of checks.
+    it('a narrative CLEAR preserves carried checks until individually retired', async () => {
+      // Terminal completion calls the store directly. This checkpoint rewrite
+      // clears prose while the carried evidence remains available to successors.
       withPrior(null);
       await one({
         id: 'WI-7',
@@ -3113,9 +3170,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       withPrior(prior);
       const r = await one({ id: 'WI-7', checkpoint: null });
       expect(r.ok).toBe(true);
-      expect(r.cleared).toBe(true);
-      expect(await lastStored()).toBeNull();
-      expect(r.checks).toBe(0);
+      expect(r.cleared).toBe(false);
+      expect(await lastStored()).toContain('X holds');
+      expect(await lastStored()).not.toContain('body');
+      expect(r.checks).toBe(1);
     });
 
     /**
@@ -3138,7 +3196,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
       const prior = await lastStored();
       expect(prior).toContain('the full plan: A, then B, then C');
-      expect(prior).toContain('- ? X holds');
+      expect(withoutRowIds(prior)).toContain('- ? X holds');
 
       // The reported call: promote one check to VERIFIED, touching nothing else.
       withPrior(prior);
@@ -3151,7 +3209,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       // The body is the whole point: it must still be there.
       expect(stored).toContain('the full plan: A, then B, then C');
       expect(stored).toContain('the file-by-file record of what landed');
-      expect(stored).toContain('- ✓ X holds');
+      expect(withoutRowIds(stored)).toContain('- ✓ X holds');
       expect(stored).toContain('evidence: ran probe X at 16:20Z');
       expect(r.cleared).not.toBe(true);
     });
@@ -3290,7 +3348,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace', confirmRetire: true });
+      const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace', confirmRetire: true, retireIds: await carriedRowIdsFor(["X holds"]) });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
       expect(stored).toContain('the body worth keeping');
@@ -3311,7 +3369,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         return lastStored();
       }
 
-      it('refuses an unconfirmed replace before storing and names every retired check', async () => {
+      it('preserves omitted checks during a replace-style write without retireIds', async () => {
         const prior = await seedThree();
         withPrior(await prior);
         getWorkItemCheckpoint.mockClear();
@@ -3322,18 +3380,15 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           checks: [{ claim: 'a brand new claim' }],
           rowsMode: 'replace',
         });
-        expect(r).toMatchObject({
-          ok: false,
-          errorCode: 'checkpoint_replace_would_drop_rows',
-          retryable: true,
-          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
-        });
-        expect(r.message).toContain('confirmRetire');
+        expect(r).toMatchObject({ ok: true, checks: 4 });
+        expect(r.checksDropped).toBeUndefined();
+        const stored = await lastStored();
+        for (const row of THREE) expect(stored).toContain(row.claim);
         expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before + 1);
-        expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
+        expect(getWorkItemCheckpoint).toHaveBeenCalled();
       });
 
-      it('does not let confirmShrink bypass confirmRetire for a rows replacement', async () => {
+      it('confirmShrink changes the body without retiring omitted checks', async () => {
         const prior = await seedThree();
         withPrior(await prior);
         const before = setWorkItemCheckpointWithPrior.mock.calls.length;
@@ -3345,13 +3400,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           confirmShrink: true,
         });
 
-        expect(r).toMatchObject({
-          ok: false,
-          errorCode: 'checkpoint_replace_would_drop_rows',
-          retryable: true,
-          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
-        });
-        expect(r.message).toContain('confirmRetire');
+        expect(r).toMatchObject({ ok: true, checks: 4 });
+        expect(r.checksDropped).toBeUndefined();
+        const stored = await lastStored();
+        for (const row of THREE) expect(stored).toContain(row.claim);
         expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before + 1);
       });
 
@@ -3363,13 +3415,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           checkpoint: 'new body',
           checks: [{ claim: 'a brand new claim' }],
           rowsMode: 'replace',
-          confirmRetire: true,
+          confirmRetire: true, retireIds: await carriedRowIdsFor(["gate is green","main is at abc123","deploy landed"]),
         });
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
       });
 
-      it('requires exact retireIds when appending a body while replacing checks, even with confirmRetire:true', async () => {
+      it('confirmRetire:true preserves omitted checks while appending a body', async () => {
         const prior = await seedThree();
         withPrior(await prior);
         getWorkItemCheckpoint.mockClear();
@@ -3383,27 +3435,20 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           confirmRetire: true,
         });
 
-        expect(r).toMatchObject({
-          ok: false,
-          errorCode: 'checkpoint_replace_would_drop_rows',
-          retryable: true,
-          retireIdsRequired: true,
-          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
-        });
-        expect(r.message).toContain('confirmRetire:true is not sufficient');
-        expect(r.message).toContain('retireIds');
-        expect(getWorkItemCheckpoint).not.toHaveBeenCalled(); // refusal comes from the locked transform
+        expect(r).toMatchObject({ ok: true, checks: 4 });
+        expect(r.checksDropped).toBeUndefined();
+        const stored = await lastStored();
+        for (const row of THREE) expect(stored).toContain(row.claim);
+        expect(stored).toContain('append narrative while replacing checks');
       });
 
-      it('refuses an unconfirmed explicit [] clear', async () => {
+      it('an empty replace-style list preserves its carried checks', async () => {
         const prior = await seedThree();
         withPrior(await prior);
         const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace' });
-        expect(r).toMatchObject({
-          ok: false,
-          errorCode: 'checkpoint_replace_would_drop_rows',
-          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
-        });
+        expect(r).toMatchObject({ ok: true, checks: 3 });
+        expect(r.checksDropped).toBeUndefined();
+        expect(withoutRowIds(await lastStored())).toBe(withoutRowIds(prior));
       });
 
       it('does not require confirmation when replace keeps every carried row', async () => {
@@ -3427,7 +3472,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           checkpoint: 'new body',
           checks: [{ claim: 'a brand new claim' }],
           rowsMode: 'replace',
-          retireIds: ['gate is green', 'main is at abc123', 'deploy landed'],
+          retireIds: await carriedRowIdsFor(['gate is green', 'main is at abc123', 'deploy landed']),
         });
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
@@ -3442,7 +3487,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           append: true,
           rowsMode: 'replace',
           checks: [{ claim: 'replacement check' }],
-          retireIds: ['gate is green', 'main is at abc123', 'deploy landed'],
+          retireIds: await carriedRowIdsFor(['gate is green', 'main is at abc123', 'deploy landed']),
         });
 
         expect(r.ok).toBe(true);
@@ -3465,18 +3510,18 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           checks: [{ claim: 'a brand new claim' }],
           rowsMode: 'replace',
           confirmRetire: true,
-          retireIds: ['gate is green', 'main is at abc123'], // missing "deploy landed"
+          retireIds: await carriedRowIdsFor(['gate is green', 'main is at abc123']), // missing "deploy landed"
         });
         expect(r).toMatchObject({
           ok: false,
           errorCode: 'checkpoint_retire_ids_mismatch',
           retryable: true,
-          retireIdsRequested: ['gate is green', 'main is at abc123'],
+          retireIdsRequested: splitCarryNoteChecks(prior).checks.slice(0, 2).map(row => row.id),
         });
         expect(r.retireIdsActual).toEqual(
-          expect.arrayContaining(['gate is green', 'main is at abc123', 'deploy landed']),
+          expect.arrayContaining(splitCarryNoteChecks(prior).checks.map(row => row.id)),
         );
-        expect(r.message).toContain('deploy landed');
+        expect(r.message).toContain(splitCarryNoteChecks(prior).checks[2]!.id);
       });
 
       it('EI-21923095696933477: refuses when retireIds names a row that would NOT actually drop (a stale snapshot)', async () => {
@@ -3487,7 +3532,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           checkpoint: 'new body',
           checks: THREE, // keeps every carried row — nothing actually drops
           rowsMode: 'replace',
-          retireIds: ['gate is green'], // caller believes this drops; it does not
+          retireIds: await carriedRowIdsFor(['gate is green']), // caller believes this drops; it does not
         });
         expect(r).toMatchObject({ ok: false, errorCode: 'checkpoint_retire_ids_mismatch' });
         expect(r.retireIdsActual).toEqual([]);
@@ -3512,7 +3557,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             checkpoint: 'new body',
             checks: [{ claim: 'a replacement row' }],
             ...(rowsMode === undefined ? {} : { rowsMode }),
-            retireIds: ['gate is green'],
+            retireIds: await carriedRowIdsFor(['gate is green']),
           });
 
           expect(r).toMatchObject({
@@ -3520,7 +3565,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             errorCode: 'checkpoint_retire_ids_requires_replace',
             retryable: true,
             rowsMode: 'merge',
-            retireIdsRequested: ['gate is green'],
+            retireIdsRequested: splitCarryNoteChecks(prior).checks.slice(0, 1).map(row => row.id),
           });
           expect(r.message).toContain("rowsMode:'replace'");
           expect(r.message).toContain('omit `retireIds`');
@@ -3621,7 +3666,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             checkpoint: 'new body',
             checks: [{ claim: 'a brand new claim' }],
             rowsMode: 'replace',
-            retireIds: ['gate #4 is green'],
+            retireIds: await carriedRowIdsFor(['gate #4 is green']),
           });
           expect(r.ok).toBe(true);
           expect(r.checksDropped).toEqual(['gate #4 is green']);
@@ -3644,7 +3689,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.cleared).not.toBe(true);
       // No shortened body was sent to the store; the locked transform carries the
       // existing narrative forward while the dependency metadata is restamped.
-      expect(await lastStored()).toBe(prior);
+      expect(withoutRowIds(await lastStored())).toBe(withoutRowIds(prior));
       const call = setWorkItemCheckpointWithPrior.mock.calls.at(-1) as [
         unknown,
         unknown,
@@ -3672,7 +3717,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         cleared: false,
         learned: { posted: true, level: 'work_item', ref: 'WI-7' },
       });
-      expect(await lastStored()).toBe(prior);
+      expect(withoutRowIds(await lastStored())).toBe(withoutRowIds(prior));
       expect(postLearnedAtLevel).toHaveBeenCalledWith(
         expect.objectContaining({
           workItemId: 'WI-7',
@@ -3752,7 +3797,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.ok).toBe(true);
       const stored = await lastStored();
       expect(stored).not.toContain('body to be discarded');
-      expect(stored).toContain('- ? Y holds');
+      expect(withoutRowIds(stored)).toContain('- ? Y holds');
     });
 
     /**
@@ -3782,7 +3827,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           ],
         });
         const prior = await lastStored();
-        expect(prior).toContain('- ? A holds');
+        expect(withoutRowIds(prior)).toContain('- ? A holds');
 
         // The reporter's exact intent: touch ONE row, leave the rest alone.
         withPrior(prior);
@@ -3792,7 +3837,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           // Post-P-013 the drop only happens under an EXPLICIT replace — which is
           // precisely when it still has to be announced.
           rowsMode: 'replace',
-          confirmRetire: true,
+          confirmRetire: true, retireIds: await carriedRowIdsFor(["B holds","C holds"]),
         })) as { ok: boolean; checks: number; checksDropped?: string[]; checksDroppedNote?: string };
 
         expect(r.ok).toBe(true);
@@ -3800,7 +3845,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const stored = await lastStored();
         expect(stored).toContain('the body worth keeping');
         // ...but B and C are genuinely gone. This is the contract, now stated out loud.
-        expect(stored).toContain('- ✓ A holds');
+        expect(withoutRowIds(stored)).toContain('- ✓ A holds');
         expect(stored).not.toContain('B holds');
         expect(stored).not.toContain('C holds');
         expect(r.checks).toBe(1);
@@ -3917,7 +3962,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.ok).toBe(true);
           const stored = await lastStored();
           // The new row landed...
-          expect(stored).toContain('- ✓ D holds');
+          expect(withoutRowIds(stored)).toContain('- ✓ D holds');
           // ...and NOTHING carried was destroyed — the whole point.
           expect(stored).toContain('A holds');
           expect(stored).toContain('B holds');
@@ -3948,7 +3993,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.ok).toBe(true);
           const stored = await lastStored();
           // Promoted from PREDICTED to VERIFIED in place — one row, not two.
-          expect(stored).toContain('- ✓ A holds');
+          expect(withoutRowIds(stored)).toContain('- ✓ A holds');
           expect(stored).not.toContain('- ? A holds');
           expect(stored).toContain('B holds');
           expect(r.checks).toBe(2);
@@ -4113,7 +4158,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.ok).toBe(false);
           expect(r.errorCode).toBe('append_checks_overflow');
           expect(r.unmatchedRowRefs).toEqual(['no such carried check']);
-          expect(readCurrent()).toBe(prior);
+          expect(withoutRowIds(readCurrent())).toBe(withoutRowIds(prior));
         });
 
         /**
@@ -4256,10 +4301,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           };
 
           expect(r).toMatchObject({ ok: false, errorCode: 'append_checks_overflow' });
-          expect(readCurrent()).toBe(prior);
+          expect(withoutRowIds(readCurrent())).toBe(withoutRowIds(prior));
         });
 
-        it('honors confirmRetire:true for checks-only merge overflow and reports the confirmed eviction', async () => {
+        it('confirmRetire:true cannot authorize checks-only eviction of an unnamed row', async () => {
           const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
           }));
@@ -4281,16 +4326,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             checksDroppedNote?: string;
           };
 
-          expect(r).toMatchObject({
-            ok: true,
-            checks: CARRY_NOTE_MAX_CHECKS,
-          });
-          expect(r.errorCode).toBeUndefined();
+          expect(r).toMatchObject({ ok: false, errorCode: 'append_checks_overflow' });
           expect(r.checksDropped).toEqual([`PEER-${String(CARRY_NOTE_MAX_CHECKS).padStart(2, '0')} holds`]);
-          expect(r.checksDroppedNote).toContain('CAP EVICTION');
           const stored = readCurrent();
-          expect(stored).toContain('MINE holds');
-          expect(stored).not.toContain(`PEER-${String(CARRY_NOTE_MAX_CHECKS).padStart(2, '0')} holds`);
+          expect(stored).toBe(prior);
           expect(splitCarryNoteChecks(stored).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
         });
 
@@ -4316,7 +4355,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
          * prior still refuses caller-caused eviction; together they are the distinction
          * the fix turns on, and breaking either direction fails here.
          */
-        it('normalizes a legacy OVER-CAP prior on write — succeeds, lands exactly at the cap, PREDICTED rows evicted before VERIFIED', async () => {
+        it('preserves legacy over-cap rows and the append body, reporting a new row that cannot fit', async () => {
           const verifiedRows = Array.from({ length: 8 }, (_, i) => ({
             claim: `VERIFIED-${String(i + 1).padStart(2, '0')} holds`,
             recheck: `probe verified ${i + 1}`,
@@ -4352,30 +4391,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           const storedClaims = storedChecks.map((c) => c.claim);
 
           // Lands EXACTLY at the cap — the legacy excess is gone, not carried forward.
-          expect(storedChecks.length).toBe(CARRY_NOTE_MAX_CHECKS);
-          expect(r.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+          expect(storedChecks.map(({ id, ...row }) => row)).toEqual(splitCarryNoteChecks(prior).checks.map(({ id, ...row }) => row));
+          expect(r.checks).toBe(20);
 
           // The caller's own row survives; it is never the row the cap cuts.
-          expect(storedClaims).toContain('BRAND-NEW holds');
+          expect(storedClaims).not.toContain('BRAND-NEW holds');
+          expect(r).toMatchObject({ checksNotRetained: ['BRAND-NEW holds'] });
+          expect(readCurrent()).toContain('the finding I just made');
 
           // EVERY evidence-bearing row survives: 1 supplied + 8 VERIFIED = 9 of 12 seats,
           // leaving 3 for PREDICTED rows, so 9 of the 12 PREDICTED rows yield.
           for (const row of verifiedRows) expect(storedClaims).toContain(row.claim);
           const survivingPredicted = storedClaims.filter((c) => c.startsWith('PREDICTED-'));
-          expect(survivingPredicted.length).toBe(3);
+          expect(survivingPredicted.length).toBe(12);
 
           // The eviction is REPORTED, never silent, and names the legacy cause rather
           // than blaming the caller for a state that predates their write.
-          expect(r.checksDropped?.length).toBe(9);
-          expect(r.checksDropped?.every((c) => c.startsWith('PREDICTED-'))).toBe(true);
-          expect(r.checksDroppedNote).toMatch(/LEGACY CAP NORMALIZATION/);
-          expect(r.checksDroppedNote).toContain('not your mistake');
+          expect(r.checksDropped).toBeUndefined();
         });
 
         /** The self-heal must be TERMINAL: once normalized the note fits, so the very next
          *  additive write evicts nothing. Without this, a fix that merely trimmed on every
          *  write would pass the test above while quietly shedding a row per call. */
-        it('self-heals terminally — the write AFTER a legacy normalization evicts nothing', async () => {
+        it('repeated legacy over-cap appends preserve every carried row', async () => {
           const prior = withCarryNoteChecks(
             'legacy checkpoint body',
             Array.from({ length: 20 }, (_, i) => ({
@@ -4393,8 +4431,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             checks: [{ claim: 'FIRST holds', verified: 'measured' }],
           })) as { ok: boolean; checksDropped?: string[] };
           expect(first.ok).toBe(true);
-          expect(first.checksDropped?.length).toBeGreaterThan(0);
-          expect(splitCarryNoteChecks(readCurrent()).checks.length).toBe(CARRY_NOTE_MAX_CHECKS);
+          expect(first.checksDropped).toBeUndefined();
+          expect(splitCarryNoteChecks(readCurrent()).checks.map(({ id, ...row }) => row)).toEqual(splitCarryNoteChecks(prior).checks.map(({ id, ...row }) => row));
 
           // The note now FITS, so this write is an ordinary at-cap append — which the
           // companion guard refuses rather than silently evicting. Either way the
@@ -4412,7 +4450,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             // Refused as a normal caller-caused overflow — NOT as a legacy over-cap note.
             expect(second.errorCode).toBe('append_checks_overflow');
           }
-          expect(splitCarryNoteChecks(readCurrent()).checks.length).toBe(CARRY_NOTE_MAX_CHECKS);
+          expect(splitCarryNoteChecks(readCurrent()).checks.map(({ id, ...row }) => row)).toEqual(splitCarryNoteChecks(prior).checks.map(({ id, ...row }) => row));
+          expect(readCurrent()).toContain('first touch');
+          expect(readCurrent()).toContain('second touch');
         });
 
         it('accepts the advertised append:true checks:[] recovery when a legacy prior exceeds the current cap', async () => {
@@ -4427,7 +4467,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
           expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS + 1 });
           expect(r.error).toBeUndefined();
-          expect(readCurrent()).toBe(prior);
+          expect(withoutRowIds(readCurrent())).toBe(withoutRowIds(prior));
         });
 
         it('refreshes selected keyed rows in an over-cap legacy note without evicting its evidence', async () => {
@@ -4473,7 +4513,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(stored).toContain('LEGACY-50 holds');
         });
 
-        it('normalizes over-cap legacy checks while preserving the submitted append body', async () => {
+        it('refuses an append that cannot fit without deleting legacy evidence rows', async () => {
           const legacyChecks = Array.from({ length: 83 }, (_, i) => ({
             id: `legacy-${String(i + 1).padStart(2, '0')}`,
             claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
@@ -4492,20 +4532,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             legacyChecksNormalization?: { truncatedFields: number; droppedRows: number };
           };
 
-          expect(r.ok).toBe(true);
-          expect(r.errorCode).toBeUndefined();
+          expect(r).toMatchObject({ ok: false, errorCode: 'append_body_overflow' });
           const current = readCurrent();
-          expect(current).toContain(addendum);
+          expect(current).toBe(prior);
           if (current === null) throw new Error('legacy checkpoint write unexpectedly cleared');
-          expect(current.length).toBeLessThanOrEqual(32000);
-          expect(r.checksDropped?.length).toBeGreaterThan(0);
-          expect(r.checksDroppedNote).toContain('LEGACY BYTE NORMALIZATION');
           // This fixture exceeds the byte cap through row count/serialized evidence,
           // not any individual soft field cap. Row-only normalization must not claim
           // that a field was shortened; that signal is reserved for truncateCarryField
           // repairs, while droppedRows reports the legacy rows yielded for body space.
-          expect(r.legacyChecksNormalization?.truncatedFields).toBe(0);
-          expect(r.legacyChecksNormalization?.droppedRows).toBeGreaterThan(0);
+          expect(r.checksDropped).toBeUndefined();
+          expect(splitCarryNoteChecks(current).checks).toEqual(splitCarryNoteChecks(prior).checks);
         });
 
         /**
@@ -4707,7 +4743,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           });
           expect(r.rowsModeNote).toContain('NO-OP');
           expect(r.error).toBeUndefined();
-          expect(readCurrent()).toBe(prior);
+          expect(withoutRowIds(readCurrent())).toBe(withoutRowIds(prior));
         });
 
         it('PLAIN (non-append) replace still retires a stale check when explicitly confirmed', async () => {
@@ -4723,7 +4759,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             id: 'WI-7',
             checks: [{ claim: 'A holds', recheck: 'probe A' }],
             rowsMode: 'replace',
-            confirmRetire: true,
+            confirmRetire: true, retireIds: await carriedRowIdsFor(["B is stale"]),
           })) as { ok: boolean; checks: number; checksDropped?: string[] };
 
           expect(r.ok).toBe(true);
@@ -4761,7 +4797,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             recheck: `probe fresh ${i + 1}`,
           }));
 
-          it('refuses (does not silently merge-at-cap) when confirmRetire is not passed', async () => {
+          it('preserves rows through the shrink retry and reports supplied rows that cannot fit', async () => {
             const prior = withCarryNoteChecks(bigBody, staleRows);
             expect(prior.length).toBeGreaterThan(500);
             const readCurrent = installLegacyPrior(prior);
@@ -4773,18 +4809,15 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
               checks: freshRows,
             })) as { ok: boolean; errorCode?: string; checksDropped?: string[]; checksNotRetained?: string[] };
 
-            expect(r).toMatchObject({
-              ok: false,
-              errorCode: 'checkpoint_replace_would_drop_rows',
-              checksDropped: staleRows.map((row) => row.claim),
-            });
+            expect(r).toMatchObject({ ok: true, checksNotRetained: freshRows.map(row => row.claim) });
             // The self-contradictory shape this bug reported must not appear on a refusal.
-            expect(r.checksNotRetained).toBeUndefined();
+            expect(r.checksDropped).toBeUndefined();
             // Refused ⇒ nothing written.
-            expect(readCurrent()).toBe(prior);
+            expect(splitCarryNoteChecks(readCurrent()).checks.map(({ id, ...row }) => row)).toEqual(splitCarryNoteChecks(prior).checks.map(({ id, ...row }) => row));
+            expect(readCurrent()).toContain('concise refresh');
           });
 
-          it('replaces the stale rows with the supplied ones once confirmRetire:true is passed', async () => {
+          it('replaces individually named rows through the shrink retry', async () => {
             const prior = withCarryNoteChecks(bigBody, staleRows);
             const readCurrent = installLegacyPrior(prior);
 
@@ -4793,6 +4826,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
               checkpoint: 'concise refresh',
               rowsMode: 'replace',
               confirmRetire: true,
+              retireIds: staleRows.map(row => row.claim),
               checks: freshRows,
             })) as { ok: boolean; checks: number; checksNotRetained?: string[]; checksDropped?: string[] };
 
@@ -4831,7 +4865,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         };
         expect(r.ok).toBe(true);
         const stored = await lastStored();
-        expect(stored).toContain('- ✓ A holds');
+        expect(withoutRowIds(stored)).toContain('- ✓ A holds');
         expect(stored).toContain('observed at 19:00Z');
         // Nothing was dropped, so the key is absent entirely (shape unchanged).
         expect(r.checksDropped).toBeUndefined();
@@ -4857,8 +4891,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         };
         expect(r.ok).toBe(true);
         const stored = await lastStored();
-        expect(stored).toContain('- ? A holds');
-        expect(stored).toContain('- ? B holds');
+        expect(withoutRowIds(stored)).toContain('- ? A holds');
+        expect(withoutRowIds(stored)).toContain('- ? B holds');
         expect(r.checks).toBe(2);
         expect(r.checksDropped).toBeUndefined();
       });
@@ -4869,7 +4903,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const prior = await lastStored();
 
         withPrior(prior);
-        const r = (await one({ id: 'WI-7', checks: [], rowsMode: 'replace', confirmRetire: true })) as {
+        const r = (await one({ id: 'WI-7', checks: [], rowsMode: 'replace', confirmRetire: true, retireIds: await carriedRowIdsFor(["A holds"]) })) as {
           ok: boolean;
           checksDropped?: string[];
         };
@@ -4902,7 +4936,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored!.match(/## Checks/g) ?? []).toHaveLength(1);
       expect(stored).toContain('first');
       expect(stored).toContain('an addendum');
-      expect(stored).toContain('- ✓ X holds');
+      expect(withoutRowIds(stored)).toContain('- ✓ X holds');
       expect(r.checks).toBe(1);
       expect(getWorkItemCheckpoint).toHaveBeenCalledTimes(1); // post-write verification only
     });
@@ -4913,7 +4947,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       withPrior(null);
       await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
       const prior = await lastStored();
-      expect(prior).toContain('- ? X holds');
+      expect(withoutRowIds(prior)).toContain('- ? X holds');
 
       withPrior(prior);
       await one({
@@ -4922,7 +4956,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'ran probe X at 21:40Z' }],
       });
       const stored = await lastStored();
-      expect(stored).toContain('- ✓ X holds');
+      expect(withoutRowIds(stored)).toContain('- ✓ X holds');
       expect(stored).not.toContain('- ? X holds');
       expect(stored).toContain('evidence: ran probe X at 21:40Z');
     });

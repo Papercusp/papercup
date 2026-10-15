@@ -490,7 +490,8 @@ export const GUARD_RAIL_KEY_PREFIX = 'guard-rail:';
  * with zero extra reads. NULL/absent for free-text sourceRefs + legacy rows.
  */
 export interface FactSourceProvenance {
-  kind: 'msg' | 'work-item' | 'owner-turn';
+  kind: 'msg' | 'work-item' | 'owner-turn' | 'promotion';
+  promotedFrom?: Array<{ kind: 'memory' | 'session-turn' | 'work-item' | 'report' | 'fact' | 'decision'; ref: string }>;
   /** Did the ref resolve against the platform's own store at assert time? */
   verified: boolean;
   /** Bounded verbatim quote of the source (msg summary/body, WI title, the
@@ -1472,13 +1473,16 @@ export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | 
   }
   if (!raw || typeof raw !== 'object') return null;
   const s = raw as Record<string, unknown>;
-  if (s.kind !== 'msg' && s.kind !== 'work-item' && s.kind !== 'owner-turn') return null;
+  if (s.kind !== 'msg' && s.kind !== 'work-item' && s.kind !== 'owner-turn' && s.kind !== 'promotion') return null;
   if (typeof s.verified !== 'boolean') return null;
   if (typeof s.verifiedAt !== 'string' || !s.verifiedAt) return null;
   return {
     kind: s.kind,
     verified: s.verified,
     verifiedAt: s.verifiedAt,
+    ...(Array.isArray(s.promotedFrom) ? { promotedFrom: s.promotedFrom.filter((v): v is NonNullable<FactSourceProvenance['promotedFrom']>[number] =>
+      !!v && typeof v === 'object' && typeof v.ref === 'string' &&
+      ['memory', 'session-turn', 'work-item', 'report', 'fact', 'decision'].includes(v.kind)) } : {}),
     ...(typeof s.quote === 'string' && s.quote ? { quote: s.quote } : {}),
     ...(s.quoteRedacted === true ? { quoteRedacted: true } : {}),
     ...(typeof s.label === 'string' && s.label ? { label: s.label } : {}),

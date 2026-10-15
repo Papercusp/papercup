@@ -24,6 +24,6 @@ export default defineTool({
     checkHandleScope(scope, args.handle);
     return runOperation(() => signalBlueprintOperation(scope.sql, args.handle, scope.callerId, {
       channel: args.channel, payload: args.payload, requestKey: args.requestKey,
-    }));
+    }, { principalId: scope.principalId }));
   },
 });

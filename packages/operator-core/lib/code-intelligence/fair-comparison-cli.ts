@@ -23,10 +23,10 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, loadavg } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { ArmDeps } from './engine-comparison-arms';
@@ -39,6 +39,9 @@ import { createLspQueryArm, createNoThirdPartyArm, loadVendoredTypescript } from
 import { acquireArmRunLock } from './fair-comparison-lock';
 import { runArm, scoreRuns, type ArmRun, type FairArmFactory, type PendingSites, type ResourceStage, type ArmResourceSample } from './fair-comparison-run';
 import type { FairCase } from './fair-comparison';
+import { readProcessIdentity } from '../process-identity';
+import { absCgroupDir, readProcessCgroupPath, walkCgroupTree, type CgroupFs } from '../task-manager/cgroup-read';
+import { taskIdFromScopeUnit } from '../task-manager/types';
 
 export interface FrozenFairInputs {
   readonly preregistration: Preregistration;
@@ -141,6 +144,43 @@ export async function measureFairToolPayload(request: unknown, response: unknown
     requestBytes: Buffer.byteLength(requestJson), responseBytes: Buffer.byteLength(responseJson),
     requestHash: hash(requestJson), responseHash: hash(responseJson),
     scope: 'raw-tool-payload-only' as const };
+}
+
+/** Native replay cannot accept a changed question or silently route text search
+ * through compiler topology. Keep this separate from the frozen backend arms. */
+export function frozenGraphRequest(kase: FairCase, inputs: FrozenFairInputs) {
+  validateFrozenInputs(inputs);
+  const saved = inputs.cases.find(candidate => candidate.id === kase.id);
+  if (!saved || hashCases([saved]) !== hashCases([kase]))
+    throw new Error('native graph question differs from frozen case');
+  const operations = { callers: 'callers', callees: 'callees', definition: 'symbol', impact: 'impact' } as const;
+  if (!(kase.intent in operations) || !kase.anchorFile)
+    throw new Error(`native graph replay does not cover ${kase.intent}`);
+  return { op: operations[kase.intent as keyof typeof operations], name: kase.subject,
+    file_path: kase.anchorFile, paths: [kase.anchorFile], limit: 100 };
+}
+
+async function replayFrozenGraphTask(tree: string, kase: FairCase, inputs: FrozenFairInputs) {
+  const request = frozenGraphRequest(kase, inputs);
+  // Repository tasks retain the complete pinned donor; authored controls reuse
+  // the existing original/stale/deleted/configuration transition mechanism.
+  const control = kase.source === 'repository-task' ? null : await prepareFrozenControl(tree, kase, inputs);
+  if (kase.source === 'repository-task') await verifyFrozenSource(tree, inputs);
+  const sourceHash = kase.sourceState === 'deleted' ? null : createHash('sha256')
+    .update(await readFile(join(tree, kase.anchorFile!))).digest('hex');
+  if (kase.source === 'repository-task' && sourceHash !== kase.sourceFingerprint)
+    throw new Error('native graph repository source differs from frozen case');
+  const graph = (await import('../agent-tools/gitnexus/query')).default;
+  const parsed = graph.args.parse(request);
+  const started = performance.now();
+  const response = (await graph.handler(parsed, { projectDir: tree } as never) as {
+    data: import('./contracts').CodeIntelAnswer;
+  }).data;
+  return { tool: 'graph:query' as const, question: kase, request: parsed, response,
+    wallMs: performance.now() - started, control,
+    sourceWitness: { path: kase.anchorFile!, contentHash: sourceHash,
+      sourceCommit: inputs.preregistration.protocol!.sourceCommit },
+    tokenWitness: await measureFairToolPayload(parsed, response) };
 }
 
 /** Restore before each question; mutations cannot leak into a later control. */
@@ -247,8 +287,86 @@ export async function indexFileCensus(roots: readonly string[], baseline: Readon
   return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+/** Point census using the managed cgroup walk and kernel PID identities. A second
+ * walk detects population races; this does not observe forks between samples. */
+export function fairProcessCensus(expected: { taskId: string; cgroupPath: string; rootPid: number; rootIdentity: string },
+  deps: { fs?: CgroupFs; identity?: typeof readProcessIdentity; cgroup?: typeof readProcessCgroupPath } = {}):
+  NonNullable<ArmResourceSample['processCensus']> {
+  const unknown: string[] = [];
+  const processes: { pid: number; identity: string | null; cgroupPath: string | null }[] = [];
+  const result = () => ({ taskId: expected.taskId, cgroupPath: expected.cgroupPath, rootPid: expected.rootPid,
+    processes, childProcesses: unknown.length ? null : processes.length - 1, unknown: [...new Set(unknown)] });
+  const identity = deps.identity ?? readProcessIdentity;
+  const cgroup = deps.cgroup ?? readProcessCgroupPath;
+  const rootCurrent = identity(expected.rootPid);
+  if (!expected.rootIdentity || rootCurrent !== expected.rootIdentity) unknown.push('worker-process-identity-mismatch');
+  if (taskIdFromScopeUnit(basename(expected.cgroupPath)) !== expected.taskId ||
+      cgroup(expected.rootPid) !== expected.cgroupPath) unknown.push('worker-task-cgroup-mismatch');
+  // Refuse a broad/foreign cgroup before enumerating anyone else's processes.
+  if (unknown.length) return result();
+  const absolute = absCgroupDir(expected.cgroupPath);
+  const raw: CgroupFs = deps.fs ?? {
+    readFile: path => readFileSync(path, 'utf8'), readDir: path => readdirSync(path),
+    isDir: path => statSync(path).isDirectory(),
+  };
+  const checked = <T>(path: string, read: () => T, fallback: T): T => {
+    try { return read(); } catch { unknown.push(`unreadable-cgroup:${path}`); return fallback; }
+  };
+  const fs: CgroupFs = {
+    readFile: path => {
+      const value = checked(path, () => raw.readFile(path), null);
+      if (value === null || value.split(/\s+/).filter(Boolean).some(pid => !/^[1-9]\d*$/.test(pid)))
+        unknown.push(`unreadable-process-census:${path}`);
+      return value;
+    },
+    readDir: path => checked(path, () => raw.readDir(path), []),
+    isDir: path => {
+      const directory = checked(path, () => raw.isDir(path), false);
+      if (directory && relative(absolute, path).split('/').filter(Boolean).length > 32) {
+        unknown.push(`cgroup-depth-unmeasured:${path}`); return false;
+      }
+      return directory;
+    },
+  };
+  const pids = () => [...new Set(walkCgroupTree(absolute, fs).flatMap(group => group.pids))].sort((a, b) => a - b);
+  const first = pids();
+  if (!first.includes(expected.rootPid)) unknown.push('worker-missing-from-process-census');
+  for (const pid of first) {
+    const stamp = identity(pid), path = cgroup(pid);
+    processes.push({ pid, identity: stamp, cgroupPath: path });
+    if (!stamp) unknown.push(`process-identity-unreadable:${pid}`);
+    if (!path || (path !== expected.cgroupPath && !path.startsWith(`${expected.cgroupPath}/`)))
+      unknown.push(`process-outside-worker-cgroup:${pid}`);
+  }
+  if (JSON.stringify(first) !== JSON.stringify(pids())) unknown.push('cgroup-population-changed-during-census');
+  for (const row of processes) {
+    if (identity(row.pid) !== row.identity) unknown.push(`process-replaced-during-census:${row.pid}`);
+    if (cgroup(row.pid) !== row.cgroupPath) unknown.push(`process-moved-during-census:${row.pid}`);
+  }
+  if (identity(expected.rootPid) !== expected.rootIdentity) unknown.push('worker-process-identity-mismatch');
+  return result();
+}
+
+/** A dirty test parent can call an older committed child under test:file's
+ * loader. Refuse that known RPC-contract mismatch before copying or spawning.
+ * This is a precondition, not a claim that all transitive source is qualified. */
+export async function verifyFairWorkerSource(readSource?:
+  (path: string, version: 'working' | 'committed') => Promise<string>): Promise<void> {
+  const root = fileURLToPath(new URL('../../../../', import.meta.url));
+  const read = readSource ?? (async (path: string, version: 'working' | 'committed') => {
+    if (version === 'working') return readFile(join(root, path), 'utf8');
+    return (await run('git', ['-C', root, 'show', `HEAD:${path}`], { maxBuffer: 1 << 24 })).stdout;
+  });
+  for (const path of ['packages/operator-core/lib/code-intelligence/fair-comparison-cli.ts',
+    'packages/operator-core/lib/code-intelligence/fair-comparison-run.ts']) {
+    if (await read(path, 'working') !== await read(path, 'committed'))
+      throw new Error(`fresh worker source differs from committed child: ${path}; wait for a containing commit and use lint:as-committed`);
+  }
+}
+
 /** One managed worker per repetition; reuse the existing arm adapters and task metrics. */
 export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, frozenPath: string): Promise<FairArmFactory> {
+  await verifyFairWorkerSource();
   const sourceCommit = inputs.preregistration.protocol!.sourceCommit;
   const snapshot = join(BENCH, `snapshot-${sourceCommit.slice(0, 12)}`);
   await verifyFrozenSource(snapshot, inputs);
@@ -352,14 +470,24 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         }
       };
       const confinedPath = cgroupPath;
+      // child.pid is systemd-run's client, not the confined payload. Obtain the
+      // payload's identity through the existing worker RPC before any census.
+      const payload = await rpc<{ pid: number; identity: string }>('identity');
+      const censusIdentity = { taskId: launched.taskId, cgroupPath: confinedPath,
+        rootPid: payload.pid, rootIdentity: payload.identity };
+      let observedChildProcessesMax: number | null = null;
       return { identity: { taskId: launched.taskId, cgroupPath: confinedPath, treeRoot, home, sourceCommit,
         runtimeVersion: admitted.capabilities.version },
       arm: { capabilities: admitted.capabilities, unavailable: null,
         index: () => rpc('index'), query: kase => rpc('query', kase), close },
+      nativeGraphQuery: kase => rpc<Awaited<ReturnType<typeof replayFrozenGraphTask>>>('native-graph', kase),
       async sampleResources(_stage: ResourceStage) {
         const sample = sampleCgroup(absCgroupDir(confinedPath));
+        const processCensus = fairProcessCensus(censusIdentity);
+        if (processCensus.childProcesses !== null)
+          observedChildProcessesMax = Math.max(observedChildProcessesMax ?? 0, processCensus.childProcesses);
         const indexFiles = await indexFileCensus([treeRoot, home], baseline);
-        const unknown: string[] = [];
+        const unknown: string[] = [...processCensus.unknown, 'descendant-process-lifetime-peak-not-measured'];
         if (sample.memoryBytes === null) unknown.push('memory.current unreadable');
         if (sample.peakMemoryBytes === null) unknown.push('memory.peak unreadable');
         if (indexFiles === null) unknown.push('index census unreadable');
@@ -368,7 +496,8 @@ export async function freshFactory(id: FairArmId, inputs: FrozenFairInputs, froz
         if (id === 'lsp-query') unknown.push('language-server-task-costs-not-in-worker-scope');
         unknown.push('native-tool-seam-and-configuration-invalidation-not-verified');
         return { sampledAt: new Date().toISOString(), memoryCurrentBytes: sample.memoryBytes,
-          memoryPeakBytes: sample.peakMemoryBytes, indexFiles, unknown };
+          memoryPeakBytes: sample.peakMemoryBytes, peakChildProcesses: null,
+          processCensus, observedChildProcessesMax, indexFiles, unknown };
       } };
     } catch (error) {
       await stop();
@@ -386,9 +515,12 @@ async function worker(id: FairArmId): Promise<void> {
   for await (const line of createInterface({ input: process.stdin })) {
     const request = JSON.parse(line) as { id: number; method: string; kase?: FairCase };
     try {
-      if (request.method === 'query' && !indexed) throw new Error('worker query before frozen source indexing');
+      if ((request.method === 'query' || request.method === 'native-graph') && !indexed)
+        throw new Error('worker query before frozen source indexing');
       const control = request.method === 'query' ? await prepareFrozenControl(treeOf(id), request.kase!, inputs) : null;
-      const result = request.method === 'index' ? await arm.index() : request.method === 'query' ?
+      const result = request.method === 'native-graph' ? await replayFrozenGraphTask(treeOf(id), request.kase!, inputs) :
+        request.method === 'identity' ? { pid: process.pid, identity: readProcessIdentity(process.pid) } :
+        request.method === 'index' ? await arm.index() : request.method === 'query' ?
         { ...await arm.query(request.kase!), control }
         : request.method === 'close' ? await arm.close?.() ?? null : (() => { throw new Error('unknown worker method'); })();
       if (request.method === 'index') indexed = (result as { ok?: boolean }).ok === true;

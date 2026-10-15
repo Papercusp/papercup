@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 const SURFACE_ROOT = dirname(fileURLToPath(import.meta.url));
 import {
   evidenceFirst,
+  checkpointRowsMode,
   isProhibitionShaped,
   lintRelativeScratchPaths,
   RELATIVE_SCRATCH_ADVISORY,
@@ -494,6 +495,18 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
 
     const affirmative = 'one uncovered lockfile remains and needs remediation';
     expect(findVerificationConflict(affirmative, claim)).toMatch(/uncovered/i);
+  });
+
+  it('does not downgrade a timestamped past-tense lifecycle snapshot', () => {
+    const evidence = 'the git-sync fire was in-flight since 19:40:08Z';
+    expect(findVerificationConflict(evidence, 'git-sync is healthy')).toBeNull();
+    const [row] = normalizeCheckEntries(
+      [{ claim: 'git-sync is healthy', recheck: 'inspect the routine snapshot', verified: evidence }],
+      [],
+      Date.parse('2026-09-05T17:00:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim: 'git-sync is healthy', verified: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('contested');
   });
 
   it('still detects affirmative unresolved status phrases', () => {
@@ -2205,6 +2218,32 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
       const carried = mergeCarryRows({ priorNote: priorNoteWith([1].map(check)), baseNote: 'b', hasNoteWrite: true });
       expect(carried.overflowChecks).toEqual([]);
     });
+  });
+});
+
+describe('P-007 — individually governed carry-row survival', () => {
+  it.each([undefined, 'replace', 'merge'] as const)('preserves omitted row ids and evidence on a %s rewrite', requested => {
+    const rows = [{ id: 'open-check', claim: 'observed state', recheck: 'read state', verified: 'observed' }];
+    const prior = mergeCarryRows({ priorNote: null, baseNote: 'old', checks: rows,
+      walls: [{ id: 'open-wall', claim: 'await decision', recheck: 'read ruling' }], hasNoteWrite: true }).note;
+    const rewritten = mergeCarryRows({ priorNote: prior, baseNote: 'new', checks: [], walls: [],
+      mode: checkpointRowsMode(requested), hasNoteWrite: true });
+    expect(rewritten.checks[0]).toMatchObject({ id: 'open-check', claim: 'observed state', recheck: 'read state' });
+    expect(rewritten.checks[0].verified).toContain('observed');
+    expect(rewritten.walls[0]).toMatchObject({ id: 'open-wall', claim: 'await decision' });
+    expect(rewritten.droppedChecks).toEqual([]);
+    expect(rewritten.droppedWalls).toEqual([]);
+    expect(rewritten.note).toContain('new');
+  });
+
+  it('closes only the named row and keeps other stable ids', () => {
+    const prior = mergeCarryRows({ priorNote: null, baseNote: 'old', hasNoteWrite: true,
+      checks: [{ id: 'one', claim: 'one' }, { id: 'two', claim: 'two' }] }).note;
+    const rewritten = mergeCarryRows({ priorNote: prior, baseNote: 'new', checks: [],
+      retire: ['one'], mode: checkpointRowsMode('replace'), hasNoteWrite: true });
+    expect(rewritten.checks.map(row => row.id)).toEqual(['two']);
+    expect(rewritten.retiredChecks).toEqual(['one']);
+    expect(rewritten.droppedChecks).toEqual([]);
   });
 });
 

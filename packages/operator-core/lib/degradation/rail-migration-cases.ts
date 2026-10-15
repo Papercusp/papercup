@@ -1220,6 +1220,84 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'goal-liveness-original-independent-reasons-unknown-preservation-and-measured-recovery',
+  item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const producer = await import('../system-health/goal-liveness-watchdog');
+    const path = 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts';
+    type Goal = import('../system-health/goal-liveness-watchdog').GoalRowLike;
+    type Holder = import('../system-health/goal-liveness-watchdog').GoalHolderLike;
+    type Verdict = import('../agent-tools/coordination/liveness-oracle').LivenessVerdict;
+    const now = 100_000, old = 1;
+    const goal = (workspaceId: string, goalId: string): Goal => ({ workspaceId, goalId,
+      title: 'Fixture goal', updatedAtMs: old, status: 'active' });
+    const a = goal('fixture:a', 'same/goal'), b = goal('fixture', 'a:same/goal');
+    let goals = [a, b], holders: Holder[] = [], available = true;
+    let verdicts = new Map<string, Verdict>();
+    const v = (ownerId: string, sessionState: 'live' | 'ended' | null): Verdict => ({
+      ownerId, sessionState, wakeable: sessionState === 'live', liveTurn: sessionState === 'live',
+      confirmLiveness: null, heartbeatFresh: sessionState === 'live',
+      ...(sessionState == null ? { signalMissing: true as const } : {}),
+    });
+    const h = (ownerId: string, epoch: number): Holder => ({ workspaceId: a.workspaceId,
+      goalId: a.goalId, ownerId, setAtMs: old, goalLeaseEpoch: epoch });
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const legacy: Array<{ meta: { dedupKind: string; subjectSignature: string } }> = [];
+    let legacyFails = false;
+    const escalate = execute(original(path, 'async function defaultEscalate(', 'function'), {
+      WATCHDOG_IDENTITY: { ownerId: 'goal-liveness-watchdog' },
+      formatDark: execute(original(path, 'function formatDark(', 'function'), {}, 'formatDark'),
+      openEscalation: async (_identity: unknown, input: typeof legacy[number]) => {
+        legacy.push(input); if (legacyFails) throw new Error('legacy delivery unavailable');
+      },
+    }, 'defaultEscalate') as (alert: import('../system-health/goal-liveness-watchdog').GoalLivenessAlert) => Promise<void>;
+    const run = () => producer.runGoalLivenessSweepOnce({} as never, {
+      readGoals: async () => { if (!available) throw new Error('goal census unavailable'); return { goals, holders }; },
+      resolveLiveness: async () => verdicts, escalate, now: () => now, graceMs: 1_000,
+      flagEnabled: async () => true, readReadiness: async () => new Map(),
+      readHolderProductivity: async () => new Map(), readPortfolioThroughput: async () => new Map(),
+      readUnplannedClusters: async () => new Map(),
+      rail: { broadcast: async (event) => {
+        expect(event.oneShot).toBe(true);
+        if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+        open.add(event.conditionKey!); return true;
+      }, resolve: async (event) => {
+        if (!open.delete(event.conditionKey)) return false;
+        resolvedKeys.push(event.conditionKey); return true;
+      } },
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await run(); await run();
+      expect(open.size).toBe(2); expect(openedKeys).toHaveLength(2);
+      expect(legacy[0].meta).toMatchObject({ dedupKind: 'goal-liveness',
+        subjectSignature: a.workspaceId + ':' + a.goalId + ':unheld' });
+      expect(producer.goalLivenessConditionKey(a, 'unheld')).not.toBe(producer.goalLivenessConditionKey(b, 'unheld'));
+      available = false; await expect(run()).rejects.toThrow('goal census unavailable');
+      available = true; goals = []; await run(); expect(open.size).toBe(2);
+      goals = [{ ...a, updatedAtMs: now }]; await run(); expect(open.size).toBe(2);
+      goals = [a]; holders = [h('elected', 2)]; await run(); expect(open.size).toBe(2);
+      verdicts = new Map([['elected', v('elected', null)]]); await run(); expect(open.size).toBe(2);
+      legacyFails = true; verdicts = new Map([['elected', v('elected', 'ended')]]);
+      await run(); expect(open.size).toBe(3);
+      expect(open.has(producer.goalLivenessConditionKey(a, 'abandoned'))).toBe(true);
+      holders.push(h('historical', 1));
+      verdicts = new Map([['elected', v('elected', 'live')]]);
+      await run(); expect(open.size).toBe(3); // Missing historical verdict cannot clear.
+      verdicts.set('historical', v('historical', 'live'));
+      await run(); expect(open.has(producer.goalLivenessConditionKey(a, 'overlap'))).toBe(true);
+      verdicts.set('historical', v('historical', 'ended'));
+      await run(); expect([...open]).toEqual([producer.goalLivenessConditionKey(b, 'unheld')]);
+      goals = [b]; holders = [{ ...h('other', 1), workspaceId: b.workspaceId, goalId: b.goalId }];
+      verdicts = new Map([['other', v('other', 'live')]]);
+      await run(); expect(open.size).toBe(0);
+      expect(legacy.some((row) => row.meta.subjectSignature.endsWith(':overlap'))).toBe(true);
+      return { route: 'condition', openedKeys, resolvedKeys };
+    } finally { warn.mockRestore(); }
+  },
+}, {
   id: 'compaction-original-independent-episodes-force-fallback-and-measured-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1',
     'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1'],

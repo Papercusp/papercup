@@ -2437,6 +2437,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     force: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     ownerId?: undefined;
     gated: boolean;
@@ -2444,30 +2450,71 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     force: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     deliveryId: any;
     ownerId: any;
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     deliveryId?: undefined;
     ownerId: any;
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     deliveryId: any;
     ownerId?: undefined;
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     deliveryId?: undefined;
     ownerId?: undefined;
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
+} | {
+    mode: string;
+    data: string;
+    gated: boolean;
+    observationVersion: any;
+    ownerId: any;
+    expectedAdvSessionId: any;
+    expectedNativeSessionId: any;
+    expectedHostStartedAt: any;
+    expectedChildGeneration: any;
+    expectedHostCodeVersion: any;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2479,6 +2526,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2495,6 +2548,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2506,6 +2565,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2522,6 +2587,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2533,6 +2604,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2549,6 +2626,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2560,6 +2643,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2576,6 +2665,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2587,6 +2682,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2603,6 +2704,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2614,6 +2721,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2630,6 +2743,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2641,6 +2760,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2657,6 +2782,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2668,6 +2799,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2684,6 +2821,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2695,6 +2838,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2711,6 +2860,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2722,6 +2877,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2738,6 +2899,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2749,6 +2916,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2765,6 +2938,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2776,6 +2955,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2792,6 +2977,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2806,6 +2997,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2820,6 +3017,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2834,6 +3037,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2848,6 +3057,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2862,6 +3077,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2876,6 +3097,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2890,6 +3117,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2904,6 +3137,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2918,6 +3157,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -2932,6 +3177,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -2946,6 +3197,12 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -2960,18 +3217,36 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     systemPromptAddendum: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     ownerId: any;
     mode: string;
     data: string;
     focus: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     ownerId?: undefined;
     mode: string;
     data: string;
     focus: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -2988,6 +3263,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3004,6 +3283,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3020,6 +3303,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3036,6 +3323,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3052,6 +3343,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3068,6 +3363,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3084,6 +3383,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3100,6 +3403,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3116,6 +3423,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3132,6 +3443,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3148,6 +3463,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3164,6 +3483,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3180,6 +3503,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3196,6 +3523,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3212,6 +3543,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3228,6 +3563,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3244,6 +3583,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3260,6 +3603,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3276,6 +3623,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3292,6 +3643,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3308,6 +3663,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3324,6 +3683,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3340,6 +3703,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3356,6 +3723,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3372,6 +3743,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3388,6 +3763,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3404,6 +3783,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3420,6 +3803,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3436,6 +3823,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3452,6 +3843,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3468,6 +3863,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3484,6 +3883,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3500,6 +3903,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3516,6 +3923,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3532,6 +3943,10 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3548,11 +3963,57 @@ export function decodeControl(payload: any): {
     mode: string;
     data: string;
     gated: boolean;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostCodeVersion?: undefined;
 };
 /** The full logical bytes a decoded control message represents (raw: verbatim;
  *  turn: text + CR). Pure — kept for tests / one-shot external callers. NOTE the
  *  host no longer writes a turn in one shot; see controlWrites. */
 export function controlBytes(decoded: any): any;
+/** Exact current-process observation, never a reload or an agent turn. */
+export function hooksObservationIdentityMatches(request: any, current: any): boolean;
+export function codexHooksObservationScreen(raw: any, dims: any): {
+    rows: string[];
+    browser: boolean;
+    emptyComposer: boolean;
+    commandOffered: boolean;
+    fullPaint: boolean;
+};
+/** Bounded viewport observation. It cannot certify all hooks, enabled policy,
+ * nested dispatch, or P003. Every write revalidates exact custody. Cleanup is
+ * state-driven: a second Escape is permitted only after a fresh browser paint. */
+export function runCodexHooksObservation({ request, identity, canStart, interrupted, write, readTap, resetTap, readCurrent, screenDims, sleep, now, timeoutMs, crDelayMs }: {
+    request: any;
+    identity: any;
+    canStart: any;
+    interrupted: any;
+    write: any;
+    readTap: any;
+    resetTap: any;
+    readCurrent: any;
+    screenDims: any;
+    sleep?: ((ms: any) => Promise<any>) | undefined;
+    now?: (() => number) | undefined;
+    timeoutMs?: number | undefined;
+    crDelayMs?: number | undefined;
+}): Promise<{
+    ok: boolean;
+    reason: string;
+    inputReleased: boolean;
+} | {
+    visibleRows?: string[] | undefined;
+    coverage?: {
+        scope: string;
+        complete: boolean;
+        notMeasured: string[];
+    } | undefined;
+    ok: boolean;
+    reason: string;
+    inputReleased: boolean;
+    identity: any;
+}>;
 /** Strip ANSI escapes (CSI / OSC / simple ESC pairs) + normalize \r so a TUI
  *  byte stream reads as plain lines. Pure — exported for tests. */
 export function stripAnsi(s: any): string;

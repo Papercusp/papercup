@@ -5,6 +5,7 @@ import {
   blueprintProgramCompletionRef,
   projectBlueprintOperationStatus,
   terminalOperationWorkerProof,
+  assertBusinessReviewer,
   type BlueprintOperationHandle,
 } from './operation-service';
 import { selectOperationSpecificationRevision } from './operation-admission';
@@ -19,6 +20,16 @@ const plan: BlueprintOperationHandle = {
   ...direct, receiptId: 13,
   target: { kind: 'plan', runId: 25, instanceSlug: 'template@run-25' },
 };
+
+describe('distinct authenticated business reviewer', () => {
+  const policy = { reviewerPrincipals: ['reviewer', 'submitter', 'worker'] };
+  it('allows only a named principal distinct from submitter and worker', () => {
+    expect(() => assertBusinessReviewer('reviewer', 'submitter/client', policy, 'worker/session')).not.toThrow();
+    for (const principal of ['submitter', 'worker', 'intruder', 'reviewer/forged-client']) {
+      expect(() => assertBusinessReviewer(principal, 'submitter/client', policy, 'worker/session')).toThrow(/distinct/);
+    }
+  });
+});
 
 describe('terminalOperationWorkerProof', () => {
   const worker = { terminalOwner: 'reviewer', terminalCompletionRef: 'completion:12',

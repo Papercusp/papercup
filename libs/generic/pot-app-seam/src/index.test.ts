@@ -200,7 +200,7 @@ describe('createPotAppSeam', () => {
     const seam = createPotAppSeam(host());
     expect(Object.keys(seam).sort()).toEqual([
       'bootstrapPots', 'cancelOperation', 'emitScorecard', 'operationEvents', 'operationResult', 'operationStatus',
-      'readScorecard', 'startIngestLoop', 'submitOperations',
+      'readScorecard', 'reviewOperation', 'startIngestLoop', 'submitOperations',
     ]);
   });
 
@@ -284,6 +284,82 @@ describe('createPotAppSeam', () => {
     await seam.operationEvents(handle!);
     expect(h.eventCalls[1]).toEqual({});
     await expect(seam.operationEvents(handle!, { limit: 0 })).rejects.toThrow(/1\.\.100/);
+  });
+
+  it('keeps execution readiness separate from durable business review and applies the output parse gate to reviewer reads', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('reviewable')]);
+    const seen: unknown[] = [];
+    const businessReview = { state: 'pending' as const, accountableOwner: 'support-lead', resultFingerprint: 'b'.repeat(64) };
+    h.readBlueprintOperationResult = (same, options) => {
+      seen.push(options);
+      return { state: 'ready', status: statusOf(same), output: { summary: 'Cited case' }, evidenceRef: 'work-item:1', businessReview };
+    };
+    const result = await seam.operationResult(handle!, (raw) => ({ summary: (raw as { summary: string }).summary }), { review: true });
+    expect(result).toMatchObject({ state: 'ready', businessReview: { state: 'pending' }, output: { summary: 'Cited case' } });
+    expect(seen).toEqual([{ review: true }]);
+    await expect(seam.operationResult(handle!, () => { throw new Error('uncited result'); }, { review: true }))
+      .rejects.toBeInstanceOf(OperationOutputRejectedError);
+    await seam.operationEvents(handle!, { review: true, cursor: '12' });
+    expect(h.eventCalls).toEqual([{ review: true, cursor: '12' }]);
+  });
+
+  it.each(['accepted', 'rejected', 'rework'] as const)('preserves the %s reviewer decision and its evidence', async (state) => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft(state)]);
+    const businessReview = { state, accountableOwner: 'support-lead', resultFingerprint: 'b'.repeat(64),
+      decision: { eventId: '19', reviewerPrincipal: 'reviewer', reason: 'Compared the cited case', at: '2026-10-15T00:00:00Z' } };
+    h.readBlueprintOperationResult = (same) => ({ state: 'ready', status: statusOf(same), output: {}, evidenceRef: 'work-item:1', businessReview });
+    expect(await seam.operationResult(handle!, (raw) => raw)).toMatchObject({ businessReview });
+  });
+
+  it('refuses missing decision evidence, malformed fingerprints, cancelled results and review smuggling before parsing output', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('malformed')]);
+    const review = { state: 'accepted', accountableOwner: 'lead', resultFingerprint: 'b'.repeat(64),
+      decision: { eventId: '19', reviewerPrincipal: 'reviewer', reason: 'Checked', at: '2026-10-15T00:00:00Z' } };
+    let parses = 0;
+    for (const businessReview of [{ ...review, decision: undefined }, { ...review, state: 'pending' },
+      { ...review, resultFingerprint: 'bad' }, { ...review, accountableOwner: '' },
+      { ...review, decision: { ...review.decision, reviewerPrincipal: '' } },
+      { ...review, decision: { ...review.decision, at: 'not a date' } }]) {
+      h.readBlueprintOperationResult = (same) => ({ state: 'ready', status: statusOf(same), output: {},
+        evidenceRef: 'work-item:1', businessReview } as never);
+      await expect(seam.operationResult(handle!, () => { parses++; })).rejects.toThrow(/business review/);
+    }
+    h.readBlueprintOperationResult = (same) => ({ state: 'ready', status: statusOf(same, { cancellationRequested: true }),
+      output: {}, evidenceRef: 'work-item:1', businessReview: review } as never);
+    await expect(seam.operationResult(handle!, () => { parses++; })).rejects.toThrow(/validated successful result/);
+    h.readBlueprintOperationResult = (same) => ({ state: 'pending', status: statusOf(same), businessReview: review } as never);
+    await expect(seam.operationResult(handle!, () => { parses++; })).rejects.toThrow(/must not carry business review/);
+    expect(parses).toBe(0);
+  });
+
+  it('records a review using the canonical signal and does not turn the receipt into a business outcome', async () => {
+    const calls: unknown[] = [];
+    const h = host();
+    h.signalBlueprintOperation = (handle, input) => {
+      calls.push({ handle, input });
+      return { eventId: '19', replayed: false, accepted: true, wakeQueued: false, handled: false };
+    };
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([draft('review')]);
+    const input = { decision: 'accept' as const, reason: ' Checked citations ', resultFingerprint: 'b'.repeat(64), requestKey: 'decision:1' };
+    expect(await seam.reviewOperation(handle!, input)).toEqual({ eventId: '19', replayed: false, accepted: true, wakeQueued: false, handled: false });
+    expect(calls).toEqual([{ handle, input: { channel: 'business-review', requestKey: 'decision:1',
+      payload: { decision: 'accept', reason: 'Checked citations', resultFingerprint: input.resultFingerprint } } }]);
+    for (const bad of [{ ...input, decision: 'approve' }, { ...input, reason: ' ' },
+      { ...input, resultFingerprint: 'old' }, { ...input, requestKey: '' }, { ...input, requestKey: 'x'.repeat(201) }]) {
+      await expect(seam.reviewOperation(handle!, bad as typeof input)).rejects.toThrow();
+    }
+    expect(calls).toHaveLength(1);
+    h.signalBlueprintOperation = () => ({ eventId: '', accepted: true } as never);
+    await expect(seam.reviewOperation(handle!, input)).rejects.toThrow(/canonical input receipt/);
+    delete h.signalBlueprintOperation;
+    await expect(seam.reviewOperation(handle!, input)).rejects.toThrow(/not connected/);
   });
 
   it('cancels through the handle with an idempotent request key and a required reason', async () => {
@@ -395,6 +471,26 @@ describe('blueprintOperationHostFromInvoker', () => {
     expect(calls[0]).toEqual({ harness: 'phone', operationId: 'call-wrap-up', requestKey: 'k1',
       input: { callKey: 'c' }, privateInput: segments });
     expect(calls[1]).not.toHaveProperty('privateInput');
+  });
+
+  it('forwards reviewer mode and the existing review signal without accepting a client-supplied identity', async () => {
+    const calls: unknown[] = [];
+    const h = blueprintOperationHostFromInvoker(async (name, args) => {
+      calls.push([name, args]);
+      if (name === 'blueprint:signal') return { eventId: '19', accepted: true, handled: false, replayed: false, wakeQueued: false };
+      if (name === 'blueprint:events') return { status: statusOf(handle), events: [], cursor: '0', hasMore: false };
+      return { state: 'pending', status: statusOf(handle) };
+    });
+    await h.readBlueprintOperationResult(handle, { review: true });
+    await h.readBlueprintOperationEvents(handle, { review: true, cursor: '4' });
+    await h.signalBlueprintOperation!(handle, { channel: 'business-review', requestKey: 'review:1',
+      payload: { decision: 'rework', reason: 'Missing steps', resultFingerprint: 'b'.repeat(64) } });
+    expect(calls).toEqual([
+      ['blueprint:result', { handle, review: true }],
+      ['blueprint:events', { handle, review: true, cursor: '4' }],
+      ['blueprint:signal', { handle, channel: 'business-review', requestKey: 'review:1',
+        payload: { decision: 'rework', reason: 'Missing steps', resultFingerprint: 'b'.repeat(64) } }],
+    ]);
   });
 
   it('refuses a malformed tool result instead of passing it to the app', async () => {

@@ -6600,6 +6600,7 @@ export function decodeControl(payload) {
         o.mode === 'carry-respawn' ||
         o.mode === 'compact' ||
         o.mode === 'shutdown' ||
+        o.mode === 'hooks-observe' ||
         o.mode === 'mcp-reconnect')
     ) {
       // SHUTDOWN (WI-6638): wind this session down and EXIT. psu is `exec`'d
@@ -6630,6 +6631,16 @@ export function decodeControl(payload) {
           ...decodeOwnerIdentity(o),
           ...decodeDeliveryId(o),
         };
+      if (o.mode === 'hooks-observe') return {
+        mode: 'hooks-observe', data: '', gated: true,
+        observationVersion: o.observationVersion,
+        ownerId: o.ownerId,
+        expectedAdvSessionId: o.expectedAdvSessionId,
+        expectedNativeSessionId: o.expectedNativeSessionId,
+        expectedHostStartedAt: o.expectedHostStartedAt,
+        expectedChildGeneration: o.expectedChildGeneration,
+        expectedHostCodeVersion: o.expectedHostCodeVersion,
+      };
       if (o.mode === 'raw')
         return { mode: 'raw', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
       // osc = recolor escape bytes for the terminal DISPLAY (not the agent) —
@@ -6737,11 +6748,101 @@ export function decodeControl(payload) {
  *  turn: text + CR). Pure — kept for tests / one-shot external callers. NOTE the
  *  host no longer writes a turn in one shot; see controlWrites. */
 export function controlBytes(decoded) {
-  if (decoded.mode === 'unsupported-control') return '';
+  if (decoded.mode === 'unsupported-control' || decoded.mode === 'hooks-observe') return '';
   return decoded.mode === 'raw' ? decoded.data : `${decoded.data}\r`;
 }
 
 // ── mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13) ─────────
+
+/** Exact current-process observation, never a reload or an agent turn. */
+export function hooksObservationIdentityMatches(request, current) {
+  return request.observationVersion === 1 && typeof request.ownerId === 'string' && !!request.ownerId &&
+    typeof request.expectedNativeSessionId === 'string' && !!request.expectedNativeSessionId &&
+    request.ownerId === current.ownerId &&
+    String(request.expectedAdvSessionId ?? '') !== '' &&
+    String(request.expectedAdvSessionId) === String(current.advSessionId) &&
+    request.expectedNativeSessionId === current.nativeSessionId &&
+    typeof request.expectedHostCodeVersion === 'string' && !!request.expectedHostCodeVersion &&
+    request.expectedHostCodeVersion === current.hostCodeVersion &&
+    Number.isFinite(request.expectedHostStartedAt) && request.expectedHostStartedAt === current.hostStartedAt &&
+    Number.isInteger(request.expectedChildGeneration) && request.expectedChildGeneration === current.childGeneration;
+}
+
+export function codexHooksObservationScreen(raw, dims) {
+  const rows = renderTerminalScreen(raw, dims).map((row) => row.trimEnd());
+  const heading = rows.some((row) => /^\s*(?:[│╭─ ]*)?(?:Hooks|Hook browser)\s*(?:[│─]*)$/i.test(row));
+  const dismiss = rows.some((row) => /\b(?:esc|escape)\b.*\b(?:close|back|cancel)\b/i.test(row));
+  const emptyComposer = !heading && rows.some((row) => /^\s*[›❯>]\s*$/.test(row)) &&
+    codexFooterStateFromOutput(raw, dims) === 'ready';
+  const commandOffered = rows.some((row) => /^\s*[›❯>]?\s*\/hooks\s+.*\b(?:view|show|manage|inspect)\b.*\bhooks?\b/i.test(row));
+  return { rows, browser: heading && dismiss, emptyComposer, commandOffered,
+    fullPaint: /\x1b\[(?:2|3)J/.test(raw) };
+}
+
+/** Bounded viewport observation. It cannot certify all hooks, enabled policy,
+ * nested dispatch, or P003. Every write revalidates exact custody. Cleanup is
+ * state-driven: a second Escape is permitted only after a fresh browser paint. */
+export async function runCodexHooksObservation({ request, identity, canStart, interrupted,
+  write, readTap, resetTap, readCurrent, screenDims, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  now = Date.now, timeoutMs = 3000, crDelayMs = 200 }) {
+  const same = () => hooksObservationIdentityMatches(request, identity());
+  const screen = (raw) => codexHooksObservationScreen(raw, screenDims());
+  if (!same()) return { ok: false, reason: 'stale-observation-identity', inputReleased: true };
+  if (!canStart() || !screen(readCurrent()).emptyComposer)
+    return { ok: false, reason: 'observation-not-at-empty-composer', inputReleased: true };
+  let commandWritten = false;
+  let submitted = false;
+  let observed = null;
+  let reason = 'observation-paint-unavailable';
+  const guardedWrite = (bytes, cleanup = false) => {
+    if (!same() || (!cleanup && interrupted())) return false;
+    write(bytes); return true;
+  };
+  const waitFor = async (predicate) => {
+    const deadline = now() + timeoutMs;
+    while (now() < deadline) {
+      if (!same()) return null;
+      const view = screen(readTap());
+      if (view.fullPaint && predicate(view)) return view;
+      await sleep(25);
+    }
+    return null;
+  };
+  resetTap();
+  if (!guardedWrite('/hooks')) return { ok: false, reason: 'observation-interrupted', inputReleased: true };
+  commandWritten = true;
+  await sleep(crDelayMs);
+  // A missing/disabled slash command must never submit `/hooks` to a model.
+  const offered = await waitFor((view) => view.commandOffered);
+  if (offered && guardedWrite('\r')) {
+    submitted = true;
+    observed = await waitFor((view) => view.browser);
+    if (observed) reason = interrupted() ? 'observation-interrupted' : 'observed';
+  } else reason = interrupted() ? 'observation-interrupted' : 'hooks-command-unavailable';
+  let inputReleased = false;
+  if (same() && !submitted && commandWritten) {
+    // Only our known, unsubmitted command occupies the leased composer.
+    resetTap();
+    guardedWrite('\x15', true);
+    inputReleased = !!await waitFor((view) => view.emptyComposer);
+  } else if (same()) {
+    let view = screen(readTap());
+    if (view.fullPaint && view.emptyComposer) inputReleased = true;
+    for (let level = 0; !inputReleased && level < 2 && view.fullPaint && view.browser; level++) {
+      resetTap();
+      if (!guardedWrite('\x1b', true)) break;
+      const next = await waitFor((paint) => paint.emptyComposer || paint.browser);
+      if (!next) break;
+      view = next;
+      inputReleased = view.emptyComposer;
+    }
+  }
+  return { ok: !!observed && inputReleased && reason === 'observed', reason: !same() ?
+    'stale-observation-identity' : !inputReleased ? 'observation-cleanup-unconfirmed' : reason,
+    inputReleased, identity: same() ? identity() : null,
+    ...(observed ? { visibleRows: observed.rows, coverage: { scope: 'fresh-hook-browser-viewport',
+      complete: false, notMeasured: ['offscreen-hooks', 'managed-policy', 'nested-dispatch', 'operation-terminal-proof'] } } : {}) };
+}
 //
 // A Claude Code self-re-exec (auto-update relaunch / TUI fullscreen switch)
 // severs the session's HTTP-MCP transport: tools vanish, and the armed loop's
@@ -9225,7 +9326,7 @@ export function shouldDeferWakeForPendingRespawn(mode, pendingRespawnCount) {
  *  Claude Code TUI's paste detector (the CR becomes a literal newline and the
  *  turn never submits). Pure — exported for tests. */
 export function controlWrites(decoded, crDelayMs = TURN_SUBMIT_CR_DELAY_MS) {
-  if (decoded.mode === 'unsupported-control') return [];
+  if (decoded.mode === 'unsupported-control' || decoded.mode === 'hooks-observe') return [];
   // raw (force-interrupt byte) and osc (recolor bytes) are both ONE immediate
   // verbatim write — no idle gate, no submit CR.
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return [{ data: decoded.data, delayMs: 0 }];
@@ -9310,7 +9411,7 @@ export function bracketedPasteFrame(text) {
  *  @param {{ bracketedPaste?: boolean }} [opts]
  */
 export function controlWritesForAgent(decoded, agent, env = process.env, opts = {}) {
-  if (decoded.mode === 'unsupported-control') return [];
+  if (decoded.mode === 'unsupported-control' || decoded.mode === 'hooks-observe') return [];
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env, opts);
   const normalized = String(agent || '').trim().toLowerCase();
@@ -10657,6 +10758,7 @@ export function hostThroughPty(o) {
     // authBlocked and resets it on recycle, so the operator may recycle a
     // headless child whose in-memory login is dead.
     caps: ['carry-respawn', 'mcp-reconnect', 'shutdown', 'shutdown-identity', 'quota-recovery', 'auth-recovery', 'native-turn-start', 'delivery-cancel',
+      ...(env.PAPERCUSP_AGENT === 'codex' ? ['codex-hooks-observe-v1'] : []),
       ...(env.PAPERCUSP_AGENT === 'codex' && mintQuotaResumeArgs ? ['quota-recovery-resume'] : [])],
     // WI-6638: WHO launched this session — `injectLaunchedByArg` (agent-launch-core)
     // stamps `--launched-by=<caller ownerId>` onto every tool-driven psu launch, and
@@ -10694,6 +10796,7 @@ export function hostThroughPty(o) {
         ...authBlockDetector.snapshot(),
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+          childGeneration,
         } : {}),
         execution: currentNativeExecution(),
       }));
@@ -10919,6 +11022,8 @@ export function hostThroughPty(o) {
     return true;
   };
   let machineTurnActive = false;
+  let hooksObservationActive = false;
+  let hooksObservationInputHeld = false;
   // Latest owner-visible machine submit into THIS child. The ordinary Codex
   // native-boundary probe rejects any older task_complete record, preventing a
   // previous turn from certifying a new turn that has only just been submitted.
@@ -13535,6 +13640,50 @@ export function hostThroughPty(o) {
         });
         return { ok: false, reason: 'unsupported-control-envelope' };
       }
+      if ((hooksObservationActive || hooksObservationInputHeld) && msg.mode === 'raw')
+        return { ok: false, reason: 'observation-input-lease-held' };
+      if (msg.mode === 'hooks-observe') {
+        if (env.PAPERCUSP_AGENT !== 'codex') return { ok: false, reason: 'observation-unsupported-backend' };
+        const identity = () => ({ ownerId, advSessionId: baseMeta.advSessionId,
+          nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
+          hostStartedAt: baseMeta.startedAt, childGeneration, hostCodeVersion: baseMeta.hostCodeVersion });
+        if (!hooksObservationIdentityMatches(msg, identity()))
+          return { ok: false, reason: 'stale-observation-identity' };
+        const release = await injectMutex.acquire();
+        const tap = makeOutputTap();
+        const ownerEpoch = ownerInputGeneration;
+        try {
+          if (hooksObservationActive || hooksObservationInputHeld || machineTurnActive || nativeStartPending.size ||
+            carryRearm.pendingCount('carry-respawn') || ownerComposerGate.hasPending() ||
+            nativeExecutionBlocksInjection(currentNativeExecution()))
+            return { ok: false, reason: 'observation-input-busy' };
+          const initial = codexHooksObservationScreen(childStartupOutput, childScreenDims());
+          if (!initial.emptyComposer) return { ok: false, reason: 'observation-not-at-empty-composer' };
+          const execution = currentNativeExecution();
+          if (execution.phase !== 'settled' || !Number.isFinite(execution.observedAt) ||
+            Date.now() - execution.observedAt > 10_000)
+            return { ok: false, reason: 'observation-native-boundary-unverified' };
+          hooksObservationActive = true;
+          hooksObservationInputHeld = true;
+          const result = await runCodexHooksObservation({ request: msg, identity,
+            canStart: () => !ownerComposerGate.hasPending() && !nativeExecutionBlocksInjection(currentNativeExecution()),
+            interrupted: () => ownerInputGeneration !== ownerEpoch,
+            write: (bytes) => child.write(bytes), readTap: tap.read, resetTap: tap.reset,
+            readCurrent: () => childStartupOutput, screenDims: () => childScreenDims(),
+            crDelayMs: turnSubmitCrDelayForAgent('codex', env) });
+          hooksObservationInputHeld = !result.inputReleased;
+          appendHostEvent(ownerId, 'hooks-observation-result', result);
+          if (result.inputReleased) {
+            hooksObservationActive = false;
+            const ownerInput = queuedOwnerInput; queuedOwnerInput = [];
+            for (const input of ownerInput) forwardOwnerInput(input);
+          }
+          return result;
+        } finally {
+          hooksObservationActive = false;
+          tap.close(); release();
+        }
+      }
       // WI-2141435: the guard above calls appendHostEvent ONLY on its reject path, so
       // its silence cannot distinguish "no violations" from "structurally blind to this
       // class" — an ownerId-less payload takes the documented no-op branch above and
@@ -13942,6 +14091,7 @@ export function hostThroughPty(o) {
         return { ok: false, reason: 'deferred-owner-input' };
       };
       try {
+        if (hooksObservationInputHeld) return { ok: false, reason: 'observation-cleanup-unconfirmed' };
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
           // mid-typing. Only meaningful when there IS a bridged terminal a human
@@ -15105,6 +15255,19 @@ export function hostThroughPty(o) {
   /** Owner bytes → the child (or the post-submit queue while a machine turn
    *  owns the line). Shared by the live bridge and the parked-input replay. */
   function forwardOwnerInput(input) {
+    if (hooksObservationInputHeld) {
+      if (!codexHooksObservationScreen(childStartupOutput, childScreenDims()).emptyComposer) {
+        // A real human may dismiss an unresolved menu; machine envelopes may
+        // not do so. Other owner bytes stay buffered until a confirmed composer.
+        if (!hooksObservationActive && input === '\x1b') { child.write(input); return; }
+        queuedOwnerInput.push(input);
+        return;
+      }
+      hooksObservationInputHeld = false;
+      const pending = queuedOwnerInput; queuedOwnerInput = [];
+      for (const held of pending) forwardOwnerInput(held);
+    }
+    if (hooksObservationActive) { queuedOwnerInput.push(input); return; }
     if (bridgeTty) {
       if (machineTurnActive) {
         // The machine turn owns the current text→CR gap. Replay these bytes only

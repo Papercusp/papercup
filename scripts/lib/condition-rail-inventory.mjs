@@ -93,7 +93,7 @@ export function isScannable(file) {
   if (!CODE_EXT_RE.test(file) || file.endsWith('.d.ts') || file.endsWith('.d.mts')) return false;
   if (/(^|\/)(node_modules|_retired|__fixtures__|fixtures|coverage)\//.test(file)) return false;
   if (/(^|\/)dist[^/]*\//.test(file) || /(^|\/)\.vitest-tmp\//.test(file)) return false;
-  if (/(^|\/)__tests__\//.test(file) || /\.(test|spec|bench)\.[cm]?[jt]sx?$/.test(file)) return false;
+  if (/(^|\/)(test|tests|__tests__)\//.test(file) || /\.(test|spec|bench)\.[cm]?[jt]sx?$/.test(file)) return false;
   if (/(^|\/)(sidecar|target|build|out|public|vendor|storybook-static)\//.test(file)) return false; // bundles / vendored assets
   // This scanner and its dispositions name every token on purpose.
   if (/scripts\/lib\/condition-rail-(inventory|dispositions)\.mjs$/.test(file)) return false;

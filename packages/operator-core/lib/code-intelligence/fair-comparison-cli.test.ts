@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { buildArm, FAIR_ARM_IDS, indexFileCensus, loadFairInputs, materializeFrozenControls,
+import { buildArm, fairProcessCensus, FAIR_ARM_IDS, frozenGraphRequest, indexFileCensus, loadFairInputs, materializeFrozenControls,
   materializeFrozenRepositoryTask, measureFairToolPayload, prepareFrozenControl, validateFrozenInputs, verifyFrozenSource,
-  workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
+  verifyFairWorkerSource, workspaceDirs, type FrozenFairInputs } from './fair-comparison-cli';
 
 // Transitive users can mock only their own subprocess seam. Importing the CLI's
 // helpers must not read/promisify the absent execFile before an actual CLI run.
@@ -82,6 +82,16 @@ describe('CLI import without execFile', () => {
     expect((await buildArm('rg')).capabilities.armId).toBe('rg');
     expect(spawn).not.toHaveBeenCalled();
   });
+
+  it('refuses mixed worker contracts before launch and propagates unreadable provenance', async () => {
+    const read = vi.fn(async (path: string, version: 'working' | 'committed') =>
+      version === 'working' && path.endsWith('fair-comparison-run.ts') ? 'new-contract' : 'committed-contract');
+    await expect(verifyFairWorkerSource(read)).rejects.toThrow(/differs from committed child.*lint:as-committed/);
+    expect(spawn).not.toHaveBeenCalled();
+    await expect(verifyFairWorkerSource(async () => 'same-contract')).resolves.toBeUndefined();
+    await expect(verifyFairWorkerSource(async () => { throw new Error('git source unavailable'); }))
+      .rejects.toThrow('git source unavailable');
+  });
 });
 
 describe('logical index file census', () => {
@@ -102,12 +112,86 @@ describe('logical index file census', () => {
   });
 });
 
+describe('fresh task point process census', () => {
+  const taskId = 'aaa123', cgroupPath = '/user.slice/pc-aaa123.scope';
+  const absolute = `/sys/fs/cgroup${cgroupPath}`;
+  const expected = { taskId, cgroupPath, rootPid: 10, rootIdentity: 'linux:boot:10' };
+  const fixture = () => ({
+    fs: {
+      readFile: (path: string) => path === `${absolute}/cgroup.procs` ? '10\n11\n' :
+        path === `${absolute}/child/cgroup.procs` ? '12\n' : '999\n',
+      readDir: (path: string) => path === absolute ? ['child', 'cgroup.procs', 'pids.current'] : [],
+      isDir: (path: string) => path === absolute || path === `${absolute}/child`,
+    },
+    identity: (pid: number) => `linux:boot:${pid}`,
+    cgroup: (pid: number) => pid === 12 ? `${cgroupPath}/child` : cgroupPath,
+  });
+
+  it('counts process leaders across child scopes, excludes the worker and ignores thread counters', () => {
+    const deps = fixture();
+    const read = vi.spyOn(deps.fs, 'readFile');
+    const census = fairProcessCensus(expected, deps);
+    expect(census.childProcesses).toBe(2);
+    expect(census.processes.map(row => row.pid)).toEqual([10, 11, 12]);
+    expect(census.unknown).toEqual([]);
+    expect(read.mock.calls.some(([path]) => path.endsWith('/pids.current'))).toBe(false);
+    expect(census).not.toHaveProperty('peakChildProcesses');
+  });
+
+  it('refuses foreign scopes and changed worker identity before reading their population', () => {
+    for (const changed of [{ ...expected, taskId: 'bbb123' }, { ...expected, rootIdentity: 'linux:boot:old' }]) {
+      const deps = fixture(), read = vi.spyOn(deps.fs, 'readFile');
+      expect(fairProcessCensus(changed, deps).childProcesses).toBeNull();
+      expect(read).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps unreadable and malformed child branches unknown instead of counting an empty branch', () => {
+    for (const missing of [null, '12\ninvalid\n']) {
+      const deps = fixture(), read = deps.fs.readFile;
+      const census = fairProcessCensus(expected, { ...deps, fs: { ...deps.fs,
+        readFile: path => path === `${absolute}/child/cgroup.procs` ? missing : read(path) } });
+      expect(census.childProcesses).toBeNull();
+      expect(census.unknown).toContain(`unreadable-process-census:${absolute}/child/cgroup.procs`);
+    }
+    const deps = fixture();
+    expect(fairProcessCensus(expected, { ...deps, fs: { ...deps.fs,
+      readDir: () => { throw new Error('denied'); } } }).childProcesses).toBeNull();
+  });
+
+  it('rejects population changes, PID replacement and processes that escape their task scope', () => {
+    const deps = fixture(), read = deps.fs.readFile;
+    let reads = 0;
+    const changing = fairProcessCensus(expected, { ...deps, fs: { ...deps.fs,
+      readFile: path => path === `${absolute}/cgroup.procs` && ++reads > 1 ? '10\n' : read(path) } });
+    expect(changing.childProcesses).toBeNull();
+    expect(changing.unknown).toContain('cgroup-population-changed-during-census');
+    let identities = 0;
+    const replaced = fairProcessCensus(expected, { ...deps,
+      identity: pid => pid === 11 && ++identities > 1 ? 'linux:boot:new' : deps.identity(pid) });
+    expect(replaced.childProcesses).toBeNull();
+    expect(replaced.unknown).toContain('process-replaced-during-census:11');
+    const escaped = fairProcessCensus(expected, { ...deps,
+      cgroup: pid => pid === 12 ? `${cgroupPath}-foreign` : cgroupPath });
+    expect(escaped.childProcesses).toBeNull();
+    expect(escaped.unknown).toContain('process-outside-worker-cgroup:12');
+  });
+});
+
 describe('saved native protocol inputs and worker controls', () => {
   const frozenPath = new URL('../../../../docs/evidence/native-code-intelligence-preregistration-2026-10-09.json', import.meta.url);
   const frozen = JSON.parse(readFileSync(frozenPath, 'utf8')) as FrozenFairInputs;
   const control = (state: string, configuration = 'configured') => frozen.cases.find(kase =>
     kase.language === 'typescript' && kase.intent === 'callers' && kase.source === 'authored' &&
     kase.subject === 'target' && kase.sourceState === state && kase.configuration === configuration)!;
+
+  it('refuses changed native questions and text-search topology substitution before dispatch', () => {
+    const kase = frozen.cases.find(candidate => candidate.id === 'native-real-javascript-definition-main')!;
+    expect(frozenGraphRequest(kase, frozen)).toMatchObject({ op: 'symbol', paths: [kase.anchorFile] });
+    expect(() => frozenGraphRequest({ ...kase, subject: 'unregistered' }, frozen)).toThrow(/differs from frozen/);
+    expect(() => frozenGraphRequest(frozen.cases.find(candidate =>
+      candidate.id === 'native-real-javascript-text-search-main')!, frozen)).toThrow(/does not cover text-search/);
+  });
 
   it('loads all saved cases and keys without generating or rewriting preregistration', async () => {
     const out = mkdtempSync(join(tmpdir(), 'fair-frozen-input-'));

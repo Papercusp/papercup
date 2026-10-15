@@ -1804,9 +1804,10 @@ export function assessTerminalRepairQueueReconciliation(
   // WI-10000288 (ready-to-verify).
   // Preserving is a HANDOFF (the queue is retained and re-stamped to the successor), never a
   // retire, so the red signature survives. It stays deliberately narrow: provenance must name
-  // the terminal attempt or its immediate predecessor, no fixer may be assigned (a live fixer
-  // advances the queue itself by admission, and a dead one needs liveness this pure check does
-  // not have), and no unexpired dispatch reservation may be held (a launch is in flight). An
+  // the terminal attempt or its immediate predecessor, unless a legacy/null-origin row is pinned
+  // to its exact repairHead. No fixer may be assigned (a live fixer advances the queue itself by
+  // admission, and a dead one needs liveness this pure check does not have), and no unexpired
+  // dispatch reservation may be held (a launch is in flight). An
   // expired reservation is abandoned: `decideFrozenCandidateRepairQueue` already treats it as
   // dispatchable, so refusing on it here would recreate the same deadlock one field over.
   // Fail closed without a clock: an unmeasurable expiry counts as a live reservation.
@@ -1814,7 +1815,7 @@ export function assessTerminalRepairQueueReconciliation(
     queue.dispatchReservation != null &&
     !(typeof successor.nowMs === 'number' && queue.dispatchReservation.expiresAtMs <= successor.nowMs);
   if (
-    (originMatchesTerminal || originMatchesImmediatePredecessor) &&
+    (originMatchesTerminal || originMatchesImmediatePredecessor || unknownOriginPinnedToRepairHead) &&
     queue.phase === 'awaiting-fixer' &&
     queue.fixerSpawnId === null &&
     !reservationLive

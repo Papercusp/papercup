@@ -17,6 +17,7 @@
  * column lands.
  */
 
+import { randomUUID } from 'node:crypto';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
 import { resolveDispatchPremises } from './agent-tools/premises-gate';
@@ -274,11 +275,21 @@ interface KernelAuthorityTimingSample {
   calls: number;
   totalMs: number;
 }
-type KernelAuthorityTimingCollector = Record<KernelAuthorityTimingName, KernelAuthorityTimingSample>;
+interface KernelAuthorityQueryTrace {
+  queryFingerprint: 'controlAnchorSql/v1';
+  traceId: string;
+  backendPid: number | null;
+  queryStart: string | null;
+  outcome: 'fulfilled' | 'rejected';
+}
+type KernelAuthorityTimingCollector = {
+  controlAnchorSql: KernelAuthorityTimingSample & { executions: KernelAuthorityQueryTrace[] };
+  identityGrantEvaluation: KernelAuthorityTimingSample;
+};
 
 function createKernelAuthorityTimingCollector(): KernelAuthorityTimingCollector {
   return {
-    controlAnchorSql: { calls: 0, totalMs: 0 },
+    controlAnchorSql: { calls: 0, totalMs: 0, executions: [] },
     identityGrantEvaluation: { calls: 0, totalMs: 0 },
   };
 }
@@ -287,11 +298,13 @@ function recordKernelAuthorityTiming(
   collector: KernelAuthorityTimingCollector | undefined,
   name: KernelAuthorityTimingName,
   startedAt: number,
+  queryTrace?: KernelAuthorityQueryTrace,
 ): void {
   if (!collector) return;
   const sample = collector[name];
   sample.calls += 1;
   sample.totalMs += Math.max(0, performance.now() - startedAt);
+  if (queryTrace && name === 'controlAnchorSql') collector.controlAnchorSql.executions.push(queryTrace);
 }
 
 function attachKernelAuthorityTimings(
@@ -303,6 +316,7 @@ function attachKernelAuthorityTimings(
   const timings = Object.fromEntries(measured.map(([name, sample]) => [name, {
     calls: sample.calls,
     totalMs: Math.round(sample.totalMs * 10) / 10,
+    ...('executions' in sample && sample.executions.length ? { executions: sample.executions } : {}),
   }]));
   return {
     ...verdict,
@@ -495,8 +509,17 @@ export async function readControlAnchorKernelState(
   const authorityUnavailableSources: AuthorityUnavailableSource[] = [];
   const authorityReadFailures: AuthorityReadFailure[] = [];
   const anchorReadStartedAt = performance.now();
+  const anchorTrace: KernelAuthorityQueryTrace = {
+    queryFingerprint: 'controlAnchorSql/v1',
+    traceId: randomUUID(),
+    backendPid: null,
+    queryStart: null,
+    outcome: 'rejected',
+  };
   try {
     const rows = await sql<Array<{
+      backend_pid?: number | string | null;
+      query_start?: Date | string | null;
       control_state: unknown;
       control_generation: number | string | null;
       workspace_id: string | null;
@@ -509,7 +532,9 @@ export async function readControlAnchorKernelState(
       launch_spec_has_accepted_operation?: boolean | null;
       launch_spec_accepted_operation?: unknown;
     }>>`
-      SELECT b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
+      /* papercusp:controlAnchorSql/v1 */
+      SELECT pg_backend_pid() AS backend_pid, statement_timestamp() AS query_start,
+             b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,
              a.id AS adv_session_id, a.launch_header_known,
              a.launch_spec_type, a.launch_spec_workspace_id, a.launch_spec_harness_slug,
              a.launch_spec_has_accepted_operation, a.launch_spec_accepted_operation,
@@ -542,7 +567,13 @@ export async function readControlAnchorKernelState(
        LIMIT 1
     `;
     stateRow = rows[0];
-    recordKernelAuthorityTiming(timingCollector, 'controlAnchorSql', anchorReadStartedAt);
+    const backendPid = Number(stateRow?.backend_pid);
+    anchorTrace.backendPid = Number.isSafeInteger(backendPid) && backendPid > 0 ? backendPid : null;
+    const queryStart = stateRow?.query_start;
+    anchorTrace.queryStart = queryStart instanceof Date
+      ? queryStart.toISOString()
+      : typeof queryStart === 'string' ? queryStart : null;
+    anchorTrace.outcome = 'fulfilled';
   } catch (error) {
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
@@ -550,6 +581,8 @@ export async function readControlAnchorKernelState(
     authorityUnavailableSources.push('control-anchor-query-failed');
     authorityReadFailures.push(authorityReadFailure('control-anchor-query-failed', error, anchorReadStartedAt));
     stateRow = undefined;
+  } finally {
+    recordKernelAuthorityTiming(timingCollector, 'controlAnchorSql', anchorReadStartedAt, anchorTrace);
   }
   if (callerAdvSessionId !== null) {
     const selectedAdvSessionId =

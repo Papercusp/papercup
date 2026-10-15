@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 
 const privateEnv = {
@@ -18,6 +18,23 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('adds distinct workspace choices without accepting an existing multi-workspace or foreign registry', () => {
+    const id = privateEnv.PAPERCUSP_WORKSPACE_ID;
+    const original = { current: id, workspaces: [{ id, name: 'Private', createdAt: 1 }] };
+    const expanded = fixtureSwitchRegistry(original, privateEnv);
+    expect(expanded.current).toBe(id);
+    expect(expanded.workspaces.map(w => [w.id, w.name])).toEqual([
+      [id, 'Native workspace A'], [id + '-other', 'Native workspace B'],
+    ]);
+    expect(original.workspaces).toEqual([{ id, name: 'Private', createdAt: 1 }]);
+    expect(() => fixtureSwitchRegistry(expanded, privateEnv)).toThrow('untouched private registry');
+    expect(() => fixtureSwitchRegistry({ ...original, current: 'foreign' }, privateEnv))
+      .toThrow('Private current workspace mismatch');
+    expect(() => fixtureSwitchRegistry({ ...original, workspaces: [{ ...original.workspaces[0]!, id: 'foreign' }] }, privateEnv))
+      .toThrow('Private workspace registry mismatch');
+    expect(() => fixtureSwitchRegistry(original, { ...privateEnv, PAPERCUSP_BACKGROUND_WORKERS: '1' }))
+      .toThrow('must be disabled');
+  });
   it('distinguishes alive withheld startup, process exit and listener timeout without exposing private logs', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'fixture-readiness-'));
     const log = join(directory, 'host.log');

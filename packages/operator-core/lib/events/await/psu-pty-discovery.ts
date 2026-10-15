@@ -92,6 +92,7 @@ export interface PsuPtyHost {
   /** Codex UUID observed through the current PTY child's writer lock. Null or
    *  absent means unknown; never fall back to the requested argv UUID. */
   nativeSessionId?: string | null;
+  childGeneration?: number;
   startedAt: number;
   // ── Activity annotation (liveness-hardening P-006; ADDITIVE — absent on
   //    files written by older hosts). The pty stream is a true mid-turn
@@ -1336,7 +1337,7 @@ export function _injectAuditCountersForTest(): {
   };
 }
 
-export function injectIntoHostWithConfirmation(
+export async function injectIntoHostWithConfirmation(
   sock: string,
   msg: {
     mode:
@@ -1348,6 +1349,7 @@ export function injectIntoHostWithConfirmation(
       | 'recycle'
       | 'carry-respawn'
       | 'mcp-reconnect'
+      | 'hooks-observe'
       | 'delivery-cancel'
       | 'shutdown';
     data: string;
@@ -1359,6 +1361,10 @@ export function injectIntoHostWithConfirmation(
     requireNativeTurnStart?: boolean;
     expectedChildGeneration?: number;
     expectedHostStartedAt?: number;
+    observationVersion?: number;
+    expectedAdvSessionId?: string;
+    expectedNativeSessionId?: string;
+    expectedHostCodeVersion?: string;
     provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
@@ -1435,6 +1441,15 @@ export function injectIntoHostWithConfirmation(
   },
   timeoutMs = 2000,
 ): Promise<InjectHostResult> {
+  if (msg.mode === 'hooks-observe') {
+    const host = msg.ownerId ? await findLiveHostAsync(msg.ownerId) : null;
+    if (!host || host.sock !== sock || !hostSupports(host, 'codex-hooks-observe-v1') ||
+      msg.observationVersion !== 1 || !msg.expectedNativeSessionId || !msg.expectedHostCodeVersion ||
+      host.nativeSessionId !== msg.expectedNativeSessionId || host.hostCodeVersion !== msg.expectedHostCodeVersion ||
+      String(host.advSessionId) !== msg.expectedAdvSessionId || host.startedAt !== msg.expectedHostStartedAt ||
+      host.childGeneration !== msg.expectedChildGeneration)
+      return { ok: false, confirmation: 'error', reason: 'observation-capability-or-custody-unavailable' };
+  }
   const envelope: {
     v: 1;
     mode: string;
@@ -1444,6 +1459,10 @@ export function injectIntoHostWithConfirmation(
     requireNativeTurnStart?: boolean;
     expectedChildGeneration?: number;
     expectedHostStartedAt?: number;
+    observationVersion?: number;
+    expectedAdvSessionId?: string;
+    expectedNativeSessionId?: string;
+    expectedHostCodeVersion?: string;
     provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
@@ -1472,6 +1491,10 @@ export function injectIntoHostWithConfirmation(
   if (msg.requireNativeTurnStart !== undefined) envelope.requireNativeTurnStart = msg.requireNativeTurnStart;
   if (msg.expectedChildGeneration !== undefined) envelope.expectedChildGeneration = msg.expectedChildGeneration;
   if (msg.expectedHostStartedAt !== undefined) envelope.expectedHostStartedAt = msg.expectedHostStartedAt;
+  if (msg.observationVersion !== undefined) envelope.observationVersion = msg.observationVersion;
+  if (msg.expectedAdvSessionId !== undefined) envelope.expectedAdvSessionId = msg.expectedAdvSessionId;
+  if (msg.expectedNativeSessionId !== undefined) envelope.expectedNativeSessionId = msg.expectedNativeSessionId;
+  if (msg.expectedHostCodeVersion !== undefined) envelope.expectedHostCodeVersion = msg.expectedHostCodeVersion;
   if (msg.provenanceIssuedAtMs !== undefined) envelope.provenanceIssuedAtMs = msg.provenanceIssuedAtMs;
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;

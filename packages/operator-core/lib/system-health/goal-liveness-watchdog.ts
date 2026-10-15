@@ -152,6 +152,8 @@ import {
   GOAL_OWNER_REPORT_MAX_SILENCE_MS,
   GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS,
 } from './goal-owner-report-watchdog';
+import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 
 /**
  * P-001: `holderCountsAsAlive` moved to `../goals/holder`, which is now the ONE
@@ -332,6 +334,18 @@ export interface GoalLivenessAlert {
   /** Holders and the verdict each resolved to, for the escalation body. */
   holders: { ownerId: string; sessionState: string }[];
 }
+
+/** Exact workspace/goal/reason key for the liveness condition episode. */
+export function goalLivenessConditionKey(
+  goal: Pick<GoalRowLike, 'workspaceId' | 'goalId'>,
+  reason: GoalLivenessReason,
+): string {
+  return 'alarm:goal-liveness:' + encodeURIComponent(JSON.stringify([
+    goal.workspaceId, goal.goalId, reason,
+  ]));
+}
+
+const GOAL_LIVENESS_REASONS: readonly GoalLivenessReason[] = ['unheld', 'abandoned', 'overlap'];
 
 /**
  * PURE: classify one goal. Returns null when the goal is healthy OR when the
@@ -564,6 +578,8 @@ export interface GoalLivenessSweepDeps {
   flagEnabled: () => Promise<boolean>;
   now: () => number;
   graceMs: number;
+  /** Injected condition rail for producer tests; defaults to the native rail. */
+  rail?: AlarmAttentionDeps;
 }
 
 /** The `readReadiness` map key. Colon-composite, same convention as `blockerStatusKey`. */
@@ -1382,6 +1398,42 @@ export async function runGoalLivenessSweepOnce(
   const verdicts = await deps.resolveLiveness([...new Set(relevant.map((h) => h.ownerId))]);
 
   const alerts = scanGoalLiveness(goals, relevant, verdicts, deps.now(), deps.graceMs);
+  // Publish one exact episode for each measured unhealthy goal and resolve all
+  // prior reasons only after a positively healthy holder fold and complete
+  // relevant-holder measurements. Missing or in-band unknown verdicts preserve it.
+  for (const goal of goals) {
+    const alert = classifyGoalLiveness(goal, relevant, verdicts, deps.now(), deps.graceMs);
+    if (alert) {
+      try {
+        const event = {
+          conditionKey: goalLivenessConditionKey(alert, alert.reason),
+          oneShot: true as const,
+          summary: 'Goal liveness: ' + alert.reason,
+          body: 'Goal ' + alert.goalId + ' in workspace ' + alert.workspaceId +
+            ' has a holder health failure (' + alert.reason + ') for ' + alert.darkMs + 'ms.',
+        };
+        if (deps.rail?.broadcast) await deps.rail.broadcast(event);
+        else await broadcastSevereEvent(event);
+      } catch (e) {
+        console.warn('[goal-liveness-watchdog] condition publish failed for ' + goal.goalId + ': ' + (e instanceof Error ? e.message : String(e)));
+      }
+      continue;
+    }
+    const goalHolders = relevant.filter((holder) => holder.workspaceId === goal.workspaceId && holder.goalId === goal.goalId);
+    const fold = resolveGoalHoldersFromRows(goal.goalId, goal.workspaceId, goalHolders, verdicts, deps.now());
+    if (fold.liveness !== 'held' || fold.overlap.status === 'violation') continue;
+    if (!goalHolders.every((holder) => {
+      const verdict = verdicts.get(holder.ownerId);
+      return verdict != null && verdict.sessionState != null && verdict.signalMissing !== true;
+    })) continue;
+    try {
+      for (const reason of GOAL_LIVENESS_REASONS) {
+        await resolveAlarm(goalLivenessConditionKey(goal, reason), 'goal-liveness', deps.rail);
+      }
+    } catch (e) {
+      console.warn('[goal-liveness-watchdog] condition resolve failed for ' + goal.goalId + ': ' + (e instanceof Error ? e.message : String(e)));
+    }
+  }
   let escalated = 0;
   for (const alert of alerts) {
     try {

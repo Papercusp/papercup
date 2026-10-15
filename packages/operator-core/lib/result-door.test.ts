@@ -1593,6 +1593,19 @@ describe('applyResultDoor', () => {
     expect(kept.positionsMarker).toMatchObject({ marker, inMain: true, deployed: true });
     expect(kept.currentBuildTestRoute).toEqual(currentBuildTestRoute);
 
+    const nestedDoored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'dev:pipeline_position',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    );
+    const nestedKept = JSON.parse((nestedDoored.content[0] as { text: string }).text) as any;
+    expect(nestedKept._projection.truncated).toBe(true);
+    expect(nestedKept.currentBuildTestRoute).toEqual(currentBuildTestRoute);
+
     // FALSIFIABILITY CONTROL: the same oversized bytes through an ordinary tool
     // have no marker-verdict policy and should still demonstrate the old drop.
     const control = applyResultDoor(

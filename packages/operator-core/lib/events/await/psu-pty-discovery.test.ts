@@ -17,6 +17,21 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import net from 'node:net';
+
+describe('hook observation capability gate', () => {
+  it('never opens a socket for an old, absent, or unqualified host', async () => {
+    const connect = vi.spyOn(net, 'createConnection');
+    try {
+      expect(await injectIntoHostWithConfirmation('/tmp/never-hook-observation.sock', {
+        mode: 'hooks-observe', data: '', observationVersion: 1,
+        ownerId: `su-missing-observation-${process.pid}`, expectedNativeSessionId: 'native',
+        expectedAdvSessionId: '42', expectedHostStartedAt: 1, expectedChildGeneration: 1,
+        expectedHostCodeVersion: 'host-sha',
+      })).toMatchObject({ ok: false, reason: 'observation-capability-or-custody-unavailable' });
+      expect(connect).not.toHaveBeenCalled();
+    } finally { connect.mockRestore(); }
+  });
+});
 import {
   findLiveHost,
   findLiveHostAsync,

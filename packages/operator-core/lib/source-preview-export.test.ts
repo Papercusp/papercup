@@ -563,7 +563,14 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const receiptPath = join(tmp, 'materialized-dependency-source-receipt.json');
     const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
       command: [process.execPath, script, 'verifier-measure'] };
-    expect(await runVerifierCommand(options)).toBe(0);
+    // The donor must pass the ignored-source-scratch guard, not accidentally
+    // be admitted because both fixture repositories are beneath OS tmpdir.
+    const restrictedTemp = join(tmp, 'materialized-source-only-temp');
+    await fsPromises.mkdir(restrictedTemp);
+    vi.stubEnv('TMPDIR', restrictedTemp);
+    try {
+      expect(await runVerifierCommand(options)).toBe(0);
+    } finally { vi.unstubAllEnvs(); }
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
     const dependencyReceipt = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
     expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);

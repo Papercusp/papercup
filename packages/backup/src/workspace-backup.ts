@@ -46,6 +46,7 @@ import { BACKUP_APPLICATION_NAMES } from './application-names';
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
 const SNAPSHOT_ROW_TAG_KEY = 'papercusp-backup-row-id';
+export const BACKUP_RETENTION_PIN = 'papercusp-legal-hold-retention';
 
 /** Kopia accepts `<snapshot-id>/<relative-path>` to restore one snapshot entry. */
 function snapshotSubpath(source: string): string {
@@ -149,7 +150,7 @@ interface KopiaSnapshotManifest {
     totalSize?: number;
     totalBytes?: number;
   };
-  rootEntry?: { summ?: { size?: number } };
+  rootEntry?: { obj?: string; summ?: { size?: number } };
 }
 
 interface SnapshotInFlight {
@@ -589,12 +590,18 @@ export class WorkspaceBackup {
           // self-exclude the repo dir. Without this guard the snapshot would
           // recursively include kopia-repo/ and balloon toward 1TB.
           await this.assertSelfExclusionPolicy(env);
+          // Kopia expires older snapshots DURING create. Always protect the
+          // existing artifacts and the new artifact before capture, including
+          // when a hold is placed while the long capture runs. Only a fresh
+          // serialized no-hold decision below may remove our safety pins.
+          await this.pinForRetention(env);
           // WI-42258: the Kopia artifact is durable before the PG receipt UPDATE.
           // Tag it with the already-durable row id so backup:snapshot_create can
           // recover the exact receipt if the host dies in that narrow boundary.
           const out = await this.kopia([
             'snapshot',
             'create',
+            ...(backupHost().withRetentionLease ? [`--pin=${BACKUP_RETENTION_PIN}`] : []),
             `--tags=${SNAPSHOT_ROW_TAG_KEY}:${snapshotRowId}`,
             ...sources,
             '--json',
@@ -607,6 +614,8 @@ export class WorkspaceBackup {
           });
           return { ...p, durationMs: Date.now() - startedAtMs };
         });
+        // Outside the cached step: a resumed operation must read today's holds.
+        await this.expireWithRetentionLease(env);
 
         // Step 4 — record the result. Idempotent UPDATE keyed by the row id.
         //
@@ -945,6 +954,8 @@ export class WorkspaceBackup {
     if (!manifest.id || !manifest.endTime) {
       throw new Error(`tagged Kopia artifact for row ${snapshotId} is missing id/endTime`);
     }
+    // Pinning replaces the manifest; the root object remains restorable.
+    const kopiaSnapshotId = manifest.rootEntry?.obj || manifest.id;
     if (manifest.source?.path && manifest.source.path !== this.workspaceRoot) {
       throw new Error(
         `tagged Kopia artifact for row ${snapshotId} belongs to ${manifest.source.path}, not ${this.workspaceRoot}`,
@@ -969,7 +980,7 @@ export class WorkspaceBackup {
       : null;
     const updated = await sql<{ id: number }[]>`
       UPDATE harness_shared.backup_snapshots
-         SET kopia_snapshot_id = ${manifest.id},
+         SET kopia_snapshot_id = ${kopiaSnapshotId},
              finished_at       = ${manifest.endTime}::timestamptz,
              status            = ${status},
              error_text        = ${errorText},
@@ -998,7 +1009,7 @@ export class WorkspaceBackup {
     }
     await this.event(snapshotId, 'reconciled', {
       phase: 'record_result_recovered',
-      kopiaSnapshotId: manifest.id,
+      kopiaSnapshotId,
       artifactEndTime: manifest.endTime,
       status,
     });
@@ -1008,7 +1019,7 @@ export class WorkspaceBackup {
       stillRunning: false,
       status,
       dbDumpOk,
-      kopiaSnapshotId: manifest.id,
+      kopiaSnapshotId,
       bytesAdded,
       bytesTotal,
       durationMs: Math.max(0, artifactEndMs - startedAtMs),
@@ -1063,11 +1074,65 @@ export class WorkspaceBackup {
   }
 
   async maintenance(level: 'quick' | 'full' = 'quick'): Promise<void> {
-    const password = await deriveRepoPassword(this.workspaceId);
-    const env = this.envWithPassword(password);
-    // kopia uses bool --full for full; no flag = quick.
-    const args = level === 'full' ? ['maintenance', 'run', '--full'] : ['maintenance', 'run'];
-    await this.kopia(args, { env });
+    // Reuse the capture rendezvous: otherwise maintenance could remove the
+    // safety pins while another process is still capturing this repository.
+    const lock = await backupHost().acquireMigrationLock?.();
+    try {
+      const password = await deriveRepoPassword(this.workspaceId);
+      const env = this.envWithPassword(password);
+      // kopia uses bool --full for full; no flag = quick.
+      const args = level === 'full' ? ['maintenance', 'run', '--full'] : ['maintenance', 'run'];
+      await this.pinForRetention(env);
+      await this.kopia(args, { env });
+      await this.expireWithRetentionLease(env);
+    } finally {
+      await lock?.release();
+    }
+  }
+
+  private async retentionSnapshotIds(env: NodeJS.ProcessEnv): Promise<string[]> {
+    const raw = await this.kopia(['snapshot', 'list', '--all', '--json'], { env });
+    const rows: unknown = JSON.parse(raw);
+    if (!Array.isArray(rows) || rows.some((r) => !r || typeof r.id !== 'string' || !/^[a-f0-9]+$/.test(r.id))) {
+      throw new Error('backup retention: malformed Kopia snapshot list; expiry refused');
+    }
+    // Pin updates replace Kopia manifests. Convert legacy receipt references to
+    // their stable root object before any pin mutation makes the old id vanish.
+    const sql = backupHost().getSql();
+    for (const row of rows) {
+      const rootId = row.rootEntry?.obj;
+      if (typeof rootId === 'string' && rootId) {
+        await sql`UPDATE harness_shared.backup_snapshots
+                     SET kopia_snapshot_id = ${rootId}
+                   WHERE workspace_id = ${this.workspaceId} AND kopia_snapshot_id = ${row.id}`;
+      }
+    }
+    return rows.map((r) => r.id as string);
+  }
+
+  private async pinForRetention(env: NodeJS.ProcessEnv): Promise<void> {
+    if (!backupHost().withRetentionLease) return;
+    const ids = await this.retentionSnapshotIds(env);
+    for (let i = 0; i < ids.length; i += 100) {
+      await this.kopia(['snapshot', 'pin', `--add=${BACKUP_RETENTION_PIN}`, ...ids.slice(i, i + 100)], { env });
+    }
+  }
+
+  private async expireWithRetentionLease(env: NodeJS.ProcessEnv): Promise<void> {
+    const lease = backupHost().withRetentionLease;
+    if (!lease) return;
+    await lease(async (holdIds) => {
+      if (!Array.isArray(holdIds) || holdIds.some((id) => typeof id !== 'string' || !id)) {
+        throw new Error('backup retention: unreadable legal holds; expiry refused');
+      }
+      if (holdIds.length) return;
+      // Other pins (operator/manual preservation) are never removed.
+      const ids = await this.retentionSnapshotIds(env);
+      for (let i = 0; i < ids.length; i += 100) {
+        await this.kopia(['snapshot', 'pin', `--remove=${BACKUP_RETENTION_PIN}`, ...ids.slice(i, i + 100)], { env });
+      }
+      await this.kopia(['snapshot', 'expire', '--all', '--delete'], { env });
+    });
   }
 
   async updateSettings(partial: Partial<Omit<BackupSettings, 'workspaceId'>>): Promise<BackupSettings> {
@@ -1706,7 +1771,7 @@ export function parseKopiaSnapshotJson(stdout: string): {
   }
   const obj = JSON.parse(lines[lines.length - 1]!) as {
     id?: string;
-    rootEntry?: { summ?: { size?: number; numFailedEntries?: number } };
+    rootEntry?: { obj?: string; summ?: { size?: number; numFailedEntries?: number } };
     stats?: {
       totalBytes?: number;
       uploadedBytes?: number;
@@ -1718,7 +1783,9 @@ export function parseKopiaSnapshotJson(stdout: string): {
     throw new Error(`kopia snapshot create missing id: ${JSON.stringify(obj).slice(0, 200)}`);
   }
   return {
-    snapshotId: obj.id,
+    // Content IDs survive pin changes; manifest IDs do not. Older clients and
+    // stored step results without rootEntry still use the historical fallback.
+    snapshotId: obj.rootEntry?.obj || obj.id,
     // Current Kopia uses addedSize/totalSize. Keep the former field names for
     // repositories produced by older installed clients.
     bytesAdded: obj.stats?.addedSize ?? obj.stats?.uploadedBytes ?? 0,

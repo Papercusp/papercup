@@ -5,6 +5,23 @@ import { prepareRuntimeReader } from '../vitest.e2e.config';
 import { unitExcludedVitestTest } from '../../../scripts/lib/related-tests.mjs';
 
 describe('operator e2e config loading', () => {
+  it.each(['integration', 'e2e'])('uses the selected live-profile runtime reader in the %s layer', async (layer) => {
+    vi.stubEnv('PAPERCUSP_APP_OPERATION_LIVE_PROFILE',
+      'docs/evidence/gateway-admission-congestion-only-2026-10-13/live-runtime-profile.json');
+    vi.stubEnv('PAPERCUSP_WOE_SERVED_AUDIT', '0');
+    vi.stubEnv('PAPERCUSP_TEST_POSTHOG_LIVE', 'false');
+    try {
+      const loaded = await loadConfigFromFile(
+        { command: 'serve', mode: 'test' }, resolve(import.meta.dirname, `../vitest.${layer}.config.ts`),
+      );
+      expect(loaded!.config.test!.provide!.papercuspTestLayer).toBe(layer);
+      expect(loaded!.config.test!.reporters).toEqual(expect.arrayContaining([
+        [expect.any(String), expect.objectContaining({ readRuntimeEnvironment: expect.any(Function) })],
+      ]));
+      expect(loaded!.dependencies.some(path => /runtime-vintage\.ts$/.test(path))).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('selects paid blueprint routing proof only through the explicit e2e lane', async () => {
     const file = 'lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
     for (const config of ['vitest.config.ts', 'vitest.integration.config.ts']) {

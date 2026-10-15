@@ -157,6 +157,15 @@ describe('native protocol real confined worker lifecycle', () => {
       expect(ready.memoryCurrentBytes).toBeGreaterThan(0);
       expect(ready.memoryPeakBytes).toBeGreaterThan(0);
       expect(ready.indexFiles).not.toBeNull();
+      expect(ready.processCensus?.taskId).toBe(identity.taskId);
+      expect(ready.processCensus?.unknown).toEqual([]);
+      expect(ready.processCensus?.processes).toContainEqual(expect.objectContaining({
+        pid: ready.processCensus!.rootPid, cgroupPath: identity.cgroupPath,
+      }));
+      expect(ready.processCensus?.childProcesses).toBeGreaterThanOrEqual(0);
+      expect(ready.observedChildProcessesMax).toBeGreaterThanOrEqual(ready.processCensus!.childProcesses!);
+      expect(ready.peakChildProcesses).toBeNull();
+      expect(ready.unknown).toContain('descendant-process-lifetime-peak-not-measured');
       // Unknown native tool/configuration proof remains visible even when the
       // subprocess and resource measurements are actually working.
       expect(ready.unknown).toContain('native-tool-seam-and-configuration-invalidation-not-verified');
@@ -175,8 +184,46 @@ describe('native protocol real confined worker lifecycle', () => {
         else if (state === 'stale') expect(answer.control.currentSourceHash).not.toBe(answer.control.originalSourceHash);
         else expect(answer.control.currentSourceHash).toBe(answer.control.originalSourceHash);
       }
+      expect(repetition.nativeGraphQuery).toBeTypeOf('function');
+      const nativeReplays = [];
+      // These are original frozen questions through the exposed graph handler
+      // inside the managed payload, not answers from the rg comparison arm.
+      for (const kase of saved.cases.filter(candidate => candidate.source === 'repository-task' &&
+        candidate.intent === 'definition')) {
+        const replay = await repetition.nativeGraphQuery!(kase);
+        const sites = replay.response.sites.map(site => `${site.path}:${site.line1}`).sort();
+        expect(replay.tool).toBe('graph:query');
+        expect(replay.question).toEqual(kase);
+        expect(replay.sourceWitness.contentHash).toBe(kase.sourceFingerprint);
+        expect(replay.tokenWitness.requestHash).toBe(createHash('sha256')
+          .update(JSON.stringify(replay.request)).digest('hex'));
+        expect(replay.tokenWitness.responseHash).toBe(createHash('sha256')
+          .update(JSON.stringify(replay.response)).digest('hex'));
+        if (kase.language === 'javascript') {
+          expect(replay.response.error, JSON.stringify(replay.response)).toBeNull();
+          expect(sites).toEqual([...saved.keys.find(key => key.caseId === kase.id)!.sites].sort());
+        } else {
+          expect(replay.response.error).toMatch(/unsupported/i);
+          expect(sites).toEqual([]);
+          expect(replay.response.freshness.health).not.toBe('healthy');
+        }
+        nativeReplays.push(replay);
+      }
+      for (const state of ['current', 'stale', 'deleted', 'current']) {
+        const kase = selected(state), replay = await repetition.nativeGraphQuery!(kase);
+        if (state === 'deleted') expect(replay.response.error).not.toBeNull();
+        else expect(replay.response.error, JSON.stringify(replay.response)).toBeNull();
+        expect(replay.response.sites.map(site => `${site.path}:${site.line1}`).sort())
+          .toEqual([...saved.keys.find(key => key.caseId === kase.id)!.sites].sort());
+        nativeReplays.push(replay);
+      }
       const final = await repetition.sampleResources!('final');
       expect(final.memoryPeakBytes).toBeGreaterThanOrEqual(ready.memoryPeakBytes!);
+      console.log('NATIVE_FRESH_GRAPH_TASK=' + JSON.stringify({ preregHash: saved.preregistration.hash,
+        identity, ready, final, replays: nativeReplays,
+        backendVerdict: 'unqualified',
+        notMeasured: ['complete-descendant-process-lifetime-peak', 'separate-lsp-task-costs',
+          'full-143-case-backend-comparison', 'repository-project-config-byte-custody'] }));
       const [task] = await storage.sql!`SELECT confined, scope_unit, workspace_id FROM harness_shared.task_ledger
         WHERE task_id = ${identity.taskId}`;
       expect(task).toMatchObject({ confined: true, workspace_id: `test-fair-worker-${process.pid}` });

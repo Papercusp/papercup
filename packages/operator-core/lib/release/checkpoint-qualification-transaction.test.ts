@@ -1177,11 +1177,32 @@ describe('logical checkpoint qualification transaction', () => {
         qualificationAttemptId: 'someone-else',
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
-    // Unknown origin is not enough on its own for this handoff.
+    // Unknown origin needs the exact repairHead pin, then remains safe to hand off only while
+    // the fixer is unassigned and no dispatch reservation is live.
+    const unknownOriginQueue = { ...awaitingFixer, qualificationAttemptId: null };
     expect(
-      assessTerminalRepairQueueReconciliation(inconclusive, successor, {
-        ...awaitingFixer,
-        qualificationAttemptId: null,
+      assessTerminalRepairQueueReconciliation(inconclusive, successor, unknownOriginQueue),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    const pinnedSuccessor = { ...successor, requiredAncestorSha: unknownOriginQueue.repairHead };
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, unknownOriginQueue),
+    ).toMatchObject({ status: 'preserved', reason: 'awaiting-unassigned-fixer' });
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, {
+        ...successor,
+        requiredAncestorSha: 'different-repair-head',
+      }, unknownOriginQueue),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, {
+        ...unknownOriginQueue,
+        fixerSpawnId: 's-live',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
+    expect(
+      assessTerminalRepairQueueReconciliation(inconclusive, pinnedSuccessor, {
+        ...unknownOriginQueue,
+        dispatchReservation: { token: 'live', claimedAtMs: 450, expiresAtMs: 9_999_999 },
       }),
     ).toMatchObject({ status: 'blocked', reason: 'queue-origin-unknown' });
   });

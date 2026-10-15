@@ -25,22 +25,26 @@ export function premiseFactStatus(fact: PremiseFact): Resolution['status'] {
 export async function resolveDispatchPremises(
   refs: readonly string[], ctx: UnifiedToolContext, inject?: Sql,
 ): Promise<Resolution[]> {
-  if (!ctx.workspaceId) return refs.map(ref => ({ ref, status: 'unknown', reason: 'workspace unavailable' }));
-  const sql = inject ?? getOrgPg().sql;
+  const workspaceId = ctx.workspaceId;
+  if (!workspaceId) return refs.map(ref => ({ ref, status: 'unknown', reason: 'workspace unavailable' }));
+  const sql: Sql = inject ?? getOrgPg().sql;
   return Promise.all(refs.map(async ref => {
     const parsed = ref.startsWith('fact:') ? parseFactRef(ref) : { key: ref };
     if (!parsed || parsed.version !== undefined) return { ref, status: 'unknown' as const,
       reason: 'expected a fact key or unpinned canonical fact reference' };
-    const rows = await sql<PremiseFact[]>`
+    const key = parsed.key;
+    const scope = parsed.scope ?? null;
+    const scopeRef = parsed.scopeRef ?? null;
+    const rows = await Promise.resolve(sql<PremiseFact[]>`
       SELECT id, confidence, retracted_at::text, superseded_at::text, expires_at <= now() AS expired
         FROM (
           SELECT DISTINCT ON (scope, coalesce(scope_ref, '')) *
             FROM harness_shared.agent_facts
-           WHERE workspace_id = ${ctx.workspaceId} AND key = ${parsed.key}
+           WHERE workspace_id = ${workspaceId} AND key = ${key}
              AND source_hive IS NULL
-             AND ${parsed.scope ? sql`scope = ${parsed.scope} AND coalesce(scope_ref, '') = ${parsed.scopeRef ?? ''}` : sql`TRUE`}
+             AND (${scope}::text IS NULL OR (scope = ${scope} AND coalesce(scope_ref, '') = coalesce(${scopeRef}, '')))
            ORDER BY scope, coalesce(scope_ref, ''), id DESC
-        ) current_identities LIMIT 2`;
+        ) current_identities LIMIT 2`);
     if (!rows.length) return { ref, status: 'missing' as const };
     if (rows.length > 1) return { ref, status: 'unknown' as const, reason: 'ambiguous key; cite a scoped fact reference' };
     return { ref, status: premiseFactStatus(rows[0]), factId: rows[0].id };

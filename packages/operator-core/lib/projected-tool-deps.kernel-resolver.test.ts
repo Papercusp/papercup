@@ -271,7 +271,11 @@ describe('control-anchor kernel resolver (D-030)', () => {
   });
 
   it('records successful control-anchor SQL and identity-grant evaluation timings', async () => {
-    db.rows.push([anchorRow({ activation: appliedActivation() })]);
+    const queryStart = '2026-10-14T23:00:00.000Z';
+    db.rows.push([anchorRow({ activation: appliedActivation() }, {
+      backend_pid: 73142,
+      query_start: queryStart,
+    })]);
 
     const verdict = await controlAnchorKernelResolver(request());
 
@@ -280,12 +284,26 @@ describe('control-anchor kernel resolver (D-030)', () => {
       serverAudit: {
         authorityTimings: {
           schemaVersion: 1,
-          controlAnchorSql: { calls: 1, totalMs: expect.any(Number) },
+          controlAnchorSql: {
+            calls: 1,
+            totalMs: expect.any(Number),
+            executions: [{
+              queryFingerprint: 'controlAnchorSql/v1',
+              traceId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+              backendPid: 73142,
+              queryStart,
+              outcome: 'fulfilled',
+            }],
+          },
           identityGrantEvaluation: { calls: 1, totalMs: expect.any(Number) },
         },
       },
     });
     const timings = verdict?.serverAudit?.authorityTimings as Record<string, unknown>;
+    const [anchorQuery] = db.queryCalls()[0] as [readonly string[], ...unknown[]];
+    expect(anchorQuery.join(' ')).toContain('/* papercusp:controlAnchorSql/v1 */');
+    expect(anchorQuery.join(' ')).toContain('pg_backend_pid() AS backend_pid');
+    expect(anchorQuery.join(' ')).toContain('statement_timestamp() AS query_start');
     expect(JSON.stringify(timings)).not.toMatch(/ws-a|SELECT|launch_spec/i);
   });
 

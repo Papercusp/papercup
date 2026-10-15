@@ -47,6 +47,7 @@ import { completedResultPayload } from '../abort-completion-payload';
 import graphQuery from '../gitnexus/query';
 import { generateNativeArchitecture } from '../../harness/docs/native-architecture';
 import type { CodeIntelAnswer } from '../../code-intelligence/contracts';
+import { promotedFromSchema, validatePromotedFrom } from '../../promotion-lineage';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -600,6 +601,7 @@ const argsSchema = z.object({
       'Kebab-case file slug or canonical doc path (optional .md/.mdx; e.g. "named-fleet-vs-ephemeral-swarm" or "agent-insights/named-fleet-vs-ephemeral-swarm"). A path routes its subdirectory to section and becomes <section>/<slug>.mdx.',
     ),
   title: z.string().min(1).max(200).describe('Human title (frontmatter `title`).'),
+  promotedFrom: promotedFromSchema.optional(),
   description: z
     .string()
     .min(1)
@@ -717,6 +719,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ctxAny = ctx as { harnessSlug?: string; isSuperuser?: boolean; metadata?: (d: Record<string, unknown>) => void };
     const warnings: string[] = [];
+    const promotedFrom = await validatePromotedFrom(args.promotedFrom, ctx.workspaceId);
 
     const slugRes = normalizeSlug(args.slug);
     if (!slugRes.ok) return err(slugRes.error);
@@ -850,7 +853,7 @@ export default defineTool({
         : inheritedGoverns !== undefined
           ? { governs: inheritedGoverns }
           : {}),
-      preservedFrontmatter: existingFrontmatter,
+      preservedFrontmatter: { ...existingFrontmatter, ...(promotedFrom !== undefined ? { promotedFrom } : {}) },
     };
     const content = composeDoc(fm, authoredBody);
 

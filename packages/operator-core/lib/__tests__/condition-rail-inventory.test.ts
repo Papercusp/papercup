@@ -212,6 +212,8 @@ describe('condition-rail inventory — scope, dispositions and coverage', () => 
     for (const f of [
       'packages/operator-core/lib/alarm-attention.test.ts',
       'packages/operator-core/lib/__tests__/x.ts',
+      'packages/operator-core/test/liveness-alarm-http-fixture.ts',
+      'packages/operator-core/tests/helper.ts',
       'apps/operator/dist-host/hono-host.mjs',
       'apps/operator/public/docs/pagefind/pagefind.js',
       'libs/generic/papergrid/grid-core/storybook-static/sb-manager/runtime.js',

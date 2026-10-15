@@ -8,7 +8,7 @@
  * shapes, so the transports cannot drift into separate contracts. */
 import { z } from 'zod';
 import { entityRef } from '@papercusp/tooldef';
-import { OperationEventBodySchema, OperationHandleSchema } from './operation-service';
+import { BusinessReviewStateSchema, OperationEventBodySchema, OperationHandleSchema } from './operation-service';
 
 export { BLUEPRINT_OPERATION_TOOLS, type BlueprintOperationVerb } from './operation-tool-names';
 
@@ -35,10 +35,12 @@ export const SubmitArgsSchema = z.object({
   summary: z.string().max(4_000).optional(),
 }).strict();
 
-export const HandleArgsSchema = z.object({ handle }).strict();
+const review = z.literal(true).optional().describe('Read as the distinct authenticated business reviewer named by this pinned operation.');
+export const HandleArgsSchema = z.object({ handle, review }).strict();
 
 export const EventsArgsSchema = z.object({
   handle,
+  review,
   cursor: z.string().regex(/^(0|[1-9][0-9]*)$/).optional()
     .describe('Resume after this event cursor (from a prior page). Omit to read from the start.'),
   limit: z.number().int().min(1).max(100).optional(),
@@ -94,6 +96,7 @@ export const BlueprintOperationResultSchema = z.union([
   z.object({
     state: z.literal('ready'), status: BlueprintOperationStatusSchema,
     output: z.unknown(), evidenceRef: z.string(), acceptanceEvidenceRef: z.string().optional(),
+    businessReview: BusinessReviewStateSchema.optional(),
   }),
 ]);
 

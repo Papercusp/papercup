@@ -9,6 +9,107 @@ import { readFileSync } from 'node:fs';
 import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
 
+describe('Codex hook observation transaction', () => {
+  const request = { mode: 'hooks-observe', observationVersion: 1, ownerId: 'su-observer',
+    expectedAdvSessionId: '42', expectedNativeSessionId: 'native', expectedHostStartedAt: 100,
+    expectedChildGeneration: 3, expectedHostCodeVersion: 'host-sha' };
+  const custody = { ownerId: 'su-observer', advSessionId: '42', nativeSessionId: 'native',
+    hostStartedAt: 100, childGeneration: 3, hostCodeVersion: 'host-sha' };
+  const paint = (body: string) => `\x1b[2J\x1b[H${body}`;
+  const composer = paint('›\r\nReady · GPT-6-Sol medium · Context 100% left · staging');
+  const menu = paint('/hooks View configured hooks\r\n› /hooks');
+  const browser = paint('Hooks\r\nPreToolUse: configured hook\r\nEsc to close');
+  const fixture = (overrides: Record<string, unknown> = {}) => {
+    let time = 0;
+    let output = '';
+    const writes: string[] = [];
+    const options = { request, identity: () => custody, canStart: () => true, interrupted: () => false,
+      readCurrent: () => composer, screenDims: () => ({ rows: 24, cols: 80 }),
+      readTap: () => output, resetTap: () => { output = ''; }, timeoutMs: 100,
+      now: () => time, sleep: async (ms: number) => { time += ms; },
+      write: (bytes: string) => {
+        writes.push(bytes);
+        output = bytes === '/hooks' ? menu : bytes === '\r' ? browser : composer;
+      }, ...overrides };
+    return { writes, options, setOutput: (value: string) => { output = value; } };
+  };
+
+  it('captures only a fresh viewport and dismisses once without a blind second Escape', async () => {
+    const f = fixture();
+    const result = await realHost.runCodexHooksObservation(f.options);
+    expect(result).toMatchObject({ ok: true, inputReleased: true, identity: custody,
+      coverage: { complete: false, scope: 'fresh-hook-browser-viewport' } });
+    expect(result.visibleRows).toContain('PreToolUse: configured hook');
+    expect(f.writes).toEqual(['/hooks', '\r', '\x1b']);
+    expect(result.coverage.notMeasured).toContain('nested-dispatch');
+  });
+
+  it.each(['ownerId', 'advSessionId', 'nativeSessionId', 'hostStartedAt', 'childGeneration', 'hostCodeVersion'])(
+    'rejects a changed %s before writing any child input', async (key) => {
+      const f = fixture({ identity: () => ({ ...custody, [key]: 'different' }) });
+      expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false, reason: 'stale-observation-identity' });
+      expect(f.writes).toEqual([]);
+    });
+
+  it('never presses Enter after a generation change in the command-to-submit gap', async () => {
+    let generation = 3;
+    const f = fixture({ identity: () => ({ ...custody, childGeneration: generation }),
+      sleep: async () => { generation = 4; } });
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false, inputReleased: false });
+    expect(f.writes).toEqual(['/hooks']);
+  });
+
+  it('never submits an unsupported slash command and clears only its leased draft', async () => {
+    const f = fixture();
+    f.options.write = (bytes: string) => {
+      f.writes.push(bytes);
+      f.setOutput(bytes === '\x15' ? composer : paint('› /hooks'));
+    };
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
+      reason: 'hooks-command-unavailable', inputReleased: true });
+    expect(f.writes).toEqual(['/hooks', '\x15']);
+  });
+
+  it('aborts on owner input before Enter and restores the composer before release', async () => {
+    const f = fixture({ interrupted: () => false });
+    f.options.interrupted = () => f.writes.length > 0;
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
+      reason: 'observation-interrupted', inputReleased: true });
+    expect(f.writes).toEqual(['/hooks', '\x15']);
+  });
+
+  it('permits another Escape only after a newly painted hook browser remains visible', async () => {
+    const f = fixture();
+    let escapes = 0;
+    f.options.write = (bytes: string) => {
+      f.writes.push(bytes);
+      if (bytes === '\x1b') escapes++;
+      f.setOutput(bytes === '/hooks' ? menu : bytes === '\r' || escapes === 1 ? browser : composer);
+    };
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: true, inputReleased: true });
+    expect(f.writes).toEqual(['/hooks', '\r', '\x1b', '\x1b']);
+  });
+
+  it('does not treat partial old hook text as a fresh browser or send blind cleanup keys', async () => {
+    const f = fixture();
+    f.options.write = (bytes: string) => {
+      f.writes.push(bytes);
+      f.setOutput(bytes === '/hooks' ? menu : 'Hooks\r\nEsc to close');
+    };
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
+      reason: 'observation-cleanup-unconfirmed', inputReleased: false });
+    expect(f.writes).toEqual(['/hooks', '\r']);
+  });
+
+  it('keeps observation out of generic turn byte helpers', () => {
+    const decoded = realHost.decodeControl(JSON.stringify({ v: 1, ...request }));
+    expect(decoded).toMatchObject({ mode: 'hooks-observe', data: '', gated: true });
+    expect(realHost.controlBytes(decoded)).toBe('');
+    expect(realHost.controlWrites(decoded)).toEqual([]);
+    expect(realHost.controlWritesForAgent(decoded, 'codex')).toEqual([]);
+  });
+});
+
 describe('currentNativeSessionId', () => {
   it('observes each current child without retaining a predecessor UUID', () => {
     const resolve = vi.fn((pid: number) => pid === 11 ? 'original-native' : 'carry-successor');
@@ -506,10 +607,23 @@ describe('control wire protocol (v1)', () => {
     expect(d).toEqual({ mode: 'turn', data: 'just some text', gated: true });
     expect(controlBytes(d)).toBe('just some text\r');
   });
-  it('an unknown/garbage JSON object falls back to a legacy turn', () => {
-    const d = decodeControl('{"v":2,"mode":"weird"}');
-    expect(d.mode).toBe('turn');
-    expect(d.gated).toBe(true);
+  it.each([
+    { v: 1, mode: 'hooks-inventory', data: '/hooks' },
+    { v: 2, mode: 'turn', data: 'future protocol' },
+    { v: '1', mode: 'raw', data: '\x1b' },
+    { v: 1, mode: null, data: 'malformed mode' },
+  ])('rejects unsupported control envelopes without producing input bytes: %j', (envelope) => {
+    const d = decodeControl(JSON.stringify({ ...envelope, ownerId: 'su-inventory' }));
+    expect(d).toEqual({ mode: 'unsupported-control', data: '', gated: false, ownerId: 'su-inventory' });
+    expect(controlBytes(d)).toBe('');
+    expect(controlWrites(d)).toEqual([]);
+    for (const agent of ['codex', 'claude', 'omp']) {
+      expect(realHost.controlWritesForAgent(d, agent, {}, { bracketedPaste: true })).toEqual([]);
+    }
+  });
+  it('keeps ordinary JSON without wire-protocol markers as a legacy turn', () => {
+    const text = '{"question":"what are hooks?"}';
+    expect(decodeControl(text)).toEqual({ mode: 'turn', data: text, gated: true });
   });
 
   // WI-5510: the fire-identity fields ({fireNumber, routineId}) a loop-fire wake

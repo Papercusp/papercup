@@ -23,6 +23,7 @@ import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { promotionSourceSchema, reversePromotions } from '../../promotion-lineage';
 import {
   createStageAttempt,
   traceStageAwait,
@@ -62,13 +63,19 @@ export default defineTool({
   agentRoles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   args: z.object({
-    query: z.string().min(1).max(500),
+    query: z.string().max(500).default(''),
+    promotedFrom: promotionSourceSchema.optional().describe('Exact reverse lookup of facts, docs and plan decisions promoted from this source. No text query or inference required.'),
     scope: scopeArg(),
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional().describe('Max results (default 5; maximum 50).'),
     ...searchFilterArgs,
-  }),
+  }).refine(args => Boolean(args.query) || args.promotedFrom !== undefined, { message: 'query or promotedFrom is required' }),
   async handler(args, ctx) {
+    if (args.promotedFrom) return { content: [{ type: 'text' as const, text: JSON.stringify({
+      ok: true, promotedFrom: args.promotedFrom,
+      ...await reversePromotions(args.promotedFrom, ctx.workspaceId, args.limit ?? 50),
+    }) }] };
+    if (!args.query) throw new Error('query or promotedFrom is required');
     const startedAt = performance.now();
     const stages: Array<{ name: string; elapsedMs: number; status: 'ok' | 'error' }> = [];
     const metadata = (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata;

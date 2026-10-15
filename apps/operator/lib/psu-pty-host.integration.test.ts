@@ -2969,6 +2969,10 @@ describe('hostThroughPty real round-trip', () => {
         expect(await send({ ...envelope, ownerId })).toMatchObject({ ok: false, reason: 'unsupported-control-envelope' });
       }
       expect(captured()).not.toContain('INPUT:');
+      expect(await send({ v: 1, mode: 'hooks-observe', observationVersion: 1, ownerId,
+        expectedAdvSessionId: 'wrong', expectedNativeSessionId: 'wrong', expectedHostStartedAt: 1,
+        expectedChildGeneration: 1, expectedHostCodeVersion: 'wrong' })).toMatchObject({ ok: false });
+      expect(captured()).not.toContain('INPUT:');
       expect(await send({ v: 1, mode: 'raw', data: 'still-responsive', ownerId })).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(captured()).toContain(`INPUT:${Buffer.from('still-responsive').toString('hex')}`), { timeout: 5000 });
       const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map((line) => JSON.parse(line));

@@ -559,7 +559,11 @@ export async function prepareVerifierSource({ repo, ref, dest, inputs = [], inpu
     // Reuse the guarded local clone: detached exact ref, borrowed objects, local
     // submodule pins, no origins, and cleanup only of its own new destination.
     const { createScratchClone } = await import('@papercusp/operator-core/lib/scratch-git-clone');
-    await createScratchClone({ source: repo, ref: sha, destination: dest, includeSubmodules: true });
+    // A retained materialized reader borrows its physical donor's ignored
+    // scratch directory. Clone that donor at the already validated exact pin;
+    // keep the reader as the input and receipt identity below.
+    await createScratchClone({ source: committedWorkRootDependencyDonor(repo), ref: sha,
+      destination: dest, includeSubmodules: true });
   } else await fs.mkdir(dest, { recursive: !operatorApi });
   let handoffIdentity;
   try {

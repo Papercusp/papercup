@@ -38,6 +38,7 @@ import {
   type SiteKey,
 } from './fair-comparison';
 import type { FairArm } from './fair-comparison-arms';
+import type { CodeIntelAnswer } from './contracts';
 
 export interface ArmRepAnswers {
   readonly rep: number;
@@ -73,6 +74,17 @@ export interface ArmResourceSample {
    * separately managed child scopes. Threads are not processes. Omitted/null
    * means no complete process census; never infer zero from worker-only metrics. */
   readonly peakChildProcesses?: number | null;
+  /** Race-checked process population at this instant; never a lifetime peak. */
+  readonly processCensus?: {
+    readonly taskId: string;
+    readonly cgroupPath: string;
+    readonly rootPid: number;
+    readonly processes: readonly { readonly pid: number; readonly identity: string | null; readonly cgroupPath: string | null }[];
+    readonly childProcesses: number | null;
+    readonly unknown: readonly string[];
+  };
+  /** Maximum of valid point samples so far. Short-lived forks may be missed. */
+  readonly observedChildProcessesMax?: number | null;
   /** Logical file sizes; null means incomplete census, [] means measured empty. */
   readonly indexFiles: readonly { readonly path: string; readonly bytes: number }[] | null;
   readonly unknown: readonly string[];
@@ -86,6 +98,17 @@ export interface FairArmFactory {
     readonly arm: FairArm;
     readonly identity: ArmRepetitionIdentity;
     sampleResources?(stage: ResourceStage): Promise<ArmResourceSample>;
+    /** Separate native task replay; never substituted for a registered arm answer. */
+    nativeGraphQuery?(kase: FairCase): Promise<{
+      tool: 'graph:query';
+      question: FairCase;
+      request: Record<string, unknown>;
+      response: CodeIntelAnswer;
+      wallMs: number;
+      control: unknown;
+      sourceWitness: { path: string; contentHash: string | null; sourceCommit: string };
+      tokenWitness: { requestHash: string; responseHash: string; requestTokens: number; responseTokens: number };
+    }>;
   }>;
 }
 

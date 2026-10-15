@@ -137,6 +137,7 @@ export function projectFact(
   full: boolean,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
+    ...(f.sourceProvenance?.promotedFrom ? { promotedFrom: f.sourceProvenance.promotedFrom } : {}),
     scope: f.scope,
     ref: f.scopeRef,
     key: f.key,

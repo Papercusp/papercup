@@ -103,7 +103,41 @@ export type BlueprintOperationResult<TOutput = unknown> =
       readonly output: TOutput;
       readonly evidenceRef: string;
       readonly acceptanceEvidenceRef?: string;
+      /** Execution readiness and the reviewer's business decision are separate. */
+      readonly businessReview?: BlueprintOperationBusinessReview;
     };
+
+export interface BlueprintOperationBusinessReview {
+  readonly state: 'pending' | 'accepted' | 'rejected' | 'rework';
+  readonly accountableOwner: string;
+  readonly resultFingerprint: string;
+  readonly decision?: {
+    readonly eventId: string;
+    readonly reviewerPrincipal: string;
+    readonly reason: string;
+    readonly at: string;
+  };
+}
+
+/** Select reviewer access; the server supplies identity from authentication. */
+export interface BlueprintOperationReadOptions {
+  readonly review?: true;
+}
+
+export interface BlueprintOperationReviewInput {
+  readonly decision: 'accept' | 'reject' | 'rework';
+  readonly reason: string;
+  readonly resultFingerprint: string;
+  readonly requestKey: string;
+}
+
+export interface BlueprintOperationInputReceipt {
+  readonly eventId: string;
+  readonly replayed: boolean;
+  readonly accepted: true;
+  readonly wakeQueued: boolean;
+  readonly handled: false;
+}
 
 /**
  * One canonical lifecycle event (`blueprint:events`). `kind` is one of
@@ -126,7 +160,7 @@ export interface BlueprintOperationEventsPage {
   readonly hasMore: boolean;
 }
 
-export interface BlueprintOperationEventsOptions {
+export interface BlueprintOperationEventsOptions extends BlueprintOperationReadOptions {
   readonly cursor?: string;
   readonly limit?: number;
 }
@@ -208,6 +242,7 @@ export interface BlueprintOperationHost {
   /** blueprint:result — only state=ready may carry output. */
   readBlueprintOperationResult(
     handle: BlueprintOperationHandle,
+    options?: BlueprintOperationReadOptions,
   ): Promise<BlueprintOperationResult> | BlueprintOperationResult;
   /** blueprint:events */
   readBlueprintOperationEvents(
@@ -219,6 +254,11 @@ export interface BlueprintOperationHost {
     handle: BlueprintOperationHandle,
     input: BlueprintOperationCancelInput,
   ): Promise<BlueprintOperationCancelReceipt> | BlueprintOperationCancelReceipt;
+  /** Existing blueprint:signal channel, optional for older host adapters. */
+  signalBlueprintOperation?(
+    handle: BlueprintOperationHandle,
+    input: { readonly channel: string; readonly payload: JsonValue; readonly requestKey: string },
+  ): Promise<BlueprintOperationInputReceipt> | BlueprintOperationInputReceipt;
 }
 
 export interface PotAppSeamHost extends BlueprintOperationHost {
@@ -245,6 +285,7 @@ export interface PotAppSeam {
   operationResult<TOutput>(
     handle: BlueprintOperationHandle,
     parse: OperationOutputParser<TOutput>,
+    options?: BlueprintOperationReadOptions,
   ): Promise<BlueprintOperationResult<TOutput>>;
   operationEvents(
     handle: BlueprintOperationHandle,
@@ -254,6 +295,11 @@ export interface PotAppSeam {
     handle: BlueprintOperationHandle,
     input: BlueprintOperationCancelInput,
   ): Promise<BlueprintOperationCancelReceipt>;
+  /** A saved input receipt; read operationResult again for the business outcome. */
+  reviewOperation(
+    handle: BlueprintOperationHandle,
+    input: BlueprintOperationReviewInput,
+  ): Promise<BlueprintOperationInputReceipt>;
   startIngestLoop<TParsed>(input: StartIngestLoopInput<TParsed>): IngestSubscription;
 }
 
@@ -540,6 +586,26 @@ function requireFields(value: unknown, what: string, fields: readonly string[]):
   return record;
 }
 
+function validateBusinessReview(raw: unknown): void {
+  const review = requireFields(raw, 'business review', ['state', 'accountableOwner', 'resultFingerprint']);
+  if (!['pending', 'accepted', 'rejected', 'rework'].includes(review.state as string) ||
+      typeof review.accountableOwner !== 'string' || !review.accountableOwner.trim() ||
+      typeof review.resultFingerprint !== 'string' || !/^[0-9a-f]{64}$/.test(review.resultFingerprint)) {
+    throw new Error('business review has invalid authority or result identity');
+  }
+  if (review.state === 'pending') {
+    if (review.decision !== undefined) throw new Error('pending business review must not carry a decision');
+    return;
+  }
+  const decision = requireFields(review.decision, 'business review decision', ['eventId', 'reviewerPrincipal', 'reason', 'at']);
+  for (const key of ['eventId', 'reviewerPrincipal', 'reason', 'at']) {
+    if (typeof decision[key] !== 'string' || !(decision[key] as string).trim()) {
+      throw new Error(`business review decision ${key} must be non-empty`);
+    }
+  }
+  if (!Number.isFinite(Date.parse(decision.at as string))) throw new Error('business review decision at must be a timestamp');
+}
+
 /**
  * Host adapter over any transport that can call the projected public tools
  * (MCP JSON-RPC, the HTTP agent-tools route, an in-process dispatcher). It
@@ -566,8 +632,8 @@ export function blueprintOperationHostFromInvoker(invoke: BlueprintToolInvoke): 
       return requireFields(await invoke(T.status, { handle }), T.status, statusFields) as unknown as
         BlueprintOperationStatus;
     },
-    async readBlueprintOperationResult(handle) {
-      return requireFields(await invoke(T.result, { handle }), T.result, ['state', 'status']) as unknown as
+    async readBlueprintOperationResult(handle, options) {
+      return requireFields(await invoke(T.result, { handle, ...(options?.review ? { review: true } : {}) }), T.result, ['state', 'status']) as unknown as
         BlueprintOperationResult;
     },
     async readBlueprintOperationEvents(handle, options) {
@@ -575,12 +641,18 @@ export function blueprintOperationHostFromInvoker(invoke: BlueprintToolInvoke): 
         handle,
         ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
         ...(options.limit === undefined ? {} : { limit: options.limit }),
+        ...(options.review ? { review: true } : {}),
       }), T.events, ['status', 'events', 'cursor', 'hasMore']) as unknown as BlueprintOperationEventsPage;
     },
     async cancelBlueprintOperation(handle, input) {
       return requireFields(await invoke(T.cancel, { handle, requestKey: input.requestKey, reason: input.reason }),
         T.cancel, ['eventId', 'replayed', 'accepted', 'wakeQueued', 'handled', 'effected']) as unknown as
         BlueprintOperationCancelReceipt;
+    },
+    async signalBlueprintOperation(handle, input) {
+      return requireFields(await invoke(T.signal, { handle, channel: input.channel,
+        payload: input.payload, requestKey: input.requestKey }), T.signal,
+      ['eventId', 'replayed', 'accepted', 'wakeQueued', 'handled']) as unknown as BlueprintOperationInputReceipt;
     },
   };
 }
@@ -644,15 +716,26 @@ export function createPotAppSeam(host: PotAppSeamHost): PotAppSeam {
       return status;
     },
 
-    async operationResult<TOutput>(handle: BlueprintOperationHandle, parse: OperationOutputParser<TOutput>) {
+    async operationResult<TOutput>(handle: BlueprintOperationHandle, parse: OperationOutputParser<TOutput>,
+      options?: BlueprintOperationReadOptions) {
       if (typeof parse !== 'function') throw new Error('operationResult requires the app parse gate');
-      const result = await host.readBlueprintOperationResult(handle);
+      const result = await host.readBlueprintOperationResult(handle, options);
       checkHandle(result.status.handle, handle, 'result');
       if (result.state !== 'ready') {
         if (Object.prototype.hasOwnProperty.call(result, 'output')) {
           throw new Error(`blueprint operation ${result.state} result must not carry output`);
         }
+        if (Object.prototype.hasOwnProperty.call(result, 'businessReview')) {
+          throw new Error(`blueprint operation ${result.state} result must not carry business review`);
+        }
         return result;
+      }
+      if (result.businessReview !== undefined) {
+        if (result.status.phase !== 'terminal' || result.status.outcome !== 'succeeded' ||
+            result.status.cancellationRequested || typeof result.evidenceRef !== 'string' || !result.evidenceRef.trim()) {
+          throw new Error('business review requires a validated successful result');
+        }
+        validateBusinessReview(result.businessReview);
       }
       let output: TOutput;
       try {
@@ -680,6 +763,27 @@ export function createPotAppSeam(host: PotAppSeamHost): PotAppSeam {
       }
       const receipt = await host.cancelBlueprintOperation(handle, input);
       if (receipt.accepted !== true) throw new Error('blueprint operation cancel was not accepted');
+      return receipt;
+    },
+
+    async reviewOperation(handle, input) {
+      if (!host.signalBlueprintOperation) throw new Error('canonical operation signal host is not connected');
+      if (!['accept', 'reject', 'rework'].includes(input.decision) ||
+          !/^[0-9a-f]{64}$/.test(input.resultFingerprint)) {
+        throw new Error('business review requires a decision and exact result fingerprint');
+      }
+      assertNonEmpty(input.reason, 'review.reason');
+      assertNonEmpty(input.requestKey, 'review.requestKey');
+      if (input.reason.trim().length > 2000 || input.requestKey.length > MAX_REQUEST_KEY_LENGTH) {
+        throw new Error('business review reason or request key exceeds the operator bound');
+      }
+      const receipt = await host.signalBlueprintOperation(handle, { channel: 'business-review',
+        payload: { decision: input.decision, reason: input.reason.trim(), resultFingerprint: input.resultFingerprint },
+        requestKey: input.requestKey });
+      if (receipt.accepted !== true || typeof receipt.eventId !== 'string' || !receipt.eventId.trim() ||
+          typeof receipt.replayed !== 'boolean' || typeof receipt.wakeQueued !== 'boolean' || receipt.handled !== false) {
+        throw new Error('blueprint operation review did not return a canonical input receipt');
+      }
       return receipt;
     },
 

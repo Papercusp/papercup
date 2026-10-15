@@ -58,6 +58,7 @@ import {
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
+import { promotedFromSchema, validatePromotedFrom, promotionDecisionBody, type PromotionSource } from '../../promotion-lineage';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -83,6 +84,7 @@ const DECISION_BODY_DESC =
   'Measure before you rule: when the decision asserts a factual claim about the tree, read the tree and add a `Measured:` line naming the file:line or command + result. A decision cited from another decision is authority for design, not evidence about current code.';
 
 const itemSpec = z.object({
+  promotedFrom: promotedFromSchema.optional(),
   slug: z.string().min(1),
   title: hardText(LIMITS.SHORT_TITLE),
   body: hardText(5000).describe(DECISION_BODY_DESC),
@@ -96,6 +98,7 @@ const itemSpec = z.object({
 const argsSchema = z
   .object({
     slug: z.string().min(1).optional(),
+    promotedFrom: promotedFromSchema.optional(),
     harness: harnessArg,
     title: hardText(LIMITS.SHORT_TITLE).optional(),
     body: hardText(5000).optional().describe(DECISION_BODY_DESC),
@@ -121,6 +124,7 @@ const argsSchema = z
   );
 
 export interface NewDecision {
+  promotedFrom?: PromotionSource[];
   slug: string;
   title: string;
   body: string;
@@ -381,7 +385,8 @@ export async function addDecisionOne(
   const it: NewDecision = {
     ...rawIt,
     title: neutralizeToolCallTags(rawIt.title),
-    body: neutralizeToolCallTags(rawIt.body),
+    body: promotionDecisionBody(neutralizeToolCallTags(rawIt.body),
+      await validatePromotedFrom(rawIt.promotedFrom, ctx.workspaceId)),
   };
   // frozen-candidate-carry-and-launch-fail-closed P-002: plan decisions are
   // durable execution authority. Do not let a positive moving-tip candidate
@@ -669,6 +674,7 @@ export default defineTool({
           slug: it.slug,
           title: it.title,
           body: it.body,
+          promotedFrom: it.promotedFrom ?? args.promotedFrom,
           refs: it.refs ?? it.itemRefs ?? batchRefs,
           affects: it.affects ?? args.affects,
           harness: it.harness ?? args.harness,
@@ -679,6 +685,7 @@ export default defineTool({
             slug: args.slug as string,
             title: args.title as string,
             body: args.body as string,
+            promotedFrom: args.promotedFrom,
             refs: batchRefs,
             affects: args.affects,
             harness: args.harness,

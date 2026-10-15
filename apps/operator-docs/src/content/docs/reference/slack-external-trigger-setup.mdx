@@ -21,6 +21,8 @@ documents:
   - "apps/operator/app/settings/integrations/TriggerPackSection.tsx"
   - "packages/operator-core/lib/providers/provider-socket-ingress.ts"
   - "packages/operator-core/lib/endpoint-route/routes/admin/external-triggers.ts"
+  - "packages/operator-core/lib/external-triggers/admin.ts"
+  - "packages/operator-core/lib/providers/slack/slack-pilot-journeys.integration.test.ts"
 plans:
   - "external-triggers-gmail-slack-2026-08-22"
   - "cupboard-distributable-integrations-2026-10-10"
@@ -78,3 +80,17 @@ Both are optional switches on the Slack card.
 - `ext:slack:<event>` keys are awaitable (`events:catalog`, family `external-trigger`), so an acceptance check can wait on the event instead of polling.
 
 Slack protocol references: https://docs.slack.dev/apis/events-api/using-socket-mode/ · https://docs.slack.dev/reference/app-manifest/ · https://docs.slack.dev/reference/methods/conversations.history/ · https://docs.slack.dev/apis/web-api/rate-limits/
+
+## Support, freshness and recovery
+
+Papercusp maintains the Slack package and host integration. The workspace administrator owns app installation, Slack scopes, token renewal, channel membership and identity mapping. Organization reads use `source-acl`; stored corpus reads also require the reader's mapped identity and corpus grant. A channel access change takes effect after a successful membership refresh, which unfinished backfill or provider backoff can delay. Live search uses the searching person's own Slack token and current Slack access; revoking their identity mapping prevents that search. Read access never grants permission to post: `chat.reply` also requires its applicable write policy and Slack's `chat:write` scope.
+
+While connected, the socket delivers edits and deletions. After an outage, each successful sync round rotates a seven-day scan across known channels. Whole-history re-walks rotate about once every 30 days, covering older posts and threads. Recovery depends on completing those paginated scans; throttling, missing scopes and an offline host extend the lag. A recent successful pass alone does not certify complete backfill or immediate source revocation.
+
+Authorized administrators can inspect the shared `/admin/triggers` snapshot, also used by `triggers:list` and `triggers:status`. Source fields include `scope`, `scopeRef`, `permissionMode`, `backfillStatus`, `lastSyncAt`, `nextAttemptAt`, `failureCount`, `status` and `lastError`. `lastSyncAt` records a successful driver pass, including a pass with more pages remaining; read it with `backfillStatus`. A null value means no successful driver pass is recorded. The projection includes the policy mode without expanding ACLs or credentials.
+
+- `rate_limited`: honor `nextAttemptAt` and Slack's `Retry-After`. The driver keeps the uncommitted cursor and resumes it after backoff.
+- `reconnect_required`: restore the revoked token or missing Slack scope, then reconnect on Settings → Integrations. The source remains in error without automatic retries until reconnected.
+- After recovery, verify a new successful pass, cleared error/failure count, completed backfill, and a scoped read as the affected person.
+
+The maintained package support contract in `libs/papercusp/plugins/slack/README.md` describes version 0.2.0. Internal stand-in Slack acceptance demonstrates the host/package paths; customer-tenant and packaged-release qualification remain separate. Private network reachability does not apply to this package's `slack.com`-only egress.

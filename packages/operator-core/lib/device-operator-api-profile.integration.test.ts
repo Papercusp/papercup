@@ -130,15 +130,15 @@ describe('disposable operator-api device lifecycle', () => {
       const { getOrgPg } = await import('@papercusp/db-org');
       const { registerRoute } = await import('./packages/operator-core/lib/endpoint-route/define-route.ts');
       const { default: routes } = await import('./packages/operator-core/lib/endpoint-route/routes/device/pair.ts');
-      const { readRegistry, writeRegistry } = await import('./packages/operator-core/lib/workspace-registry.ts');
+      const { readRegistry } = await import('./packages/operator-core/lib/workspace-registry.ts');
       const { insertDevice } = await import('./packages/operator-core/lib/device-store.ts');
       const { signDeviceToken } = await import('./packages/operator-core/lib/device-jwt.ts');
       const { sql } = getOrgPg();
       const other = id + '-other';
-      const registry = readRegistry();
-      assert(registry.workspaces.some(w => w.id === id));
-      writeRegistry({ ...registry, workspaces: [...registry.workspaces,
-        { id: other, name: 'Private second workspace', createdAt: Date.now() }] });
+      const { prepareFixtureWorkspaceSwitch } = await import('./packages/operator-core/lib/native-device-fixture.ts');
+      const switchFixture = await prepareFixtureWorkspaceSwitch();
+      assert.deepEqual(switchFixture.workspaces.map(w => w.id), [id, other]);
+      assert.equal(readRegistry().workspaces.length, 2);
       const app = new Hono().basePath('/api');
       for (const route of routes) registerRoute(app, route);
       const server = createAdaptorServer({ fetch: app.fetch });
@@ -211,6 +211,23 @@ describe('disposable operator-api device lifecycle', () => {
         assert.equal(config.workspaceId, id);
         await request('unknown-workspace-switch-refused', '/device/workspace/switch', 403,
           { method: 'POST', token: pair.deviceToken, body: { workspaceId: 'unregistered-workspace' } });
+        const switched = await request('workspace-switch-A-to-B', '/device/workspace/switch', 200,
+          { method: 'POST', token: pair.deviceToken, body: { workspaceId: other } });
+        assert.equal(switched.workspaceId, other);
+        assert(switched.deviceToken && switched.deviceToken !== pair.deviceToken);
+        const switchedConfig = await request('switched-token-claims-B', '/device/runtime-config', 200,
+          { token: switched.deviceToken, workspace: id });
+        assert.equal(switchedConfig.workspaceId, other);
+        const switchedDevices = await request('switched-device-data-is-B', '/device/devices', 200,
+          { token: switched.deviceToken });
+        assert(switchedDevices.devices.some(d => d.device_label === switchFixture.markers[1].label));
+        assert(!switchedDevices.devices.some(d => d.device_label === switchFixture.markers[0].label));
+        const switchedBack = await request('workspace-switch-B-to-A', '/device/workspace/switch', 200,
+          { method: 'POST', token: switched.deviceToken, body: { workspaceId: id } });
+        const restoredDevices = await request('switched-device-data-restores-A', '/device/devices', 200,
+          { token: switchedBack.deviceToken });
+        assert(restoredDevices.devices.some(d => d.device_label === switchFixture.markers[0].label));
+        assert(!restoredDevices.devices.some(d => d.device_label === switchFixture.markers[1].label));
         const [header, payload] = pair.deviceToken.split('.');
         const claims = JSON.parse(Buffer.from(payload, 'base64url').toString());
         const expiredPayload = Buffer.from(JSON.stringify({ ...claims,
@@ -264,6 +281,8 @@ describe('disposable operator-api device lifecycle', () => {
       'workspace-A-device-read', 'workspace-B-device-read',
       'cross-workspace-revoke-has-no-effect', 'foreign-device-still-authorized',
       'header-cannot-override-token-workspace', 'unknown-workspace-switch-refused',
+      'workspace-switch-A-to-B', 'switched-token-claims-B', 'switched-device-data-is-B',
+      'workspace-switch-B-to-A', 'switched-device-data-restores-A',
       ...['/device/runtime-config', '/device/heartbeat', '/device/workspace/switch']
         .map(path => 'expired-device-refused:' + path),
       'unexpired-device-still-authorized', 'desktop-revoke',

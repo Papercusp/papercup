@@ -37,7 +37,7 @@ async function withScript(script: string, bundled: boolean, run: (entry: string,
         name: 'record-workspace-child',
         setup(build) {
           if (rawGuard) {
-            build.onLoad({ filter: /(?:workspace-test|check-vitest-config-enrollment)\.mjs$/ }, ({ path }) => {
+            build.onLoad({ filter: /(?:workspace-test|check-vitest-config-enrollment|check-partial-index-alignment)\.mjs$/ }, ({ path }) => {
               const source = readFileSync(path, 'utf8');
               const guard = 'if (isCliEntry(import.meta.url))';
               if (!source.includes(guard)) throw new Error('Expected the production CLI-entry guard');
@@ -170,6 +170,35 @@ describe.each(SCRIPTS)('%s CLI entry', (script) => {
         expect(result.status, result.stderr).toBe(1);
         expect(result.stderr).toContain('packages/bad/vitest.config.ts');
       }
+    });
+  });
+});
+
+describe('partial-index alignment CLI entry in the operator graph', () => {
+  const script = 'check-partial-index-alignment.mjs';
+
+  it('keeps the bundled checker inert and detects the original entry comparison', async () => {
+    await withScript(script, true, (entry, root) => {
+      const result = execute([entry], root);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    });
+    await withScript(script, true, (entry, root) => {
+      const result = execute([entry], root);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain('generated.ts');
+    }, true);
+  });
+
+  it('still runs its schema preflight as a standalone checker', async () => {
+    await withScript(script, false, (entry, root) => {
+      const result = execute([entry], root);
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.stderr).toContain('generated.ts');
     });
   });
 });

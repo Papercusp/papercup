@@ -148,6 +148,12 @@ export const DISPOSITIONS = Object.freeze({
     'historical routing-receipt histogram initializes and counts the degraded outcome bucket; this pure read neither detects a runtime condition nor performs a fallback',
   ),
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts': migrate('P-014'),
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainConditionChecks|1': na(
+    'pure goal-drain verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot',
+  ),
+  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetConditionChecks|1': na(
+    'pure goal-plan-fleet verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot',
+  ),
 
   // Exact annotation IDs independently approved in thread-post:1176052; runtime siblings retain their cluster.
   'health-flag-no-condition|packages/operator-core/lib/system-health/carry-drill-drop-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,

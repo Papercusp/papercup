@@ -121,6 +121,26 @@
         "reason": "performance report diagnostic: the fallback wording describes the already measured host-health classifier used when PSI is unavailable; this site skips unreliable auto-filing and does not execute a runtime fallback"
       },
       "evidenceRef": "WI-6554700010008689/P-017-p2p-classification-2026-10-12"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalDrainConditionChecks|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "pure goal-drain verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "pure goal-drain verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot"
+      },
+      "evidenceRef": "WI-6554700010008687/D-077-goal-drain-producer-cases"
+    },
+    {
+      "rowId": "health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|goalPlanFleetConditionChecks|1",
+      "author": "su-2c60d7a4-bf4d-408e-b8e7-6c33272334aa",
+      "reason": "pure goal-plan-fleet verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "pure goal-plan-fleet verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot"
+      },
+      "evidenceRef": "WI-6554700010008687/D-077-goal-drain-producer-cases"
     }
   ]
 }

@@ -3451,7 +3451,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : []),
       ...(isScorecardsEmitCall(opts) ? SCORECARDS_EMIT_SPILL_PRESERVE_PATHS : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
-      ...(opts.toolName === PIPELINE_POSITION_TOOL ? PIPELINE_POSITION_PRESERVE_PATHS : []),
+      ...(opts.toolName === PIPELINE_POSITION_TOOL ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === PIPELINE_POSITION_TOOL)
+        ? PIPELINE_POSITION_PRESERVE_PATHS
+        : []),
       ...(opts.toolName === 'coord:send' ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send')
         ? COORD_SEND_DELIVERY_PRESERVE_PATHS

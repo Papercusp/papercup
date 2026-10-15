@@ -77,6 +77,7 @@ import {
   frozenLineageCarryViolationPayload,
 } from '../../release/frozen-lineage-execution-policy';
 import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target';
+import { promotedFromSchema, validatePromotedFrom } from '../../promotion-lineage';
 
 const FACT_LIFETIME_CALL_CONSTRAINT =
   "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it only for kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
@@ -574,6 +575,7 @@ export default defineTool({
     // callers believe `settledBy` is valid for every kind, even though the
     // store correctly rejects it outside `undecidable` (EI-20194111544678291).
     const base = {
+    promotedFrom: promotedFromSchema.optional(),
     scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef; accepted so a snake_case call still resolves the ref instead of silently dropping it.'),
@@ -1230,6 +1232,11 @@ export default defineTool({
     // whole multi-query write must share one bounded transaction. Retry that
     // complete unit on transient PG contention; retrying individual statements
     // could leave a partial append/eviction behind.
+    const promotedFrom = await validatePromotedFrom(args.promotedFrom, ctx.workspaceId);
+    if (promotedFrom !== undefined) sourceProvenance = {
+      ...(sourceProvenance ?? { kind: 'promotion' as const, verified: true, verifiedAt: new Date().toISOString() }),
+      promotedFrom,
+    };
     const factInput = {
       scope: args.scope,
       scopeRef: scopeRef ?? null,

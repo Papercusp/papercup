@@ -11,6 +11,22 @@ const annotationReview = JSON.parse(readFileSync(fileURLToPath(new URL('../../..
 const baseline = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../scripts/condition-rail-baseline.json', import.meta.url)), 'utf8'));
 
 describe('condition-rail immutable audit manifest (P-017)', () => {
+  it('keeps goal-drain emissions on the rail at their actual producer sites', () => {
+    const file = 'packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts';
+    const raw = readFileSync(fileURLToPath(new URL('../../../../' + file, import.meta.url)), 'utf8');
+    const sites = scanSites(raw, file);
+    for (const [kind, enclosing] of [
+      ['bespoke-watchdog', '<module>'],
+      ['health-flag-no-condition', 'readGoalPlanFleetObservation'],
+      ['health-flag-no-condition', 'runRelaunchLeg'],
+      ['health-flag-no-condition', 'runGoalDrainFleetSweepOnce'],
+    ]) {
+      const id = [kind, file, enclosing, 1].join('|');
+      expect(sites.find(site => site.id === id), id).toMatchObject({ onRail: true });
+      expect(baseline.rowIds, id).not.toContain(id);
+    }
+  });
+
   it('pins the original row set and retains reasoned dispositions and routes', () => {
     const pinnedHash = 'a2fdb5475a100101ea8dafb6019d75045cb38e53ef1a5e4870c6670d5abb77e4';
     expect(createHash('sha256').update(JSON.stringify(manifest.rows)).digest('hex')).toBe(pinnedHash);

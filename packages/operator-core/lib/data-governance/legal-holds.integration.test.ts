@@ -24,6 +24,8 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createHostedPrincipal } from '../auth/hosted-principal';
 import { containerPermissionRef, upsertChatMessages } from '../data-sources/chat-retrieval-units';
 import { upsertOrganizationDocuments, upsertPermissionList } from '../data-sources/documents-corpus';
+import { placeLegalHold, releaseLegalHold } from '../data-sources/chat-retrieval-units';
+import { withHostBackupRetentionLease } from './organization-backup-sealing';
 import {
   exportLegalHoldContent,
   LEGAL_HOLD_ACTIONS,
@@ -110,6 +112,30 @@ beforeEach(async () => {
 });
 
 describe('legal-hold administration (P-017b)', () => {
+  it('serializes host backup expiry against the low-level hold writer and reads the entire dump scope', async () => {
+    await withHostBackupRetentionLease(org.adminSql, async (ids) => {
+      expect(ids).toEqual([]);
+      // A separate pooled session proves the lock, without a timing guess or
+      // a mocked callback. Even the lowest-level writer must wait for expiry.
+      await expect(org.adminSql.begin(async (tx) => {
+        await tx`SET LOCAL lock_timeout = '100ms'`;
+        return placeLegalHold(tx as unknown as postgres.Sql, WS, {
+          dataSourceId: slackId, channelId: CH, reason: 'race', placedBy: 'test',
+        });
+      })).rejects.toThrow(/lock timeout/);
+    });
+    const { id } = await placeLegalHold(org.adminSql, WS, {
+      dataSourceId: slackId, channelId: CH, reason: 'after expiry', placedBy: 'test',
+    });
+    await withHostBackupRetentionLease(org.adminSql, async (ids) => {
+      expect(ids).toEqual([id]);
+    });
+    // Failure must release the transaction lease too.
+    await expect(withHostBackupRetentionLease(org.adminSql, async () => { throw new Error('expiry failed'); }))
+      .rejects.toThrow(/expiry failed/);
+    await releaseLegalHold(org.adminSql, WS, { id, releasedBy: 'test' });
+    await withHostBackupRetentionLease(org.adminSql, async (ids) => { expect(ids).toEqual([]); });
+  });
   it('places a container hold, reports what it keeps, and audits the placement', async () => {
     const { hold, auditEventId } = await placeOrganizationLegalHold(org.adminSql, {
       scope, actor: admin, workspaceId: WS, dataSourceId: slackId, channelId: CH, reason: 'litigation 11',
@@ -517,6 +543,61 @@ describe('restore under a legal hold (P-017d)', () => {
       // Content that already matches is not copied again.
       const again = await reconcile();
       expect(again.heldContent[0]).toMatchObject({ matchesExport: true, repairedRows: null });
+    } finally {
+      await pre?.end({ timeout: 5 });
+      await server.unsafe(`DROP DATABASE IF EXISTS "${preDb}" WITH (FORCE)`);
+      await server.end({ timeout: 5 });
+    }
+  });
+
+  it('repairs held documents idempotently while retaining foreign-key enforcement (EI-25984508545548441)', async () => {
+    const { hold } = await placeOrganizationLegalHold(org.adminSql, {
+      scope, actor: admin, workspaceId: WS, dataSourceId: ghId, channelId: 'acme/held', reason: 'matter 41',
+    });
+    const before = await exportLegalHoldContent(org.adminSql, {
+      scope, actor: admin, holdId: hold.holdId, purpose: 'pre-restore 41',
+    });
+    const [{ permission_list_id: listId }] = await org.adminSql<{ permission_list_id: string }[]>`
+      SELECT permission_list_id FROM harness_shared.documents WHERE workspace_id = ${WS} AND dedupe_key = 'acme/held#1'`;
+    const [{ row: listRow }] = await org.adminSql<{ row: string }[]>`
+      SELECT row_to_json(p)::text AS row FROM harness_shared.document_permission_lists p WHERE id = ${listId}::uuid`;
+    const server = postgres(Object.assign(new URL(org.adminDsn), { pathname: '/postgres' }).toString(), { max: 1, onnotice: () => {} });
+    const preDb = `${org.dbName}_pre`;
+    let pre: postgres.Sql | undefined;
+    try {
+      await server`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${org.dbName} AND pid <> pg_backend_pid()`;
+      await server.unsafe(`CREATE DATABASE "${preDb}" TEMPLATE "${org.dbName}"`);
+      pre = postgres(Object.assign(new URL(org.adminDsn), { pathname: `/${preDb}` }).toString(), { max: 1, onnotice: () => {} });
+      // Simulate a snapshot that predates both the document and its access list.
+      // Replica mode belongs only to the file-restore simulation, never the repair.
+      await org.adminSql.begin(async (tx) => {
+        await tx`SET LOCAL session_replication_role = replica`;
+        await tx`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND dedupe_key = 'acme/held#1'`;
+        await tx`DELETE FROM harness_shared.document_permission_lists WHERE id = ${listId}::uuid`;
+      });
+      const reconcile = () => reconcileRestoredAccess(org.adminSql, {
+        scope, actor: admin, purpose: 'restore drill 41', revocations: [],
+        heldContent: [{ holdId: hold.holdId, workspaceId: WS, digest: before.digest }], preRestoreSource: pre,
+      });
+      await expect(reconcile()).rejects.toMatchObject({ code: '23503' });
+      expect(await restoreReceipts()).toHaveLength(0);
+      expect(await org.adminSql`SELECT id FROM harness_shared.documents WHERE workspace_id = ${WS}`).toHaveLength(0);
+
+      // The prerequisite is restored through ordinary SQL; repair must not bypass it.
+      await org.adminSql`
+        INSERT INTO harness_shared.document_permission_lists
+        SELECT * FROM json_populate_record(NULL::harness_shared.document_permission_lists, ${listRow}::json)`;
+      const repaired = await reconcile();
+      expect(repaired.heldContent[0]).toMatchObject({ matchesExport: true, restoredDigest: before.digest, repairedRows: 1 });
+      await expect(org.adminSql`DELETE FROM harness_shared.documents WHERE workspace_id = ${WS} AND dedupe_key = 'acme/held#1'`)
+        .rejects.toThrow(/document_under_legal_hold/);
+
+      // Exercise ON CONFLICT UPDATE as well as INSERT with the held-document trigger enabled.
+      await org.adminSql`UPDATE harness_shared.documents SET text = 'backup-point text'
+                        WHERE workspace_id = ${WS} AND dedupe_key = 'acme/held#1'`;
+      expect((await reconcile()).heldContent[0]).toMatchObject({ matchesExport: true, repairedRows: 1 });
+      expect((await reconcile()).heldContent[0]).toMatchObject({ matchesExport: true, repairedRows: null });
+      expect((await restoreReceipts()).map((r) => r.metadata.heldContent[0].matchesExport)).toEqual([true, true, true]);
     } finally {
       await pre?.end({ timeout: 5 });
       await server.unsafe(`DROP DATABASE IF EXISTS "${preDb}" WITH (FORCE)`);

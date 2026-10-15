@@ -196,6 +196,7 @@ import {
   truncateCarryField,
   withCarryNoteChecks,
   withCarryNoteWalls,
+  withStableCarryRowIds,
   CHECKPOINT_BODY_CAP_CHARS,
   type WorkItemSubject,
 } from '../../carry-note';
@@ -535,20 +536,9 @@ function fitChecksForAppendBody(
     return out;
   });
 
-  let merged = bounded;
-  if (withCarryNoteChecks(body, merged).length <= CHECKPOINT_CAP) {
-    return { merged, dropped: [], truncatedFields: repairs.length };
-  }
-
-  // Put evidence-bearing rows first only when the cap actually bites; stable
-  // ordering within each tier keeps ordinary notes from churning.
-  merged = evidenceFirst(merged);
-  const dropped: AppendChecksOverflowRow[] = [];
-  while (merged.length > 0 && withCarryNoteChecks(body, merged).length > CHECKPOINT_CAP) {
-    dropped.push(merged.pop()!);
-  }
-
-  return { merged, dropped: dropped.reverse(), truncatedFields: repairs.length };
+  // A byte cap never closes a carried row. If these rows leave no room for the
+  // submitted append, appendBodyPreservationGuard refuses that append atomically.
+  return { merged: bounded, dropped: [], truncatedFields: repairs.length };
 }
 
 /**
@@ -838,13 +828,12 @@ function rowsModeSpec() {
     .describe(
       'P-013: how supplied `checks` rows are applied. `merge` (default) unions ' +
         'supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + ' +
-        '`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, ' +
+        '`checks:[]` is a no-op under either mode unless `retireIds` names individual rows. This controls CHECK ROWS only, ' +
         "and `retireIds` is rejected unless `rowsMode:'replace'` is explicit — it is never silently ignored on a merge. " +
         "never the checkpoint body. With `append:true` + `rowsMode:'replace'`, row retirement requires exact `retireIds`, " +
         "even with `confirmRetire:true`. A full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
-        'confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its ' +
-        'checks become additive; without confirmRetire, omitted carried checks are refused before write. Prefer ' +
-        '`retireIds` over a blind `confirmRetire:true` when your view of the carried set may be an excerpt.',
+        'confirmShrink:true, retireIds:[...]`. Without retireIds, omitted carried rows survive. ' +
+        'confirmRetire never authorizes omission or cap eviction. Without confirmShrink a >50% body shrink is auto-preserved.',
     );
 }
 
@@ -866,14 +855,12 @@ function retireIdsSpec() {
     .max(CARRY_NOTE_MAX_CHECKS * 2)
     .optional()
     .describe(
-      "rowsMode:'replace' safety, STRONGER than `confirmRetire` alone (EI-21923095696933477): name exactly the " +
+      "rowsMode:'replace' safety: name exactly the " +
         'carried row `id`s (or claim text for a row with no `id` — the same identity `carryRowKey` uses) you intend ' +
         'to retire. The write refuses — even with confirmRetire:true — unless this set EXACTLY matches what would ' +
         'actually be dropped, naming both any row you missed and any name that would not have dropped, so an ' +
-        'unlisted stored row can never be dropped by omission. Use this instead of a blind confirmRetire:true ' +
-        "whenever your view of the carried set may be an excerpt (e.g. a post-compaction carry document) rather " +
-        'than the full stored list — call work_items:get first for the complete set, or send `rowsMode:"replace"` ' +
-        'with neither `confirmRetire` nor `retireIds` to see the full drop list in a refusal before committing to one.',
+        'unlisted stored row can never be dropped by omission. Required for retirement under every append/body shape. ' +
+        'Call work_items:get { checksOnly:true } for stored ids before choosing which rows to close.',
     )
     .meta({
       'x-papercusp-call-constraint':
@@ -1098,16 +1085,15 @@ function checksSpec() {
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        "plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
+        "plain rewrite never silently drops them) and [] preserves them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
         `${CARRY_NOTE_MAX_CHECKS}: an unconfirmed checks-only overflow refuses atomically before it can drop rows; ` +
-        '`confirmRetire:true` explicitly permits the cap eviction and reports the dropped carried rows. A body-bearing ' +
+        '`confirmRetire:true` cannot authorize cap eviction. A body-bearing ' +
         'append/merge still stores the body and every carried row, admits supplied rows only into vacant slots, and ' +
         'returns `checksNotRetained`/`checksNotRetainedRows` for supplied rows that did not fit. Retire stale rows with ' +
         'a plain replace first, or append without `checks` to leave the carried set untouched. ' +
         "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
-        "`rowsMode:'replace'` to send the FULL set you want stored, because any stored claim you leave out is DROPPED — " +
-        'that is how you RETIRE a stale check. A supplied ' +
+        "`rowsMode:'replace'` plus exact `retireIds` to close individual carried rows. Without retireIds, omitted rows survive. A supplied " +
         "row whose claim text matches a stored one inherits that row's recheck/verified/contested/sinceMs when " +
         'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
         '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
@@ -1189,7 +1175,7 @@ const itemSpec = z.object({
       'supplied `checks` are UNIONED onto the carried set (EI-19944669306930709; `rowsMode:\'replace\'` replaces check rows only). ' +
       'No `checkpoint` + `checks` = additive body-preserving patch; otherwise a non-blank `checkpoint` is required ' +
       '(append + clear is rejected). Bounded to the 32000-char cap (superseded prior tail is trimmed first). ' +
-      `Checks beyond the ${CARRY_NOTE_MAX_CHECKS}-row cap are reported; an unconfirmed checks-only overflow refuses, \`confirmRetire:true\` permits it.`,
+      `Checks beyond the ${CARRY_NOTE_MAX_CHECKS}-row cap are reported; checks-only overflow refuses without deleting carried rows.`,
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -1198,7 +1184,7 @@ const itemSpec = z.object({
   ),
   rowsMode: rowsModeSpec(),
   confirmRetire: looseBoolean().describe(
-    "rowsMode:'replace' safety (WI-42106) and merge-cap consent (EI-22489206594122743): if supplied checks would RETIRE carried rows, or a merge would evict carried rows at the cap, refuse before writing unless true. The refusal names every affected claim.",
+    'Compatibility field. Does not authorize omitted-row retirement or cap eviction; use exact `retireIds`.',
   ),
   retireIds: retireIdsSpec(),
   dependsOn: dependsOnSpec(),
@@ -1248,7 +1234,7 @@ export default defineTool({
     // belongs in `returns`, demand-loaded via tools:find rather than baked into
     // every system prompt (the WI-9334 move).
     '`rowsMode:"merge"` adds check rows while replacing the body; `"replace"` retires rows. ' +
-    'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true`.',
+    'Full body+rows replacement requires `append:false, rowsMode:"replace", confirmShrink:true, retireIds:[...]`.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor needs — ' +
@@ -1276,10 +1262,10 @@ export default defineTool({
       '`work_items:set_state { id, state:"open", force:true }`, then claim it before resuming work. ' +
       'A blocked write carries `errorCode` plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
-      'or `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true` for an intentional full body+rows replacement. ' +
+      'or `append:false, rowsMode:"replace", confirmShrink:true, retireIds:[...]` for an intentional full body+rows replacement. ' +
       'A verify-read miss is `checkpoint_verify_failed`. ' +
       'EI-21923095696933477: retiring rows off a carry-document EXCERPT rather than a fresh work_items:get read? ' +
-      'Prefer `retireIds` over a blind `confirmRetire:true` — name exactly which carried row ids/claims to drop; ' +
+      'Retirement requires `retireIds` — name exactly which carried row ids/legacy claims to close; ' +
       'the write refuses (`checkpoint_retire_ids_mismatch`, naming both directions of the mismatch) unless that ' +
       'set exactly matches what the replace would actually drop, so an unlisted stored row can never be dropped by omission.',
   },
@@ -1363,15 +1349,14 @@ export default defineTool({
         'single shorthand default for `rowsMode`; also the items[] default. This controls CHECK ROWS only, not the body. ' +
           "`merge` unions supplied checks without appending the body. With `append:true` + `rowsMode:'replace'`, " +
           '`retireIds` are required for any retired row; `confirmRetire:true` alone is not sufficient. A complete body+rows replacement is ' +
-          "append:false, rowsMode:'replace', confirmShrink:true, confirmRetire:true.",
+          "append:false, rowsMode:'replace', confirmShrink:true, retireIds:[...]. Without retireIds, omitted rows survive.",
       ),
       confirmRetire: looseBoolean().describe(
-        "single shorthand default for `confirmRetire`; also the items[] default. For non-append rowsMode:'replace', it authorizes retiring carried checks. With append:true + rowsMode:'replace', exact retireIds are required instead.",
+        'single shorthand compatibility field, also the items[] default. Cannot authorize omission or cap eviction; retirement requires exact `retireIds`.',
       ),
       retireIds: retireIdsSpec().describe(
-        "single shorthand default for `retireIds`; also the items[] default. A STRONGER, opt-in alternative to " +
-          "`confirmRetire` (EI-21923095696933477): name exactly the carried row ids/claims a rowsMode:'replace' " +
-          'should retire, and the write refuses on any mismatch instead of trusting a blind confirmRetire:true.',
+        "single shorthand default for `retireIds`; also the items[] default. Name exactly the carried row ids (legacy claim text for rows without ids) a rowsMode:'replace' " +
+          'should retire. Required for every retirement; the write refuses on any mismatch.',
       ),
       checks: checksSchema,
       dependsOn: dependsOnSpec(),
@@ -1467,15 +1452,19 @@ export default defineTool({
         const wantsConfirmClear = it.confirmClear ?? args.confirmClear ?? false;
         const wantsAppend = it.append ?? args.append ?? false;
         const rawSuppliedChecks = it.checks ?? args.checks;
-        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const wantsRetireIds = it.retireIds ?? args.retireIds;
+        const requestedRowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
+        // Without individually named retirements, a replace-style checkpoint
+        // updates supplied rows and preserves every omitted carried row.
+        const rowsMode = requestedRowsMode === 'replace' && wantsRetireIds !== undefined
+          ? 'replace' : 'merge';
         // EI-23618780798277092: `retireIds` only has meaning for an explicit
         // replace. The default merge path does not retire rows, so accepting this
         // combination would acknowledge the request while silently ignoring the
         // named retirements and leaving the caller's replacement rows at the cap.
         // Reject before lookup/store work so the contradictory shape is visibly
         // actionable and cannot be mistaken for a successful checkpoint write.
-        if (it.unchanged !== true && wantsRetireIds !== undefined && rowsMode !== 'replace') {
+        if (it.unchanged !== true && wantsRetireIds !== undefined && requestedRowsMode !== 'replace') {
           return {
             ok: false as const,
             id: it.id,
@@ -2012,18 +2001,18 @@ export default defineTool({
         // `rowsMode:'merge'` is additive for a body write and for the checks-only
         // patch shape. An explicit clear remains a true clear, preserving the
         // work_items:complete cleanup contract.
-        const additiveRowsMode = rowsMode === 'merge' && (isChecksOnlyPatch || !isClear);
+        // A narrative clear is still a rewrite: open check rows survive until
+        // individually retired. work_items:complete uses the store directly for
+        // terminal cleanup, so it is unaffected by this tool-boundary contract.
+        const additiveRowsMode = rowsMode === 'merge';
         // `append` governs the BODY. An explicit rowsMode:'replace' remains authoritative
         // for CHECK ROWS, so callers can append a narrative update while retiring the
         // exact carried rows named by retireIds. Previously `wantsAppend` unconditionally
         // made this true, neutralizing rowsMode:'replace' and reporting that no rows would
         // drop (EI-23151788119236015).
         const additiveChecks = rowsMode === 'replace' ? false : wantsAppend || additiveRowsMode;
-        // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
-        // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
-        // survive a note clear: work_items:complete clears the checkpoint as terminal
-        // cleanup, and rows surviving that would resurrect a checks-only checkpoint on
-        // an already-closed item.
+        // Body clears preserve open rows. Terminal completion uses the underlying
+        // store directly and retains its separate cleanup contract.
         // EI-19460631385508515: a SUPPLIED `checks` list REPLACES the stored set —
         // normalizeCheckEntries iterates only the incoming rows and uses the prior set
         // solely to inherit recheck/verified/sinceMs onto claims that reappear. A stored
@@ -2039,8 +2028,7 @@ export default defineTool({
         let suppliedChecksNotRetained: AppendChecksOverflowRow[] = [];
         let preserveCarriedChecksOnOverflow = false;
         const checksTransform =
-          suppliedChecks !== undefined || !isClear || isDependencyOnlyPatch || isLearnedMetadataPatch
-            ? (priorNote: string | null, incoming: string | null | undefined) => {
+            (priorNote: string | null, incoming: string | null | undefined) => {
                 const priorSplit = splitCarryNoteChecks(priorNote);
                 const originalPrior = priorSplit.checks;
                 // P-025: resolve a one-row reword against the authoritative locked
@@ -2189,6 +2177,11 @@ export default defineTool({
                   return c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(resolvedPrior));
                 });
                 droppedCheckClaims = droppedRows.map((c) => c.claim.trim());
+                if (rowsMode === 'merge' && droppedRows.length > 0) {
+                  // Neither confirmRetire nor legacy cap normalization names a
+                  // row. Refuse atomically instead of deleting carried evidence.
+                  throw new ReplaceWouldDropError(droppedCheckClaims, true);
+                }
                 // EI-21923095696933477: retireIds is a STRONGER, opt-in check — the
                 // caller names exactly which rows they intend to retire, so an
                 // unlisted stored row can never be dropped by omission. It gates
@@ -2232,9 +2225,9 @@ export default defineTool({
                 }
                 if (merged.length === 0)
                   return enforceFrozenWorkItemCarry(body.length > 0 ? body : null, currentProvenanceText);
-                const rendered = withCarryNoteChecks(body, merged);
+                const rendered = withStableCarryRowIds(withCarryNoteChecks(body, merged));
                 if (rendered.length <= CHECKPOINT_CAP)
-                  return enforceFrozenWorkItemCarry(rendered, currentProvenanceText);
+                  return enforceFrozenWorkItemCarry(withStableCarryRowIds(rendered), currentProvenanceText);
                 // Over cap: trim the BODY and re-attach, so the checks — bounded to
                 // CARRY_NOTE_MAX_CHECKS rows — are never the part that gets cut.
                 // EI-21472322403787688: trim DIRECTION follows the body's ordering.
@@ -2247,10 +2240,9 @@ export default defineTool({
                 const trimmedBody = shouldAppendRefresh
                   ? body.slice(0, keepBody) + TRUNCATION_MARKER
                   : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
-                return enforceFrozenWorkItemCarry(withCarryNoteChecks(trimmedBody, merged), currentProvenanceText);
-              }
-            : undefined;
-        const timedChecksTransform = checksTransform && traceCheckpointPhases
+                return enforceFrozenWorkItemCarry(withStableCarryRowIds(withCarryNoteChecks(trimmedBody, merged)), currentProvenanceText);
+              };
+        const timedChecksTransform = traceCheckpointPhases
           ? (priorNote: string | null, incoming: string | null | undefined) =>
               observeCheckpointSyncPhase(
                 ctx,
@@ -2358,8 +2350,8 @@ export default defineTool({
                   'No carried check row is evicted by this refusal, or would be by proceeding past it — this guard ' +
                   'concerns the append body only. Two ways forward, with different costs: ' +
                   '(1) SAFE — first retire specific stale rows in a separate, non-append write ' +
-                  '({ rowsMode: "replace", retireIds: [...] } naming exactly what to drop, or ' +
-                  '`confirmRetire: true`), which frees cap room without touching this note, then retry this append; ' +
+                  '({ rowsMode: "replace", checks: [], retireIds: [...] } naming the specific row IDs), ' +
+                  'which frees cap room without replacing the prose, then retry this append; ' +
                   '(2) pass { confirmShrink: true } to THIS append — it keeps every carried check row intact but ' +
                   'silently trims or entirely drops the append body you are submitting now, so use it only when ' +
                   'losing this new note (never the checks) is acceptable.'
@@ -2429,18 +2421,12 @@ export default defineTool({
                  * the whole distinction: refuse CALLER-caused eviction, absorb LEGACY
                  * over-cap state.
                  */
-                const legacyExcess = priorChecksOverCapCount(_priorNote);
-                if (legacyExcess > 0) {
-                  legacyOverCapNormalization.legacyExcess = legacyExcess;
-                  return null;
-                }
                 // EI-22489206594122743: `confirmRetire:true` is the explicit one-call
                 // consent for the same merge-cap eviction that `loop:checkpoint` already
                 // permits. Without this escape, the checks-only branch below refused the
                 // write unconditionally, so the documented confirmation had no effect
                 // even though the transform could safely report the exact carried rows
                 // it evicted. Keep the default refusal for an unconfirmed additive write.
-                if (wantsConfirmRetire) return null;
                 // EI-21602661222231785: the body is the primary checkpoint payload;
                 // optional check capacity must not strand it. For body-bearing writes,
                 // proceed atomically while the transform preserves every carried row,
@@ -2474,14 +2460,10 @@ export default defineTool({
           checksDropped: error.droppedChecks,
           ...(error.retireIdsRequired ? { retireIdsRequired: true } : {}),
           message:
-            error.retireIdsRequired
-              ? "append:true with rowsMode:'replace' would RETIRE the carried checks named above. confirmRetire:true " +
-                'is not sufficient for this combination — NOTHING was written. Retry with `retireIds` naming exactly ' +
-                'the rows above, or omit rowsMode to preserve the carried checks.'
-              : "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
-                'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or name ' +
-                'exactly the rows above in `retireIds` for a mismatch-checked retirement, or omit ' +
-                'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+            'This write would remove carried checks without individually authorized retirement — NOTHING was written. ' +
+            'Read work_items:get with checksOnly:true, then name exactly the row IDs to close in `retireIds` ' +
+            "under rowsMode:'replace', or omit retireIds to preserve the carried checks. confirmRetire:true " +
+            'does not authorize row deletion.',
         });
         // EI-21923095696933477: the retireIds sibling of replaceWouldDropResponse —
         // reports what was requested vs what would actually drop so the caller can
@@ -2505,8 +2487,8 @@ export default defineTool({
               `Requested: ${error.requested.length ? error.requested.join(', ') : '(none)'}. ` +
               `Would actually drop: ${error.actual.length ? error.actual.join(', ') : '(none)'}. ` +
               sameIdUpdateHint +
-              'Re-send retireIds naming exactly the rows in "Would actually drop", or omit retireIds and use ' +
-              'confirmRetire:true instead.',
+              'Re-send retireIds naming exactly the row IDs in "Would actually drop", or omit retireIds to preserve ' +
+              'the carried rows.',
           };
         };
         // EI-21864672058763701 / EI-21864782390076614: setWorkItemCheckpointWithPrior
@@ -3222,7 +3204,7 @@ export default defineTool({
             ? {
                 rowsModeNote:
                   "rowsMode:'merge' (the default) treats an empty `checks` list as a NO-OP — carried rows are untouched. Use " +
-                  "rowsMode:'replace' with checks:[] to clear them.",
+                  "rowsMode:'replace' with checks:[] and retireIds naming each row ID to close them.",
               }
             : {}),
         };

@@ -9,6 +9,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+// Formatting assertions ignore the ID anchor; lifecycle tests below verify IDs.
+const withoutRowIds = (note: string | null | undefined) =>
+  (note ?? '').replace(/^(- (?:[✓?⚠] )?)\[#[a-z0-9_.:-]+\] /gm, '$1');
+
 import { defineTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { continuityProbeRevision } from '../../continuity-probes';
@@ -2655,8 +2659,8 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     const b = body(await call({ did: 'landed X', next: 'ship Y' }));
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
     expect(written).toContain('RENDERED:');
-    expect(written).toContain('## Walls');
-    expect(written).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
+    expect(withoutRowIds(written)).toContain('## Walls');
+    expect(withoutRowIds(written)).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
     expect(b).toMatchObject({ ok: true, walls: 1 });
   });
 
@@ -2677,17 +2681,17 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     await call({ note: '' });
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-    expect(written).toContain('## Walls\n- zombie PIDs await owner OK');
+    expect(withoutRowIds(written)).toContain('## Walls\n- zombie PIDs await owner OK');
     expect(written).not.toContain('old next step');
   });
 
   // Post-P-013 the empty list is a NO-OP under the merge default (the tool says so in
   // its own rowsModeNote), so the clear has to be asked for: replace + []. That is the
   // point of the change — a commitment can no longer be cleared incidentally.
-  it("walls:[] under rowsMode:'replace' is the one true clear — with a blank note the whole row clears", async () => {
+  it('an individually named wall retirement can clear a walls-only note', async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     setLoopCarryNote.mockResolvedValue(null);
-    const b = body(await call({ note: '', walls: [], rowsMode: 'replace', confirmRetire: true }));
+    const b = body(await call({ note: '', walls: [], rowsMode: 'replace', retireIds: ['zombie PIDs await owner OK'] }));
     expect(setLoopCarryNote).toHaveBeenCalledWith(expect.anything(), '');
     expect(b).toMatchObject({ ok: true, cleared: true, walls: 0 });
   });
@@ -2699,18 +2703,18 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
       walls: [{ claim: 'zombie PIDs await owner OK' }, { claim: 'capital arming pending owner decision' }],
     });
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-    expect(written).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
-    expect(written).toContain('- capital arming pending owner decision (since ');
+    expect(withoutRowIds(written)).toContain('- zombie PIDs await owner OK — re-check: ps -p 95902 (since 2026-07-07T12:00:00.000Z)');
+    expect(withoutRowIds(written)).toContain('- capital arming pending owner decision (since ');
   });
 
-  it("a walls-ONLY write keeps the prior narrative body and, under rowsMode:'replace', replaces the walls set", async () => {
+  it('a walls-only write keeps the narrative and retires only its named predecessor', async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     const b = body(
-      await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }], rowsMode: 'replace', confirmRetire: true }),
+      await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }], rowsMode: 'replace', retireIds: ['zombie PIDs await owner OK'] }),
     );
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
     expect(written).toContain('## Next action\nold next step'); // body carried forward
-    expect(written).toContain('- new wall — re-check: check-it');
+    expect(withoutRowIds(written)).toContain('- new wall — re-check: check-it');
     expect(written).not.toContain('zombie PIDs');
     expect(b).toMatchObject({ ok: true, walls: 1 });
   });
@@ -2909,7 +2913,7 @@ describe('EI-18833865002636933: rescue-by-parse of a tag-serialized structured w
     // the checks became a real `## Checks` section with the ✓ badge, not inert JSON prose
     expect(b.checks).toBe(1);
     expect(written).toContain('## Checks');
-    expect(written).toContain('- ✓ main is green — re-check: git rev-parse main');
+    expect(withoutRowIds(written)).toContain('- ✓ main is green — re-check: git rev-parse main');
     expect(b.rescued).toMatchObject({ from: 'tagged-blob' });
     expect(b.rescued.recovered).toEqual(expect.arrayContaining(['left', 'insight', 'next', 'checks']));
   });
@@ -3031,7 +3035,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
         ]),
       );
       const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-      expect(written).toContain('- ⚠ ');
+      expect(withoutRowIds(written)).toContain('- ⚠ ');
       expect(written).toContain('STILL RUNNING');
       expect(written).not.toContain('- ✓ ');
     });
@@ -3048,7 +3052,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(b.ok).toBe(true);
       expect(b.repairs).toBeUndefined();
       const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-      expect(written).toContain('- ✓ ');
+      expect(withoutRowIds(written)).toContain('- ✓ ');
       expect(written).toContain(evidence);
       expect(written).not.toContain('- ⚠ ');
     });
@@ -3064,7 +3068,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(b.ok).toBe(true);
       expect(b.repairs).toBeUndefined();
       const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
-      expect(written).toContain('- ✓ ');
+      expect(withoutRowIds(written)).toContain('- ✓ ');
       expect(written).toContain(evidence);
       expect(written).not.toContain('- ⚠ ');
     });
@@ -3079,7 +3083,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(b.ok).toBe(true);
       expect(b.repairs).toBeUndefined();
       const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-      expect(written).toContain('- ✓ ');
+      expect(withoutRowIds(written)).toContain('- ✓ ');
     });
 
     it('keeps structured out-of-scope disposition counts VERIFIED at the writer boundary', async () => {
@@ -3095,7 +3099,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(b.ok).toBe(true);
       expect(b.repairs).toBeUndefined();
       const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
-      expect(written).toContain('- ✓ ');
+      expect(withoutRowIds(written)).toContain('- ✓ ');
       expect(written).toContain(evidence);
       expect(written).not.toContain('- ⚠ ');
     });
@@ -3120,7 +3124,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
         expect(b.ok, evidence).toBe(true);
         expect(b.repairs, evidence).toBeUndefined();
         const [, written] = setLoopCarryNote.mock.calls.at(-1) as [unknown, string];
-        expect(written, evidence).toContain('- ✓ ');
+        expect(withoutRowIds(written), evidence).toContain('- ✓ ');
         expect(written, evidence).toContain(evidence);
         expect(written, evidence).not.toContain('- ⚠ ');
       }
@@ -3237,7 +3241,7 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
         ]),
       );
       const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-      expect(written).toContain('- ⚠ ');
+      expect(withoutRowIds(written)).toContain('- ⚠ ');
       expect(written).toContain('the gate exited 1');
       expect(written).not.toContain('- ✓ ');
     });
@@ -3421,7 +3425,7 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
     walls: { claim: string; recheck?: string }[] = [],
   ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
 
-  it('names the carried checks a supplied list left out, with a note saying how to avoid it', async () => {
+  it('reports individually named check retirements', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior([
         { claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 @2026-08-03T10:00:00.000Z' },
@@ -3437,17 +3441,17 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
         did: 'progress',
         checks: [{ claim: 'a brand new claim' }],
         rowsMode: 'replace',
-        confirmRetire: true,
+        retireIds: ['gate is green', 'main is at abc123', 'deploy landed'],
       }),
     );
 
     expect(b.ok).toBe(true); // CONFIRMED retirement proceeds — and reports the loss
     expect(b.checks).toBe(1);
-    expect(b.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
-    expect(b.checksDroppedNote).toContain('REPLACES');
+    expect(b.checksRetired).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+    expect(b.checksDropped).toBeUndefined();
   });
 
-  it('names dropped WALLS separately — an owner-gated commitment must never vanish quietly', async () => {
+  it('reports a named wall retirement separately from checks', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior([], [{ claim: 'owner must ratify the cutover' }, { claim: 'awaiting capital arming' }]),
     );
@@ -3456,12 +3460,12 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
         did: 'progress',
         walls: [{ claim: 'awaiting capital arming' }],
         rowsMode: 'replace',
-        confirmRetire: true,
+        retireIds: ['owner must ratify the cutover'],
       }),
     );
 
     expect(b.walls).toBe(1);
-    expect(b.wallsDropped).toEqual(['owner must ratify the cutover']);
+    expect(b.wallsRetired).toEqual(['owner must ratify the cutover']);
     expect(b.checksDropped).toBeUndefined(); // independent axes — no cross-reporting
   });
 
@@ -3500,20 +3504,18 @@ describe('loop:checkpoint — replace-mode retirement is CONFIRMED, never silent
     { claim: 'deploy landed', recheck: 'curl :3070/api/health' },
   ];
 
-  it('REFUSES an unconfirmed replace that would retire carried checks — and stores NOTHING', async () => {
+  it('preserves omitted checks during a replace-style write without retireIds', async () => {
     getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
     const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'replace' }));
 
-    expect(b.ok).toBe(false);
-    expect(b.error).toBe('checkpoint_replace_would_drop_rows');
-    expect(b.retryable).toBe(true);
-    expect(b.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
-    // The transaction rolled back: nothing was written at all.
-    expect(setLoopCarryNote).not.toHaveBeenCalled();
-    expect(b.message).toContain('confirmRetire');
+    expect(b).toMatchObject({ ok: true, checks: 4 });
+    expect(b.checksDropped).toBeUndefined();
+    const written = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    for (const row of THREE) expect(written).toContain(row.claim);
+    expect(written).toContain('progress');
   });
 
-  it('the SAME write passes with confirmRetire:true and still reports what retired', async () => {
+  it('confirmRetire:true cannot authorize omission-based row retirement', async () => {
     getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
     const b = body(
       await call({
@@ -3525,21 +3527,21 @@ describe('loop:checkpoint — replace-mode retirement is CONFIRMED, never silent
     );
 
     expect(b.ok).toBe(true);
-    expect(b.checks).toBe(1);
-    expect(b.checksDropped).toHaveLength(3);
+    expect(b.checks).toBe(4);
+    expect(b.checksDropped).toBeUndefined();
+    const written = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    for (const row of THREE) expect(written).toContain(row.claim);
   });
 
-  it('a [] clear without confirmRetire is refused too — clearing every wall stays deliberate', async () => {
+  it('an empty replace-style list keeps the standing wall', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior([], [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902' }]),
     );
-    setLoopCarryNote.mockResolvedValue(null);
     const b = body(await call({ note: '', walls: [], rowsMode: 'replace' }));
 
-    expect(b.ok).toBe(false);
-    expect(b.error).toBe('checkpoint_replace_would_drop_rows');
-    expect(b.wallsDropped).toEqual(['zombie PIDs await owner OK']);
-    expect(setLoopCarryNote).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, walls: 1 });
+    expect(b.wallsDropped).toBeUndefined();
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toContain('zombie PIDs await owner OK');
   });
 
   it('a replace whose lists already cover the carried set needs NO confirmation', async () => {
@@ -3563,6 +3565,42 @@ describe('loop:checkpoint — replace-mode retirement is CONFIRMED, never silent
  * transform and its fallback), and no helper-level test can see that.
  */
 describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidable (P-013)", () => {
+  it('P-007 persists distinct check/wall IDs and preserves them across a body clear', async () => {
+    setLoopCarryNote.mockImplementation(async (_ref: unknown, note: unknown) => note as string);
+    expect(body(await call({ did: 'progress',
+      checks: [{ claim: 'shared wording', recheck: 'probe', verified: 'observed' }],
+      walls: [{ claim: 'shared wording', recheck: 'ask for decision' }],
+    })).ok).toBe(true);
+    const first = lastStoredNote;
+    const check = splitCarryNoteChecks(first).checks[0]!;
+    const wall = splitCarryNoteWalls(first).walls[0]!;
+    expect(check.id).toEqual(expect.any(String));
+    expect(wall.id).toEqual(expect.any(String));
+    expect(check.id).not.toBe(wall.id);
+    getLoopCarryNote.mockResolvedValue(first);
+    expect(body(await call({ note: null })).ok).toBe(true);
+    expect(splitCarryNoteChecks(lastStoredNote).checks).toEqual([check]);
+    expect(splitCarryNoteWalls(lastStoredNote).walls).toEqual([wall]);
+    expect(lastStoredNote).not.toContain('progress');
+  });
+
+  it('P-007 closes a keyed wall only by its ID and preserves the omitted check', async () => {
+    setLoopCarryNote.mockImplementation(async (_ref: unknown, note: unknown) => note as string);
+    await call({ did: 'progress', checks: [{ claim: 'carried check', verified: 'observed' }],
+      walls: [{ claim: 'carried wall' }] });
+    const first = lastStoredNote;
+    const check = splitCarryNoteChecks(first).checks[0]!;
+    const wall = splitCarryNoteWalls(first).walls[0]!;
+    getLoopCarryNote.mockResolvedValue(first);
+    const unmatched = body(await call({ checks: [], retireIds: ['carried wall'] }));
+    expect(unmatched.unmatchedRowRefs).toContain('carried wall');
+    expect(splitCarryNoteWalls(lastStoredNote).walls).toEqual([wall]);
+    getLoopCarryNote.mockResolvedValue(lastStoredNote);
+    expect(body(await call({ checks: [], retireIds: [wall.id!] })).ok).toBe(true);
+    expect(splitCarryNoteWalls(lastStoredNote).walls).toEqual([]);
+    expect(splitCarryNoteChecks(lastStoredNote).checks).toEqual([check]);
+  });
+
   const buildPrior = (
     checks: { id?: string; claim: string; recheck?: string; verified?: string }[],
     walls: { id?: string; claim: string; recheck?: string }[] = [],
@@ -3631,7 +3669,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.checksDropped).toBeUndefined();
   });
 
-  it("CONTROL — retirement is still reachable: rowsMode:'replace' drops the omitted rows and says so", async () => {
+  it('CONTROL — retirement is reachable when each removed row is named', async () => {
     // Guards the OTHER direction: a change that made merge unconditional would make the
     // test above pass while silently removing the only way to retire a stale row.
     getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
@@ -3640,12 +3678,13 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
         did: 'progress',
         checks: [{ claim: 'a brand new claim' }],
         rowsMode: 'replace',
-        confirmRetire: true,
+        retireIds: THREE.map(row => row.claim),
       }),
     );
 
     expect(b.checks).toBe(1);
-    expect(b.checksDropped).toHaveLength(3);
+    expect(b.checksRetired).toHaveLength(3);
+    expect(b.checksDropped).toBeUndefined();
   });
 
   it('merges WALLS under the same flag', async () => {
@@ -3670,7 +3709,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
     expect(written).toContain('gate is green AT TIP, not at the candidate');
     expect(written).toContain('saw 30/30'); // evidence inherited across the reword
-    expect(written).not.toContain('- ✓ [#gate] gate is green —'); // the old wording is GONE, not duplicated
+    expect(written).not.toContain('- ✓ [#gate] gate is green —');
   });
 
   it('updates a predicted stable-id check to verified while retaining its first-seen age', async () => {
@@ -3802,7 +3841,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(after).toHaveLength(before.length);
     before.forEach((line, i) => {
       if (i === 4) expect(after[i]).toMatch(/carried 5, reworded — re-check: probe 5/);
-      else expect(after[i]).toBe(line);
+      else expect(withoutRowIds(after[i])).toBe(withoutRowIds(line));
     });
   });
 
@@ -3842,7 +3881,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   // rowsMode:'replace' resend of the FULL current set first. confirmRetire:true gives
   // the SAME one-call escape merge already offers replace: let the cap's own
   // PREDICTED-before-VERIFIED eviction proceed instead of refusing.
-  it("honors confirmRetire:true under rowsMode:'merge' to let cap eviction proceed in one call", async () => {
+  it('confirmRetire:true cannot authorize cap eviction of an unnamed check', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
     );
@@ -3855,16 +3894,16 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
       }),
     );
 
-    expect(b.ok).toBe(true);
-    expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+    expect(b).toMatchObject({ ok: false, error: 'checkpoint_merge_would_evict_rows' });
     expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
-    expect(b.checksDroppedNote).toContain('confirmRetire:true');
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
-    expect(written).toContain('one row past the cap');
-    expect(written).not.toContain(`carried ${CARRY_NOTE_MAX_CHECKS} `);
+    expect(written).not.toContain('one row past the cap');
+    expect(splitCarryNoteChecks(written).checks.map(row => row.claim)).toEqual(
+      Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => `carried ${i + 1}`),
+    );
   });
 
-  it('reports the actual confirmed eviction when a retry supplies fewer rows than its preview', async () => {
+  it('a confirmRetire retry still refuses unnamed eviction and preserves the actual rows', async () => {
     const prior = buildPrior(
       Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` })),
     );
@@ -3900,14 +3939,14 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     );
 
     expect(confirmed).toMatchObject({
-      ok: true,
+      ok: false,
       checksDropped: [`carried ${CARRY_NOTE_MAX_CHECKS}`],
     });
-    expect(confirmed.checksDroppedNote).toContain('actual eviction');
-    expect(confirmed.checksDroppedNote).not.toContain('EXACTLY');
+    const retryWrite = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    expect(splitCarryNoteChecks(retryWrite).checks).toEqual(splitCarryNoteChecks(refusalWrite).checks);
   });
 
-  it("honors confirmRetire:true under rowsMode:'merge' to let a wall cap eviction proceed", async () => {
+  it('confirmRetire:true cannot authorize cap eviction of an unnamed wall', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior(
         [],
@@ -3918,10 +3957,11 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
       await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge', confirmRetire: true }),
     );
 
-    expect(b.ok).toBe(true);
-    expect(b.walls).toBe(CARRY_NOTE_MAX_WALLS);
+    expect(b).toMatchObject({ ok: false, error: 'checkpoint_merge_would_evict_rows' });
     expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
-    expect(b.wallsDroppedNote).toContain('confirmRetire:true');
+    const written = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    expect(written).toContain(`carried wall ${CARRY_NOTE_MAX_WALLS}`);
+    expect(written).not.toContain('new wall');
   });
 
   it("still refuses an ordinary rowsMode:'merge' overflow when confirmRetire is false", async () => {
@@ -3976,7 +4016,7 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(written).not.toContain('prior body');
   });
 
-  it('normalizes a legacy over-cap carried check set once instead of refusing every additive write', async () => {
+  it('preserves a legacy over-cap set and saves the narrative when a new row cannot fit', async () => {
     const verifiedRows = Array.from({ length: 8 }, (_, i) => ({
       claim: `VERIFIED-${String(i + 1).padStart(2, '0')} holds`,
       recheck: `probe verified ${i + 1}`,
@@ -4001,18 +4041,17 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     const storedChecks = splitCarryNoteChecks(written).checks;
     const storedClaims = storedChecks.map((row) => row.claim);
 
-    expect(b).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS });
-    expect(storedChecks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
-    expect(storedClaims).toContain('BRAND-NEW holds');
+    expect(b).toMatchObject({ ok: false, error: 'checkpoint_merge_would_evict_rows', narrativePersisted: true });
+    expect(storedChecks).toEqual(splitCarryNoteChecks(prior).checks);
+    expect(storedClaims).not.toContain('BRAND-NEW holds');
+    expect(written).toContain('the finding I just made');
     for (const row of verifiedRows) expect(storedClaims).toContain(row.claim);
-    expect(storedClaims.filter((claim) => claim.startsWith('PREDICTED-'))).toHaveLength(3);
+    expect(storedClaims.filter((claim) => claim.startsWith('PREDICTED-'))).toHaveLength(12);
     expect(b.checksDropped).toHaveLength(9);
     expect(b.checksDropped.every((claim: string) => claim.startsWith('PREDICTED-'))).toBe(true);
-    expect(b.checksDroppedNote).toMatch(/LEGACY CAP NORMALIZATION/);
-    expect(b.checksDroppedNote).toContain('not your mistake');
   });
 
-  it('keeps the normal within-cap refusal after a legacy note has self-healed', async () => {
+  it('repeated legacy over-cap rewrites preserve every carried row', async () => {
     const prior = withCarryNoteChecks(
       'legacy checkpoint body',
       Array.from({ length: CARRY_NOTE_MAX_CHECKS + 8 }, (_, i) => ({
@@ -4028,10 +4067,10 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
         rowsMode: 'merge',
       }),
     );
-    expect(first.ok).toBe(true);
+    expect(first.ok).toBe(false);
     expect(first.checksDropped.length).toBeGreaterThan(0);
     const normalized = setLoopCarryNote.mock.calls[0]?.[1] as string;
-    expect(splitCarryNoteChecks(normalized).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(splitCarryNoteChecks(normalized).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS + 8);
 
     setLoopCarryNote.mockClear();
     getLoopCarryNote.mockResolvedValue(normalized);
@@ -4050,9 +4089,10 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     const secondWrite = setLoopCarryNote.mock.calls[0]?.[1] as string;
     expect(secondWrite).toContain('second touch');
     const secondChecks = splitCarryNoteChecks(secondWrite).checks.map((c) => c.claim);
-    expect(secondChecks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(secondChecks).toHaveLength(CARRY_NOTE_MAX_CHECKS + 8);
     expect(secondChecks).not.toContain('SECOND holds');
-    expect(secondChecks).toContain('FIRST holds');
+    expect(secondChecks).not.toContain('FIRST holds');
+    expect(secondChecks).toEqual(splitCarryNoteChecks(prior).checks.map(row => row.claim));
   });
 
   it('says nothing about overflow on an ordinary write', async () => {

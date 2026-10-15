@@ -36,6 +36,7 @@ import {
   lintUncheckedImperativeActions,
   RELATIVE_SCRATCH_ADVISORY,
   mergeCarryRows,
+  checkpointRowsMode,
   parseCarryNote,
   renderCarryNote,
   renderCheckLine,
@@ -66,6 +67,7 @@ import {
   splitCarryNoteWalls,
   withCarryNoteChecks,
   withCarryNoteWalls,
+  withStableCarryRowIds,
   type CarryArgRepair,
 } from '../../carry-note';
 import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
@@ -717,13 +719,9 @@ export default defineTool({
             'reports the repair; when the claim itself asserts that unresolved state, the evidence remains VERIFIED. ' +
             'Use `contested` to force an explicit warning; contested rows render ⚠ and require a re-check. ' +
             'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
-            'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
-            "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows " +
-            'up to the row cap — on overflow the write REFUSES (naming the rows that would be evicted) unless ' +
-            "confirmRetire:true is also set, in which case supplied rows win and evicted rows are named in " +
-            '`checksDropped`; PREDICTED yields before VERIFIED only while seats remain, so supplying ≥ the cap ' +
-            "evicts EVERY unmatched carried row; pass rowsMode:'replace' + confirmRetire:true to retire them " +
-            'explicitly instead; [] clears under replace.',
+            'semantics as walls: omitted rows and [] preserve the carried set under either rowsMode. ' +
+            'Retire individual rows with retireIds; confirmRetire never authorizes omission or cap eviction. ' +
+            'An overflow refuses the row write and saves the narrative with prior rows intact, including legacy over-cap rows.',
         ),
       dependsOn: dependsOnSpec('carry-note'),
       rowsMode: z
@@ -734,34 +732,23 @@ export default defineTool({
             'accepted input size is not a persistence promise. How a supplied walls/checks list combines with the carried ' +
             "set. 'merge' (default) — rows UPSERT by `id` " +
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
-            'row — but only UP TO THE ROW CAP: merge is non-destructive while the union fits, not unconditionally. ' +
-            'If the union would OVERFLOW the cap, the write is REFUSED (naming every carried row that would be ' +
-            "evicted in `checksDropped`/`wallsDropped`) unless `confirmRetire:true` is also set, in which case " +
-            'supplied rows win and PREDICTED rows yield before VERIFIED ones — a supplied list that alone fills ' +
-            "the cap evicts every carried row, evidence or not. 'replace' makes the list the new set; to retire " +
-            "or edit ONE row use `retireIds` or a row's `replaces` instead of a full resend. Under 'merge' a [] " +
-            'list is a no-op, never a clear.',
+            "row. 'replace' also preserves omitted rows: retirement always requires `retireIds`. " +
+            'At the cap, an overflowing row write is refused while its narrative is saved with carried rows intact. ' +
+            'To edit ONE row use its stable id or `replaces`; to close it use `retireIds`. An empty list is a no-op.',
         ),
       retireIds: z
         .array(z.string().min(1).max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE))
         .max((CARRY_NOTE_MAX_WALLS + CARRY_NOTE_MAX_CHECKS) * CARRY_CAP_HARD_MULTIPLE)
         .optional()
         .describe(
-          'Retire carried walls/checks by [#id] or exact claim in this same write, under either rowsMode — no ' +
+          'Retire carried walls/checks by stable [#id] in this same write, under either rowsMode — no ' +
             'full resend. Reported as `wallsRetired`/`checksRetired`; unmatched refs as `unmatchedRowRefs`.',
         ),
       confirmRetire: z
         .boolean()
         .optional()
         .describe(
-          "Confirms a deliberate row retirement. Under rowsMode:'replace' (EI-21503907176334936): when the " +
-            'supplied lists would RETIRE carried rows, the write is REFUSED before anything is stored unless this ' +
-            'is true — the refusal names every row that would have been dropped. Under rowsMode:\'merge\' ' +
-            '(EI-21849813048365808): when the union would exceed the durable row cap, the write is likewise ' +
-            'REFUSED (naming every row the cap would evict) unless this is true, in which case the cap\'s own ' +
-            'PREDICTED-before-VERIFIED eviction proceeds in this same call — a one-call alternative to a separate ' +
-            "rowsMode:'replace' resend. Set it only for a deliberate retirement/eviction (or a deliberate [] clear " +
-            "under replace); an ordinary merge that fits under the cap never needs it.",
+          'Compatibility field. Does not authorize dropping omitted rows or cap eviction; name each closed row in `retireIds`.',
         ),
       expectedHash: z
         .string()
@@ -1438,7 +1425,9 @@ export default defineTool({
     }
     // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
     // silently switching every existing caller to merge would make a clear impossible.
-    const rowsMode = args.rowsMode ?? 'merge';
+    // A narrative replacement never retires evidence by omission. The existing
+    // retireIds/replaces resolver is the only row-removal boundary.
+    const rowsMode = checkpointRowsMode(args.rowsMode);
 
     // WI-6813: the walls/checks merge runs INSIDE the row's locked transaction (the
     // `transform` seam), not out here. The caller-side read → merge → write it
@@ -1490,6 +1479,9 @@ export default defineTool({
               mode: rowsMode,
               retire: args.retireIds,
             });
+            merged.note = withStableCarryRowIds(merged.note);
+            merged.walls = splitCarryNoteWalls(merged.note).walls;
+            merged.checks = splitCarryNoteChecks(merged.note).checks;
             captured.merged = merged;
             const legacyChecksOverCap = priorChecksOverCapCount(priorNote);
             // EI-21503907176334936: under replace, retirement must be CONFIRMED, not
@@ -1498,7 +1490,7 @@ export default defineTool({
             // behind an ok:true. Refuse here — inside the locked txn, so nothing is
             // written — unless the caller asked for the retirement explicitly.
             if (
-              rowsMode === 'replace' &&
+              args.rowsMode === 'replace' &&
               args.confirmRetire !== true &&
               (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)
             ) {
@@ -1520,14 +1512,9 @@ export default defineTool({
               // refusal on every single write once the carried set filled up, and the
               // only advertised fix was a two-step dance — a plain rowsMode:'replace'
               // resend of the FULL current set to retire rows, then retry the merge.
-              // Give confirmRetire:true the SAME meaning it already has under
-              // rowsMode:'replace': an explicit, one-call opt-in to let the row cap's
-              // own PREDICTED-before-VERIFIED yielding (computed above by
-              // mergeCarryRows/upsertOntoPrior) actually commit instead of refusing.
-              // The DEFAULT (confirmRetire omitted/false) is completely unchanged: a
-              // merge overflow still refuses and names every row it would have
-              // evicted, so an ordinary additive write is exactly as safe as before.
-              if (args.confirmRetire !== true && (merged.droppedWalls.length > 0 || !normalizingLegacyChecks)) {
+              // P-007: a compatibility confirmation never authorizes cap eviction.
+              // Preserve the prior rows and report the supplied rows that did not fit.
+              if (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0) {
                 // EI-22377179869127416: the ROW CAP and the NARRATIVE are two separate
                 // commitments, and only the rows are in conflict here. Refusing the whole
                 // write took the did/left/insight/next prose down with it — the note this
@@ -1539,8 +1526,7 @@ export default defineTool({
                 //
                 // So persist the narrative with the carried rows UNTOUCHED, and still refuse
                 // the ROW write loudly below (same error code, same retryable contract, same
-                // named rows) — nothing about the row conflict becomes silent, and the two
-                // prior escapes (confirmRetire here, or a confirmed replace) are unchanged.
+                // named rows). Closing individual rows by ID is the only retirement path.
                 captured.mergeRefused = {
                   droppedWalls: merged.droppedWalls,
                   droppedChecks: merged.droppedChecks,
@@ -1642,11 +1628,10 @@ export default defineTool({
                   "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above, so the " +
                   'carried rows were left exactly as they were and your supplied rows were NOT added. The ' +
                   'did/left/insight/next note DID commit, so a cold successor reads this turn, not a stale one. ' +
-                  'To land the rows too: retry with confirmRetire:true to let the cap\'s own PREDICTED-before-VERIFIED ' +
-                  'eviction proceed (the rows above are exactly what would go, and carried rows yield evidence-last). ' +
+                  'confirmRetire:true cannot authorize cap eviction. ' +
                   "If you were RE-WORDING a carried row, retry with that row only plus `replaces: '<its [#id] or " +
                   "exact old claim>'` — an edit is not an addition. To make room for a genuinely new row, retry " +
-                  "with `retireIds: ['<[#id] or exact claim>']` for the row(s) you no longer need. Neither needs a " +
+                  "with `retireIds: ['<stable row id>']` for the row(s) you no longer need. Neither needs a " +
                   'full resend.',
               }),
             },
@@ -1684,9 +1669,9 @@ export default defineTool({
                 wallsDropped: error.droppedWalls,
                 checksDropped: error.droppedChecks,
                 message:
-                  "rowsMode:'replace' would RETIRE the carried rows named above and confirmRetire was not true — " +
-                  'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
-                  'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
+                  'The proposed composition would drop carried rows. NOTHING was written. ' +
+                  'Close individual rows with retireIds naming their stable IDs, then retry. ' +
+                  'Omission and confirmRetire never authorize retirement.',
               }),
             },
           ],
@@ -2304,7 +2289,7 @@ export default defineTool({
               ? {
                   rowsModeNote:
                     "rowsMode:'merge' treats an empty list as a NO-OP, not a clear — the carried rows are " +
-                    "untouched. To clear, re-send with rowsMode:'replace' and [].",
+                    "untouched. To clear, use rowsMode:'replace' with `retireIds` naming each closed row.",
                 }
               : {}),
             /**
@@ -2329,15 +2314,12 @@ export default defineTool({
                           `before this merge. The write normalized that legacy state to the cap, keeping supplied ` +
                           `rows first and evidence-bearing carried rows before predicted rows. This was legacy state, ` +
                           `not your mistake. Future additive writes that would exceed the cap are refused; retire ` +
-                          `stale rows explicitly with rowsMode:'replace' and confirmRetire:true.`
-                        : `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
+                          `stale rows individually with retireIds naming their stable IDs.`
+                        : `The proposed rowsMode:'merge' composition UNIONED your ` +
                           `${effectiveChecks?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
                           `${CARRY_NOTE_MAX_CHECKS}-row cap, and ${droppedChecks.length} CARRIED row(s) were ` +
-                          `evicted from the tail (supplied rows are kept first, PREDICTED rows yield before ` +
-                          `VERIFIED ones). This is the actual eviction computed for this confirmed write; an earlier ` +
-                          `refusal with different supplied rows or carried state may name a different drop set. To ` +
-                          `avoid future evictions: retire rows you no longer need in a separate plain write ` +
-                          `(rowsMode:'replace'), or pass no \`checks\` at all to leave the stored rows untouched.`
+                          `excluded from that proposed composition. Carried rows must be preserved; close rows ` +
+                          `individually with retireIds naming their stable IDs before adding replacements.`
                       : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
                         `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
                         `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
@@ -2353,8 +2335,9 @@ export default defineTool({
               ? {
                   unmatchedRowRefs: unmatchedRowRefs.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   unmatchedRowRefsNote:
-                    'These `replaces`/`retireIds` refs named no carried row (match is by [#id] or EXACT claim ' +
-                    'text). An unmatched `replaces` row was written as a new row; an unmatched retire removed nothing.',
+                    'These refs named no carried row. retireIds requires a stable row ID; replaces also accepts ' +
+                    'exact claim text for an edit. An unmatched replaces row was written as a new row; ' +
+                    'an unmatched retirement removed nothing.',
                 }
               : {}),
             /** Same contract for WALLS — and a dropped wall is worse than a dropped check:
@@ -2365,14 +2348,11 @@ export default defineTool({
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   wallsDroppedNote:
                     rowsMode === 'merge'
-                      ? `CAP EVICTION, confirmed via confirmRetire:true: rowsMode:'merge' UNIONED your ` +
+                      ? `The proposed rowsMode:'merge' composition UNIONED your ` +
                         `${effectiveWalls?.length ?? 0} row(s) onto the carried set, the union exceeded the ` +
                         `${CARRY_NOTE_MAX_WALLS}-row cap, and ${droppedWalls.length} CARRIED owner-gated ` +
-                        `commitment(s) were evicted from the tail (supplied rows are kept first). This is the actual ` +
-                        `eviction computed for this confirmed write; an earlier refusal with different supplied rows ` +
-                        `or carried state may name a different drop set. To avoid future evictions: retire ` +
-                        `rows you no longer need in a separate plain write (rowsMode:'replace'), or pass no ` +
-                        '`walls` at all to leave the stored rows untouched.'
+                        `commitment(s) were excluded from that proposed composition. Carried walls must be ` +
+                        'preserved; close individual walls with retireIds naming their stable IDs.'
                       : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
                         `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
                         `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,

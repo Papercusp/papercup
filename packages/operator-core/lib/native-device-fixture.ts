@@ -15,6 +15,7 @@ import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tu
 import { assertPort, parseArgoTunnelCert, tunnelCnameTarget } from './own-tunnel/config';
 import { provisionCloudflareTunnel, removeCloudflareTunnel, type RemovalTarget } from './own-tunnel/provision';
 import { isCliEntry } from './util/cli-entry';
+import type { WorkspaceRegistry } from './workspace-registry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
@@ -223,12 +224,44 @@ export async function expireFixturePair(pairToken: string, workspaceId: string, 
   return expiresAt;
 }
 
+/** Add a second workspace only to the maintained, initially singleton private registry. */
+export function fixtureSwitchRegistry(registry: WorkspaceRegistry, env = process.env): WorkspaceRegistry {
+  const { workspaceId } = fixtureIdentity(env);
+  assert.equal(registry.current, workspaceId, 'Private current workspace mismatch');
+  assert.equal(registry.workspaces.length, 1, 'Workspace-switch fixture requires an untouched private registry');
+  assert.equal(registry.workspaces[0]!.id, workspaceId, 'Private workspace registry mismatch');
+  return { ...registry, workspaces: [
+    { ...registry.workspaces[0]!, name: 'Native workspace A' },
+    { id: workspaceId + '-other', name: 'Native workspace B', createdAt: Date.now() },
+  ] };
+}
+
+export async function prepareFixtureWorkspaceSwitch() {
+  const { readRegistry, writeRegistry, workspacesRoot } = await import('./workspace-registry');
+  const registry = fixtureSwitchRegistry(readRegistry());
+  assert.equal(resolve(workspacesRoot()), resolve(dirname(process.env.HOME!), 'workspaces'),
+    'Only the maintained private runtime workspace root may be changed');
+  const { insertDevice } = await import('./device-store');
+  const markers = [];
+  for (const [index, workspace] of registry.workspaces.entries()) {
+    mkdirSync(resolve(workspacesRoot(), workspace.id), { recursive: true, mode: 0o700 });
+    const deviceId = randomUUID();
+    const label = `Native workspace ${index === 0 ? 'A' : 'B'} marker`;
+    await insertDevice({ deviceId, workspaceId: workspace.id, deviceLabel: label,
+      userEmail: 'native-fixture@example.invalid' });
+    markers.push({ workspaceId: workspace.id, deviceId, label });
+  }
+  writeRegistry(registry);
+  return { workspaces: registry.workspaces, markers };
+}
+
 export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800,
-  interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0')) {
+  interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0'), workspaceSwitch = false) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
   assert(interruptionSeconds === 0 || (Number.isInteger(interruptionSeconds) && interruptionSeconds >= 30 &&
     interruptionSeconds <= 120), 'Offline fixture interval must be 30 to 120 seconds');
+  assert(!workspaceSwitch || interruptionSeconds === 0, 'Workspace-switch and outage acceptance require separate fixtures');
   const evidence = resolve(evidencePath);
   assert(isAbsolute(evidencePath) && relative(ROOT, evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
   const login = parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
@@ -263,6 +296,9 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   };
   try {
     save();
+    const switchFixture = workspaceSwitch ? await prepareFixtureWorkspaceSwitch() : undefined;
+    if (switchFixture) { receipt.workspaceSwitch = switchFixture; save(); }
+    const expectedWorkspaceIds = switchFixture?.workspaces.map(w => w.id) ?? [identity.workspaceId];
     const hostEnv = {
       ...process.env, MOBILE_JWT_SECRET: randomBytes(48).toString('base64url'),
       MOBILE_DESKTOP_PUBLIC_URL: String(receipt.publicBase), MOBILE_DESKTOP_HOST: hostname,
@@ -276,7 +312,8 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         const registry = await fetch(identity.base + '/api/workspaces', { signal: AbortSignal.timeout(2000) });
         const h = await health.json(), r = await registry.json();
         assert(h.ok === true && h.service === 'papercusp-operator', 'Unexpected private health');
-        assert(r.current === identity.workspaceId && r.workspaces.length === 1 && r.workspaces[0].id === identity.workspaceId,
+        assert.equal(r.current, identity.workspaceId, 'Private current workspace mismatch');
+        assert.deepEqual(r.workspaces.map((w: { id: string }) => w.id).sort(), [...expectedWorkspaceIds].sort(),
           'Private workspace registry mismatch');
         receipt.localBoundary = await verifyProtectedIngress('http://127.0.0.1:' + identity.ingressPort);
     }, { timeoutMs: 180_000, pollMs: 500, stopped: () => stopped,
@@ -401,9 +438,10 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
 }
 
 if (isCliEntry(import.meta.url)) {
-  const [evidence, cert, lifetime, offlineSeconds] = process.argv.slice(2);
+  const [evidence, cert, lifetime, offlineSeconds, journey] = process.argv.slice(2);
+  assert(journey === undefined || journey === 'workspace-switch', 'Unknown native fixture journey');
   runNativeDeviceFixture(evidence ?? '', cert ?? '', lifetime ? Number(lifetime) : 1800,
-    offlineSeconds === undefined ? undefined : Number(offlineSeconds)).catch(error => {
+    offlineSeconds === undefined ? undefined : Number(offlineSeconds), journey === 'workspace-switch').catch(error => {
     console.error('NATIVE_HTTPS_FIXTURE_PREFLIGHT_FAILED=' + error.message); process.exitCode = 1;
   });
 }
