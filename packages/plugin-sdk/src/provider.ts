@@ -36,6 +36,9 @@ export interface ProviderOAuthDescriptor {
    * documents `scope=read,write`).
    */
   scopeSeparator?: ' ' | ',';
+  /** Expiring grants normally require a refresh token. Opt into owner reauthorization
+   * for APIs that issue none; the host still expires the grant and blocks the source. */
+  refreshPolicy?: 'refresh-token' | 'reauthorize';
   pkce?: boolean;
   /** Reference to a host-held client registration. Never a client secret. */
   clientRegistrationRef?: string;
@@ -1030,6 +1033,9 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
     if (oauth.scopeSeparator !== undefined && oauth.scopeSeparator !== ' ' && oauth.scopeSeparator !== ',') {
       issues.push('provider.oauth.scopeSeparator must be " " or ","');
+    }
+    if (oauth.refreshPolicy !== undefined && oauth.refreshPolicy !== 'refresh-token' && oauth.refreshPolicy !== 'reauthorize') {
+      issues.push('provider.oauth.refreshPolicy must be refresh-token or reauthorize');
     }
     for (const key of Object.keys(oauth)) {
       if (/secret/i.test(key)) issues.push(`provider.oauth.${key} must not carry a secret; use clientRegistrationRef`);

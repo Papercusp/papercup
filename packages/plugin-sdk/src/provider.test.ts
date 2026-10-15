@@ -140,6 +140,15 @@ describe('validateProviderDescriptor: oauth.scopeSeparator', () => {
 });
 
 describe('validateProviderDescriptor: oauth.identity request', () => {
+  it('accepts explicit reauthorization and rejects an expiry bypass', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    for (const refreshPolicy of ['refresh-token', 'reauthorize'] as const) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, refreshPolicy } })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, refreshPolicy: 'ignore-expiry' } } as unknown as ProviderDescriptor))
+      .toContain('provider.oauth.refreshPolicy must be refresh-token or reauthorize');
+  });
+
   it('accepts a GET identity endpoint with no method (the REST default)', () => {
     expect(validateProviderDescriptor(descriptor({ url: 'https://api.example.com/user', idField: 'id' }))).toEqual([]);
   });
