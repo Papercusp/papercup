@@ -75,6 +75,7 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     // submit-verify-unconfirmed), so counting this retirement would double-count.
     kind === 'native-turn-start-superseded' ||
     kind === 'wake-turn-deferred-for-pending-respawn' ||
+    kind === 'pty-spawned' ||
     kind === 'turn-deferred-for-owner-input' ||
     kind === 'duplicate-delivery-id' ||
     // An explicit cancellation fences the pending delivery before PTY write;
