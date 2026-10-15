@@ -157,14 +157,11 @@ export interface CurrentBenchNativeRunCost extends BenchRunCost {
   armMeta: { nativeCostAccounting: CurrentBenchNativeCostAccounting };
 }
 
-/** Select one new closed session from complete cumulative source receipts.
- * This is measured usage, not permission to launch or spend. The host must
- * separately bind it to its complete assignment request census.
- */
-export function currentBenchNativeSessionCostDelta(before: CurrentBenchNativeRunCost | null,
-  after: CurrentBenchNativeRunCost, nativeSessionId: string): CurrentBenchNativeSessionCost {
+/** Validate complete cumulative native receipts before reusing their spend. */
+export function requireCurrentBenchNativeRunCost(input: unknown): CurrentBenchNativeRunCost {
   const invalid = () => new Error('Fresh native session usage is incomplete, reused or non-monotone.');
-  const validate = (cost: CurrentBenchNativeRunCost) => {
+  if (!input || typeof input !== 'object') throw invalid();
+  const cost = input as CurrentBenchNativeRunCost;
     const a = cost.armMeta?.nativeCostAccounting;
     const money = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
     const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
@@ -194,9 +191,15 @@ export function currentBenchNativeSessionCostDelta(before: CurrentBenchNativeRun
     if (!money(normalized) || !money(billed) || !sameMoney(normalized, cost.costUsd) ||
         !sameMoney(normalized, a.normalizedCostUsd) || !sameMoney(billed, a.billedCostUsd) ||
         !sameMoney(billed, a.billedKnownSubtotalUsd)) throw invalid();
-    return a;
-  };
-  const current = validate(after), previous = before ? validate(before) : null;
+    return cost;
+}
+
+/** Select exactly one new session without changing any earlier source receipt. */
+export function currentBenchNativeSessionCostDelta(before: CurrentBenchNativeRunCost | null,
+  after: CurrentBenchNativeRunCost, nativeSessionId: string): CurrentBenchNativeSessionCost {
+  const invalid = () => new Error('Fresh native session usage is incomplete, reused or non-monotone.');
+  const current = requireCurrentBenchNativeRunCost(after).armMeta.nativeCostAccounting;
+  const previous = before ? requireCurrentBenchNativeRunCost(before).armMeta.nativeCostAccounting : null;
   if (!nativeSessionId || previous && (previous.priceTableVersion !== current.priceTableVersion ||
       previous.preregHash !== current.preregHash)) throw invalid();
   const old = new Map(previous?.sources.map(s => [s.nativeSessionId, s]) ?? []);
@@ -1024,7 +1027,22 @@ export function currentBenchWorkloadProviderInputCapture(options: {
 export interface CurrentBenchHostGateway {
   readonly nativeGateway: Readonly<ScopedInferenceGateway>;
   readonly nativeAccountingBinding: CurrentBenchAccountingBinding;
+  /** Trusted host only: the caller derives remaining caps from measured usage.
+   * Issuance proves scope/lifetime, not matched-cost measurement. */
+  issueSessionBudget(budget: GenerationBudget, beforeCost?: CurrentBenchNativeRunCost | null): CurrentBenchSessionBudget;
   stop(): Promise<void>;
+}
+export interface CurrentBenchSessionBudget {
+  readonly index: number;
+  readonly binding: CurrentBenchAccountingBinding;
+  readonly budget: Readonly<GenerationBudget>;
+  /** Already charged assignment usage; live session checks subtract it once. */
+  readonly priorUsage?: Readonly<Pick<BenchRunCost, 'tokensIn' | 'tokensOut' | 'tokensCacheRead' | 'tokensCacheWrite' | 'costUsd'>>;
+}
+interface CurrentBenchSessionState {
+  receipt: CurrentBenchSessionBudget;
+  phase: 'issued' | 'admitting' | 'admitted' | 'launched' | 'retired';
+  handle?: string;
 }
 // A loopback URL is configuration, not evidence that its service enforces this
 // assignment's reservations. Only the host controller can issue this pairing.
@@ -1033,6 +1051,8 @@ const currentBenchHostGateways = new WeakMap<ScopedInferenceGateway, {
   protocol: string;
   arm: CurrentBenchmarkProtocol['arms'][number];
   taskId: string;
+  sessionCount: number;
+  session?: CurrentBenchSessionState;
   active(): boolean;
   stop(): Promise<void>;
 }>();
@@ -1148,9 +1168,35 @@ export function currentBenchGatewayController(input: {
           stopped = true; revoke();
           return stopping ??= Promise.resolve().then(() => service!.stop());
         };
-        currentBenchHostGateways.set(nativeGateway, { binding: accountingBinding,
-          protocol: canonicalJson(protocol), arm, taskId, active: () => live && !stopped, stop });
-        return Object.freeze({ nativeGateway, nativeAccountingBinding: accountingBinding, stop });
+        const host: NonNullable<ReturnType<typeof currentBenchHostGateways.get>> = { binding: accountingBinding,
+          protocol: canonicalJson(protocol), arm, taskId, sessionCount: 0, active: () => live && !stopped, stop };
+        currentBenchHostGateways.set(nativeGateway, host);
+        return Object.freeze({ nativeGateway, nativeAccountingBinding: accountingBinding, stop,
+          issueSessionBudget(budget: GenerationBudget, beforeCost?: CurrentBenchNativeRunCost | null) {
+            const repeated = arm.control?.repeatedSession;
+            if (!host.active() || arm.control?.topology !== 'repeated-session' || !repeated ||
+                host.sessionCount >= repeated.maxSessions || host.session && host.session.phase !== 'retired')
+              throw new Error('Fresh native session allowance is unavailable, overlapping or exhausted.');
+            const keys = ['maxUsd', 'maxTokens', 'maxWallClockMs'] as const;
+            if (Object.keys(budget).some(key => !keys.includes(key as typeof keys[number])) ||
+                keys.some(key => {
+                  const frozen = arm.generationBudget[key], left = budget[key];
+                  return frozen === undefined ? left !== undefined : left === undefined || !Number.isFinite(left) ||
+                    left <= 0 || left > frozen || key === 'maxTokens' && !Number.isSafeInteger(left);
+                })) throw new Error('Fresh native session allowance is missing, invalid or wider than the frozen cap.');
+            let priorUsage: CurrentBenchSessionBudget['priorUsage'];
+            if (beforeCost) {
+              const accounting = requireCurrentBenchNativeRunCost(beforeCost).armMeta.nativeCostAccounting;
+              if (accounting.preregHash !== preregHash || accounting.priceTableVersion !== protocol.priceSchedule.version)
+                throw new Error('Fresh native session prior usage differs from its frozen protocol.');
+              priorUsage = Object.freeze({ tokensIn: beforeCost.tokensIn, tokensOut: beforeCost.tokensOut,
+                tokensCacheRead: beforeCost.tokensCacheRead, tokensCacheWrite: beforeCost.tokensCacheWrite, costUsd: beforeCost.costUsd });
+            }
+            const receipt = Object.freeze({ index: host.sessionCount++, binding: accountingBinding,
+              budget: Object.freeze({ ...budget }), ...(priorUsage ? { priorUsage } : {}) });
+            host.session = { receipt, phase: 'issued' };
+            return receipt;
+          } });
       } catch (error) {
         revoke();
         await service?.stop();
@@ -1422,6 +1468,8 @@ export interface CurrentSuBenchObservations {
   nativeGateway?: ScopedInferenceGateway;
   /** Same controller-issued scope; omission cannot launch or complete accounting. */
   nativeAccountingBinding?: CurrentBenchAccountingBinding;
+  /** Opaque in-process host grant; copying its fields does not copy authority. */
+  sessionBudget?: CurrentBenchSessionBudget;
   /**
    * Run the native agent CLI INSIDE this task container (benchmark-coverage-frontierswe-v2-2026-10-10
    * D-026/D-028). psu stays on the host; the launch pins its `codex` to a generated docker-exec
@@ -1432,6 +1480,9 @@ export interface CurrentSuBenchObservations {
   observeIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentityObservation | null>;
 }
 export interface CurrentSuBenchPorts extends Pick<CurrentSuBenchObservations, 'admit'> {
+  verifyGenerationBudget?(budget: GenerationBudget, taskId: string): {
+    frozenBudget: GenerationBudget; topology?: 'repeated-session'; sessionBudget?: CurrentBenchSessionBudget;
+  };
   releaseGateway?(): Promise<void>;
   collectCost?: BenchHarnessOps['collectCost'];
   readIdentity(task: CurrentBenchTask): Promise<CurrentBenchIdentity | null>;
@@ -1464,6 +1515,36 @@ export function requireCurrentBenchHostBinding(observations: Pick<CurrentSuBench
     throw new Error('Current benchmark launch requires its active host-owned gateway and exact accounting binding.');
   }
   return host;
+}
+function sessionHandle(handle: BenchHarnessHandle): string {
+  return canonicalJson([handle.slug, handle.featureId, handle.worktreePath]);
+}
+function requireSessionBudget(observations: CurrentSuBenchObservations,
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>) {
+  const host = requireCurrentBenchHostBinding(observations, opts), session = host.session;
+  if (!session || session.receipt !== observations.sessionBudget || session.phase === 'retired' ||
+      host.arm.control?.topology !== 'repeated-session')
+    throw new Error('Fresh native session requires its active host-issued allowance.');
+  return { host, session };
+}
+/** Consume once before enrollment/process creation. Rechecking the host route
+ * alone cannot authorize another native session with the same allowance. */
+export function beginCurrentBenchNativeSession(observations: CurrentSuBenchObservations,
+  opts: Pick<CurrentSuBenchOptions, 'workspaceId' | 'runId' | 'preregistration' | 'armId' | 'seed'>,
+  handle: BenchHarnessHandle): () => void {
+  const host = requireCurrentBenchHostBinding(observations, opts);
+  if (!observations.sessionBudget && host.arm.control?.topology !== 'repeated-session')
+    return () => { requireCurrentBenchHostBinding(observations, opts); };
+  const { session } = requireSessionBudget(observations, opts);
+  if (session.phase !== 'admitted' || session.handle !== sessionHandle(handle))
+    throw new Error('Fresh native session allowance was not admitted for this handle or was already used.');
+  session.phase = 'launched';
+  let spawned = false;
+  return () => {
+    if (requireSessionBudget(observations, opts).session !== session || session.phase !== 'launched' || spawned)
+      throw new Error('Fresh native session allowance was retired, replaced or already spawned.');
+    spawned = true;
+  };
 }
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
 export function currentBenchRunLabel(runId: string): string {
@@ -1570,8 +1651,13 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
         // stock-native reference (every product capability off, schema-enforced). The su driver declares
         // none: its assignment confinement (denyOutside + denyAmbientContext below) does not yet derive
         // which product capabilities it delivers, so a controlled su arm is refused rather than trusted.
-        const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId, budget,
-          topology: kind === 'stock-native' ? 'stock-native-reference' : undefined });
+        const allowance = ports.verifyGenerationBudget?.(budget, task.instanceId);
+        if (allowance?.topology === 'repeated-session' && kind !== 'stock-native')
+          throw new Error('Repeated-session allowances require the stock native driver.');
+        const frozen = requireCurrentBenchmarkAssignment(opts.preregistration.config, { ...opts, taskId: task.instanceId,
+          budget: allowance?.frozenBudget ?? budget,
+          topology: allowance?.topology ?? (kind === 'stock-native' ? 'stock-native-reference' : undefined) });
+        if (allowance?.sessionBudget) record.sessionBudget = allowance.sessionBudget;
         const frozenArm = frozen.arms.find(arm => arm.id === opts.armId)!;
         const { promptHashMode = 'exact-request-v1', ...runtimePins } = frozenArm.runtime;
         const expectedIdentity = { ...runtimePins, effort: frozenArm.effort };
@@ -1662,8 +1748,13 @@ function currentBenchHarnessDriver(lifecycle: BenchHarnessOps, ports: CurrentSuB
           const cost = await (ports.collectCost ? ports.collectCost({ handle, workspaceId }) :
             lifecycle.collectCost({ handle, workspaceId }));
           if (!hasValidBenchRunCost(cost)) throw new Error('Invalid benchmark spend measurement; retiring the native task.');
-          if ((budget.maxUsd != null && cost.costUsd >= budget.maxUsd) ||
-              (budget.maxTokens != null && cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) >= budget.maxTokens)) { result = { disposition: 'budget-exhausted' }; break; }
+          const prior = allowance?.sessionBudget?.priorUsage;
+          const costUsd = cost.costUsd - (prior?.costUsd ?? 0);
+          const tokens = cost.tokensIn + cost.tokensOut + (cost.tokensCacheRead ?? 0) + (cost.tokensCacheWrite ?? 0) -
+            ((prior?.tokensIn ?? 0) + (prior?.tokensOut ?? 0) + (prior?.tokensCacheRead ?? 0) + (prior?.tokensCacheWrite ?? 0));
+          if (costUsd < -1e-10 || tokens < 0) throw new Error('Current native usage fell below its accounted session baseline.');
+          if ((budget.maxUsd != null && costUsd >= budget.maxUsd) ||
+              (budget.maxTokens != null && tokens >= budget.maxTokens)) { result = { disposition: 'budget-exhausted' }; break; }
           await ports.sleep(Math.max(1, Math.min(pollMs, deadline - lifecycle.now())));
         }
       } catch (error) {
@@ -2598,14 +2689,43 @@ export function liveCurrentSuBenchPorts(
   };
   const restored = new Map<string, BenchmarkContextInput & { workItemId: string }>();
   return {
-    releaseGateway: async () => { await host?.stop(); },
+    releaseGateway: async () => {
+      if (observations.sessionBudget) {
+        // The assignment owns the shared gateway; one session owns only its grant.
+        if (host?.session?.receipt === observations.sessionBudget) host.session.phase = 'retired';
+      } else await host?.stop();
+    },
+    verifyGenerationBudget: (budget, taskId) => {
+      const host = requireBinding();
+      if (taskId !== host.taskId) throw new Error('Current benchmark session differs from its host assignment.');
+      if (observations.sessionBudget || host.arm.control?.topology === 'repeated-session') {
+        const { session } = requireSessionBudget(observations, opts);
+        if (canonicalJson(budget) !== canonicalJson(session.receipt.budget))
+          throw new Error('Current benchmark execution differs from its host-issued session allowance.');
+        return { frozenBudget: { ...host.arm.generationBudget }, topology: 'repeated-session', sessionBudget: session.receipt };
+      }
+      if (canonicalJson(budget) !== canonicalJson(host.arm.generationBudget))
+        throw new Error('Current benchmark admission differs from its host assignment or budget.');
+      return { frozenBudget: { ...host.arm.generationBudget } };
+    },
     admit: async (handle, budget, taskId) => {
       const host = requireBinding();
-      if (taskId !== host.taskId || canonicalJson(budget) !== canonicalJson(host.arm.generationBudget)) {
+      let session: CurrentBenchSessionState | undefined;
+      if (observations.sessionBudget || host.arm.control?.topology === 'repeated-session') {
+        session = requireSessionBudget(observations, opts).session;
+        if (session.phase !== 'issued' || canonicalJson(budget) !== canonicalJson(session.receipt.budget))
+          throw new Error('Fresh native session allowance was already admitted or its budget differs.');
+        session.phase = 'admitting'; session.handle = sessionHandle(handle);
+      }
+      if (taskId !== host.taskId || !session && canonicalJson(budget) !== canonicalJson(host.arm.generationBudget)) {
         throw new Error('Current benchmark admission differs from its host assignment or budget.');
       }
       const receipt = await observations.admit(handle, budget, taskId);
       requireBinding();
+      if (session) {
+        requireSessionBudget(observations, opts);
+        session.phase = receipt.admitted ? 'admitted' : 'retired';
+      }
       return receipt;
     },
     collectCost: input => liveCurrentBenchNativeCostReader(input.handle, opts, db, accounting)(),
@@ -2642,6 +2762,9 @@ export function liveCurrentSuBenchPorts(
         throw new Error('Benchmark native launch requires its physically restored frozen context.');
       const module = await import('../agent-tools/capability/launch-agent');
       requireHost(args);
+      const verifySession = beginCurrentBenchNativeSession(observations, opts, { slug: args.harness as string,
+        featureId: input.workItemId, worktreePath: input.checkout });
+      verifySession();
       // Server-side operations run outside the native OS boundary. Only local
       // assignment progress/completion and identity are admitted here; the native sandbox supplies
       // coding tools. Discovery, remote brains, arbitrary server execution and

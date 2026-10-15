@@ -17,7 +17,7 @@ const h = vi.hoisted(() => ({
   home: '', owner: '', child: undefined as unknown as ChildProcess,
   run: vi.fn<(input: RunAgentChatOptions) => AsyncIterable<ChatEvent>>(),
   record: vi.fn(), reanchor: vi.fn(), bind: vi.fn(), end: vi.fn(), ingest: vi.fn(),
-  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), get: vi.fn(), sandbox: vi.fn(),
+  managed: vi.fn(), kill: vi.fn(), host: vi.fn(), begin: vi.fn(), verifySession: vi.fn(), get: vi.fn(), sandbox: vi.fn(),
 }));
 vi.mock('../adv-sessions', () => ({ recordAdvSession: h.record, reanchorAdvSessionNativeId: h.reanchor, markAdvSessionEnded: h.end }));
 vi.mock('../task-manager/store', () => ({ bindLiveAgentSessionTasksToNativeSession: h.bind }));
@@ -32,6 +32,7 @@ vi.mock('@papercusp/orchestrator/fleet-srt-spawn', () => ({
 vi.mock('./current-su', async (original) => ({
   ...await original<typeof import('./current-su')>(),
   requireCurrentBenchHostBinding: h.host,
+  beginCurrentBenchNativeSession: h.begin,
   liveCurrentSuBenchPorts: () => ({ killTask: h.kill, getTask: h.get }),
   // Exercise the actual factory's ports without replacing the separately tested
   // shared assignment verifier with a fabricated committed protocol.
@@ -63,6 +64,7 @@ beforeEach(() => {
   vi.resetAllMocks(); root = mkdtempSync(join(tmpdir(), 'stock-factory-')); h.home = join(root, 'native-home'); factories = [];
   h.child = { exitCode: null, signalCode: null, kill: vi.fn(() => true) } as unknown as ChildProcess;
   h.host.mockReturnValue({ taskId: 't1' });
+  h.begin.mockReturnValue(h.verifySession);
   h.record.mockImplementation(async (input) => { h.owner = input.coordOwnerId; return 1; });
   h.reanchor.mockImplementation(async () => ({ owner: h.owner, reanchored: true }));
   h.bind.mockResolvedValue(['stock-task']); h.end.mockResolvedValue(true); h.ingest.mockResolvedValue({});
@@ -82,6 +84,19 @@ afterEach(async () => {
 });
 
 describe('current stock native factory', () => {
+  it('refuses a reused host allowance before enrolling another native session', async () => {
+    h.begin.mockImplementation(() => { throw new Error('allowance already used'); });
+    await expect(factory().ports.launchNative(input())).rejects.toThrow('allowance already used');
+    expect(h.record).not.toHaveBeenCalled(); expect(h.managed).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the allowance after enrollment before spawning the native process', async () => {
+    h.verifySession.mockImplementation(() => { throw new Error('allowance retired'); });
+    await expect(factory().ports.launchNative(input())).rejects.toThrow('allowance retired');
+    expect(h.record).toHaveBeenCalledOnce(); expect(h.managed).not.toHaveBeenCalled();
+    expect(h.end).toHaveBeenCalledOnce();
+  });
+
   it('executes the container wrapper with a relocated clean home, rewritten gateway and task cwd', async () => {
     const homes = join(root, 'homes'), perTaskDir = join(root, 'task-homes');
     h.home = join(homes, '7');

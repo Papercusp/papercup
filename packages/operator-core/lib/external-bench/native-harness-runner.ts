@@ -36,7 +36,7 @@ import { createScopedNativeSandboxSpawn } from '@papercusp/orchestrator/fleet-sr
 import { SCOPED_INFERENCE_GATEWAY_ENV } from '@papercusp/orchestrator/codex-gateway-config';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { currentBenchAssignmentId, currentBenchAttemptLabel, currentStockBenchHarnessDriver, liveCurrentSuBenchPorts,
-  requireCurrentBenchHostBinding, type CurrentSuBenchOptions, type CurrentSuBenchObservations,
+  requireCurrentBenchHostBinding, beginCurrentBenchNativeSession, type CurrentSuBenchOptions, type CurrentSuBenchObservations,
   type CurrentStockBenchPorts } from './current-su';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { DbScope } from './reproducibility/db';
@@ -93,7 +93,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
       return task && streamErrors.has(id) ? { ...task, detail: { ...task.detail, nativeStreamError: streamErrors.get(id) } } : task;
     },
     async launchNative({ handle, task, context }) {
-      requireCurrentBenchHostBinding(observations, opts);
+      const verifySession = beginCurrentBenchNativeSession(observations, opts, handle);
       const [{ recordAdvSession, reanchorAdvSessionNativeId, markAdvSessionEnded }, { bindLiveAgentSessionTasksToNativeSession },
         { runAgentChat }] = await Promise.all([import('../adv-sessions'), import('../task-manager/store'), import('../agent-chat-stream')]);
       const ownerId = `benchmark-stock-${randomUUID()}`;
@@ -144,6 +144,7 @@ export function createCurrentStockBenchHarness(opts: CurrentSuBenchOptions, ctx:
             },
             spawnProcess: async (command, args, options) => {
               const host = requireCurrentBenchHostBinding(observations, opts);
+              verifySession();
               if (opts.signal?.aborted) throw new Error('Stock native assignment was cancelled before process creation.');
               if (!['codex', 'codex.js'].includes(basename(command)) || options.cwd !== handle.worktreePath || options.env?.CODEX_HOME !== home)
                 throw new Error('Stock native identity transport cannot be observed in this host.');
