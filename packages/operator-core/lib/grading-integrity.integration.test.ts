@@ -29,6 +29,10 @@ import { closeTask, getTask, listTasks, registerTask } from './task-manager/stor
 const workspaceId = 'default';
 const taskLedgerMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/696-task-ledger.sql', import.meta.url));
 if (!existsSync(taskLedgerMigration)) throw new Error(`grading audit fixture migration missing: ${taskLedgerMigration}`);
+const coordinationSubstrateMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/123-coordination-substrate.sql', import.meta.url));
+if (!existsSync(coordinationSubstrateMigration)) throw new Error(`coordination substrate fixture migration missing: ${coordinationSubstrateMigration}`);
+const coordinationConversationsMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/132-coordination-conversations.sql', import.meta.url));
+if (!existsSync(coordinationConversationsMigration)) throw new Error(`coordination conversations fixture migration missing: ${coordinationConversationsMigration}`);
 const consultThreadsMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url));
 if (!existsSync(consultThreadsMigration)) throw new Error(`consult threads fixture migration missing: ${consultThreadsMigration}`);
 const consultCascadeCursorMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url));
@@ -64,8 +68,17 @@ beforeAll(async () => {
   h.sql = db.sql;
   h.url = db.url;
   prepared = postgres(db.url, { max: 2, onnotice: () => {} });
+  await db.sql.unsafe(`
+    DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+    DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+  `);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
   await applyMigrationForTest(db.sql, taskLedgerMigration);
+  // 834 widens the consult kind on coord_conversations, so replay the production
+  // substrate/conversation prerequisites before applying it. createFreshPgDb
+  // provisions an empty schema and never replays migrations on its own.
+  await applyMigrationForTest(db.sql, coordinationSubstrateMigration);
+  await applyMigrationForTest(db.sql, coordinationConversationsMigration);
   await applyMigrationForTest(db.sql, consultThreadsMigration);
   await applyMigrationForTest(db.sql, consultCascadeCursorMigration);
 });
