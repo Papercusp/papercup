@@ -22,6 +22,9 @@ import {
 } from '@papercusp/db-org';
 import { HOSTED_SESSION_COOKIE, type HostedSession } from '../auth/hosted-session';
 import { createHostedPrincipalResolver } from '../auth/hosted-principal-resolver';
+import { createHostedCustomerDeletionRequester } from '../data-governance/hosted-customer-data';
+import type { HostedCustomerDeletionPolicy, HostedCustomerDeletionRequest } from '../data-governance/hosted-customer-deletion';
+import type { OrganizationDataExport } from '../data-governance/organization-data-receipts';
 import type { HostedUsageRecord, HostedUsageStatement } from '../auth/hosted/billing/usage-statement';
 import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
@@ -36,6 +39,10 @@ import {
   HOSTED_BROWSER_PROVISION_PATH,
   HOSTED_BROWSER_REST_QUERY_PATH,
   HOSTED_BROWSER_SSE_PATH,
+  HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH,
+  HOSTED_BROWSER_USER_EXPORT_PATH,
+  HOSTED_BROWSER_ORGANIZATION_DELETE_PATH,
+  HOSTED_BROWSER_USER_DELETE_PATH,
 } from './hosted-browser';
 import type { AssembledHostedControlPlane } from './hosted-control-plane';
 import { createHostedRuntime, type HostedRuntimeDependencies } from './hosted-runtime';
@@ -335,6 +342,109 @@ afterAll(async () => {
 });
 
 describe.sequential('assembled hosted two-tenant acceptance', () => {
+  it('exports customer data over private HTTP using persisted cookies and server-derived tenant and user scope', async () => {
+    const session = await createSession(plane, USER_A, ORG_A, WORKSPACE_A, 'data-export');
+    const server = serve({ fetch: plane.app.fetch, hostname: '127.0.0.1', port: 0 });
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private customer-data HTTP address unavailable');
+      const base = `http://127.0.0.1:${address.port}/api`;
+      const post = (path: string, value: HostedSession | null = session, extra: Record<string, string> = {}) => fetch(base + path, {
+        method: 'POST', headers: { origin: ORIGIN, 'content-type': 'application/json',
+          ...(value ? { cookie: cookie(plane, value) } : {}), ...extra },
+        // Scope fields supplied by the browser must never replace cookie authority.
+        body: JSON.stringify({ organizationId: ORG_B, userId: USER_B, workspaceId: WORKSPACE_B }),
+      });
+      for (const [path, filename] of [[HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, 'organization'],
+        [HOSTED_BROWSER_USER_EXPORT_PATH, 'user']] as const) {
+        const response = await post(path);
+        expect(response.status, await response.clone().text()).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        expect(response.headers.get('content-disposition')).toBe(`attachment; filename="${filename}-data.json"`);
+        const exported = await response.json() as OrganizationDataExport;
+        expect(exported.stores.find(store => store.store === 'papercusp_auth.hosted_users')?.rows.map(row => row.id)).toEqual([USER_A]);
+        expect(JSON.stringify(exported)).not.toContain(USER_B);
+        expect(JSON.stringify(exported)).not.toContain(ORG_B);
+        const receipts = await sql`SELECT organization_id, actor_id, metadata FROM papercusp_auth.organization_audit_events
+          WHERE id = ${exported.receiptId}::uuid`;
+        expect(receipts).toHaveLength(1);
+        expect(receipts[0]).toMatchObject({ organization_id: ORG_A, actor_id: USER_A,
+          metadata: { operation: 'export', executor: 'hosted-control-plane',
+            ...(filename === 'user' ? { userId: USER_A } : {}) } });
+      }
+      const foreign = await post(HOSTED_BROWSER_ORGANIZATION_EXPORT_PATH, sessionB);
+      expect(foreign.status, await foreign.clone().text()).toBe(200);
+      expect(JSON.stringify(await foreign.json())).not.toContain(USER_A);
+      expect((await post(HOSTED_BROWSER_USER_EXPORT_PATH, null)).status).toBe(401);
+      expect((await post(HOSTED_BROWSER_USER_EXPORT_PATH, session, { origin: 'https://foreign.example' })).status).toBe(403);
+      expect((await post(HOSTED_BROWSER_USER_EXPORT_PATH, session, { 'x-papercusp-workspace': WORKSPACE_B })).status).toBe(403);
+      await plane.components.sessionStore.revoke(session.id, 'customer-data acceptance');
+      expect((await post(HOSTED_BROWSER_USER_EXPORT_PATH)).status).toBe(401);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('admits deletion over private HTTP only after server policy approval and commits immutable authority before enqueue', async () => {
+    let policy: HostedCustomerDeletionPolicy | null = null;
+    const enqueued: HostedCustomerDeletionRequest[] = [];
+    const enqueue = vi.fn(async (input: HostedCustomerDeletionRequest) => {
+      // This separate connection cannot see an uncommitted admission. No provider
+      // is invoked here; the real DBOS executor has its own isolated SDK proof.
+      const admissions = await sql`SELECT organization_id, actor_id, metadata FROM papercusp_auth.organization_audit_events
+        WHERE action = 'organization.data.deletion.requested' AND metadata->>'operationId' = ${input.operationId}`;
+      expect(admissions).toHaveLength(1);
+      expect(admissions[0]).toMatchObject({ organization_id: ORG_A, actor_id: USER_A,
+        metadata: { kind: 'organization', policy: { approvalRef: 'fixture:approved-retention', stripe: 'retain', consent: 'retain' } } });
+      enqueued.push(input);
+      return { operationId: input.operationId };
+    });
+    const deletionPlane = await createHostedRuntime(CONFIGURATION, { ...runtimeDependencies(),
+      hostedBrowser: { ...runtimeDependencies().hostedBrowser,
+        requestCustomerDeletion: createHostedCustomerDeletionRequester({ runService,
+          resolveApprovedPolicy: async () => policy, enqueueCustomerDeletion: enqueue }) },
+    });
+    const session = await createSession(deletionPlane, USER_A, ORG_A, WORKSPACE_A, 'data-deletion');
+    const server = serve({ fetch: deletionPlane.app.fetch, hostname: '127.0.0.1', port: 0 });
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('private deletion HTTP address unavailable');
+      const base = `http://127.0.0.1:${address.port}/api`;
+      const post = (path: string, confirmation: string, extra: Record<string, string> = {}) => fetch(base + path, {
+        method: 'POST', headers: { origin: ORIGIN, cookie: cookie(deletionPlane, session), 'content-type': 'application/json', ...extra },
+        body: JSON.stringify({ confirmation, organizationId: ORG_B, userId: USER_B, operationId: 'caller-chosen',
+          policy: { approvalRef: 'untrusted-browser-policy', stripe: 'delete', consent: 'delete' } }),
+      });
+      const pending = await post(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'DELETE ORGANIZATION');
+      expect(pending.status).toBe(409);
+      expect(await pending.json()).toMatchObject({ error: 'retention_policy_pending' });
+      expect(enqueue).not.toHaveBeenCalled();
+      policy = { approvalRef: 'fixture:approved-retention', stripe: 'retain', consent: 'retain' };
+      expect((await post(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'wrong confirmation')).status).toBe(400);
+      expect((await post(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'DELETE ORGANIZATION', { origin: 'https://foreign.example' })).status).toBe(403);
+      expect((await post(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'DELETE ORGANIZATION', { 'x-papercusp-workspace': WORKSPACE_B })).status).toBe(403);
+      expect(enqueue).not.toHaveBeenCalled();
+      const accepted = await post(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'DELETE ORGANIZATION');
+      expect(accepted.status, await accepted.clone().text()).toBe(202);
+      expect(accepted.headers.get('cache-control')).toBe('no-store');
+      const result = await accepted.json() as { operationId: string };
+      expect(enqueued).toEqual([{ operationId: result.operationId, organizationId: ORG_A, requestedBy: USER_A,
+        target: { kind: 'organization' }, policy }]);
+      expect(result.operationId).toMatch(/^[0-9a-f-]{36}$/);
+      const orphan = await post(HOSTED_BROWSER_USER_DELETE_PATH, 'DELETE MY ACCOUNT');
+      expect(orphan.status).toBe(409);
+      expect(await orphan.json()).toMatchObject({ error: 'transfer_organization_ownership_required' });
+      expect(enqueue).toHaveBeenCalledTimes(1);
+      await deletionPlane.components.sessionStore.revoke(session.id, 'customer-deletion acceptance');
+      expect((await post(HOSTED_BROWSER_ORGANIZATION_DELETE_PATH, 'DELETE ORGANIZATION')).status).toBe(401);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('serves persisted-session billing usage over private HTTP with tenant isolation, replay and durable corrections', async () => {
     const now = Date.UTC(2026, 9, 2);
     const records: HostedUsageRecord[] = [

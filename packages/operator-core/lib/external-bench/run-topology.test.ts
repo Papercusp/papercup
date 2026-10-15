@@ -84,6 +84,30 @@ function fakeAgent(overrides: Partial<AgentRunOutput> = {}) {
 /** The declared ensemble selector every judge-best run must carry. */
 const SELECTOR = { id: 'fixture-judge', kind: 'judge-agent' as const };
 
+test('separate cache tokens exhaust topology headroom and remain in the scored total', async () => {
+  const cached = { tokensCacheRead: 20, tokensCacheWrite: 5 };
+  const agent = fakeAgent({ tokensIn: 10, tokensOut: 5, ...cached });
+  const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint),
+    backlog: [task('cache-first'), task('cache-skipped')], seam: fakeSeam().seam, budget: { maxTokens: 40 },
+    rowMeta: ROW_META, runId: 'cache-cap', seed: 1, now: fakeClock(), runAgent: agent.run, cap: 1 });
+  assert.equal(agent.calls.length, 1);
+  assert.equal(result.tokensSpent, 40);
+  assert.equal(result.rows[0].tokensTotal, 40);
+  assert.equal(result.rows[0].tokensIn, 10);
+  assert.deepEqual(result.skippedTaskIds, ['cache-skipped']);
+});
+
+test('pair aggregation charges each participant cache tokens once', async () => {
+  const cached = { tokensCacheRead: 20, tokensCacheWrite: 5 };
+  const agent = fakeAgent({ tokensIn: 10, tokensOut: 5, ...cached });
+  const result = await runTopology({ spec: resolveCoordinationSpec(loadBuiltinBlueprint('pair').blueprint),
+    backlog: [task('cache-pair')], seam: fakeSeam().seam, budget: { maxTokens: 100 },
+    rowMeta: ROW_META, runId: 'cache-pair', seed: 1, now: fakeClock(), runAgent: agent.run, cap: 1 });
+  assert.equal(agent.calls.length, 2);
+  assert.equal(result.tokensSpent, 80);
+  assert.equal(result.rows[0].tokensTotal, 80);
+});
+
 test('distributed arm (dist-broadcast) — one worker per task, rows carry seam grade + summed usage', async () => {
   const spec = resolveCoordinationSpec(loadBuiltinBlueprint('dist-broadcast').blueprint);
   const { seam, cloned, graded, tornDown } = fakeSeam();

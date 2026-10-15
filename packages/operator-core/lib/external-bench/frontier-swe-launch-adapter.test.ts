@@ -80,6 +80,7 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
     const f = fixture();
     f.output.telemetry.armMeta = { currentExecution: { identityStatus: 'measured', protocolIdentity: { status: 'matched' } } };
     f.output.telemetry.tokensCacheRead = 40;
+    f.output.telemetry.tokensCacheWrite = 5;
     const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
     const grade = vi.fn(async () => ({ resolved: false, score: 0.5, graderStatus: 'failed' as const }));
     const teardown = vi.fn(async () => {});
@@ -91,8 +92,10 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
           preregHash: 'a'.repeat(64), rolloutId: 'fixture-rollout', graderFamily: 'frontier-swe', graderVersion: 'v2', priceTableVersion: 'frozen-prices' },
         runAgent: adapter.runAgent });
       expect(result.modelCallsSpent).toBe(4);
+      expect(result.tokensSpent).toBe(155);
       expect(result.rows).toHaveLength(1);
       expect(result.rows[0]).toMatchObject({ score: 0.5, generationStatus: 'completed', costUsd: 0.2,
+        tokensIn: 100, tokensOut: 10, tokensTotal: 155,
         armMeta: { executionPath: 'modernization-launch-adapter', nativeUsage: { tokensCacheRead: 40 },
           currentExecution: { protocolIdentity: { status: 'matched' } } } });
       expect(grade).toHaveBeenCalledWith(f.input.task, f.input.handle);

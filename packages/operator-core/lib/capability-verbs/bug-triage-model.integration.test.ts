@@ -19,6 +19,9 @@ import { upsertOwnedExternalTriggerSource } from '../external-triggers/source-st
 import { createProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { SuTarget } from '../llm-testing/targets/su';
 import { buildCatalog } from '../llm-testing/targets/su-catalog';
+import { isCodexResponsesModel } from '../llm-testing/targets/codex-responses-tool-loop';
+import { parseBridgeModel } from '../inference-gateway/codex-cli-bridge';
+import { preflightCodexModel } from '../inference-gateway/codex-oauth-proxy';
 import { fileTicketFromPlanRun, TicketFilingError, type FileTicketInput } from './ticket';
 
 const WS = 'bug-triage-model-acceptance';
@@ -69,6 +72,24 @@ let installationId: string;
 let sequence = 8000;
 let providerCalls = 0;
 let posts = 0;
+let modelPreflight: unknown;
+const modelRoutes: Array<{ model: string; effort: string; account: string | null; status: number }> = [];
+const modelAccount = process.env.PAPERCUSP_BUG_TRIAGE_MODEL_ACCOUNT?.trim();
+const codexFetch: typeof fetch = async (input, init) => {
+  const headers = new Headers(init?.headers);
+  expect(modelAccount, 'Pin the same account that passed model preflight').toBeTruthy();
+  headers.set('x-papercusp-account', modelAccount!);
+  headers.set('x-papercusp-account-pin', 'hard');
+  headers.set('x-papercusp-owner', process.env.PAPERCUSP_SID || 'bug-triage-model-acceptance');
+  const request = JSON.parse(String(init?.body));
+  const result = await fetch(input, { ...init, headers });
+  const route = { model: request.model, effort: request.reasoning?.effort,
+    account: result.headers.get('x-papercusp-routed-account'), status: result.status };
+  modelRoutes.push(route);
+  console.info('BUG_TRIAGE_MODEL_ROUTE ' + JSON.stringify(route));
+  expect(route.account, 'Actual gateway account must match the preflight account').toBe(modelAccount);
+  return result;
+};
 const remote = new Map<string, { gid: string; project: string; notes: string }>();
 const response = (status: number, data: unknown, extra: Record<string, unknown> = {}) =>
   ({ status, headers: {}, bodyEncoding: 'utf8' as const, body: JSON.stringify({ data, ...extra }) });
@@ -96,6 +117,17 @@ const deps = { registry, hostFetchFor: () => hostFetch, options: { hostFetchFor:
 
 beforeAll(async () => {
   if (!enabled) return;
+  const model = process.env.LLM_TEST_SUT_MODEL;
+  if (isCodexResponsesModel(model)) {
+    expect(modelAccount, 'Name the gateway account for independently attributed acceptance').toBeTruthy();
+    const home = process.env.PAPERCUSP_BUG_TRIAGE_MODEL_HOME?.trim();
+    expect(home, 'Name that account\'s credential home for the maintained preflight').toBeTruthy();
+    const resolved = parseBridgeModel(model);
+    const result = await preflightCodexModel(home!, resolved.id);
+    modelPreflight = { ...resolved, account: modelAccount, result };
+    console.info('BUG_TRIAGE_MODEL_PREFLIGHT ' + JSON.stringify(modelPreflight));
+    expect(result.verdict, JSON.stringify(modelPreflight)).toBe('ok');
+  }
   templatePath = process.env.PAPERCUSP_BUG_TRIAGE_MODEL_TEMPLATE ?? '';
   expect(templatePath, 'Name the installed template; source-only prompt proof is insufficient').not.toBe('');
   template = readFileSync(templatePath, 'utf8');
@@ -151,8 +183,9 @@ it.runIf(enabled).each(cases)('actual model records $id once from the installed 
   const callsBefore = providerCalls;
   const postsBefore = posts;
   const inputs: FileTicketInput[] = [];
+  const routeStart = modelRoutes.length;
   console.info('BUG_TRIAGE_MODEL_PHASE model-start ' + id);
-  const target = new SuTarget({ id: 'bug-triage', catalog, loadSystemPrompt: () => template });
+  const target = new SuTarget({ id: 'bug-triage', catalog, loadSystemPrompt: () => template, codexFetch });
   const session = await target.open({ runId: randomUUID(), workspaceMode: 'isolated', transport: 'in-process',
     onDiagnostic: diagnostic => console.info('BUG_TRIAGE_MODEL_TRANSPORT ' + JSON.stringify(diagnostic)),
     dispatchOverride: { override: async (name, input) => {
@@ -196,6 +229,7 @@ it.runIf(enabled).each(cases)('actual model records $id once from the installed 
     installationId, templatePath, templateSha256: createHash('sha256').update(template).digest('hex'),
     classification: beforeReplay.classification, posts: posts - postsBefore, providerCalls: providerCalls - callsBefore,
     modelCalls: turn.toolCalls, finishReason: turn.finishReason, costUsd: turn.costUsd,
+    modelPreflight, modelRoutes: modelRoutes.slice(routeStart),
     limitation: 'Real model and materialized package with isolated PG; provider HTTP is recorded, not live Slack/Asana.' }));
 }, 270_000);
 

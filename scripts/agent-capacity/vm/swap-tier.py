@@ -309,7 +309,10 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
         env = f"env -i HOME={home} USER={user} LOGNAME={user} CODEX_HOME={config} PATH=/usr/local/bin:/usr/bin:/bin TERM=tmux-256color LANG=C.UTF-8"
         cmd = (f"systemd-run --scope --quiet --unit={SLICE}-{name} --slice={SLICE} -p MemoryAccounting=yes -- "
                f"setpriv --reuid={user} --regid={user} --init-groups -- {env} codex "
-               f"--no-alt-screen --sandbox read-only --ask-for-approval never --model {shlex.quote(model)}")
+               # Independent benchmark sessions must keep their runtime in the
+               # measured cgroup. The shared daemon can fail its control-socket
+               # bootstrap during a large launch and outlive the measured TUI.
+               f"--no-daemon --no-alt-screen --sandbox read-only --ask-for-approval never --model {shlex.quote(model)}")
         # Keep exited terminals until their status/output has been recorded. Without
         # this, a launch crash becomes an empty pane followed by a three-minute wait.
         sh(TMUX + ["new-session", "-d", "-s", name, "-x", "160", "-y", "50", "-c", work, cmd,

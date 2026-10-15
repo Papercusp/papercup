@@ -27,6 +27,36 @@ function py(module: string, expr: string, input: unknown): any {
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
 describe('real Luna load and swap tuning', () => {
+  it('keeps each native runtime in its measured scope without requiring a daemon socket', () => {
+    const code = [
+      'import importlib.util, types, json, io, builtins',
+      `s = importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'commands=[]',
+      'm.os.makedirs=lambda *a, **kw: None',
+      'm.open=lambda p, mode="r", **kw: io.BytesIO(b"fixture") if "b" in mode else io.StringIO()',
+      'm.time.sleep=lambda *a: None',
+      'def shell(args, **kw):',
+      ' commands.append(args)',
+      ' if "new-session" in args and "--no-daemon" not in args[args.index("-c")+2]:',
+      '  raise RuntimeError("app-server-control.sock did not become ready")',
+      ' return types.SimpleNamespace(returncode=0, stdout="0", stderr="")',
+      'm.sh=shell',
+      'm.pane=lambda n: "ready"',
+      'm.codex_ready=lambda *a: True',
+      'm.start_codex_agents(2,"agent",types.SimpleNamespace(rec=lambda *a, **kw: None),"gpt-6-luna","low","http://127.0.0.1:18788/v1","test-owner")',
+      'print(json.dumps([a[a.index("-c")+2] for a in commands if "new-session" in a]))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const commands = JSON.parse(result.stdout) as string[];
+    expect(commands).toHaveLength(2);
+    for (const command of commands) {
+      expect(command).toContain('--slice=swaptier');
+      expect(command).toContain('--no-daemon');
+    }
+  });
+
   it('bounds the native launch throttle and rejects unsafe values', () => {
     expect(py(DRIVER, 'm.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":"1.25"})', null)).toBe(1.25);
     expect(py(DRIVER, 'm.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":"0"})', null)).toBe(0);

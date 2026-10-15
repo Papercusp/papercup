@@ -166,6 +166,8 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
           submission: { containerId: input.handle.containerId, instanceId: input.task.instanceId },
           status: usage.armMeta?.costUsdMeasurementMissing || measurementError ? 'error' : generationStatusForStopReason(usage.stopReason),
           modelCalls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, costUsd: usage.costUsd,
+          ...(usage.tokensCacheRead !== undefined ? { tokensCacheRead: usage.tokensCacheRead } : {}),
+          ...(usage.tokensCacheWrite !== undefined ? { tokensCacheWrite: usage.tokensCacheWrite } : {}),
           turns: usage.turns, capped: usage.stopReason === 'budget-exhausted', error: measurementError ?? usage.generationError,
           armMeta: { ...usage.armMeta, nativeUsage: { stopReason: usage.stopReason,
             tokensCacheRead: usage.tokensCacheRead ?? 0, tokensCacheWrite: usage.tokensCacheWrite ?? 0 },

@@ -68,6 +68,9 @@ export interface AgentRunUsage {
   modelCalls: number;
   tokensIn: number;
   tokensOut: number;
+  /** When present, these are separate from tokensIn (which is uncached input). */
+  tokensCacheRead?: number;
+  tokensCacheWrite?: number;
   costUsd: number;
   /** Agent steps / turns (→ TaskRunResult.turns). */
   turns: number;
@@ -250,7 +253,7 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
   const spent = { calls: 0, tokens: 0, costUsd: 0 };
   const addUsage = (u: AgentRunUsage): void => {
     spent.calls += u.modelCalls;
-    spent.tokens += u.tokensIn + u.tokensOut;
+    spent.tokens += u.tokensIn + u.tokensOut + (u.tokensCacheRead ?? 0) + (u.tokensCacheWrite ?? 0);
     spent.costUsd += u.costUsd;
   };
   const exhausted = (): boolean => {
@@ -296,7 +299,9 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     ...(traceList(args.traceRefs ?? []).length > 0 ? { traceRefs: traceList(args.traceRefs ?? []) } : {}),
     tokensIn: args.usage.tokensIn,
     tokensOut: args.usage.tokensOut,
-    tokensTotal: args.usage.tokensIn + args.usage.tokensOut,
+    tokensTotal: args.usage.tokensIn + args.usage.tokensOut + (args.usage.tokensCacheRead ?? 0) + (args.usage.tokensCacheWrite ?? 0),
+    ...(args.usage.tokensCacheRead !== undefined ? { tokensCacheRead: args.usage.tokensCacheRead } : {}),
+    ...(args.usage.tokensCacheWrite !== undefined ? { tokensCacheWrite: args.usage.tokensCacheWrite } : {}),
     costUsd: args.usage.costUsd,
     priceTableVersion: rowMeta.priceTableVersion,
     wallClockMs: args.wallClockMs,
@@ -319,6 +324,10 @@ export async function runTopology<H = unknown>(deps: TopologyRunDeps<H>): Promis
     modelCalls: a.modelCalls + b.modelCalls,
     tokensIn: a.tokensIn + b.tokensIn,
     tokensOut: a.tokensOut + b.tokensOut,
+    ...(a.tokensCacheRead !== undefined || b.tokensCacheRead !== undefined
+      ? { tokensCacheRead: (a.tokensCacheRead ?? 0) + (b.tokensCacheRead ?? 0) } : {}),
+    ...(a.tokensCacheWrite !== undefined || b.tokensCacheWrite !== undefined
+      ? { tokensCacheWrite: (a.tokensCacheWrite ?? 0) + (b.tokensCacheWrite ?? 0) } : {}),
     costUsd: a.costUsd + b.costUsd,
     turns: a.turns + b.turns,
   });

@@ -3,6 +3,7 @@ import {
   IDLE_REPAIR_QUEUE_MS,
   IDLE_RUNG_GRACE_MS,
   decideIdleQueueAction,
+  dispatchIdleQueueFixer,
   runIdleQueueActuatorPass,
   evaluateIdleQueueActuatorWindow,
   type IdleQueueActuatorObservation,
@@ -12,6 +13,7 @@ import {
   type IdleRungResult,
 } from './idle-repair-queue-actuator';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
+import { createFrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 
 const MIN = 60_000;
 const OPENED = Date.parse('2026-10-08T00:00:00Z');
@@ -74,6 +76,90 @@ function fixture(
   };
   return { state, calls, messages, at, deps };
 }
+
+describe('idle repair-queue fixer handoff', () => {
+  const queue = createFrozenCandidateRepairQueue({
+    candidate: 'a'.repeat(40),
+    base: 'b'.repeat(40),
+    failingTests: ['lib/failing.test.ts'],
+    nowMs: OPENED,
+  });
+
+  it('persists the spawned fixer assignment before the idle rung reports success', async () => {
+    const reserved = {
+      ...queue,
+      updatedAtMs: OPENED + 1,
+      dispatchReservation: { token: 'reservation-token', claimedAtMs: OPENED + 1, expiresAtMs: OPENED + 10 * MIN },
+    };
+    const calls: string[] = [];
+    const result = await dispatchIdleQueueFixer(queue, {
+      reserve: async (current) => {
+        calls.push('reserve');
+        expect(current).toBe(queue);
+        return reserved;
+      },
+      dispatch: async () => {
+        calls.push('dispatch');
+        return { spawnId: 'spawn-123', runId: 'run-123' };
+      },
+      finalize: async (current, fired) => {
+        calls.push('finalize');
+        expect(current).toBe(reserved);
+        expect(fired).toEqual({ spawnId: 'spawn-123', runId: 'run-123' });
+        return { ...queue, fixerSpawnId: 'spawn-123' };
+      },
+    });
+
+    expect(calls).toEqual(['reserve', 'dispatch', 'finalize']);
+    expect(result).toEqual({
+      ok: true,
+      detail: 'dispatched fixer spawn-123 and persisted its queue assignment',
+    });
+  });
+
+  it('does not report a spawned fixer as successful when the queue CAS did not bind it', async () => {
+    const reserved = {
+      ...queue,
+      updatedAtMs: OPENED + 1,
+      dispatchReservation: { token: 'reservation-token', claimedAtMs: OPENED + 1, expiresAtMs: OPENED + 10 * MIN },
+    };
+    const result = await dispatchIdleQueueFixer(queue, {
+      reserve: async () => reserved,
+      dispatch: async () => ({ spawnId: 'spawn-123', runId: 'run-123' }),
+      finalize: async () => null,
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      detail: 'spawned fixer spawn-123, but queue assignment was not persisted',
+    });
+  });
+
+  it('releases a reservation when the dispatcher returns no spawn', async () => {
+    const reserved = {
+      ...queue,
+      updatedAtMs: OPENED + 1,
+      dispatchReservation: { token: 'reservation-token', claimedAtMs: OPENED + 1, expiresAtMs: OPENED + 10 * MIN },
+    };
+    const calls: string[] = [];
+    const result = await dispatchIdleQueueFixer(queue, {
+      reserve: async () => reserved,
+      dispatch: async () => null,
+      finalize: async (current, fired) => {
+        calls.push('finalize');
+        expect(current).toBe(reserved);
+        expect(fired).toBeNull();
+        return { ...queue, updatedAtMs: OPENED + 2 };
+      },
+    });
+
+    expect(calls).toEqual(['finalize']);
+    expect(result).toEqual({
+      ok: false,
+      detail: 'dispatcher returned no spawn; reservation released',
+    });
+  });
+});
 
 describe('idle repair-queue actuator (P-002, WI-10007476)', () => {
   it('records effect completion after the awaited action, not its invocation clock', async () => {

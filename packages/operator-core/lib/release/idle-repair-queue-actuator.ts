@@ -281,6 +281,77 @@ export interface IdleRungResult {
   detail: string;
 }
 
+export interface IdleQueueFixerDispatchReceipt {
+  spawnId: string | null;
+  runId: string | null;
+}
+
+export interface IdleQueueFixerHandoffDeps {
+  reserve: (queue: FrozenCandidateRepairQueue) => Promise<FrozenCandidateRepairQueue | null>;
+  dispatch: () => Promise<IdleQueueFixerDispatchReceipt | null>;
+  finalize: (
+    reserved: FrozenCandidateRepairQueue,
+    fired: IdleQueueFixerDispatchReceipt | null,
+  ) => Promise<FrozenCandidateRepairQueue | null>;
+}
+
+/**
+ * The idle rung may report success only after the durable queue row names the spawned fixer.
+ * The reservation closes the read/launch/write race; finalization binds the launch receipt to
+ * that exact queue generation, or releases the reservation when no spawn was made.
+ */
+export async function dispatchIdleQueueFixer(
+  queue: FrozenCandidateRepairQueue,
+  deps: IdleQueueFixerHandoffDeps,
+): Promise<IdleRungResult> {
+  const reserved = await deps.reserve(queue);
+  if (!reserved) return { ok: false, detail: 'queue reservation was unavailable or the queue changed' };
+
+  let fired: IdleQueueFixerDispatchReceipt | null = null;
+  try {
+    fired = await deps.dispatch();
+  } catch (error) {
+    let released = false;
+    try {
+      const after = await deps.finalize(reserved, null);
+      released = !!after && !after.dispatchReservation;
+    } catch {
+      // Preserve the dispatch error; the detail below says the lease release is unconfirmed.
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      detail: `dispatcher threw: ${message}; reservation ${released ? 'released' : 'release could not be confirmed'}`,
+    };
+  }
+
+  let finalized: FrozenCandidateRepairQueue | null;
+  try {
+    finalized = await deps.finalize(reserved, fired);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      detail: fired?.spawnId
+        ? `spawned fixer ${fired.spawnId}, but queue assignment finalization failed: ${message}`
+        : `queue reservation finalization failed: ${message}`,
+    };
+  }
+
+  if (!fired?.spawnId) {
+    return {
+      ok: false,
+      detail: finalized && !finalized.dispatchReservation
+        ? 'dispatcher returned no spawn; reservation released'
+        : 'dispatcher returned no spawn; reservation release could not be confirmed',
+    };
+  }
+  if (finalized?.fixerSpawnId !== fired.spawnId || finalized.dispatchReservation) {
+    return { ok: false, detail: `spawned fixer ${fired.spawnId}, but queue assignment was not persisted` };
+  }
+  return { ok: true, detail: `dispatched fixer ${fired.spawnId} and persisted its queue assignment` };
+}
+
 export interface IdleQueueActuatorDeps {
   installSlug: string;
   nowMs: () => number;
@@ -616,9 +687,12 @@ export async function checkIdleRepairQueue(
     if (rows.length === 0) return null;
     const workspaceId = opts.workspaceId ?? rows[0].workspace_id;
 
-    const { readFrozenCandidateRepairQueueState, dispatchReleaseFixer } = await import(
-      '../harness/routines/release-actions'
-    );
+    const {
+      readFrozenCandidateRepairQueueState,
+      dispatchReleaseFixer,
+      reserveFrozenCandidateRepairFixer,
+      finalizeFrozenCandidateRepairFixer,
+    } = await import('../harness/routines/release-actions');
     const { releaseFixerSpawnAlive } = await import('./fixer-liveness');
     const { readGateOwnership } = await import('../coord/gate-ownership');
 
@@ -685,15 +759,12 @@ export async function checkIdleRepairQueue(
       dispatchFixer: async () => {
         const q = queue;
         if (!q) return { ok: false, detail: 'queue vanished before dispatch' };
-        const r = await dispatchReleaseFixer({ installSlug, workspaceId }, q.candidate, q.failingTests, q);
-        return r?.spawnId
-          ? { ok: true, detail: `dispatched fixer ${r.spawnId}` }
-          : {
-              ok: false,
-              detail: r
-                ? 'dispatcher reserved but produced no spawn'
-                : 'dispatcher declined (see release-fixer-skipped pipeline events)',
-            };
+        const target = { installSlug, workspaceId };
+        return dispatchIdleQueueFixer(q, {
+          reserve: (current) => reserveFrozenCandidateRepairFixer(target, current),
+          dispatch: () => dispatchReleaseFixer(target, q.candidate, q.failingTests, q),
+          finalize: (reserved, fired) => finalizeFrozenCandidateRepairFixer(target, reserved, fired),
+        });
       },
       wakeGateOwner: async (holder, msg) => {
         const { sendMessage } = await import('../agent-tools/coordination/messages');

@@ -70,6 +70,26 @@ describe('FSWE-P019-MATCHEDCOST repeated fresh sessions', () => {
     expect(result.stop).toBe('budget-exhausted');
   });
 
+  it('charges separate cache tokens before passing the next fresh-session allowance', async () => {
+    const requests: RunAgentInput<typeof input.handle>[] = [];
+    const cached = { ...receipt(), tokensCacheRead: 20, tokensCacheWrite: 5 };
+    const result = await runRepeatedSessions({ ...input, attemptBudget: { maxTokens: 70 } },
+      { treatmentCostUsd: 10, maxSessions: 10, openFreshSession: async request => {
+        requests.push(request); return cached;
+      } });
+    expect(requests.map(request => request.attemptBudget.maxTokens)).toEqual([70, 30]);
+    expect(result.stop).toBe('budget-exhausted');
+    expect(result.usage).toMatchObject({ tokensIn: 20, tokensOut: 10, tokensCacheRead: 40, tokensCacheWrite: 10 });
+  });
+
+  it.each(['tokensCacheRead', 'tokensCacheWrite'] as const)('refuses invalid %s before opening another session', async field => {
+    const launch = vi.fn(async () => ({ ...receipt(), [field]: NaN }));
+    const result = await runRepeatedSessions(input, { treatmentCostUsd: 10, maxSessions: 10, openFreshSession: launch });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(result.stop).toBe('error');
+    expect(result.error).toContain(field);
+  });
+
   it('bounds zero-cost sessions', async () => {
     const launch = vi.fn(async () => receipt({ costUsd: 0, modelCalls: 0 }));
     expect((await runRepeatedSessions(input, { treatmentCostUsd: 2, maxSessions: 3, openFreshSession: launch })).stop).toBe('session-limit');
