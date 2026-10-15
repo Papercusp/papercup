@@ -711,6 +711,18 @@ export function retainPortalResponse<T>(pending: Promise<T>): Promise<T> {
   return pending;
 }
 
+/** Capture the browser's actual query body while reload is still settling.
+ * Waiting for navigation first can leave CDP with an expired response id.
+ * Playwright's json() already waits for the response body to finish. */
+export async function reloadPrivateHealthSnapshot<T>(page: Pick<Page, 'waitForResponse' | 'reload'>): Promise<{ rows: T[] }> {
+  const bodyPromise = retainPortalResponse(page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
+  }).then(response => response.json() as Promise<{ rows: T[] }>));
+  const [body] = await Promise.all([bodyPromise, page.reload()]);
+  return body;
+}
+
 /** Evaluate the real ADV module graph before allocating a private database. */
 export async function verifyPrivateDocsBrowserMount(input: Parameters<typeof buildPortalRosterBrowser>[0]) {
   assert.ok(input.docs, 'Docs preflight requires a Docs surface');
@@ -3115,19 +3127,9 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
     snapshots.push(snapshot);
     await writeSharedSnapshot('system.health', input.workspace, snapshot, 1);
     await recordHealthHistory(previous, snapshot);
-    const body = await waitForPrivateHealthSnapshot<Awaited<ReturnType<typeof computeSystemHealth>>>(async () => {
-      const responsePromise = page.waitForResponse(response => {
-        const url = new URL(response.url());
-        return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
-      });
-      await page.reload();
-      const response = await responsePromise;
-      // The page may consume/release the response while the reload settles.
-      // Wait for network completion before asking CDP for the body; otherwise
-      // Network.getResponseBody can race the browser's response cleanup.
-      await response.finished();
-      return response.json();
-    }, input.workspace, row => isDeepStrictEqual(row.panels.infra.data?.hostedControlPlane, hosted));
+    const body = await waitForPrivateHealthSnapshot<Awaited<ReturnType<typeof computeSystemHealth>>>(
+      () => reloadPrivateHealthSnapshot(page), input.workspace,
+      row => isDeepStrictEqual(row.panels.infra.data?.hostedControlPlane, hosted));
     assert.deepEqual(body.rows[0].panels.infra.data?.hostedControlPlane, hosted,
       'actual workspace-scoped HTTP query must return the collector reading');
     const infra = page.locator('[data-panel="infra"]');

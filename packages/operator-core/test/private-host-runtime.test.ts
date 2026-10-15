@@ -39,16 +39,6 @@ it('retires the roster worker auth listener before its shared database pools', (
   expect(phases[pools].body).toContain('_resetForTests()');
 });
 
-it('waits for the Health snapshot response to finish before reading its body', () => {
-  const file = join(import.meta.dirname, 'portal-roster-browser-fixture.ts');
-  const source = readFileSync(file, 'utf8');
-  const responseRead = source.indexOf("return response.json();");
-  expect(responseRead, 'Health convergence must read the captured response body').toBeGreaterThanOrEqual(0);
-  const finished = source.lastIndexOf('await response.finished();', responseRead);
-  expect(finished, 'Health convergence must await response completion before CDP body retrieval').toBeGreaterThanOrEqual(0);
-  expect(finished).toBeLessThan(responseRead);
-});
-
 it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
