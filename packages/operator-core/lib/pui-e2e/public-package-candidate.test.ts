@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { loadPinnedPackageCandidate } from './public-package-candidate';
+import { assertPackageBuildDependencies, loadPinnedPackageCandidate } from './public-package-candidate';
 
 const SOURCE = 'a'.repeat(40);
 const TARGET = 'linux-x86_64';
@@ -29,6 +29,34 @@ function fixture(overrides: object = {}) {
 }
 
 describe('public package candidate identity preflight', () => {
+  function dependencyFixture() {
+    const f = fixture();
+    const packages = Object.fromEntries(['esbuild', '@lydell/node-pty'].map((name) => {
+      const key = `node_modules/${name}`;
+      mkdirSync(path.join(f.root, key), { recursive: true });
+      writeFileSync(path.join(f.root, key, 'package.json'), JSON.stringify({ name, version: '1.0.0' }));
+      return [key, { version: '1.0.0' }];
+    }));
+    return { ...f, packages };
+  }
+
+  test('admits the bundler inputs at their committed lock paths', () => {
+    const f = dependencyFixture();
+    expect(() => assertPackageBuildDependencies(f.root, f.packages)).not.toThrow();
+  });
+
+  test('refuses an exposed dependency absent from the lock before native compilation', () => {
+    const f = dependencyFixture();
+    delete f.packages['node_modules/esbuild'];
+    expect(() => assertPackageBuildDependencies(f.root, f.packages)).toThrow('not reachable through a locked install path');
+  });
+
+  test('refuses the wrong installed dependency version before native compilation', () => {
+    const f = dependencyFixture();
+    f.packages['node_modules/esbuild'] = { version: '2.0.0' };
+    expect(() => assertPackageBuildDependencies(f.root, f.packages)).toThrow('disagrees with committed');
+  });
+
   test('unset inputs preserve the existing HEAD and mutation build route', () => {
     expect(loadPinnedPackageCandidate({ PUI_PUBLIC_PACKAGE_SUBJECT: '/mutant' }, '/unused', TARGET)).toBeUndefined();
   });

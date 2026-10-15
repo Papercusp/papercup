@@ -34,7 +34,7 @@ import { spawn as ptySpawn } from '@lydell/node-pty';
 import { WebSocketServer } from 'ws';
 import { VtScreen } from './vt-screen';
 import { hostedForwardInput } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
-import { loadPinnedPackageCandidate, type PackageResult } from './public-package-candidate';
+import { assertPackageBuildDependencies, loadPinnedPackageCandidate, type PackageResult } from './public-package-candidate';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const PACKAGER = path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh');
@@ -330,6 +330,9 @@ beforeAll(async () => {
   }
   NO_OPERATOR_PORT = await closedPort();
   const previous = previousGeneration(HEAD);
+  for (const sha of [previous, HEAD]) {
+    assertPackageBuildDependencies(REPO_ROOT, JSON.parse(git('show', `${sha}:package-lock.json`)).packages);
+  }
   A = packageAt(previous, path.join(WORK, 'dist-a'));
   B = pinned ?? packageAt(HEAD, path.join(WORK, 'dist-b'));
 }, 2 * BUILD_TIMEOUT_MS);

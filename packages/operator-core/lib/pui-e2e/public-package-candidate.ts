@@ -1,8 +1,12 @@
 /** Candidate input for the existing package lifecycle suite, independent of its harness HEAD. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import * as path from 'node:path';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-expect-error — reuse the packager's JavaScript lock-path resolver.
+import { lockedPackageKeyResolver } from '../../../../apps/tui/scripts/bundle-psu-dependencies.mjs';
 
 export interface PackageResult {
   archive: string;
@@ -16,6 +20,21 @@ export interface PackageResult {
 
 const INPUTS = ['PUI_PUBLIC_PACKAGE_ARCHIVE', 'PUI_PUBLIC_PACKAGE_SOURCE_SHA', 'PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256'] as const;
 const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
+
+/** Check the bundler's native build prerequisites before spending time in Cargo. */
+export function assertPackageBuildDependencies(root: string, packages: Record<string, { version?: string; link?: boolean }>): void {
+  const requireFromRoot = createRequire(path.join(root, 'package.json'));
+  const packageKey = lockedPackageKeyResolver(root, packages);
+  const inputs = [path.dirname(requireFromRoot.resolve('esbuild/package.json')),
+    realpathSync(path.join(root, 'node_modules', '@lydell', 'node-pty'))];
+  for (const directory of inputs) {
+    const key = packageKey(directory) as string;
+    const installed = JSON.parse(readFileSync(path.join(directory, 'package.json'), 'utf8')) as { name: string; version: string };
+    if (installed.version !== packages[key]?.version) {
+      throw new Error(`package build dependency ${installed.name}@${installed.version} disagrees with committed ${key}@${packages[key]?.version}`);
+    }
+  }
+}
 
 /**
  * Reuse a release archive as generation B without rebuilding or changing it.

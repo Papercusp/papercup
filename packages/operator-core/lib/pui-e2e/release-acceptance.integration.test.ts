@@ -22,7 +22,7 @@ import type {
   AcceptanceMatrixFile, Candidate, EvidenceRow, Exclusion, Verdict,
 } from './release-acceptance';
 import { runChildWithLiveLog, runReleaseAcceptance } from './release-acceptance-run';
-import { loadPinnedPackageCandidate } from './public-package-candidate';
+import { assertPackageBuildDependencies, loadPinnedPackageCandidate } from './public-package-candidate';
 
 // Mutation-probe seam (copy-out tier): PUI_RELEASE_ACCEPTANCE_SUBJECT substitutes a mutated
 // copy of release-acceptance.ts for EVERY importer — this suite and release-acceptance-run.ts,
@@ -231,6 +231,8 @@ describe.sequential('P-012 release stage over a real candidate (package → inst
       pkg = pinned;
       console.log(`PUI_RELEASE_STAGE_CANDIDATE ${JSON.stringify({ harnessSha, ...pinned })}`);
     } else {
+      const lock = JSON.parse(execFileSync('git', ['-C', REPO_ROOT, 'show', `${head}:package-lock.json`], { encoding: 'utf8' }));
+      assertPackageBuildDependencies(REPO_ROOT, lock.packages);
       const packaged = spawnSync(path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh'),
         ['--target', TARGET, '--sha', head, '--out', path.join(WORK, 'dist')],
         { cwd: REPO_ROOT, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
