@@ -128,7 +128,8 @@ it('retains and rejects an async builder launch failure without waiting for the 
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',
   '--import="file:///repo/node_modules/tsx/dist/loader.mjs"'])('removes %s and preserves guarded plain Node options', preload => {
   const guard = '--import="/repo with spaces/scripts/lib/committed-source-loader.mjs"';
-  const env = { NODE_OPTIONS: `${guard} ${preload} --max-old-space-size=4096 --trace-warnings`, OTHER: 'keep' };
+  const env = { NODE_OPTIONS: `${guard} ${preload} --max-old-space-size=4096 --trace-warnings`,
+    OTHER: 'keep', PAPERCUSP_HARNESS_DIR: '/repo/libs/papercusp/packages/harness' };
   expect(privateBundleRuntimeEnv(env)).toEqual({ ...env,
     NODE_OPTIONS: `${guard} --max-old-space-size=4096 --trace-warnings` });
   expect(env.NODE_OPTIONS).toContain(preload);
