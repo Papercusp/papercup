@@ -927,7 +927,7 @@ export default defineTool({
                   // waiting for a successor that did not exist, still holding unflushed
                   // state. Name the precondition (pty quiet) and the falsifier (you are
                   // still here) so the failure is self-diagnosing from the agent's side.
-                  'Carry-respawn QUEUED — not performed yet. The host cuts this process only once your pty goes QUIET at a clean boundary, then respawns your successor on the deterministic carry document. It re-polls for a few minutes and can terminally DROP the carry — an interactive back-and-forth, or steady output, can supersede it indefinitely. So: wrap up and go quiet now, but FLUSH durable state first (work_items:checkpoint / loop:checkpoint / facts:assert) rather than relying on the cut. If you are still here on your next turn, it did not happen — re-request at the next clean stopping point instead of waiting.') +
+                  'Carry-respawn QUEUED — not performed yet. The host saved the mechanical checkpoint of each held work item. Add any new judgment that is not already durable, then end this turn at a clean boundary. The host cuts this process once your pty goes QUIET and respawns your successor on the deterministic carry document. It re-polls for a few minutes and can terminally DROP the carry if newer interaction supersedes it. If you are still here on your next turn, re-request at the next clean stopping point instead of waiting.') +
               staleNote +
               nativeBgNote +
               openQuestionNote +

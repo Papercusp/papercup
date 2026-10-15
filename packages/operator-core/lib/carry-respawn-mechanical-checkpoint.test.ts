@@ -46,7 +46,7 @@ beforeEach(() => {
     const blockedReason = opts.guard?.(prior, priorLength);
     if (blockedReason) return { stored: prior, priorLength, blockedReason };
     const stored = opts.transform ? opts.transform(prior, note) : note ?? null;
-    notes.set(workItemId, stored);
+    notes.set(workItemId, stored ?? null);
     return { stored, priorLength };
   });
 });

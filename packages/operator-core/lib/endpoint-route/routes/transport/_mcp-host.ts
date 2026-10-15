@@ -201,6 +201,7 @@ import {
   applyCompactTier,
   filterListingsByAllowlist,
   getSessionSurface,
+  restoreSessionTools,
   activateSessionTools,
   rememberSessionToolRegistryRevision,
   sessionToolRegistryRevisionState,
@@ -3344,6 +3345,12 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // there's no seed at all. Keyed by the su session identity (uiClientId).
   const seed = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
   const sessionKey = spawnRes.kind === 'ok' ? spawnRes.ctx.uiClientId : null;
+  if (!identityListings && spawnRes.kind === 'ok' && seed && sessionKey) {
+    await restoreSessionTools({ sessionKey, seed,
+      ownerId: resolveAgentIdentity(spawnRes.ctx).ownerId,
+      workspaceId: spawnRes.ctx.workspaceId,
+    });
+  }
   const allow = identityListings ? null : getSessionSurface(sessionKey, seed);
   // `?tools_compact=` is the SECOND axis of the same decision (deterministic-
   // tool-definition-delivery-2026-09-21): `?tools=` says WHICH tools are
