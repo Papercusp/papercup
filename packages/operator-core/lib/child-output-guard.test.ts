@@ -66,6 +66,7 @@ const CONVERTED = [
   'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
   'packages/operator-core/lib/harness-state/git-export/git-committer.ts',
   'packages/operator-core/lib/release-deploy-launch.ts',
+  'packages/operator-core/lib/memory/embed-sidecar-spawn.ts',
 ];
 
 /**
@@ -82,7 +83,6 @@ const BASELINE: Record<string, number> = {
   'apps/operator/scripts/hooks/cc/__tests__/spawn-hook.ts': 2,
   // Submodule sites — invisible to a non-recursive `git ls-files`, and the
   // reason this guard recurses. Two of them are live orchestrator code.
-  'libs/papercusp-shared/src/agent/chat-stream.ts': 2,
   'libs/papercusp/packages/cli/src/install-atomic.node-test.ts': 2,
   'libs/papercusp/packages/orchestrator/src/bus-posts.test.ts': 1,
   'libs/papercusp/packages/orchestrator/src/chunk-loop-driver.test.ts': 2,
@@ -119,7 +119,6 @@ const BASELINE: Record<string, number> = {
   'packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': 2,
   'packages/operator-core/lib/harness/routines/release-actions.ts': 4,
   'packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts': 2,
-  'packages/operator-core/lib/memory/embed-sidecar-spawn.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/drill.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/network-egress.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts': 1,
@@ -129,9 +128,6 @@ const BASELINE: Record<string, number> = {
   'packages/operator-core/lib/release-cut-launch.ts': 1,
   'packages/operator-core/lib/service-health.test.ts': 1,
   'packages/operator-core/lib/sync/pot-git/ref-announce-tick.integration.test.ts': 2,
-  'packages/operator-core/lib/task-manager/managed-spawn.ts': 1,
-  'templates/papercusp-tauri-desktop-shell/checks/boot-e2e.test.ts': 2,
-  'templates/papercusp-web-host/checks/boot-e2e.test.ts': 2,
 };
 
 const FIX_HINT =
@@ -438,5 +434,26 @@ describe('the scanner itself (a blind detector makes the guard green and worthle
       '};',
     ];
     expect(enclosingTopLevelSymbol(lines, 2)).toBe('runGitLocal');
+  });
+
+  it('finds a per-chunk decode hidden behind an accumulated alias', () => {
+    const src = `function go() {\n  child.stdout.on('data', (chunk) => {\n    const decoded = chunk.toString('utf8');\n    output += decoded;\n  });\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([
+      { line: 3, symbol: 'go', text: "const decoded = chunk.toString('utf8');" },
+    ]);
+  });
+
+  it('finds decoded chunk aliases in named data callbacks', () => {
+    const src = `function go() {\n  const append = (chunk: Buffer) => {\n    const decoded = String(chunk);\n    output += decoded;\n  };\n  child.stdout.addListener('data', append);\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([
+      { line: 3, symbol: 'go', text: 'const decoded = String(chunk);' },
+    ]);
+  });
+
+  it('finds a named function callback with direct per-chunk decoding', () => {
+    const src = `function append(chunk: Buffer) {\n  output += chunk.toString('utf8');\n}\nfunction go() {\n  child.stdout.on('data', append);\n}`;
+    expect(scanSource('x.ts', src)).toMatchObject([
+      { line: 2, symbol: 'append', text: "output += chunk.toString('utf8');" },
+    ]);
   });
 });
