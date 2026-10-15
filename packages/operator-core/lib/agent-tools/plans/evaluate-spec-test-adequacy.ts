@@ -1,5 +1,6 @@
 /** plans:evaluate-spec-test-adequacy — compile exact clause/evidence rows into scorecard drafts. */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
@@ -72,6 +73,14 @@ function summarizeMeasurementEvidence(
       status,
       ...(status === 'measured' && typeof row.serverMeasurement?.measuredAtCommit === 'string'
         ? { measuredAtCommit: row.serverMeasurement.measuredAtCommit }
+        : {}),
+      ...(status === 'measured' && row.serverMeasurement?.status === 'measured'
+        ? { measurementFingerprint: 'sha256:' + createHash('sha256').update(JSON.stringify([
+            row.serverMeasurement.current.sourceFingerprint,
+            row.serverMeasurement.current.testFingerprint ?? null,
+            row.serverMeasurement.current.fixtureFingerprint ?? null,
+            row.serverMeasurement.current.environmentFingerprint ?? null,
+          ])).digest('hex') }
         : {}),
     }];
   }).sort((a, b) => a.bindingId - b.bindingId);
