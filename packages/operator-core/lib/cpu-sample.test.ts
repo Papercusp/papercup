@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
+import { createTextCollector } from './child-output';
 import * as cdpInspector from '../../../scripts/cdp-inspector.mjs';
 import { captureCpuProfile, persistCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
 
@@ -142,8 +143,7 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
   const child = spawn(process.execPath, [waitForStartup ? '--inspect-wait=127.0.0.1:0' : '--inspect=127.0.0.1:0', entry, '--probe-target'],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   const exit = once(child, 'exit');
-  let output = '';
-  child.stdout!.on('data', chunk => { output += String(chunk); });
+  const output = createTextCollector(child.stdout);
   try {
     const port = await new Promise<number>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('busy inspector did not open')), 5000);
@@ -159,7 +159,7 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
         if (String(chunk).includes('CPU_SAMPLE_BUSY_READY')) { ready = true; settle(); }
       });
     });
-    await run({ pid: child.pid!, port, entry, output: () => output });
+    await run({ pid: child.pid!, port, entry, output: () => output.peek() });
   } finally {
     child.kill('SIGTERM');
     await exit;
