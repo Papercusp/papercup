@@ -90,6 +90,31 @@ export function selectableGraderLiveness(
  */
 export const ACCEPTANCE_GRADING_SWEEP_ACTOR = 'system:acceptance-grading-sweep';
 
+/** Optional routine-scoped pin, carried through audit repair and re-certification. */
+export type GradingLaunchProfile = { agent: 'codex'; model: string; effort: 'xhigh'; account: 'auto' };
+
+export function gradingLaunchProfile(ctx: unknown): GradingLaunchProfile | undefined {
+  const raw = (ctx as { gradingLaunch?: unknown } | null)?.gradingLaunch;
+  if (raw == null) return undefined;
+  const p = raw as Partial<GradingLaunchProfile>;
+  if (p.agent !== 'codex' || p.model !== 'gpt-6.1-sol' || p.effort !== 'xhigh' || p.account !== 'auto') {
+    throw new Error('gradingLaunch must pin codex/gpt-6.1-sol/xhigh through account auto');
+  }
+  return { agent: p.agent, model: p.model, effort: p.effort, account: p.account };
+}
+
+export function withGradingLaunchProfile(
+  launch: typeof launchAgentTool.handler,
+  profile: GradingLaunchProfile | undefined,
+): typeof launchAgentTool.handler {
+  if (!profile) return launch;
+  return ((args, ctx) => launch({
+    ...args,
+    ...profile,
+    members: args.members?.map((member) => ({ ...member, ...profile })),
+  } as never, ctx)) as typeof launchAgentTool.handler;
+}
+
 /**
  * A task can be a grading request without carrying source-plan provenance: the
  * delegated request path historically stored the plan slug in its prose. Keep
@@ -381,7 +406,7 @@ export type AcceptanceGraderLifecycle = {
     retiredTaskIds: string[];
     attempts: number;
     codes: AcceptanceGraderTerminalFailureCode[];
-    fallback: { agent: 'codex'; model: 'gpt-5.6-sol'; effort: 'high'; account: 'auto' };
+    fallback: { agent: 'codex'; model: string; effort: string; account: 'auto' };
   };
 };
 
@@ -522,6 +547,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     detectStartupStall = true,
     nativeTranscriptPath = null,
     nativeSessionId = null,
+    nativeBackend = 'claude',
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
     sleep?: (ms: number) => Promise<void>;
@@ -578,6 +604,8 @@ export async function detectAcceptanceGraderTerminalFailure(
     /** Exact native JSONL path and session id supplied by the launch receipt. */
     nativeTranscriptPath?: string | null;
     nativeSessionId?: string | null;
+    /** The caller must bind the transcript to this exact owner/session first. */
+    nativeBackend?: 'claude' | 'codex';
   },
 ): Promise<AcceptanceGraderTerminalFailure | null> {
   if (!logPath) return null;
@@ -586,7 +614,30 @@ export async function detectAcceptanceGraderTerminalFailure(
   const nativeApiErrorStatus = async (): Promise<number | null> => {
     if (!nativeTranscriptPath || !nativeSessionId) return null;
     try {
-      return acceptanceGraderNativeApiErrorStatus(await readLogTail(nativeTranscriptPath), nativeSessionId);
+      const transcript = await readLogTail(nativeTranscriptPath);
+      if (nativeBackend === 'claude') return acceptanceGraderNativeApiErrorStatus(transcript, nativeSessionId);
+      // A capacity screen is transient. The native task_complete error is a
+      // completed failed turn, even when PTY redraws leave an old Working tail.
+      // Reuse the provider classifier, and discard an old error on any later
+      // turn activity or unreadable record. The owner-bound resolver supplies
+      // identity when the bounded tail no longer contains session_meta.
+      const { classifyCodexProviderError } = await import('./system-health/codex-rollout-persistence-watchdog');
+      let status: number | null = null;
+      for (const line of transcript.split(/\r?\n/u)) {
+        if (!line.trim()) continue;
+        try {
+          const row = JSON.parse(line);
+          if (row.type === 'session_meta' && row.payload?.id !== nativeSessionId) return null;
+          if (row.type === 'event_msg' && row.payload?.type === 'task_complete') {
+            status = classifyCodexProviderError(line)?.rawCode === 'server_overloaded' ? 503 : null;
+          } else if (row.type !== 'event_msg' || row.payload?.type !== 'token_count') {
+            status = null;
+          }
+        } catch {
+          status = null;
+        }
+      }
+      return status;
     } catch {
       return null;
     }
@@ -3078,7 +3129,8 @@ export async function launchAcceptanceGrader(
   ].join('\n\n');
 
   try {
-    const launch = deps.launch ?? launchAgentTool.handler;
+    const profile = gradingLaunchProfile(ctx);
+    const launch = withGradingLaunchProfile(deps.launch ?? launchAgentTool.handler, profile);
     const readTasks = deps.listTasks ?? listTasks;
     const terminateTask = deps.killTask ?? killTask;
     const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
@@ -3089,7 +3141,7 @@ export async function launchAcceptanceGrader(
     const terminalTaskIds: string[] = [];
     const terminalCodes: AcceptanceGraderTerminalFailureCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
-    let launchBackend: 'claude' | 'codex' = 'claude';
+    let launchBackend: 'claude' | 'codex' = profile?.agent ?? 'claude';
     let terminalFallbacks = 0;
 
     const recoveryFields = (attempts: number) => ({
@@ -3100,7 +3152,7 @@ export async function launchAcceptanceGrader(
               retiredTaskIds: terminalTaskIds,
               attempts,
               codes: terminalCodes,
-              fallback: ACCEPTANCE_GRADER_FALLBACK,
+              fallback: profile ?? ACCEPTANCE_GRADER_FALLBACK,
             },
           }
         : {}),
@@ -3366,7 +3418,7 @@ export async function launchAcceptanceGrader(
               retiredTaskIds: terminalTaskIds,
               attempts: ACCEPTANCE_GRADER_MAX_STALE_RETRIES + 1,
               codes: terminalCodes,
-              fallback: ACCEPTANCE_GRADER_FALLBACK,
+              fallback: profile ?? ACCEPTANCE_GRADER_FALLBACK,
             },
           }
         : {}),

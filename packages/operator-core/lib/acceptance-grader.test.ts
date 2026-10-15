@@ -971,6 +971,23 @@ function deps(launch: ReturnType<typeof vi.fn>) {
 }
 
 describe('launchAcceptanceGrader', () => {
+  it('pins routine-scoped fresh and retry launches to the requested gateway model', async () => {
+    const launch = vi.fn().mockResolvedValueOnce({
+      data: { launch: { tasks: [{ taskId: 'pinned-quota', logPath: '/tmp/pinned-quota.log' }] } },
+    }).mockResolvedValue({
+      data: { launch: { tasks: [{ taskId: 'pinned-retry', logPath: '/tmp/pinned-retry.log' }] } },
+    });
+    const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
+    await launchAcceptanceGrader('ship-the-thing', { ...ctx, gradingLaunch: profile } as never, {
+      ...deps(launch),
+      readLogTail: (path) => path.includes('pinned-quota') ? "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model." : '',
+    });
+    expect(launch).toHaveBeenCalledTimes(2);
+    for (const [args] of launch.mock.calls) {
+      expect(args).toMatchObject({ ...profile, independent: true, members: [{ role: 'judge', ...profile }] });
+    }
+  });
+
   it('launches exactly one fresh headless judge with stable identity and a parseable frozen snapshot', async () => {
     const launch = vi.fn(async (_args: Record<string, unknown>) => ({
       content: [{ type: 'text', text: 'launched' }],
@@ -2191,6 +2208,26 @@ describe('classifyAcceptanceGraderParkedWithoutEmit (WI-10005295)', () => {
 });
 
 describe('detectAcceptanceGraderTerminalFailure', () => {
+  it.each(['failed', 'resumed', 'successful', 'foreign-session', 'partial'])(
+    'uses exact native Codex completion evidence, preserving %s ordering', async (state) => {
+      const native = [
+        JSON.stringify({ type: 'session_meta', payload: { id: state === 'foreign-session' ? 'other' : 'native-codex' } }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+          error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity. Please try a different model.' } } }),
+        ...(state === 'resumed' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } })] : []),
+        ...(state === 'successful' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } })] : []),
+        ...(state === 'partial' ? ['{"type":'] : []),
+      ].join('\n');
+      const result = await detectAcceptanceGraderTerminalFailure('judge.log', {
+        readLogTail: (path) => path.endsWith('.jsonl') ? native : '• Called scorecards:get\nWorking · GPT-5.6-Sol high',
+        nativeTranscriptPath: 'judge.jsonl', nativeSessionId: 'native-codex', nativeBackend: 'codex',
+        maxRechecks: 0, detectStartupStall: false,
+      });
+      if (state === 'failed') expect(result).toMatchObject({ code: 'inference_gateway_error' });
+      else expect(result).toBeNull();
+    },
+  );
+
   it('classifies a completed one-shot audit refusal only when explicitly enabled', async () => {
     const finalAnswer =
       "● I didn't emit an audit, so scorecard EI-24208147289140038 is still unsettled. " +
