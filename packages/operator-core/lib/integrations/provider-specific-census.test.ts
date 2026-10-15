@@ -101,12 +101,11 @@ const EXCLUDED_TOKENS: Record<string, string> = {
   github: 'platform source-hosting identity, not an integration provider',
 };
 
-type CensusGroup = 'social' | 'facebook-vault' | 'google-workspace' | 'discord';
+type CensusGroup = 'social' | 'google-workspace' | 'discord';
 
 /** Where each group's migration is owned. */
 export const MIGRATION_OWNERS: Record<CensusGroup, string> = {
   social: 'provider-adapters-to-packages-2026-10-11',
-  'facebook-vault': 'provider-adapters-to-packages-2026-10-11',
   'google-workspace': 'provider-adapters-to-packages-2026-10-11',
   discord: 'provider-adapters-to-packages-2026-10-11',
 };
@@ -159,16 +158,6 @@ export const CENSUS: readonly CensusEntry[] = [
   p('packages/operator-core/lib/external-triggers/social/youtube-common.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/youtube-write-adapter.ts', 'social'),
 
-  // Facebook personal vault.
-  p('packages/operator-core/lib/external-triggers/facebook.ts', 'facebook-vault'),
-  p('packages/operator-core/lib/harness/routines/facebook-personal-vault-poll-action.ts', 'facebook-vault'),
-  {
-    path: 'packages/operator-core/lib/integrations/builtin-connection-adapters.ts',
-    group: 'facebook-vault',
-    detectedBy: 'content',
-    marker: /facebook/i,
-  },
-
   // Google Workspace leftovers (Gmail and Calendar already ship as packages).
   p('packages/operator-core/lib/external-triggers/google-workspace.ts', 'google-workspace'),
 
@@ -179,7 +168,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 39;
+export const CENSUS_HIGH_WATERMARK = 36;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.
@@ -469,7 +458,7 @@ describe('provider-specific code census (shrink-only)', () => {
         p('packages/operator-core/lib/external-triggers/chat-bridge.ts', 'discord'),
         {
           path: 'packages/operator-core/lib/integrations/builtin-connection-adapters.ts',
-          group: 'facebook-vault',
+          group: 'google-workspace',
           detectedBy: 'content',
           marker: /facebook/i,
         },
@@ -508,9 +497,10 @@ describe('provider-specific code census (shrink-only)', () => {
     for (const e of CENSUS) expect(MIGRATION_OWNERS[e.group], e.path).toMatch(/\S/);
   });
 
-  it('Facebook Pages stays package-owned while its personal-vault migration remains separate', () => {
+  it('Facebook Pages and Personal Vault stay package-owned', () => {
     expect(CENSUS.filter((e) => e.group === 'social' && /facebook/i.test(e.path))).toEqual([]);
-    expect(CENSUS.some((e) => e.group === 'facebook-vault')).toBe(true);
+    expect(Object.keys(MIGRATION_OWNERS)).not.toContain('facebook-vault');
+    expect(CENSUS.filter((e) => /facebook/i.test(e.path))).toEqual([]);
     const root = fixtureRoot({
       'packages/operator-core/lib/external-triggers/social/facebook-posts-adapter.ts': 'export {};\n',
     });
