@@ -261,10 +261,174 @@
       "logPath": "/tmp/p032-r02-clean-control-9086d-20261015.log",
       "logSha256": "2e8d2c23b959995172aef3144c64558c8f6ff7b94f5273a40352fcd408f2c19b"
     },
+    "sharedTaskListProof": {
+      "status": "pass-clean-current-proof",
+      "specId": "AUTO-BAR-R-13-P-016",
+      "bindingIds": [
+        47726,
+        47727,
+        47728
+      ],
+      "installedTaskJourneyTestRunId": 21258081,
+      "routeBaselineTestRunId": 21260571,
+      "routeMutantTestRunId": 21260581,
+      "readbackPath": "/tmp/p032-r13-final-adequacy-9086d-20261015.json"
+    },
+    "supplementaryContextPaneSourceProof": {
+      "testRunId": 21258188,
+      "bindingIds": [
+        47729,
+        47730
+      ],
+      "specIds": [
+        "AUTO-BAR-R-07-P-002",
+        "AUTO-BAR-R-07-P-008"
+      ],
+      "result": "Both correct-layer checks pass; targeted defect controls remain open.",
+      "scope": "Exact ce62 installed-artifact context-pane suite with a fake canonical operator; retained production-handler agent-chat proof supplies the separate operator leg.",
+      "readbackPath": "/tmp/p032-r07-context-layer-adequacy-9086d-20261015.json"
+    },
+    "postTaskProofCohort": {
+      "scope": "This work-item bound proof cohort; this is not the whole-plan product grade or shipment verdict.",
+      "count": 48,
+      "verdicts": {
+        "pass": 22,
+        "fail": 0,
+        "unknown": 26
+      },
+      "unknownSpecIds": [
+        "AUTO-BAR-R-04-P-008",
+        "AUTO-BAR-R-04-P-010",
+        "AUTO-BAR-R-05-P-007",
+        "AUTO-BAR-R-05-P-016",
+        "AUTO-BAR-R-06-P-009",
+        "AUTO-BAR-R-07-P-002",
+        "AUTO-BAR-R-07-P-008",
+        "AUTO-BAR-R-08-P-010",
+        "AUTO-BAR-R-09-P-010",
+        "AUTO-BAR-R-09-P-011",
+        "AUTO-BAR-R-12-P-012",
+        "AUTO-BAR-R-12-P-013",
+        "AUTO-BAR-R-12-P-014",
+        "P032:current-verdict",
+        "PUI-APPROVAL-ALLOW",
+        "PUI-APPROVAL-DENY",
+        "PUI-COMMANDS",
+        "PUI-EDITOR-COPY",
+        "PUI-EDITOR-HISTORY",
+        "PUI-EDITOR-UNDO",
+        "PUI-FILE-CONTEXT",
+        "PUI-INTERRUPT",
+        "PUI-QUESTION",
+        "PUI-TOOLS-DIFF",
+        "PUI-TOOL-TURN",
+        "PUI-USAGE"
+      ],
+      "readbackPath": "/tmp/p032-post-task-cohort-adequacy-9086d-20261015.json",
+      "nextPackageHarnessWorkItem": "EI-26076294683834968"
+    },
     "taskSourceProof": {
       "testRunId": 21258081,
       "bindingIds": [47259, 47260, 47261, 47262, 47263, 47264, 47265, 47266, 47269],
-      "result": "The nine PUI-TASK clauses pass correct-layer using the retained real operator/PTY owner-and-agent task journey. PUI-TASK-ADD additionally passes its complete adequacy evaluation after the targeted route control below; other task defect controls are in progress.",
+      "result": "All nine PUI-TASK clauses pass complete adequacy evaluation. The retained installed owner/agent task journey supplies UI proof; clean targeted canonical-route operation controls supply falsifiability.",
+      "domainControls": [
+        {
+          "specId": "PUI-TASK-EDIT",
+          "baselineTestRunId": 21260601,
+          "relocatedBaselineTestRunId": 21260629,
+          "mutantTestRunId": 21260630,
+          "bindingIds": [
+            47770,
+            47771
+          ],
+          "logPath": "/tmp/p032-pui-task-edit-clean-control-9086d-20261015.log",
+          "logSha256": "56c88b86d5df05a7bcde533ec505fa8e6fef8e123354567c5fda325099d83f3a"
+        },
+        {
+          "specId": "PUI-TASK-START",
+          "baselineTestRunId": 21260633,
+          "relocatedBaselineTestRunId": 21260643,
+          "mutantTestRunId": 21260646,
+          "bindingIds": [
+            47772,
+            47773
+          ],
+          "logPath": "/tmp/p032-pui-task-start-clean-control-9086d-20261015.log",
+          "logSha256": "9c0a3403f8dd3c88dd06bac70cbdb7d07ace1be472cc81713d8c5e0ef13b0904"
+        },
+        {
+          "specId": "PUI-TASK-COMPLETE",
+          "baselineTestRunId": 21260649,
+          "relocatedBaselineTestRunId": 21260661,
+          "mutantTestRunId": 21260666,
+          "bindingIds": [
+            47774,
+            47775
+          ],
+          "logPath": "/tmp/p032-pui-task-complete-clean-control-9086d-20261015.log",
+          "logSha256": "5d3ae902b0000c188dadbf961b07a739ee3c036b42d1403aa8e1018639eef227"
+        },
+        {
+          "specId": "PUI-TASK-DROP",
+          "baselineTestRunId": 21260672,
+          "relocatedBaselineTestRunId": 21260673,
+          "mutantTestRunId": 21260684,
+          "bindingIds": [
+            47776,
+            47777
+          ],
+          "logPath": "/tmp/p032-pui-task-drop-clean-control-9086d-20261015.log",
+          "logSha256": "d760db4d02036242d4271e99b9f9aeaf96c6994ed312cea52a2c3282658c85ce"
+        },
+        {
+          "specId": "PUI-TASK-BLOCK",
+          "baselineTestRunId": 21261183,
+          "relocatedBaselineTestRunId": 21261187,
+          "mutantTestRunId": 21261191,
+          "bindingIds": [
+            47778,
+            47779
+          ],
+          "logPath": "/tmp/p032-pui-task-block-clean-control-9086d-20261015.log",
+          "logSha256": "59eb9c908ea1d79ed7744b909d834d73bda26b36de987cca4989b6137d505478"
+        },
+        {
+          "specId": "PUI-TASK-UNBLOCK",
+          "baselineTestRunId": 21261196,
+          "relocatedBaselineTestRunId": 21261203,
+          "mutantTestRunId": 21261210,
+          "bindingIds": [
+            47780,
+            47781
+          ],
+          "logPath": "/tmp/p032-pui-task-unblock-clean-control-9086d-20261015.log",
+          "logSha256": "e6d9c109799ceff4b6b95daafcbacb1fda5f3acea403bbee1e069f3701699b18"
+        },
+        {
+          "specId": "PUI-TASK-REOPEN",
+          "baselineTestRunId": 21261215,
+          "relocatedBaselineTestRunId": 21261223,
+          "mutantTestRunId": 21261283,
+          "bindingIds": [
+            47782,
+            47783
+          ],
+          "logPath": "/tmp/p032-pui-task-reopen-clean-control-9086d-20261015.log",
+          "logSha256": "df291b6fd7198ae81bdde38e1e84542cd90ab5be2a28265703ea023a230956d7"
+        },
+        {
+          "specId": "PUI-TASK-REORDER",
+          "baselineTestRunId": 21261286,
+          "relocatedBaselineTestRunId": 21261287,
+          "mutantTestRunId": 21261288,
+          "bindingIds": [
+            47784,
+            47785
+          ],
+          "logPath": "/tmp/p032-pui-task-reorder-clean-control-9086d-20261015.log",
+          "logSha256": "7324c8be9eb1843c30a1aaad9f333e0f956796c6a43b6defc6d2ec73dfc1d646"
+        }
+      ],
       "addControl": {
         "status": "pass-clean-current-proof",
         "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
@@ -294,13 +458,32 @@
     },
     "r14CapabilityControl": {
       "status": "pass-clean-current-proof",
-      "baselineTestRunId": 21259712,
-      "relocatedBaselineTestRunId": 21259721,
-      "mutantTestRunId": 21259723,
-      "bindingIds": [47214, 47215],
-      "probeInvocationId": "460b0657-beaa-4e3c-b1a0-1ff63492fb7a",
-      "logPath": "/tmp/p032-capability-gate-mutation-9086d-20261015.log",
-      "reason": "The original shared-origin control is historical. Clean committed replacement proof below passed all three R14 clauses; bindings 47214 and 47215 were retracted after that replacement succeeded.",
+      "baselineTestRunId": 21260445,
+      "relocatedBaselineTestRunId": 21260446,
+      "mutantTestRunId": 21260447,
+      "bindingIds": [
+        47497,
+        47498,
+        47499,
+        47500,
+        47501,
+        47502
+      ],
+      "probeInvocationId": "ea605b9a-2f3d-47bf-8561-5ce36f11a774",
+      "logPath": "/tmp/p032-r14-isolated-clean-mutation-9086d-20261015.log",
+      "reason": "Current clean replacement passed all three R14 clauses. The original dirty control remains in history and its live bindings were withdrawn.",
+      "historicalSharedOriginControl": {
+        "baselineTestRunId": 21259712,
+        "relocatedBaselineTestRunId": 21259721,
+        "mutantTestRunId": 21259723,
+        "bindingIds": [
+          47214,
+          47215
+        ],
+        "probeInvocationId": "460b0657-beaa-4e3c-b1a0-1ff63492fb7a",
+        "logPath": "/tmp/p032-capability-gate-mutation-9086d-20261015.log",
+        "status": "caught-dirty-retired"
+      },
       "currentProof": {
         "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
         "harnessRoot": "/tmp/pcv/papercusp-lint-as-committed-c2ebf8b88f-zTn5Oo",
