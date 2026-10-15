@@ -44,7 +44,7 @@ const item = (value: unknown = output) => ({ id: 'WI-12', harness: harnessSlug, 
   terminalCompletionRef: 'completion:12', updatedAt: '2026-10-15T10:00:00Z',
   payload: { blueprintOperation: pin, blueprintResult: { operationId: 'handoff', specificationRevision: revision,
     output: value, evidenceRef: 'evidence:12' } },
-} as WorkItem);
+} as unknown as WorkItem);
 const sql = vi.fn(async (strings: TemplateStringsArray) => {
   const query = strings.join('?');
   if (query.includes('blueprint_operation_invocations')) return [{ id: 12, caller_id: callerId,

@@ -1,19 +1,23 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { ComponentProps } from 'react';
+import { cleanup, fireEvent, render as renderReact, screen, waitFor } from '@testing-library/react';
+import type { ComponentProps, ReactNode } from 'react';
+import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { BlueprintOperationHandle, BlueprintOperationResult, PotAppSeam } from '@papercusp/pot-app-seam';
-import WorkflowOperationResult from './WorkflowOperationResult';
+import WorkflowOperationResult, { type WorkflowDisplayOutput } from './WorkflowOperationResult';
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const render = (ui: ReactNode, searchParams = '') => renderReact(ui, {
+  wrapper: ({ children }) => <NuqsTestingAdapter hasMemory searchParams={searchParams}>{children}</NuqsTestingAdapter>,
+});
 const handle: BlueprintOperationHandle = { workspaceId: 'w', harnessSlug: 'support', receiptId: 12,
   operationId: 'prepare-handoff', specificationRevision: 'a'.repeat(64), target: { kind: 'work-item', id: 'WI-12' } };
 const status = (receipt = handle) => ({ handle: receipt, phase: 'terminal' as const, outcome: 'succeeded' as const,
   items: [], planRun: null, cancellationRequested: false, wait: null });
-const ready = (receipt = handle): BlueprintOperationResult<string> => ({ state: 'ready', status: status(receipt),
-  output: 'Cited support summary', evidenceRef: 'evidence:output', acceptanceEvidenceRef: 'evidence:evaluation',
+const ready = (receipt = handle): BlueprintOperationResult<WorkflowDisplayOutput> => ({ state: 'ready', status: status(receipt),
+  output: { kind: 'json', text: 'Cited support summary' }, evidenceRef: 'evidence:output', acceptanceEvidenceRef: 'evidence:evaluation',
   businessReview: { state: 'pending', accountableOwner: 'support-owner', resultFingerprint: 'f'.repeat(64) } });
-function host(result: BlueprintOperationResult<string> = ready()) {
+function host(result: BlueprintOperationResult<WorkflowDisplayOutput> = ready()) {
   return {
     operationResult: vi.fn<NonNullable<ComponentProps<typeof WorkflowOperationResult>['seam']>['operationResult']>()
       .mockResolvedValue(result),
@@ -25,6 +29,15 @@ function host(result: BlueprintOperationResult<string> = ready()) {
 }
 
 describe('existing Workflows operation receipt journey', () => {
+  it('restores reviewer context from the URL while retaining server authorization', async () => {
+    const seam = host();
+    render(<WorkflowOperationResult handle={handle} seam={seam} />, '?wfReview=true');
+    await screen.findByRole('button', { name: 'Accept result' });
+    expect(seam.operationResult).toHaveBeenLastCalledWith(handle, expect.any(Function), { review: true });
+    expect(screen.getByRole('checkbox').getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('Business outcome: pending')).toBeTruthy();
+  });
+
   it('shows output and evaluation evidence without claiming business acceptance', async () => {
     const seam = host();
     render(<WorkflowOperationResult handle={handle} seam={seam} />);
@@ -97,11 +110,11 @@ describe('existing Workflows operation receipt journey', () => {
 
   it('isolates an old late response when the selected receipt changes', async () => {
     const seam = host();
-    let finish!: (value: BlueprintOperationResult<string>) => void;
+    let finish!: (value: BlueprintOperationResult<WorkflowDisplayOutput>) => void;
     seam.operationResult.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const view = render(<WorkflowOperationResult handle={handle} seam={seam} />);
     const second = { ...handle, receiptId: 13, target: { kind: 'work-item' as const, id: 'WI-13' } };
-    seam.operationResult.mockResolvedValue({ ...ready(second), output: 'Second run' } as BlueprintOperationResult<string>);
+    seam.operationResult.mockResolvedValue({ ...ready(second), output: { kind: 'json', text: 'Second run' } } as BlueprintOperationResult<WorkflowDisplayOutput>);
     view.rerender(<WorkflowOperationResult handle={second} seam={seam} />);
     await screen.findByText('Second run');
     finish(ready());
@@ -119,5 +132,38 @@ describe('existing Workflows operation receipt journey', () => {
     expect(fetch).toHaveBeenCalledWith('/api/agent-mcp/run-tool', expect.objectContaining({
       body: JSON.stringify({ name: 'blueprint:result', args: { handle }, confirmed: true }),
     }));
+  });
+
+  const supportOutput = { supportCaseId: 'case-12', summary: 'Export fails for archived accounts',
+    reproduction: ['Open an archived account', 'Choose Export'], checklist: ['Check archive permissions'],
+    suggestedRole: 'Export engineer', citations: [{ id: '00000000-0000-4000-8000-000000000012',
+      source: 'slack', externalId: 'T1:C1:123' }] };
+
+  it('renders a support handoff through the real seam without claiming a business decision', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true,
+      result: { content: [{ text: JSON.stringify({ ...ready(), output: supportOutput }) }] } }) }));
+    render(<WorkflowOperationResult handle={handle} />);
+    expect(await screen.findByRole('region', { name: 'Prepared support handoff' })).toBeTruthy();
+    expect(screen.getByText('Export fails for archived accounts')).toBeTruthy();
+    expect(screen.getByText('Choose Export')).toBeTruthy();
+    expect(screen.getByText('Check archive permissions')).toBeTruthy();
+    expect(screen.getByText(/Suggested responsible role: Export engineer/)).toBeTruthy();
+    expect(screen.getByText(supportOutput.citations[0].id)).toBeTruthy();
+    expect(screen.getByText(/T1:C1:123/)).toBeTruthy();
+    expect(screen.getByText('Business outcome: pending')).toBeTruthy();
+  });
+
+  it.each([
+    { ...supportOutput, citations: [] },
+    { ...supportOutput, reproduction: [], checklist: [] },
+    { ...supportOutput, citations: [{ ...supportOutput.citations[0], id: 'not-a-document' }] },
+  ])('rejects malformed support output before rendering or enabling review', async output => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true,
+      result: { content: [{ text: JSON.stringify({ ...ready(), output }) }] } }) }));
+    render(<WorkflowOperationResult handle={handle} />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Prepared support handoff' })).toBeNull();
+    expect(screen.queryByText('Business outcome: pending')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Accept result' })).toBeNull();
   });
 });

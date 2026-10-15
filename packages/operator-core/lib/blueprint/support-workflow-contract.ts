@@ -75,19 +75,46 @@ export function assertSupportCaseInput(
   return Object.freeze({ ...input, documentIds: Object.freeze([...input.documentIds]) });
 }
 
-/** App parse gate for the judged operation result. canonicalDocuments must come
- * from the current ACL-checked case read, never from the worker's output. */
-export function parseSupportToEngineeringResult(value: unknown,
-  selection: Pick<SupportCaseInput, 'supportCaseId' | 'documentIds'>,
-  canonicalDocuments: SupportToEngineeringResult['citations']): SupportToEngineeringResult {
+/** Browser-safe display gate. This checks shape only; the canonical result
+ * service separately binds the case and citations to current authorized sources. */
+export function parseSupportToEngineeringResultShape(value: unknown): SupportToEngineeringResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('support result must be an object');
   const result = value as Record<string, unknown>;
-  if (result.supportCaseId !== selection.supportCaseId || !text(result.summary, 20_000) ||
+  if (!text(result.supportCaseId, 200) || !text(result.summary, 20_000) ||
       !text(result.suggestedRole, 200) || !Array.isArray(result.reproduction) ||
       !Array.isArray(result.checklist) || !Array.isArray(result.citations) ||
       result.citations.length < 1 || result.citations.length > 50 ||
       result.reproduction.length + result.checklist.length < 1 ||
       result.reproduction.length > 50 || result.checklist.length > 50) {
+    throw new Error('support result does not match the approved output contract');
+  }
+  const strings = (items: unknown[]) => items.every((item) => text(item, 2000));
+  if (!strings(result.reproduction) || !strings(result.checklist) || result.citations.some((citation) => {
+    if (!citation || typeof citation !== 'object' || Array.isArray(citation)) return true;
+    const row = citation as Record<string, unknown>;
+    return typeof row.id !== 'string' || !UUID.test(row.id) || !text(row.source, 120) ||
+      (row.externalId !== null && !text(row.externalId, 500));
+  })) throw new Error('support result contains malformed evidence');
+  if (new Set(result.citations.map((citation) => citation.id)).size !== result.citations.length) {
+    throw new Error('support result contains ambiguous evidence');
+  }
+  return Object.freeze({
+    supportCaseId: result.supportCaseId, summary: result.summary,
+    reproduction: Object.freeze([...result.reproduction] as string[]),
+    checklist: Object.freeze([...result.checklist] as string[]), suggestedRole: result.suggestedRole,
+    citations: Object.freeze(result.citations.map((row) => Object.freeze({
+      id: row.id as string, source: row.source as string, externalId: row.externalId as string | null,
+    }))),
+  });
+}
+
+/** Semantic gate. canonicalDocuments must come from the current ACL-checked
+ * case read, never from the worker's output. */
+export function parseSupportToEngineeringResult(value: unknown,
+  selection: Pick<SupportCaseInput, 'supportCaseId' | 'documentIds'>,
+  canonicalDocuments: SupportToEngineeringResult['citations']): SupportToEngineeringResult {
+  const result = parseSupportToEngineeringResultShape(value);
+  if (result.supportCaseId !== selection.supportCaseId) {
     throw new Error('support result does not match the approved output contract');
   }
   const selectedIds = new Set(selection.documentIds);
@@ -99,24 +126,12 @@ export function parseSupportToEngineeringResult(value: unknown,
     throw new Error('support result requires complete canonical evidence for the selected case');
   }
   const documentsById = new Map(canonicalDocuments.map((document) => [document.id, document]));
-  if (documentsById.size !== selectedIds.size ||
-      new Set(result.citations.map((citation) => citation?.id)).size !== result.citations.length) {
+  if (documentsById.size !== selectedIds.size) {
     throw new Error('support result contains ambiguous evidence');
   }
-  const strings = (items: unknown[]) => items.every((item) => text(item, 2000));
-  if (!strings(result.reproduction) || !strings(result.checklist) || result.citations.some((citation) => {
-    if (!citation || typeof citation !== 'object' || Array.isArray(citation)) return true;
-    const row = citation as Record<string, unknown>;
-    const document = typeof row.id === 'string' ? documentsById.get(row.id) : undefined;
-    return !text(row.id, 120) || !UUID.test(row.id) || !selection.documentIds.includes(row.id) ||
-      !document || row.source !== document.source || row.externalId !== document.externalId;
+  if (result.citations.some((citation) => {
+    const document = documentsById.get(citation.id);
+    return !document || citation.source !== document.source || citation.externalId !== document.externalId;
   })) throw new Error('support result contains malformed evidence');
-  return Object.freeze({
-    supportCaseId: selection.supportCaseId, summary: result.summary,
-    reproduction: Object.freeze([...result.reproduction] as string[]),
-    checklist: Object.freeze([...result.checklist] as string[]), suggestedRole: result.suggestedRole,
-    citations: Object.freeze(result.citations.map((row) => Object.freeze({
-      id: row.id as string, source: row.source as string, externalId: row.externalId as string | null,
-    }))),
-  });
+  return result;
 }

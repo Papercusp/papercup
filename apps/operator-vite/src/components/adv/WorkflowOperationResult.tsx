@@ -1,5 +1,6 @@
 /** Canonical operation receipts inside the existing Workflows inspector. */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { parseAsBoolean, useQueryState } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
 import {
   blueprintOperationHostFromInvoker, createPotAppSeam,
@@ -7,6 +8,8 @@ import {
   type OperationOutputParser, type PotAppSeam,
 } from '@papercusp/pot-app-seam';
 import { runScheduleTool } from './ScheduleEditor';
+import { parseSupportToEngineeringResultShape, type SupportToEngineeringResult } from
+  '@papercusp/operator-core/lib/blueprint/support-workflow-contract';
 
 const operationHost = blueprintOperationHostFromInvoker(async (name, args) => {
   const result = await runScheduleTool(name, args);
@@ -19,16 +22,22 @@ const defaultSeam = createPotAppSeam({ ...operationHost,
   readBootstrapMarker: noBootstrap, writeBootstrapMarker: noBootstrap, ensurePot: noBootstrap,
 });
 type InspectorSeam = Pick<PotAppSeam, 'reviewOperation' | 'cancelOperation'> & {
-  operationResult(handle: BlueprintOperationHandle, parse: OperationOutputParser<string>,
-    options?: BlueprintOperationReadOptions): Promise<BlueprintOperationResult<string>>;
+  operationResult(handle: BlueprintOperationHandle, parse: OperationOutputParser<WorkflowDisplayOutput>,
+    options?: BlueprintOperationReadOptions): Promise<BlueprintOperationResult<WorkflowDisplayOutput>>;
 };
 
-/** Generic inspector output is text; application-specific journeys add their
- * domain parse gate before storing a judged result in application state. */
-function parseOutput(value: unknown): string {
+export type WorkflowDisplayOutput = { kind: 'json'; text: string } |
+  { kind: 'support'; handoff: SupportToEngineeringResult };
+
+/** The server result gate owns current source access and accepted-case identity.
+ * The inspector also rejects malformed support output before it enters UI state. */
+function parseOutput(value: unknown): WorkflowDisplayOutput {
+  if (value && typeof value === 'object' && !Array.isArray(value) && 'supportCaseId' in value) {
+    return { kind: 'support', handoff: parseSupportToEngineeringResultShape(value) };
+  }
   const text = JSON.stringify(value, null, 2);
   if (text === undefined || text.length > 100_000) throw new Error('Result cannot be displayed in the inspector');
-  return text;
+  return { kind: 'json', text };
 }
 const message = (error: unknown) => error instanceof Error ? error.message : 'Operation request failed';
 
@@ -45,8 +54,8 @@ export default function WorkflowOperationResult({ handle, seam = defaultSeam }: 
 function OperationReceipt({ identity, seam }: { identity: string; seam: InspectorSeam }) {
   const handle = JSON.parse(identity) as BlueprintOperationHandle;
   const generation = useRef(0);
-  const [reviewAccess, setReviewAccess] = useState(false);
-  const [result, setResult] = useState<BlueprintOperationResult<string> | null>(null);
+  const [reviewAccess, setReviewAccess] = useQueryState('wfReview', parseAsBoolean.withDefault(false));
+  const [result, setResult] = useState<BlueprintOperationResult<WorkflowDisplayOutput> | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -90,7 +99,7 @@ function OperationReceipt({ identity, seam }: { identity: string; seam: Inspecto
       <p>Receipt {handle.receiptId} · Revision <code>{handle.specificationRevision}</code></p>
       <label>
         <Checkbox checked={reviewAccess} disabled={busy} ariaLabel="Read as an authorized reviewer" onChange={(checked) => {
-          setResult(null); setNotice(null); setReason(''); setReviewAccess(checked);
+          setResult(null); setNotice(null); setReason(''); void setReviewAccess(checked);
         }} /> Read as an authorized reviewer
       </label>
       <div className="pc-wf__insp-actions">
@@ -112,7 +121,8 @@ function OperationReceipt({ identity, seam }: { identity: string; seam: Inspecto
       {result?.state === 'ready' && <>
         <p>Prepared result · Evidence <code>{result.evidenceRef}</code></p>
         {result.acceptanceEvidenceRef && <p>Evaluation evidence <code>{result.acceptanceEvidenceRef}</code></p>}
-        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{result.output}</pre>
+        {result.output.kind === 'support' ? <SupportHandoff handoff={result.output.handoff} /> :
+          <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{result.output.text}</pre>}
         {review && <>
           <h4>Business outcome: {review.state}</h4>
           <p>Accountable owner: {review.accountableOwner}</p>
@@ -141,4 +151,25 @@ function OperationReceipt({ identity, seam }: { identity: string; seam: Inspecto
       </>}
     </section>
   );
+}
+
+function SupportHandoff({ handoff }: { handoff: SupportToEngineeringResult }) {
+  return <section aria-label="Prepared support handoff">
+    <h4>Support case {handoff.supportCaseId}</h4>
+    <p>{handoff.summary}</p>
+    {handoff.reproduction.length > 0 && <>
+      <h4>Reproduction steps</h4>
+      <ol>{handoff.reproduction.map((step, index) => <li key={index}>{step}</li>)}</ol>
+    </>}
+    {handoff.checklist.length > 0 && <>
+      <h4>Engineering checklist</h4>
+      <ul>{handoff.checklist.map((step, index) => <li key={index}>{step}</li>)}</ul>
+    </>}
+    <p>Suggested responsible role: {handoff.suggestedRole}</p>
+    <h4>Source evidence</h4>
+    <ul>{handoff.citations.map((citation) => <li key={citation.id}>
+      <strong>{citation.source}</strong>{citation.externalId && <> · {citation.externalId}</>}
+      {' '}· Document <code>{citation.id}</code>
+    </li>)}</ul>
+  </section>;
 }

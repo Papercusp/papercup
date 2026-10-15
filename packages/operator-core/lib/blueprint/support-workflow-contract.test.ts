@@ -6,6 +6,7 @@ import {
   assertApprovedSupportWorkflow,
   assertSupportCaseInput,
   parseSupportToEngineeringResult,
+  parseSupportToEngineeringResultShape,
   type ApprovedSupportWorkflow,
 } from './support-workflow-contract';
 
@@ -26,7 +27,8 @@ describe('P-012b support workflow contract', () => {
   it('declares the selected workflow on the canonical operation manifest and pins its policy', () => {
     const operation = supportToEngineeringOperation({ id: workflow.operationId, version: '1', role: 'worker',
       identity: { kind: 'identity', ref: 'worker-domain', revision: '1', contentHash: 'b'.repeat(64) },
-      ...workflow });
+      ...workflow, reviewerPrincipals: [...workflow.reviewerPrincipals],
+      allowedSources: [...workflow.allowedSources], allowedActions: [...workflow.allowedActions] });
     const source = { id: 'support-workflow', workItem: { kind: 'task' }, roles: [{ id: 'worker' }],
       spine: { edges: { DONE: { to: 'done' } } }, dependencies: { tools: ['blueprint:read-private-input'] },
       operations: [operation] };
@@ -91,5 +93,13 @@ describe('P-012b support workflow contract', () => {
     documents[0].source = 'changed-after-parse';
     expect(parsed.citations).toEqual([{ id, source: 'slack', externalId: null }]);
     expect(Object.isFrozen(parsed.citations[0])).toBe(true);
+  });
+
+  it('checks display shape without treating worker citation metadata as canonical evidence', () => {
+    const forged = { ...output, citations: [{ ...evidence[0], source: 'github' }] };
+    expect(parseSupportToEngineeringResultShape(forged).citations[0].source).toBe('github');
+    expect(() => parseSupportToEngineeringResult(forged, selection, evidence)).toThrow(/evidence/);
+    expect(() => parseSupportToEngineeringResultShape({ ...output, reproduction: [null] })).toThrow(/evidence/);
+    expect(() => parseSupportToEngineeringResultShape({ ...output, citations: [] })).toThrow(/contract/);
   });
 });
