@@ -6,7 +6,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
 import {
   parseJsonWithTrailer,
+  trackPhase,
   type AbortCompletionReceipt,
+  type PhaseTracker,
   type ToolResult,
 } from '@papercusp/tooldef';
 import { COORD_ROLES } from '../coordination/roles';
@@ -448,8 +450,15 @@ export function scorecardEmitMutexKey(input: {
 
 type ScorecardEmitMutexReservation = Awaited<ReturnType<ReturnType<typeof scorecardEmitMutexSql>['reserve']>>;
 
-async function acquireScorecardEmitMutex(key: string): Promise<() => Promise<void>> {
-  const reserved: ScorecardEmitMutexReservation = await scorecardEmitMutexSql().reserve();
+async function acquireScorecardEmitMutex(
+  key: string,
+  phases?: PhaseTracker,
+): Promise<() => Promise<void>> {
+  const reserved: ScorecardEmitMutexReservation = await trackPhase(
+    phases,
+    'scorecards:emit:mutex:dedup:pool-reservation',
+    () => scorecardEmitMutexSql().reserve(),
+  );
   let acquired = false;
   try {
     // The harness_admin role carries a finite lock_timeout (currently 15s), and
@@ -462,7 +471,9 @@ async function acquireScorecardEmitMutex(key: string): Promise<() => Promise<voi
     // application queries.
     await reserved`SET lock_timeout = 0`;
     await reserved`SET statement_timeout = 0`;
-    await reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
+    await trackPhase(phases, 'scorecards:emit:mutex:dedup:advisory-lock', () =>
+      reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
+    );
     acquired = true;
     return async () => {
       if (!acquired) return;
@@ -1659,6 +1670,8 @@ export async function emitScorecard(
     /** P-011 (D-006): the tree tests-check files resolve + run against — the handler
      *  passes its ctx-resolved root; omitted ⇒ the resolver's ctx-less fallback. */
     checkRoot?: string;
+    /** The dispatcher's per-call phase recorder, carried through the tool-context bridge. */
+    phases?: PhaseTracker;
   },
   deps: {
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
@@ -2898,7 +2911,7 @@ export async function emitScorecard(
         releaseGradingAuditSubjectMutex = await acquireGradingAuditSubjectMutex({
           workspaceId: input.workspaceId ?? activeWorkspaceId(),
           subjectIssueId: args.subject.ref,
-        });
+        }, input.phases);
       }
       const graded = await getIssue(args.subject.ref);
       const gradedRawObservation =
@@ -3330,6 +3343,7 @@ export async function emitScorecard(
           rubricRef: args.rubricRef,
           sourceHive,
         }),
+        input.phases,
       );
     }
     // The evidence fingerprint deliberately excludes subject for stored-row
@@ -3598,38 +3612,40 @@ export async function emitScorecard(
       if (checkScope.refusal) {
         return { ok: false as const, error: checkScope.refusal.detail, checkScopeRefusal: checkScope.refusal };
       }
-      const checkEvaluation = await evaluateChecks({
-        criteria: rubric.criteria,
-        ratings,
-        root: checkScope.root,
-        ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
-        ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
-        ...(deps.evaluateChecks ? {} : {
-          // force:true expressly asks for a fresh sample even when the evidence
-          // fingerprint is unchanged; never satisfy it from an older check run.
-          runner: args.force
-            ? runCriterionCheckFiles
-            : (opts: Parameters<CriterionCheckRunner>[0]) => (deps.runRecoverableChecks ?? runRecoverableScorecardChecks)(opts, {
-                rubricRef: args.rubricRef,
-                rubricRevision: rubricRevision ?? null,
-                criteriaHash: criteriaHash ?? null,
-                evidenceFingerprint,
-                createdBy: input.createdBy,
-                subjectRef: args.subject?.ref ?? null,
-                operationRef: JSON.stringify({
-                  terminal: args.terminal ?? null,
-                  supersedes: effectiveSupersedes ?? null,
-                  acceptanceOf: args.acceptanceOf ?? null,
-                  acknowledgeExisting: args.acknowledgeExisting ?? null,
-                }),
-            }),
+      const checkEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:tests', () =>
+        evaluateChecks({
+          criteria: rubric.criteria,
+          ratings,
+          root: checkScope.root,
+          ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
+          ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
+          ...(deps.evaluateChecks ? {} : {
+            // force:true expressly asks for a fresh sample even when the evidence
+            // fingerprint is unchanged; never satisfy it from an older check run.
+            runner: args.force
+              ? runCriterionCheckFiles
+              : (opts: Parameters<CriterionCheckRunner>[0]) => (deps.runRecoverableChecks ?? runRecoverableScorecardChecks)(opts, {
+                  rubricRef: args.rubricRef,
+                  rubricRevision: rubricRevision ?? null,
+                  criteriaHash: criteriaHash ?? null,
+                  evidenceFingerprint,
+                  createdBy: input.createdBy,
+                  subjectRef: args.subject?.ref ?? null,
+                  operationRef: JSON.stringify({
+                    terminal: args.terminal ?? null,
+                    supersedes: effectiveSupersedes ?? null,
+                    acceptanceOf: args.acceptanceOf ?? null,
+                    acknowledgeExisting: args.acknowledgeExisting ?? null,
+                  }),
+              }),
+          }),
+          // One shared budget for the batched run. scorecards:emit declares a longer
+          // tool timeout below, so the transport gives this mutation enough time to
+          // return a typed verdict (and still leaves a full minute for process-group
+          // settlement, the ledger write, and response serialization).
+          timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
         }),
-        // One shared budget for the batched run. scorecards:emit declares a longer
-        // tool timeout below, so the transport gives this mutation enough time to
-        // return a typed verdict (and still leaves a full minute for process-group
-        // settlement, the ledger write, and response serialization).
-        timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
-      });
+      );
       if (!checkEvaluation.ok) {
         return {
           ok: false as const,
@@ -3649,11 +3665,13 @@ export async function emitScorecard(
     const probeCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'probe' && !ledgerOwnedKeys.has(c.key));
     if (probeCheckedCriteria.length > 0) {
       const evaluateProbe = deps.evaluateProbeChecks ?? evaluateCriterionProbeChecks;
-      const probeEvaluation = await evaluateProbe({
-        criteria: rubric.criteria.filter((c) => !ledgerOwnedKeys.has(c.key)),
-        ratings,
-        dispatchTool: deps.dispatchTool,
-      });
+      const probeEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:probe', () =>
+        evaluateProbe({
+          criteria: rubric.criteria.filter((c) => !ledgerOwnedKeys.has(c.key)),
+          ratings,
+          dispatchTool: deps.dispatchTool,
+        }),
+      );
       // test-rubric-unification-2026-10-12 P-006 (D-004 rule 1): every EXECUTED probe writes one
       // results-ledger row, pass or fail — including the one that contradicted its rating and
       // refuses this emit. A ledger fault is reported, never allowed to change the verdict.
@@ -3699,14 +3717,16 @@ export async function emitScorecard(
       if (checkScope.refusal) {
         return { ok: false as const, error: checkScope.refusal.detail, checkScopeRefusal: checkScope.refusal };
       }
-      const checkEvaluation = await evaluateCargo({
-        criteria: rubric.criteria,
-        ratings,
-        root: checkScope.root,
-        ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
-        ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
-        timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
-      });
+      const checkEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:cargo', () =>
+        evaluateCargo({
+          criteria: rubric.criteria,
+          ratings,
+          root: checkScope.root,
+          ...(checkScope.workspaceId ? { workspaceId: checkScope.workspaceId } : {}),
+          ...(checkScope.harnessSlug ? { harnessSlug: checkScope.harnessSlug } : {}),
+          timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
+        }),
+      );
       if (!checkEvaluation.ok) {
         return {
           ok: false as const,
@@ -3733,19 +3753,21 @@ export async function emitScorecard(
       // narrowing a property access does not carry across a function boundary.
       const subjectPlan = rubric.subjectPlan;
       const workspaceId = input.workspaceId;
-      const coverageEvaluation = await evaluateCoverage({
-        criteria: rubric.criteria,
-        ratings,
-        readCoverage: (a) => readCoverage(a),
-        // planTouched resolves to the files the subject plan's COMPLETED work actually
-        // changed. Only an acceptance rubric has a subject plan; anywhere else this
-        // returns null and the check refuses rather than silently widening its scope.
-        // The workspace is required for the SAME reason: planTouchedFiles filters on
-        // `workspace_id`, so resolving it without one would widen the scope to every
-        // workspace's rows — the silent-widening this check exists to refuse.
-        resolvePlanTouchedFiles: () =>
-          subjectPlan && workspaceId ? planTouchedFiles(workspaceId, subjectPlan) : Promise.resolve(null),
-      });
+      const coverageEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:coverage', () =>
+        evaluateCoverage({
+          criteria: rubric.criteria,
+          ratings,
+          readCoverage: (a) => readCoverage(a),
+          // planTouched resolves to the files the subject plan's COMPLETED work actually
+          // changed. Only an acceptance rubric has a subject plan; anywhere else this
+          // returns null and the check refuses rather than silently widening its scope.
+          // The workspace is required for the SAME reason: planTouchedFiles filters on
+          // `workspace_id`, so resolving it without one would widen the scope to every
+          // workspace's rows — the silent-widening this check exists to refuse.
+          resolvePlanTouchedFiles: () =>
+            subjectPlan && workspaceId ? planTouchedFiles(workspaceId, subjectPlan) : Promise.resolve(null),
+        }),
+      );
       if (!coverageEvaluation.ok) {
         return {
           ok: false as const,
@@ -3772,38 +3794,40 @@ export async function emitScorecard(
       const evaluateRequirements = deps.evaluateRequirementChecks ?? evaluateCriterionRequirementChecks;
       // Hoisted for the same narrowing reason as the coverage block above.
       const requirementsPlan = rubric.subjectPlan;
-      const requirementsEvaluation = await evaluateRequirements({
-        criteria: rubric.criteria,
-        ratings,
-        readRequirementRealization: async () => {
-          if (!requirementsPlan) return null;
-          // Read all three together. They are independent queries over the same plan, and
-          // the judge's own contract treats an empty planItems list as "not supplied"
-          // (never as "the plan has no items"), so a transient read failure degrades to
-          // the pre-P-016 behaviour instead of convicting every target.
-          // Item rows are owned per (harness, slug), so scope them to the subject plan's
-          // harness (WI-10005167). The two audit reads stay (workspace, slug): plan_audits
-          // is keyed that way and its harness_slug is only a citation context.
-          const [activationAudit, itemAudits, planItems] = await Promise.all([
-            getLatestActivationAudit(requirementsPlan),
-            getEffectiveItemAudits(requirementsPlan),
-            getPlanItemStatuses(requirementsPlan, { harnessSlug: rubric.subjectHarnessSlug }),
-          ]);
-          const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
-            ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', {
-                current: args.current,
-                harnessSlug: rubric.subjectHarnessSlug,
-              })
-            : null;
-          return {
-            planSlug: requirementsPlan,
-            mappings: activationAudit?.activation?.mappings ?? [],
-            itemAudits,
-            planItems,
-            nonCodeItemProofs: proof?.nonCodeItemProofs,
-          };
-        },
-      });
+      const requirementsEvaluation = await trackPhase(input.phases, 'scorecards:emit:checks:requirements', () =>
+        evaluateRequirements({
+          criteria: rubric.criteria,
+          ratings,
+          readRequirementRealization: async () => {
+            if (!requirementsPlan) return null;
+            // Read all three together. They are independent queries over the same plan, and
+            // the judge's own contract treats an empty planItems list as "not supplied"
+            // (never as "the plan has no items"), so a transient read failure degrades to
+            // the pre-P-016 behaviour instead of convicting every target.
+            // Item rows are owned per (harness, slug), so scope them to the subject plan's
+            // harness (WI-10005167). The two audit reads stay (workspace, slug): plan_audits
+            // is keyed that way and its harness_slug is only a citation context.
+            const [activationAudit, itemAudits, planItems] = await Promise.all([
+              getLatestActivationAudit(requirementsPlan),
+              getEffectiveItemAudits(requirementsPlan),
+              getPlanItemStatuses(requirementsPlan, { harnessSlug: rubric.subjectHarnessSlug }),
+            ]);
+            const proof = itemAudits.some(({ entry }) => entry.verdict === 'not-code')
+              ? await readAndEvaluateAcceptanceBarLifecycle(requirementsPlan, 'pre-grading', {
+                  current: args.current,
+                  harnessSlug: rubric.subjectHarnessSlug,
+                })
+              : null;
+            return {
+              planSlug: requirementsPlan,
+              mappings: activationAudit?.activation?.mappings ?? [],
+              itemAudits,
+              planItems,
+              nonCodeItemProofs: proof?.nonCodeItemProofs,
+            };
+          },
+        }),
+      );
       if (!requirementsEvaluation.ok) {
         return {
           ok: false as const,
@@ -4328,6 +4352,7 @@ export async function emitScorecardForToolContext(
       workspaceId: identity.workspaceId ?? undefined,
       previewOnly: options.previewOnly === true,
       launchContext: ctx,
+      phases: ctx.phases,
       // P-011: tests-checks resolve + run against the tree the AGENT edits.
       checkRoot: resolveAgentWorkspaceRoot(ctx),
     },

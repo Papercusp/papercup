@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import postgres from 'postgres';
+import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
@@ -3022,14 +3023,20 @@ function gradingAuditSubjectMutexKey(input: {
 export async function acquireGradingAuditSubjectMutex(input: {
   workspaceId: string;
   subjectIssueId: string;
-}): Promise<() => Promise<void>> {
+}, phases?: PhaseTracker): Promise<() => Promise<void>> {
   const key = gradingAuditSubjectMutexKey(input);
-  const reserved = await gradingAuditSubjectMutexSql().reserve();
+  const reserved = await trackPhase(
+    phases,
+    'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
+    () => gradingAuditSubjectMutexSql().reserve(),
+  );
   let acquired = false;
   try {
     await reserved.unsafe('SET lock_timeout = 0');
     await reserved.unsafe('SET statement_timeout = 0');
-    await reserved.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+    await trackPhase(phases, 'scorecards:emit:mutex:grading-audit-subject:advisory-lock', () =>
+      reserved.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
+    );
     acquired = true;
     return async () => {
       if (!acquired) return;
