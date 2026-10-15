@@ -112,7 +112,8 @@ function runSweepInvocations(requiredDir: string, procRoot?: string): string[][]
 /** Run the sweep and return each kopia invocation's FULL argv, flags included, in order. */
 function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[][] {
   rmSync(join(dir, 'create-argv'), { force: true });
-  execFileSync('/usr/bin/env', ['bash', SCRIPT], {
+  try {
+    execFileSync('/usr/bin/env', ['bash', '-x', SCRIPT], {
     env: {
       ...process.env,
       HOME: join(dir, 'home'),
@@ -127,8 +128,14 @@ function runSweepRawInvocations(requiredDir: string, procRoot?: string): string[
       PAPERCUSP_HOST_PG_DUMP_DIR: requiredDir,
       ...(procRoot ? { KOPIA_SNAPSHOT_PROC_ROOT: procRoot } : {}),
     },
-    timeout: 60_000,
-  });
+      timeout: 60_000,
+    });
+  } catch (error) {
+    const failure = error as Error & { stderr?: Buffer; stdout?: Buffer };
+    const logPath = join(dir, 'log', 'snapshot-all.log');
+    const phaseLog = existsSync(logPath) ? readFileSync(logPath, 'utf8').slice(-8000) : '';
+    throw new Error(`${failure.message}\nShell phase trace:\n${String(failure.stderr ?? '').slice(-2000)}\n${phaseLog}\n${String(failure.stdout ?? '').slice(-1000)}`);
+  }
   const invocations: string[][] = [[]];
   for (const line of readFileSync(join(dir, 'create-argv'), 'utf8').split('\n')) {
     if (line === INVOCATION_END) invocations.push([]);
