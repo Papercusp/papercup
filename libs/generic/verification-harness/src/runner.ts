@@ -275,6 +275,8 @@ export interface DiskSpaceSnapshot {
 }
 
 export interface RunPruneOptions {
+  /** Judge only: never removes evidence or writes retention metadata. */
+  dryRun?: boolean;
   env?: NodeJS.ProcessEnv;
   /** Injectable for deterministic retention-policy tests. */
   measureDisk?: (evidenceRoot: string) => Promise<DiskSpaceSnapshot | null>;
@@ -283,6 +285,13 @@ export interface RunPruneOptions {
 }
 
 export interface RunPruneReport {
+  preview?: {
+    advisory: true;
+    rootStatus: 'readable' | 'unreadable';
+    candidates: Array<{ path: string; reason: 'count' | 'pressure'; allocatedBytes: number | null }>;
+    kept: Array<{ path: string; reason: string }>;
+    uncertainty: string;
+  };
   removed: string[];
   runDirsSeen: number;
   disk: {
@@ -353,23 +362,31 @@ async function hasTerminalResult(evidenceRoot: string, runId: string): Promise<b
   }
 }
 
-async function removeRunIfEligible(
+async function runIneligibility(
   evidenceRoot: string,
   runId: string,
   now: number,
   requireTerminal: boolean,
-): Promise<boolean> {
-  if (await latestRunId(evidenceRoot) === runId) return false;
+): Promise<string | null> {
+  if (await latestRunId(evidenceRoot) === runId) return 'latest';
   const runDir = path.join(evidenceRoot, runId);
   const terminal = await hasTerminalResult(evidenceRoot, runId);
-  if (await hasKeepMarker(runDir)) return false;
-  if (requireTerminal && !terminal) return false;
+  if (await hasKeepMarker(runDir)) return '.vh-keep';
+  if (requireTerminal && !terminal) return 'non-terminal';
   // An incomplete checkpoint has no terminal receipt and receives the existing 24-hour
   // grace before count retention can remove it.
   if (!terminal) {
     const born = await stat(runDir).then((s) => s.mtimeMs, () => now);
-    if (now - born < IN_PROGRESS_GRACE_MS) return false;
+    if (now - born < IN_PROGRESS_GRACE_MS) return 'incomplete-grace';
   }
+  return null;
+}
+
+async function removeRunIfEligible(
+  evidenceRoot: string, runId: string, now: number, requireTerminal: boolean,
+): Promise<boolean> {
+  if (await runIneligibility(evidenceRoot, runId, now, requireTerminal)) return false;
+  const runDir = path.join(evidenceRoot, runId);
   try {
     // Recheck both protections at the removal boundary; latest can move while another
     // run finalizes, and a caller may pin a run while this sweep is judging it.
@@ -400,10 +417,12 @@ export async function pruneRunsWithReport(
   const measure = options.measureDisk ?? measureDiskSpace;
   const reserve = options.reserveBytes ?? vhDiskReserveBytes;
   let names: string[] = [];
+  let rootReadable = false;
   try {
     names = (await readdir(evidenceRoot, { withFileTypes: true }))
       .filter((d) => d.isDirectory() && RUN_DIR_RE.test(d.name))
       .map((d) => d.name);
+    rootReadable = true;
   } catch {
     // A missing or unreadable evidence root has no safely judged candidates.
   }
@@ -414,6 +433,57 @@ export async function pruneRunsWithReport(
     disk: { status: 'unmeasured', reserveBytes: null, availableBeforeBytes: null, availableAfterBytes: null },
   };
   const removed = new Set<string>();
+  if (options.dryRun) {
+    const preview: NonNullable<RunPruneReport['preview']> = {
+      advisory: true, rootStatus: rootReadable ? 'readable' : 'unreadable', candidates: [], kept: [],
+      uncertainty: 'Ordered pressure candidates are an upper bound, not an exact removal set. Allocated bytes are observational, not reclaimable bytes (hardlinks, reflinks, concurrent changes). No projected free-after or recovery claim. Foreign entries are outside this runs-only preview. Unknown measurements are null.',
+    };
+    report.preview = preview;
+    const sample = await measure(evidenceRoot).catch(() => null);
+    let pressure = false;
+    if (rootReadable && sample && Number.isFinite(sample.totalBytes) && sample.totalBytes > 0 &&
+        Number.isFinite(sample.availableBytes) && sample.availableBytes >= 0) {
+      report.disk.availableBeforeBytes = sample.availableBytes;
+      const floor = reserve(sample.totalBytes, env);
+      if (Number.isFinite(floor) && floor >= 0) {
+        report.disk.reserveBytes = floor;
+        pressure = sample.availableBytes < floor;
+        report.disk.status = pressure ? 'unresolved' : 'healthy';
+      }
+    }
+    const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
+    // One shared bounded observation budget; lstat never follows symlinks.
+    let budget = 100000;
+    const allocated = async (target: string, seen = new Set<string>()): Promise<number> => {
+      if (--budget < 0) throw new Error('measurement budget exceeded');
+      const s = await lstat(target);
+      const key = `${s.dev}:${s.ino}`;
+      if (seen.has(key)) return 0;
+      seen.add(key);
+      if (!Number.isFinite(s.blocks)) throw new Error('allocated blocks unavailable');
+      let bytes = s.blocks * 512;
+      if (s.isDirectory()) for (const child of await readdir(target)) bytes += await allocated(path.join(target, child), seen);
+      return bytes;
+    };
+    for (const name of names) {
+      let reason: 'count' | 'pressure' | null = null;
+      let kept = 'within-count';
+      if (countNames.has(name)) {
+        const why = await runIneligibility(evidenceRoot, name, now, false);
+        if (!why) reason = 'count'; else kept = why;
+      }
+      if (!reason && pressure) {
+        const why = await runIneligibility(evidenceRoot, name, now, true);
+        if (!why) reason = 'pressure'; else kept = why;
+      }
+      const target = path.resolve(evidenceRoot, name);
+      if (reason) preview.candidates.push({ path: target, reason, allocatedBytes: await allocated(target).catch(() => null) });
+      else preview.kept.push({ path: target, reason: kept });
+    }
+    // Mutation completes its count pass before considering pressure candidates.
+    preview.candidates.sort((a, b) => Number(a.reason === 'pressure') - Number(b.reason === 'pressure'));
+    return report;
+  }
   if (keep > 0) {
     for (const name of names.slice(0, Math.max(0, names.length - keep))) {
       if (await removeRunIfEligible(evidenceRoot, name, now, false)) {

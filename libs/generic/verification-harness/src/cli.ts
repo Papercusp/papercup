@@ -11,6 +11,8 @@
  *     runs the guard rails matching contract.json's scopeTags (source: VH_GUARD_RAIL_SOURCE),
  *     writes <dir>/guard-rails.json, prints a VH_GUARD_RAIL line per probe; exit 0 when every
  *     rail holds, 1 otherwise (with a final VH_GUARD_RAILS_FAILED reason=… detail=… line)
+ *   cli.ts retain --evidence-root <root> --dry-run
+ *     prints a zero-effect JSON plan; pressure candidates are advisory, not reclaimed space.
  */
 import { realpathSync } from 'node:fs';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
@@ -128,7 +130,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
 
 export async function retainRunsCommand(argv: string[]) {
   const evidenceRoot = flag(argv, '--evidence-root');
-  return pruneRunsWithReport(evidenceRoot);
+  return pruneRunsWithReport(evidenceRoot, undefined, undefined, { dryRun: argv.includes('--dry-run') });
 }
 
 const GUARD_RAIL_REPORT = 'guard-rails.json';
@@ -167,6 +169,10 @@ async function main(): Promise<number> {
   const [cmd, ...argv] = process.argv.slice(2);
   if (cmd === 'retain') {
     const report = await retainRunsCommand(argv);
+    if (report.preview) {
+      process.stdout.write(JSON.stringify(report) + '\n');
+      return 0;
+    }
     const line = formatRunRetentionLine(report);
     if (line) process.stderr.write(line + '\n');
     // 28 is ENOSPC: a measured reserve breach that safe retention could not clear

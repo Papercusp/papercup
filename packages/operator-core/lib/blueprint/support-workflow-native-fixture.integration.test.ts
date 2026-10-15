@@ -46,7 +46,19 @@ describe('maintained native support seed and production cookie switching', () =>
     expect(forbidden).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a registry writer on a different database before creating any users', async () => {
+    const users = () => db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.users`;
+    const before = await users();
+    connection.sql = vi.fn().mockResolvedValue([{ name: 'live', directory: '/live/pgdata' }]) as unknown as Sql;
+    try {
+      await expect(seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId }))
+        .rejects.toThrow(/registry must use the same isolated PostgreSQL/);
+    } finally { connection.sql = db.adminSql; }
+    expect(await users()).toEqual(before);
+  });
+
   it('switches three real password-authenticated cookie principals and admits only accessible source input', async () => {
+    expect(fixture.role).toBe('operator');
     const app = new Hono();
     type Route = RouteDefinition<ZodTypeAny | undefined>;
     for (const route of [authLogin, ...authMe] as Route[]) registerRoute(app, route);
@@ -100,8 +112,9 @@ describe('maintained native support seed and production cookie switching', () =>
     const projectDir = await resolveProjectDir(fixture.harnessSlug, workspaceId);
     expect(projectDir).toBe(fileURLToPath(new URL('../../../../', import.meta.url)));
     if (!projectDir) throw new Error('Native support fixture has no registered launch checkout');
+    const featureId = handle.target.id;
     expect(() => assembleRolePrompt({ slug: fixture.harnessSlug, role: fixture.role,
-      projectDir, mode: 'chat', featureId: handle.target.id })).not.toThrow();
+      projectDir, mode: 'chat', featureId })).not.toThrow();
     expect(await submit('native-fixture-employee')).toEqual(handle);
     await replacePermissionListMembers(db.adminSql, workspaceId, fixture.listId, [fixture.identities.reviewer]);
     await expect(submit('native-fixture-revoked')).rejects.toThrow(/unavailable|revoked/);

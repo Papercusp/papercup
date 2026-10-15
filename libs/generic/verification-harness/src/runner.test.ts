@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneRuns, runHarness, writeRunResult } from './runner.js';
+import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { symlinkSync } from 'node:fs';
+import { retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
 
 const contract: HarnessContract = {
@@ -18,6 +20,66 @@ const contract: HarnessContract = {
 };
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-'));
+
+describe('read-only retention preview', () => {
+  const now = Date.now();
+  const names = ['20200101T000000Z-1', '20200102T000000Z-1', '20200103T000000Z-1'];
+  const fixture = () => {
+    const root = tmp();
+    for (const name of names) {
+      mkdirSync(path.join(root, name));
+      writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date(now).toISOString(), verdict: 'pass' }));
+    }
+    return root;
+  };
+  it('shares count eligibility with mutation but leaves all evidence intact', async () => {
+    const root = fixture();
+    const before = names.map(n => readFileSync(path.join(root, n, 'result.json'), 'utf8'));
+    const external = tmp();
+    writeFileSync(path.join(external, 'proof'), 'external');
+    symlinkSync(external, path.join(root, names[0], 'external'));
+    const options = { measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
+    const plan = await pruneRunsWithReport(root, 1, now, { ...options, dryRun: true });
+    expect(plan.removed).toEqual([]);
+    expect(plan.preview?.candidates.map(c => path.basename(c.path))).toEqual(names.slice(0, 2));
+    expect(plan.preview?.candidates.every(c => c.allocatedBytes !== null)).toBe(true);
+    expect(names.map(n => readFileSync(path.join(root, n, 'result.json'), 'utf8'))).toEqual(before);
+    expect(readlinkSync(path.join(root, names[0], 'external'))).toBe(external);
+    expect((await pruneRunsWithReport(root, 1, now, options)).removed).toEqual(names.slice(0, 2));
+    expect(readFileSync(path.join(external, 'proof'), 'utf8')).toBe('external');
+  });
+  it('reports a pressure upper bound without simulated recovery and preserves protected/foreign entries', async () => {
+    const root = fixture();
+    symlinkSync(names[2], path.join(root, 'latest'));
+    writeFileSync(path.join(root, names[1], '.vh-keep'), 'pin');
+    mkdirSync(path.join(root, 'retained'));
+    writeFileSync(path.join(root, 'foreign'), 'proof');
+    const plan = await pruneRunsWithReport(root, 30, now, { dryRun: true, measureDisk: async () => ({ totalBytes: 1000, availableBytes: 0 }), reserveBytes: () => 100 });
+    expect(plan.preview?.candidates.map(c => [path.basename(c.path), c.reason])).toEqual([[names[0], 'pressure']]);
+    expect(plan.preview?.kept.map(c => c.reason)).toEqual(['.vh-keep', 'latest']);
+    expect(plan.disk.status).toBe('unresolved');
+    expect(plan.disk.availableAfterBytes).toBeNull();
+    expect(readlinkSync(path.join(root, 'latest'))).toBe(names[2]);
+    expect(readFileSync(path.join(root, names[1], '.vh-keep'), 'utf8')).toBe('pin');
+    expect(readFileSync(path.join(root, 'foreign'), 'utf8')).toBe('proof');
+    expect(readdirSync(root).sort()).toEqual([...names, 'latest', 'retained', 'foreign'].sort());
+  });
+  it('keeps fresh partial runs and exposes unknown disk/root state', async () => {
+    const root = fixture();
+    rmSync(path.join(root, names[0], 'result.json'));
+    const plan = await pruneRunsWithReport(root, 1, now, { dryRun: true, measureDisk: async () => null });
+    expect(plan.preview?.kept).toContainEqual({ path: path.join(root, names[0]), reason: 'incomplete-grace' });
+    expect(plan.disk.status).toBe('unmeasured');
+    expect((await pruneRunsWithReport(path.join(root, 'absent'), 1, now, { dryRun: true })).preview?.rootStatus).toBe('unreadable');
+  });
+  it('exposes zero-effect preview through the existing retain CLI', async () => {
+    const root = fixture();
+    const report = await retainRunsCommand(['--evidence-root', root, '--dry-run']);
+    expect(report.preview?.advisory).toBe(true);
+    expect(report.removed).toEqual([]);
+    expect(readdirSync(root).sort()).toEqual(names);
+  });
+});
 
 describe('declared completion receipt retention', () => {
   const receipts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json'];
