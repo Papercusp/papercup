@@ -6,6 +6,7 @@ const h = vi.hoisted(() => {
   const order: string[] = [];
   return {
     order,
+    lineageQuery: vi.fn(async (_sql: string, _params: string[]): Promise<Record<string, unknown>[]> => [{ exists: 1 }]),
     existsSync: vi.fn(() => false),
     mkdir: vi.fn(async () => undefined),
     writeFile: vi.fn(async () => undefined),
@@ -41,6 +42,11 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 vi.mock('../../harness/docs/harness-repo', () => ({ resolveHarnessDocPaths: h.resolveHarnessDocPaths }));
+vi.mock('../../promotion-lineage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../promotion-lineage')>();
+  return { ...actual, validatePromotedFrom: (raw: Parameters<typeof actual.validatePromotedFrom>[0], workspace: string) =>
+    actual.validatePromotedFrom(raw, workspace, h.lineageQuery) };
+});
 vi.mock('../../harness/docs/doc-fs', () => ({ safeJoinUnderRoot: h.safeJoinUnderRoot }));
 vi.mock('../../harness/docs/manual-anchor', () => ({ anchorManualDoc: h.anchorManualDoc }));
 vi.mock('../../harness/docs/authored-doc-projection', () => ({ applyProjectionBanner: h.applyProjectionBanner }));
@@ -58,7 +64,7 @@ type HandlerResult = { content: Array<{ text: string }>; isError?: boolean };
 type AuthorHandler = (args: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<HandlerResult>;
 
 const callAuthor = (args: Record<string, unknown>) =>
-  (authorTool as unknown as { handler: AuthorHandler }).handler(args, { isSuperuser: true });
+  (authorTool as unknown as { handler: AuthorHandler }).handler(args, { isSuperuser: true, workspaceId: 'lineage-workspace' });
 
 const baseArgs = {
   slug: 'current-refresh',
@@ -75,8 +81,34 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.existsSync.mockImplementation(() => false);
   h.getAuthoredDocContent.mockResolvedValue(null);
+  h.lineageQuery.mockReset();
+  h.lineageQuery.mockResolvedValue([{ exists: 1 }]);
   h.generateNativeArchitecture.mockResolvedValue({ body: '## Source-backed architecture\n\nCited static relationship.',
     documents: ['api.ts', 'target.ts'], sourceFingerprint: 'a'.repeat(64), statements: 1 });
+});
+
+describe('docs:author promotion lineage write boundary', () => {
+  it('persists resolved lineage in canonical frontmatter and the projection', async () => {
+    const promotedFrom = [{ kind: 'work-item', ref: 'WI-123' }];
+    const result = await callAuthor({ ...baseArgs, promotedFrom });
+    expect(JSON.parse(result.content[0].text).ok).toBe(true);
+    expect(h.lineageQuery).toHaveBeenCalledWith(expect.stringContaining('harness_shared.work_items'), ['lineage-workspace', 'WI-123']);
+    const content = h.anchorManualDoc.mock.calls[0][0].content;
+    expect(authorTool).toBeDefined();
+    expect(content).toContain('promotedFrom:');
+    expect(content).toContain('WI-123');
+    expect(h.writeFile).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('WI-123'), 'utf8');
+  });
+
+  it.each(['missing', 'unavailable'])('refuses %s lineage before canonical persistence or projection', async (state) => {
+    if (state === 'missing') h.lineageQuery.mockResolvedValue([]);
+    else h.lineageQuery.mockRejectedValue(new Error('resolver offline'));
+    await expect(callAuthor({ ...baseArgs, promotedFrom: [{ kind: 'work-item', ref: 'WI-123' }] }))
+      .rejects.toThrow(state === 'missing' ? 'source missing' : 'resolution unavailable');
+    expect(h.anchorManualDoc).not.toHaveBeenCalled();
+    expect(h.writeFile).not.toHaveBeenCalled();
+    expect(h.refreshDocPageSections).not.toHaveBeenCalled();
+  });
 });
 
 describe('docs:author native architecture write boundary', () => {
