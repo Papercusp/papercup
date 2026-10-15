@@ -52,6 +52,8 @@ describe('capability:git-evidence', () => {
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', byte_limit: MAX_GIT_EVIDENCE_PAGE_BYTES }).success).toBe(false);
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', byte_offset: 0, byte_limit: MAX_GIT_EVIDENCE_PAGE_BYTES }).success).toBe(true);
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', rootHarnessSlug: 'portal' }).success).toBe(true);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', repositoryPath: 'libs/sub' }).success).toBe(true);
+    expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', repositoryPath: '../outside' }).success).toBe(false);
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', cwd: '/external' }).success).toBe(false);
     expect(schema.safeParse({ op: 'readFileAtCommit', commitSha: sha, path: 'evidence.txt', rootHarnessSlug: ' ' }).success).toBe(false);
     expect(schema.safeParse({ op: 'isAncestor', ancestorSha: sha, descendantSha: sha, rootHarnessSlug: 'portal' }).success).toBe(false);
@@ -191,6 +193,35 @@ describe('capability:git-evidence', () => {
       resolved: { repositoryPath: 'nested', commitSha: pinnedSubmoduleCommit, blobSha: pinnedBlob },
       content: 'pinned submodule source\n',
     });
+
+    const directChildRead = await runJudgeGitEvidence(
+      {
+        op: 'readFileAtCommit',
+        commitSha: pinnedSubmoduleCommit,
+        path: 'source.ts',
+        repositoryPath: 'nested',
+      },
+      { repositoryDir: root, signal: never },
+    );
+    expect(directChildRead).toMatchObject({
+      ok: true,
+      op: 'readFileAtCommit',
+      commitSha: pinnedSubmoduleCommit,
+      path: 'source.ts',
+      resolved: { repositoryPath: 'nested', commitSha: pinnedSubmoduleCommit, blobSha: pinnedBlob },
+      content: 'pinned submodule source\n',
+    });
+
+    const invalidRepository = await runJudgeGitEvidence(
+      {
+        op: 'readFileAtCommit',
+        commitSha: pinnedSubmoduleCommit,
+        path: 'source.ts',
+        repositoryPath: '../outside',
+      },
+      { repositoryDir: root, signal: never },
+    );
+    expect(invalidRepository).toMatchObject({ ok: false, reason: 'invalid_repository_path' });
   });
 
   it('routes concurrent historical reads through the dedicated read-only Git runner', async () => {

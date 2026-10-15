@@ -84,12 +84,17 @@ export function isSafeGitEvidencePath(value: string): boolean {
 const relativeFilePath = z.string().refine(isSafeGitEvidencePath, {
   message: 'path must be a normalized repository-relative POSIX file path',
 });
+const relativeRepositoryPath = z.string().refine(
+  (value) => value === '.' || isSafeGitEvidencePath(value),
+  { message: 'repositoryPath must be "." or a normalized repository-relative POSIX path' },
+);
 
 const readFileAtCommitArgs = z.object({
   op: z.literal('readFileAtCommit').describe('Read a UTF-8 blob from an immutable commit. Oversized blobs are returned in bounded byte pages.'),
   commitSha: fullCommitSha.describe('Full 40- or 64-character commit SHA; refs and abbreviations are refused.'),
   path: relativeFilePath.describe('Repository-relative POSIX file path; absolute paths and traversal are refused.'),
   rootHarnessSlug: z.string().trim().min(1).max(120).optional().describe('Registered harness whose repository contains the cited commit, taken from the evidence measurement. Resolved only in the caller workspace; no arbitrary directory is accepted.'),
+  repositoryPath: relativeRepositoryPath.optional().describe('Optional nested Git repository path under the resolved root, taken from the evidence measurement pin. It must resolve inside that root and contain its own .git entry.'),
   byte_offset: z.number().int().nonnegative().optional().describe('0-based byte offset for an exact page. Pair with byte_limit; the first page of an oversized blob defaults to 0.'),
   byte_limit: z.number().int().positive().max(MAX_GIT_EVIDENCE_PAGE_BYTES).optional().describe(`Maximum exact bytes in this page (≤${MAX_GIT_EVIDENCE_PAGE_BYTES}). Follow next_cursor for the next page.`),
 }).strict();
@@ -152,6 +157,7 @@ export function doorSafeGitEvidencePageBytes(
   requestedBytes: number,
   rootHarnessSlug?: string,
   resolved?: GitEvidenceResolvedBlob,
+  repositoryPath?: string,
 ): number {
   const envelopeChars = JSON.stringify({
     ok: true,
@@ -159,6 +165,7 @@ export function doorSafeGitEvidencePageBytes(
     commitSha,
     path,
     ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+    ...(repositoryPath ? { repositoryPath } : {}),
     ...(resolved ? { resolved } : {}),
     encoding: 'base64',
     byte_offset: Number.MAX_SAFE_INTEGER,
@@ -173,6 +180,7 @@ export function doorSafeGitEvidencePageBytes(
         commitSha,
         path,
         ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+        ...(repositoryPath ? { repositoryPath } : {}),
         byte_offset: Number.MAX_SAFE_INTEGER,
         byte_limit: MAX_GIT_EVIDENCE_PAGE_BYTES,
       },
@@ -253,6 +261,36 @@ async function runJudgeGitEvidenceInner(
     return result;
   };
   const invoke = (argv: string[]) => invokeAt(repositoryDir, argv);
+
+  let selectedRepositoryPath = '.';
+  if (args.op === 'readFileAtCommit' && args.repositoryPath !== undefined) {
+    if (args.repositoryPath !== '.' && !isSafeGitEvidencePath(args.repositoryPath)) {
+      return { ok: false, reason: 'invalid_repository_path' };
+    }
+    const top = await invoke(['rev-parse', '--show-toplevel']);
+    if (top.code !== 0 || !isAbsolute(top.output.trim())) {
+      const message = top.output.slice(0, 300);
+      return {
+        ok: false,
+        reason: top.code === null ? 'repository_probe_failed' : 'not_git_repository',
+        ...(message ? { message } : {}),
+      };
+    }
+    const repositoryRoot = top.output.trim();
+    try {
+      const rootRealPath = await realpath(repositoryRoot);
+      const selectedRealPath = await realpath(resolve(repositoryRoot, args.repositoryPath));
+      const withinRoot = relative(rootRealPath, selectedRealPath);
+      if (withinRoot === '..' || withinRoot.startsWith(`..${sep}`) || isAbsolute(withinRoot)) {
+        return { ok: false, reason: 'repository_path_outside_root' };
+      }
+      if (args.repositoryPath !== '.') await lstat(resolve(selectedRealPath, '.git'));
+      repositoryDir = selectedRealPath;
+      selectedRepositoryPath = args.repositoryPath;
+    } catch {
+      return { ok: false, reason: 'nested_repository_unavailable' };
+    }
+  }
 
   const resolveCommit = async (input: string): Promise<string | null> => {
     if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(input)) return null;
@@ -374,7 +412,9 @@ async function runJudgeGitEvidenceInner(
         }
       }
       const resolved: GitEvidenceResolvedBlob = {
-        repositoryPath: location.repo,
+        repositoryPath: selectedRepositoryPath === '.'
+          ? location.repo
+          : location.repo === '.' ? selectedRepositoryPath : `${selectedRepositoryPath}/${location.repo}`,
         commitSha: location.commitSha,
         blobSha: location.object,
       };
@@ -445,7 +485,9 @@ async function runJudgeGitEvidenceInner(
     }
 
     const requestedLimit = args.byte_limit ?? MAX_GIT_EVIDENCE_PAGE_BYTES;
-    const pageLimit = doorSafeGitEvidencePageBytes(commitSha, args.path, requestedLimit, args.rootHarnessSlug, resolved);
+    const pageLimit = doorSafeGitEvidencePageBytes(
+      commitSha, args.path, requestedLimit, args.rootHarnessSlug, resolved, args.repositoryPath,
+    );
     if (pageLimit <= 0) {
       return {
         ok: false,
@@ -477,6 +519,7 @@ async function runJudgeGitEvidenceInner(
                 commitSha,
                 path: args.path,
                 ...(args.rootHarnessSlug ? { rootHarnessSlug: args.rootHarnessSlug } : {}),
+                ...(args.repositoryPath ? { repositoryPath: args.repositoryPath } : {}),
                 byte_offset: nextOffset,
                 byte_limit: pageLimit,
               },
@@ -535,7 +578,7 @@ export default defineTool({
     when: 'A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.',
     notWhen: 'For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.',
     chaining:
-      'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path. Paths below a submodule follow the child commit pinned by each parent gitlink; the result reports resolved.repositoryPath, resolved.commitSha, and resolved.blobSha while commitSha remains the requested superproject commit. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:"base64", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null.',
+      'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path. Paths below a submodule follow the child commit pinned by each parent gitlink; the result reports resolved.repositoryPath, resolved.commitSha, and resolved.blobSha while commitSha remains the requested superproject commit. When a binding measurement pins a nested repository HEAD directly, pass its path as repositoryPath and use the child-relative file path and commit; the nested repository must resolve inside the selected root. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:"base64", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null.',
   },
   capability: 'capability:git-evidence:read',
   effect: 'read',
