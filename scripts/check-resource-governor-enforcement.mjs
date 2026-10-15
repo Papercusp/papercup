@@ -486,8 +486,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/tauri-surface-verify-reports.mts (EI-25357092317407008; third start reviewed under WI-10007542; fourth under WI-6554700010008629; fifth under WI-6554700010008580; sixth under EI-25822025814936255): disposable isolated Tauri acceptance, with no resident queue or detached worker. The two native bridge/poll execFileSync sites have 60s/90s deadlines. The third runs the exact frozen native test files through test:file, admitted upstream by runGovernedTestProcess. The fourth publishes the kernel-measured native runtime witness in one awaited Node child with a 60s deadline. The fifth runs only a prepared source-snapshot bundle with its recorded SHA-256 checked before execFile, preserving the owned private workspace and discovery directory, a 300s deadline, and 4MiB output bound. The sixth invokes the maintained frozen bundle-host.sh synchronously for unique receipt-attested script inputs before the test runner starts, with a 300s preparation deadline and the same verified private test environment. That recipe retains its dependency-reader mutex and restricted-source checks. verifyVerifierSourceSync checks the archive before and after compilation; profile entries bind the resulting bytes to their source-root paths. Preparation does not consume or widen the native journey's 300s limit. All children are awaited and exit within the enclosing isolated verifier operation; none adds independent managed serving capacity.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return resourceStartCallCount(source) === 6 &&
-        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 5 &&
+      return resourceStartCallCount(source) === 7 &&
+        [...code.matchAll(/\bexecFileSync\s*\(/g)].length === 6 &&
         [...code.matchAll(/\bexecFile\s*\(/g)].length === 1 &&
         // Fifth start: the awaited native child, with its owned profile restored.
         source.includes("const env = nativeChildEnvironment(profile);") &&
@@ -667,11 +667,16 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook that makes the restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: ONE synchronous `execFileSync('git', ['-C', <checkout>, ...])` call site that runs read-only `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module) and `cat-file blob` (per module whose bytes differ from HEAD). Each call is bounded by a 60 s timeout and awaited to exit before the module load continues; nothing is detached and nothing is held after exit. It runs only inside the census child that scripts/lib/restricted-hold-preflight.mjs spawnCensus starts (its argv and NODE_OPTIONS name this loader), and that child is the one timeout-bounded census start already dispositioned above. Every door runs that child at most once per process, so the git reads add no residency or queue of their own. Pinned by matchesSource to that one timeout-bounded git start: a second start in this file falls out of the exemption.",
+      "P-016 reviewed bypass disposition for scripts/lib/committed-source-loader.mjs (plan personal-data-reader-set-labels-2026-10-01 D-012; WI-10005764, WI-10005802): the `--import` load hook makes the restricted-hold census child execute only committed bytes. Its only start is the `git(top, args)` helper: one synchronous `execFileSync(gitExecutable, ['-C', top, ...args])` site that reads `ls-tree -r HEAD` (once per checkout, cached), `check-ignore -q` (per untracked module), and `cat-file blob` (per differing module). The executable resolves through realpath to an absolute executable; each read has a 60 s timeout, is awaited, and leaves no resident child. The hook runs only inside the timeout-bounded restricted-hold census child, which already owns admission. The exact executable-resolution and single-read shape is pinned below.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
-        /\breturn execFileSync\(/.test(code) && /\btimeout:\s*GIT_TIMEOUT_MS\b/.test(code) &&
+        /\breturn execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/.test(code) &&
+        source.includes("const COMMITTED_SOURCE_GIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_GIT';") &&
+        source.includes("if (configured && !isAbsolute(configured))") &&
+        source.includes("const resolved = realpathSync(candidate);") &&
+        source.includes("accessSync(resolved, fsConstants.X_OK);") &&
+        /\btimeout:\s*GIT_TIMEOUT_MS\b/.test(code) &&
         !/\bnew\s+Worker\s*\(|\bnew\s+Piscina\s*\(|\.admit\s*\(|\bdetached\b/.test(code) &&
         !hasCalledResourceStartAlias(code);
     },
@@ -2219,8 +2224,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for review-cloud-tutorial-native.mjs: the native tutorial review runs under pc-heavy, uses one headed Playwright worker, tracks its window-manager/accessibility/test children together, and sends termination to every child in the finally path. It is an attended isolated verification journey, not a serving workload.",
-    matchesSource: (source) => resourceStartCallCount(source) === 3 &&
+      "P-016 reviewed bypass disposition for review-cloud-tutorial-native.mjs: the attended native tutorial review runs under pc-heavy with one headed Playwright worker. Its browser readiness probe owns a process group and 15s deadline with SIGTERM/SIGKILL cleanup; the desktop phase tracks its window-manager, accessibility and test children and stops them in finally. These four lexical start sites create no serving workload.",
+    matchesSource: (source) => resourceStartCallCount(source) === 4 &&
       source.includes("scripts/pc-heavy.sh") &&
       source.includes("--workers=1") &&
       source.includes("const stop = () => { for (const c of children)") &&
@@ -2295,7 +2300,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("if (terminal || attempt === attempts - 1)")
       );
       const shapePinned = source.includes("REAPER_IMAGE")
-        ? resourceStartCallCount(source) === 5 && readinessPinned &&
+        ? resourceStartCallCount(source) === 8 && readinessPinned &&
           testcontainersImports === 1 &&
           source.includes("import { getContainerRuntimeClient } from 'testcontainers';") &&
           source.includes(`await dockerAllocation(['run', '-d', '--rm', '--pull=${hasReadiness ? 'missing' : 'never'}', '--name', name,`) &&
@@ -2336,6 +2341,129 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       [...stripCommentsAndStrings(source, "cluster-lag-watchdog.ts").matchAll(RESIDENT_QUEUE)]
         .map((match) => match[1])
         .join(",") === "pending,pending",
+  },
+  {
+    path: "packages/operator-core/lib/release/sibling-tree-root.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for packages/operator-core/lib/release/sibling-tree-root.ts (WI-6554700010009501): one awaited read-only git rev-parse probe identifies the enclosing checkout for sibling-tree path resolution. Each child has a 10s timeout and 64KiB output bound; the existing outer walk visits at most 16 ancestors and stops on the first failed probe. It creates no resident workload or queue.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(/\bexecFileAsync\s*\(/g)].length === 1 &&
+        source.includes("const execFileAsync = promisify(execFile);") &&
+        source.includes("execFileAsync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {") &&
+        source.includes("timeout: 10_000") && source.includes("maxBuffer: 64 * 1024") &&
+        source.includes("const MAX_ENCLOSING_HOPS = 16;") &&
+        source.includes("for (let hop = 0; hop < MAX_ENCLOSING_HOPS; hop++)");
+    },
+  },
+  {
+    path: "scripts/bench-work-item-continuations.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/bench-work-item-continuations.ts: this explicit staging measurement uses the attributed mcp-call CLI to measure real work-item writes and readbacks. It requires the current session and already-owned items; each child is awaited with a 35s timeout, 1MiB output bound, and propagated abort signal. The fixed experiment drains all outstanding calls in finally.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return source.includes("const exec = promisify(execFile);") &&
+        [...code.matchAll(/\bexec\s*\(/g)].length === 1 &&
+        source.includes("resolve(ROOT, 'scripts/mcp-call.mjs')") &&
+        source.includes("timeout: 35_000, maxBuffer: 1024 * 1024, signal");
+    },
+  },
+  {
+    path: "scripts/bench-work-item-continuations.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/bench-work-item-continuations.ts: pending holds exactly the three controlled outstanding promises (held, cancelled, ordered), not queued work. The scenario creates those three at fixed call sites and awaits all of them with Promise.allSettled in finally.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(RESIDENT_QUEUE)].map((match) => match[1]).join(",") ===
+          "pending,pending,pending" &&
+        source.includes("pending.push(heldWrite);") &&
+        source.includes("pending.push(cancelled);") &&
+        source.includes("pending.push(ordered);") &&
+        source.includes("await Promise.allSettled(pending);");
+    },
+  },
+  {
+    path: "scripts/bench-work-items-get.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/bench-work-items-get.ts: this one-shot staging cohort measures attributed mcp-call startup and authoritative summary reads. It accepts 1–10 item ids and 1–10 repeats, executes calls sequentially (at most 100), and bounds each child to 35s and 1MiB output; it creates no independently managed serving capacity.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return source.includes("const exec = promisify(execFile);") &&
+        [...code.matchAll(/\bexec\s*\(/g)].length === 1 &&
+        source.includes("timeout: 35_000, maxBuffer: 1024 * 1024") &&
+        source.includes("input.ids.length > 10") && source.includes("input.repeats > 10") &&
+        source.includes("if (port !== '3170')");
+    },
+  },
+  {
+    path: "scripts/lib/git-index-fault.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/git-index-fault.mjs: the explicit audit-sink diagnostic uses bounded synchronous sudo/auditctl and state reads under one 10s probe deadline. Each execFileSync inherits the remaining timeout, caps output at 4MiB, and exits before the probe continues; it creates no resident worker or queue.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("run = (args, budget) => execFileSync('sudo', ['-n', ...args], {") &&
+        source.includes("timeout: budget, killSignal: 'SIGKILL'") &&
+        source.includes("maxBuffer: 4 * 1024 * 1024") &&
+        source.includes("const deadline = started + Math.min(10_000, Math.max(1, timeoutMs));") &&
+        source.includes("process.argv.includes('--audit-sink')");
+    },
+  },
+  {
+    path: "scripts/lib/related-tests.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/lib/related-tests.mjs: its three awaited child sites only enumerate maintained test inputs (command-selection, safe glob expansion, and Vitest config contracts) for the root test:affected job admitted by pc-heavy. The two selector reads have 10s deadlines; config resolution has a 120s deadline and 64MiB output bound. Actual test execution remains with the governed test runner.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 3 &&
+        source.includes("execFileSync(executable, args, { cwd: wsRoot, encoding: 'utf8', timeout: 10_000 })") &&
+        source.includes("execFileSync('/bin/sh', ['-c',") &&
+        source.includes("execFileSync(process.execPath, [path.join(root, 'scripts/resolve-vitest-config-contracts.mjs')") &&
+        source.includes("timeout: 120_000") && source.includes("maxBuffer: 64 * 1024 * 1024") &&
+        !/\bspawn\s*\(/.test(code);
+    },
+  },
+  {
+    path: "scripts/resolve-vitest-config-contracts.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/resolve-vitest-config-contracts.mjs: the single child synchronizes and inspects an Astro test-selection workspace for the admitted test:affected selector. Requests are processed sequentially; each child has a 120s timeout and 64MiB output bound, and actual tests run only in the governed test runner.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return resourceStartCallCount(source) === 1 &&
+        source.includes("execFileSync(process.execPath, [fileURLToPath(import.meta.url), '--astro-selection-child']") &&
+        source.includes("timeout: 120_000, maxBuffer: 64 * 1024 * 1024") &&
+        source.includes("for (const request of requests)");
+    },
+  },
+  {
+    path: "scripts/review-cloud-tutorial-native.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for scripts/review-cloud-tutorial-native.mjs: pending is the browser-readiness probe's CDP request correlation map, not a work queue. Entries are created only for protocol SEND ids and removed on matching RECV; the isolated browser process is killed on its 15s deadline, and remaining ids are diagnostic output.",
+    matchesSource: (source) => {
+      const code = stripCommentsAndStrings(source);
+      return [...code.matchAll(RESIDENT_QUEUE)].map((match) => match[1]).join(",") === "pending" &&
+        source.includes("const phases = [], pending = new Map();") &&
+        source.includes("pending.set(message.id, { id: message.id, method: message.method, at: match[1] });") &&
+        source.includes("pending.delete(message.id);") &&
+        source.includes("pending: [...pending.values()]") &&
+        source.includes("timeoutMs = 15000");
+    },
   },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(

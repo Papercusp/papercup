@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { capacityRow, parseRampLog } from './capacity-table';
 import {
   buildRows,
   CAPACITY,
@@ -22,14 +24,50 @@ const row = (id: string, agents = 50, saved: number | null = null) => {
 };
 
 describe('cost-model inputs', () => {
+  // Original GCP output, retained with the full source-file hashes. Do not compare the model
+  // only with old decision prose: D-020 corrected D-019's slot-based pricing, but the model
+  // and its old regression both retained 64 instead of the 60.1 sessions actually held.
+  const { measurements } = JSON.parse(readFileSync(new URL('./fixtures/capacity-ramps.json', import.meta.url), 'utf8')) as {
+    measurements: Array<{
+      capacityId: string;
+      source: string;
+      sourceSha256: string;
+      label?: string;
+      verdictLines?: string[];
+      summary?: { failed: number; achievedConcurrency: { target: number; mean: number } };
+    }>;
+  };
+
+  it('retains original measurement evidence for every model capacity input', () => {
+    expect(measurements.map((m) => m.capacityId).sort()).toEqual(CAPACITY.map((c) => c.id).sort());
+    for (const m of measurements) {
+      expect(m.source).not.toBe('');
+      expect(m.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  it.each(measurements)('$capacityId uses achieved concurrency and censoring from the original run', (m) => {
+    const c = capacity(m.capacityId);
+    if (m.verdictLines && m.label) {
+      const measured = capacityRow(c.machineType, m.label, parseRampLog(m.verdictLines.join('\n')), { capture: null, sessions: [] }, 120);
+      expect(measured.activeAgents).not.toBeNull();
+      expect(c.active).toBe(measured.activeAgents);
+      expect(c.atLeast ?? false).toBe(measured.censored);
+    } else {
+      expect(m.summary).toBeDefined();
+      expect(m.summary?.failed).toBe(0);
+      expect(c.active).toBe(Math.min(m.summary!.achievedConcurrency.target, m.summary!.achievedConcurrency.mean));
+      expect(c.atLeast).toBe(true); // D-040's last tested step; no saturation run followed it.
+    }
+  });
+
   it('every capacity row cites a plan Decision', () => {
     for (const c of CAPACITY) expect(c.source, c.id).toMatch(/\bD-\d{3}\b/);
   });
 
-  // The decisions priced their rows from the same gcp-rails catalog prices, so the model must
-  // reproduce the published per-active-agent figures; a price or capacity edit that breaks one fails here.
+  // Reproduce the achieved-concurrency figures, including D-020's correction to D-019.
   it.each([
-    ['mixed-e2s16', 3.86, 'D-019'],
+    ['mixed-e2s16', 4.11, 'D-020'],
     ['mixed-e2c16', 2.81, 'D-020'],
     ['heavy-e2s16', 10.33, 'D-023'],
     ['heavy-e2s16-adm', 7.76, 'D-023'],
@@ -71,14 +109,14 @@ describe('cost-model levers', () => {
   });
 
   it('a dedicated VM must hold its own p99 busy agents plus the Server slot', () => {
-    // 50 agents x 0.35 x 1.3 = 22.75 busy at p99, inside one e2-standard-8 (32 - 1 slots).
+    // 50 agents x 0.35 x 1.3 = 22.75 busy at p99, inside one e2-standard-8 (31.6 - 1 active).
     expect(dedicatedHosts(50, capacity('mixed-e2s8'))).toBe(1);
     expect(dedicatedHosts(1, capacity('mixed-e2s4'))).toBe(1);
     // 100 agents need 45.5 at p99: two e2-standard-8.
     expect(dedicatedHosts(100, capacity('mixed-e2s8'))).toBe(2);
-    // 140 agents: 63.7 busy at p99 over 31 usable slots = 3 hosts. Sizing on the mean (49 busy)
-    // or forgetting the Server slot (63.7 / 32) would both give 2.
-    expect(dedicatedHosts(140, capacity('mixed-e2s8'))).toBe(3);
+    // 135 agents: 61.425 busy at p99 over 30.6 usable active capacity = 3 hosts. Sizing on the
+    // mean (47.25 busy) or forgetting the Server slot (61.425 / 31.6) would both give 2.
+    expect(dedicatedHosts(135, capacity('mixed-e2s8'))).toBe(3);
   });
 
   it('each lever row costs no more than the row it builds on', () => {

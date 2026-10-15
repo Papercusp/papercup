@@ -17,7 +17,7 @@
  */
 export const HOSTED_GCP_OWN_VM_SIZES = [
   { size: 'e2-standard-4', maxAgents: 15 },
-  { size: 'e2-standard-8', maxAgents: 68 },
+  { size: 'e2-standard-8', maxAgents: 67 },
   { size: 'e2-custom-16-32768', maxAgents: 158 },
 ] as const;
 

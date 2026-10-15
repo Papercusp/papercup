@@ -257,7 +257,98 @@ describe('PostgresHostedAllocationStore (real hosted service transactions)', () 
       .rejects.toThrow(/explicit unknownReason/);
     // The database keeps an outcome's identity fields immutable across revisions.
     await expect(store.recordOutcome(outcome({ workflowRef: 'pilot:other', observedAtMs: T + 8 }))).rejects.toThrow(/keep immutable fields/);
+    await expect(store.recordOutcome(outcome({ allocationId: 'proj-b', reservationIds: [], observedAtMs: T + 8 })))
+      .rejects.toThrow(/keep immutable fields/);
     expect(await count('hosted_outcome_cost_records', o)).toBe(4);
+  });
+
+  it('exports each reservation once across ancestor rollups and preserves incomplete bills and human measurements', async () => {
+    const o = org();
+    for (const costClass of HOSTED_COST_CLASSES) {
+      const prefix = `${costClass}-`;
+      await smallTree(o, { costClass, prefix });
+      const final = hold(o, `${prefix}proj-a`, 100_000, { costClass, reservationId: `${prefix}final` });
+      const pending = hold(o, `${prefix}proj-a`, 100_000, { costClass, reservationId: `${prefix}pending` });
+      expect((await store.reserve(final)).outcome).toBe('admitted');
+      expect((await store.reserve(pending)).outcome).toBe('admitted');
+      for (const [h, cost, providerFinal] of [[final, 30_003, true], [pending, 25_000, false]] as const) {
+        expect((await store.settle({ organization: o, reservationId: h.reservationId,
+          costSource: providerFinal ? 'provider-billed' : 'provider-reported', costMicros: cost, providerFinal,
+          observedAtMs: T + 1, evidenceRef: 'fixture:provider-observation' })).outcome).toBe('settled');
+      }
+      expect((await store.recordOutcome({ organization: o, outcomeId: `${prefix}outcome`, allocationId: `${prefix}proj-a`,
+        workflowRef: 'pilot:finance', evidenceClass: 'internal-simulation', result: { state: 'accepted' },
+        reservationIds: [final.reservationId, pending.reservationId],
+        reviewEffortSeconds: { unknownReason: 'human-review-not-measured' }, reworkCount: { unknownReason: 'rework-not-measured' },
+        observedAtMs: T + 2, evidenceRef: 'fixture:outcome', recordedBy: 'fixture' })).outcome).toBe('recorded');
+    }
+    const exported = await store.accountingExport({ organization: o, month: MONTH });
+    expect(exported).toMatchObject({ organization: o, month: MONTH, currency: 'USD' });
+    expect(exported.rows).toHaveLength(6);
+    for (const costClass of HOSTED_COST_CLASSES) {
+      const rows = exported.rows.filter(r => r.costClass === costClass);
+      expect(rows).toHaveLength(2);
+      expect(rows.reduce((sum, r) => sum + r.committedMicros, 0)).toBe(130_003);
+      expect(exported.byCostClass[costClass]).toEqual({ reservations: 2, pendingProviderFinal: 1,
+        committedMicros: 130_003, unreconciledMicros: 100_000, providerFinalMicros: 30_003 });
+      expect(rows[0]!.allocationPath).toEqual([`${costClass}-org`, `${costClass}-dept`, `${costClass}-proj-a`]);
+      expect(rows.find(r => r.reservationId.endsWith('final'))).toMatchObject({ revision: 2,
+        providerFinalCostMicros: { value: 30_003 }, outcomeIds: [`${costClass}-outcome`] });
+      expect(rows.find(r => r.reservationId.endsWith('pending'))).toMatchObject({ costSource: 'provider-reported',
+        observedCostMicros: { value: 25_000 }, providerFinalCostMicros: { unknownReason: 'provider-final-bill-not-recorded' } });
+      expect(exported.outcomes.find(r => r.outcomeId === `${costClass}-outcome`)).toMatchObject({
+        resultState: 'accepted', evidenceClass: 'internal-simulation', resultCostMicros: {
+          unknownReason: `provider-final-pending:${costClass}-pending` } });
+      expect(exported.gaps).toEqual(expect.arrayContaining([
+        { kind: 'provider-final-pending', ref: `${costClass}-pending`, reason: 'provider-final-bill-not-recorded' },
+        { kind: 'unknown-review-effort', ref: `${costClass}-outcome`, reason: 'human-review-not-measured' },
+        { kind: 'unknown-rework', ref: `${costClass}-outcome`, reason: 'rework-not-measured' },
+      ]));
+    }
+  });
+
+  it('isolates accounting exports by both organization keys and month, including reused reservation IDs', async () => {
+    const o = org();
+    const foreign = [{ ...o, organizationId: randomUUID() }, { ...o, controlWorkspaceId: randomUUID() }];
+    for (const [index, scope] of [o, ...foreign].entries()) {
+      await smallTree(scope);
+      expect((await store.reserve(hold(scope, 'proj-a', (index + 1) * 10_000, { reservationId: 'same-id' }))).outcome).toBe('admitted');
+    }
+    const exported = await store.accountingExport({ organization: o, month: MONTH });
+    expect(exported.rows).toHaveLength(1);
+    expect(exported.rows[0]).toMatchObject({ reservationId: 'same-id', committedMicros: 10_000,
+      observedCostMicros: { unknownReason: 'usage-cost-not-recorded' }, outcomeIds: [] });
+    expect(exported.gaps).toContainEqual({ kind: 'unattributed-reservation', ref: 'same-id', reason: 'no-recorded-workflow-outcome' });
+    const absent = await store.accountingExport({ organization: o, month: '2026-11' });
+    expect(absent.rows).toEqual([]); expect(absent.outcomes).toEqual([]);
+    expect(absent.byCostClass.model).toEqual({ reservations: 0, pendingProviderFinal: 0,
+      committedMicros: 0, unreconciledMicros: 0, providerFinalMicros: 0 });
+    await expect(store.accountingExport({ organization: o, month: '2026-13' })).rejects.toThrow('invalid hosted allocation month');
+  });
+
+  it('counts shared outcome costs once and exports only the latest outcome links and measurement revisions', async () => {
+    const o = org(); await smallTree(o);
+    expect((await store.reserve(hold(o, 'proj-a', 100_000, { reservationId: 'shared' }))).outcome).toBe('admitted');
+    const outcome = (outcomeId: string, change: Partial<HostedOutcomeRecordRequest> = {}): HostedOutcomeRecordRequest => ({
+      organization: o, outcomeId, allocationId: 'proj-a', workflowRef: 'pilot:finance', evidenceClass: 'synthetic',
+      result: { state: 'accepted' }, reservationIds: ['shared'], reviewEffortSeconds: { value: 0 }, reworkCount: { value: 0 },
+      observedAtMs: T + 1, evidenceRef: 'fixture:outcome', recordedBy: 'fixture', ...change,
+    });
+    for (const id of ['a', 'b']) expect((await store.recordOutcome(outcome(id))).outcome).toBe('recorded');
+    const first = await store.accountingExport({ organization: o, month: MONTH });
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0]).toMatchObject({ committedMicros: 100_000, outcomeIds: ['a', 'b'] });
+    expect(first.gaps).toContainEqual({ kind: 'shared-outcome-reservation', ref: 'shared',
+      reason: 'cost-counted-once;per-outcome-allocation-weights-not-recorded' });
+    expect((await store.recordOutcome(outcome('a', { reservationIds: [], result: { state: 'unknown',
+      unknownReason: 'review-pending' }, reviewEffortSeconds: { unknownReason: 'not-reviewed' }, observedAtMs: T + 2 }))).outcome).toBe('recorded');
+    const revised = await store.accountingExport({ organization: o, month: MONTH });
+    expect(revised.rows[0]!.outcomeIds).toEqual(['b']);
+    expect(revised.outcomes).toHaveLength(2);
+    expect(revised.outcomes.find(r => r.outcomeId === 'a')).toMatchObject({ revision: 2, reservationIds: [],
+      resultState: 'unknown', resultCostMicros: { unknownReason: 'no-linked-reservations' } });
+    expect(revised.gaps).toContainEqual({ kind: 'unknown-result', ref: 'a', reason: 'review-pending' });
+    expect(revised.gaps.some(g => g.kind === 'shared-outcome-reservation')).toBe(false);
   });
 
   it('enforces dense immutable revisions and service-only access in the database itself', async () => {

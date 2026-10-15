@@ -179,6 +179,44 @@ export interface HostedAllocationReport {
   readonly outcomes: readonly HostedOutcomeCostSummary[];
 }
 
+export interface HostedAllocationAccountingRow {
+  readonly reservationId: string;
+  readonly allocationId: string;
+  /** Organization, department and project IDs for filtering; this row's cost is counted once. */
+  readonly allocationPath: readonly string[];
+  readonly costClass: HostedCostClass;
+  readonly revision: number;
+  readonly observedAtMs: number;
+  readonly costSource: HostedHoldCostSource;
+  readonly maximumCostMicros: number;
+  readonly observedCostMicros: KnownOrUnknown<number>;
+  readonly providerFinalCostMicros: KnownOrUnknown<number>;
+  readonly committedMicros: number;
+  readonly unreconciledMicros: number;
+  readonly outcomeIds: readonly string[];
+}
+export interface HostedAllocationAccountingExport {
+  readonly organization: HostedAllocationOrganization;
+  readonly month: string;
+  readonly currency: 'USD';
+  readonly rows: readonly HostedAllocationAccountingRow[];
+  readonly byCostClass: Readonly<Record<HostedCostClass, {
+    readonly reservations: number;
+    readonly pendingProviderFinal: number;
+    readonly committedMicros: number;
+    readonly unreconciledMicros: number;
+    readonly providerFinalMicros: number;
+  }>>;
+  /** Latest recorded measurements retain their evidence class and explicit unknown reasons. */
+  readonly outcomes: readonly HostedOutcomeRecord[];
+  readonly gaps: readonly {
+    readonly kind: 'provider-final-pending' | 'unattributed-reservation' | 'shared-outcome-reservation'
+      | 'unknown-result' | 'unknown-result-cost' | 'unknown-review-effort' | 'unknown-rework';
+    readonly ref: string;
+    readonly reason: string;
+  }[];
+}
+
 type Row = Record<string, unknown>;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const MONTH = /^[0-9]{4}-(0[1-9]|1[0-2])$/;
@@ -505,6 +543,17 @@ function summarize(allocationId: string, records: readonly HostedOutcomeRecord[]
     reworkUnknown: records.filter(r => !('value' in r.reworkCount)).length };
 }
 
+async function readOutcomeRecords(sql: Sql, o: HostedAllocationOrganization, ids: readonly string[]): Promise<HostedOutcomeRecord[]> {
+  if (ids.length === 0) return [];
+  // The database append guard pins allocation_id across outcome revisions.
+  const rows = await sql<Row[]>`SELECT DISTINCT ON (outcome_id) *
+    FROM papercusp_auth.hosted_outcome_cost_records
+    WHERE control_workspace_id = ${o.controlWorkspaceId} AND organization_id = ${o.organizationId}
+      AND allocation_id = ANY(${'{' + ids.join(',') + '}'}::text[])
+    ORDER BY outcome_id, revision DESC`;
+  return rows.map(outcomeRow);
+}
+
 /** A consistent per-month position, read under the organization fence. */
 export async function readHostedAllocationReport(sql: Sql, input: { organization: HostedAllocationOrganization; month: string }):
     Promise<HostedAllocationReport> {
@@ -532,15 +581,70 @@ export async function readHostedAllocationReport(sql: Sql, input: { organization
       providerFinalMicros: classHolds.reduce((total, h) => add(total, h.providerFinal ? h.costMicros ?? 0 : 0), 0) };
   }
   const ids = [...all.keys()];
-  const rows = ids.length === 0 ? [] : await sql<Row[]>`SELECT DISTINCT ON (outcome_id) *
-    FROM papercusp_auth.hosted_outcome_cost_records
-    WHERE control_workspace_id = ${o.controlWorkspaceId} AND organization_id = ${o.organizationId}
-      AND allocation_id = ANY(${'{' + ids.join(',') + '}'}::text[])
-    ORDER BY outcome_id, revision DESC`;
-  const records = rows.map(outcomeRow);
+  const records = await readOutcomeRecords(sql, o, ids);
   const outcomes = [...new Set(records.map(r => r.allocationId))].sort()
     .map(id => summarize(id, records.filter(r => r.allocationId === id)));
   return { month: input.month, byCostClass, outcomes };
+}
+
+/** Reservation-level accounting projection of the existing ledger. Ancestor
+ * rollups and shared outcome links never multiply money. Non-final bills,
+ * unassigned costs and missing human measurements remain explicit gaps. */
+export async function readHostedAllocationAccountingExport(sql: Sql, input: {
+  organization: HostedAllocationOrganization; month: string;
+}): Promise<HostedAllocationAccountingExport> {
+  const o = organization(input.organization);
+  const report = await readHostedAllocationReport(sql, input);
+  // report holds the same transaction-scoped organization fence as every writer.
+  const population = await holds(sql, o, input.month);
+  const nodes = new Map(HOSTED_COST_CLASSES.flatMap(c => report.byCostClass[c].allocations.map(a => [a.allocationId, a] as const)));
+  const outcomes = await readOutcomeRecords(sql, o, [...nodes.keys()]);
+  const gaps: HostedAllocationAccountingExport['gaps'][number][] = [];
+  const associations = new Map<string, string[]>();
+  for (const outcome of outcomes) {
+    for (const reservationId of outcome.reservationIds) {
+      const ids = associations.get(reservationId) ?? [];
+      ids.push(outcome.outcomeId); associations.set(reservationId, ids);
+    }
+    if (outcome.resultState === 'unknown') gaps.push({ kind: 'unknown-result', ref: outcome.outcomeId,
+      reason: outcome.resultUnknownReason ?? 'result-not-measured' });
+    for (const [field, kind] of [['resultCostMicros', 'unknown-result-cost'],
+      ['reviewEffortSeconds', 'unknown-review-effort'], ['reworkCount', 'unknown-rework']] as const) {
+      const measurement = outcome[field];
+      if ('unknownReason' in measurement) gaps.push({ kind, ref: outcome.outcomeId, reason: measurement.unknownReason });
+    }
+  }
+  const byCostClass = {} as Record<HostedCostClass, HostedAllocationAccountingExport['byCostClass'][HostedCostClass]>;
+  for (const c of HOSTED_COST_CLASSES) {
+    const positions = report.byCostClass[c];
+    const classHolds = population.filter(h => h.costClass === c);
+    byCostClass[c] = { reservations: classHolds.length, pendingProviderFinal: classHolds.filter(h => !h.providerFinal).length,
+      committedMicros: positions.committedMicros, unreconciledMicros: positions.unreconciledMicros,
+      providerFinalMicros: positions.providerFinalMicros };
+  }
+  const rows = [...population].sort((a, b) => a.reservationId.localeCompare(b.reservationId)).map(h => {
+    const allocationPath: string[] = [];
+    let id: string | null = h.allocationId;
+    while (id !== null) {
+      const node = nodes.get(id);
+      if (!node || allocationPath.includes(id)) throw new Error('broken hosted allocation accounting path');
+      allocationPath.unshift(id); id = node.parentAllocationId;
+    }
+    const outcomeIds = [...(associations.get(h.reservationId) ?? [])].sort();
+    if (!h.providerFinal) gaps.push({ kind: 'provider-final-pending', ref: h.reservationId,
+      reason: 'provider-final-bill-not-recorded' });
+    if (outcomeIds.length === 0) gaps.push({ kind: 'unattributed-reservation', ref: h.reservationId,
+      reason: 'no-recorded-workflow-outcome' });
+    if (outcomeIds.length > 1) gaps.push({ kind: 'shared-outcome-reservation', ref: h.reservationId,
+      reason: 'cost-counted-once;per-outcome-allocation-weights-not-recorded' });
+    return { reservationId: h.reservationId, allocationId: h.allocationId, allocationPath, costClass: h.costClass,
+      revision: h.revision, observedAtMs: h.observedAtMs, costSource: h.costSource,
+      maximumCostMicros: h.maximumCostMicros,
+      observedCostMicros: h.costMicros === null ? { unknownReason: 'usage-cost-not-recorded' } : { value: h.costMicros },
+      providerFinalCostMicros: h.providerFinal ? { value: h.costMicros! } : { unknownReason: 'provider-final-bill-not-recorded' },
+      committedMicros: committedOf(h), unreconciledMicros: unreconciledOf(h), outcomeIds };
+  });
+  return { organization: o, month: report.month, currency: 'USD', rows, byCostClass, outcomes, gaps };
 }
 
 /** Standalone transaction wrapper; the functions above also compose inside a
@@ -556,5 +660,8 @@ export class PostgresHostedAllocationStore {
   recordOutcome(input: HostedOutcomeRecordRequest) { return this.run(sql => recordHostedOutcome(sql, input)); }
   report(input: { organization: HostedAllocationOrganization; month: string }) {
     return this.run(sql => readHostedAllocationReport(sql, input));
+  }
+  accountingExport(input: { organization: HostedAllocationOrganization; month: string }) {
+    return this.run(sql => readHostedAllocationAccountingExport(sql, input));
   }
 }

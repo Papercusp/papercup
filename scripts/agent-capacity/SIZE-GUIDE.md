@@ -13,15 +13,15 @@ Agent counts come from `cost-model.ts`, and each row names the plan decision it 
 
 | workload | machine | active | own VM | pooled host | USD/month on-demand / spot | spot USD per agent-month, pooled | spot USD per agent-month, own VM full | source |
 |---|---|---|---|---|---|---|---|---|
-| mixed | e2-standard-4 | 8 | 15 | 22 | 110 / 71 | 3.09 | 4.71 | D-019 |
-| mixed | e2-standard-8 | 32 | 68 | 91 | 208 / 129 | 1.42 | 1.90 | D-019 |
-| mixed | e2-standard-16 | 64 | 138 | 182 | 403 / 247 | 1.35 | 1.79 | D-019 |
-| mixed | e2-custom-16-32768 | 73.2 | 158 | 209 | 335 / 206 | 0.98 | 1.30 | D-020 |
+| mixed | e2-standard-4 | 7.9 | 15 | 22 | 110 / 71 | 3.13 | 4.71 | D-019 (achieved concurrency per D-020) |
+| mixed | e2-standard-8 | 31.6 | 67 | 90 | 208 / 129 | 1.43 | 1.93 | D-019 (achieved concurrency per D-020) |
+| mixed | e2-standard-16 | 60.1 | 129 | 171 | 403 / 247 | 1.44 | 1.91 | D-019 (corrected by D-020) |
+| mixed | e2-custom-16-32768 | >=73.2 | >=158 | >=209 | 335 / 206 | <=0.98 | <=1.30 | D-020 |
 | mixed | c4a-standard-16 | 87.6 | 190 | 250 | 539 / 250 | 1.00 | 1.32 | D-024 |
-| mixed | c4a-highcpu-16 | 83 | 180 | 237 | 457 / 213 | 0.90 | 1.19 | D-027 |
-| heavy | e2-standard-16 | 24 | 50 | 68 | 403 / 247 | 3.60 | 4.94 | D-023 (no admission) |
-| heavy | e2-standard-16 | 32 | 68 | 91 | 403 / 247 | 2.70 | 3.63 | D-023 (heavy-job admission) |
-| heavy | e2-standard-16 | >=48 | >=103 | >=137 | 403 / 247 | <=1.80 | <=2.40 | D-040 (admission + shared tsc-service; saturation moved from n40 to >= n48) |
+| mixed | c4a-highcpu-16 | >=83.3 | >=180 | >=238 | 457 / 213 | <=0.90 | <=1.19 | D-027 |
+| heavy | e2-standard-16 | 23.9 | 50 | 68 | 403 / 247 | 3.61 | 4.94 | D-023 (no admission) |
+| heavy | e2-standard-16 | 31.8 | 67 | 90 | 403 / 247 | 2.72 | 3.68 | D-023 (heavy-job admission) |
+| heavy | e2-standard-16 | >=47.9 | >=103 | >=136 | 403 / 247 | <=1.80 | <=2.40 | D-040 (admission + shared tsc-service; n48 held 47.9; slowdown unmeasured) |
 
 ## Smallest own VM for a workspace (mixed work, spot)
 
@@ -33,7 +33,7 @@ Agent counts come from `cost-model.ts`, and each row names the plan decision it 
 | 15 | e2-standard-4 | 71 |
 | 25 | e2-standard-8 | 129 |
 | 50 | e2-standard-8 | 129 |
-| 100 | e2-custom-16-32768 | 206 |
+| 100 | e2-custom-16-32768 | <=206 |
 
 A pool beats every row here: it is sized for the average, not for each workspace's own peak (see `cost-model.ts`, D-046).
 
@@ -50,7 +50,7 @@ Floor = the Server's cores and RAM at e2 spot rates, reachable only with near-pe
 
 A new Papercusp-hosted workspace gets its own `e2-standard-4` VM, spot (read from `packages/operator-core/lib/auth/hosted/first-workspace.ts`).
 
-- mixed: up to 15 assigned agents (8 active), 71 USD/month on spot (D-019).
+- mixed: up to 15 assigned agents (7.9 active), 71 USD/month on spot (D-019 (achieved concurrency per D-020)).
 - heavy: not measured on this shape.
 
 ## Pricing inputs
@@ -58,8 +58,8 @@ A new Papercusp-hosted workspace gets its own `e2-standard-4` VM, spot (read fro
 The Google cost a price has to cover each month, with a shared pool on spot:
 
 - per workspace, its Server: 5.10-12 USD, floor to packed; Server variant: embed sidecar exits when idle (P-532); source: D-045 + D-052.
-- per mixed agent: 0.90 USD on c4a-highcpu-16; source: D-027.
-- per heavy agent: <=1.80 USD on e2-standard-16; source: D-040 (admission + shared tsc-service; saturation moved from n40 to >= n48).
+- per mixed agent: <=0.90 USD on c4a-highcpu-16; source: D-027.
+- per heavy agent: <=1.80 USD on e2-standard-16; source: D-040 (admission + shared tsc-service; n48 held 47.9; slowdown unmeasured).
 
 The pricing model is the owner's decision and is not made yet. The default in use is a base fee per workspace plus a per-agent fee (D-046, D-052); metered busy agent-hours is the alternative. This guide commits no price.
 

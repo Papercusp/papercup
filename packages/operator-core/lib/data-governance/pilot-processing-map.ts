@@ -301,7 +301,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
     retention: 'audit class for organization and operator audit; provider-ledger for the model-call ledger.',
     canaryJourney: ['packages/operator-core/lib/auth/hosted/governance.test.ts'],
     unknowns: [
-      'Correlating accepted and denied actions across the three audit stores (P-008 evidence export) is not built yet.',
+      'Accepted/denied action correlation and SIEM delivery are qualified separately by P-008 (WI-10007903). Resolve its current saved evidence and acceptance ledger; this processing declaration does not establish that runtime outcome.',
       'Audience and redaction of the workflow output itself are owned by the pilot workflow (P-012), not mapped here.',
     ],
   },
@@ -325,7 +325,7 @@ export const PILOT_PROCESSING_MAP: readonly PilotDataPath[] = [
     retention: 'Host journald retention is host configuration, not recorded here.',
     canaryJourney: null,
     unknowns: [
-      'The hosted log-capture guard (cloud-portal-public-release-2026-10-13#P-012, WI-6554700010011225) is not built.',
+      'Hosted control-plane log-capture qualification belongs to cloud-portal-public-release-2026-10-13#P-012 (WI-6554700010011225). Resolve its current evidence; a hosted guard does not establish redaction of every pilot host log sink.',
       'No declared secret-canary population for logs, and no proof that every log sink passes through a redaction helper.',
       'Telemetry export targets and their retention are not enumerated.',
     ],

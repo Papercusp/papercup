@@ -133,6 +133,19 @@ describe('pilot processing map', () => {
     }
   });
 
+  it('keeps cross-item acceptance in its owning ledger instead of copying lifecycle status', () => {
+    // A processing declaration is consumed by security/procurement evidence. A copied
+    // "not built"/"done" status silently contradicts the independently updated item.
+    // Keep stable ownership/qualification references here and resolve status at use.
+    const copiedStatus = PILOT_PROCESSING_MAP.flatMap((p) =>
+      p.unknowns
+        .filter((u) => /\b(?:P-\d{3,}|WI-\d+)\b/.test(u))
+        .filter((u) => /\b(?:not built(?: yet)?|completed|shipped|done)\b/i.test(u))
+        .map((u) => `${p.id}: ${u}`),
+    );
+    expect(copiedStatus).toEqual([]);
+  });
+
   // P-007b (WI-6554700010011594) / WI-6554700010011737: a selected path must name the tests that
   // exercise its permitted and denied journeys, and those tests must exist. A path that is not
   // selected names none, so a canary can never be claimed for a path the pilot does not run.

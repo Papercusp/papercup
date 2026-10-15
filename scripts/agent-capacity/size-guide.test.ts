@@ -40,10 +40,10 @@ describe('size guide derives from the cost model', () => {
     }
   });
 
-  it('keeps the measured anchors: e2-standard-4 holds 15 mixed agents on its own VM, e2-standard-8 holds 68', () => {
+  it('keeps the measured anchors: e2-standard-4 holds 15 mixed agents on its own VM, e2-standard-8 holds 67', () => {
     const rows = new Map(sizeRows().map((r) => [r.id, r]));
     expect(rows.get('mixed-e2s4')?.ownVmAgents).toBe(15);
-    expect(rows.get('mixed-e2s8')?.ownVmAgents).toBe(68);
+    expect(rows.get('mixed-e2s8')?.ownVmAgents).toBe(67);
   });
 
   it('the cheapest own VM for 50 mixed agents is the D-046 M1 row', () => {

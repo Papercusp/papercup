@@ -654,12 +654,19 @@ describe('resource governor enforcement lint', () => {
     expect(inspectGovernorSource(source)).toContain('resource-start-outside-admission');
     expect(P016_DISPOSITION_REGISTRY.get(key)?.disposition).toBe('bypass');
     expect(P016_DISPOSITION_REGISTRY.get(key)?.reason).toContain('spawnCensus');
-    expect(source).toMatch(/return execFileSync\('git', \['-C', top, \.\.\.args\]/);
+    expect(source).toMatch(/return execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/);
+    expect(source).toContain("if (configured && !isAbsolute(configured))");
+    expect(source).toContain("const resolved = realpathSync(candidate);");
+    expect(source).toContain("accessSync(resolved, fsConstants.X_OK);");
     expect(scanInventory([[path, source]], { migrations: ['P-016'], validateRegistry: true })).toEqual([]);
     // A second start, or a detached git child, needs a fresh review: both fall out of the pin.
     const secondStart = source.replace('function audit(record) {', "function audit(record) {\n  execFileSync('ls', []);");
     const detached = source.replace("stdio: ['ignore', 'pipe', 'pipe'],", "detached: true,\n    stdio: ['ignore', 'pipe', 'pipe'],");
-    for (const mutant of [secondStart, detached]) {
+    const unresolvedExecutable = source.replace(
+      "return execFileSync(gitExecutable, ['-C', top, ...args], {",
+      "return execFileSync('git', ['-C', top, ...args], {",
+    );
+    for (const mutant of [secondStart, detached, unresolvedExecutable]) {
       expect(mutant).not.toBe(source);
       expect(scanInventory([[path, mutant]], { migrations: ['P-016'], validateRegistry: true })).toEqual([
         `${path}:resource-start-outside-admission`,

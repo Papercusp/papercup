@@ -50,23 +50,26 @@ export interface Capacity {
 /**
  * mixed = 50/50 Claude/Codex planning workload, replayed (D-009 accepted replay for it).
  * heavy = real typecheck/test-heavy Papercusp engineering (P-019 recordings replayed in P-529/WI-5384).
+ * Use achieved concurrency, not the requested ramp slots. The original output is retained in
+ * fixtures/capacity-ramps.json and checked through the existing capacity-table reducer by the tests.
+ * A ramp that stopped without saturation supplies a lower bound, including the lean/Arm rows.
  */
 export const CAPACITY: readonly Capacity[] = [
-  { id: 'mixed-e2s4', workload: 'mixed', machineType: 'e2-standard-4', active: 8, source: 'D-019' },
-  { id: 'mixed-e2s8', workload: 'mixed', machineType: 'e2-standard-8', active: 32, source: 'D-019' },
-  { id: 'mixed-e2s16', workload: 'mixed', machineType: 'e2-standard-16', active: 64, source: 'D-019' },
-  { id: 'mixed-e2c16', workload: 'mixed', machineType: 'e2-custom-16-32768', active: 73.2, source: 'D-020' },
+  { id: 'mixed-e2s4', workload: 'mixed', machineType: 'e2-standard-4', active: 7.9, source: 'D-019 (achieved concurrency per D-020)' },
+  { id: 'mixed-e2s8', workload: 'mixed', machineType: 'e2-standard-8', active: 31.6, source: 'D-019 (achieved concurrency per D-020)' },
+  { id: 'mixed-e2s16', workload: 'mixed', machineType: 'e2-standard-16', active: 60.1, source: 'D-019 (corrected by D-020)' },
+  { id: 'mixed-e2c16', workload: 'mixed', machineType: 'e2-custom-16-32768', active: 73.2, atLeast: true, source: 'D-020' },
   { id: 'mixed-c4a16', workload: 'mixed', machineType: 'c4a-standard-16', active: 87.6, source: 'D-024' },
-  { id: 'mixed-c4ahc16', workload: 'mixed', machineType: 'c4a-highcpu-16', active: 83, source: 'D-027' },
-  { id: 'heavy-e2s16', workload: 'heavy', machineType: 'e2-standard-16', active: 24, source: 'D-023 (no admission)' },
-  { id: 'heavy-e2s16-adm', workload: 'heavy', machineType: 'e2-standard-16', active: 32, source: 'D-023 (heavy-job admission)' },
+  { id: 'mixed-c4ahc16', workload: 'mixed', machineType: 'c4a-highcpu-16', active: 83.3, atLeast: true, source: 'D-027' },
+  { id: 'heavy-e2s16', workload: 'heavy', machineType: 'e2-standard-16', active: 23.9, source: 'D-023 (no admission)' },
+  { id: 'heavy-e2s16-adm', workload: 'heavy', machineType: 'e2-standard-16', active: 31.8, source: 'D-023 (heavy-job admission)' },
   {
     id: 'heavy-e2s16-adm-tsc',
     workload: 'heavy',
     machineType: 'e2-standard-16',
-    active: 48,
+    active: 47.9,
     atLeast: true,
-    source: 'D-040 (admission + shared tsc-service; saturation moved from n40 to >= n48)',
+    source: 'D-040 (admission + shared tsc-service; n48 held 47.9; slowdown unmeasured)',
   },
 ];
 

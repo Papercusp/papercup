@@ -1155,6 +1155,13 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         },
       },
     }, '2026-06-21T10:05:30Z');
+    await insert('EI-audit-target-binding-unavailable', {
+      ratings,
+      rerunRecipe: {
+        args: { harness: 'papercusp' },
+        selection: { bindingIds: [Number.MAX_SAFE_INTEGER] },
+      },
+    }, '2026-06-21T10:05:45Z');
 
     const read = async (id: string) => {
       const result = await readScorecardEvidence(id);
@@ -1204,6 +1211,14 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       evidenceBindingCurrentness: {
         state: 'current', reason: 'current', citedBindingCount: 1,
         retractedBindingIds: [], unavailableBindingIds: [],
+      },
+    });
+    const bindingUnavailable = await read('EI-audit-target-binding-unavailable');
+    expect(bindingUnavailable.auditTarget).toMatchObject({
+      current: null,
+      evidenceBindingCurrentness: {
+        state: 'unknown', reason: 'cited-binding-unavailable', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [String(Number.MAX_SAFE_INTEGER)],
       },
     });
     await db.adminSql`
