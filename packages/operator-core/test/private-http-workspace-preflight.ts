@@ -874,14 +874,32 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
 
 /** Consume independently retained artifacts without invoking the builder. The
  * optional branch leaves the generic preparation callers unchanged. */
-export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string, options?: {
+type PrivateApiBundleReceipt = PrivateBundleReceipt & {
+  qualification?: { status: 'pending' | 'preparation-qualified' };
+  selectedSource?: { receiptPath: string; sha256: string; sourceCommit: string };
+};
+type PreparedPrivateApiBundleReceipt = PrivateApiBundleReceipt & { receiptSha256: string };
+type CommittedPrivateApiBundle = {
   committedReader: { receiptPath: string; sourceReceiptPath: string; selectedCommit: string };
-}) {
+};
+type ProgressPrivateApiBundle = { builder: PrivateBundleBuilder & { maxMs: number } };
+export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string,
+  options: ProgressPrivateApiBundle): Promise<PreparedPrivateApiBundleReceipt>;
+export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string,
+  options?: CommittedPrivateApiBundle): PreparedPrivateApiBundleReceipt;
+export function preparePrivateOperatorApiBundle(root: string, evidenceDir: string, options?: {
+  committedReader: CommittedPrivateApiBundle['committedReader'];
+} | ProgressPrivateApiBundle) {
   assertPrivatePreparationEvidence();
+  const retain = (receipt: PrivateApiBundleReceipt): PreparedPrivateApiBundleReceipt => {
+    const receiptBytes = JSON.stringify(receipt);
+    writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), receiptBytes);
+    return { ...receipt, receiptSha256: digestBytes(receiptBytes) };
+  };
+  if (options && 'builder' in options)
+    return buildPrivateOperatorApiBundle(root, evidenceDir, options.builder).then(retain);
   const selected = options?.committedReader;
-  let receipt: { path: string; sha256: string; qualification?: { status: 'pending' | 'preparation-qualified' }; selectedSource?: {
-    receiptPath: string; sha256: string; sourceCommit: string;
-  } };
+  let receipt: PrivateApiBundleReceipt;
   if (!selected) receipt = buildPrivateOperatorApiBundle(root, evidenceDir);
   else {
     const sourceBytes = readFileSync(selected.sourceReceiptPath);
@@ -907,9 +925,7 @@ export function preparePrivateOperatorApiBundle(root: string, evidenceDir: strin
     receipt = { ...closure, path, sha256: closure.sha256, qualification,
       selectedSource: { receiptPath: sourcePath, sha256: digestBytes(sourceBytes), sourceCommit: selected.selectedCommit } };
   }
-  const receiptBytes = JSON.stringify(receipt);
-  writeFileSync(join(evidenceDir, 'operator-api-preflight.json'), receiptBytes);
-  return { ...receipt, receiptSha256: createHash('sha256').update(receiptBytes).digest('hex') };
+  return retain(receipt);
 }
 
 /** Run once in recordIsolatedIntegrationProof's existing allocated prepare
