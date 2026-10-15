@@ -21,6 +21,7 @@ import { defineTool, AGENT_ROLES, resolveMcpName } from '@papercusp/agent-mcp';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import { decodeToolsInvokeArgs } from './invoke-args';
+import { readServingGeneration } from '../../serving-generation';
 
 type NestedOutcome = {
   effectiveStatus: 'ok' | 'partial' | 'error' | 'vacuous';
@@ -297,7 +298,7 @@ export default defineTool({
       'the model constructs the call natively). This meta-tool adds a layer of indirection; prefer a ' +
       'direct call whenever the tool is reachable.',
     chaining:
-      'tools:find("<intent>") → take the top hit\'s name + argSchema → tools:invoke({ name, args: {…} }).',
+    'tools:find("<intent>") → take the top hit\'s name + argSchema + servingGeneration → tools:invoke({ name, args: {…}, servingGeneration }). The dispatcher refuses a different/unknown generation before target execution.',
     seeAlso: [
       'tools:find (discover a tool by intent — returns names + schemas, and activates them where supported)',
     ],
@@ -342,6 +343,8 @@ export default defineTool({
   args: z.object({
     /** Exact MCP tool name in colon form, e.g. "flags:set". */
     name: z.string().min(1).max(120),
+    /** Exact generation returned by tools:find; binds the schema to this dispatcher. */
+    servingGeneration: z.string().trim().min(1).max(160).optional(),
     // EI-6681 / EI-15360: some MCP clients intermittently stringify a
     // moderately-long/complex nested `args` object before it reaches this schema
     // (root cause client-side — this server's own dispatch path never stringifies
@@ -372,6 +375,19 @@ export default defineTool({
         isError: true,
         content: [{ type: 'text' as const, text: 'invalid_target: tools:invoke cannot invoke itself' }],
       };
+    }
+    if (args.servingGeneration) {
+      const current = await readServingGeneration();
+      if (current.state !== 'known') {
+        throw new Error(
+          `stale_tool_contract: dispatch generation cannot be verified (${current.reason}); refresh tools:find on this operator`,
+        );
+      }
+      if (current.revision !== args.servingGeneration) {
+        throw new Error(
+          `stale_tool_contract: schema was discovered from ${args.servingGeneration}, but this operator serves ${current.revision}; refresh tools:find on this operator`,
+        );
+      }
     }
     if (!ctx.dispatchTool) {
       return {
