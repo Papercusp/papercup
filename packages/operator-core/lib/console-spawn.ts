@@ -1464,7 +1464,7 @@ function createKickoffProofRequest(): KickoffProofRequest {
   // existing private per-user runtime mount so a full scratch volume cannot
   // prevent the parent and child from establishing kickoff proof (WI-10007856).
   // Hosts without such a directory retain their ordinary OS temp route.
-  const path = createControlPlaneTempFile('papercup-kickoff-proof-', '.json', 'payload');
+  const path = createControlPlaneTempFile('papercup-kickoff-proof-', '.json', 'log');
   return { path, token };
 }
 
@@ -1681,10 +1681,10 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
   //      null (the default) flows straight through buildConsoleOneliner to an
   //      unmodified banner, so an opted-out caller sees zero behavior change.
   const receiptPath = opts.verifyBootReceipt
-    ? createControlPlaneTempFile('papercup-console-receipt-', '.log', 'payload')
+    ? createControlPlaneTempFile('papercup-console-receipt-', '.log', 'log')
     : null;
   const terminalPidReceiptPath = opts.captureTerminalPid
-    ? createControlPlaneTempFile('papercup-console-terminal-pid-', '.txt', 'payload')
+    ? createControlPlaneTempFile('papercup-console-terminal-pid-', '.txt', 'log')
     : null;
 
   // 2. Build the one-liner once (appearance/OSC colors + cd + env + sentinel +
@@ -1898,7 +1898,7 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
     return { status: 'error', code: 500, error: `Could not prepare GNOME terminal settings: ${error instanceof Error ? error.message : String(error)}` };
   }
   const childArgs = [...term.args, 'bash', '-lc', oneliner];
-  const stderrPath = createControlPlaneTempFile('papercup-console-stderr-', '.log', 'payload');
+  const stderrPath = createControlPlaneTempFile('papercup-console-stderr-', '.log', 'log');
   let stderrFd: number | null = null;
   try {
     stderrFd = openSync(stderrPath, 'w');
@@ -2137,7 +2137,7 @@ async function spawnMacConsole(
     writeFileSync(inv.file, inv.content, { mode: 0o755 });
     // Capture `open`'s stderr so the operator error carries LaunchServices' own
     // words (e.g. "-10810") rather than a bare exit code.
-    stderrPath = createControlPlaneTempFile('papercup-console-stderr-', '.log', 'payload');
+    stderrPath = createControlPlaneTempFile('papercup-console-stderr-', '.log', 'log');
     let stderrFd: number | null = null;
     try {
       stderrFd = openSync(stderrPath, 'w');

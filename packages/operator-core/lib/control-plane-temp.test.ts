@@ -67,7 +67,7 @@ describe('control-plane temp roots', () => {
     };
 
     const dir = createControlPlaneTempDir('private-dir-', 'payload', options);
-    const asyncDir = await createControlPlaneTempDirAsync('private-async-', 'socket', options);
+    const asyncDir = await createControlPlaneTempDirAsync('private-async-', 'log', options);
     const file = createControlPlaneTempFile('private-file-', '.json', 'payload', options);
     scratch.push(dir, asyncDir, file);
 
@@ -94,11 +94,15 @@ describe('control-plane temp roots', () => {
         sharedMemoryDir: preferred,
         tempDir: fallback,
         isUsableDirectory: (path: string) => path === preferred || path === fallback,
-        writeFileSync(path: string, contents: string, options: Record<string, unknown>) {
+        writeFileSync(
+          path: string,
+          contents: string | Uint8Array,
+          options?: { encoding?: 'utf8'; mode?: number; flag?: string },
+        ) {
           if (path.startsWith(preferred + sep)) {
             throw Object.assign(new Error('filesystem full'), { code: 'ENOSPC' });
           }
-          fsWriteFileSync(path, contents, options as never);
+          fsWriteFileSync(path, contents, options);
         },
       },
     );

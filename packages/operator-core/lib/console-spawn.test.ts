@@ -389,9 +389,9 @@ describe('spawnConsole boot receipt — the visible-path phantom-ok (EI-19330040
       expect((r as { error: string }).error).toContain('PSU_ACTUAL_REFUSAL');
       expect((r as { error: string }).error).toContain(`boot receipt retained: ${path}`);
       expect(existsSync(path)).toBe(true);
-      expect(path).toMatch(/papercup-console-receipt-.*\/boot\.log$/);
+      expect(path).toMatch(/papercup-console-receipt-.*\.log$/);
     } finally {
-      if (path) rmSync(join(path, '..'), { recursive: true, force: true });
+      if (path) rmSync(path, { force: true });
     }
   }, 10_000);
 
