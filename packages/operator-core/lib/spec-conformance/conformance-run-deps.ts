@@ -72,7 +72,7 @@ function foldResults(kind: EvaluatedConformanceCheck['kind'], results: ReadonlyA
   };
 }
 
-/** Judge a tests check from the latest test-run row of each named file. */
+/** Judge a tests check from the latest repository-health run of each named file. */
 export async function judgeTestsFromLedger(
   input: { files: readonly string[]; workspaceId: string },
   sql: Sql = getOrgPg().sql,
@@ -82,6 +82,9 @@ export async function judgeTestsFromLedger(
       FROM harness_shared.test_runs
      WHERE file_path = ANY(${[...input.files]})
        AND framework IS DISTINCT FROM 'rubric-check'
+       -- Mutation controls deliberately pass or fail against altered copies;
+       -- filter them before DISTINCT ON, as the test-ledger browser does.
+       AND source IS DISTINCT FROM 'mutation-probe'
        AND (workspace_id = ${input.workspaceId} OR workspace_id IS NULL)
        AND status IN ('pass', 'fail', 'error')
      ORDER BY file_path, finished_at DESC NULLS LAST, id DESC
