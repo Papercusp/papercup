@@ -3606,12 +3606,48 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
 
-  /** Records each statement's HEAD-classified kind + text, so a test can assert WHICH write ran. */
-  function statementRecordingSql(rows: Record<string, unknown>[], seen: string[]): Sql {
-    return ((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+  type AppliedMonitorBudgetWrite = {
+    routineId: string;
+    fireToken: string;
+    remainingNoDeltaBudget: number;
+  };
+
+  type StatementRecordingState = {
+    settledBudgetFireByRoutine: Map<string, string>;
+    appliedBudgetWrites: AppliedMonitorBudgetWrite[];
+  };
+
+  const statementRecordingState = (): StatementRecordingState => ({
+    settledBudgetFireByRoutine: new Map(),
+    appliedBudgetWrites: [],
+  });
+
+  /** Records statements and models the atomic per-fire guard used by the budget UPDATE. */
+  function statementRecordingSql(
+    rows: Record<string, unknown>[],
+    seen: string[],
+    state: StatementRecordingState = statementRecordingState(),
+  ): Sql {
+    return ((strings: TemplateStringsArray, ...vals: unknown[]) => {
       const q = strings.join(' ? ');
       if (/^\s*UPDATE/i.test(q)) {
         seen.push(q);
+        if (q.includes("'{monitor,remainingNoDeltaBudget}'")) {
+          const [remaining, fireTokenValue, routineIdValue] = vals;
+          const fireToken = String(fireTokenValue);
+          const routineId = String(routineIdValue);
+          const guardedByThisFire = /\(metadata->>'monitor_budget_fire_at'\)\s+IS DISTINCT FROM\s+\?\s*::text/.test(q);
+
+          // A missing or changed predicate applies the write again. With the production
+          // predicate, the second overlapping snapshot for the same fire is a no-op.
+          if (guardedByThisFire && state.settledBudgetFireByRoutine.get(routineId) === fireToken) {
+            return Promise.resolve([]);
+          }
+
+          state.settledBudgetFireByRoutine.set(routineId, fireToken);
+          state.appliedBudgetWrites.push({ routineId, fireToken, remainingNoDeltaBudget: Number(remaining) });
+          return Promise.resolve([{ id: routineId }]);
+        }
         // Enough columns for standDownMonitorLoop's RETURNING destructure; the transition
         // write it triggers is fail-soft evidence and never affects the verdict.
         return Promise.resolve([
@@ -3626,6 +3662,15 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
             prev_next_fire_at: 'infinity',
           },
         ]);
+      }
+      if (
+        /^\s*SELECT/i.test(q) &&
+        /\(metadata->>'monitor_budget_fire_at'\)\s*=\s*\?\s*::text/.test(q)
+      ) {
+        const [routineIdValue, fireTokenValue] = vals;
+        const routineId = String(routineIdValue);
+        const fireToken = String(fireTokenValue);
+        return Promise.resolve(state.settledBudgetFireByRoutine.get(routineId) === fireToken ? [{ id: routineId }] : []);
       }
       if (/^\s*INSERT/i.test(q)) return Promise.resolve([]);
       return Promise.resolve(rows);
@@ -3772,18 +3817,49 @@ describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
     expect(standdownWrites(seen)).toHaveLength(0);
   });
 
-  it('the budget write carries a FIRE TOKEN so two overlapping passes cannot double-decrement', async () => {
+  it('two overlapping settled passes apply one budget write for the same fire, then accept the next fire', async () => {
     const seen: string[] = [];
-    await reconcile({
-      sql: statementRecordingSql([row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })], seen),
+    const state = statementRecordingState();
+    const sql = statementRecordingSql(
+      [row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })],
+      seen,
+      state,
+    );
+    const firstFire = {
+      sql,
       nowMs: T0 + 10_000,
       recheckMonitorAuthority: AUTHORITY_HELD,
+    };
+
+    // Both calls read the same static pre-decrement fixture before either reaches the
+    // write. The fake database applies the conditional UPDATE at the point each statement
+    // runs, as PostgreSQL does after the row lock is acquired.
+    await Promise.all([reconcile(firstFire), reconcile(firstFire)]);
+    expect(budgetWrites(seen)).toHaveLength(2);
+    expect(state.appliedBudgetWrites).toEqual([
+      { routineId: 'rt-1', fireToken: String(T0), remainingNoDeltaBudget: 2 },
+    ]);
+
+    // A new settled fire has a new last_fired_at token, so its budget update still applies.
+    await reconcile({
+      sql: statementRecordingSql(
+        [
+          row({
+            last_fired_at: pgString(T0 + 60_000),
+            lifecycle_completed_at: pgString(T0 + 65_000),
+            payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 2 }),
+          }),
+        ],
+        seen,
+        state,
+      ),
+      nowMs: T0 + 70_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
     });
-    // The reconcile SELECT is deliberately unlocked, so exactly-once cannot come from the
-    // read — it has to be in the WRITE's own predicate.
-    const budget = budgetWrites(seen)[0];
-    expect(budget).toContain('monitor_budget_fire_at');
-    expect(budget).toContain('IS DISTINCT FROM');
+    expect(state.appliedBudgetWrites).toEqual([
+      { routineId: 'rt-1', fireToken: String(T0), remainingNoDeltaBudget: 2 },
+      { routineId: 'rt-1', fireToken: String(T0 + 60_000), remainingNoDeltaBudget: 1 },
+    ]);
   });
 
   it('a NON-SETTLE re-arm (fire withheld by the gate) never touches the budget or the authority', async () => {
