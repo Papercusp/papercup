@@ -168,7 +168,7 @@ it('keeps owner input and real PTY output responsive while discovery rename is s
   let ended = false;
   const done = hostThroughPty({
     command: execPath,
-    args: ['-e', "process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.toString().includes('QUIT'))process.exit(0);process.stdout.write('ECHO:'+d.toString()+'\\n');});process.stdout.write('SLOW_FS_READY\\n');"],
+    args: ['-e', String.raw`const {StringDecoder}=require('node:string_decoder');const decoder=new StringDecoder('utf8');let quitTail='';process.stdin.setRawMode(true);process.stdin.on('data',d=>{const text=decoder.write(d);quitTail=(quitTail+text).slice(-8);if(quitTail.includes('QUIT'))process.exit(0);if(text)process.stdout.write('ECHO:'+text+'\n');});process.stdout.write('SLOW_FS_READY\n');`],
     cwd: process.cwd(), env: hermeticEnv({ PAPERCUSP_SID: ownerId }), ownerId,
     io: { ...io, stdin }, bridgeTty: false, signalSource: signals, activityPersistMs: 25,
   }).then((code) => { ended = true; return code; });
@@ -179,6 +179,9 @@ it('keeps owner input and real PTY output responsive while discovery rename is s
     }, { timeout: 5000 });
     stdin.emit('data', Buffer.from('owner-input'));
     await vi.waitFor(() => expect(captured()).toContain('ECHO:owner-input'), { timeout: 3000 });
+    stdin.emit('data', Buffer.from([0xc3]));
+    stdin.emit('data', Buffer.from([0xa9]));
+    await vi.waitFor(() => expect(captured()).toContain('ECHO:é'), { timeout: 3000 });
     expect(existsSync(metaPath)).toBe(false);
     stdin.emit('data', Buffer.from('QUIT'));
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
