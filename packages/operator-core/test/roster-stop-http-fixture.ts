@@ -6,7 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
 import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
@@ -809,7 +809,16 @@ finally {
     await inboxInvalidationListener?.unlisten();
     await cupboardCatalog?.close();
   });
+  // Auth capability reads lazily start a process-wide PG LISTEN subscription.
+  // Close that subscription before retiring the shared db-org pools; otherwise
+  // the browser proof's assertions pass but this worker remains pinned until the
+  // outer execute deadline and is SIGTERM'd instead of returning its verdict.
+  await cleanupPhase('auth-invalidation-listener-stop', async () => {
+    const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
+    await _stopInvalidationListenerForTests();
+  });
   await cleanupPhase('database-close', () => sql.end({ timeout: 5 }));
+  await cleanupPhase('db-org-pools-reset', () => _resetForTests());
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
   if (failures.length) throw new AggregateError(failures, 'Private roster cleanup failed');
