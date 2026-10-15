@@ -701,6 +701,23 @@ export default defineTool({
     const filePath = args.file_path ?? args.uri;
     if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
 
+    // Result-door scratch references get a bounded set of nested timings so a slow
+    // raw line read can be localized without adding phases to ordinary file reads.
+    const scratchReferencePath = /(?:^|[\\/])\.papercusp[\\/]scratch[\\/]/.test(filePath);
+    const trackScratchAsync = <T>(phase: string, work: () => Promise<T>): Promise<T> => {
+      if (!scratchReferencePath || !ctx.phases) return work();
+      return ctx.phases.track(`capability:read:scratch:${phase}`, work);
+    };
+    const trackScratchSync = <T>(phase: string, work: () => T): T => {
+      if (!scratchReferencePath || !ctx.phases) return work();
+      const startedAt = Date.now();
+      try {
+        return work();
+      } finally {
+        ctx.phases.addCompleted(`capability:read:scratch:${phase}`, startedAt, Date.now() - startedAt);
+      }
+    };
+
     if (isDurableScratchReferenceUri(filePath)) {
       if (args.byte_offset === undefined || args.byte_limit === undefined) {
         return err(
@@ -806,7 +823,7 @@ export default defineTool({
 
     let fileStat: Awaited<ReturnType<typeof stat>>;
     try {
-      fileStat = await stat(abs);
+      fileStat = await trackScratchAsync('stat', () => stat(abs));
       if (fileStat.isDirectory()) return err('is_a_directory', `${abs} is a directory. List it with capability:list.`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -830,7 +847,7 @@ export default defineTool({
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
     const boundedLineRead = args.offset !== undefined || args.limit !== undefined || args.tail !== undefined;
     if (fileStat.size > MAX_FILE_BYTES) {
-      if (await startsWithScratchReference(abs)) {
+      if (await trackScratchAsync('large-reference-check', () => startsWithScratchReference(abs))) {
         return err(
           'too_large',
           `${abs} is a large scratch reference; use its emitted reference cursor instead of reading the container as a plain file.`,
@@ -855,12 +872,16 @@ export default defineTool({
           );
         }
         if (boundedLineRead) {
-          return renderLargeLineWindow(
+          const largeLineRead = await trackScratchAsync(
+            'large-line-read',
+            () => readLargeLineWindow(abs, args as LineReadArgs, credentialBearingConfig),
+          );
+          return trackScratchSync('large-line-render', () => renderLargeLineWindow(
             abs,
             args as LineReadArgs,
             ctx as ReadContext,
-            await readLargeLineWindow(abs, args as LineReadArgs, credentialBearingConfig),
-          );
+            largeLineRead,
+          ));
         }
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -871,7 +892,7 @@ export default defineTool({
 
     let bytes: Buffer;
     try {
-      bytes = await readFile(abs);
+      bytes = await trackScratchAsync('file-read', () => readFile(abs));
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
@@ -879,7 +900,7 @@ export default defineTool({
 
     let reference: ScratchReferenceManifest | undefined;
     try {
-      const parsed = parseScratchReference(bytes);
+      const parsed = trackScratchSync('scratch-reference-parse', () => parseScratchReference(bytes));
       if (parsed) {
         reference = parsed.manifest;
         let ownerId: string | null = null;
@@ -904,10 +925,10 @@ export default defineTool({
             ownerId = null;
           }
         }
-        authorizeScratchReference(reference, {
+        trackScratchSync('scratch-reference-authorize', () => authorizeScratchReference(reference!, {
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
           ownerId,
-        });
+        }));
         bytes = parsed.payload;
       }
     } catch (e: unknown) {
@@ -1099,27 +1120,34 @@ export default defineTool({
       ), reference);
     }
 
-    const sourceText = bytes.toString('utf8');
-    // Redact the complete source before selecting a line window. A secret near
-    // a window boundary must not survive merely because the caller requested a
-    // narrow diagnostic slice.
-    const text = credentialBearingConfig ? redactSensitiveText(sourceText) : sourceText;
+    const decodedLines = trackScratchSync('text-decode-and-line-split', () => {
+      const sourceText = bytes.toString('utf8');
+      // Redact the complete source before selecting a line window. A secret near
+      // a window boundary must not survive merely because the caller requested a
+      // narrow diagnostic slice.
+      const text = credentialBearingConfig ? redactSensitiveText(sourceText) : sourceText;
+      const allLines = text.split('\n');
+      // A trailing newline yields a final empty element; drop it so line counts match the file.
+      if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
+      return { text, allLines };
+    });
+    const { text, allLines } = decodedLines;
 
-    const allLines = text.split('\n');
-    // A trailing newline yields a final empty element; drop it so line counts match the file.
-    if (allLines.length > 0 && allLines[allLines.length - 1] === '') allLines.pop();
-
-    const limit = args.limit ?? DEFAULT_LIMIT;
-    // `tail` addresses the END of the file, which offset (anchored at line 1)
-    // cannot reach without first knowing the line count. The 2026-07-26 bash
-    // audit found this was the single largest un-substitutable file read:
-    // 1,752 `tail -n N FILE` atoms across 63 sessions had no tool form at all.
-    const start = args.tail
-      ? Math.max(0, allLines.length - args.tail)
-      : args.offset && args.offset > 0
-        ? args.offset - 1
-        : 0;
-    const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
+    const selectedWindow = trackScratchSync('line-window-select', () => {
+      const limit = args.limit ?? DEFAULT_LIMIT;
+      // `tail` addresses the END of the file, which offset (anchored at line 1)
+      // cannot reach without first knowing the line count. The 2026-07-26 bash
+      // audit found this was the single largest un-substitutable file read:
+      // 1,752 `tail -n N FILE` atoms across 63 sessions had no tool form at all.
+      const start = args.tail
+        ? Math.max(0, allLines.length - args.tail)
+        : args.offset && args.offset > 0
+          ? args.offset - 1
+          : 0;
+      const slice = allLines.slice(start, start + (args.tail ? Math.min(args.tail, limit) : limit));
+      return { limit, start, slice };
+    });
+    const { limit, start, slice } = selectedWindow;
 
     if (args.raw) {
       const end = start + slice.length;
@@ -1154,20 +1182,22 @@ export default defineTool({
       // Reconstruct the exact source span rather than joining a normalized
       // array. This preserves the source's trailing newline (or lack of one)
       // while still honoring offset/limit/tail line windows.
-      const startOffset = allLines
-        .slice(0, start)
-        .reduce((offset, line) => offset + line.length + 1, 0);
-      const selected = slice.join('\n');
-      const endOffset = startOffset + selected.length;
-      const hasSourceNewline = text[endOffset] === '\n';
-      const rawBody = text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0));
+      const rawBody = trackScratchSync('raw-window-build', () => {
+        const startOffset = allLines
+          .slice(0, start)
+          .reduce((offset, line) => offset + line.length + 1, 0);
+        const selected = slice.join('\n');
+        const endOffset = startOffset + selected.length;
+        const hasSourceNewline = text[endOffset] === '\n';
+        return text.slice(startOffset, endOffset + (hasSourceNewline ? 1 : 0));
+      });
       if (reference && scratchLineWindowExceedsDoor(rawBody)) {
         return err(
           'scratch_line_window_too_large',
           'This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
         );
       }
-      return markScratchReferenceRead({
+      return trackScratchSync('raw-window-result', () => markScratchReferenceRead({
         content: [{
           type: 'text' as const,
           text: rawBody,
@@ -1176,7 +1206,7 @@ export default defineTool({
         ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
           ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
           : {}),
-      }, reference);
+      }, reference));
     }
 
     const numbered = slice
