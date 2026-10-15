@@ -331,7 +331,30 @@ def stop_agents():
         raise RuntimeError("benchmark agent slice is still active; refusing a duplicate launch")
 
 
-def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
+def saved_codex_session(config, expected_sha256):
+    """Resolve an existing native history; never silently resume an empty/wrong home."""
+    paths = glob.glob(config + "/sessions/**/*.jsonl", recursive=True)
+    if not paths:
+        raise ValueError(f"no native session to resume in {config}")
+    path = max(paths, key=os.path.getmtime)
+    state = {"expected_sha256": expected_sha256}
+    session_id = None
+    with open(path) as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("type") == "session_meta":
+                session_id = row.get("payload", {}).get("id")
+            codex_record(state, row)
+    verified = sorted(k for k, v in state.get("outcomes", {}).items() if k.startswith("WARM-") and v is None)
+    if not session_id or not re.fullmatch(r"[0-9a-f-]{36}", session_id) or not verified:
+        raise ValueError(f"native session has no verified warm history in {path}")
+    return {"id": session_id, "path": path, "verifiedWarmMarkers": verified}
+
+
+def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=False):
     home = f"/home/{user}"
     names = [f"a{k}" for k in range(1, n + 1)]
     for name in names:
@@ -346,6 +369,9 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
             f.write(codex_config(model, effort, gateway_url, owner, work))
         with open(work + "/dummy-data.txt", "rb") as f:
             expected_sha256 = hashlib.sha256(f.read()).hexdigest()
+        saved = saved_codex_session(config, expected_sha256) if resume else None
+        if saved:
+            rec.rec("native-resume", agent=name, **saved)
         CODEX_SESSIONS[name] = {"root": config + "/sessions", "started": time.time(),
                                 "expected_sha256": expected_sha256}
         sh(["chown", "-R", f"{user}:{user}", work, config])
@@ -356,6 +382,8 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
                # measured cgroup. The shared daemon can fail its control-socket
                # bootstrap during a large launch and outlive the measured TUI.
                f"--no-daemon --no-alt-screen --sandbox read-only --ask-for-approval never --model {shlex.quote(model)}")
+        if saved:
+            cmd += " resume " + saved["id"]
         # Keep exited terminals until their status/output has been recorded. Without
         # this, a launch crash becomes an empty pane followed by a three-minute wait.
         sh(TMUX + ["new-session", "-d", "-s", name, "-x", "160", "-y", "50", "-c", work, cmd,
@@ -385,11 +413,11 @@ def check_codex_terminal(name, rec):
         raise RuntimeError(f"Codex terminal exited before readiness: {json.dumps(evidence)}")
 
 
-def start_agents(n, user, rec, cli="claude", model="gpt-6-luna", effort="low", gateway_url=None, owner=None):
+def start_agents(n, user, rec, cli="claude", model="gpt-6-luna", effort="low", gateway_url=None, owner=None, resume=False):
     if cli == "codex":
         if not gateway_url or not owner:
             raise ValueError("real Codex benchmark requires --gateway-url and --owner")
-        return start_codex_agents(n, user, rec, model, effort, gateway_url, owner)
+        return start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume)
     home = f"/home/{user}"
     claude = f"{home}/.local/bin/claude"
     cfg_path = f"{home}/.claude.json"
@@ -440,7 +468,6 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
     Returns {name: {t0, tEcho, tEnter, tDone}} (None where a step never happened)."""
     if GATEWAY_CHECK:
         GATEWAY_CHECK()
-    next_gateway_check = time.monotonic() + 15
     state = {}
     for name in names:
         if REAL_MODEL:
@@ -449,9 +476,9 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
         type_text(name, prompt_for(name))
     deadline = time.time() + timeout
     while time.time() < deadline and any(s["tDone"] is None and not s["error"] for s in state.values()):
-        if GATEWAY_CHECK and time.monotonic() >= next_gateway_check:
-            GATEWAY_CHECK()
-            next_gateway_check = time.monotonic() + 15
+        # Once submitted, native completion/errors and this batch's deadline are
+        # authoritative. A synchronous health probe here both contaminates the
+        # timing and can destroy an otherwise live cohort on one slow response.
         for name, s in state.items():
             if s["tDone"] is not None or s["error"]:
                 continue
@@ -847,6 +874,7 @@ def run(a):
         time.sleep(1)
         swap_off()
         rec.rec("run-start", agents=a.agents, warm=a.warm, warmConcurrency=a.warm_concurrency or a.agents,
+                resumeNative=a.resume_native,
                 single=a.single, arms=arms, idleSec=IDLE_SEC,
                 kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
                 effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
@@ -854,7 +882,7 @@ def run(a):
         if REAL_MODEL:
             gateway_preflight(a.gateway_url, a.owner, rec)
             codex_sandbox_preflight(a.user, rec)
-        names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner)
+        names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner, a.resume_native)
         warm(names, a.warm, rec, a.warm_concurrency)
         for arm in arms:
             run_arm(arm, names, a.single, a.ram_gb, rec, stub_log)
@@ -875,6 +903,7 @@ def main(argv=None):
     r.add_argument("--agents", type=int, default=24)
     r.add_argument("--warm", type=int, default=8)
     r.add_argument("--warm-concurrency", type=int, help="limit warm-up requests; wake storm still uses all agents")
+    r.add_argument("--resume-native", action="store_true", help="resume recorded native sessions, then verify fresh warm turns")
     r.add_argument("--single", type=int, default=8)
     r.add_argument("--ram-gb", type=int, default=16)
     r.add_argument("--user", default="agent")
@@ -895,6 +924,8 @@ def main(argv=None):
     q.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "run":
+        if a.resume_native and (a.cli != "codex" or a.warm < 1):
+            ap.error("--resume-native requires Codex and at least one fresh verified warm round")
         if a.warm_concurrency is not None and not 1 <= a.warm_concurrency <= a.agents:
             ap.error("--warm-concurrency must be between 1 and --agents")
         if a.single >= a.agents:

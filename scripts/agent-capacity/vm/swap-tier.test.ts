@@ -108,6 +108,49 @@ describe('real Luna load and swap tuning', () => {
     }
   });
 
+  it('lets submitted native tasks settle without an interrupting health request', () => {
+    const code = [
+      'import importlib.util, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'checks=[]; clock=[0]',
+      'def check():',
+      ' checks.append(1)',
+      ' if len(checks)>1: raise RuntimeError("health endpoint timed out while native task was completing")',
+      'def tick(*a): clock[0]+=20',
+      'm.GATEWAY_CHECK=check; m.time.time=lambda:clock[0]; m.time.monotonic=lambda:clock[0]; m.time.sleep=tick',
+      'm.type_text=lambda *a:None; m.press_enter=lambda *a:None; m.pane=lambda *a:"MARKER DONE-MARKER"',
+      'state=m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",100)',
+      'print(json.dumps({"checks":len(checks),"state":state}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.checks).toBe(1);
+    expect(receipt.state.a1).toMatchObject({ tDone: 20, error: null });
+  });
+
+  it('requires native hash-verified history before resuming a saved session', () => {
+    const code = [
+      'import importlib.util, json, tempfile, pathlib',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'with tempfile.TemporaryDirectory() as d:',
+      ' p=pathlib.Path(d)/"sessions"; p.mkdir(); f=p/"native.jsonl"',
+      ' rows=[{"type":"session_meta","payload":{"id":"12345678-1234-1234-1234-123456789abc"}},{"type":"event_msg","payload":{"type":"task_started"}},{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"WARM-a1-0"}]}},{"type":"response_item","payload":{"type":"function_call_output","output":"Process exited with code 0\\nOutput:\\nabc123  dummy-data.txt\\n"}},{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"DONE-WARM-a1-0"}]}},{"type":"event_msg","payload":{"type":"task_complete"}}]',
+      ' f.write_text("\\n".join(json.dumps(r) for r in rows)+"\\n")',
+      ' good=m.saved_codex_session(d,"abc123")',
+      ' try: m.saved_codex_session(d,"wrong")',
+      ' except ValueError as e: error=str(e)',
+      ' print(json.dumps({"good":good,"error":error}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.good).toMatchObject({ id: '12345678-1234-1234-1234-123456789abc', verifiedWarmMarkers: ['WARM-a1-0'] });
+    expect(receipt.error).toContain('no verified warm history');
+  });
+
   it('bounds the native launch throttle and rejects unsafe values', () => {
     expect(py(DRIVER, 'm.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":"1.25"})', null)).toBe(1.25);
     expect(py(DRIVER, 'm.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":"0"})', null)).toBe(0);
