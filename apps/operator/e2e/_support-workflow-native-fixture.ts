@@ -1,11 +1,13 @@
 import type { Sql } from 'postgres';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { projectBlueprintToPg } from '../../../packages/operator-core/lib/blueprint/project-to-pg';
 import { supportToEngineeringOperation } from '../../../packages/operator-core/lib/blueprint/support-workflow-operation';
 import { currentBenchOpenAiInputContract } from '../../../packages/operator-core/lib/external-bench/current-su';
 import { defineHostedAllocation } from '../../../packages/operator-core/lib/auth/hosted/billing/allocation-store';
 import { createPersonalGrant } from '../../../packages/operator-core/lib/personal-vault/store';
+import { getIdentitySource } from '../../../packages/operator-core/lib/agent-identities/source';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers,
   upsertOrganizationDocuments, upsertPermissionList } from '../../../packages/operator-core/lib/data-sources/documents-corpus';
 
@@ -25,6 +27,18 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
   if (!database || (!/^org_[a-f0-9]{12}$/.test(database.name)
     && !/\/verify-tauri-headless\.[^/]+\/isolated-pgdata(?:\/|$)/.test(database.directory)))
     throw new Error('Support native fixture requires the maintained isolated PostgreSQL database');
+
+  // Admission alone accepts a syntactically valid identity pin. The actual
+  // worker bootstrap also resolves its source, so pin the maintained identity
+  // instead of inventing a role-named source and a placeholder content hash.
+  const workerIdentity = await getIdentitySource('blueprint-operation-worker', {
+    repoDir: fileURLToPath(new URL('../../../', import.meta.url)),
+  });
+  if (!workerIdentity.ok || !workerIdentity.sourcePath)
+    throw new Error('Support native fixture requires the maintained blueprint operation worker identity');
+  const workerIdentityRevision = workerIdentity.identity.version;
+  if (!workerIdentityRevision)
+    throw new Error('Support native fixture requires a versioned blueprint operation worker identity');
 
   const nonce = randomUUID().replaceAll('-', '').slice(0, 12);
   const harnessSlug = input.harnessSlug ?? `support-native-${nonce}`;
@@ -74,7 +88,8 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
       WHERE workspace_id=${workspaceId} AND dedupe_key=${supportCaseId}`;
     if (!document) throw new Error('Fixture source document was not created');
     const operation = supportToEngineeringOperation({ id: operationId, version: '1', role,
-      identity: { kind: 'identity', ref: role, revision: '1', contentHash: 'b'.repeat(64) },
+      identity: { kind: 'identity', ref: workerIdentity.identity.id,
+        revision: workerIdentityRevision, contentHash: workerIdentity.contentHash },
       accountableOwner: actors.admin.id, reviewerPrincipals: [actors.reviewer.id],
       allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000,
       model: { mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium', onUnavailable: 'fail' }, funding,
