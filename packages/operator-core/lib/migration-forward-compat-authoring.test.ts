@@ -337,6 +337,17 @@ describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
     expect(findDraftColumnReferences(sql, [{ file: 'store.ts', text }]).references).toEqual([]);
   });
 
+  it('excludes generated bundles while retaining a new production source consumer', () => {
+    const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
+    const text = 'const query = sql`SELECT fc_probe_outcome FROM fc_probe_sessions`;';
+    expect(findDraftColumnReferences(sql, [
+      { file: 'apps/operator/dist-sidecar/worker.mjs', text },
+      { file: 'apps/operator/dist-hosted-control-plane/serve.mjs', text },
+      { file: 'apps/operator/storybook-static/worker.js', text },
+      { file: 'apps/operator/lib/new-store.ts', text },
+    ]).references).toEqual([{ column: 'fc_probe_outcome', file: 'apps/operator/lib/new-store.ts', line: 1 }]);
+  });
+
   it('retains genuine reads in ordinary SQL strings and concatenated query arguments', () => {
     const sql = 'ALTER TABLE fc_probe_sessions ADD COLUMN fc_probe_outcome text;';
     for (const text of [
