@@ -130,6 +130,7 @@ import {
   injectIntoHost,
   injectIntoHostWithConfirmation,
   readHostEventTail,
+  readHostEventTailAsync,
   type InjectConfirmation,
   type PsuPtyHost,
   type PtyHostEvent,
@@ -2348,7 +2349,18 @@ export async function degradeToInboxOrDrop(
   d: DeliveryWork,
   reason: string,
   send: typeof sendMessage,
+  options: { allowLoopMarkerFallback?: boolean } = {},
 ): Promise<WakeOutcome> {
+  // An inbox notice proves that a message was queued, not that a loop iteration
+  // started. Keep a surviving loop marker as a visible drop so reconciliation
+  // can retry/backstop it; mixed wakes whose stale loop component was stripped
+  // above remain eligible for the ordinary inbox fallback.
+  if (!options.allowLoopMarkerFallback && readLoopDeliveryMarkers(d.payload).length > 0) {
+    return {
+      kind: 'drop',
+      reason: 'loop turn delivery cannot fall back to inbox: ' + reason,
+    };
+  }
   const inboxDelivery = deferredLockGrantInboxSnapshot(d);
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
@@ -2842,6 +2854,8 @@ export interface ExecuteWakeDeps {
    * quota recovery, and the existing productive-tool writer used to prove the
    * recovered successor actually picked the wake up. */
   readPsuHostEventTail?: typeof readHostEventTail;
+  /** Non-blocking host ledger reader for terminal delivery reconciliation. */
+  readPsuHostEventTailAsync?: typeof readHostEventTailAsync;
   lastProductiveToolCallAtByOwner?: typeof lastProductiveToolCallAtByOwner;
   /** queen-brief-cache-assembly B-01/P-012: fire a FRESH hive launch instead of
    *  resuming a hive-operator session. Injected for tests; default fires the
@@ -3002,6 +3016,28 @@ type PsuInjectHostView = {
   launchedBy?: string | null;
 };
 
+function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
+  return delivery.lastError?.startsWith('psu-host accepted:') === true ||
+    delivery.lastError?.startsWith('psu-host pending-delivery-id:') === true;
+}
+
+function hasCurrentHostEndingDrop(
+  events: readonly PtyHostEvent[],
+  deliveryId: string,
+  hostStartedAt: number | undefined,
+): boolean {
+  if (!Number.isFinite(hostStartedAt)) return false;
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i] as Record<string, unknown>;
+    if (event.kind !== 'wake-rearm-dropped' || event.mode !== 'turn' || event.reason !== 'host-ending') continue;
+    const eventAt = typeof event.ts === 'string' ? Date.parse(event.ts) : Number.NaN;
+    if (!Number.isFinite(eventAt) || eventAt < (hostStartedAt as number)) continue;
+    if (!Array.isArray(event.deliveryIds) || !event.deliveryIds.some((id) => String(id) === deliveryId)) continue;
+    return true;
+  }
+  return false;
+}
+
 export interface QuotaRecoveryReceipt {
   status: 'ready' | 'dropped';
   operationId: string;
@@ -3092,6 +3128,20 @@ async function injectPsuHostWake(
   capturedCarryNoteMeta: DeliveryCarryNoteMeta | null = null,
   accountRoute: WakeAccountRoute | null = null,
 ): Promise<WakeOutcome | null> {
+  // An accepted ACK only fences inbox fallback while this host still owns the
+  // detached write. Cleanup emits an exact-id terminal row before clearing the
+  // host dedup slot; consume that row on retry so a host-ending delivery can
+  // leave the accepted-commit park. Fence it to this host generation so an old
+  // log row cannot release a later host's new acceptance for the same delivery.
+  if (isAcceptedPsuHostDelivery(d) && Number.isFinite(host.startedAt)) {
+    const events = await (deps.readPsuHostEventTailAsync ?? readHostEventTailAsync)(d.subscriberId).catch(() => []);
+    if (hasCurrentHostEndingDrop(events, String(d.id), host.startedAt)) {
+      return {
+        kind: 'park',
+        reason: `psu-host terminal host-ending drop confirmed for delivery ${d.id}; prior accepted write is no longer host-owned`,
+      };
+    }
+  }
   const sock = host.sock;
   // WI-5510: read the loop-fire marker ONCE up front — both the warm and cold
   // branches below need {wakeCount, routineId} to stamp the delivery-side
@@ -3196,7 +3246,11 @@ async function injectPsuHostWake(
       if (result.reason === 'cancelled-before-write') {
         return { kind: 'delivered', channel: 'suppressed-redundant' };
       }
-      if (result.reason === 'accepted' || result.reason === 'pending-delivery-id') {
+      if (
+        result.reason === 'accepted' ||
+        result.reason === 'pending-delivery-id' ||
+        result.reason === 'coalesced-into-pending-turn'
+      ) {
         return {
           kind: 'park',
           reason: `psu-host ${result.reason}: delivery accepted before turn-start proof; retry remains durable`,
@@ -4197,6 +4251,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           d,
           `${lifecycleReason}; loop injection/resume was withheld`,
           sendCoordMessage,
+          { allowLoopMarkerFallback: true },
         );
       }
       return {
