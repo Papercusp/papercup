@@ -809,8 +809,11 @@ export async function executePlanTerminalCensus(
 export default defineTool({
   name: 'testing:record-run',
   description:
-    'For a live plan terminal check, pass planTerminalCensus:{slug} instead of evidenceFile/expectedSha256. It executes the canonical population, refuses unexplained drops and changes, then writes native operational evidence. ' +
-    `Register a completed non-Vitest check in harness_shared.test_runs and return testRunIds for plans:bind-spec-evidence. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256 for those bytes. Mutation probes need exact MUTATION_PROBE_EVIDENCE_JSON records and cannot use shared .papercusp/scratch. Optional archivedMutation:{originalTestRunId,rawLogFile,rawLogSha256,rawLogCommit?} adds failed-case identities from a committed raw log after validating the original scoped receipt; rawLogCommit pins a full Git revision when the published log is redacted. It never changes that receipt or runs a test. A legacy operational receipt with NULL execution is recovered by appending a labelled row only when its scope, outcome, timestamps and original committed artifact bytes agree. Evidence JSON limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky raw artifacts by SHA-256. Verdict derives from exitCode + assertions, not caller input. Idempotent by artifact hash.`,
+    'Live plan terminal check: pass planTerminalCensus:{slug} instead of evidenceFile/expectedSha256; it reads the canonical population, rejects unexplained drops/changes, and records operational evidence. ' +
+    'Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. ' +
+    'Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:"operational-test-evidence", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. ' +
+    'Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. ' +
+    `Evidence limit: ${MAX_OPERATIONAL_EVIDENCE_BYTES} bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.`,
   guidance: {
     when: 'A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.',
     notWhen:
