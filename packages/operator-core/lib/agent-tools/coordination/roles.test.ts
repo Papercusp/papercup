@@ -67,10 +67,18 @@ describe('COORD_ROLES', () => {
   });
 
   test('acceptance judge can consume coordination reads without becoming a general coordinator', async () => {
-    const [{ default: inbox }, { default: read }, { default: orient }, { default: cupMail }, { default: assignments }] = await Promise.all([
+    const [
+      { default: inbox },
+      { default: read },
+      { default: orient },
+      { default: whoami },
+      { default: cupMail },
+      { default: assignments },
+    ] = await Promise.all([
       import('./tools/inbox.js'),
       import('./tools/read.js'),
       import('./tools/orient.js'),
+      import('./tools/whoami.js'),
       import('../fleet/cup_mail.js'),
       import('../fleet/assignments.js'),
     ]);
@@ -79,6 +87,7 @@ describe('COORD_ROLES', () => {
       ['coord:inbox', inbox],
       ['coord:read', read],
       ['coord:orient', orient],
+      ['coord:whoami', whoami],
       ['fleet:cup_mail', cupMail],
       ['fleet:assignments', assignments],
     ] as const) {
