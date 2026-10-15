@@ -2634,7 +2634,7 @@
     },
     "nativeWritableStreamPreparation": {
       "workItem": "WI-6554700010013569",
-      "status": "producer-pins-committed-native-boundary-guard-failed-comparator-fix-pending-verification",
+      "status": "current-committed-five-pin-native-guard-passed",
       "reused": ["existing OUT-gated vitest-startup-trace preload", "existing immutable native process events", "existing affected native execution receipt transport"],
       "behavior": "Retain bounded binary inputs accepted by each observed process stdout/stderr Writable API, with immutable SHA256 sidecars and process identity. Delegate original write receiver, arguments, callbacks, return and thrown error unchanged; retain synchronous exit-listener writes after the original exit emission. Parent verifies stream pins, bounds and hashes and retains explicit unavailable, truncated or missing-terminal gaps.",
       "sourcePinsAtPreparation": [
@@ -2653,8 +2653,8 @@
         "nativeExitCode":0,"scope":"two named operator-core test files and owning scripts declaration; imported source radius not measured",
         "previousRun":"v1 ended exit1 with TS2339 in the test environment object. Explicit Record<string,string> typing fixed that named error before this successful recheck."
       },
-      "settlement": "The five original preparation pins matched committed HEAD 2bc6dd0ef4f871182cf35bc35f8c0fc878089a59 before the current native run. One later maintained-test assertion correction is local: vitest-startup-trace.test.ts SHA256 ba526bee62b5e4373cd5595f1de2955b49339f066af9f3692980ca1d5195db45. Native source readiness remains unfired until this corrected pin settles and the guard passes. No manual git, loader bypass or restart was attempted.",
-      "currentNativeGuard": {
+      "settlement": "All five current source/test hashes matched committed code before and after the successful native v3 run. Corrected vitest-startup-trace.test.ts SHA256 ba526bee62b5e4373cd5595f1de2955b49339f066af9f3692980ca1d5195db45 supersedes its historical preparation pin. Post-run HEAD beb61f58d10ed537932597707a50b04d5b70fe9b. No manual git, loader bypass or restart was attempted.",
+      "previousFailedNativeGuard": {
         "originRunId":"b3f738fa-24aa-4a3a-8b45-fe3711e9c373","detachedRunId":"3c327599-62ce-44a9-beef-8e46c9528d27",
         "foreground":"Requested timeoutMs180000 was clamped to45000; the tool started its own durable detached recovery. No duplicate manual native run was started.",
         "nativeExitCode":1,"headBeforeAndAfter":"2bc6dd0ef4f871182cf35bc35f8c0fc878089a59","requested":2,"executed":2,"matched":2,"childSubstituted":0,"skippedTests":"unknown",
@@ -2665,8 +2665,20 @@
         "correction":"Use Buffer.equals(...).toBe(true) for the full retained payload; preserve the 16MiB bound, full-output assertion, truncation assertion and existing child/test timeouts. Local correction is not yet a verified guard pass.",
         "harnessAudit":"Initial pre-settlement failure required exact committed-pin preflight (now enforced). Foreground timeout required consuming automatic detached recovery, not retrying foreground. Before any next native attempt require the corrected test pin committed; use a retained native/detached route with useful failure output."
       },
-      "sourceReadyEvent":{"key":"harness:papercusp:native-writable-stream-preparation-20261014-ready","generation":1,"fired":false,"peerRequest":"coord-send-9248ec3010c8388abe71e500c59c96314d8ae4464ac733ff5eb12c231ed5aadf","reply":"coord-send-65044c363bc16dbb2458f377dc4d107504779029a83249bec52426e6587e3c25"},
-      "next":"After all five pins match committed source, run the registered two-file native guard and verify before/after pins and actual child substitutions. Emit the existing readiness generation only on a reviewed current pass. Do not repeat original operational chains.",
+      "sourceReadyEvent":{"key":"harness:papercusp:native-writable-stream-preparation-20261014-ready","generation":1,"fired":true,"emitReceipt":{"ok":true,"woken":1,"waiters":1,"pickupConfirmed":null},"peerRequest":"coord-send-9248ec3010c8388abe71e500c59c96314d8ae4464ac733ff5eb12c231ed5aadf","reply":"coord-send-65044c363bc16dbb2458f377dc4d107504779029a83249bec52426e6587e3c25"},
+      "currentNativeGuard": {
+        "command":"npm run test:file -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+      "log":"~/.papercusp/scratch/c0523-native-streams-tests-v3.log",
+        "logSha256":"ca6ede361a27444c16b6779469e318862a761dd78c4f9b3cff8c098dbfe59b02",
+        "nativeExitCode":0,"testsPassed":284,"requested":2,"executed":2,"matched":2,"skippedTests":0,"childSubstituted":0,
+        "startedAt":"2026-10-15T00:24:29.335Z","postRunHead":"beb61f58d10ed537932597707a50b04d5b70fe9b",
+        "sourceVerification":{"allFiveLocalMatchCommittedBeforeAndAfter":true,"correctedTestSha256":"ba526bee62b5e4373cd5595f1de2955b49339f066af9f3692980ca1d5195db45","otherFourHashes":"unchanged from sourcePinsAtPreparation"},
+        "ledgerRows":[21248296,21248297],
+        "ledgerScope":{"workspaceId":"papercusp-workspace","harnessSlug":null,"source":"local","worktreeDirty":true,"isScratchConfig":false},
+        "provenance":"Named five pins match committed source. Both test children report zero substitutions and skips. Router substituted two unrelated modules; imported-source radius is unmeasured. Ledger harness is null because PAPERCUSP_TEST_RUN_HARNESS was omitted; exact row IDs and file paths identify this local run. No full-runtime or operational acceptance is inferred.",
+        "rootCauseVerification":"The previous 60s guard timeout originated in generic Vitest deep equality over an equal 16MiB Buffer. The exact piped child completed1167ms and Buffer.equals1ms, while the installed generic comparator exceeded20s. Replacing only that assertion with full-byte Buffer.equals keeps all bounds/timeouts and now passes in the maintained two-suite native run."
+      },
+      "next":"Publish the verified current guard and five source pins through the existing Writable readiness generation, then continue original per-step receipt and runtime-closure preparation. Do not repeat unchanged original operational chains.",
       "limits":["Writable call inputs only; direct fd/native and inherited child writes unobserved", "missing preloads or terminal observations remain gaps", "16 MiB per stream and 64 MiB retained parent population bound", "original test reports, installed dependencies, final transforms, pre-setup, external and nonmodule runtime closure unverified"],
       "orderedChainQualified":false,"runtimeClosure":"unmeasured","operationalAcceptance":false,"fullPlan":"unshipped"
     },
@@ -2691,5 +2703,88 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Dependency-census readiness generation1 already fired. Existing OUT transport now retains evaluator inputs, actual VM wrapper bytes and external call IDs; 66 evaluator tests pass with one explicit pre-existing skip, imported-source provenance unknown and owning-workspace typecheck exit0. Test-config source bytes match committed b1bf690e46 and parent gitlink. Existing native affected-task journal now writes parent command/binary-stream/wrapper-input receipts; 280 maintained tests pass with 12 committed substitutions in integration-only preview children, and scoped scripts/operator-core typecheck exit0. These are local prospective preparation boundaries. Continue actual original per-step receipt production and pre-setup/external-loader/non-module/other-runner closure. Original public-docs, fixture and desktop chains remain missing. Do not repeat unchanged commands or saved guards absent drift. Preserve D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
+  "nativeVitestOutcomePreparation": {
+    "workItemId": "WI-6554700010013705",
+    "status": "committed-named-source-pins-local-maintained-guard-and-owning-workspace-typecheck-passed",
+    "report": {
+      "reportId": "rpt_318f0294-7440-446e-8c3b-155025ccb588",
+      "path": "/reports?sel=rpt_318f0294-7440-446e-8c3b-155025ccb588",
+      "requestKey": "c0523-r12-native-vitest-outcomes-20261015-edition1",
+      "bodySha256": "f561cf3e43831cc922ce56c86f287d65fab39ff1410e890853a0b524b63697c7",
+      "readbackExact": true,
+      "visibility": "owner",
+      "sourceEvidencePath": "docs/evidence/green-main-r12-paired-preparation-20261014.json#nativeVitestOutcomePreparation",
+      "publicationFriction": "EI-25698211877223668; published with unchanged key/body through staging after the older serving contract refused request_key. Complete report body and owner visibility were then read back through staging after a direct MCP read reset."
+    },
+    "reused": [
+      "existing ExecutedSourceMapReporter optional OUT diagnostics",
+      "existing collectModuleExecution, collectTestCases and firstAttemptModuleVerdict"
+    ],
+    "behavior": "OUT retains reporter callback process identity and clocks, observed module occurrences, native case outcomes/counts and first-attempt verdicts, terminal module multiset, run-end reason and unhandled-error count. Omitted errors/reason remain null with explicit gaps; exit-only and missing/unreadable module results remain incomplete. These diagnostics never enter reusable-pass rows.",
+    "sourceAtVerification": {
+      "parentHeadAtRun": "a235d68c01",
+      "testConfigHeadAtRun": "e1fb622210474813c22441107c85eefa40e7cfcb",
+      "parentGitlinkAtRun": "c72f546d0d7d347fa936c07121c96bbab0bc96ef",
+      "files": [
+        {
+          "path": "libs/test-config/src/executed-source-map-reporter.ts",
+          "sha256": "00fb4e872a3d3b707e70143986a34fdb900aa4a8ea9d1eb4c873dff898d6fd3b",
+          "committedAtRun": false
+        },
+        {
+          "path": "libs/test-config/src/executed-source-map-reporter.test.ts",
+          "sha256": "cbc650cca4ba450a2f5fa1f8470a8a476b11d32e45dcef80c1220de0f9522e76",
+          "committedAtRun": false
+        }
+      ],
+      "provenance": "Named source/test pins still match the saved v2 verification. Router stamped the named test as dirty; the imported-source radius was not measured. Later source settlement cannot upgrade this into a committed-runtime test."
+    },
+    "maintainedTests": {
+      "command": "npm run test:file -- libs/test-config/src/executed-source-map-reporter.test.ts",
+      "log": "~/.papercusp/scratch/c0523-native-run-outcomes-tests-v2.log",
+      "logSha256": "62197fdb6876b4976730a3284ab2711350d9666ea5ef5bd6b06bb094ba99047d",
+      "nativeExitCode": 0,
+      "passed": 66,
+      "failed": 0,
+      "requested": 1,
+      "executed": 1,
+      "matched": 1,
+      "skippedTests": 0,
+      "childSubstituted": 0,
+      "routerProcessSubstitution": "packages/operator-core/lib/events/await/psu-pty-discovery.ts",
+      "controls": [
+        "clean pass and first-attempt failure/retry",
+        "skipped and pending cases and collection failure",
+        "failed or interrupted run with passed file assertions",
+        "omitted error-array and run-end reason remain unknown",
+        "exit-only flush and repeated or unreadable terminal modules",
+        "dirty no-persist diagnostics excluded from reusable rows"
+      ]
+    },
+    "typecheck": {
+      "command": "node scripts/lint-tsc.mjs --files=libs/test-config/src/executed-source-map-reporter.ts,libs/test-config/src/executed-source-map-reporter.test.ts",
+      "routedTo": "npm run lint:tsc:workspaces -- --files=libs/test-config/src/executed-source-map-reporter.ts,libs/test-config/src/executed-source-map-reporter.test.ts",
+      "log": "~/.papercusp/scratch/c0523-native-run-outcomes-tsc-v2.log",
+      "logSha256": "7876937687686bae43f5759093aaeb4bcd777a0de83cbf5778710cc20eda2ab1",
+      "nativeExitCode": 0,
+      "scope": "owning libs/test-config workspace: one passed, zero failed"
+    },
+    "sourceSettlement": {
+      "status": "verified",
+      "parentHead": "3d2e1fd122eb4823c6b044472d5d898b012c14a8",
+      "testConfigHeadAndParentGitlink": "898022df51e5baa02acb7ba216f59a9826061256",
+      "verification": "Both named source/test SHA256 values match the saved v2 verification, current local bytes, submodule HEAD blobs and parent-pinned submodule blobs. Background git-sync performed settlement; no manual git operation or duplicate test was run. The saved test remains local dirty-at-run proof with an unmeasured imported-source radius.",
+      "settlementFriction": "Request-only git-sync host refused a mutating fire; sanctioned background-worker fire reported an existing system git-sync exclusive hold. That existing sync subsequently committed both pins and updated the parent gitlink."
+    },
+    "limits": [
+      "Reporter callbacks only; no unobserved process exit or full runtime closure inferred",
+      "Prospective receipt preparation only; historical original command chains remain missing",
+      "No original operational command or unchanged guard was rerun"
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Reporter native case/run outcome preparation passes its maintained 66-test suite and owning-workspace typecheck v2; both exact source/test pins match committed test-config and the parent gitlink. This does not upgrade the dirty-at-run local guard into full committed-runtime proof. Continue actual original per-step receipt production and pre-setup/external-loader/non-module/other-runner closure. Original public-docs, fixture and desktop chains remain missing. Do not repeat unchanged commands or saved guards absent drift. Preserve D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
 }
