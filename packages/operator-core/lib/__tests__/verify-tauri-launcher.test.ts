@@ -14,6 +14,7 @@ function executeLauncher(isolated: boolean) {
   const capture = resolve(dir, 'npm.json');
   writeFileSync(resolve(dir, 'npm'), `#!/usr/bin/env node
 require('node:fs').writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({
+  pid: process.pid,
   args: process.argv.slice(2),
   env: Object.fromEntries(['PAPERCUSP_CLUSTER', 'PAPERCUSP_SPAWNER_SIDECAR',
     'PAPERCUSP_OPERATOR_URL', 'PAPERCUSP_DEV_HOST_DIAGNOSTIC_DIR',
@@ -21,7 +22,7 @@ require('node:fs').writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({
 }));
 `, { mode: 0o755 });
   try {
-    execFileSync('bash', ['-c', `
+    const launchedPid = execFileSync('bash', ['-c', `
 set -euo pipefail
 WORK="$FIXTURE_DIR"
 DESKTOP_DIR="$FIXTURE_DIR"
@@ -45,13 +46,18 @@ ISOLATED_ENV_LINE='DATABASE_URL=postgresql://fixture/isolated'
 VERIFY_SCOPE_BASE=fixture
 LAUNCH_PREFIX=()
 verify_tauri_dev_url() { printf 'http://127.0.0.1:%s' "$1"; }
-start_verify_process() { bash "$3" > "$2" 2>&1; }
+start_verify_process() {
+  bash "$3" > "$2" 2>&1 &
+  VERIFY_STARTED_PROCESS_PID=$!
+}
 ${launcher}
 write_and_launch_tauri
+wait "$TAURI_PID"
+printf '%s' "$TAURI_PID"
 `], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, FIXTURE_DIR: dir,
       FIXTURE_CAPTURE: capture, FIXTURE_ISOLATED: isolated ? '1' : '0', GH_TOKEN: 'must-be-removed' },
       encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000 });
-    return JSON.parse(readFileSync(capture, 'utf8'));
+    return { ...JSON.parse(readFileSync(capture, 'utf8')), launchedPid: Number(launchedPid) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -60,6 +66,7 @@ write_and_launch_tauri
 describe('maintained native generated launcher', () => {
   it.each([true, false])('executes npm with the complete environment (isolated=%s)', (isolated) => {
     const result = executeLauncher(isolated);
+    expect(result.launchedPid).toBe(result.pid);
     expect(result.args.slice(0, 5)).toEqual(['run', 'tauri', '--', 'dev', '--no-watch']);
     const config = JSON.parse(result.args[6]);
     expect(config.build.devUrl).toBe(`http://127.0.0.1:12345${isolated ? '?verify-tauri-isolated=1' : ''}`);
