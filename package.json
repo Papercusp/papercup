@@ -112,6 +112,7 @@
     "doctor:fixed-but-open": "node scripts/check-fixed-but-open.mjs",
     "measure:launch-cost": "tsx scripts/measure-launch-cost.ts",
     "measure:startup-cache": "tsx scripts/measure-startup-cache.ts",
+    "measure:tool-output": "node scripts/measure-tool-output.mjs",
     "census:leaks": "tsx scripts/leak-census.ts",
     "leaks:ratchet": "tsx scripts/leak-ratchet.ts",
     "stats:proof": "tsx scripts/stats-proof.ts",
