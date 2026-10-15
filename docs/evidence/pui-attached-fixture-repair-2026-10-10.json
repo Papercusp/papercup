@@ -90,7 +90,50 @@
         "deadline": "2026-10-15T14:16:49.648Z",
         "terminalEvent": "task:terminal:0mv9lekc4j4shaucxep",
         "awaitId": 306341,
-        "status": "running; liveness verified; no native result yet"
+        "status": "terminal1 before native legs; Docker stock smoke timed out",
+        "terminalAt": "2026-10-15T13:54:52.002Z",
+        "rootExitCode": 1,
+        "nativeLegsRan": 0,
+        "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-trace-repair-20261015-1346.partial.acceptance.json"
+      },
+      "stockSmokeRepair": {
+        "workItem": "EI-26054003608529816",
+        "status": "done; canonical tests pass",
+        "rootCause": "Interrupted Docker smoke lost its inconclusive state and was treated as a completed candidate failure, suppressing every native leg.",
+        "originalContainer": {
+          "id": "c173f27f97b5",
+          "candidateMount": "/tmp/pui-acceptance-7534f/run-codex-trace-repair-20261015-1346/unit/pui-0.1.0-linux-x86_64",
+          "state": "created",
+          "pid": 0,
+          "startedAt": "0001-01-01T00:00:00Z",
+          "disposition": "identity inspected; owned orphan removed"
+        },
+        "fix": "Reuse StockMachineResult.unmeasured for interrupted invocation and absent terminal status; name smoke containers for timeout cleanup and the existing orphan sweep. Completed nonzero binary exits still block legs; unmeasured smokes still refuse release.",
+        "files": [
+          "packages/operator-core/lib/pui-e2e/release-acceptance-run.ts",
+          "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts"
+        ],
+        "testRunId": "f05429fc-a118-4811-a244-abadd389c512",
+        "testRunIds": [21257148],
+        "passed": 59,
+        "failed": 0,
+        "skipped": 0,
+        "limitation": "Docker delay origin remains undiagnosed; these are harness tests, not native-product acceptance."
+      },
+      "focusedNativeAfterSmokeRepair": {
+        "taskId": "0mv9m427ugij21l1mus",
+        "rootLogPath": ".papercusp/scratch/bash-6e0ce6bd-de2.log",
+        "deadline": "2026-10-15T15:06:39.218Z",
+        "work": "/tmp/pui-acceptance-7534f/run-native-focus-repair-20261015-1406",
+        "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-native-focus-repair-20261015-1406.partial.acceptance.json",
+        "scope": "Codex and OMP parent greeting/tool/interrupt/continue plus explicit approval/effect/same-identity OS restart; live-tree diagnostic fixture, immutable6a0 archive; partial/source-drift release refusal expected",
+        "account": "auto",
+        "mode": "auto",
+        "planEnabled": true,
+        "approvalEnabled": true,
+        "codexModel": "gpt-5.5",
+        "ompModel": "unpinned per D-013",
+        "status": "running; no native result yet"
       }
     }
   },
