@@ -379,17 +379,21 @@ catch (error) {
     // listen() completion cannot reopen the retired socket.
     const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
     await _stopInvalidationListenerForTests();
-    // pg-listen-hub owns a direct postgres-js connection outside db-org's
-    // reset registry. Close it before resetting disposable pools, or its
-    // referenced socket keeps the worker alive after every native failure.
-    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
-    await _stopHubForTests();
+    // Capture the census while the fixture-owned pools are still live. In the
+    // hub scenario this is the only point where the shared listen-hub client
+    // can be observed; stopping it first made the canonical cleanup assertion
+    // contradict the fixture's own setup.
     const { sql } = getOrgPg();
     const pgConnections = await sql`SELECT client_port, application_name, state
       FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
       .catch(error => { retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable',
         { error: String(error) }); return []; });
     retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closing', { pgConnections });
+    // pg-listen-hub owns a direct postgres-js connection outside db-org's
+    // reset registry. Close it after the census, before resetting disposable
+    // pools, or its referenced socket keeps the worker alive after a failure.
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
     await _resetForTests();
     // libuv completes socket close callbacks on the next loop turn. Record
     // after that boundary so an already-closing handle is not called a leak.
