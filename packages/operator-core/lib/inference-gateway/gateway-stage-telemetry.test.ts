@@ -671,6 +671,82 @@ const fixtureReservation = (attempt: GatewayCarryTrialAttempt) => ({
   clockId: attempt.clockId, validUntilMonotonicMs: processMonotonicClock.now() + 5_000,
 });
 
+it.each(['bearer', 'anthropic', 'oauth'] as const)(
+  'accepted support budget observes the final %s body and refuses an unreserved retry', async protocol => {
+    const attempts: GatewayCarryTrialAttempt[] = [], wire: string[] = [];
+    upstream = http.createServer(async (req, res) => {
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      wire.push(Buffer.concat(chunks).toString());
+      res.writeHead(protocol === 'oauth' ? 200 : 429, { 'content-type': 'application/json', 'retry-after': '3600' });
+      res.end(JSON.stringify(protocol === 'oauth'
+        ? { id: 'resp_support', model: 'gpt-6-sol', status: 'completed', output: [],
+          usage: { input_tokens: 1, output_tokens: 1 } }
+        : { error: { message: 'synthetic throttle' } }));
+    });
+    const up = await listen(upstream);
+    const home = protocol === 'oauth' ? await mkdtemp(join(tmpdir(), 'support-budget-oauth-')) : undefined;
+    const dispatcher = home ? new Agent({ connect: (_options, callback) => {
+      const socket = net.connect(up, '127.0.0.1');
+      const failed = (error: Error) => callback(error, null);
+      socket.once('error', failed);
+      socket.once('connect', () => { socket.off('error', failed); callback(null, socket); });
+    } }) : undefined;
+    try {
+      if (home) {
+        const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+        const token = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+        await writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+          access_token: token, refresh_token: 'SYNTHETIC_SUPPORT_REFRESH', account_id: 'support-a',
+        } }));
+      }
+      const binding = { ...trialBinding(async attempt => {
+        attempts.push(attempt);
+        return attempts.length > 1 ? null : fixtureReservation(attempt);
+      }), outputTokenLimit: 17 };
+      gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+        pool: createFailoverPool([{ accountId: 'support-a', token: async () => 'token-a' },
+          { accountId: 'support-b', token: async () => 'token-b' }]),
+        ...(protocol === 'oauth' ? {} : { codexPool: createFailoverPool([
+          { accountId: 'support-a', token: async () => 'token-a' },
+          { accountId: 'support-b', token: async () => 'token-b' }]) }),
+        ...(home && dispatcher ? { codexCliAccounts: () => [{ accountId: 'support-a', home }], codexOAuthProxy: true,
+          fetchImpl: ((target, init) => fetch(target, { ...init, dispatcher } as RequestInit)) as typeof fetch } : {}),
+        upstreamBase: `http://127.0.0.1:${up}`, openaiUpstreamBase: `http://127.0.0.1:${up}`,
+        readAcceptedOperationBudgetBinding: async owner => {
+          expect(owner).toBe('support-worker'); return binding;
+        }, requestAbsorbMs: 0, selfHeal: { enabled: false },
+      });
+      const port = await gateway.listen(0);
+      const send = () => fetch(`http://127.0.0.1:${port}/v1/${protocol === 'anthropic' ? 'messages' : 'responses'}`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'support-worker' },
+        body: JSON.stringify(protocol === 'anthropic'
+          ? { model: 'claude-opus-4', max_tokens: 900, messages: [{ role: 'user', content: 'synthetic' }] }
+          : { model: 'gpt-6-sol', input: 'synthetic', stream: protocol === 'oauth' }),
+      });
+      const response = await send(); await response.text();
+      // OAuth has one selected account; a second request is still a new send
+      // and must obtain its own reservation. API-key lanes fail over in-request.
+      if (protocol === 'oauth') {
+        expect(response.status).toBe(200);
+        const retry = await send(); await retry.text(); expect(retry.status).toBe(403);
+      } else expect(response.status).toBe(403);
+      expect(attempts.length).toBeGreaterThanOrEqual(2);
+      expect(wire).toHaveLength(1);
+      expect(attempts[0]!.body).toBe(wire[0]);
+      expect(attempts[0]!.transport).toBe(protocol === 'oauth' ? 'oauth-http'
+        : protocol === 'anthropic' ? 'anthropic-http' : 'bearer-http');
+      expect(attempts[0]!.bodySha256).toBe(sha256(wire[0]!));
+      const body = JSON.parse(wire[0]!);
+      if (protocol === 'oauth') expect(body.max_output_tokens).toBeUndefined();
+      else expect(body[protocol === 'anthropic' ? 'max_tokens' : 'max_output_tokens']).toBe(17);
+      expect(new Set(attempts.map(a => a.attemptId)).size).toBe(attempts.length);
+    } finally {
+      await gateway?.close(); gateway = undefined;
+      await dispatcher?.close();
+      if (home) await rm(home, { recursive: true, force: true });
+    }
+  });
+
 it.each(['codex', 'anthropic'].flatMap(protocol => ['complete', 'malformed-tail', 'missing-completion'].map(mode => ({ protocol, mode }))))(
   'carry trial observes source-bound provider body closure ($protocol/$mode)', async ({ protocol, mode }) => {
     const headers: GatewayCarryTrialAttemptResult[] = [];

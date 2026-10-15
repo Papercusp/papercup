@@ -636,6 +636,12 @@ export async function readAcceptedProgramRootGuard(
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationEventBodySchema = z.discriminatedUnion('kind', [
   z.object({
+    kind: z.literal('native-budget-reservation'), receiptId: z.number().int().positive(),
+    attemptId: z.string().uuid(), maximumCostMicros: z.number().int().positive(),
+    bodySha256: z.string().regex(/^[0-9a-f]{64}$/), reservationId: z.string().regex(/^[0-9a-f]{64}$/),
+    specificationRevision: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+  z.object({
     kind: z.literal('business-review'), receiptId: z.number().int().positive(),
     workItemId: z.string().nullable(), runId: z.string().nullable(),
     specificationRevision: z.string().regex(/^[0-9a-f]{64}$/),

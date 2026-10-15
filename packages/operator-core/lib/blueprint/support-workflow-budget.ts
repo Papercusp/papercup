@@ -2,6 +2,7 @@
  * ledger. Unknown provider charges keep their full reservation. This module
  * neither estimates token counts nor creates a second funding ledger. */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { Sql } from 'postgres';
 import type { BlueprintOperationHandle, BusinessReviewDecision } from './operation-service';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialBinding } from '../inference-gateway/gateway';
@@ -37,7 +38,8 @@ export async function readSupportOperationBudgetBinding(workspaceId: string, own
     const support = operation.policy.supportCase;
     if (!support) return null;
     const payload = item.payload as Record<string, unknown> | null;
-    if (ANY_FAMILY_TERMINAL_STATES.includes(item.state) || payload?.blueprintCancellation ||
+    if (!isDeepStrictEqual(pin, binding.pin) || operation.id !== binding.operationId ||
+        item.assignee !== ownerId || ANY_FAMILY_TERMINAL_STATES.includes(item.state) || payload?.blueprintCancellation ||
         pin.specificationRevision !== binding.specificationRevision || !support.funding || !support.native ||
         support.funding.organization.controlWorkspaceId !== workspaceId ||
         operation.policy.model?.mode !== 'exact' || operation.policy.model.models.length !== 1 ||
@@ -53,6 +55,35 @@ export async function readSupportOperationBudgetBinding(workspaceId: string, own
     const handle: BlueprintOperationHandle = { workspaceId, harnessSlug: binding.harnessSlug,
       operationId: binding.operationId, receiptId: Number(receipt.id), specificationRevision: binding.specificationRevision,
       target: { kind: 'work-item', id: binding.workItemId } };
+    const validateOperationAuthority = async () => {
+      // Counting native input and reserving funding both await external work.
+      // A receipt read before either wait cannot authorize a stopped/replaced
+      // worker or content whose source access has since been revoked.
+      const current = await readActiveOperationWorkerClaimBinding(workspaceId, ownerId);
+      if (current.status !== 'bound' || !isDeepStrictEqual(current, active)) {
+        throw new Error('Support operation worker authority changed');
+      }
+      const latest = await getWorkItem(binding.workItemId, binding.storageHarnessSlug);
+      if (!latest || latest.assignee !== ownerId || ANY_FAMILY_TERMINAL_STATES.includes(latest.state) ||
+          (latest.payload as Record<string, unknown> | null)?.blueprintCancellation) {
+        throw new Error('Support operation worker is stopped or no longer holds its item');
+      }
+      const accepted = await readAcceptedBlueprintDirectWorkItem(sql, workspaceId, latest);
+      if (!isDeepStrictEqual(accepted.pin, pin)) throw new Error('Support operation pin changed');
+      const [{ supportWorkflowFromOperation }, { readSelectedSupportCase }] = await Promise.all([
+        import('./support-workflow-operation'), import('./support-workflow-case'),
+      ]);
+      const workflow = supportWorkflowFromOperation(accepted.operation, binding.harnessSlug, binding.specificationRevision);
+      if (!workflow) throw new Error('Support operation source policy is missing');
+      // Admission verified and pinned this principal; the worker cannot replace
+      // it with its own identity or with an inference request header.
+      const principal = { kind: 'user', trust: 'verified', workspaceId, slug: pin.callerId?.split('/')[0] };
+      const selected = await readSelectedSupportCase(sql, { workspaceId, harnessSlug: binding.harnessSlug,
+        role: accepted.operation.execution?.kind === 'agent' ? accepted.operation.execution.role : undefined,
+        principal }, workflow, pin.input as unknown as import('./support-workflow-contract').SupportCaseInput);
+      if (!selected.allowed) throw new Error('Support operation source access revoked');
+    };
+    await validateOperationAuthority();
     const native = support.native;
     const authenticator = createNativeProviderAuthenticator({ workspaceId, manifestSha256: binding.specificationRevision,
       assignmentId: supportOperationReservationId(handle), rate: native,
@@ -61,8 +92,14 @@ export async function readSupportOperationBudgetBinding(workspaceId: string, own
           maxTokens: native.inputTokenCeiling + native.outputTokenCeiling } } });
     const controller = createSupportWorkflowBudgetController({ handle, funding: support.funding,
       maximumCostMicros: support.maximumCostMicros, authenticateProvider: authenticator.authenticateProvider,
+      validateOperationAuthority,
       reserveAttempt: attempt => reserveSupportOperationAttempt(sql, attempt) });
-    return { ...controller.binding, ...(native.payer === 'api-key' ? { outputTokenLimit: native.outputTokenCeiling } : {}) };
+    return { ...controller.binding,
+      // The callback escapes this read's async scope and may be invoked later
+      // from another gateway request. Re-establish the accepted workspace for
+      // every authority/source read and reservation it performs.
+      authorizeAttempt: attempt => runWithWorkspace(workspaceId, () => controller.binding.authorizeAttempt(attempt)),
+      ...(native.payer === 'api-key' ? { outputTokenLimit: native.outputTokenCeiling } : {}) };
   });
 }
 
@@ -133,10 +170,11 @@ export async function reserveSupportOperationAttempt(sql: Sql, value: SupportOpe
 export function createSupportWorkflowBudgetController(input: {
   handle: BlueprintOperationHandle; funding: SupportWorkflowFunding; maximumCostMicros: number;
   authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>;
+  validateOperationAuthority: () => Promise<void>;
   reserveAttempt: (attempt: SupportOperationAttemptReservation) => Promise<boolean>;
 }): { binding: GatewayCarryTrialBinding; revoke: () => void } {
   const handle = structuredClone(input.handle), funding = structuredClone(input.funding);
-  const { maximumCostMicros, authenticateProvider, reserveAttempt } = input;
+  const { maximumCostMicros, authenticateProvider, reserveAttempt, validateOperationAuthority } = input;
   if (!Number.isSafeInteger(maximumCostMicros) || maximumCostMicros <= 0 ||
       funding.organization.controlWorkspaceId !== handle.workspaceId) throw new Error('Invalid support operation budget');
   const armId = supportOperationReservationId(handle);
@@ -150,6 +188,8 @@ export function createSupportWorkflowBudgetController(input: {
       if (!live || attempt.signal.aborted || attempt.clockId !== processMonotonicClock.id ||
           attempt.manifestSha256 !== handle.specificationRevision || attempt.armId !== armId ||
           attempt.bodySha256 !== createHash('sha256').update(attempt.body).digest('hex')) return null;
+      try { await validateOperationAuthority(); } catch { return null; }
+      if (!live || attempt.signal.aborted) return null;
       const supplied = await authenticateProvider(attempt);
       if (!supplied?.inputEvidence) return null;
       const authority = Object.freeze({ ...supplied });
@@ -172,8 +212,10 @@ export function createSupportWorkflowBudgetController(input: {
           !Number.isFinite(authority.validUntilMonotonicMs) ||
           authority.inputEvidence!.bodySha256 !== attempt.bodySha256) return null;
       try { check(); } catch { return null; }
+      try { await validateOperationAuthority(); check(); } catch { return null; }
       if (!await reserveAttempt({ handle, funding, operationMaximumMicros: maximumCostMicros,
         attemptId: attempt.attemptId, attemptMaximumMicros: micros, bodySha256: attempt.bodySha256 })) return null;
+      try { await validateOperationAuthority(); check(); } catch { return null; }
       // The gateway invokes this again synchronously inside its send callback.
       return { attemptId: attempt.attemptId, reservationRef: armId, clockId: attempt.clockId,
         validUntilMonotonicMs: authority.validUntilMonotonicMs, validateAuthorization: check };

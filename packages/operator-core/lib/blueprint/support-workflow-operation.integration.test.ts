@@ -1,10 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import postgres from 'postgres';
 import { compileAgentSpecification, BlueprintSchema } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from './project-to-pg';
 import { submitBlueprintOperation } from './operation-service';
 import { supportToEngineeringOperation } from './support-workflow-operation';
+import { currentBenchOpenAiInputContract } from '../external-bench/current-su';
+import { defineHostedAllocation, readHostedAllocationReport, settleHostedAllocation } from '../auth/hosted/billing/allocation-store';
+import { recordSupportWorkflowOutcome, reserveSupportOperationAttempt, supportOperationReservationId } from './support-workflow-budget';
 import { createPersonalGrant } from '../personal-vault/store';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers,
   upsertOrganizationDocuments, upsertPermissionList } from '../data-sources/documents-corpus';
@@ -56,7 +60,15 @@ beforeAll(async () => {
   const operation = supportToEngineeringOperation({ id: 'support-to-engineering', version: '1', role,
     identity: { kind: 'identity', ref: 'support-worker', revision: '1', contentHash: 'b'.repeat(64) },
     accountableOwner: 'engineering-owner', reviewerPrincipals: ['engineering-reviewer'],
-    allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000 });
+    allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000,
+    model: { mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium', onUnavailable: 'fail' },
+    funding: { organization: { controlWorkspaceId: workspaceId, organizationId: 'synthetic-support-org' },
+      allocationId: 'synthetic-support-project', month: '2026-10' },
+    native: { model: 'gpt-6.1-sol', effort: 'medium', account: 'auto', payer: 'api-key',
+      inputTokenCeiling: 1000, outputTokenCeiling: 100,
+      inputTokenCeilingSourceSha256: currentBenchOpenAiInputContract('gpt-6.1-sol', 1000),
+      // Synthetic frozen rates for admission-only tests; no provider is called.
+      inputUsdPerMillion: 1, cachedInputUsdPerMillion: 1, cacheWriteUsdPerMillion: 1, outputUsdPerMillion: 2 } });
   const source = BlueprintSchema.parse({ id: harnessSlug, workItem: { kind: 'task' }, roles: [{ id: role }],
     spine: { edges: { DONE: { to: 'done' } } }, dependencies: { tools: ['blueprint:read-private-input'] },
     operations: [operation] });
@@ -112,4 +124,75 @@ describe('selected support operation admission', () => {
       AND request_key IN ('revoked-source', 'revoked-grant')`;
     expect(count!.n).toBe(0);
   });
+});
+
+describe('support operation durable native funding (synthetic; no provider sends)', () => {
+  it('serializes attempts across connections/restarts and retains unknown outcome costs and ancestor limits', async () => {
+    // Restore this synthetic fixture's grant after the preceding hostile ACL test.
+    await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
+      scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
+    await replacePermissionListMembers(db.adminSql, workspaceId, listId, [{ provider: 'slack', providerUserId: 'T1:EMPLOYEE' }]);
+    const funding = { organization: { controlWorkspaceId: workspaceId, organizationId: 'synthetic-support-org' },
+      allocationId: 'synthetic-support-project', month: '2026-10' };
+    await db.adminSql.begin(async tx => {
+      for (const [allocationId, parentAllocationId, level, maximum] of [
+        ['synthetic-support-org', null, 'organization', 1_000_000],
+        ['synthetic-support-dept', 'synthetic-support-org', 'department', 150_000],
+        [funding.allocationId, 'synthetic-support-dept', 'project', 1_000_000],
+      ] as const) {
+        expect((await defineHostedAllocation(tx as unknown as Sql, { organization: funding.organization,
+          allocationId, parentAllocationId, level, costClass: 'model', month: funding.month,
+          capMicros: 1_000_000, maxUnreconciledMicros: maximum,
+          evidenceRef: 'synthetic:A-8:internal-simulation', recordedBy: 'fixture' })).outcome).toBe('created');
+      }
+    });
+    const handle = await submit('native-budget-race');
+    const request = (maximum: number) => ({ handle, funding, operationMaximumMicros: 100_000,
+      attemptId: crypto.randomUUID(), attemptMaximumMicros: maximum, bodySha256: 'c'.repeat(64) });
+    // A distinct, wide pool plus a connection barrier makes this a real race.
+    // The fixture's normal max:2 pool must not serialize it accidentally.
+    const wide = postgres(db.adminDsn, { max: 4, prepare: false, onnotice: () => {} });
+    let arrived = 0, release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const requests = Array.from({ length: 4 }, () => request(40_000));
+    try {
+      const results = await Promise.all(requests.map(r => wide.reserve().then(async connection => {
+        try {
+          if (++arrived === requests.length) release();
+          await gate;
+          return await reserveSupportOperationAttempt(connection as unknown as Sql, r);
+        } finally { connection.release(); }
+      })));
+      expect(results.filter(Boolean)).toHaveLength(2);
+      expect(await reserveSupportOperationAttempt(wide, requests[results.indexOf(true)]!)).toBe(false);
+    } finally { await wide.end(); }
+    // A new pool has no process-local allowance state from the race.
+    const restarted = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
+    try {
+      expect(await reserveSupportOperationAttempt(restarted, request(20_000))).toBe(true);
+      expect(await reserveSupportOperationAttempt(restarted, request(1))).toBe(false);
+      await restarted.begin(async tx => recordSupportWorkflowOutcome(tx as unknown as Sql, {
+        handle, funding, decision: 'accept', reviewerPrincipal: 'engineering-reviewer', evidenceRef: 'synthetic:review:unknown',
+      }));
+      let report = await restarted.begin(tx => readHostedAllocationReport(tx as unknown as Sql, funding));
+      expect(report.byCostClass.model).toMatchObject({ committedMicros: 100_000, unreconciledMicros: 100_000 });
+      expect(report.outcomes[0]).toMatchObject({ acceptedWithUnknownCost: 1, costPerAcceptedOutcomeMicros: null,
+        reviewEffortUnknown: 1, reworkUnknown: 1, evidenceClasses: ['internal-simulation'] });
+      await restarted.begin(async tx => {
+        expect((await settleHostedAllocation(tx as unknown as Sql, { organization: funding.organization,
+          reservationId: supportOperationReservationId(handle), costSource: 'provider-billed', providerFinal: true,
+          costMicros: 23_000, observedAtMs: Date.now(), evidenceRef: 'synthetic:provider-final' })).outcome).toBe('settled');
+        await recordSupportWorkflowOutcome(tx as unknown as Sql, { handle, funding, decision: 'accept',
+          reviewerPrincipal: 'engineering-reviewer', evidenceRef: 'synthetic:review:known' });
+      });
+      report = await restarted.begin(tx => readHostedAllocationReport(tx as unknown as Sql, funding));
+      expect(report.outcomes[0]).toMatchObject({ outcomes: 1, acceptedWithUnknownCost: 0,
+        acceptedResultCostMicros: 23_000, costPerAcceptedOutcomeMicros: 23_000 });
+      const second = await submit('native-budget-second'), third = await submit('native-budget-third');
+      expect(await reserveSupportOperationAttempt(restarted, { ...request(40_000), handle: second })).toBe(true);
+      expect(await reserveSupportOperationAttempt(restarted, { ...request(40_000), handle: third })).toBe(false);
+      report = await restarted.begin(tx => readHostedAllocationReport(tx as unknown as Sql, funding));
+      expect(report.byCostClass.model).toMatchObject({ committedMicros: 123_000, unreconciledMicros: 100_000 });
+    } finally { await restarted.end(); }
+  }, 30_000);
 });

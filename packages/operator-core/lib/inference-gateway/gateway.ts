@@ -2410,7 +2410,7 @@ export function accumulateGatewayRouteUsage(
 export function createInferenceGateway(deps: GatewayDeps) {
   // Snapshot the binding so a mutable dependency cannot change an arm or remove
   // its enforcement while the request is queued or waiting on authorization.
-  const carryTrialProtocols = deps.carryTrial?.protocols === undefined
+  const carryTrialProtocols: NonNullable<GatewayCarryTrialBinding['protocols']> = deps.carryTrial?.protocols === undefined
     ? ['openai-responses'] : deps.carryTrial.protocols;
   if (deps.carryTrial && (!Array.isArray(carryTrialProtocols) || carryTrialProtocols.length === 0 ||
     carryTrialProtocols.length > 2 || new Set(carryTrialProtocols).size !== carryTrialProtocols.length ||

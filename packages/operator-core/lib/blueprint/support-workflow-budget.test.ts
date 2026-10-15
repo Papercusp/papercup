@@ -25,9 +25,10 @@ function authority(value: GatewayCarryTrialAttempt): NativeGymProviderAuthorizat
 }
 function setup(authenticateProvider = vi.fn(async (value: GatewayCarryTrialAttempt) => authority(value))) {
   const reserveAttempt = vi.fn(async () => true);
+  const validateOperationAuthority = vi.fn(async () => {});
   const controller = createSupportWorkflowBudgetController({ handle, funding, maximumCostMicros: 100_000,
-    authenticateProvider, reserveAttempt });
-  return { ...controller, authenticateProvider, reserveAttempt };
+    authenticateProvider, reserveAttempt, validateOperationAuthority });
+  return { ...controller, authenticateProvider, reserveAttempt, validateOperationAuthority };
 }
 describe('support operation native budget authority', () => {
   it('reserves only authenticated native exposure and rechecks revocation at the actual send', async () => {
@@ -52,9 +53,36 @@ describe('support operation native budget authority', () => {
     let finish!: (value: NativeGymProviderAuthorization) => void;
     const c = setup(vi.fn(() => new Promise(resolve => { finish = resolve; })));
     const value = attempt(), pending = c.binding.authorizeAttempt(value);
+    await vi.waitFor(() => expect(c.authenticateProvider).toHaveBeenCalledOnce());
     c.revoke(); finish(authority(value));
     expect(await pending).toBeNull();
     expect(c.reserveAttempt).not.toHaveBeenCalled();
+  });
+  it.each(['stop', 'claim-loss', 'source-revocation', 'worker-replacement'])(
+    'refuses %s during native input counting before reserving or sending', async reason => {
+      let finish!: (value: NativeGymProviderAuthorization) => void;
+      const c = setup(vi.fn(() => new Promise(resolve => { finish = resolve; })));
+      const value = attempt(), pending = c.binding.authorizeAttempt(value);
+      await vi.waitFor(() => expect(c.authenticateProvider).toHaveBeenCalledOnce());
+      c.validateOperationAuthority.mockRejectedValue(new Error(reason));
+      finish(authority(value));
+      expect(await pending).toBeNull();
+      expect(c.reserveAttempt).not.toHaveBeenCalled();
+    });
+  it('does not begin provider input counting without current operation and source authority', async () => {
+    const c = setup(); c.validateOperationAuthority.mockRejectedValue(new Error('revoked'));
+    expect(await c.binding.authorizeAttempt(attempt())).toBeNull();
+    expect(c.authenticateProvider).not.toHaveBeenCalled();
+    expect(c.reserveAttempt).not.toHaveBeenCalled();
+  });
+  it('retains the funding hold but refuses a send when control changes while reservation waits', async () => {
+    const c = setup();
+    c.reserveAttempt.mockImplementationOnce(async () => {
+      c.validateOperationAuthority.mockRejectedValue(new Error('stopped'));
+      return true;
+    });
+    expect(await c.binding.authorizeAttempt(attempt())).toBeNull();
+    expect(c.reserveAttempt).toHaveBeenCalledOnce();
   });
   it.each(['over-cap', 'no-input-proof', 'foreign-body', 'expired'])('refuses %s authority without reserving', async kind => {
     const c = setup(vi.fn(async value => {

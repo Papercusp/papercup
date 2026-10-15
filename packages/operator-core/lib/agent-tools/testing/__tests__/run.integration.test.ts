@@ -1350,6 +1350,63 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
+  it.each([0, 1])('preserves original diagnostics when exit %s has no measured report', async (code) => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-missing-report-log-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const logPath = join(root, 'original-router.log');
+    const cause = 'integration bootstrap failed before reporting';
+    await writeFile(logPath, `${cause}\n${'startup progress\n'.repeat(1000)}`);
+    const runRouterFn = vi.fn(async () => ({
+      code, signal: null, timedOut: false, aborted: false,
+      output: 'startup progress\n'.repeat(200), outputLogPaths: [logPath],
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
+    expect(out).toMatchObject({ ok: false, error: 'no_report', diagnostics: { routerLogPaths: [logPath] } });
+    expect(await readFile(logPath, 'utf8')).toContain(cause);
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the original router log only after a measured successful verdict', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-success-log-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const logPath = join(root, 'original-router.log');
+    await writeFile(logPath, 'original output\n');
+    const runRouterFn = vi.fn(async () => ({
+      code: 0, signal: null, timedOut: false, aborted: false, outputLogPaths: [logPath],
+      output: '# tests 1\n# pass 1\n# fail 0\n# skipped 0\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed',
+    }));
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
+    expect(out).toMatchObject({ ok: true, passed: 1, failed: 0 });
+    expect(existsSync(logPath)).toBe(false);
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 1])('keeps the real router child log after exit %s without a report', async (code) => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-real-missing-report-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const cause = 'fixture bootstrap cause before verbose startup';
+    await writeFile(join(root, 'scripts/test-files.mjs'), [
+      `process.stderr.write(${JSON.stringify(`${cause}\n`)});`,
+      "process.stdout.write('startup progress\\n'.repeat(1000));",
+      `process.exitCode = ${code};`,
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 });
+    if (out.error !== 'no_report') throw new Error(JSON.stringify(out));
+    const logs = out.diagnostics?.routerLogPaths ?? [];
+    try {
+      expect(logs).toHaveLength(1);
+      expect(out.routerOutput).not.toContain(cause);
+      expect(await readFile(logs[0]!, 'utf8')).toContain(cause);
+    } finally {
+      await Promise.all(logs.map((path) => rm(path, { force: true })));
+    }
+  });
+
   it('recovers a completed Node-only run at the foreground deadline without replaying it', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-run-node-complete-');
     await mkdir(join(root, 'scripts'), { recursive: true });

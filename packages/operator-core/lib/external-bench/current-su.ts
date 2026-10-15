@@ -783,7 +783,9 @@ export function currentBenchProviderAuthenticator(input: {
 export function createNativeProviderAuthenticator(input: {
   workspaceId: string; manifestSha256: string; assignmentId: string;
   policy: Pick<CurrentBenchmarkProtocol['arms'][number],
-    'agent' | 'account' | 'model' | 'effort' | 'payer' | 'generationBudget'>;
+    'agent' | 'account' | 'model' | 'effort' | 'payer'> & {
+      generationBudget: { maxUsd: number; maxTokens?: number };
+    };
   rate: FrozenBenchRate;
   readNativeInputCeiling?: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
 }, ports?: {
