@@ -196,8 +196,11 @@ it.skipIf(process.platform !== 'linux')('starts profiling before releasing an ex
     const sampledUrls = [...new Set(result.profile.nodes
       .filter((node: { id: number }) => sampled.has(node.id))
       .map((node: { callFrame: { url: string } }) => node.callFrame.url))];
-    expect(sampledUrls.filter(url => url && !url.startsWith('node:')))
-      .toContain(pathToFileURL(entry).href);
+    const sampledSourceUrls = sampledUrls.filter(url => url && !url.startsWith('node:'));
+    const targetUrl = pathToFileURL(entry).href;
+    if (!sampledSourceUrls.includes(targetUrl)) {
+      throw new Error('expected startup source URL ' + targetUrl + '; sampled source URLs: ' + JSON.stringify(sampledSourceUrls));
+    }
   }, true);
 }, 15000);
 
