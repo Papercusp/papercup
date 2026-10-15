@@ -621,9 +621,9 @@ export function buildServiceHealthDiagnostic(
 export default defineTool({
   name: "dev:service_health",
   description:
-    'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; read unknowns first because nonexistent and stopped units can both appear inactive.',
+    'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; pass `unitsOnly:true` to skip the full endpoint snapshot when you only need those states. Read unknowns first because nonexistent and stopped units can both appear inactive.',
   guidance: {
-    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
+    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user", unitsOnly:true }` (read unitsUnknown before unitStates, then probe :3170). Omit unitsOnly when you also want the full fixed-endpoint snapshot; diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
     // EI-21678459404022074: `target` is dev:restart's argument, not this tool's — and
@@ -646,11 +646,11 @@ export default defineTool({
         // "<work-item-id>"); an enum arg must carry a real member. 'staging' matches this
         // tool's own `when` clause and the papercusp-staging-api example in `note` below.
         args: { target: 'staging' },
-        note: 'dev:service_health probes a FIXED endpoint set and takes only `units` + `scope` — there is no `target` to aim it at. Restarting a named service is dev:restart { target }; to VERIFY that restart, call this tool with units:["papercusp-staging-api"], scope:"user" and read unitsUnknown before unitStates',
+        note: 'dev:service_health probes a FIXED endpoint set and accepts `units`, `scope`, and optional `unitsOnly`; there is no `target` to aim it at. Restarting a named service is dev:restart { target }; to VERIFY that restart, call this tool with units:["papercusp-staging-api"], scope:"user", unitsOnly:true when you only need that unit state (omit unitsOnly for the full snapshot), and read unitsUnknown before unitStates',
       },
     },
     returns:
-      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision, dhtUniverse?, unitStates?, unitsUnknown?, scopesUnavailable?, healthPhaseTimingsMs }. `healthPhaseTimingsMs` reports measured wall time for each independently awaited handler phase; absent optional phases were not requested or not entered. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The unit fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
+      "Default result: { configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision, dhtUniverse?, unitStates?, unitsUnknown?, scopesUnavailable?, healthPhaseTimingsMs }. With `unitsOnly:true`, the result contains only `{ ok, snapshotMode:'units-only', unitStates, unitsUnknown, scopesUnavailable, healthPhaseTimingsMs }`; this mode requires `units` and avoids unrelated snapshot probes. `healthPhaseTimingsMs` reports measured wall time for each independently awaited handler phase; absent optional phases were not requested or not entered. `dhtUniverse.warnings` flags a product host off the public DHT outside a drill. The unit fields appear when `units` is requested; read `unitsUnknown` before treating an inactive `unitStates` entry as a stopped unit. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",
@@ -704,6 +704,20 @@ export default defineTool({
       .describe(
         "Which systemd manager `units` is looked up in: 'user' (default — every papercup-* unit), 'system' (auditd, ufw, pgbouncer), or 'all' to query both and merge. Only meaningful with `units`.",
       ),
+    unitsOnly: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, return only the requested `units` state and skip the full endpoint/supervision snapshot. Requires at least one `units` entry. Default false preserves the combined snapshot behavior.",
+      ),
+  }).superRefine((input, ctx) => {
+    if (input.unitsOnly && !input.units?.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["units"],
+        message: "unitsOnly requires at least one unit",
+      });
+    }
   }),
   // Keep the complete diagnostic snapshot available as structured MCP content.
   // The text projection remains human-oriented, while this schema makes the
@@ -724,7 +738,28 @@ export default defineTool({
       scopesUnavailable: z.unknown().optional(),
     })
     .passthrough(),
-  async handler({ units, scope }) {
+  async handler({ units, scope, unitsOnly }) {
+    const healthPhaseTimingsMs: Record<string, number> = {};
+    if (unitsOnly) {
+      const unitStates = await measureHealthPhase(healthPhaseTimingsMs, "requestedUnitStates", () =>
+        probeUnitStates(units!, scope ?? "user"),
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              ok: true,
+              snapshotMode: "units-only",
+              unitStates: unitStates.states,
+              unitsUnknown: unitStates.unitsUnknown,
+              ...(unitStates.scopesUnavailable.length ? { scopesUnavailable: unitStates.scopesUnavailable } : {}),
+              healthPhaseTimingsMs,
+            }),
+          },
+        ],
+      };
+    }
     // The unit query is ADDITIVE and independent of the fixed probe set: a
     // caller passing `units` still gets the full snapshot, because "is this one
     // unit up" and "what is the state of everything" are usually asked in the
@@ -732,7 +767,6 @@ export default defineTool({
     // whole plan exists to remove.
     // These reads do not depend on one another. A slow systemd/spawner-sidecar
     // request must not serialize two more probe phases past the MCP deadline.
-    const healthPhaseTimingsMs: Record<string, number> = {};
     const unitStatesPromise = units?.length
       ? measureHealthPhase(healthPhaseTimingsMs, "requestedUnitStates", () => probeUnitStates(units, scope ?? "user"))
       : Promise.resolve(null);

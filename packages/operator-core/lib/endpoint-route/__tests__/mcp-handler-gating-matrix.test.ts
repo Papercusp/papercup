@@ -4995,6 +4995,24 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.alsWorkspace).toBe('ws-arg');
   });
 
+  it('EI-25982690010642755: harness:get and harness:status expose the per-call workspace tx path', async () => {
+    const getRes = await callTool(
+      'harness:get',
+      { slug: 'missing-project', workspace: 'ws-get' },
+      superuserExtra(),
+    );
+    expect(textOf(getRes)).not.toContain('requires a workspace-scoped call');
+    expect(h.withWorkspaceCalls).toEqual(['ws-get']);
+
+    const statusRes = await callTool(
+      'harness:status',
+      { slug: 'missing-project', workspace: 'ws-status' },
+      superuserExtra(),
+    );
+    expect(textOf(statusRes)).not.toContain('requires a workspace-scoped call');
+    expect(h.withWorkspaceCalls).toEqual(['ws-get', 'ws-status']);
+  });
+
   it('an UNSCOPED superuser call with NO workspace gets neither tx nor principal nor ALS pin', async () => {
     const res = await callTool('gatingtest:scoped', {}, superuserExtra());
     expect(res.isError).toBeUndefined(); // this probe tool itself needs no principal

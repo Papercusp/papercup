@@ -30,10 +30,15 @@ const recoveryCooldown = pinModuleState(
   '@papercusp/operator-core.gitFetchCacheRecoveryCooldown',
   () => ({ failedAt: new Map<string, number>() }),
 );
+const recoveryInFlight = pinModuleState(
+  '@papercusp/operator-core.gitFetchCacheRecoveryInFlight',
+  () => new Set<string>(),
+);
 
-/** Test seam: forget every recorded failed recovery. */
+/** Test seam: forget every recorded failed or in-flight recovery. */
 export function resetGitFetchCacheRecoveryCooldown(): void {
   recoveryCooldown.failedAt.clear();
+  recoveryInFlight.clear();
 }
 
 /** Same-device paths share one key; an unreadable path falls back to its own key. */
@@ -110,13 +115,21 @@ export async function withGitFetchHeadroom(
       return refused(`${initial}; cache recovery skipped: an attempt on this filesystem ` +
         `${Math.round(sinceFailedMs / 1000)}s ago did not restore the reserve`);
     }
+    if (recoveryInFlight.has(fsKey)) {
+      return refused(`${initial}; cache recovery skipped: an attempt on this filesystem is already in progress`);
+    }
     // One bounded manager-native attempt, never a retry loop or a relaxed
-    // reserve. Only the fresh object-store sample may admit the transfer.
+    // reserve. Concurrent submodule fetches share this per-filesystem gate so
+    // they do not all queue for the same package-cache mutex. Only the fresh
+    // object-store sample may admit the transfer.
     let recoveryError = '';
+    recoveryInFlight.add(fsKey);
     try {
       await recover(path);
     } catch (error) {
       recoveryError = `; cache recovery failed: ${String(error)}`;
+    } finally {
+      recoveryInFlight.delete(fsKey);
     }
     if (signal?.aborted) return refused('git aborted during disk headroom recovery');
     initial = await refusal();

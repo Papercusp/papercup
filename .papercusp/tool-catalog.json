@@ -36064,7 +36064,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use only when a named external condition or human capability actually stops work. Credential/device/service blockers open coord:ask-owner. Product-decision may park with defaultIfUnanswered + decideBy; owner-authority topics still need the owner. Use a stable ref and name nextVerb when known.",
+        "when": "Use only when a named external condition or human capability actually stops work. Credential/device/service blockers open coord:ask-owner. kind:'product-decision' may park with defaultIfUnanswered + decideBy; owner-authority topics still need the owner. Use a stable ref and name nextVerb when known.",
         "notWhen": "Use work_items:link {rel:'blocks'} when another work-item must finish first. A vague concern is not a blocker. Do not pause ordinary non-final work for main/:3070/green-checkpoint; staging/current-build is the acceptance plane.",
         "chaining": "set_blocker {id,kind,ref,…} → follow the returned disposition → set_blocker {id,ref,clear:true,evidence} when resolved. Omit ref on clear-only only when one active blocker matches."
       }

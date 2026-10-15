@@ -229,4 +229,30 @@ describe('Git fetch disk headroom', () => {
       expect(recover).toHaveBeenCalledTimes(3);
     });
   });
+
+  it('skips duplicate same-filesystem recovery while the first attempt is in flight', async () => {
+    let markStarted!: () => void;
+    let finishRecovery!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const recovery = new Promise<void>((resolve) => { finishRecovery = resolve; });
+    const recover = vi.fn(() => {
+      markStarted();
+      return recovery;
+    });
+    const sample = vi.fn(async () => [snapshot(GIB)]);
+    const refusingRun = () => vi.fn(async () => ({ ...ok, stdout: path }));
+
+    const first = withGitFetchHeadroom(['fetch'], refusingRun(), undefined, sample, recover);
+    await started;
+    const second = await withGitFetchHeadroom(['fetch'], refusingRun(), undefined, sample, recover);
+
+    expect(second).toMatchObject({
+      code: -1,
+      stderr: expect.stringContaining('cache recovery skipped: an attempt on this filesystem is already in progress'),
+    });
+    expect(recover).toHaveBeenCalledTimes(1);
+
+    finishRecovery();
+    expect(await first).toMatchObject({ code: -1, stderr: expect.stringContaining('critical reserve') });
+  });
 });

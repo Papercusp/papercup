@@ -50,7 +50,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/adv/harnesses/harness-testing-data-source.ts', 'libs/testing-shell/src/TestingShell.tsx',
         'libs/testing-shell/src/DomainTestPanel.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -186,7 +187,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/cupboard/CupboardErrorState.tsx', 'apps/operator/bin/hono-host.ts',
         'apps/operator/bin/host-handler.ts', 'apps/operator/bin/host-rebinding-guard.ts', 'apps/operator/bin/bundle-host.sh',
         'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -238,7 +240,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/dev/_components/WorkspacePicker.tsx', 'apps/operator/bin/hono-host.ts',
         'apps/operator/bin/host-handler.ts', 'apps/operator/bin/host-rebinding-guard.ts', 'apps/operator/bin/bundle-host.sh',
         'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -301,7 +304,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/harness/insights/InsightsTab.tsx', 'apps/operator/app/harness/insights/TokensView.tsx',
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts', 'apps/operator/bin/bundle-host.sh',
         'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -375,7 +379,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/harness/brainstorm/MapView.tsx', 'apps/operator/app/harness/brainstorm/CanvasView.tsx',
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -433,7 +438,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -492,7 +498,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -565,7 +572,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/adv/hud/HudSearchBox.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -619,7 +627,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/adv/create/AdvCreateDock.tsx', 'apps/operator/app/admin/plans/plans-api.ts',
         'packages/operator-ui/src/seam.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -683,7 +692,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         ...prepared.sourcePaths,
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -752,7 +762,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-ui/src/surfaces/index.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -817,7 +828,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -873,7 +885,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -927,7 +940,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -979,7 +993,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -1029,7 +1044,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/host-spa.ts', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -1080,7 +1096,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
         'apps/operator/bin/bundle-host-common.sh',
         'apps/operator/bin/bundle-host.sh'],
-      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
+      prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+        { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',

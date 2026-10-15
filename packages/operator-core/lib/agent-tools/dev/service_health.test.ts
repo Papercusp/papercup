@@ -138,6 +138,39 @@ describe("dev:service_health handler", () => {
     expect(result.unitsUnknown).toEqual(["papercusp-staging-api.service"]);
   });
 
+  it("unitsOnly returns requested unit state without waiting for unrelated snapshot probes", async () => {
+    unitM.mockResolvedValueOnce({
+      states: [],
+      unitsUnknown: ["papercup-staging-sync.service"],
+      scopesUnavailable: [],
+    });
+
+    const result = body((await tool.handler({
+      units: ["papercup-staging-sync"],
+      scope: "user",
+      unitsOnly: true,
+    } as never, {} as never)) as Out);
+
+    expect(result).toMatchObject({
+      ok: true,
+      snapshotMode: "units-only",
+      unitStates: [],
+      unitsUnknown: ["papercup-staging-sync.service"],
+      healthPhaseTimingsMs: { requestedUnitStates: expect.any(Number) },
+    });
+    expect(unitM).toHaveBeenCalledWith(["papercup-staging-sync"], "user");
+    expect(probeM).not.toHaveBeenCalled();
+    expect(mcpHandshakeM).not.toHaveBeenCalled();
+    expect(supervisionM).not.toHaveBeenCalled();
+    expect(dhtM).not.toHaveBeenCalled();
+    expect(getTelemetryHealth).not.toHaveBeenCalled();
+  });
+
+  it("requires at least one systemd unit for unitsOnly", () => {
+    const args = (tool as unknown as { args: { safeParse(value: unknown): { success: boolean } } }).args;
+    expect(args.safeParse({ unitsOnly: true }).success).toBe(false);
+  });
+
   it("opts out of the ambient workspace transaction because health probes are DB-independent", () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
@@ -156,7 +189,7 @@ describe("dev:service_health handler", () => {
   it("documents the canonical staging unit read after dev:restart", () => {
     const when = (tool as { guidance?: { when?: string } }).guidance?.when ?? "";
     expect(when).toContain('dev:restart { target:"staging" }');
-    expect(when).toContain('dev:service_health { units:["papercusp-staging-api"], scope:"user" }');
+    expect(when).toContain('dev:service_health { units:["papercusp-staging-api"], scope:"user", unitsOnly:true }');
   });
 
   it("surfaces the probe snapshot under { ok, services }", async () => {
