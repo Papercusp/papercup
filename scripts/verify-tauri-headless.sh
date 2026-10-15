@@ -2526,6 +2526,11 @@ EXPECTED_DISPLAY=":$DISPLAY_NUM"
 EXPECTED_PORT="$DEV_PORT"
 EXPECTED_SID="$TAURI_OWNER_SID"
 EXPECTED_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
+# Assertions may run in a user namespace that cannot read a host process's
+# environ. Keep the same live provenance checks in the existing host observer.
+if [ -n "\${PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET:-}" ]; then
+  exec node --import tsx "\$OPERATOR_SOURCE_ROOT/packages/operator-core/lib/testing-native-runtime.ts" --check-native-liveness
+fi
 SCOPE_UNIT=""
 if [ "$VERIFY_SCOPE_ENABLED" = 1 ]; then
   SCOPE_UNIT="${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
