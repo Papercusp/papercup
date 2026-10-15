@@ -57,6 +57,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(await execute(c.tools)).toMatchObject({ ok: true, dryRun: true, nonPassing: 1,
       gaps: [{ classification: 'major', action: 'would-file' }] });
     expect(c.audit).toHaveBeenCalledWith(expect.objectContaining({ phase: 'completion', dryRun: true, items: auditItems }));
+    expect(c.evaluate.mock.calls[0][0]).not.toHaveProperty('planItemIds');
     expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ specIds: ['SPEC-PASS'], dryRun: true }));
     expect(c.create).not.toHaveBeenCalled();
   });
@@ -80,6 +81,11 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(await execute(c.tools, { dryRun: false, auditItems: [{ itemId: 'P-003', verdict: 'partial' }] }))
       .toMatchObject({ ok: true, nonPassing: 1, gaps: [{ blockers: ['code-truth'] }] });
     expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+    const stale = controls([row({ wouldBlock: ['freshness', 'falsifiability', 'plan-class-risk-floor'],
+      ratings: { freshness: { rating: 'fail' } } })]);
+    expect(await execute(stale.tools)).toMatchObject({ ok: true, gaps: [{ classification: 'outdated' }] });
+    const unreviewed = controls([row({ planItemId: 'P-004', verdict: 'pass', wouldBlock: [] })]);
+    expect(await execute(unreviewed.tools)).toMatchObject({ ok: true, nonPassing: 1, gaps: [{ blockers: ['code-truth'] }] });
   });
   it('refuses partial audits, certification failures, invalid identity and unaccountable filings', async () => {
     const partial = controls([row()], { audit: { ok: true, partial: true, rejectedItemIds: ['P-003'] } });
@@ -94,6 +100,9 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(await execute(identity.tools)).toMatchObject({ ok: false, error: 'invalid_clause_identity' });
     const owner = controls([row()], { filed: { ok: true, results: [{ ok: true, workItem: { id: 'WI-unclaimed' } }] } });
     expect(await execute(owner.tools, { dryRun: false })).toMatchObject({ ok: false, phase: 'file' });
+    const links = controls([row()], { filed: { ok: true, results: [{ ok: true,
+      workItem: { id: 'WI-unlinked', assignee: 'converge-owner' }, inlineLinkWarnings: ['link refused'] }] } });
+    expect(await execute(links.tools, { dryRun: false })).toMatchObject({ ok: false, phase: 'file' });
   });
 });
 
@@ -168,6 +177,7 @@ describe('converge real PostgreSQL composition', () => {
       const execution: TestRunExecutionDetails = { schemaVersion: 1, root, filePath: testPath,
         runGroupId: null, workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp',
         testNamePattern: null, testLayer: 'integration', mutationPhase: null, commitSha: null, worktreeDirty: false,
+        ...(status === 'pass' ? { passedCaseTitles: ['persisted proof fixture'] } : { failedCaseTitles: ['persisted proof fixture'] }),
         passed: status === 'pass' ? 1 : 0, failed: status === 'fail' ? 1 : 0, skipped: 0, collectionFailed: false };
       // Validate fixtures with the very parser the evidence reader consumes;
       // incomplete status-only rows must never masquerade as passing proof.
@@ -187,6 +197,27 @@ describe('converge real PostgreSQL composition', () => {
           pathReachable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
           outcome: 'passed', targeted: specId, testLayer: 'integration', testCases: ['persisted proof fixture'],
           coverageRungs: { l3: true } } } })).toMatchObject({ status: 'created' });
+      if (status === 'pass') {
+        // Seed the canonical negative-control leg as evaluator INPUT alongside
+        // its passing baseline. A boolean attestation cannot make proof pass.
+        const mutant: TestRunExecutionDetails = { ...execution, mutationPhase: 'mutant', passed: 0, failed: 1,
+          passedCaseTitles: [], failedCaseTitles: ['persisted proof fixture'] };
+        expect(parseTestRunExecutionDetails(mutant)).toEqual(mutant);
+        const [red] = await fx.admin`INSERT INTO harness_shared.test_runs
+          (workspace_id, harness_slug, file_path, framework, status, source, worktree_dirty, execution_details, output_tail)
+          VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${testPath}, 'vitest', 'fail', 'mutation-probe', false,
+            ${JSON.stringify(mutant)}::text::jsonb, 'persisted proof fixture: expected true to be false') RETURNING id`;
+        await fx.admin`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status)
+          VALUES (${red.id}, 0, 'persisted proof fixture', 'fail')`;
+        expect(await bindSpecEvidence({ harnessSlug: 'papercusp', planSlug: slug, specId,
+          workItemId: 'WI-CONVERGE-PROOF', evidenceKind: 'mutation', evidenceRef: `test-run:${red.id}:${testPath}`,
+          testRunId: Number(red.id), ...fingerprints,
+          ...(stale ? { sourceFingerprint: 'deliberately-stale-source' } : {}), actorId: 'su-converge-pg',
+          details: { currentMeasurement: measurement, adequacy: { fixtureCalibrated: true,
+            pathReachable: true, oracleIndependent: true, collected: true, skipped: false, executed: true,
+            outcome: 'killed', targeted: specId, testLayer: 'integration', testCases: ['persisted proof fixture'] } } }))
+          .toMatchObject({ status: 'created' });
+      }
     }
     const reviewed = ['P-003', 'P-004', 'P-005', 'P-006'].map(itemId => ({
       ...auditItems[0], itemId, verdict: itemId === 'P-005' ? 'missing' : 'implemented',

@@ -5,9 +5,8 @@ const dryRun = inputs.dryRun !== false;
 if (!planSlug || !harness || !classRef || !Array.isArray(auditItems) || auditItems.length === 0) {
   return { ok: false, error: "scope_and_reviewed_auditItems_required" };
 }
-const planItemIds = auditItems.map(item => item.itemId);
 const evaluation = await tools.plans.evaluateSpecTestAdequacy({
-  harness, slug: planSlug, classRef, planItemIds, includeDraft: true, detail: "full",
+  harness, slug: planSlug, classRef, includeDraft: true, detail: "full",
 });
 if (evaluation.ok !== true || !Array.isArray(evaluation.rows)) {
   return { ok: false, phase: "evaluate", evaluation };
@@ -32,8 +31,10 @@ for (const row of rows) {
   // Missing proof is not evidence of broken behavior. Only a reviewed missing
   // implementation is critical. "outdated" is a conformance label; work-items
   // retain their existing critical/major/minor/nit severity vocabulary.
+  const stale = blockers.includes("freshness") && row.ratings && row.ratings.freshness
+    && row.ratings.freshness.rating === "fail" && !blockers.includes("code-truth");
   const classification = reviewed && reviewed.verdict === "missing" ? "critical"
-    : blockers.length > 0 && blockers.every(value => value === "freshness") ? "outdated"
+    : stale || blockers.length > 0 && blockers.every(value => value === "freshness") ? "outdated"
     : blockers.length > 0 && blockers.every(value => value === "traceability") ? "minor" : "major";
   const severity = classification === "outdated" ? "minor" : classification;
   const conditionKey = `spec-gap:${harness}/${planSlug}/${row.specId}@${row.specRevision}`;
@@ -64,7 +65,8 @@ for (const proposal of proposals) {
   });
   const outcome = filed.results && filed.results[0];
   if (!filed.ok || !outcome || !outcome.ok || !outcome.workItem
-      || !(outcome.workItem.assignee || outcome.workItem.terminalOwner)) {
+      || !(outcome.workItem.assignee || outcome.workItem.terminalOwner)
+      || (outcome.inlineLinkWarnings || []).length > 0) {
     return { ok: false, phase: "file", filed, gaps };
   }
   gaps.push({ ...proposal, action: outcome.conditionUpsert ? "reused" : "filed", id: outcome.id || outcome.workItem.id });
