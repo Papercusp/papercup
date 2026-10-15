@@ -161,6 +161,18 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
     expect(deps.killTask).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['already_gone', true],
+    ['command_failed', false],
+  ] as const)('treats exact native answerer retirement %s as settled=%s', async (error, settled) => {
+    const deps = dependencies();
+    deps.killTask.mockResolvedValue({ ok: false, taskId: 'exact-task', action: 'kill', error });
+    const failure = await readOpenGradingAnswererTerminalFailure(input, deps);
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(await failure?.retire?.()).toBe(settled);
+    expect(deps.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
+  });
+
   it('awaits asynchronous native readers before inspecting and revalidating the turn', async () => {
     const deps = dependencies();
     const failure = await readOpenGradingAnswererTerminalFailure(input, {
@@ -1257,7 +1269,7 @@ describe('launchAcceptanceGrader', () => {
     expect(result).toMatchObject({ state: 'deduped', launch: { tasks: [{ taskId: 'task-1' }] } });
   });
 
-  it('retires an over-age deduped judge and launches a deterministic fresh retry', async () => {
+  it.each([null, 'already_gone'] as const)('retires an over-age deduped judge (%s) and launches a deterministic fresh retry', async (error) => {
     const launch = vi.fn(async (args: Record<string, unknown>) =>
       String(args.idempotencyKey).includes(':retry:')
         ? {
@@ -1269,7 +1281,7 @@ describe('launchAcceptanceGrader', () => {
             data: { deduped: true, launch: { tasks: [{ taskId: 'task-stale' }] } },
           },
     );
-    const kill = vi.fn(async () => ({ ok: true }));
+    const kill = vi.fn(async () => error ? { ok: false, error } : { ok: true });
     const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
       ...deps(launch),
       listTasks: vi.fn(async () => [
@@ -1296,7 +1308,7 @@ describe('launchAcceptanceGrader', () => {
     });
   });
 
-  it('retires a quota-blocked Claude judge and performs one deterministic Codex fallback', async () => {
+  it.each([null, 'already_gone'] as const)('retires a quota-blocked Claude judge (%s) and performs one deterministic Codex fallback', async (error) => {
     const quotaLog = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
     const launch = vi.fn(async (args: Record<string, unknown>) =>
       args.agent === 'codex'
@@ -1316,7 +1328,7 @@ describe('launchAcceptanceGrader', () => {
             },
           },
     );
-    const kill = vi.fn(async () => ({ ok: true }));
+    const kill = vi.fn(async () => error ? { ok: false, error } : { ok: true });
     const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
       ...deps(launch),
       killTask: kill as never,
@@ -1379,6 +1391,20 @@ describe('launchAcceptanceGrader', () => {
     });
     expect(quoted).toHaveBeenCalledTimes(1);
     expect(quotedKill).not.toHaveBeenCalled();
+  });
+
+  it('refuses a terminal fallback when exact task retirement fails', async () => {
+    const launch = vi.fn(async () => ({
+      data: { deduped: false, launch: { tasks: [{ taskId: 'task-refused', logPath: '/tmp/refused.log' }] } },
+    }));
+    const kill = vi.fn(async () => ({ ok: false, error: 'command_failed' }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
+      readLogTail: () => "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+    });
+    expect(result).toMatchObject({ state: 'failed', error: expect.stringContaining('could not be retired: command_failed') });
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith('task-refused', { includeSubtree: true, escalateAfterMs: 5_000 });
   });
 
   it('rechecks the headless log after launch returns before deciding quota fallback', async () => {

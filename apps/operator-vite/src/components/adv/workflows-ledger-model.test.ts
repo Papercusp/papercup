@@ -183,6 +183,7 @@ describe('buildLedgerRows', () => {
             operationId: "triage-message",
             specificationRevision: null,
             target: null,
+            handle: null,
           },
         }),
       ],

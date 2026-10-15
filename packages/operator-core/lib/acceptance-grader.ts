@@ -2020,7 +2020,8 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
           await readTail(path) !== nativeTail) return false;
       if (currentTask.endedAt) return true;
       const result = await (deps.killTask ?? killTask)(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
-      return result.ok || result.error === 'not_live' || result.error === 'task_not_found';
+      return result.ok || result.error === 'not_live' || result.error === 'task_not_found' ||
+        result.error === 'already_gone';
     },
   };
 }
@@ -3238,7 +3239,10 @@ export async function launchAcceptanceGrader(
           };
         }
         const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
-        if (!killed.ok && killed.error !== 'not_live' && killed.error !== 'task_not_found') {
+        // The exact failed process may exit and have its scope collected before
+        // this signal. already_gone confirms retirement just as not_live does.
+        if (!killed.ok && killed.error !== 'not_live' && killed.error !== 'task_not_found' &&
+            killed.error !== 'already_gone') {
           return {
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,
@@ -3331,7 +3335,7 @@ export async function launchAcceptanceGrader(
       }
       if (live) {
         const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
-        if (!killed.ok) {
+        if (!killed.ok && killed.error !== 'already_gone') {
           return {
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,

@@ -72,8 +72,8 @@ function fixture(): BuildAutomationModelInput {
     enabled: true,
     counts: { sources: 2, bindings: 2, armed: 2, recentFailures: 0 },
     sources: [
-      { id: 'source-slack', kind: 'slack', status: 'connected', config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
-      { id: 'source-gmail', kind: 'gmail', status: 'connected', config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
+      { id: 'source-slack', kind: 'slack', status: 'connected', scope: 'pot', scopeRef: 'papercusp', permissionMode: 'source-acl', backfillStatus: 'not-requested', lastSyncAt: null, nextAttemptAt: null, failureCount: 0, config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
+      { id: 'source-gmail', kind: 'gmail', status: 'connected', scope: 'pot', scopeRef: 'papercusp', permissionMode: 'source-acl', backfillStatus: 'not-requested', lastSyncAt: null, nextAttemptAt: null, failureCount: 0, config: {}, credentialRef: null, cursor: {}, lastConnectedAt: '2026-08-22T19:00:00.000Z', lastError: null, bindingCount: 1, armedBindingCount: 1, failedDeliveries24h: 0, social: null },
     ],
     bindings: [
       {
