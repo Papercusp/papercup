@@ -31,10 +31,11 @@ import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
   BM25_LATENCY_ARTIFACT_IDENTITY, BM25_LATENCY_ARTIFACT_PATH, BM25_LATENCY_INSTRUMENT_KEY,
-  parseBm25LatencyArtifact, platformComputedInstrumentKeys,
+  parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
-import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
+import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
+import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY, measurePgTableGrowthWindow } from './storage/pg-table-growth';
 import {
   NATIVE_ADOPTION_VERSION,
@@ -417,6 +418,7 @@ export async function resolveScorecardInstrumentSnapshots(
     readArtifact?: (path: string) => Promise<string>;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
+    coldEvidence?: (key: string, window: { workspaceId: string; harnessSlug: string; windowStart: string; windowEnd: string }) => Promise<{ verdict: 'pass' | 'fail' | 'unknown'; detail: string }>;
     pgTableGrowth?: (input: Parameters<typeof measurePgTableGrowthWindow>[1]) => ReturnType<typeof measurePgTableGrowthWindow>;
     /** Native code-intelligence adoption for one workspace window (P-033). */
     nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
@@ -555,6 +557,29 @@ export async function resolveScorecardInstrumentSnapshots(
       continue;
     }
     const overheadCriterion = workOverheadCriterionForInstrument(key);
+    if ([COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY].includes(key)) {
+      const evidenceRef = 'native:cold-mounts+move-logs+kopia+disk-census+reclaim-audit';
+      const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;
+      const historicalHostRead = key !== DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY && Date.parse(measuredAt) - end > 60_000;
+      if (subject.kind !== 'plan' || subject.ref !== input.rubric.subjectPlan || !workspaceId || !harnessSlug ||
+          end > Date.parse(measuredAt) || historicalHostRead || (key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY && end - start !== 72 * 3_600_000)) {
+        snapshots[key] = { ...unknown('Require a canonical completed plan window; current host reads cannot certify a historical window.'), evidenceRef };
+        continue;
+      }
+      try {
+        const request = { workspaceId, harnessSlug, windowStart: subject.windowStart, windowEnd: subject.windowEnd };
+        const instrument = getRegisteredInstrument(key);
+        let result: { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
+        if (deps.coldEvidence) result = await deps.coldEvidence(key, request);
+        else if (instrument?.evaluator === 'platform' && instrument.rescore) result = await instrument.rescore.resolve(request);
+        else throw new Error('Native resolver is not registered.');
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          window: { ...window, workspaceId, harnessSlug }, value: { resolver: key, resolverVersion: 1, detail: result.detail } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Cold-tier measurement unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
+      continue;
+    }
     if (overheadCriterion) {
       const evidenceRef = 'harness_shared.session_turn_parts+adv_sessions:agent-work-overhead';
       const workspaceId = input.rubric.workspaceId;
