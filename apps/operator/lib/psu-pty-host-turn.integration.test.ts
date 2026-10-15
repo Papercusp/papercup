@@ -935,6 +935,103 @@ describe('Codex native id discovered after carry binding deadline (EI-2534455650
   });
 });
 
+describe('Codex recycle reanchors its fresh native session before carry delivery', () => {
+  it('waits for the exact successor mapping before submitting the recycle carry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-recycle-reanchor-'));
+    const ownerId = uniqueOwner('RECYCLE-REANCHOR');
+    const nativeId = '12345678-1234-4234-8234-123456789abc';
+    const nativeDir = join(root, 'sessions', '2026', '10', '15');
+    const nativePath = join(nativeDir, `rollout-2026-10-15T00-00-00-${nativeId}.jsonl`);
+    mkdirSync(nativeDir, { recursive: true });
+    const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+    const nativeSinceMs = Date.now();
+    const { captured, io } = fakeIo();
+    const reportedIds: string[] = [];
+    let confirmReport!: () => void;
+    const reportGate = new Promise<void>((resolve) => { confirmReport = resolve; });
+    const childCode = [
+      "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');process.stdout.write('READY\\n');",
+      "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
+      "if(c==='\\u0004'){process.exit(0);}if(c==='\\r'){if(line){",
+      "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',timestamp:new Date().toISOString(),payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
+      "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'recycle-carry'}})+'\\n');",
+      "line='';process.stdout.write('SUBMITTED\\n');}}else{line+=c;echo+=c;}}if(echo)process.stdout.write(echo);});",
+      'setTimeout(()=>process.exit(0),10000);',
+    ].join('');
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: root,
+      env: hermeticEnv({
+        PAPERCUSP_AGENT: 'codex',
+        CODEX_HOME: root,
+        CARRY_NATIVE_PATH: nativePath,
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+        PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+      }),
+      ownerId,
+      io,
+      bridgeTty: false,
+      resolveRespawnNativeId: () => nativeId,
+      nativePersistenceTimeoutMs: 300,
+      mintRecycleArgs: () => ({ args: ['-e', childCode], nativeId: null }),
+      onRespawn: async (id: string) => {
+        reportedIds.push(id);
+        await reportGate;
+        return true;
+      },
+      onExit: () => {},
+    });
+    let recycleDispatch: Promise<unknown> | null = null;
+    try {
+      expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+      recycleDispatch = injectIntoHost(socketPathFor(ownerId), {
+        mode: 'recycle', data: `${marker}\nCARRIED`, ownerId,
+      });
+      const reportDeadline = Date.now() + 3000;
+      while (reportedIds.length === 0 && Date.now() < reportDeadline) await sleep(20);
+      await sleep(150);
+      expect(reportedIds).toEqual([nativeId]);
+      expect(captured()).not.toContain('SUBMITTED');
+      expect(existsSync(nativePath)).toBe(false);
+
+      confirmReport();
+      expect(await waitForOutput(captured, 'SUBMITTED', 5000)).toBe(true);
+      expect(await recycleDispatch).toBe(true);
+      expect(readFileSync(nativePath, 'utf8')).toContain(marker);
+      expect(findNativeTranscriptMarker({
+        agent: 'codex', env: hermeticEnv({ CODEX_HOME: root }), marker, sinceMs: nativeSinceMs,
+      })).toBe(nativePath);
+      const eventDeadline = Date.now() + 5000;
+      let events: Array<Record<string, unknown>> = [];
+      while (Date.now() < eventDeadline) {
+        events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+          .trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        if (events.some((event) => event.kind === 'respawn-carry-delivered' || event.kind === 'respawn-carry-dropped')) break;
+        await sleep(20);
+      }
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-binding-confirmed', nativeId }));
+      expect(events).toContainEqual(expect.objectContaining({ kind: 'respawn-carry-delivered', nativeId }));
+      expect(events.findIndex((event) => event.kind === 'respawn-binding-confirmed' && event.nativeId === nativeId))
+        .toBeLessThan(events.findIndex((event) => event.kind === 'respawn-carry-delivered' && event.nativeId === nativeId));
+    } finally {
+      confirmReport();
+      await recycleDispatch?.catch(() => {});
+      await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+      await done;
+      for (const file of [eventLogPathForOwner(ownerId), metaPathFor(ownerId), socketPathFor(ownerId)]) {
+        rmSync(file, { force: true });
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
+
 describe('unbound Codex successor is replaced or refused, never stranded (P-005 / D-003)', () => {
   const readEvents = (ownerId: string): Array<Record<string, unknown>> =>
     existsSync(eventLogPathForOwner(ownerId))
