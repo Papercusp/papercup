@@ -20,6 +20,8 @@ import type { HostedBillingStore } from '../../../auth/hosted/billing/billing-st
 import { logHostedBillingFailure, observeHostedBillingFailure, type HostedBillingFailureObserver } from '../../../auth/hosted/billing/billing-recovery';
 import type { HostedBillingUsageSource } from '../../../auth/hosted/billing/usage-service';
 import type { HostedUsageStatement } from '../../../auth/hosted/billing/usage-statement';
+import { HOSTED_COST_CLASSES, type HostedAllocationOrganization, type HostedAllocationReport,
+  type HostedAllocationAccountingExport, type KnownOrUnknown } from '../../../auth/hosted/billing/allocation-store';
 import {
   SUBSCRIBED_STATUSES,
   resolveHostedSubscriptionEntitlement,
@@ -47,6 +49,18 @@ export const HOSTED_BILLING_ROUTES = [
  * ledger holds the receipts is the composition's decision.
  */
 export type HostedBillingReceiptSource = (stripeCustomerId: string) => Promise<readonly CustomerReceiptEntry[]>;
+
+/** Server-owned monthly ledger snapshot. Its census covers recorded allocation
+ * costs only; it does not attest that every provider bill has been recorded. */
+export interface HostedBillingAllocationFinance {
+  readonly organization: HostedAllocationOrganization;
+  readonly asOfMs: number;
+  readonly report: HostedAllocationReport;
+  readonly accounting: HostedAllocationAccountingExport;
+}
+export type HostedBillingAllocationSource = (input: Readonly<{
+  organization: HostedAllocationOrganization; month: string; asOfMs: number;
+}>) => Promise<HostedBillingAllocationFinance>;
 
 /** One entry of `GET /hosted/billing/receipts`. */
 export interface HostedBillingReceiptView {
@@ -108,6 +122,7 @@ export interface HostedBillingRouteDependencies {
   readonly receipts?: HostedBillingReceiptSource;
   /** A server-owned collector/read composition; the request supplies no billing facts. */
   readonly usage?: HostedBillingUsageSource;
+  readonly allocations?: HostedBillingAllocationSource;
   readonly clock?: () => Date;
 }
 
@@ -160,6 +175,57 @@ function usageView(statement: HostedUsageStatement): HostedUsageStatement {
         costSource: revision.costSource, costMicros: revision.costMicros, observedAtMs: revision.observedAtMs,
         ...(revision.costMicrosExact === undefined ? {} : { costMicrosExact: revision.costMicrosExact }),
       })) })),
+  };
+}
+
+/** Copy the public contract at every level, including unknown measurements. */
+function allocationFinanceView(finance: HostedBillingAllocationFinance): HostedBillingAllocationFinance {
+  const measurement = (m: KnownOrUnknown<number>): KnownOrUnknown<number> =>
+    'value' in m ? { value: m.value } : { unknownReason: m.unknownReason };
+  const organization = { controlWorkspaceId: finance.organization.controlWorkspaceId,
+    organizationId: finance.organization.organizationId };
+  return { organization, asOfMs: finance.asOfMs,
+    report: { month: finance.report.month,
+      byCostClass: Object.fromEntries(HOSTED_COST_CLASSES.map(costClass => {
+        const c = finance.report.byCostClass[costClass]; const f = c.forecast;
+        return [costClass, { committedMicros: c.committedMicros, unreconciledMicros: c.unreconciledMicros,
+          providerFinalMicros: c.providerFinalMicros,
+          allocations: c.allocations.map(a => ({ allocationId: a.allocationId, parentAllocationId: a.parentAllocationId,
+            level: a.level, capMicros: a.capMicros, maxUnreconciledMicros: a.maxUnreconciledMicros,
+            committedMicros: a.committedMicros, unreconciledMicros: a.unreconciledMicros,
+            providerFinalMicros: a.providerFinalMicros, availableMicros: a.availableMicros, openHolds: a.openHolds })),
+          ...(f ? { forecast: { method: f.method, basisMicros: f.basisMicros,
+            ...(f.basisMicrosExact === undefined ? {} : { basisMicrosExact: f.basisMicrosExact }),
+            elapsedMs: f.elapsedMs, periodMs: f.periodMs, projectedConsumptionMicros: f.projectedConsumptionMicros,
+            provisional: f.provisional, unavailableReason: f.unavailableReason, scope: f.scope, evidenceRef: f.evidenceRef } } : {}),
+        }];
+      })) as HostedAllocationReport['byCostClass'],
+      outcomes: finance.report.outcomes.map(o => ({ allocationId: o.allocationId, outcomes: o.outcomes,
+        byState: { accepted: o.byState.accepted, rejected: o.byState.rejected,
+          'rework-requested': o.byState['rework-requested'], unknown: o.byState.unknown },
+        evidenceClasses: [...o.evidenceClasses], acceptedResultCostMicros: o.acceptedResultCostMicros,
+        acceptedWithUnknownCost: o.acceptedWithUnknownCost, costPerAcceptedOutcomeMicros: o.costPerAcceptedOutcomeMicros,
+        costPerAcceptedUnknownReason: o.costPerAcceptedUnknownReason, reviewEffortKnownSeconds: o.reviewEffortKnownSeconds,
+        reviewEffortUnknown: o.reviewEffortUnknown, reworkKnownTotal: o.reworkKnownTotal, reworkUnknown: o.reworkUnknown })),
+    },
+    accounting: { organization: { ...organization }, month: finance.accounting.month, currency: finance.accounting.currency,
+      byCostClass: Object.fromEntries(HOSTED_COST_CLASSES.map(costClass => {
+        const c = finance.accounting.byCostClass[costClass];
+        return [costClass, { reservations: c.reservations, pendingProviderFinal: c.pendingProviderFinal,
+          committedMicros: c.committedMicros, unreconciledMicros: c.unreconciledMicros, providerFinalMicros: c.providerFinalMicros }];
+      })) as HostedAllocationAccountingExport['byCostClass'],
+      rows: finance.accounting.rows.map(r => ({ reservationId: r.reservationId, allocationId: r.allocationId,
+        allocationPath: [...r.allocationPath], costClass: r.costClass, revision: r.revision, observedAtMs: r.observedAtMs,
+        costSource: r.costSource, maximumCostMicros: r.maximumCostMicros,
+        observedCostMicros: measurement(r.observedCostMicros), providerFinalCostMicros: measurement(r.providerFinalCostMicros),
+        committedMicros: r.committedMicros, unreconciledMicros: r.unreconciledMicros, outcomeIds: [...r.outcomeIds] })),
+      outcomes: finance.accounting.outcomes.map(o => ({ outcomeId: o.outcomeId, revision: o.revision,
+        allocationId: o.allocationId, workflowRef: o.workflowRef, evidenceClass: o.evidenceClass,
+        resultState: o.resultState, resultUnknownReason: o.resultUnknownReason, reservationIds: [...o.reservationIds],
+        resultCostMicros: measurement(o.resultCostMicros), reviewEffortSeconds: measurement(o.reviewEffortSeconds),
+        reworkCount: measurement(o.reworkCount) })),
+      gaps: finance.accounting.gaps.map(g => ({ kind: g.kind, ref: g.ref, reason: g.reason })),
+    },
   };
 }
 
@@ -392,7 +458,10 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       const organizationId = organizationOf(ctx);
       if (!organizationId || !ctx.principal) return jsonError('organization_required', 'An active organization is required.', 403);
       const parameters = new URL(req.url).searchParams;
-      if ([...parameters.keys()].some(key => !['month', 'workspaceId'].includes(key))
+      const allocations = parameters.get('view') === 'allocations';
+      if ((parameters.has('view') && !allocations)
+          || [...parameters.keys()].some(key => !(allocations ? ['month', 'view'] : ['month', 'workspaceId']).includes(key))
+          || parameters.getAll('view').length > 1
           || parameters.getAll('month').length > 1 || parameters.getAll('workspaceId').length > 1) {
         return jsonError('invalid_usage_filter', 'Choose one month and an optional workspace.', 400);
       }
@@ -403,6 +472,25 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
           || (customerWorkspaceId !== null && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(customerWorkspaceId))) {
         return jsonError('invalid_usage_filter', 'Choose a valid month and workspace.', 400);
+      }
+      if (allocations) {
+        if (!deps.allocations) return jsonError('usage_unavailable', 'Usage is not configured.', 503);
+        const organization = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId });
+        try {
+          const finance = await deps.allocations(Object.freeze({ organization, month, asOfMs: now }));
+          if (finance.organization.controlWorkspaceId !== organization.controlWorkspaceId
+              || finance.organization.organizationId !== organizationId || finance.asOfMs !== now
+              || finance.report.month !== month || finance.accounting.month !== month
+              || finance.accounting.organization.controlWorkspaceId !== organization.controlWorkspaceId
+              || finance.accounting.organization.organizationId !== organizationId
+              || HOSTED_COST_CLASSES.some(c => finance.report.byCostClass[c].forecast?.scope !== 'recorded-allocation-costs')) {
+            return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+          }
+          return Response.json({ ok: true, allocations: allocationFinanceView(finance) },
+            { headers: { 'cache-control': 'no-store' } });
+        } catch {
+          return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+        }
       }
       if (!deps.usage) return jsonError('usage_unavailable', 'Usage is not configured.', 503);
       const scope = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId, customerWorkspaceId });
