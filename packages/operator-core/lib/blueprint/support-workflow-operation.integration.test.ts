@@ -222,11 +222,13 @@ describe('support native launch with applied PostgreSQL authority and funding', 
     await db.adminSql.begin(async tx => {
       for (const [allocationId, parentAllocationId, level] of [
         [funding.organization.organizationId, null, 'organization'],
-        [funding.allocationId, funding.organization.organizationId, 'project'],
+        ['synthetic-native-joint-dept', funding.organization.organizationId, 'department'],
+        [funding.allocationId, 'synthetic-native-joint-dept', 'project'],
       ] as const) {
-        expect((await defineHostedAllocation(tx as unknown as Sql, { ...funding, allocationId,
+        const defined = await defineHostedAllocation(tx as unknown as Sql, { ...funding, allocationId,
           level, parentAllocationId, costClass: 'model', capMicros: 100_000, maxUnreconciledMicros: 100_000,
-          evidenceRef: 'synthetic:native-joint', recordedBy: 'fixture' })).outcome).toBe('created');
+          evidenceRef: 'synthetic:native-joint', recordedBy: 'fixture' });
+        expect(defined.outcome, JSON.stringify(defined)).toBe('created');
       }
       // Production admits model holds only against a project leaf. Catch a
       // malformed funding fixture before paying the native launch setup cost.
