@@ -1039,7 +1039,8 @@ export function evaluateLivenessAlarm(
     // The hosted incident has its own stable identity/responder. Do not open a
     // second catch-all alarm for that same fault; an independent Infra crit still pages.
     if (panel.key === 'infra' && panel.data &&
-        signals.some(signal => signal.key === 'hosted-control-plane-degraded') &&
+        signals.some(signal => signal.key === 'hosted-control-plane-degraded' ||
+          signal.key === 'hosted-reverse-connector-lost' || signal.key === 'platform-lifecycle-budget-exceeded') &&
         infraStatus({ ...(panel.data as InfraHealth), hostedControlPlane: null }) !== 'crit') continue;
     if (panel.key === 'infra' && panel.data && infraCritAmbientOnly(panel.data as InfraHealth)) {
       signals.push({

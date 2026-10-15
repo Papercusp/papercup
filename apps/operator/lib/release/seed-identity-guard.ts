@@ -305,6 +305,14 @@ export type SeedIdentityVerdict = {
   readonly message: string;
 };
 
+/** Carries measured findings through publication cleanup without exposing file contents. */
+export class SeedIdentityError extends Error {
+  constructor(readonly verdict: SeedIdentityVerdict) {
+    super(verdict.message);
+    this.name = 'SeedIdentityError';
+  }
+}
+
 export async function judgeSeedIdentity(inp: {
   readonly dir: string;
   readonly literals: IdentityLiterals;
@@ -390,7 +398,7 @@ export async function assertStagedSeedCarriesNoIdentity(inp: {
     );
   }
   const verdict = await judgeSeedIdentity({ dir: inp.dir, literals });
-  if (!verdict.ok) throw new Error(verdict.message);
+  if (!verdict.ok) throw new SeedIdentityError(verdict);
   console.warn(verdict.message);
   return verdict;
 }

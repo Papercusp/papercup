@@ -980,7 +980,7 @@ describe('launchAcceptanceGrader', () => {
     const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
     const discover = vi.fn();
     const openCascade = vi.fn();
-    const result = await resolveAcceptanceGrader('ship-the-thing', { ...ctx, gradingLaunch: profile } as never, {
+    const result = await resolveAcceptanceGrader('ship-the-thing', { ...baseCtx, gradingLaunch: profile } as never, {
       ...deps(launch),
       discover,
       openCascade,

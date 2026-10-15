@@ -2840,6 +2840,34 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     expect(post?.body).toMatch(/^selected-body-/);
   });
 
+  it('preserves nested tools:invoke projection paths through raw JSON re-encoding and the final result door', async () => {
+    const paths = [
+      'results[].threadWindow.posts[].body',
+      'results[].threadWindow.posts[].author_id',
+      'results[].threadWindow.posts[].created_ts',
+    ];
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { probe: 'deep', projection: { pick: paths } },
+      },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toMatchObject({ truncated: true });
+    const payload = JSON.parse((res.content[0] as { type: 'text'; text: string }).text) as {
+      results: Array<{
+        threadWindow: { posts: Array<{ body?: string; author_id?: string; created_ts?: string }> };
+      }>;
+    };
+    const post = payload.results[0]?.threadWindow.posts[0];
+    expect(post).toMatchObject({ author_id: 'agent-1', created_ts: '2026-10-06T00:00:00.000Z' });
+    expect(post?.body).toMatch(/^selected-body-/);
+  });
+
   it('preserves selected leaf fields across six rows through the tools:invoke result door', async () => {
     const paths = [
       'results[].threadWindow.posts[].body',

@@ -126,13 +126,19 @@ describe('hosted control-plane alarm through the existing liveness engine', () =
     expect(evaluateLivenessAlarm(health(hosted(0, 1)), null)
       .some(s => s.key === 'hosted-control-plane-degraded')).toBe(true);
   });
-  it('does not duplicate a hosted failure in the Infra catch-all, but retains independent Infra incidents', () => {
-    const failed = mkHealth({ panels: { infra: { status: 'crit', data: { hostedControlPlane: hosted(1) } } } });
+  it.each([
+    ['hosted-control-plane-degraded', { ...hosted(1) }],
+    ['hosted-reverse-connector-lost', { ...hosted(0), reverseConnectors: { active: 1, lost: 1 } }],
+    ['platform-lifecycle-budget-exceeded', { ...hosted(0), ownedCost: {
+      estimatedUsdCents: 2400, estimates: 1, unpriced: 0, breachedBudgets: 1,
+    } }],
+  ])('does not duplicate %s in the Infra catch-all, but retains independent Infra incidents', (signature, reading) => {
+    const failed = mkHealth({ panels: { infra: { status: 'crit', data: { hostedControlPlane: reading } } } });
     const signals = evaluateLivenessAlarm(failed, null);
-    expect(signals.some(s => s.key === 'hosted-control-plane-degraded')).toBe(true);
+    expect(signals.some(s => s.key === signature)).toBe(true);
     expect(signals.some(s => s.key === 'panel:infra')).toBe(false);
     const independent = mkHealth({ panels: { infra: { status: 'crit', data: {
-      hostedControlPlane: hosted(1), perf: { status: 'crit' },
+      hostedControlPlane: reading, perf: { status: 'crit' },
     } } } });
     expect(evaluateLivenessAlarm(independent, null).some(s => s.key === 'panel:infra')).toBe(true);
   });

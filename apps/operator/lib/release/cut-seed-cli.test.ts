@@ -8,12 +8,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, cp, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile, readdir, cp, rename, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { assertStagedSeedCarriesNoIdentity } from './seed-identity-guard.js';
 import Corestore from 'corestore';
 import { openOwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { cutHiveSeed } from '@papercusp/operator-core/lib/sync/hyperbee/seed-cutter';
@@ -466,6 +467,38 @@ describe('transactional seed output', () => {
       expect(await readFile(join(out, 'epoch-keys.json'), 'utf8')).toBe('new keys');
       expect(await readFile(join(out, 'corestore', 'data'), 'utf8')).toBe('prior corestore');
       expect(await readdir(root)).toEqual(['seed']);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('retains a rejected identity-bearing stage privately without publishing it', async () => {
+    const { root, out } = await fixture();
+    const marker = 'fixture-crossbox-marker';
+    const rejected = Buffer.concat([Buffer.from([0, 255]), Buffer.from(marker)]);
+    try {
+      await expect(withSeedOutput(out, async staged => {
+        await cp(out, staged, { recursive: true });
+        await mkdir(join(staged, 'corestore', 'db'));
+        await writeFile(join(staged, 'corestore', 'db', '000104.blob'), rejected);
+        await assertStagedSeedCarriesNoIdentity({
+          dir: staged,
+          neutralHostname: FIXTURE_BUILD_HOST,
+          env: {},
+          probe: { user: () => undefined, home: () => undefined, hostname: () => 'runner-test' },
+          extraLiterals: [marker],
+        });
+      })).rejects.toThrow(/STAGED SEED CARRIES/);
+      await expectPrior(out);
+      const transactions = (await readdir(root)).filter(name => name.startsWith('.seed-cut-'));
+      expect(transactions).toHaveLength(1);
+      const transaction = join(root, transactions[0]);
+      expect((await stat(transaction)).mode & 0o077).toBe(0);
+      expect(await readFile(join(transaction, 'next', 'corestore', 'db', '000104.blob'))).toEqual(rejected);
+      const receiptPath = join(transaction, 'identity-failure.json');
+      expect((await stat(receiptPath)).mode & 0o077).toBe(0);
+      expect(JSON.parse(await readFile(receiptPath, 'utf8'))).toMatchObject({
+        kind: 'seed-identity',
+        findings: [{ file: 'corestore/db/000104.blob', key: 'release-literal:0', offset: 2, binary: true }],
+      });
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

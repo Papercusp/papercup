@@ -99,7 +99,7 @@
  *   --json                 print the manifest + size report as JSON
  */
 
-import { resolve, join, dirname, basename } from 'node:path';
+import { resolve, join, dirname, basename, relative } from 'node:path';
 import { moduleRepoRoot } from '@papercusp/operator-core/lib/module-repo-root';
 import { constants, existsSync } from 'node:fs';
 import { createReadStream } from 'node:fs';
@@ -114,7 +114,7 @@ import {
   planHostnameNeutralization,
   buildNeutralizedChildEnv,
 } from './seed-hostname-neutralization.js';
-import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
+import { assertStagedSeedCarriesNoIdentity, releaseSeedRedactionValues, SeedIdentityError, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
 export { mergeReleaseSeedRedactionValues } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir, mkdir, mkdtemp, lstat, realpath } from 'node:fs/promises';
 import Corestore from 'corestore';
@@ -1543,7 +1543,9 @@ export async function waitForOperatorDrain(inp: {
 
 /** Build and verify off to the side; a failed cut must preserve the entire prior
  * seed, including its manifest and epoch keys. The sibling transaction directory
- * keeps publication on one filesystem and retains the backup if rollback fails. */
+ * keeps publication on one filesystem and retains the backup if rollback fails.
+ * An identity rejection retains that same private transaction for attribution:
+ * deleting it would erase the only bytes naming the leak after an expensive cut. */
 export async function withSeedOutput<T>(
   outDir: string,
   build: (stagingDir: string) => Promise<T>,
@@ -1555,6 +1557,7 @@ export async function withSeedOutput<T>(
   const backupDir = join(transactionDir, 'previous');
   let displaced = false;
   let published = false;
+  let retainRejectedStage = false;
   try {
     const result = await build(stagingDir);
     try {
@@ -1578,8 +1581,28 @@ export async function withSeedOutput<T>(
       throw error;
     }
     return result;
+  } catch (error) {
+    if (error instanceof SeedIdentityError) {
+      // mkdtemp creates this directory with mode 0700. Keep the rejected bytes
+      // outside the published seed; the receipt contains positions, never values.
+      retainRejectedStage = true;
+      const receiptPath = join(transactionDir, 'identity-failure.json');
+      try {
+        await writeFile(receiptPath, JSON.stringify({
+          kind: 'seed-identity',
+          findings: error.verdict.findings.map(finding => ({
+            ...finding,
+            file: relative(stagingDir, finding.file),
+          })),
+        }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+      } catch (receiptError) {
+        throw new AggregateError([error, receiptError], `Seed identity rejection; private failed stage retained at ${stagingDir}, but writing its receipt failed`);
+      }
+      error.message += `\n  Rejected stage retained privately at ${stagingDir}; findings receipt: ${receiptPath}`;
+    }
+    throw error;
   } finally {
-    if (!displaced || published) await rm(transactionDir, { recursive: true, force: true });
+    if (!retainRejectedStage && (!displaced || published)) await rm(transactionDir, { recursive: true, force: true });
   }
 }
 

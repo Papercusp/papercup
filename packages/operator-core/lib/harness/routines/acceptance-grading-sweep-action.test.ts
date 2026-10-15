@@ -40,7 +40,7 @@ describe('registered acceptance sweep audit entrypoint', () => {
     const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
     h.resolveGrader.mockResolvedValue({ state: 'launched' });
     h.runSweep.mockImplementation(async (d) => d.dispatchGrader({ workspaceId: 'ws-sweep', harnessSlug: 'papercusp', planSlug: 'ready-plan' }));
-    await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep', installSlug: 'papercusp', payloadTemplate: { gradingLaunch: profile } } as SystemActionCtx);
+    await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep', installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: { gradingLaunch: profile } });
     expect(h.reconcile).toHaveBeenCalledWith(expect.objectContaining({ ctx: expect.objectContaining({ gradingLaunch: profile }) }));
     expect(h.resolveGrader).toHaveBeenCalledWith('ready-plan', expect.objectContaining({ gradingLaunch: profile }));
   });
