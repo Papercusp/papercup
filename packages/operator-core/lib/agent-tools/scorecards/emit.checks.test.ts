@@ -12,6 +12,7 @@
  * burns a suite).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPhaseTracker } from '@papercusp/tooldef';
 
 const getRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
@@ -26,6 +27,12 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    // scorecards:emit uses the failure-aware writer read; keep this unit suite on
+    // the same mocked rubric fixtures instead of falling through to live PG.
+    readRubric: async (rubricId: string) => {
+      const rubric = await getRubric(rubricId);
+      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    },
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
     // The real identity helper closes over the real getRubric, bypassing this suite's mock.
@@ -81,6 +88,7 @@ vi.mock('../plans/source', () => ({
 
 import scorecardEmitTool, {
   emitScorecard,
+  emitScorecardForToolContext,
   runRecoverableScorecardChecks,
   scorecardCheckRunPrefix,
   SCORECARD_EMIT_TIMEOUT_SEC,
@@ -91,7 +99,9 @@ import { asStructuredObservation } from '../../harness/improvements/observation-
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
 import type {
   evaluateCriterionCargoChecks,
+  evaluateCriterionCoverageChecks,
   evaluateCriterionProbeChecks,
+  evaluateCriterionRequirementChecks,
   evaluateCriterionTestChecks,
   CriterionCheckRun,
 } from '../../rubrics-criterion-checks';
@@ -522,7 +532,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       checkRuns: { 'det-outcome': PASS_RUN },
     });
     const res = await emitScorecard(emitArgs() as never, EMIT_INPUT, { evaluateChecks });
-    expect(res.ok).toBe(true);
+    expect(res, JSON.stringify(res)).toMatchObject({ ok: true });
     // the evaluator got the rubric's criteria, the canonical ratings, and the ctx root.
     expect(evaluateChecks).toHaveBeenCalledTimes(1);
     const call = evaluateChecks.mock.calls[0][0];
@@ -791,6 +801,78 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect((res as { reason?: string }).reason).toBe('unchanged-evidence');
     expect(evaluateChecks).not.toHaveBeenCalled();
     expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('records separate timings for every deterministic evaluator', async () => {
+    let clock = 0;
+    const phases = createPhaseTracker({ now: () => clock });
+    const criteria = [
+      { ...CHECKED_RUBRIC.criteria[0], key: 'tests-wait', check: { kind: 'tests', files: ['packages/x/a.test.ts'] } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'probe-wait', check: { kind: 'probe', probe: { kind: 'tool', tool: 'acceptance:read', args: {}, schemaRevision: 'phase-test', expect: { path: '$.ok', op: 'eq', value: true } } } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'cargo-wait', check: { kind: 'cargo', manifestPath: 'apps/x/Cargo.toml', sourceFiles: ['apps/x/src/lib.rs'] } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'coverage-wait', check: { kind: 'coverage', scope: { sourceFiles: ['packages/x/a.ts'] }, floor: 'required' } },
+      { ...CHECKED_RUBRIC.criteria[0], key: 'requirements-wait', check: { kind: 'requirements' } },
+    ];
+    getRubric.mockResolvedValue({ ...CHECKED_RUBRIC, criteria, subjectPlan: 'phase-test-plan' });
+    const ratings = Object.fromEntries(criteria.map(({ key }) => [key, { rating: 'pass', evidence: 'phase timing fixture' }]));
+    const advanceClock = async () => {
+      clock += 7;
+      return { ok: true as const, checkRuns: {} };
+    };
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockImplementation(advanceClock);
+    const evaluateProbeChecks = vi.fn<typeof evaluateCriterionProbeChecks>().mockImplementation(advanceClock);
+    const evaluateCargoChecks = vi.fn<EvaluateCargoChecks>().mockImplementation(advanceClock);
+    const evaluateCoverageChecks = vi.fn<typeof evaluateCriterionCoverageChecks>().mockImplementation(advanceClock);
+    const evaluateRequirementChecks = vi.fn<typeof evaluateCriterionRequirementChecks>().mockImplementation(advanceClock);
+    const recordCheckResults = vi.fn<typeof recordRubricCheckResults>().mockResolvedValue([]);
+
+    const result = await emitScorecard(emitArgs({ ratings }) as never, { ...EMIT_INPUT, phases }, {
+      evaluateChecks,
+      evaluateProbeChecks,
+      evaluateCargoChecks,
+      evaluateCoverageChecks,
+      evaluateRequirementChecks,
+      recordCheckResults,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(phases.intervals()).toEqual([
+      { phase: 'scorecards:emit:checks:tests', startMs: 0, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:probe', startMs: 7, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:cargo', startMs: 14, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:coverage', startMs: 21, durationMs: 7 },
+      { phase: 'scorecards:emit:checks:requirements', startMs: 28, durationMs: 7 },
+    ]);
+  });
+
+  it('forwards the dispatcher phase tracker through the tool-context bridge', async () => {
+    const phases = createPhaseTracker();
+    const probe = {
+      kind: 'tool' as const,
+      tool: 'acceptance:read',
+      args: {},
+      schemaRevision: 'synthetic-read-revision',
+      expect: { path: '$.count', op: 'eq' as const, value: 2 },
+    };
+    getRubric.mockResolvedValue({
+      ...CHECKED_RUBRIC,
+      criteria: [CHECKED_RUBRIC.criteria[0], { ...CHECKED_RUBRIC.criteria[1], check: { kind: 'probe', probe } }],
+    });
+    const dispatchTool = vi.fn(async () => ({ count: 2 }));
+    const result = await emitScorecardForToolContext(emitArgs() as never, {
+      uiClientId: 'su-scorecard-phase',
+      isSuperuser: true,
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      role: 'engineer',
+      projectDir: REPO_ROOT,
+      dispatchTool,
+      phases,
+    } as never);
+
+    expect(result.ok).toBe(true);
+    expect(dispatchTool).toHaveBeenCalledOnce();
+    expect(phases.intervals().map(({ phase }) => phase)).toContain('scorecards:emit:checks:probe');
   });
 });
 
