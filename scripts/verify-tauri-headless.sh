@@ -4934,6 +4934,12 @@ fi
 vh_begin assert
 # Assertions write diagnostics outside the disposable operator source. Export
 # after vh_begin so children receive the current phase, not the boot directory.
+# When the retention preflight fails, the verification-harness shim is
+# intentionally disabled and vh_begin is a no-op. Keep the assertion boundary
+# runnable under nounset in that mode, and retain its diagnostics in WORK.
+if [ -z "${VH_PHASE_DIR:-}" ]; then
+  VH_PHASE_DIR="${WORK:-${TMPDIR:-/tmp}}"
+fi
 export VH_PHASE_DIR
 if [ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]; then
   # Native builds generate schemas/placeholders before the browser starts.
