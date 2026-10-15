@@ -236,6 +236,39 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory([[path, source.replace("execFileSync('git'", "execFileSync('worker'")]])).toContain(finding);
   });
 
+  it('counts benchmark RegExp.exec parsing separately from its awaited child exec', () => {
+    for (const path of ['scripts/bench-work-item-continuations.ts', 'scripts/bench-work-items-get.ts']) {
+      const source = readFileSync(ROOT + path, 'utf8');
+      const key = `${path}::resource-start-outside-admission`;
+      const entry = BYPASS_REGISTRY.get(key);
+      const finding = `${path}:resource-start-outside-admission`;
+      expect(entry?.matchesSource, path).toBeTypeOf('function');
+      expect(entry?.matchesSource?.(source), path).toBe(true);
+      expect(scanInventory([[path, source]], { migrations: ['P-016'] })).not.toContain(finding);
+      for (const mutant of [
+        source.replace('timeout: 35_000', 'timeout: undefined'),
+        source + "\nspawn('unreviewed-worker', []);",
+      ]) {
+        expect(mutant).not.toBe(source);
+        expect(entry?.matchesSource?.(mutant), path).toBe(false);
+        expect(scanInventory([[path, mutant]], { migrations: ['P-016'] })).toContain(finding);
+      }
+    }
+  });
+
+  it('keeps the isolated hosted-test module child joined and forcibly stoppable', () => {
+    const path = 'packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts';
+    const source = readFileSync(ROOT + path, 'utf8');
+    const key = `${path}::resource-start-outside-admission`;
+    const finding = `${path}:resource-start-outside-admission`;
+    const entry = BYPASS_REGISTRY.get(key);
+    expect(entry?.matchesSource?.(source)).toBe(true);
+    const mutant = source.replace("child.kill('SIGTERM');", 'child.disconnect();');
+    expect(mutant).not.toBe(source);
+    expect(entry?.matchesSource?.(mutant)).toBe(false);
+    expect(scanInventory([[path, mutant]])).toContain(finding);
+  });
+
   it('keeps finite native diagnostic dispositions scoped to their reviewed starts and lifecycle', () => {
     const heapPath = 'scripts/analyze-heap-snapshots.mjs';
     const heap = readFileSync(ROOT + heapPath, 'utf8');
@@ -279,6 +312,7 @@ describe('resource governor enforcement lint', () => {
       source.replace("digest('hex'), prepared.sha256,", "digest('hex'), 'unchecked',"),
       source.replace("join(sourceRoot, 'apps/operator/bin/bundle-host.sh')", "join(sourceRoot, 'apps/operator/bin/resident-worker.sh')"),
       source.replace("timeout: 300_000, env: testEnv", "timeout: undefined, env: testEnv"),
+      source.replace("timeout: 60_000, env: nativeLedgerEnvironment()", "timeout: 60_000, env: process.env"),
       source.replace("new Set(nativeScripts).size === nativeScripts.length", 'true'),
       source.replace("receipt.files.some((entry: { path: string }) => entry.path === script)", 'true'),
       source.replace('if (!error) { resolve({ stdout, stderr }); return; }', 'resolve({ stdout, stderr }); return;'),
@@ -305,11 +339,13 @@ describe('resource governor enforcement lint', () => {
       source.replace('attempts = 31, isStopped', 'attempts = Infinity, isStopped'),
       source.replace('if (isStopped()) return;', 'if (false) return;'),
       source.replace('secrets: [databasePassword], isStopped: () => stopped', 'secrets: [], isStopped: () => stopped'),
-      source.replace('if (terminal || attempt === attempts - 1)', 'if (false)'),
+      source.replace('for (let attempt = 0; ; attempt++)', 'for (let attempt = 0; attempt < attempts; attempt++)'),
+      source.replace('stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;', 'stalledAttempts += 1;'),
+      source.replace('if (terminal || stalledAttempts >= attempts)', 'if (terminal)'),
       source.replace("socket.write('label=papercusp.test.owner=' + owner + '\\n')", "socket.write('label=all\\n')"),
       source.replace("'--pull=missing', '--name', name", "'--pull=always', '--name', name"),
       source.replace('if (containers.length || networkCreated) {', 'if (false) {'),
-      source.replace('await cleanup();', 'await ignoreCleanup();'),
+      source.replace("try { await runPhase('cleanup', cleanup); }", 'try { await ignoreCleanup(); }'),
       source + "\nspawnSync('unreviewed-worker', []);",
     ]) {
       expect(unsafe).not.toBe(source);
@@ -528,6 +564,7 @@ describe('resource governor enforcement lint', () => {
   it('pins newly reviewed P-016 and bypass entries to the current source shape', () => {
     const startPins: Array<[string, string, boolean]> = [
       ['packages/operator-core/lib/harness/routines/operator-e2e-isolated-action.ts', 'resource-start-outside-admission', true],
+      ['packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts', 'resource-start-outside-admission', false],
       ['packages/operator-core/lib/release/staging-fix-proposal-cli.ts', 'resource-start-outside-admission', true],
       ['packages/operator-core/lib/sync/hyperbee/seed-frozen-execution.ts', 'resource-start-outside-admission', true],
       ['packages/operator-core/lib/system-health/claude-update-canary.ts', 'resource-start-outside-admission', true],
@@ -564,6 +601,10 @@ describe('resource governor enforcement lint', () => {
         'if ((seen.get(value) ?? -1) >= mode) continue;', 'if (mode < 0) continue;', false],
       ['packages/operator-core/lib/endpoint-route/hosted-workspace-session.ts', 'unbounded-resident-queue',
         'if (pending.size >= 64 || pending.has(requestId)) return;', 'if (pending.has(requestId)) return;', false],
+      ['packages/operator-core/lib/agent-tools/coordination/inbox-visibility.ts', 'unbounded-resident-queue',
+        'pending.set(entry, { key, fingerprint });', 'pending.push(entry);', false],
+      ['scripts/bench-work-item-continuations.ts', 'unbounded-resident-queue',
+        'pending.push(heldWrite);', 'pending.set(heldWrite);', true],
     ];
     for (const [path, code, before, after, p016] of queuePins) {
       const source = readFileSync(ROOT + path, 'utf8');
