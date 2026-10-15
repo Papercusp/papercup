@@ -385,7 +385,96 @@
       "planEnabled": true,
       "approvalEnabled": true,
       "testFilter": null,
-      "status": "running; no full-candidate pass inferred from earlier focused repairs"
+      "status": "complete; aggregate verdict accepted",
+      "terminal": {
+        "taskExitCode": 0,
+        "taskTerminalAt": "2026-10-15T16:43:34.793Z",
+        "rootLogPath": ".papercusp/scratch/bash-f143e934-134.log",
+        "rootLogSha256": "29677c18690c3c1530edbc9479c390e69b53a7426edf36d4e3227d47694635b9",
+        "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-ce62-full-approval-20261015-1550.acceptance.json",
+        "verdictSha256": "ee574b9bf275ea4802ad1016fa3836f323e7a7dd72d8add41dad83977efef450",
+        "verdictOk": true,
+        "refusals": [],
+        "runnerHead": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+        "archiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+        "candidateBinarySha256": "3602b3154090498cd1b09647a2fc047b13ae21b408e070ebd7aea6935ae2afb2",
+        "legs": {
+          "scripted": {"status": 0, "rows": 66, "logSha256": "3e98a909fe82f794f84fb8f72b864717e5b23a0bd14810ef722614d511b4b086", "passed": 87, "skipped": 11},
+          "claude": {"status": 0, "rows": 5, "logSha256": "9422ec7d7cd47f91c02ac5d0a53ef05503b6458765321acbed18cc406b96ef71", "passed": 13, "skipped": 85, "nativeApproval": true, "processRestart": true, "sameNativeIdentity": true},
+          "codex": {"status": 0, "rows": 4, "logSha256": "373617757cd0366737950c511dc0bd933b6c054b0f609ee51905b4351b2b8383", "passed": 12, "skipped": 86, "nativeApproval": true, "processRestart": true, "sameNativeIdentity": true},
+          "omp": {"status": 0, "rows": 5, "logSha256": "e154054f63febdac60fddacc4fedf3c07023df3fad7085b90a097cb228908a9d", "passed": 13, "skipped": 85, "nativeApproval": true, "processRestart": true, "sameNativeIdentity": true}
+        },
+        "advertisedCells": ["Linux x86_64 × Claude", "Linux x86_64 × Codex", "Linux x86_64 × OMP"],
+        "macOSAdvertised": false,
+        "suiteProvenanceMatched": true,
+        "stockMachineSmokePassed": true,
+        "cloudDeviceStartPassed": true
+      },
+      "progress": {
+        "observedWindowUtc": "2026-10-15 16:43-17:12",
+        "rootLiveness": "task terminal state completed exit 0; aggregate verdict and all per-leg logs were independently read",
+        "nextTerminalAwaitId": 307315,
+        "nextTerminalAwaitExpiresAt": "2026-10-15T16:49:00.658Z",
+        "scripted": {
+          "childExitCode": 0,
+          "passed": 87,
+          "skipped": 11,
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-scripted.log"
+        },
+        "claude": {
+          "childExitCode": 0,
+          "passed": 13,
+          "skipped": 85,
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-claude.log",
+          "logSha256": "9422ec7d7cd47f91c02ac5d0a53ef05503b6458765321acbed18cc406b96ef71",
+          "nativeSessionId": "d646c760-4fe2-486d-ada0-c280206d930a",
+          "approvalReplyStatus": 200,
+          "toolCompleted": true,
+          "exactEffectVerified": true,
+          "effectSha256": "7c54a5086f522df0d4758f1230ba956fa4e7aa8272d4f7dfb187c45d6a93fc21",
+          "firstOperatorPid": 1148017,
+          "secondOperatorPid": 1183661,
+          "savedRuntimeGeneration": 0,
+          "resumedRuntimeGeneration": 1,
+          "sameSavedAndResumedIdentity": true,
+          "candidateSourceAndBinaryMatch": true
+        },
+        "codex": {
+          "childExitCode": 0,
+          "passed": 12,
+          "skipped": 86,
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-codex.log",
+          "nativeApprovalAndRestart": "receipt and same-identity OS restart observed; child exit 0"
+        },
+        "omp": {
+          "status": "native approval and OS restart observed; child exit 0",
+          "logPath": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550/vitest-omp.log",
+          "nativeSessionId": "01a1406d-2d43-7510-81b6-c6e715a553fa",
+          "approvalReplyStatus": 200,
+          "toolCompleted": true,
+          "exactEffectVerified": true,
+          "effectSha256": "8113f846020844c27d4c5d6001288af1b558509978e9fcabb1e324bff5376eeb",
+          "resumedProcessPid": 1974380,
+          "resumedRuntimeGeneration": 1,
+          "passed": 13,
+          "skipped": 85,
+          "childExitCode": 0
+        },
+        "allChildLegsExit0": true,
+        "aggregateVerdictPending": false,
+        "fullCandidateAccepted": true,
+        "bindingIds": [47028, 47029, 47030, 47031],
+        "retractedBindingIds": [47022, 47023, 47024, 47025],
+        "bindingCurrentness": "ledger-derived test bindings 47028-47031 report currentness current; earlier caller-attested operational rows were retracted as unknown",
+        "barAndGradeBlocker": {
+          "activeRubricRevision": 16,
+          "activeRubricCriteriaHash": "9dd8a68c940e70de35f5fa8e9ca3bb318ffbd299cc8fb0b609d76d6a35527b09",
+          "snapshotSourceRubricRevision": 14,
+          "scorecardsEvaluate": "acceptance_bar_contract_not_ready",
+          "blockingCodes": ["bar_snapshot_proof_stale", "bar_snapshot_proof_inadequate", "bar_snapshot_evidence_plane_unmet"],
+          "note": "P-030 candidate proof is complete; BAR contract re-projection/current proof and independent grade remain separate gates."
+        }
+      }
     },
     "publicationStatus": "Not published; full matching acceptance, required grade and final candidate-specific Avi approval remain pending"
   },
