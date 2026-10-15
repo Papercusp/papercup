@@ -224,6 +224,10 @@ export interface ResumeTarget {
   /** The session's coord identity — the pty-host discovery key + the identity an
    *  in-place resume re-attaches. */
   ownerId: string | null;
+  /** Workspace recorded on the exact adv_sessions source row. */
+  workspaceId: string | null;
+  /** Harness recorded in the exact source launch argv; absent argv stays unknown. */
+  harnessSlug: string | null;
   agent: string | null;
   /** Persona role recorded on the source session; null means the standard SU role. */
   role: string | null;
@@ -252,6 +256,17 @@ export interface ResumeTarget {
   binding: AdvSessionExpectedBinding | null;
 }
 
+/** Server-only guard carried through an internal projected successor dispatch. */
+export const INTERNAL_EXPECTED_SUCCESSOR_BINDING: unique symbol = Symbol('internal-expected-successor-binding');
+export interface InternalExpectedSuccessorBinding {
+  ownerId: string;
+  advSessionId: number;
+  workspaceId: string;
+  harnessSlug: string;
+  binding: AdvSessionExpectedBinding;
+  requirePositiveTerminalEvidence?: boolean;
+}
+
 export type ResolveResumeError =
   | { ok: false; error: 'not_found'; detail: string }
   | { ok: false; error: 'no_native_session_id'; detail: string };
@@ -261,7 +276,7 @@ export type ResolveResumeResult = ({ ok: true } & ResumeTarget) | ResolveResumeE
 /** Read the model and account settings that a resume must carry from launch argv. */
 function resumeLaunchMetadata(
   launchArgv: unknown,
-): Pick<ResumeTarget, 'model' | 'modelSource' | 'account'> {
+): Pick<ResumeTarget, 'model' | 'modelSource' | 'account' | 'harnessSlug'> {
   const source = flagValueFromArgv(launchArgv, 'model-source');
   const account = accountFromArgv(launchArgv);
   return {
@@ -271,6 +286,7 @@ function resumeLaunchMetadata(
         ? source
         : null,
     account: account && isLaunchAccountValue(account) ? account : null,
+    harnessSlug: flagValueFromArgv(launchArgv, 'harness')?.trim() || null,
   };
 }
 
@@ -447,6 +463,7 @@ export async function resolveResumeTarget(ref: {
     ompThreadId: row.ompThreadId,
     resumeId: nativeSessionId ?? String(row.id),
     ownerId: row.coordOwnerId,
+    workspaceId: row.workspaceId?.trim() || null,
     agent: row.agent,
     role: row.role,
     feature: row.feature,
