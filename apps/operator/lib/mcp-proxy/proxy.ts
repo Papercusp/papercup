@@ -658,6 +658,17 @@ export interface McpProxyOptions {
    */
   maxInFlight?: number;
   /**
+   * EI-25792330557867199 — bounded FIFO waiters for ordinary non-handshake requests that
+   * reach the admission ceiling. A queued request owns no upstream slot until granted.
+   * Defaults to DEFAULT_MAX_ORDINARY_QUEUE; zero preserves immediate shedding.
+   */
+  maxOrdinaryQueue?: number;
+  /**
+   * Maximum time (ms) an ordinary request may wait in the admission FIFO. Defaults to the
+   * shared PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS budget (30s); zero disables dwell expiry.
+   */
+  maxOrdinaryQueueWaitMs?: number;
+  /**
    * EI-21391963810159383 — class-specific ceiling for write-free MCP session handshakes
    * (`initialize` / `ping` / `tools/list`). A reconnect burst must not consume the whole
    * reserved-control-plane pool and queue the watchdog behind the class it diagnoses.
@@ -2002,6 +2013,15 @@ export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(
 )
   ? Math.max(0, Math.floor(configuredMaxHandshakeQueue))
   : 64;
+/** EI-25792330557867199 — hard bound for ordinary admission waiters. */
+const configuredMaxOrdinaryQueue = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_ORDINARY_QUEUE ?? 64,
+);
+export const DEFAULT_MAX_ORDINARY_QUEUE = Number.isFinite(
+  configuredMaxOrdinaryQueue,
+)
+  ? Math.max(0, Math.floor(configuredMaxOrdinaryQueue))
+  : 64;
 /**
  * EI-21556422206126497 — continuation writes are deliberately single-flight upstream, but
  * immediate shed-on-one made the durability plane fail exactly when two sessions checkpointed
@@ -2934,6 +2954,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxHandshakeQueue = Number.isFinite(configuredHandshakeQueue)
     ? Math.max(0, Math.floor(configuredHandshakeQueue))
     : 0;
+  const configuredOrdinaryQueue =
+    opts.maxOrdinaryQueue ?? DEFAULT_MAX_ORDINARY_QUEUE;
+  const maxOrdinaryQueue = Number.isFinite(configuredOrdinaryQueue)
+    ? Math.max(0, Math.floor(configuredOrdinaryQueue))
+    : 0;
+  const configuredOrdinaryQueueWaitMs =
+    opts.maxOrdinaryQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
+  const ordinaryQueueWaitMs =
+    Number.isFinite(configuredOrdinaryQueueWaitMs) &&
+    configuredOrdinaryQueueWaitMs >= 0
+      ? Math.floor(configuredOrdinaryQueueWaitMs)
+      : DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
   // EI-21504897841052086 — queue dwell bound + per-waiter telemetry cadence.
   const maxHandshakeQueueWaitMs =
     opts.maxHandshakeQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
@@ -3131,6 +3163,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     maxWaitMs: number;
   }
   type QueuedHandshake = QueuedAdmission;
+  interface QueuedOrdinary extends QueuedAdmission {
+    traceId: string;
+    method: string;
+    path: string;
+    maxWaitMs: number;
+  }
+  const ordinaryQueue: QueuedOrdinary[] = [];
   const handshakeQueue: QueuedHandshake[] = [];
   const criticalContinuationQueue: QueuedCriticalContinuation[] = [];
   interface QueuedCoordSend extends QueuedAdmission {
@@ -3149,6 +3188,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // Resolve one waiter at a time so the async continuation can increment the live counters
   // before another queued request is granted. This reservation also keeps the global hard cap
   // true while the grant continuation is between the queue and the forwarding loop.
+  let ordinaryGrantReservations = 0;
+  let pumpOrdinaryQueue: () => void = () => {};
   let handshakeGrantReservations = 0;
   let pumpHandshakeQueue: () => void = () => {};
   let criticalContinuationGrantReservations = 0;
@@ -3161,6 +3202,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 
   const handshakeQueueLength = (): number =>
     handshakeQueue.reduce(
+      (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
+      0,
+    );
+  const ordinaryQueueLength = (): number =>
+    ordinaryQueue.reduce(
       (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
       0,
     );
@@ -3283,7 +3329,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     if (partitionedAdmission) {
       const reservedWithGrant =
         reservedControlPlaneInFlight + handshakeGrantReservations;
-      const normalWithGrant = ordinaryInFlight + reservedWithGrant;
+      const normalWithGrant =
+        ordinaryInFlight +
+        ordinaryGrantReservations +
+        reservedWithGrant;
       return (
         !shouldShedForInFlight(
           reservedWithGrant,
@@ -3293,8 +3342,43 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     }
     return (
       maxInFlight <= 0 ||
-      inFlightStarts.size + handshakeGrantReservations < maxInFlight
+      inFlightStarts.size +
+        handshakeGrantReservations +
+        ordinaryGrantReservations <
+        maxInFlight
     );
+  };
+
+  const canGrantOrdinary = (): boolean => {
+    if (
+      shouldShedForInFlight(
+        ordinaryInFlight + ordinaryGrantReservations,
+        ordinaryInFlightCeiling,
+      )
+    ) {
+      return false;
+    }
+    if (partitionedAdmission) {
+      const reservedWithGrant =
+        reservedControlPlaneInFlight + handshakeGrantReservations;
+      const normalWithGrant =
+        ordinaryInFlight + ordinaryGrantReservations + reservedWithGrant;
+      return !shouldShedForInFlight(normalWithGrant, maxInFlight);
+    }
+    return (
+      maxInFlight <= 0 ||
+      inFlightStarts.size +
+        ordinaryGrantReservations +
+        handshakeGrantReservations <
+        maxInFlight
+    );
+  };
+
+  const cancelQueuedOrdinary = (waiter: QueuedOrdinary): void => {
+    if (waiter.cancelled || waiter.granted) return;
+    waiter.cancelled = true;
+    waiter.resolve(false);
+    pumpOrdinaryQueue();
   };
 
   const cancelQueuedHandshake = (waiter: QueuedHandshake): void => {
@@ -3321,6 +3405,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       }
       waiter.granted = true;
       handshakeGrantReservations++;
+      waiter.resolve(true);
+    }
+  };
+
+  pumpOrdinaryQueue = (): void => {
+    while (ordinaryQueue.length > 0) {
+      const waiter = ordinaryQueue.shift();
+      if (!waiter || waiter.cancelled) continue;
+      if (!canGrantOrdinary()) {
+        ordinaryQueue.unshift(waiter);
+        return;
+      }
+      waiter.granted = true;
+      ordinaryGrantReservations++;
       waiter.resolve(true);
     }
   };
@@ -3721,6 +3819,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           maxWaitMs: waiter.maxWaitMs,
           ...(waiter.toolFailureCapture ? { toolFailureCapture: true } : {}),
         }));
+      const waitingOrdinaryRequests = ordinaryQueue
+        .filter((waiter) => !waiter.cancelled && !waiter.granted)
+        .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
+        .map((waiter) => ({
+          traceId: waiter.traceId,
+          method: waiter.method,
+          path: waiter.path,
+          ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
+          maxWaitMs: waiter.maxWaitMs,
+        }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -3730,6 +3838,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           inFlight: {
             total: inFlightStarts.size,
             ordinary: ordinaryInFlight,
+            ordinaryQueue: {
+              waiting: ordinaryQueueLength(),
+              max: maxOrdinaryQueue,
+              maxWaitMs: ordinaryQueueWaitMs,
+              grantReservations: ordinaryGrantReservations,
+              oldestAgeMs:
+                waitingOrdinaryRequests.length > 0
+                  ? Math.max(
+                      ...waitingOrdinaryRequests.map(
+                        (request) => request.ageMs,
+                      ),
+                    )
+                  : null,
+              requests: waitingOrdinaryRequests,
+            },
             reservedControlPlane: reservedControlPlaneInFlight,
             watchdog: watchdogProbeInFlight,
             criticalContinuation: criticalContinuationInFlight,
@@ -3935,6 +4058,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             : standardReservedControlPlane
               ? "reserved-control-plane"
               : "ordinary";
+        const ordinaryQueueEligible =
+          admissionClass === "ordinary" && !sessionHandshake;
         const admissionCeiling =
           improvementsCapture
             ? 1
@@ -3970,7 +4095,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // Ordinary handshakes use the bounded FIFO below, which accounts for both their own
         // handshake cap and the reserved-class cap. Shedding them here would bypass that queue.
         const admissionSaturated =
-          criticalContinuation || coordSend || improvementsCapture
+          ordinaryQueueEligible ||
+          criticalContinuation ||
+          coordSend ||
+          improvementsCapture
           ? false
           : sessionHandshake && !watchdogSessionProbe
             ? false
@@ -4765,6 +4893,197 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             0,
             criticalContinuationGrantReservations - 1,
           );
+        }
+        // EI-25792330557867199 — preserve work-conserving admission while making ordinary
+        // saturation a bounded FIFO. Handshakes and reserved/special recovery classes retain
+        // their own admission paths and cannot be held behind this queue.
+        if (ordinaryQueueEligible) {
+          pumpOrdinaryQueue();
+          if (ordinaryQueueLength() > 0 || !canGrantOrdinary()) {
+            const queuedNow = ordinaryQueueLength();
+            if (queuedNow >= maxOrdinaryQueue) {
+              const retryAfterSec = retryAfterSecForDrainRate(
+                ordinaryInFlight,
+                ordinaryInFlightCeiling,
+                completedForwardAtMs,
+                Date.now(),
+              );
+              res.writeHead(429, {
+                "content-type": "application/json",
+                "retry-after": String(retryAfterSec),
+              });
+              res.end(
+                JSON.stringify({
+                  ok: false,
+                  error: "mcp_proxy_overloaded",
+                  retryable: true,
+                  forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
+                  detail:
+                    "proxy ordinary FIFO already has " +
+                    queuedNow +
+                    " waiter(s) (queue max " +
+                    maxOrdinaryQueue +
+                    ") — shed before forwarding",
+                  retryAfterSec,
+                  traceId: requestTraceId,
+                }),
+              );
+              log(
+                "shed ordinary request " +
+                  requestTraceId +
+                  " — " +
+                  queuedNow +
+                  "/" +
+                  maxOrdinaryQueue +
+                  " waiters",
+              );
+              record({
+                kind: "shed_ordinary_queue_full",
+                method: req.method,
+                path: req.url,
+                traceId: requestTraceId,
+                ordinaryInFlight,
+                ordinaryInFlightCeiling,
+                normalInFlight,
+                queueLength: queuedNow,
+                maxOrdinaryQueue,
+                retryAfterSec,
+                forwardingResult: "not_forwarded",
+              });
+              return;
+            }
+
+            let queuedOrdinary!: QueuedOrdinary;
+            const enqueuedAtMs = Date.now();
+            const granted = await new Promise<boolean>((resolve) => {
+              queuedOrdinary = {
+                resolve,
+                cancelled: false,
+                granted: false,
+                enqueuedAtMs,
+                expired: false,
+                traceId: requestTraceId,
+                method: req.method ?? "",
+                path: req.url ?? "",
+                maxWaitMs: ordinaryQueueWaitMs,
+              };
+              ordinaryQueue.push(queuedOrdinary);
+              cancelQueuedAdmission = (): void => {
+                clearQueuedWaitTimer(queuedOrdinary);
+                cancelQueuedOrdinary(queuedOrdinary);
+              };
+
+              if (queuedOrdinary.maxWaitMs > 0) {
+                const expireWhenDue = (): void => {
+                  if (queuedOrdinary.granted || queuedOrdinary.cancelled)
+                    return;
+                  const remainingMs =
+                    queuedOrdinary.maxWaitMs -
+                    (Date.now() - queuedOrdinary.enqueuedAtMs);
+                  if (remainingMs > 0) {
+                    queuedOrdinary.waitTimer = setTimeout(
+                      expireWhenDue,
+                      remainingMs,
+                    );
+                    queuedOrdinary.waitTimer.unref?.();
+                    return;
+                  }
+                  queuedOrdinary.expired = true;
+                  clearQueuedWaitTimer(queuedOrdinary);
+                  cancelQueuedOrdinary(queuedOrdinary);
+                };
+                queuedOrdinary.waitTimer = setTimeout(
+                  expireWhenDue,
+                  queuedOrdinary.maxWaitMs,
+                );
+                queuedOrdinary.waitTimer.unref?.();
+              }
+
+              log(
+                "queued ordinary request " +
+                  requestTraceId +
+                  " — " +
+                  ordinaryInFlight +
+                  " in flight, " +
+                  ordinaryQueueLength() +
+                  " waiting (max " +
+                  maxOrdinaryQueue +
+                  ")",
+              );
+              record({
+                kind: "queue_ordinary",
+                method: req.method,
+                path: req.url,
+                traceId: requestTraceId,
+                ordinaryInFlight,
+                ordinaryInFlightCeiling,
+                normalInFlight,
+                queueLength: ordinaryQueueLength(),
+                maxOrdinaryQueue,
+                maxWaitMs: ordinaryQueueWaitMs,
+                forwardingResult: "queued",
+              });
+            });
+            clearQueuedWaitTimer(queuedOrdinary);
+            cancelQueuedAdmission = null;
+            if (!granted || clientGone) {
+              if (granted) {
+                ordinaryGrantReservations = Math.max(
+                  0,
+                  ordinaryGrantReservations - 1,
+                );
+                pumpOrdinaryQueue();
+              } else if (queuedOrdinary.expired && !clientGone) {
+                const waitedMs = Date.now() - queuedOrdinary.enqueuedAtMs;
+                res.writeHead(429, {
+                  "content-type": "application/json",
+                  "retry-after": "2",
+                });
+                res.end(
+                  JSON.stringify({
+                    ok: false,
+                    error: "mcp_proxy_overloaded",
+                    retryable: true,
+                    forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
+                    detail:
+                      "ordinary request waited " +
+                      waitedMs +
+                      "ms in the admission FIFO (max " +
+                      queuedOrdinary.maxWaitMs +
+                      "ms) — shed before forwarding",
+                    retryAfterSec: 2,
+                    traceId: requestTraceId,
+                  }),
+                );
+                log(
+                  "shed ordinary request " +
+                    requestTraceId +
+                    " — queue dwell " +
+                    waitedMs +
+                    "ms exceeded " +
+                    queuedOrdinary.maxWaitMs +
+                    "ms",
+                );
+                record({
+                  kind: "shed_ordinary_queue_dwell",
+                  method: req.method,
+                  path: req.url,
+                  traceId: requestTraceId,
+                  waitedMs,
+                  ordinaryInFlight,
+                  ordinaryInFlightCeiling,
+                  queueLength: ordinaryQueueLength(),
+                  maxOrdinaryQueueWaitMs: queuedOrdinary.maxWaitMs,
+                  forwardingResult: "not_forwarded",
+                });
+              }
+              return;
+            }
+            ordinaryGrantReservations = Math.max(
+              0,
+              ordinaryGrantReservations - 1,
+            );
+          }
         }
         // EI-21391963810159383 — a proxy restart made ~60 clients reconnect at once. Because
         // initialize/tools/list/ping are reserved traffic, every one bypassed the ordinary
@@ -5649,6 +5968,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // itself was already available; pump after both counters are current so neither cap
           // is oversubscribed during the grant continuation.
           pumpHandshakeQueue();
+          pumpOrdinaryQueue();
           pumpCriticalContinuationQueue();
           pumpCoordSendQueue();
           pumpImprovementsCaptureQueue();
@@ -5699,6 +6019,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
     // EI-21504897841052086 — queued waiters' dwell watches must not hold the loop open.
+    for (const waiter of ordinaryQueue) clearQueuedWaitTimer(waiter);
     for (const waiter of handshakeQueue) clearQueuedWaitTimer(waiter);
     for (const waiter of criticalContinuationQueue)
       clearQueuedWaitTimer(waiter);

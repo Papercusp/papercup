@@ -38,6 +38,7 @@ import {
   DEFAULT_CONTROL_PLANE_RESERVE,
   DEFAULT_MAX_HANDSHAKES_IN_FLIGHT,
   DEFAULT_MAX_HANDSHAKE_QUEUE,
+  DEFAULT_MAX_ORDINARY_QUEUE,
   DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE,
   DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   DEFAULT_COORD_SEND_QUEUE_WAIT_MS,
@@ -10169,6 +10170,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT)).toBe(true);
     expect(DEFAULT_MAX_HANDSHAKE_QUEUE).toBeGreaterThan(0);
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKE_QUEUE)).toBe(true);
+    expect(DEFAULT_MAX_ORDINARY_QUEUE).toBeGreaterThan(0);
+    expect(Number.isFinite(DEFAULT_MAX_ORDINARY_QUEUE)).toBe(true);
   });
 
   it("EI-21656350947178031: default durability FIFO covers the proxy admission population", () => {
@@ -10241,6 +10244,203 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     // upstream still answers 200 immediately post-gate-release for any further hits.
     expect([200, 429]).toContain(after.status);
   });
+
+  it("EI-25792330557867199: queues an ordinary request FIFO and forwards it after a slot opens", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => {};
+    const firstStartedGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const logs: string[] = [];
+    const hits: number[] = [];
+    const upstream = track(
+      http.createServer((_req, res) => {
+        hits.push(hits.length + 1);
+        if (hits.length === 1) {
+          firstStarted();
+          void firstGate.then(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end('{"result":"first"}');
+          });
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"queued"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        retryBackoffMs: 5,
+        maxInFlight: 1,
+        controlPlaneReserve: 0,
+        maxOrdinaryQueue: 1,
+        maxOrdinaryQueueWaitMs: 2_000,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryCall =
+      '{"method":"tools/call","params":{"name":"unit:ordinary"}}';
+    const first = request(port(proxy), ordinaryCall);
+    await firstStartedGate;
+    const queued = request(port(proxy), ordinaryCall);
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued ordinary request")),
+    );
+
+    releaseFirst();
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    expect(firstResult.status).toBe(200);
+    expect(queuedResult.status).toBe(200);
+    expect(hits).toEqual([1, 2]);
+  }, 10_000);
+
+  it("EI-25792330557867199: hard-bounds the ordinary FIFO and reports local overload as not forwarded", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => {};
+    const firstStartedGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const logs: string[] = [];
+    let hits = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        hits++;
+        if (hits === 1) {
+          firstStarted();
+          void firstGate.then(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end('{"result":"first"}');
+          });
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"queued"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        retryBackoffMs: 5,
+        maxInFlight: 1,
+        controlPlaneReserve: 0,
+        maxOrdinaryQueue: 1,
+        maxOrdinaryQueueWaitMs: 2_000,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryCall =
+      '{"method":"tools/call","params":{"name":"unit:ordinary"}}';
+    const first = request(port(proxy), ordinaryCall);
+    await firstStartedGate;
+    const queued = request(port(proxy), ordinaryCall);
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued ordinary request")),
+    );
+
+    const overflow = await request(port(proxy), ordinaryCall);
+    expect(overflow.status).toBe(429);
+    expect(JSON.parse(overflow.body)).toMatchObject({
+      error: "mcp_proxy_overloaded",
+      retryable: true,
+      forwardingResult: "not_forwarded",
+    });
+    expect(overflow.headers["retry-after"]).toBeTruthy();
+    expect(hits).toBe(1);
+
+    releaseFirst();
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    expect(firstResult.status).toBe(200);
+    expect(queuedResult.status).toBe(200);
+    expect(hits).toBe(2);
+  }, 10_000);
+
+  it("EI-25792330557867199: exposes ordinary FIFO size and waiter age in local health", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => {};
+    const firstStartedGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((_req, res) => {
+        firstStarted();
+        void firstGate.then(() => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end('{"result":"ok"}');
+        });
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        retryBackoffMs: 5,
+        maxInFlight: 1,
+        controlPlaneReserve: 0,
+        maxOrdinaryQueue: 2,
+        maxOrdinaryQueueWaitMs: 2_000,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryCall =
+      '{"method":"tools/call","params":{"name":"unit:ordinary"}}';
+    const first = request(port(proxy), ordinaryCall);
+    await firstStartedGate;
+    const queued = request(port(proxy), ordinaryCall);
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued ordinary request")),
+    );
+
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.ordinaryQueue).toMatchObject({
+      waiting: 1,
+      max: 2,
+      maxWaitMs: 2_000,
+      grantReservations: 0,
+    });
+    expect(health.inFlight.ordinaryQueue.oldestAgeMs).toEqual(
+      expect.any(Number),
+    );
+    expect(health.inFlight.ordinaryQueue.requests).toHaveLength(1);
+    expect(health.inFlight.ordinaryQueue.requests[0]).toMatchObject({
+      maxWaitMs: 2_000,
+      ageMs: expect.any(Number),
+    });
+
+    releaseFirst();
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    expect(firstResult.status).toBe(200);
+    expect(queuedResult.status).toBe(200);
+  }, 10_000);
 
   it("maxInFlight:0 (explicit) never sheds, even with many concurrent holds", async () => {
     let releaseUpstream: () => void = () => {};
