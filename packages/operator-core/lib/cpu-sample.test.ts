@@ -143,8 +143,12 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
   // can remain buffered in Node's pipe writer. Flush the marker before the
   // loop to make the startup/output assertion deterministic.
   writeFileSync(entry, 'import { writeSync } from "node:fs";writeSync(1, "CPU_SAMPLE_BUSY_READY\\n");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
+  // The test runner loads the committed-source guard through NODE_OPTIONS. Do
+  // not inherit that loader into the paused fixture: its git-backed module
+  // checks can consume the short profile window before the target reaches the
+  // busy loop, leaving the profile attributed only to the loader itself.
   const child = spawn(process.execPath, [waitForStartup ? '--inspect-wait=127.0.0.1:0' : '--inspect=127.0.0.1:0', entry, '--probe-target'],
-    { stdio: ['ignore', 'pipe', 'pipe'] });
+    { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: '' } });
   const exit = once(child, 'exit');
   const output = createTextCollector(child.stdout);
   try {
