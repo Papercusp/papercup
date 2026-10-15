@@ -4429,7 +4429,10 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
 
       // RECYCLE (no carry — we're testing the respawn argv/identity, not carry inject).
       await controlInject(sock, 'recycle', '');
-      await sleep(2500); // kill + respawn + boot
+      // The host's predecessor fence waits for the real node-pty exit callback;
+      // a fixed 2.5s sleep races that callback under a whole-file run and then
+      // reports a missing successor even though recycle is still progressing.
+      await vi.waitFor(() => expect(captured()).toContain('ARGV:RECYCLED'), { timeout: 10_000 });
 
       // The respawn ran the REWRITTEN argv (proves spawnChild(recycleArgs) wiring)…
       expect(captured()).toContain('ARGV:RECYCLED');
