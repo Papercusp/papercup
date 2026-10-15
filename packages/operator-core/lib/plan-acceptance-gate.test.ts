@@ -2022,10 +2022,25 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
       stockScorecards([metaVettingCard({ createdAt: '2026-09-01T05:00:00Z' })], acceptedCards);
       const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
       expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_vetted_after_grading' });
+      expect(v.gradingRef).toBe('EI-1');
+      expect(v.staleGradingScorecardId).toBe('EI-1');
+      expect(v.staleGradingScorecardIds).toEqual(['EI-1']);
       // Both timestamps belong in the message: the complaint is about ORDER, and a
       // reader who cannot see both cannot tell that the attestation itself is fine.
       expect(v.message).toContain('2026-09-01T05:00:00Z');
       expect(v.message).toContain(gradedAt);
+    });
+
+    it('excludes every pre-vetting independent card from recruitment settlement', async () => {
+      stockScorecards([metaVettingCard({ createdAt: '2026-09-01T05:00:00Z' })], [
+        scorecard({ issueId: 'EI-newer', createdAt: gradedAt, createdBy: 'su-grader' }),
+        scorecard({ issueId: 'EI-older', createdAt: '2026-09-01T01:00:00Z', createdBy: 'su-other-grader' }),
+        acceptedCards[1]!,
+      ]);
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_vetted_after_grading',
+        staleGradingScorecardId: 'EI-newer' });
+      expect(v.staleGradingScorecardIds?.sort()).toEqual(['EI-newer', 'EI-older']);
     });
 
     it('CONTROL: the same state with the attestation moved BEFORE the grading satisfies', async () => {

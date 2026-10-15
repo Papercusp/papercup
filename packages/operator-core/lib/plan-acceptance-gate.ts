@@ -258,12 +258,12 @@ export interface PlanAcceptanceGateVerdict {
   blockingPhaseLifecycle?: Omit<AcceptanceBarLifecycleVerdict, 'nonCodeItemProofs'>;
   /** Exact authoritative grading to read before recording an author verdict. */
   gradingRef?: string;
-  /** On `self_graded_only`: the independent scorecard the acceptance BAR judged
-   * cohort-stale. The grader recruiter excludes it from its settlement read, so the
+  /** On `self_graded_only` or `acceptance_rubric_vetted_after_grading`: the independent
+   * scorecard the gate excluded. The recruiter excludes it from its settlement read, so the
    * fresh grading this refusal asks for is actually dispatched (WI-10003286). */
   staleGradingScorecardId?: string;
-  /** On `self_graded_only`: EVERY independent scorecard this gate excluded as
-   * cohort-stale — the named card above plus each older independent card that
+  /** EVERY independent scorecard this gate excluded as cohort- or ordering-stale —
+   * the named card above plus each older independent card that
    * predates it. The recruiter must exclude the whole set: handing it only the named
    * id lets its settlement read fall back to an older, equally excluded card and
    * report "settled", so the fresh grading is never dispatched (WI-10003286). */
@@ -1879,6 +1879,14 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       satisfied: false,
       code: 'acceptance_rubric_vetted_after_grading',
       rubricId: rubric.rubricId,
+      gradingRef: independent.issueId,
+      staleGradingScorecardId: independent.issueId,
+      staleGradingScorecardIds: [...new Set([
+        ...cohortStaleIndependentIds,
+        ...independentCards
+          .filter((card) => Date.parse(card.createdAt) < Date.parse(vettingAttestedAt))
+          .map((card) => card.issueId),
+      ])],
       gradedBy: independent.createdBy ?? null,
       gradedVia: independentVia,
       ...(unknownRatedCriteria.length > 0 ? { unknownRatedCriteria } : {}),

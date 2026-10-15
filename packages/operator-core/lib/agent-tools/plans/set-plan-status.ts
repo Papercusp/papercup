@@ -418,10 +418,15 @@ export const ACCEPTANCE_GRADER_GATE_CODES = new Set([
   'acceptance_ungraded',
   'self_graded_only',
   'independent_verification_missing',
+  'acceptance_rubric_vetted_after_grading',
 ]);
 
 /** The codes where the gate itself found no admissible independent grading. */
-const GRADING_ABSENT_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
+const GRADING_ABSENT_GATE_CODES = new Set([
+  'acceptance_ungraded',
+  'self_graded_only',
+  'acceptance_rubric_vetted_after_grading',
+]);
 
 /** Read the open IV gaps and render the verifier step; '' when none or unreadable. */
 async function defaultIndependentVerificationBrief(slug: string, harnessSlug: string, workspaceId: string): Promise<string> {

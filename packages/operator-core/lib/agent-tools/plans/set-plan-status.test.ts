@@ -479,7 +479,7 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
         .toBeUndefined();
       expect(launch).not.toHaveBeenCalled();
     });
-  it.each(['acceptance_ungraded', 'self_graded_only'])('launches once for %s', async (code) => {
+  it.each(['acceptance_ungraded', 'self_graded_only', 'acceptance_rubric_vetted_after_grading'])('launches once for %s', async (code) => {
     const launch = vi.fn(async () => ({
       state: 'launched' as const,
       idempotencyKey: 'acceptance-grader:key',
@@ -563,6 +563,26 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
       'plan-a',
       expect.objectContaining({ acceptanceStaleGradingScorecardId: 'EI-stale-independent' }),
     );
+  });
+
+  it('recruits a post-vetting regrade without settling on earlier independent cards', async () => {
+    const launch = vi.fn(async () => ({ state: 'launched' as const,
+      idempotencyKey: 'post-vetting', label: 'post-vetting' }));
+    const gate = { satisfied: false, code: 'acceptance_rubric_vetted_after_grading',
+      staleGradingScorecardId: 'EI-before-vetting',
+      staleGradingScorecardIds: ['EI-before-vetting', 'EI-older'] };
+    await launchAcceptanceGraderForGate('plan-a', gate,
+      { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-shipper' } as never,
+      'papercusp', launch as never);
+    expect(launch).toHaveBeenCalledTimes(1);
+    expect(launch).toHaveBeenCalledWith('plan-a', expect.objectContaining({
+      ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+      acceptanceShipperOwnerId: 'su-shipper',
+      acceptanceGateFoundNoAdmissibleGrading: true,
+      acceptanceStaleGradingScorecardId: 'EI-before-vetting',
+      acceptanceStaleGradingScorecardIds: ['EI-before-vetting', 'EI-older'],
+    }));
+    expect(gate.satisfied).toBe(false);
   });
 
   // WI-10003286 (second half): the gate excludes the named card AND every older
