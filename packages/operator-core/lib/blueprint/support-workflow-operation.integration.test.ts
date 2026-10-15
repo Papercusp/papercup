@@ -26,7 +26,8 @@ import type { RunningGatewayService } from '../inference-gateway/launch';
 import { hermeticEnv } from '../../../../apps/operator/vitest-shims/psu-pty-temp-dir';
 import { currentBenchOpenAiInputContract } from '../external-bench/current-su';
 import { defineHostedAllocation, readHostedAllocationReport, settleHostedAllocation } from '../auth/hosted/billing/allocation-store';
-import { recordSupportWorkflowOutcome, reserveSupportOperationAttempt, supportOperationReservationId } from './support-workflow-budget';
+import { readSupportOperationBudgetBinding, recordSupportWorkflowOutcome, reserveSupportOperationAttempt,
+  supportOperationReservationId } from './support-workflow-budget';
 import { createPersonalGrant } from '../personal-vault/store';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers,
   upsertOrganizationDocuments, upsertPermissionList } from '../data-sources/documents-corpus';
@@ -105,10 +106,11 @@ beforeAll(async () => {
     inputUsdPerMillion: 30, cachedInputUsdPerMillion: 30, cacheWriteUsdPerMillion: 30,
     outputUsdPerMillion: 100,
   });
-  const source = BlueprintSchema.parse({ id: harnessSlug, workItem: { kind: 'task' }, roles: [{ id: role }],
+  const source = BlueprintSchema.parse({ id: harnessSlug, grants: {}, workItem: { kind: 'task' }, roles: [{ id: role }],
     spine: { edges: { DONE: { to: 'done' } } }, dependencies: { tools: ['blueprint:read-private-input'] },
     operations: [operation, nativeOperation] });
   const specification = compileAgentSpecification({ source });
+  expect(specification.configuration.grants).toBeDefined();
   specificationArtifact = specification;
   revision = specification.specificationRevision;
   await projectBlueprintToPg(db.adminSql, { workspaceId, harnessSlug,
@@ -243,8 +245,8 @@ describe('support native launch with applied PostgreSQL authority and funding', 
     await db.adminSql`UPDATE harness_shared.work_items SET taken_by = ${ownerId}
       WHERE workspace_id = ${workspaceId} AND feature_id = ${workItemId}`;
     const active = await readActiveOperationWorkerClaimBinding(workspaceId, ownerId);
-    expect(active.status).toBe('bound');
     if (active.status !== 'bound') throw new Error(JSON.stringify(active));
+    expect(await readSupportOperationBudgetBinding(workspaceId, ownerId)).not.toBeNull();
 
     const root = mkdtempSync('/tmp/support-native-funded-');
     const codexHome = join(root, 'codex-home'); mkdirSync(codexHome);
@@ -285,12 +287,22 @@ describe('support native launch with applied PostgreSQL authority and funding', 
     let gateway: ReturnType<typeof createInferenceGateway> | undefined;
     let route: Awaited<ReturnType<typeof prepareSupportOperationNativeLaunch>>;
     let child: ReturnType<typeof spawn> | undefined;
+    const attempts: Array<Record<string, unknown>> = [];
     const start = async () => {
       route = await prepareSupportOperationNativeLaunch({ workspaceId, ownerId, sessionId,
         agent: 'codex', checkout: root, accepted: active.binding }, async options => {
         gateway = createInferenceGateway({ accountId: 'synthetic-support', token: async () => 'synthetic-support-native-bearer',
           codexPool: createFailoverPool([{ accountId: 'synthetic-support', token: async () => 'synthetic-support-native-bearer' }]),
-          carryTrial: options.carryTrial,
+          carryTrial: { ...options.carryTrial!, async authorizeAttempt(attempt) {
+            // Retain the final synthetic request shape for an actionable failure
+            // without recording either the private route or provider credential.
+            const body = JSON.parse(attempt.body);
+            attempts.push({ transport: attempt.transport, target: attempt.target, accountId: attempt.accountId,
+              bodyKeys: Object.keys(body), model: body.model, reasoning: body.reasoning,
+              maxOutputTokens: body.max_output_tokens,
+              toolTypes: Array.isArray(body.tools) ? body.tools.map((tool: { type?: string }) => tool.type) : null });
+            return options.carryTrial!.authorizeAttempt(attempt);
+          } },
           fetchImpl: async (target, init) => {
             expect(String(target)).toBe('https://api.openai.com/v1/responses');
             return originalFetch(`http://127.0.0.1:${upstreamPort}/v1/responses`, init);
@@ -338,7 +350,7 @@ describe('support native launch with applied PostgreSQL authority and funding', 
         child!.once('error', error => { clearTimeout(timer); reject(error); });
         child!.once('close', value => { clearTimeout(timer); resolve(value); });
       });
-      expect(code, output).toBe(0);
+      expect(code, JSON.stringify({ output, counts, attempts, upstreamSends: bodies.length })).toBe(0);
       expect(output).toContain('SUPPORT_FUNDED_NATIVE_RECEIPT');
       expect(bodies, output).toHaveLength(1);
       expect(JSON.parse(bodies[0]!)).toMatchObject({ model: 'gpt-6.1-sol', reasoning: { effort: 'medium' }, max_output_tokens: 100 });
