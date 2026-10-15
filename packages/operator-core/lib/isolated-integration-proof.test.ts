@@ -144,6 +144,29 @@ it('reaps a native descendant after host exit before waiting for inherited pipes
   }
 }, 5_000);
 
+it('fails bounded host cleanup when a descendant still owns the output pipes', async () => {
+  const host = spawn(process.execPath, ['-e', `
+    const { spawn } = require('node:child_process');
+    const native = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
+    console.log(native.pid);
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+  `], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let nativePid: number | undefined;
+  try {
+    const [chunk] = await once(host.stdout!, 'data');
+    nativePid = Number(String(chunk).trim());
+    expect(Number.isSafeInteger(nativePid)).toBe(true);
+    await expect(stopPrivateOperatorHost(host, undefined, 100)).rejects.toThrow('stdio drainage did not settle');
+    expect(host.exitCode).not.toBeNull();
+    expect(() => process.kill(nativePid!, 0)).not.toThrow();
+  } finally {
+    host.kill('SIGKILL');
+    if (nativePid) try { process.kill(nativePid, 'SIGKILL'); } catch { /* already reaped */ }
+    host.stdout?.destroy(); host.stderr?.destroy();
+  }
+}, 5_000);
+
 it('retains native output when a later source snapshot is empty or shorter', () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-shrink-'));
   const source = join(evidenceDir, 'source.log');
@@ -210,6 +233,10 @@ it.each([
   const workspace = 'test-runtime-proof-failure';
   let child: ReturnType<typeof fork> | undefined;
   vi.stubEnv('VH_EVIDENCE_ROOT_BASE', fixture);
+  // Retention operates only on this disposable evidence. Keep its pin store
+  // and mutex private too, so host cleanup cannot stall these lifecycle tests.
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(fixture, 'retention'));
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(fixture, 'locks'));
   try {
     mkdirSync(runtimeRoot); mkdirSync(dataDir);
     writeFileSync(supervisorPath, `
