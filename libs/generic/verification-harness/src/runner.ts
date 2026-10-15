@@ -412,9 +412,10 @@ async function removeRunIfEligible(
  * those entries consume space but never become deletion candidates. */
 async function retentionRootUsage(root: string): Promise<{ bytes: number; runs: Map<string, { bytes: number; newest: number }> }> {
   let budget = 100000;
+  const deadline = Date.now() + 30000;
   const seen = new Set<string>();
   const walk = async (target: string): Promise<{ bytes: number; newest: number }> => {
-    if (--budget < 0) throw new Error('retention byte census budget exceeded');
+    if (--budget < 0 || Date.now() >= deadline) throw new Error('retention byte census budget exceeded');
     const s = await lstat(target);
     const key = `${s.dev}:${s.ino}`;
     if (seen.has(key)) return { bytes: 0, newest: s.mtimeMs };

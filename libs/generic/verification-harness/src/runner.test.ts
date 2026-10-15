@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -90,8 +91,8 @@ describe('evidence root byte ceiling', () => {
         mkdirSync(path.join(root, name));
         writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
         writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
-        const time = new Date(Date.now() - (3 - i) * 3600e3);
-        const { utimesSync } = await import('node:fs');
+        // Reverse name order: the actual newest write decides cap eviction.
+        const time = new Date(Date.now() - (i + 1) * 3600e3);
         for (const file of [path.join(root, name), path.join(root, name, 'bulk'), path.join(root, name, 'result.json')]) utimesSync(file, time, time);
       }
       const options = { maxBytes: 100 * 1024, measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
@@ -99,12 +100,12 @@ describe('evidence root byte ceiling', () => {
       expect(preview.preview?.candidates.map(c => c.reason)).toEqual(['size-cap', 'size-cap', 'size-cap']);
       expect(names.every(name => existsSync(path.join(root, name)))).toBe(true);
       const report = await pruneRunsWithReport(root, 30, Date.now(), options);
-      expect(report.removed).toEqual(names.slice(0, 2));
+      expect(report.removed).toEqual([names[2], names[1]]);
       expect(report.cap?.afterBytes).toBeLessThanOrEqual(options.maxBytes);
-      expect(existsSync(path.join(root, names[2]))).toBe(true);
+      expect(existsSync(path.join(root, names[0]))).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('reports pins above cap and keeps latest while continuing past protected older runs', async () => {
+  it('keeps latest and reports the remaining overage while continuing past protected older runs', async () => {
     const root = tmp();
     const names = ['20200101T000000Z-1', '20200102T000000Z-1'];
     try {
@@ -119,6 +120,31 @@ describe('evidence root byte ceiling', () => {
       expect(report.cap?.overByBytes).toBeGreaterThan(0);
       expect(existsSync(path.join(root, names[0]))).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('counts and reports finite descendant pins above cap; expiry restores eviction', async () => {
+    const root = tmp();
+    const leases = tmp();
+    const names = ['20200101T000000Z-1', '20200102T000000Z-1'];
+    const now = Date.now();
+    try {
+      for (const name of names) {
+        mkdirSync(path.join(root, name));
+        writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date(now).toISOString(), verdict: 'pass' }));
+        writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
+      }
+      const id = randomUUID();
+      const tag = 'agent-pin-' + Buffer.from(JSON.stringify({ version: 1, id, owner: 'test', reason: 'cap-test', createdAt: new Date(now).toISOString() })).toString('base64url');
+      writeFileSync(path.join(leases, `lease-agent-pin-${id}.tsv`), `schema=papercusp-release-retention/v1\ntag=${tag}\nexpires_ns=${BigInt(now + 3600e3) * 1000000n}\npath=${path.join(root, names[0], 'bulk')}\n`);
+      const options = { env: { ...process.env, PAPERCUSP_RELEASE_RETENTION_ROOT: leases }, maxBytes: 1, measureDisk: async () => null };
+      const report = await pruneRunsWithReport(root, 30, now, options);
+      expect(report.removed).toEqual([names[1]]);
+      expect(report.cap?.pinnedPaths).toEqual([path.join(root, names[0])]);
+      expect(report.cap?.pinnedBytes).toBeGreaterThanOrEqual(64 * 1024);
+      expect(report.cap?.pinnedOverageBytes).toBeGreaterThan(0);
+      const expired = await pruneRunsWithReport(root, 30, now + 2 * 3600e3, options);
+      expect(expired.removed).toEqual([names[0]]);
+      expect(expired.cap?.pinnedBytes).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(leases, { recursive: true, force: true }); }
   });
 });
 
