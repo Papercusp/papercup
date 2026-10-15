@@ -28,6 +28,7 @@ const handlerMocks = vi.hoisted(() => ({
   defaultBarReadinessDeps: vi.fn(() => ({})),
   emitDecisionAdded: vi.fn(),
   readFrozenRepairMarker: vi.fn(),
+  lineageQuery: vi.fn(async (_sql: string, _params: string[]): Promise<Record<string, unknown>[]> => [{ exists: 1 }]),
   // WI-42142: the provenance stamp does transcript IO. Mocked so these tests pin
   // the WIRING (refusal + advisory fold), while falsifiedOwnerAnchors itself stays
   // REAL here — its own contract is unit-tested in carry-surface-provenance-stamp.test.ts.
@@ -52,6 +53,11 @@ vi.mock('./with-plan-lock', () => ({
   withPlanLock: handlerMocks.withPlanLock,
   bumpUpdatedDate: (body: string) => body,
 }));
+vi.mock('../../promotion-lineage', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../promotion-lineage')>();
+  return { ...actual, validatePromotedFrom: (raw: Parameters<typeof actual.validatePromotedFrom>[0], workspace: string) =>
+    actual.validatePromotedFrom(raw, workspace, handlerMocks.lineageQuery) };
+});
 vi.mock('./revisions', () => ({
   planRevisionCapture: handlerMocks.planRevisionCapture,
 }));
@@ -499,6 +505,33 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       ...ctx,
       harnessSlug: typeof harness === 'string' ? harness : 'session-harness',
     }));
+  });
+
+  it('writes resolved promotion lineage into the decision readback', async () => {
+    handlerMocks.lineageQuery.mockResolvedValue([{ exists: 1 }]);
+    let written = '';
+    handlerMocks.withPlanLock.mockImplementationOnce(async (_ctx, _opts, mutate) => {
+      const result = await mutate(HANDLER_PLAN);
+      written = result.newBody;
+      return { kind: 'ok', ...result, filePath: 'handler-plan.md' };
+    });
+    const promotedFrom = [{ kind: 'work-item', ref: 'WI-123' }];
+    const result = await handlerBody({ slug: 'handler-plan', harness: 'papercusp', title: 'Promoted conclusion',
+      body: 'Source-backed conclusion.', promotedFrom }, handlerContext('papercusp'));
+    expect(result.counts.failed).toBe(0);
+    expect(handlerMocks.lineageQuery).toHaveBeenCalledWith(expect.stringContaining('harness_shared.work_items'), ['ws-add-decision', 'WI-123']);
+    expect(parsePlan(written, { filePath: 'handler-plan.md' }).decisions.at(-1)?.promotedFrom).toEqual(promotedFrom);
+  });
+
+  it.each(['missing', 'unavailable'])('refuses %s promotion lineage before locking or writing the plan', async (state) => {
+    if (state === 'missing') handlerMocks.lineageQuery.mockResolvedValue([]);
+    else handlerMocks.lineageQuery.mockRejectedValue(new Error('resolver offline'));
+    const result = await handlerBody({ slug: 'handler-plan', harness: 'papercusp', title: 'Promoted conclusion',
+      body: 'Source-backed conclusion.', promotedFrom: [{ kind: 'work-item', ref: 'WI-123' }] }, handlerContext('papercusp'));
+    expect(result.counts.failed).toBe(1);
+    expect(JSON.stringify(result.results)).toContain(state === 'missing' ? 'source missing' : 'resolution unavailable');
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(handlerMocks.planRevisionCapture).not.toHaveBeenCalled();
   });
 
   it('recovers the owning harness from an exact slug in operator scope', async () => {
