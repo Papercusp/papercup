@@ -369,10 +369,6 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
-  'system:facebook-personal-vault-poll': {
-    spend: 'none',
-    why: 'Polls the owner-authorized Facebook Graph surface and emits replay-safe trigger/vault deliveries',
-  },
   'system:connector-sync': {
     spend: 'none',
     why: 'Drives every registered provider source through leased backfill/incremental sync pages and admits records into the local delivery ledger; no agent or model call',
