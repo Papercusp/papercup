@@ -575,7 +575,7 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
     'phases/execute/build.log', 'phases/execute/operator-api-build.log',
     'phases/execute/hono-host.mjs.build-steps.jsonl',
-    'phases/execute/worker-progress.ndjson',
+    'phases/execute/worker.log', 'phases/execute/worker-progress.ndjson',
     'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
     'phases/execute/native-result.json', 'phases/execute/operator-api-build-result.json',
