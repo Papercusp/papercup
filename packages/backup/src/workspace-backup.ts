@@ -560,6 +560,10 @@ export class WorkspaceBackup {
         );
       }
       if (opts?.resumeSnapshotId !== undefined) {
+        // The orphan sweep can terminalize a lost producer before its explicit
+        // recovery reaches this lock. Reopen only that machine-authored verdict,
+        // after proving that the same row has no completed artifact.
+        if (await this.reopenOrphanedProducer(snapshotRowId!, reason)) receiptFinalized = false;
         const receipt = await this.reconcileSnapshotReceipt(snapshotRowId!);
         if (!receipt.stillRunning) {
           receiptFinalized = true;
@@ -920,6 +924,57 @@ export class WorkspaceBackup {
    * side-effect-free read. The row-id tag makes reconciliation exact: no
    * timestamp guessing and no chance of attaching a sibling snapshot.
    */
+  private async taggedSnapshotManifests(snapshotId: number): Promise<KopiaSnapshotManifest[]> {
+    await this.ensureRepo();
+    const password = await deriveRepoPassword(this.workspaceId);
+    const raw = await this.kopia([
+      'snapshot', 'list', '--all', `--tags=${SNAPSHOT_ROW_TAG_KEY}:${snapshotId}`, '--json',
+    ], { env: this.envWithPassword(password) });
+    const manifests: unknown = JSON.parse(raw);
+    if (!Array.isArray(manifests)) throw new Error('Kopia snapshot list returned a malformed manifest list');
+    return manifests as KopiaSnapshotManifest[];
+  }
+
+  /** Called only while snapshotOnce holds the cross-process producer lock. */
+  private async reopenOrphanedProducer(snapshotId: number, reason: SnapshotTriggerReason): Promise<boolean> {
+    const sql = backupHost().getSql();
+    const [row] = await sql<{
+      status: string; error_text: string | null; finished_at: string | null;
+      kopia_snapshot_id: string | null; db_dump_ok: boolean | null;
+    }[]>`
+      SELECT status, error_text, finished_at, kopia_snapshot_id, db_dump_ok
+        FROM harness_shared.backup_snapshots
+       WHERE workspace_id = ${this.workspaceId} AND id = ${snapshotId}
+    `;
+    if (!row || row.status !== 'failed'
+      || !/^orphan-sweep: status='running' for >\d+min$/.test(row.error_text ?? '')) return false;
+    if (row.kopia_snapshot_id !== null || row.db_dump_ok === false
+      || !row.finished_at || !Number.isFinite(Date.parse(row.finished_at))) {
+      throw new Error(`snapshot ${snapshotId} has a protected terminal receipt; refusing to overwrite it`);
+    }
+    if ((await this.taggedSnapshotManifests(snapshotId)).length !== 0) {
+      throw new Error(`snapshot ${snapshotId} already has a tagged artifact; refusing orphan producer recovery`);
+    }
+    const updated = await sql<{ id: number }[]>`
+      UPDATE harness_shared.backup_snapshots
+         SET status = 'running', finished_at = NULL, error_text = NULL
+       WHERE workspace_id = ${this.workspaceId} AND id = ${snapshotId}
+         AND status = 'failed' AND error_text = ${row.error_text}
+         AND finished_at = ${row.finished_at}::timestamptz
+         AND kopia_snapshot_id IS NULL AND db_dump_ok IS NOT FALSE
+         AND trigger_reason = ${reason}
+         AND sources_json = ${JSON.stringify([this.workspaceRoot])}::jsonb
+       RETURNING id
+    `;
+    if (updated.length !== 1) {
+      throw new Error(`snapshot ${snapshotId} changed during orphan recovery; refusing to resume`);
+    }
+    await this.event(snapshotId, 'progress', {
+      phase: 'orphan_producer_reopened', priorError: row.error_text, priorFinishedAt: row.finished_at,
+    }).catch(() => {}); // Progress telemetry must not strand the successful CAS.
+    return true;
+  }
+
   async reconcileSnapshotReceipt(snapshotId: number): Promise<SnapshotReceiptReconciliation> {
     const sql = backupHost().getSql();
     const rows = await sql<{
@@ -974,18 +1029,7 @@ export class WorkspaceBackup {
       };
     }
 
-    await this.ensureRepo();
-    const password = await deriveRepoPassword(this.workspaceId);
-    const env = this.envWithPassword(password);
-    const raw = await this.kopia([
-      'snapshot',
-      'list',
-      '--all',
-      `--tags=${SNAPSHOT_ROW_TAG_KEY}:${snapshotId}`,
-      '--json',
-    ], { env });
-    const manifests = JSON.parse(raw) as KopiaSnapshotManifest[];
-    if (!Array.isArray(manifests)) throw new Error('Kopia snapshot list returned a malformed manifest list');
+    const manifests = await this.taggedSnapshotManifests(snapshotId);
     if (manifests.length === 0) {
       return {
         snapshotId,

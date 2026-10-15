@@ -472,10 +472,20 @@ export function warnMissingReexecLoop({
  * configuration that `warnMissingReexecLoop` exists to warn about.
  *
  * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
- *           allowInteractive?: boolean }} args
+ *           allowInteractive?: boolean, pendingTurnDelivery?: boolean }} args
  */
-export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive = false }) {
+export function shouldAdoptHostCode({
+  onReexec,
+  reexecCode,
+  bridgeTty,
+  allowInteractive = false,
+  pendingTurnDelivery = false,
+}) {
   if (!onReexec || !reexecCode) return false;
+  // The current host owns pending turn text and delivery IDs in carryRearm's
+  // process-local state. A launcher handoff carries the compaction first turn,
+  // not those queued loop wakes; cleanup would settle them as host-ending.
+  if (pendingTurnDelivery) return false;
   if (!bridgeTty) return true;
   return Boolean(allowInteractive);
 }
@@ -2325,6 +2335,20 @@ export async function observeKickoffModelTurnStart({
  * backends stay fail-closed. */
 export function carryTurnProofRequiresNativeId(agent) {
   return String(agent ?? '').trim().toLowerCase() !== 'codex';
+}
+
+/** A fresh Codex thread has no rollout/writer lock until its first tagged
+ * kickoff is submitted. Requiring the startup flock before that write creates a
+ * deadlock: catalog discovery can complete while the host waits forever for an
+ * id that only the kickoff can mint. Fresh Codex still gets the stronger native
+ * transcript proof after submission; resumed/carry threads retain the binding
+ * gate because they already have an authoritative native identity. */
+export function launchKickoffRequiresPreSubmissionNativeBinding({
+  agent, isResume = false, hasResolver = false,
+} = {}) {
+  return Boolean(hasResolver) && (
+    String(agent ?? '').trim().toLowerCase() !== 'codex' || Boolean(isResume)
+  );
 }
 
 /** WI-6554700010009740: does the native turn-start proof, not the generic
@@ -12372,8 +12396,11 @@ export function hostThroughPty(o) {
         // A fresh Codex role also needs its native id registered before its
         // first provider request: accepted operations attest against that id.
         // Reuse the exact-child carry gate instead of racing a detached hook.
-        const needsInitialBinding = !isResumeLaunch &&
-          env.PAPERCUSP_AGENT === 'codex' && Boolean(resolveRespawnNativeId);
+        const needsInitialBinding = launchKickoffRequiresPreSubmissionNativeBinding({
+          agent: env.PAPERCUSP_AGENT,
+          isResume: isResumeLaunch,
+          hasResolver: Boolean(resolveRespawnNativeId),
+        });
         const carryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
           (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
           ? prepareCarryBinding(adoptedCarryRespawn?.nativeId ?? null, Date.now() + kickoffBudgetMs)
@@ -12587,6 +12614,40 @@ export function hostThroughPty(o) {
             lostChars: proof.markerTruncated.lostChars,
             nativeRef: proof.nativeRef ?? null,
           });
+        }
+        // Fresh Codex creates its rollout UUID as part of accepting this first
+        // tagged turn. Bind/report that exact proof after submission; probing
+        // before the write is the deadlock guarded by
+        // launchKickoffRequiresPreSubmissionNativeBinding().
+        if (env.PAPERCUSP_AGENT === 'codex' && proof.persisted) {
+          const proofNativeId = currentNativeSessionId(child.pid, resolveRespawnNativeId) ||
+            (/^rollout-.*-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i
+              .exec(basename(proof.nativeRef ?? ''))?.[1] ?? null);
+          if (proofNativeId) {
+            const binding = await announceVerifiedCarryRespawn({
+              ownerId,
+              agent: env.PAPERCUSP_AGENT,
+              nativeId: proofNativeId,
+              proof,
+              report: onRespawn,
+              emit: () => {},
+              timeoutMs: respawnReportTimeoutMs,
+              isCurrent: () => !recycling && !shuttingDown && !hostCleanedUp,
+            });
+            appendHostEvent(ownerId, binding.announced
+              ? 'launch-native-binding-confirmed'
+              : 'launch-native-binding-unconfirmed', {
+                nativeId: binding.nativeId,
+                reason: binding.reason ?? null,
+                nativeRef: proof.nativeRef ?? null,
+              });
+          } else {
+            appendHostEvent(ownerId, 'launch-native-binding-unconfirmed', {
+              nativeId: null,
+              reason: 'successor-native-id-missing',
+              nativeRef: proof.nativeRef ?? null,
+            });
+          }
         }
         // EI-25925116860039557: a recorded user turn can still be rejected by the
         // provider with a usage-limit wall. Delay the success receipt until the
@@ -15974,11 +16035,13 @@ export function hostThroughPty(o) {
         const hostCode = hostCodeStalenessFn();
         if (hostCode.stale) {
           const allowInteractive = interactiveAdoptionOptIn();
+          const pendingTurnDelivery = carryRearm.pendingCount('turn') > 0;
           const adoptable = shouldAdoptHostCode({
             onReexec,
             reexecCode,
             bridgeTty,
             allowInteractive,
+            pendingTurnDelivery,
           });
           appendHostEvent(ownerId, 'host-code-stale', {
             mode: respawnMode,
@@ -15990,6 +16053,7 @@ export function hostThroughPty(o) {
             // ADDITIVE — absent on rows written by older hosts, so a reader must
             // treat `undefined` as "not recorded", never as false.
             adoptable,
+            pendingTurnDelivery,
             willAdopt: adoptable && !quotaRecovery && !freshChildOnly,
             notAdoptingReason: adoptable
               ? quotaRecovery
@@ -16001,7 +16065,9 @@ export function hostThroughPty(o) {
                 ? 'interactive-tty'
                 : !onReexec
                   ? 'no-reexec-callback'
-                  : 'no-reexec-code',
+                  : !reexecCode
+                    ? 'no-reexec-code'
+                    : 'pending-turn-delivery',
             bridgeTty,
             hasReexecCallback: Boolean(onReexec),
             reexecCode: reexecCode ?? null,
@@ -16225,6 +16291,11 @@ export function hostThroughPty(o) {
       // would throw away the pending/completed dedup state before the operator
       // can confirm pickup. Ordinary respawns still adopt current code exactly
       // as before.
+      // A loop turn deferred by the busy gate is separately owned by
+      // carryRearm's process-local queue. The launcher handoff carries only the
+      // compaction firstTurnText, and cleanup settles the queued loop delivery
+      // as host-ending. Keep this respawn in-process until that turn re-arm has
+      // reached its terminal outcome.
       // Kept on ONE line deliberately: psu-pty-host.test.ts locates this block by the
       // literal `if (!quotaRecovery && shouldAdoptHostCode` to assert the adoption body
       // never fires the session-compacted event. Reformatting it silently turns that
@@ -16233,7 +16304,13 @@ export function hostThroughPty(o) {
       // A launch fresh child (WI-10004943) stays in-process too: the launch closure
       // that asked for it still owes the kickoff and its proof receipt, and a
       // re-exec would end that closure before either is published.
-      if (!quotaRecovery && shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive }) && !freshChildOnly) {
+      if (!quotaRecovery && shouldAdoptHostCode({
+        onReexec,
+        reexecCode,
+        bridgeTty,
+        allowInteractive,
+        pendingTurnDelivery: carryRearm.pendingCount('turn') > 0,
+      }) && !freshChildOnly) {
         let hostCode = { stale: false };
         try {
           hostCode = hostCodeStalenessFn();

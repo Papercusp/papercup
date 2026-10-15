@@ -48,11 +48,16 @@ describe('snapshot receipt recovery', () => {
     const row = { id: 78850, trigger_reason: 'pre_destructive', sources_json: [] as string[],
       started_at: new Date().toISOString(), status, finished_at: null as string | null,
       kopia_snapshot_id: null as string | null, bytes_added: '1', bytes_total: '2',
-      db_dump_ok: true, hook_payload: { ok: true } };
+      db_dump_ok: true as boolean | null, error_text: null as string | null, hook_payload: { ok: true } };
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?'); queries.push({ text, values });
-      if (text.includes('SELECT id, trigger_reason') || text.includes('FROM harness_shared.backup_snapshots AS snapshot')) {
+      if (text.includes('SELECT id, trigger_reason') || text.includes('SELECT status, error_text')
+        || text.includes('FROM harness_shared.backup_snapshots AS snapshot')) {
         return Promise.resolve([row]);
+      }
+      if (text.includes("SET status = 'running', finished_at = NULL")) {
+        row.status = 'running'; row.finished_at = null; row.error_text = null;
+        return Promise.resolve([{ id: row.id }]);
       }
       if (text.includes('UPDATE harness_shared.backup_snapshots') && text.includes('RETURNING id')) return Promise.resolve([{ id: row.id }]);
       return Promise.resolve([]);
@@ -148,6 +153,51 @@ describe('snapshot receipt recovery', () => {
     await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 })).rejects.toThrow('refusing to overwrite');
     expect(f.queries.some(q => q.text.includes('UPDATE harness_shared.backup_snapshots'))).toBe(false);
     expect(f.kopia).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('reopens only an artifact-free orphan-sweep verdict under the producer lock, retaining the exact row', async () => {
+    const f = producerFixture('failed');
+    f.row.error_text = "orphan-sweep: status='running' for >60min";
+    f.row.finished_at = new Date().toISOString(); f.row.db_dump_ok = null;
+    let locked = false;
+    const release = vi.fn(async () => { locked = false; });
+    configureWithSql(f.sql, async () => { locked = true; return { release }; });
+    f.kopia.mockImplementation(async (...params: unknown[]) => {
+      expect(locked).toBe(true);
+      return (params[0] as string[]).includes('create')
+        ? JSON.stringify({ id: 'same-row-artifact', stats: {} }) : '[]';
+    });
+    expect(await f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .toMatchObject({ snapshotId: 78850, kopiaSnapshotId: 'same-row-artifact', dbDumpOk: true });
+    const reopen = f.queries.find(q => q.text.includes("SET status = 'running', finished_at = NULL"));
+    expect(reopen?.text).toContain("AND status = 'failed' AND error_text =");
+    expect(reopen?.text).toContain('AND finished_at =');
+    expect(reopen?.text).toContain('AND sources_json =');
+    expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each(['artifact', 'known-artifact', 'failed-dump', 'malformed-list', 'receipt-race'] as const)
+  ('preserves an orphan verdict when safe recovery cannot be proved (%s)', async which => {
+    const f = producerFixture('failed');
+    f.row.error_text = "orphan-sweep: status='running' for >60min";
+    f.row.finished_at = new Date().toISOString(); f.row.db_dump_ok = null;
+    if (which === 'known-artifact') f.row.kopia_snapshot_id = 'protected-artifact';
+    if (which === 'failed-dump') f.row.db_dump_ok = false;
+    if (which === 'artifact') f.kopia.mockResolvedValue('[{"id":"protected-artifact"}]');
+    if (which === 'malformed-list') f.kopia.mockResolvedValue('{}');
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (which === 'receipt-race' && strings.join('?').includes("SET status = 'running', finished_at = NULL")) return Promise.resolve([]);
+      return (f.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(strings, ...values);
+    }) as unknown as Sql;
+    const release = vi.fn(async () => {}); configureWithSql(sql, async () => ({ release }));
+    await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 })).rejects.toThrow();
+    expect(f.row.status).toBe('failed');
+    expect(f.row.error_text).toBe("orphan-sweep: status='running' for >60min");
+    expect(f.kopia.mock.calls.some(([args]) => (args as string[]).includes('create'))).toBe(false);
+    expect(f.steps).not.toContain('backup-pre-snapshot-hook');
+    expect(f.queries.some(q => q.text.includes('SET finished_at = now()'))).toBe(false);
     expect(release).toHaveBeenCalledOnce();
   });
 

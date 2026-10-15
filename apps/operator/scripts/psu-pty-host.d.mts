@@ -162,13 +162,14 @@ export function warnMissingReexecLoop({ diagnosis, interactive, write, }?: {
  * configuration that `warnMissingReexecLoop` exists to warn about.
  *
  * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
- *           allowInteractive?: boolean }} args
+ *           allowInteractive?: boolean, pendingTurnDelivery?: boolean }} args
  */
-export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive }: {
+export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive, pendingTurnDelivery, }: {
     onReexec?: unknown;
     reexecCode?: unknown;
     bridgeTty?: unknown;
     allowInteractive?: boolean;
+    pendingTurnDelivery?: boolean;
 }): boolean;
 /**
  * The operator opt-in behind {@link shouldAdoptHostCode}'s `allowInteractive`.
@@ -916,6 +917,16 @@ export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls
  * the post-respawn mtime floor is the strongest available native proof. Unknown
  * backends stay fail-closed. */
 export function carryTurnProofRequiresNativeId(agent: any): boolean;
+/** A fresh Codex thread has no rollout/writer lock until its first tagged
+ * kickoff is submitted. Requiring the startup flock before that write creates a
+ * deadlock: catalog discovery can complete while the host waits forever for an
+ * id that only the kickoff can mint. Fresh Codex still gets the stronger native
+ * transcript proof after submission; resumed/carry threads retain the binding
+ * gate because they already have an authoritative native identity. */
+export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, }?: {
+    isResume?: boolean | undefined;
+    hasResolver?: boolean | undefined;
+}): boolean;
 /** WI-6554700010009740: does the native turn-start proof, not the generic
  * submit verifier, own this carry's delivery verdict? Since c727419b0a the
  * verifier requires native confirmation for a tagged turn and reports
