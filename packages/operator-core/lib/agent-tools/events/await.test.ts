@@ -19,6 +19,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../acceptance-runtime-wait-guard', () => ({
   acceptancePlaneAdvisoryForWait: vi.fn(async () => null),
+  mainWaitAdvisoryForWait: vi.fn(async () => null),
   mainWaitPlanReviewForWait: vi.fn(async () => null),
 }));
 // EI-20268841604319803: the service-up EDGE advisory reads live health at arm
@@ -180,7 +181,7 @@ import {
 } from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
 import { hasActiveMonitorForOwnerPredicate } from '../../harness/routines/monitor-policy';
-import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
+import { mainWaitAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -204,6 +205,30 @@ describe('events:await wrapper defaults', () => {
     expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
     expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
     expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('attaches the main-wait advisory when the presence-plan review had nothing to say (WI-6554700010014960)', async () => {
+    vi.mocked(mainWaitAdvisoryForWait).mockResolvedValueOnce('MAIN-WAIT ADVISORY: do every step that does not need green main first.');
+    const out = await call({ event: 'release:green:papercusp', note: 'carry WI-10007221' });
+    expect(out).toMatchObject({ ok: true, main_wait_advisory: expect.stringContaining('MAIN-WAIT ADVISORY') });
+    expect(mainWaitAdvisoryForWait).toHaveBeenCalledWith({
+      ownerId: 'su-awaiter',
+      event: 'release:green:papercusp',
+      note: 'carry WI-10007221',
+    });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not add the generic advisory on top of an allowed presence-plan review', async () => {
+    vi.mocked(mainWaitPlanReviewForWait).mockResolvedValueOnce({
+      plan: 'plan-a', allowWait: true, code: 'plan_main_wait_review_required',
+      readyItems: [], downstreamItems: [], waitRoots: ['P-001'], reasonAccepted: true,
+      message: 'Plan plan-a still has 1 open item(s).',
+    });
+    const out = await call({ event: 'release:green:papercusp' });
+    expect(out).toMatchObject({ ok: true, main_wait_plan_review: { plan: 'plan-a' } });
+    expect(out).not.toHaveProperty('main_wait_advisory');
+    expect(mainWaitAdvisoryForWait).not.toHaveBeenCalled();
   });
 
   it('refuses an exact await when the owner already has the same active monitor, before mutation', async () => {

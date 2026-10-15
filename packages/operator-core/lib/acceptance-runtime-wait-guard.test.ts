@@ -2,15 +2,18 @@
  * acceptance-runtime-plane-not-main-2026-09-23 P-003/P-006 — a deploy wait is challenged
  * when the caller's held live acceptance bars are measured on another runtime.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   acceptancePlaneAdvisoryForWait,
   buildAcceptancePlaneAdvisory,
   goalNamesDeployWait,
   isDeployWaitEvent,
   loadHeldLiveBars,
+  mainWaitAdvisoryForWait,
   mainWaitPlanReviewForWait,
+  planSlugsNamedIn,
   reviewMainWaitPlan,
+  workItemIdsNamedIn,
   type MainWaitPlanSnapshot,
   type WaitGuardDeps,
 } from './acceptance-runtime-wait-guard';
@@ -271,6 +274,93 @@ describe('advisory construction', () => {
     expect(advisory).toMatch(/psu-pty-plan#R-2: runtime unknown/);
     expect(advisory).toMatch(/Only psu-pty-plan#R-1 genuinely need the release operator/);
     expect(advisory).not.toContain('staging-operator: psu-pty-plan#R-2');
+  });
+});
+
+describe('mainWaitAdvisoryForWait — every main wait gets the reminder (WI-6554700010014960)', () => {
+  const open = (id: string, text = `Implement ${id} on staging`): MainWaitPlanSnapshot['items'][number] => ({
+    id,
+    text,
+    effectiveStatus: 'todo',
+    blockedBy: [],
+    linkedBlocked: false,
+    liveHeld: false,
+    heldByCaller: false,
+  });
+  const plansDeps = (
+    related: string[],
+    snapshots: Record<string, MainWaitPlanSnapshot>,
+  ): WaitGuardDeps & { relatedCalls: string[] } => {
+    const d = {
+      ...deps([]),
+      relatedCalls: [] as string[],
+      planSnapshot: async () => null,
+      relatedPlanSlugs: async (_ownerId: string, text: string) => {
+        d.relatedCalls.push(text);
+        return related;
+      },
+      planSnapshotForSlug: async (_ownerId: string, slug: string) => snapshots[slug] ?? null,
+    };
+    return d;
+  };
+
+  it('extracts dated plan slugs and work-item ids from a wait note', () => {
+    const note = 'On fire: gate-test-reuse-yield-2026-10-01 P-008 (WI-10004719) and EI-25911343611632456; not main-ish-word.';
+    expect(planSlugsNamedIn(note)).toEqual(['gate-test-reuse-yield-2026-10-01']);
+    expect(workItemIdsNamedIn(note)).toEqual(['WI-10004719', 'EI-25911343611632456']);
+  });
+
+  it('gives an agent with no plan anywhere the generic reminder instead of silence', async () => {
+    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp' }, plansDeps([], {}));
+    expect(advisory).toMatch(/MAIN-WAIT ADVISORY/);
+    expect(advisory).toContain('No plan was found');
+    expect(advisory).toContain('do it now');
+    expect(advisory).toContain('advice, not a refusal');
+  });
+
+  it('names staging-ready items of plans found outside presence (held work-items, the note)', async () => {
+    const d = plansDeps(['plan-a-2026-10-01', 'plan-b-2026-10-02', 'missing-2026-10-03'], {
+      'plan-a-2026-10-01': { slug: 'plan-a-2026-10-01', items: [open('P-006'), open('P-008')] },
+      'plan-b-2026-10-02': { slug: 'plan-b-2026-10-02', items: [{ ...open('P-005'), liveHeld: true }] },
+    });
+    const note = 'carry plans; WI-10007221 needs the deployed check';
+    const advisory = await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green:papercusp', note }, d);
+    expect(d.relatedCalls).toEqual([note]);
+    expect(advisory).toContain('plan-a-2026-10-01 (2 open; staging-ready: P-006, P-008)');
+    expect(advisory).not.toContain('plan-b-2026-10-02 (1 open; staging-ready');
+    expect(advisory).not.toContain('missing-2026-10-03');
+  });
+
+  it('stays silent for a non-main wait and for the fixer operating the gate', async () => {
+    const d = plansDeps(['plan-a-2026-10-01'], { 'plan-a-2026-10-01': { slug: 'plan-a-2026-10-01', items: [open('P-001')] } });
+    expect(await mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1' }, d)).toBeNull();
+    expect(
+      await mainWaitAdvisoryForWait(
+        { ownerId: 'su-x', event: 'release:green:papercusp', note: 'repair the green-checkpoint gate red and rerun' },
+        d,
+      ),
+    ).toBeNull();
+    expect(d.relatedCalls).toEqual([]);
+  });
+
+  it('degrades to the generic reminder when plan discovery fails', async () => {
+    const broken: WaitGuardDeps = {
+      ...deps([]),
+      relatedPlanSlugs: async () => {
+        throw new Error('pool exhausted');
+      },
+      planSnapshotForSlug: async () => null,
+    };
+    // withBoundedTimeout reports the swallowed read failure; that warning is the expected trace.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(mainWaitAdvisoryForWait({ ownerId: 'su-x', event: 'release:green' }, broken)).resolves.toContain(
+        'No plan was found',
+      );
+      expect(warn.mock.calls.some((call) => String(call[0]).includes('main-wait-advisory'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

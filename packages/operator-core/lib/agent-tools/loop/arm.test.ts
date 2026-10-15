@@ -52,6 +52,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../acceptance-runtime-wait-guard', () => ({
   acceptancePlaneAdvisoryForWait: vi.fn(async () => null),
+  mainWaitAdvisoryForWait: vi.fn(async () => null),
   mainWaitPlanReviewForWait: vi.fn(async () => null),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));

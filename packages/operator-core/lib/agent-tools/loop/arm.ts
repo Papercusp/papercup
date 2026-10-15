@@ -65,7 +65,11 @@ import { refreshControlAnchorAfterMutation } from '../coordination/control-ancho
 import { attestLoopControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
-import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
+import {
+  acceptancePlaneAdvisoryForWait,
+  mainWaitAdvisoryForWait,
+  mainWaitPlanReviewForWait,
+} from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { selfCompactionAvailabilityAsync } from '../../events/await/psu-pty-discovery';
 import {
@@ -1752,6 +1756,13 @@ export default defineTool({
     const acceptancePlaneAdvisory = await measure('acceptance_plane_advisory', () =>
       acceptancePlaneAdvisoryForWait({ ownerId, goal }),
     );
+    // WI-6554700010014960: a main-shaped loop goal the presence-plan review could not see
+    // still gets the reminder to do every step that does not need green main first.
+    const mainWaitAdvisory = mainWaitPlanReview
+      ? null
+      : await measure('main_wait_advisory', () =>
+          mainWaitAdvisoryForWait({ ownerId, goal, note: [goal, args.blockedOn?.reason].filter(Boolean).join('\n') }),
+        );
     // EI-21542193720279374 part (b) — see the coldNoCarryNoteWarning computation above.
     const coldCarryNoteWarningText = coldNoCarryNoteWarning ? ` ⚠ ${coldNoCarryNoteWarning}` : '';
     // EI-24899961156406639 — see the coldCarryNoHostWarning computation above.
@@ -1855,6 +1866,7 @@ export default defineTool({
             // armed by an agent whose held live acceptance bars run elsewhere. Advisory only.
             ...(acceptancePlaneAdvisory ? { acceptancePlaneAdvisory } : {}),
             ...(mainWaitPlanReview ? { mainWaitPlanReview } : {}),
+            ...(mainWaitAdvisory ? { mainWaitAdvisory } : {}),
             note,
           }),
         },

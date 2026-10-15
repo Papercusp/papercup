@@ -224,6 +224,15 @@ export interface WaitGuardDeps {
   }> | null>;
   /** The same plan item, issue-block, and live-holder floors used by plans:items. */
   planSnapshot?: (ownerId: string) => Promise<MainWaitPlanSnapshot | null>;
+  /**
+   * WI-6554700010014960: plans the caller is carrying that presence does not name —
+   * source plans of its held work-items, and work-item ids / dated plan slugs named in
+   * the wait text. An agent working an owner directive across several plans often
+   * declares no `current_plan_slug`, which left the presence-only review silent.
+   */
+  relatedPlanSlugs?: (ownerId: string, text: string) => Promise<string[]>;
+  /** {@link planSnapshot} for an explicit slug. Null when the plan does not exist or has shipped. */
+  planSnapshotForSlug?: (ownerId: string, slug: string) => Promise<MainWaitPlanSnapshot | null>;
 }
 
 async function realPlanWaitSnapshot(ownerId: string): Promise<MainWaitPlanSnapshot | null> {
@@ -231,10 +240,21 @@ async function realPlanWaitSnapshot(ownerId: string): Promise<MainWaitPlanSnapsh
   const presence = await getPresence(ownerId);
   const slug = presence?.currentPlanSlug;
   if (!slug || !presence?.workspaceId) return null;
+  return realPlanSnapshotIn(ownerId, presence.workspaceId, slug);
+}
+
+async function realPlanSnapshotForSlug(ownerId: string, slug: string): Promise<MainWaitPlanSnapshot | null> {
+  const { getPresence } = await import('./agent-tools/coordination/presence');
+  const presence = await getPresence(ownerId).catch(() => null);
+  const { activeWorkspaceId } = await import('./workspace-registry');
+  return realPlanSnapshotIn(ownerId, presence?.workspaceId ?? activeWorkspaceId(), slug);
+}
+
+async function realPlanSnapshotIn(ownerId: string, workspaceId: string, slug: string): Promise<MainWaitPlanSnapshot | null> {
   const { getPlanRow, planItemsForRow, resolvePlanHarnessSlug } = await import('./agent-tools/plans/source');
-  const harnessSlug = await resolvePlanHarnessSlug(presence.workspaceId, slug);
+  const harnessSlug = await resolvePlanHarnessSlug(workspaceId, slug);
   if (!harnessSlug) return null;
-  const row = await getPlanRow(slug, { workspaceId: presence.workspaceId, harnessSlug });
+  const row = await getPlanRow(slug, { workspaceId, harnessSlug });
   if (!row || row.status === 'shipped' || row.status === 'superseded') return null;
   const { specTriadGate, specTriadEpoch } = await import('./agent-tools/plans/spec-triad-policy');
   const { getFlag } = await import('@papercusp/flags/server');
@@ -311,6 +331,102 @@ export async function loadHeldLiveBars(ownerId: string, deps: WaitGuardDeps): Pr
   return out;
 }
 
+/** Dated plan slugs (`<words>-YYYY-MM-DD`) named in free text. */
+export function planSlugsNamedIn(text: string | null | undefined): string[] {
+  return [...new Set((text ?? '').match(/\b[a-z0-9][a-z0-9-]*-20\d{2}-\d{2}-\d{2}\b/g) ?? [])];
+}
+
+/** Work-item ids (`WI-`, `EI-`, `F-`) named in free text. */
+export function workItemIdsNamedIn(text: string | null | undefined): string[] {
+  return [...new Set((text ?? '').match(/\b(?:WI|EI|F)-\d{2,}\b/g) ?? [])];
+}
+
+async function realRelatedPlanSlugs(ownerId: string, text: string): Promise<string[]> {
+  const { getWorkItemsByIds, listWorkItems } = await import('./work-items');
+  const slugs = new Set(planSlugsNamedIn(text));
+  const named = workItemIdsNamedIn(text).slice(0, 20);
+  const [held, namedItems] = await Promise.all([
+    listWorkItems({ assignee: ownerId, notTerminal: true, limit: 20 }).catch(() => []),
+    named.length ? getWorkItemsByIds(named, undefined, {}, { ambiguous: [] }).catch(() => []) : Promise.resolve([]),
+  ]);
+  // Acceptance items often carry no source plan link, only the slug in their title or summary.
+  for (const item of [...held, ...namedItems]) {
+    if (item.sourcePlanSlug) slugs.add(item.sourcePlanSlug);
+    for (const slug of planSlugsNamedIn(`${item.title ?? ''}\n${item.summary ?? ''}`)) slugs.add(slug);
+  }
+  return [...slugs];
+}
+
+export interface MainWaitPlanFrontier {
+  plan: string;
+  open: number;
+  readyItems: string[];
+}
+
+/**
+ * The message every main wait carries when the presence-plan review had nothing to say.
+ * Advice only: a release fixer or a final shipment check may genuinely need green main.
+ */
+export function buildMainWaitAdvisory(plans: ReadonlyArray<MainWaitPlanFrontier>): string {
+  const withWork = plans.filter((plan) => plan.readyItems.length > 0);
+  const found = withWork.length
+    ? `Work you can start now: ${withWork.map((p) => `${p.plan} (${p.open} open; staging-ready: ${p.readyItems.join(', ')})`).join('; ')}.`
+    : plans.length
+      ? `Plans checked: ${plans.map((p) => `${p.plan} (${p.open} open)`).join('; ')}. None has an unheld staging-ready item, but proof, rubric review and per-item audits for open plans run on staging too.`
+      : 'No plan was found in your presence, your held work-items, or this note.';
+  return [
+    'MAIN-WAIT ADVISORY: this wait parks you until main goes green or deploys.',
+    'A red or held gate blocks only final shipment steps; staging (the current build) is the implementation and acceptance plane.',
+    found,
+    'Before this becomes your only wake, list every remaining step that does not need the deployed result and do it now.',
+    'If one step genuinely needs green main, name it and why in the await note.',
+    'Registered anyway: this is advice, not a refusal.',
+  ].join(' ');
+}
+
+const MAX_ADVISORY_PLANS = 6;
+
+/**
+ * WI-6554700010014960: the main-wait message for a caller the presence-plan review could
+ * not see. Never throws and never refuses; a failed read degrades to the generic advice.
+ */
+export async function mainWaitAdvisoryForWait(
+  input: { ownerId: string | null | undefined; event?: string | null; goal?: string | null; note?: string | null },
+  deps: WaitGuardDeps = REAL_WAIT_GUARD_DEPS,
+): Promise<string | null> {
+  const ownerId = input.ownerId;
+  if (!ownerId || (!isDeployWaitEvent(input.event) && !goalNamesDeployWait(input.goal))) return null;
+  const text = [input.note, input.goal].filter(Boolean).join('\n');
+  // A release fixer operating the gate legitimately waits for the verdict it drives.
+  if (text && isLiveGateOperationText(text)) return null;
+  let plans: MainWaitPlanFrontier[] = [];
+  const { relatedPlanSlugs, planSnapshotForSlug } = deps;
+  if (relatedPlanSlugs && planSnapshotForSlug) {
+    try {
+      const probe = await withBoundedTimeout(
+        async () => {
+          const slugs = [...new Set(await relatedPlanSlugs(ownerId, text))].slice(0, MAX_ADVISORY_PLANS);
+          const frontiers = await Promise.all(
+            slugs.map(async (slug): Promise<MainWaitPlanFrontier | null> => {
+              const snapshot = await planSnapshotForSlug(ownerId, slug).catch(() => null);
+              const review = snapshot ? reviewMainWaitPlan(snapshot, text) : null;
+              return snapshot && review
+                ? { plan: snapshot.slug, open: snapshot.items.filter(isOpen).length, readyItems: review.readyItems }
+                : null;
+            }),
+          );
+          return frontiers.filter((frontier): frontier is MainWaitPlanFrontier => frontier !== null);
+        },
+        { fallback: [] as MainWaitPlanFrontier[], timeoutMs: 8_000, label: 'main-wait-advisory' },
+      );
+      plans = probe.value;
+    } catch {
+      plans = [];
+    }
+  }
+  return buildMainWaitAdvisory(plans);
+}
+
 async function realHeldPlanSlugs(ownerId: string): Promise<string[]> {
   const { getPresence } = await import('./agent-tools/coordination/presence');
   const presence = await getPresence(ownerId).catch(() => null);
@@ -327,6 +443,8 @@ export const REAL_WAIT_GUARD_DEPS: WaitGuardDeps = {
   heldPlanSlugs: realHeldPlanSlugs,
   acceptanceCriteria: realAcceptanceCriteria,
   planSnapshot: realPlanWaitSnapshot,
+  relatedPlanSlugs: realRelatedPlanSlugs,
+  planSnapshotForSlug: realPlanSnapshotForSlug,
 };
 
 /**
