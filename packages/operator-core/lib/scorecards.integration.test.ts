@@ -1180,11 +1180,11 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
     const retracted = await read('EI-audit-target-retracted');
     expect(retracted.auditTarget).toMatchObject({ current: false, retracted: true, superseded: false });
 
-    // A rubric subject whose live identity cannot be resolved is NOT current.
+    // An unresolved subject identity is unknown, not a known stale result.
     const rubricSubject = await read('EI-audit-target-rubric-subject');
     expect(rubricSubject.subjectRubricCurrentness).toMatchObject({ state: 'unknown', reason: 'live-identity-missing' });
     expect(rubricSubject.auditTarget).toMatchObject({
-      current: false,
+      current: null,
       subjectRubricCurrentness: expect.objectContaining({ state: 'unknown' }),
     });
 

@@ -257,7 +257,7 @@ const scorecardEvidenceSchema = z.object({
   subjectRubricCurrentness: scorecardSubjectRubricCurrentnessSchema.optional(),
   supersededBy: z.string().optional(),
   auditTarget: z.object({
-    current: z.boolean(),
+    current: z.boolean().nullable(),
     superseded: z.boolean(),
     supersededBy: z.string().nullable(),
     retracted: z.boolean(),

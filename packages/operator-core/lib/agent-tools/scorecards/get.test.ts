@@ -128,6 +128,26 @@ describe('scorecards:get evidence-first projection', () => {
     });
     expect(missingCard.success).toBe(true);
 
+    const unknownAuditTarget = resultContract.safeParse({
+      ok: true,
+      scorecard: {
+        ...scorecard,
+        auditTarget: {
+          ...scorecard.auditTarget,
+          current: null,
+          subjectRubricCurrentness: {
+            state: 'unknown',
+            reason: 'live-identity-missing',
+            recordedRevision: 4,
+            currentRevision: null,
+            recordedCriteriaHash: 'criteria-hash-v4',
+            currentCriteriaHash: null,
+          },
+        },
+      },
+    });
+    expect(unknownAuditTarget.success).toBe(true);
+
     const index = resultContract.safeParse({
       ok: true,
       scorecard: { ...scorecard, criteria: [] },
