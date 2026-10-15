@@ -667,7 +667,7 @@ describe('coord:orient args', () => {
     }
   });
 
-  it('handler returns the afterCompaction partial snapshot when a later fold exceeds the aggregate deadline', async () => {
+  it('does not wait for disclosure recording after afterCompaction composition', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ownerId = 'su-orient-handler-test';
@@ -697,11 +697,10 @@ describe('coord:orient args', () => {
     fetchOrientPipelineMock.mockResolvedValue(null);
     buildCompactionRecoveryMock.mockResolvedValue(recovery);
     readGovernorStateSnapshotMock.mockResolvedValue(null);
-    // This is the late handler-owned fold that used to leave aggregate recovery
-    // without a handler-level regression. The compose progress callback must have
-    // already copied the useful afterCompaction snapshot into the stable fallback.
-    // Signal from the mock itself instead of guessing how many microtasks/dynamic
-    // imports the real handler needs before reaching this late fold.
+    // This optional background fold must not delay assembly of the useful
+    // afterCompaction snapshot.
+    // Signal from the mock instead of guessing how many microtasks/dynamic imports
+    // the real handler needs before reaching this late fold.
     let disclosuresStartedResolve!: () => void;
     const disclosuresStarted = new Promise<void>((resolve) => {
       disclosuresStartedResolve = resolve;
@@ -741,19 +740,9 @@ describe('coord:orient args', () => {
         'ws-test',
         expect.any(Object),
       );
-      // The handler must not advance the control watermark while this late
-      // fold is still preventing the orient payload from assembling.
-      expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
-        ok: true,
-        status: 'unknown',
-        degraded: true,
-        degradedReason: 'aggregate_timeout',
-        partial: true,
         recovery,
         me: {
           ok: true,
@@ -762,15 +751,14 @@ describe('coord:orient args', () => {
         },
         claimable: [],
       });
-      expect(result.data.phaseDiagnostics).toMatchObject({
-        aggregateElapsedMs: ORIENT_AGGREGATE_TIMEOUT_MS,
-        activePhase: 'handler:recordOrientDisclosures',
-        activePhaseSelection: 'latest-started-pending',
-      });
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+      expect(result.data.degradedReason).not.toBe('aggregate_timeout');
+      expect(result.data.partial).not.toBe(true);
+      expect(acknowledgeControlTransitionMock).toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
       recordOrientDisclosuresMock.mockReset();
       recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+      acknowledgeControlTransitionMock.mockClear();
       inProcessCallMock.mockReset();
       getModesMock.mockReset();
       getModesMock.mockResolvedValue(null);
@@ -791,7 +779,7 @@ describe('coord:orient args', () => {
     }
   });
 
-  it('bounds an early preflight stall before core composition and preserves assignments in the aggregate fallback', async () => {
+  it('does not wait for disclosure recording after an early preflight stall', async () => {
     vi.useFakeTimers();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const ownerId = 'su-orient-preflight-timeout-test';
@@ -857,15 +845,9 @@ describe('coord:orient args', () => {
     try {
       await vi.advanceTimersByTimeAsync(ORIENT_PREFLIGHT_LEG_TIMEOUT_MS);
       await disclosuresStarted;
-      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
       const result = (await resultPromise) as { data: Record<string, unknown> };
 
       expect(result.data).toMatchObject({
-        ok: true,
-        status: 'unknown',
-        degraded: true,
-        degradedReason: 'aggregate_timeout',
-        partial: true,
         recovery,
         me: {
           ok: true,
@@ -874,10 +856,13 @@ describe('coord:orient args', () => {
         },
         claimable: [],
       });
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
+      expect(result.data.degradedReason).not.toBe('aggregate_timeout');
+      expect(result.data.partial).not.toBe(true);
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('orient:aggregate'));
     } finally {
       recordOrientDisclosuresMock.mockReset();
       recordOrientDisclosuresMock.mockResolvedValue('unchanged');
+      acknowledgeControlTransitionMock.mockClear();
       inProcessCallMock.mockReset();
       getModesMock.mockReset();
       getModesMock.mockResolvedValue(null);
@@ -897,6 +882,7 @@ describe('coord:orient args', () => {
   });
 
   it('acknowledges the recovered control generation after a successful afterCompaction assembly', async () => {
+    acknowledgeControlTransitionMock.mockClear();
     const ownerId = 'su-orient-handler-success-test';
     const recovery = {
       selfRecall: "sessions:search { session: 'self' }",
@@ -1017,7 +1003,7 @@ describe('coord:orient args', () => {
         'handler:preflight',
         'composeOrient',
         'handler:compactionRecovery',
-        'handler:recordOrientDisclosures',
+      'background:recordOrientDisclosures',
         'handler:acknowledgeControlTransition',
         'handler:bindOutputResult',
       ]),
