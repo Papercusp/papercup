@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
@@ -177,6 +177,18 @@ async function main() {
   // Apply the mount boundary to the whole operator/invoke/native lineage.
   const privateRoot = dirname(e.HOME!);
   const hostEnv = privateBundleRuntimeEnv(e);
+  if (blueprintRoute) {
+    // `with-test-pg --isolated-runtime` deliberately scrubs ambient
+    // PAPERCUSP_* keys. The blueprint scenario selects the maintained checkout
+    // harness after that boundary; carry that exact, preflighted path into the
+    // private operator host explicitly before it can resolve invoke-once/tsx.
+    const harnessDir = realpathSync(join(root, 'libs/papercusp/packages/harness'));
+    assert.equal(e.PAPERCUSP_HARNESS_DIR, harnessDir,
+      'blueprint runtime preflight must select the checkout harness');
+    hostEnv.PAPERCUSP_HARNESS_DIR = harnessDir;
+    assert.equal(hostEnv.PAPERCUSP_HARNESS_DIR, harnessDir,
+      'private operator host must receive the preflighted harness path');
+  }
   // Use the maintained installed shim's explicit launcher override; its
   // default release checkout cannot certify this current-build candidate.
   hostEnv.PAPERCUSP_PSU_LAUNCHER = join(root, 'apps/operator/scripts/psu-launcher.mjs');
