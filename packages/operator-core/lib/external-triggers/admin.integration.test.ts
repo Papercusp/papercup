@@ -125,6 +125,32 @@ async function seedSettledProviderRun(): Promise<{ deliveryId: string; triggerRu
 }
 
 describe('external-trigger admin shared seam', () => {
+  it('projects source policy and sync diagnostics from canonical rows within the requested workspace', async () => {
+    const lastSyncAt = '2026-10-14T12:00:00.000Z';
+    const nextAttemptAt = '2026-10-14T12:00:30.000Z';
+    await sql`UPDATE harness_shared.data_sources
+      SET scope = 'pot', scope_ref = ${HARNESS}, permission_mapping = '{"mode":"source-acl"}'::jsonb,
+          backfill_status = 'running', sync_last_success_at = ${lastSyncAt}::timestamptz,
+          sync_next_attempt_at = ${nextAttemptAt}::timestamptz, sync_failure_count = 2,
+          last_error = 'rate_limited: retry after 30s'
+      WHERE workspace_id = ${WS} AND id = ${sourceId}::uuid`;
+    const [foreign] = await sql<{ id: string }[]>`INSERT INTO harness_shared.data_sources
+      (workspace_id, kind, status) VALUES ('admin-diagnostics-other-workspace', 'slack', 'error') RETURNING id::text`;
+
+    const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
+    expect(snapshot.sources.map((source) => source.id)).toEqual([sourceId]);
+    expect(snapshot.sources[0]).toMatchObject({
+      scope: 'pot', scopeRef: HARNESS, permissionMode: 'source-acl', backfillStatus: 'running',
+      lastSyncAt, nextAttemptAt, failureCount: 2, lastError: 'rate_limited: retry after 30s',
+    });
+    expect(snapshot.sources[0]).not.toHaveProperty('permissionMapping');
+    expect(snapshot.sources[0]).not.toHaveProperty('credentials');
+    expect((await loadExternalTriggerAdminSnapshot(sql, 'admin-diagnostics-other-workspace')).sources[0]).toMatchObject({
+      id: foreign!.id, scope: 'organization', scopeRef: null, permissionMode: 'owner',
+      backfillStatus: 'not-requested', lastSyncAt: null, nextAttemptAt: null, failureCount: 0,
+    });
+  });
+
   it('reports source/binding/run truth from the canonical tables', async () => {
     const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
     expect(snapshot.counts).toEqual({ sources: 1, bindings: 1, armed: 1, recentFailures: 1 });

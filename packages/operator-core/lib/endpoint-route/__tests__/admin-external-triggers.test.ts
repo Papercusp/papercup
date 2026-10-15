@@ -97,6 +97,7 @@ vi.mock('../../external-triggers/admin', () => ({
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 import { registerRoute } from '../define-route';
+import { requirePrincipal, PrincipalCheckError } from '../../auth/require-principal';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
 import routes from '../routes/admin/external-triggers';
@@ -138,6 +139,14 @@ describe('external-trigger admin route pair', () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ enabled: true });
     expect(loadSnapshot).toHaveBeenCalledWith(sql, 'ws-test');
+  });
+
+  it('refuses an unauthorized administrator read before loading source diagnostics', async () => {
+    vi.mocked(requirePrincipal).mockRejectedValueOnce(new PrincipalCheckError(403, 'trust_required'));
+    const response = await request(read, 'GET');
+    expect(response.status).toBe(403);
+    expect(loadSnapshot).not.toHaveBeenCalled();
+    expect(flagEnabled).not.toHaveBeenCalled();
   });
 
   it('folds the named plan schedule/manual snapshot into the shared trigger read', async () => {

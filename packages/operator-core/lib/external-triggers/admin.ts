@@ -162,6 +162,15 @@ export interface ExternalTriggerSourceAdminRow {
   id: string;
   kind: string;
   status: string;
+  scope: string;
+  scopeRef: string | null;
+  /** Policy mode only; does not expand the source's ACL or credentials. */
+  permissionMode: string;
+  backfillStatus: string;
+  /** Last successful driver pass, which may still have backfill pages remaining. */
+  lastSyncAt: string | null;
+  nextAttemptAt: string | null;
+  failureCount: number;
   config: Record<string, unknown>;
   credentialRef: string | null;
   cursor: Record<string, unknown>;
@@ -375,6 +384,13 @@ interface SourceDbRow {
   id: string;
   kind: string;
   status: string;
+  scope: string;
+  scopeRef: string | null;
+  permissionMode: string;
+  backfillStatus: string;
+  lastSyncAt: Date | string | null;
+  nextAttemptAt: Date | string | null;
+  failureCount: number;
   config: Record<string, unknown>;
   credentialRef: string | null;
   cursor: Record<string, unknown>;
@@ -1355,6 +1371,13 @@ export async function loadExternalTriggerAdminSnapshot(
       SELECT s.id::text,
              s.kind,
              s.status,
+             s.scope,
+             s.scope_ref AS "scopeRef",
+             s.permission_mapping->>'mode' AS "permissionMode",
+             s.backfill_status AS "backfillStatus",
+             s.sync_last_success_at AS "lastSyncAt",
+             s.sync_next_attempt_at AS "nextAttemptAt",
+             s.sync_failure_count AS "failureCount",
              s.config,
              s.credential_ref AS "credentialRef",
              s.cursor,
@@ -1442,6 +1465,8 @@ export async function loadExternalTriggerAdminSnapshot(
   const nowMs = Date.now();
   const sources = sourceRows.map((row) => ({
     ...row,
+    lastSyncAt: iso(row.lastSyncAt),
+    nextAttemptAt: iso(row.nextAttemptAt),
     lastConnectedAt: iso(row.lastConnectedAt),
     social: socialAdminFacts(row.kind, row.cursor, nowMs),
   }));

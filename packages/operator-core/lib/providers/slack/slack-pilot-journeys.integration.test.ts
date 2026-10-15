@@ -46,6 +46,7 @@ import {
 } from '../../data-sources/documents-corpus';
 import { LIVE_SEARCH_SYNC_MODE, providerLiveSearchAdapters, searchLiveSources } from '../../data-sources/live-search-adapter';
 import { DEFAULT_SOURCE_TOKEN_HARNESS } from '../../external-triggers/source-store';
+import { loadExternalTriggerAdminSnapshot } from '../../external-triggers/admin';
 import { ingestExternalTriggerEvent } from '../../external-triggers/ingestion';
 import { enforceInheritedPolicy } from '../../governance-policy/enforce';
 import type { ChainLoad, StoredPolicyLayer } from '../../governance-policy/store';
@@ -268,6 +269,14 @@ async function health(sourceId: string) {
            EXTRACT(EPOCH FROM (sync_next_attempt_at - now()))::int AS next_in,
            cursor->>'provider' AS provider_cursor, backfill_status
       FROM harness_shared.data_sources WHERE id = ${sourceId}::uuid`;
+  return row!;
+}
+
+/** Shared administrator projection of the actual driver's persisted state. */
+async function adminHealth(sourceId: string) {
+  const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
+  const row = snapshot.sources.find((source) => source.id === sourceId);
+  expect(row).toBeDefined();
   return row!;
 }
 
@@ -501,6 +510,13 @@ describe('Slack pilot: retries and administrator health (P-011)', () => {
     expect(limited.last_error).toMatch(/^rate_limited: /);
     expect(limited.next_in).toBeGreaterThan(20);
     expect(limited.next_in).toBeLessThanOrEqual(30);
+    const limitedAdmin = await adminHealth(sourceId);
+    expect(limitedAdmin).toMatchObject({
+      scope: 'organization', scopeRef: null, permissionMode: 'source-acl', backfillStatus: 'running',
+      status: 'connected', failureCount: 1, lastError: limited.last_error,
+    });
+    expect(limitedAdmin.lastSyncAt).toEqual(expect.any(String));
+    expect(Date.parse(limitedAdmin.nextAttemptAt!)).toBeGreaterThan(Date.now());
 
     // The next pass resumes the queued backfill; membership is not re-walked first.
     await due(sourceId);
@@ -511,6 +527,10 @@ describe('Slack pilot: retries and administrator health (P-011)', () => {
       '/api/conversations.history:C0OPS',
     ]);
     expect(await health(sourceId)).toMatchObject({ status: 'connected', last_error: null, failure_count: 0, backfill_status: 'complete' });
+    const recoveredAdmin = await adminHealth(sourceId);
+    expect(recoveredAdmin).toMatchObject({ status: 'connected', lastError: null, failureCount: 0, backfillStatus: 'complete' });
+    expect(Date.parse(recoveredAdmin.lastSyncAt!)).toBeGreaterThanOrEqual(Date.parse(limitedAdmin.lastSyncAt!));
+    expect(Date.parse(recoveredAdmin.nextAttemptAt!)).toBeGreaterThan(Date.now());
   });
 
   it('a revoked bot token shows reconnect_required and stops retrying until the owner reconnects', async () => {
@@ -523,6 +543,10 @@ describe('Slack pilot: retries and administrator health (P-011)', () => {
     const row = await health(sourceId);
     expect(row).toMatchObject({ status: 'error', next_in: null });
     expect(row.last_error).toMatch(/^reconnect_required: .*token_revoked/);
+    expect(await adminHealth(sourceId)).toMatchObject({
+      status: 'error', nextAttemptAt: null, failureCount: 1, lastError: row.last_error,
+      scope: 'organization', permissionMode: 'source-acl', lastSyncAt: expect.any(String),
+    });
   });
 });
 
