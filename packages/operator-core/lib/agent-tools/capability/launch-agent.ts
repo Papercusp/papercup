@@ -126,6 +126,16 @@ import {
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
 
+/** Exact scorecard binding stored on a fresh headless grading-auditor task row. */
+export interface GradingAuditTaskDetail {
+  issueId: string;
+  evidenceFingerprint: string;
+  reservation: { key: string; reservedAt: string };
+}
+
+/** Server-only direct-handler seam; it is intentionally absent from the MCP schema. */
+export const INTERNAL_GRADING_AUDIT_TASK_DETAIL: unique symbol = Symbol('internal-grading-audit-task-detail');
+
 /** Private controller seam, absent from the public tool schema. */
 export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
 export const INTERNAL_SCOPED_SESSION_CONFINEMENT: unique symbol = Symbol('internal-scoped-session-confinement');
@@ -148,6 +158,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function isGradingAuditTaskDetail(value: unknown): value is GradingAuditTaskDetail {
+  const detail = asRecord(value);
+  const reservation = asRecord(detail?.reservation);
+  if (!detail || !reservation) return false;
+  const issueId = typeof detail.issueId === 'string' ? detail.issueId.trim() : '';
+  const evidenceFingerprint = typeof detail.evidenceFingerprint === 'string' ? detail.evidenceFingerprint.trim() : '';
+  const key = typeof reservation.key === 'string' ? reservation.key.trim() : '';
+  const reservedAt = typeof reservation.reservedAt === 'string' ? reservation.reservedAt.trim() : '';
+  return Boolean(
+    issueId && evidenceFingerprint && key === `grading-audit:${issueId}` &&
+    reservedAt && Number.isFinite(Date.parse(reservedAt)),
+  );
 }
 
 function agentLaunchCompletionReceipt(
@@ -842,6 +866,9 @@ export default defineTool({
       (ctx as typeof ctx & { [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' })[INTERNAL_LOOP_FIRE_ORIGIN] === 'loop-fire'
         ? 'loop-fire'
         : null;
+    const gradingAuditTaskDetail = (ctx as typeof ctx & {
+      [INTERNAL_GRADING_AUDIT_TASK_DETAIL]?: GradingAuditTaskDetail;
+    })[INTERNAL_GRADING_AUDIT_TASK_DETAIL];
     // Internal seam used by fleet:respawn-member: a replacement must be
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
@@ -1945,6 +1972,14 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    if (gradingAuditTaskDetail !== undefined) {
+      if (!isGradingAuditTaskDetail(gradingAuditTaskDetail)) {
+        return err('Internal grading-audit task metadata is malformed; no process was spawned.');
+      }
+      if (sourceAction || count !== 1 || foldedConfigs[0]?.headless !== true) {
+        return err('Grading-audit task metadata requires one fresh headless launch; no process was spawned.');
+      }
+    }
     if (scopedGateway && (foldedConfigs.length !== 1 || foldedConfigs.some(config => config.agent !== 'codex'))) {
       return err('Scoped inference gateway requires the supported Codex transport.');
     }
@@ -2402,6 +2437,9 @@ export default defineTool({
                 logDir: headlessLogDir,
                 launchedBy: callerOwnerId ?? undefined,
                 fleetSlug,
+                ...(gradingAuditTaskDetail
+                  ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail } }
+                  : {}),
                 kickoffProof: requireKickoffProof,
                 // Fresh members and successors are explicitly pre-pinned. An
                 // in-place resume re-attaches its source owner. Each fork's
