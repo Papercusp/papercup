@@ -4134,6 +4134,7 @@ export async function main(
   if (receiptFile && expectedVitestReceiptPaths.size > 0) {
     let expectedPaths = [...expectedVitestReceiptPaths];
     let missingPaths = [];
+    let receiptDiagnostics = [];
     let receiptIssue = receiptStartError
       ? `could not inspect receipt file before run: ${receiptStartError instanceof Error ? receiptStartError.message : String(receiptStartError)}`
       : null;
@@ -4150,6 +4151,17 @@ export async function main(
         } else {
           const receiptLog = contents.subarray(receiptStartOffset).toString('utf8');
           missingPaths = reporter.missingTestRunReceiptPaths(receiptLog, expectedPaths);
+          // Preserve the reporter's failure evidence before a mutation probe
+          // removes its receipt sink. Never echo serialized test rows or config.
+          receiptDiagnostics = receiptLog.split(/\r?\n/).flatMap(line => {
+            let receipt;
+            try { receipt = JSON.parse(line); } catch { return []; }
+            if (!receipt || !missingPaths.includes(receipt.filePath)
+              || !['failed', 'timeout'].includes(receipt.outcome)) return [];
+            return [{ filePath: receipt.filePath, outcome: receipt.outcome,
+              reason: typeof receipt.reason === 'string' ? receipt.reason.slice(0, 200) : 'unknown',
+              ...(typeof receipt.errorCode === 'string' ? { errorCode: receipt.errorCode.slice(0, 80) } : {}) }];
+          }).slice(-10);
           if (missingPaths.length > 0) receiptIssue = 'one or more recordable Vitest files lack an inserted ledger receipt';
         }
       }
@@ -4160,6 +4172,7 @@ export async function main(
       console.error(
         `TEST_FILE_LEDGER_RECEIPT_MISSING requested=${expectedPaths.length} missing=${missingPaths.length} ` +
           `status=not-measured paths=${JSON.stringify(missingPaths.length > 0 ? missingPaths : expectedPaths)} ` +
+          `receiptDiagnostics=${JSON.stringify(receiptDiagnostics)} ` +
           `detail=${JSON.stringify(receiptIssue)} — refusing to report a terminal test verdict without ` +
           'an inserted canonical test_runs receipt for every recordable Vitest file.',
       );

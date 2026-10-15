@@ -86,7 +86,8 @@ async function main() {
   const evidenceDir = e.GOVERNANCE_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir && !evidenceDir.startsWith('/tmp/'));
   console.log('GOVERNANCE_HTTP_PHASE bundle-start');
-  const { path: bundle, sha256: bundleSha256 } = buildPrivateOperatorApiBundle(root, evidenceDir);
+  const { path: bundle, sha256: bundleSha256 } = await buildPrivateOperatorApiBundle(root, evidenceDir,
+    { timeoutMs: 240_000, maxMs: 420_000 });
   console.log('GOVERNANCE_HTTP_PHASE bundle-ready ' + bundleSha256);
   const hostEnv = privateBundleRuntimeEnv(e);
   host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });

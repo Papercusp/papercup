@@ -1,16 +1,52 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
+import * as ts from 'typescript';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+it('keeps request fixtures on the bounded progress-aware builder path', () => {
+  const callers: string[] = [];
+  for (const file of readdirSync(import.meta.dirname).filter(name =>
+    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts')) {
+    const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
+      ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && ['exec', 'execSync', 'execFile', 'execFileSync', 'spawn', 'spawnSync'].includes(node.expression.text)) {
+        expect(node.arguments.some(argument => argument.getText(source).includes('bundle-host.sh')),
+          `${file} must use the shared builder instead of launching the build script directly`).toBe(false);
+      }
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && node.expression.text === 'buildPrivateOperatorApiBundle') {
+        callers.push(file);
+        expect(ts.isAwaitExpression(node.parent), `${file} must await build completion`).toBe(true);
+        const policy = node.arguments[2];
+        expect(policy && ts.isObjectLiteralExpression(policy), `${file} needs a bounded progress policy`).toBe(true);
+        if (policy && ts.isObjectLiteralExpression(policy)) {
+          const values = Object.fromEntries(policy.properties.flatMap(property =>
+            ts.isPropertyAssignment(property) && ts.isNumericLiteral(property.initializer)
+              ? [[property.name.getText(source), Number(property.initializer.text)]] : []));
+          expect(values.timeoutMs, `${file} must retain the existing stall checkpoint`).toBe(240_000);
+          expect(values.maxMs, `${file} must retain the existing absolute ceiling`).toBe(420_000);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  expect(callers.sort()).toEqual(['consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+    'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
+    'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
+});
 
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
@@ -111,7 +147,12 @@ it('enforces the absolute build ceiling despite distinct successful step progres
       '_', common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
     timeoutMs: 600, maxMs: 1200, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*absolute-ceiling/);
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
-  expect(receipt.watchdog).toMatchObject({ reason: 'absolute-ceiling', extensions: 1 });
+  expect(receipt.watchdog).toMatchObject({ reason: 'absolute-ceiling' });
+  // Timers may fire just before their requested deadline and schedule one
+  // additional remainder. The contract is the absolute stop, not callback count.
+  expect(receipt.watchdog.extensions).toBeGreaterThan(0);
+  expect(receipt.elapsedMs).toBeGreaterThanOrEqual(1200);
+  expect(receipt.elapsedMs).toBeLessThan(2400);
   expect(receipt.watchdog.completedSteps).toBeGreaterThan(1);
 });
 

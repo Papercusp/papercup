@@ -2184,7 +2184,8 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     },
   );
 
-  async function runEvidenceCase(writeReceipt: boolean) {
+  async function runEvidenceCase(writeReceipt: boolean,
+    failure?: { outcome: 'failed' | 'timeout'; reason: string; errorCode?: string }) {
     const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-verdict-'));
     const receiptFile = join(dir, 'receipts.jsonl');
     const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
@@ -2194,12 +2195,12 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
-      if (writeReceipt) {
+      if (writeReceipt || failure) {
         const filePath = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
         writeFileSync(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, `${JSON.stringify({
           receiptId: 'router-test-receipt', attempt: 0, filePath, status: 'pass',
           row: { filePath, startedAt: '2026-10-14T17:00:00.000Z', finishedAt: '2026-10-14T17:00:01.000Z' },
-          outcome: 'inserted', id: 'test-run-901',
+          ...(failure ? { ...failure, replayable: false } : { outcome: 'inserted', id: 'test-run-901' }),
         })}\n`);
       }
       return { status: 0, signal: null, stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
@@ -2244,6 +2245,16 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     expect(result.code).toBe(0);
     expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(result.errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+  });
+
+  it.each(['failed', 'timeout'] as const)('retains the %s receipt reason when withholding a terminal verdict', async outcome => {
+    const result = await runEvidenceCase(false, { outcome, reason: 'pg_insert_timeout_15000ms', errorCode: 'CONNECT_TIMEOUT' });
+    expect(result.code).toBe(2);
+    expect(result.errors).toContain(`\"outcome\":\"${outcome}\"`);
+    expect(result.errors).toContain('pg_insert_timeout_15000ms');
+    expect(result.errors).toContain('CONNECT_TIMEOUT');
+    expect(result.errors).not.toContain('startedAt');
+    expect(result.output).not.toContain('TEST_FILE_RESULT');
   });
 
   it('does not create or require a receipt sink for ordinary focused runs', async () => {

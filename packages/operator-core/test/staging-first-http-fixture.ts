@@ -132,7 +132,7 @@ async function main() {
   if (!prepared) {
     console.log('STAGING_FIRST_HTTP_PHASE bundle-start');
     try {
-      buildPrivateOperatorApiBundle(root, evidenceDir);
+      await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
     } finally {
       writeFileSync(join(evidenceDir, 'build.log'), readFileSync(join(evidenceDir, 'operator-api-build.log')));
     }
