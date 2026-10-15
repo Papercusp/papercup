@@ -29,9 +29,10 @@ import { dirname, join } from 'node:path';
 
 const GIB = 1024 * 1024 * 1024;
 
-/** Ledger root. Mirrors PAPERCUSP_DISK_RESERVATION_DIR in disk-preflight.sh. */
+/** Ledger root. Mirrors PAPERCUSP_DISK_RESERVATION_DIR in disk-preflight.sh.
+ * Scratch placement must not partition the machine-wide reservation ledger. */
 export function reservationDir(env = process.env) {
-  return env.PAPERCUSP_DISK_RESERVATION_DIR || join(env.TMPDIR || '/tmp', 'papercusp-disk-reservations');
+  return env.PAPERCUSP_DISK_RESERVATION_DIR || '/tmp/papercusp-disk-reservations';
 }
 
 /**

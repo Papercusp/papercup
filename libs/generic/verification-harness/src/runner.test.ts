@@ -81,6 +81,47 @@ describe('read-only retention preview', () => {
   });
 });
 
+describe('evidence root byte ceiling', () => {
+  it('evicts oldest writes until under cap even when count and disk reserve are healthy', async () => {
+    const root = tmp();
+    const names = ['20200101T000000Z-1', '20200102T000000Z-1', '20200103T000000Z-1'];
+    try {
+      for (const [i, name] of names.entries()) {
+        mkdirSync(path.join(root, name));
+        writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
+        writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
+        const time = new Date(Date.now() - (3 - i) * 3600e3);
+        const { utimesSync } = await import('node:fs');
+        for (const file of [path.join(root, name), path.join(root, name, 'bulk'), path.join(root, name, 'result.json')]) utimesSync(file, time, time);
+      }
+      const options = { maxBytes: 100 * 1024, measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
+      const preview = await pruneRunsWithReport(root, 30, Date.now(), { ...options, dryRun: true });
+      expect(preview.preview?.candidates.map(c => c.reason)).toEqual(['size-cap', 'size-cap', 'size-cap']);
+      expect(names.every(name => existsSync(path.join(root, name)))).toBe(true);
+      const report = await pruneRunsWithReport(root, 30, Date.now(), options);
+      expect(report.removed).toEqual(names.slice(0, 2));
+      expect(report.cap?.afterBytes).toBeLessThanOrEqual(options.maxBytes);
+      expect(existsSync(path.join(root, names[2]))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('reports pins above cap and keeps latest while continuing past protected older runs', async () => {
+    const root = tmp();
+    const names = ['20200101T000000Z-1', '20200102T000000Z-1'];
+    try {
+      for (const name of names) {
+        mkdirSync(path.join(root, name));
+        writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
+        writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
+      }
+      symlinkSync(names[0], path.join(root, 'latest'));
+      const report = await pruneRunsWithReport(root, 30, Date.now(), { maxBytes: 1, measureDisk: async () => null });
+      expect(report.removed).toEqual([names[1]]);
+      expect(report.cap?.overByBytes).toBeGreaterThan(0);
+      expect(existsSync(path.join(root, names[0]))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('declared completion receipt retention', () => {
   const receipts = ['phases/prepare/source.json', 'phases/execute/lifecycle.json'];
   const source = Buffer.from('{"source":"original bytes", "sequence":1}\n');

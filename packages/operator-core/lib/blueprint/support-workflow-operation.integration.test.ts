@@ -15,6 +15,9 @@ import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOper
   signalBlueprintOperation, submitBlueprintOperation } from './operation-service';
 import { validateSupportOperationResult } from './support-workflow-case';
 import { supportToEngineeringOperation } from './support-workflow-operation';
+import { administerWorkflow, readWorkflowAdministration, WorkflowAdministrationActionSchema } from './support-workflow-administration';
+import { evaluateSupportWorkflowTrial, type SupportTrialAuthority } from './support-workflow-trial';
+import { supportWorkflowTrialEvidenceFixture } from './fixtures/support-workflow-trial-cases';
 import { getWorkItem } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
 import { writeOperatorState } from '../operator-state-pg';
@@ -525,13 +528,21 @@ describe('support business review with real corpus and funding (synthetic comple
     });
   });
   it.each(['accept', 'reject', 'rework'] as const)('persists a distinct %s decision only while both principals retain source access', async decision => {
+    const trial = supportWorkflowTrialEvidenceFixture({ workspace: workspaceId, harness: harnessSlug,
+      workflowRevision: revision, operationId: 'support-business-journey', submitter: `${userId}/employee`,
+      reviewer: reviewerId, supportCaseId: 'case-cobalt', documentIds: [documentId], now: Date.now() + 60_000 });
+    // Move the synthetic preregistration before admission, and close observations
+    // after both actual persisted operations. No claim of a real trial is made.
+    trial.registration.startsAt = new Date(Date.now() - 20_000).toISOString();
+    trial.input.registration = trial.put('fixture:registration', trial.registration, true);
+    for (const use of [1, 2]) {
     for (const id of [userId, reviewerId]) await createPersonalGrant(db.adminSql, {
       workspaceId, userId: id, principalType: 'agent-role', principalId: role,
       scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
     await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee, reviewer]);
     const callerId = `${userId}/employee`;
     const access = { principalId: reviewerId };
-    const handle = await submit(`business:${decision}`, { operationId: 'support-business-journey' });
+    const handle = await submit(`business:${decision}:${use}`, { operationId: 'support-business-journey' });
     if (handle.target.kind !== 'work-item') throw new Error('business fixture requires a work item');
     const workItemId = handle.target.id;
     const item = await runWithWorkspace(workspaceId, () => getWorkItem(workItemId, harnessSlug));
@@ -615,6 +626,70 @@ describe('support business review with real corpus and funding (synthetic comple
       const [stored] = await restarted<{ output: unknown }[]>`SELECT payload->'blueprintResult'->'output' AS output
         FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND feature_id = ${workItemId}`;
       expect(stored!.output).toEqual(output);
+      trial.observe(handle, prepared.businessReview.resultFingerprint);
+      if (use === 2) {
+        // Fixture evidence uses the existing append-only store as its trusted
+        // adapter. Canonical operation authority still comes from real PG rows.
+        const prefix = `r11:${decision}:${crypto.randomUUID()}`;
+        for (const [ref, artifact] of trial.artifacts) await restarted`INSERT INTO harness_shared.coord_event_log
+          (workspace_id, surface, writer_key, msg_id, body) VALUES (${workspaceId}, 'r11-test-artifact', ${prefix}, ${ref},
+            ${restarted.json(JSON.parse(JSON.stringify(artifact)))})`;
+        const authority: SupportTrialAuthority = { ...trial.authority, resolve: async ref => {
+          const [row] = await restarted<{ body: unknown }[]>`SELECT body FROM harness_shared.coord_event_log
+            WHERE workspace_id = ${workspaceId} AND surface = 'r11-test-artifact' AND writer_key = ${prefix} AND msg_id = ${ref}`;
+          return row?.body as Awaited<ReturnType<SupportTrialAuthority['resolve']>>;
+        } };
+        let verdict = await evaluateSupportWorkflowTrial(restarted, trial.input, authority);
+        expect(verdict.findings.map(v => v.code)).toContain('provider-final-cost-unknown');
+        for (const observed of trial.input.observations) await restarted.begin(async tx => {
+          expect((await settleHostedAllocation(tx as unknown as Sql, { organization: funding.organization,
+            reservationId: supportOperationReservationId(observed.handle), costSource: 'provider-billed', providerFinal: true,
+            costMicros: 23_000, observedAtMs: Date.now(), evidenceRef: 'synthetic:r11-final-cost' })).outcome).toBe('settled');
+          await recordSupportWorkflowOutcome(tx as unknown as Sql, { handle: observed.handle, funding, decision,
+            reviewerPrincipal: reviewerId, evidenceRef: 'synthetic:r11-final-cost' });
+        });
+        verdict = await evaluateSupportWorkflowTrial(restarted, trial.input, authority);
+        expect(verdict.status, JSON.stringify(verdict.findings)).toBe(decision === 'accept' ? 'satisfied' : 'failed');
+        expect(verdict.evidenceClass).toBe('internal-simulation');
+        if (decision !== 'accept') expect(verdict.findings).toContainEqual({ kind: 'failed', code: 'threshold-stop', subject: 'acceptedRate' });
+        if (decision === 'accept') {
+          expect(verdict.coverage).toEqual({ population: ['cohort-1'], checked: ['cohort-1'], notChecked: [] });
+          const forged = structuredClone(trial.input); forged.observations[0]!.handle.workspaceId = 'foreign';
+          expect((await evaluateSupportWorkflowTrial(restarted, forged, authority)).findings.map(v => v.code)).toContain('operation-scope');
+          const missing = structuredClone(trial.input); missing.observations[0]!.handle.receiptId = 2_000_000_000;
+          expect((await evaluateSupportWorkflowTrial(restarted, missing, authority)).findings.map(v => v.code)).toContain('receipt-missing');
+          const wrongFingerprint = structuredClone(trial.artifacts.get(trial.input.observations[0]!.record.ref)!);
+          Object.assign(wrongFingerprint.body as object, { resultFingerprint: 'f'.repeat(64) });
+          const { supportTrialBodyHash } = await import('./support-workflow-trial');
+          wrongFingerprint.record.hash = supportTrialBodyHash(wrongFingerprint.body);
+          const wrongInput = structuredClone(trial.input); wrongInput.observations[0]!.record = wrongFingerprint.record;
+          const wrongAuthority = { ...authority, resolve: async (ref: string) => ref === wrongFingerprint.record.ref
+            ? wrongFingerprint : authority.resolve(ref) };
+          expect((await evaluateSupportWorkflowTrial(restarted, wrongInput, wrongAuthority)).findings.map(v => v.code)).toContain('canonical-attribution');
+          wrongFingerprint.body = structuredClone(trial.artifacts.get(trial.input.observations[0]!.record.ref)!.body);
+          const forgedCost = wrongFingerprint.body as { measured: { costMicros: { value: number } } };
+          forgedCost.measured.costMicros = { value: 1 };
+          wrongFingerprint.record.hash = supportTrialBodyHash(wrongFingerprint.body);
+          wrongInput.observations[0]!.record = wrongFingerprint.record;
+          expect((await evaluateSupportWorkflowTrial(restarted, wrongInput, wrongAuthority)).findings.map(v => v.code)).toContain('cost-misattributed');
+          // Hide only this test's business-review event, then restore it. The
+          // successful executor result must not invent business acceptance.
+          const [reviewEvent] = await restarted<{ msg_id: string }[]>`SELECT msg_id FROM harness_shared.coord_event_log WHERE id = ${saved.eventId}::bigint`;
+          try {
+            await restarted`UPDATE harness_shared.coord_event_log SET msg_id = ${`${reviewEvent!.msg_id}:hidden`} WHERE id = ${saved.eventId}::bigint`;
+            const pending = await evaluateSupportWorkflowTrial(restarted, trial.input, authority);
+            expect(pending.status).toBe('unknown');
+            expect(pending.findings.map(v => v.code)).toEqual(expect.arrayContaining(['canonical-review-unavailable', 'repeat-use-unavailable']));
+          } finally {
+            await restarted`UPDATE harness_shared.coord_event_log SET msg_id = ${reviewEvent!.msg_id} WHERE id = ${saved.eventId}::bigint`;
+          }
+        }
+        await replacePermissionListMembers(restarted, workspaceId, listId, [employee]);
+        const revoked = await evaluateSupportWorkflowTrial(restarted, trial.input, authority);
+        expect(revoked.findings.map(v => v.code)).toContain('canonical-review-unavailable');
+        if (decision === 'accept') expect(revoked.status).toBe('unknown');
+        await replacePermissionListMembers(restarted, workspaceId, listId, [employee, reviewer]);
+      }
       await replacePermissionListMembers(restarted, workspaceId, listId, [reviewer]);
       expect(await getBlueprintOperationResult(restarted, handle, reviewerId, access)).toMatchObject({ state: 'unavailable' });
       await expect(signalBlueprintOperation(restarted, handle, reviewerId, request, access)).rejects.toThrow(/validated successful result/);
@@ -622,10 +697,104 @@ describe('support business review with real corpus and funding (synthetic comple
       await restarted.end();
       await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee]);
     }
+    }
   });
 });
 
 describe('support operation administrative lifecycle', () => {
+  it('authorizes local admin actions, preserves old pins, replays after restart and revokes live grants', async () => {
+    const admin = { workspaceId, harness: harnessSlug, operationId: 'support-to-engineering', principalId: 'engineering-owner' };
+    const denied = { ...admin, principalId: userId };
+    const original = await readBlueprintFromPg(db.adminSql, workspaceId, harnessSlug);
+    if (!original) throw new Error('Missing administration fixture');
+    await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
+      scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: admin.principalId });
+    await replacePermissionListMembers(db.adminSql, workspaceId, listId, [{ provider: 'slack', providerUserId: 'T1:EMPLOYEE' }]);
+    // This case must work alone under -t as well as after the budget cases.
+    await db.adminSql.begin(async tx => {
+      for (const [allocationId, parentAllocationId, level, maximum] of [
+        ['synthetic-support-org', null, 'organization', 1_000_000],
+        ['synthetic-support-dept', 'synthetic-support-org', 'department', 150_000],
+        ['synthetic-support-project', 'synthetic-support-dept', 'project', 1_000_000],
+      ] as const) {
+        const allocation = await defineHostedAllocation(tx as unknown as Sql, {
+          organization: { controlWorkspaceId: workspaceId, organizationId: 'synthetic-support-org' },
+          allocationId, parentAllocationId, level, month: '2026-10', costClass: 'model', capMicros: 1_000_000,
+          maxUnreconciledMicros: maximum, evidenceRef: 'synthetic:A-8:internal-simulation', recordedBy: 'fixture',
+        });
+        expect(['created', 'duplicate']).toContain(allocation.outcome);
+      }
+    });
+    const handle = await submit('native-admin-service-original');
+    const action = { action: 'promote' as const, expectedSpecificationRevision: revision,
+      targetRevision: revision, reason: 'Internal local promotion', requestKey: 'native-admin-promote' };
+    await expect(readWorkflowAdministration(db.adminSql, denied)).rejects.toThrow(/accountable owner/);
+    await expect(administerWorkflow(db.adminSql, denied, action)).rejects.toThrow(/accountable owner/);
+    await expect(readWorkflowAdministration(db.adminSql, { ...admin, workspaceId: 'unrelated-workspace' })).rejects.toThrow(/approved workflow/);
+    const before = await readWorkflowAdministration(db.adminSql, admin);
+    expect(before).toMatchObject({ approvedRevision: revision, version: '1', accountableOwner: admin.principalId,
+      funding: { capMicros: 1_000_000, unknownReason: null } });
+    const candidate = structuredClone(original);
+    candidate.operations!.find(o => o.id === admin.operationId)!.version = '2';
+    const compiled = compileAgentSpecification({ source: candidate });
+    try {
+      // Authoring/provisioning is separate from the admin switch. Retain a
+      // validated candidate through the same store projection already uses.
+      const { retainBlueprintSpecificationSnapshot } = await import('./project-to-pg');
+      await retainBlueprintSpecificationSnapshot(db.adminSql, { workspaceId, harnessSlug, specification: compiled });
+      const promote = { ...action, targetRevision: compiled.specificationRevision };
+      const receipt = await administerWorkflow(db.adminSql, admin, promote);
+      expect(receipt).toMatchObject({ accepted: true, replayed: false });
+      expect((await readWorkflowAdministration(db.adminSql, admin)).version).toBe('2');
+      await expect(submit('native-admin-stale')).rejects.toThrow(/revision/);
+      expect(await submit('native-admin-service-original')).toEqual(handle);
+      const newer = await submit('native-admin-service-new', { expectedSpecificationRevision: compiled.specificationRevision,
+        input: { ...selection(), approvedRevision: compiled.specificationRevision } });
+      const restarted = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
+      try {
+        expect(await administerWorkflow(restarted, admin, promote)).toMatchObject({ eventId: receipt.eventId, replayed: true });
+        await expect(administerWorkflow(restarted, admin, { ...promote, reason: 'Changed replay' })).rejects.toThrow(/different input/);
+        await expect(administerWorkflow(restarted, admin, { ...promote, requestKey: 'stale-admin-key' })).rejects.toThrow(/revision changed/);
+        await administerWorkflow(restarted, admin, { ...action, action: 'rollback', requestKey: 'native-admin-rollback',
+          expectedSpecificationRevision: compiled.specificationRevision, targetRevision: revision });
+        const stop = { action: 'stop' as const, expectedSpecificationRevision: revision, reason: 'Operator stop',
+          handle: newer, requestKey: 'native-admin-stop' };
+        await expect(administerWorkflow(restarted, admin, { ...stop, handle: { ...newer, workspaceId: 'other' } })).rejects.toThrow(/exact receipt/);
+        const stopReceipt = await administerWorkflow(restarted, admin, stop);
+        const [storedStop] = await restarted<{ body: unknown; shape: string }[]>`SELECT body, jsonb_typeof(body) AS shape
+          FROM harness_shared.coord_event_log WHERE workspace_id = ${workspaceId}
+            AND id = ${stopReceipt.eventId}::bigint`;
+        expect(storedStop?.shape).toBe('object');
+        const { requestKey: _stopKey, ...stopInput } = stop;
+        expect(storedStop?.body).toEqual({ ...WorkflowAdministrationActionSchema.parse(stopInput),
+          harness: harnessSlug, operationId: admin.operationId, principalId: admin.principalId });
+        expect(await administerWorkflow(restarted, admin, stop)).toMatchObject({ replayed: true });
+        expect(await getBlueprintOperationStatus(restarted, newer, `${userId}/employee`)).toMatchObject({
+          handle: { specificationRevision: compiled.specificationRevision }, cancellationRequested: true });
+        const stoppedItem = await runWithWorkspace(workspaceId, () => getWorkItem(
+          newer.target.kind === 'work-item' ? newer.target.id : '', harnessSlug));
+        expect(stoppedItem?.payload?.blueprintCancellation).toMatchObject({ requestedBy: admin.principalId });
+        const revoke = { ...stop, action: 'revoke' as const, requestKey: 'native-admin-revoke' };
+        await administerWorkflow(restarted, admin, revoke);
+        expect(await administerWorkflow(restarted, admin, revoke)).toMatchObject({ replayed: true });
+        await expect(submit('native-admin-no-live-grant')).rejects.toThrow(/no_live_grant/);
+        const after = await readWorkflowAdministration(restarted, admin);
+        expect(after).toMatchObject({ approvedRevision: revision, version: '1' });
+        expect(after.history.filter(e => e.body.action === 'stop')).toHaveLength(1);
+        expect(after.history.filter(e => e.body.action === 'revoke')).toHaveLength(1);
+        expect(after.retainedRevisions).toContainEqual({ revision: compiled.specificationRevision, version: '2' });
+        const { operation, pin } = await readAcceptedBlueprintDirectWorkItem(restarted, workspaceId,
+          (await runWithWorkspace(workspaceId, () => getWorkItem(newer.target.kind === 'work-item' ? newer.target.id : '', harnessSlug)))!);
+        expect(operation.version).toBe('2');
+        expect(pin.specificationRevision).toBe(compiled.specificationRevision);
+      } finally { await restarted.end(); }
+    } finally {
+      await projectBlueprintToPg(db.adminSql, { workspaceId, harnessSlug, blueprint: original,
+        specification: compileAgentSpecification({ source: original }) });
+      await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
+        scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
+    }
+  });
   it('preserves accepted revisions across promotion, rollback, cancellation and live source revocation', async () => {
     const employee = { provider: 'slack', providerUserId: 'T1:EMPLOYEE' };
     const callerId = `${userId}/employee`;

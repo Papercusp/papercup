@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
-import { exportArchiveToColdTier, readColdArchiveFiles, readColdArchiveStamp, sha256Hex, type ArchiveFileRow, type ArchiveStampRow } from './session-archive';
+import { exportArchiveToColdTier, migrateArchiveToColdTier, readColdArchiveFiles, readColdArchiveStamp, sha256Hex, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -39,5 +39,20 @@ describe('session archive cold-tier export', () => {
     const { stamp, row } = fixture();
     await expect(exportArchiveToColdTier(stamp, [{ ...row, blob: Buffer.from('bad') }], root)).rejects.toThrow(/mismatch|integrity|decompress/i);
     await expect(exportArchiveToColdTier({ ...stamp, manifest: [{ ...stamp.manifest[0]!, relpath: '../escape' }] }, [row], root)).rejects.toThrow('unsafe archive relpath');
+  });
+
+  it('deletes PG rows only after the verified cold export', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'session-cold-')); roots.push(root);
+    const { stamp, row } = fixture();
+    const deleted: unknown[] = [];
+    const store: SessionArchiveStore = {
+      readStamp: async () => stamp,
+      readFiles: async () => [row],
+      deleteArchiveRows: async (value) => { deleted.push(value); },
+      upsertArchive: async () => {},
+      stampAdvSessionArchived: async () => {},
+    };
+    await expect(migrateArchiveToColdTier('codex', 'sid-1', root, store)).resolves.toMatchObject({ ok: true, fileCount: 1 });
+    expect(deleted).toHaveLength(1);
   });
 });

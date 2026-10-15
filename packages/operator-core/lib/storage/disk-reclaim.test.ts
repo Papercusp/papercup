@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -19,6 +19,40 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('per-root allocated-byte caps', () => {
+  const capped = () => compilePolicy(policy.map((cls) => cls.id === 'scratch' ? { ...cls, maxBytes: 100 } : cls), '/home/test');
+  const sized = (name: string, age: number, bytes: number) => ({ ...entry(`/scratch/${name}`, 'scratch', age), bytes });
+  it('counts recent entries and selects the oldest until within the cap', () => {
+    const caps: RetentionCapReceipt[] = [];
+    const selected = selectRetentionEntries([sized('new', 1, 60), sized('middle', 2, 60), sized('old', 3, 20)], capped(), now, caps);
+    expect(selected.map((entry) => entry.path)).toEqual(['/scratch/old', '/scratch/middle']);
+    expect(caps).toEqual([expect.objectContaining({ beforeBytes: 140, maxBytes: 100, pinnedBytes: 0 })]);
+  });
+  it('retains pins, counts their bytes, and reports a pinned-only overage', () => {
+    const compiled = capped(); compiled.pins = [{ paths: ['/scratch/pin/child'], expiresAt: new Date(now + HOUR).toISOString() }];
+    const caps: RetentionCapReceipt[] = [];
+    expect(selectRetentionEntries([sized('pin', 100, 110), sized('new', 1, 30)], compiled, now, caps).map((entry) => entry.path)).toEqual(['/scratch/new']);
+    expect(caps[0]).toMatchObject({ beforeBytes: 140, pinnedBytes: 110, pinnedPaths: ['/scratch/pin'], pinnedOverageBytes: 10 });
+    compiled.pins[0]!.expiresAt = new Date(now - 1).toISOString();
+    expect(selectRetentionEntries([sized('pin', 100, 110), sized('new', 1, 30)], compiled, now).map((entry) => entry.path)).toEqual(['/scratch/pin']);
+  });
+  it('keeps recent entries at the ceiling and still expires old entries below it', () => {
+    expect(selectRetentionEntries([sized('recent', 1, 100)], capped(), now)).toEqual([]);
+    expect(selectRetentionEntries([sized('expired', 25, 1)], capped(), now).map((entry) => entry.path)).toEqual(['/scratch/expired']);
+  });
+  it('counts safety-protected trees without evicting them or protected owner data', () => {
+    const caps: RetentionCapReceipt[] = [];
+    expect(selectRetentionEntries([{ ...sized('socket-tree', 4, 120), protectedReason: 'special filesystem entry' },
+      sized('new', 1, 30), { ...sized('owner/data', 100, 1000), root: '/scratch' }], capped(), now, caps).map((entry) => entry.path)).toEqual(['/scratch/new']);
+    expect(caps[0]).toMatchObject({ beforeBytes: 150, pinnedBytes: 0 });
+  });
+  it('applies caps separately to physical roots of the same class', () => {
+    const compiled = compilePolicy([{ ...policy[0]!, roots: ['/a', '/b'], maxBytes: 100 }], '/home/test');
+    expect(selectRetentionEntries([ { ...entry('/a/one', 'scratch', 1), bytes: 80 },
+      { ...entry('/b/two', 'scratch', 1), bytes: 80 } ], compiled, now)).toEqual([]);
+  });
+});
 
 describe('exact retention receipt readback', () => {
   const expected: DiskReclaimReceipt = {

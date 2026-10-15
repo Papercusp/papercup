@@ -6414,21 +6414,22 @@ describe("psu-launcher arg parsing", () => {
     const port = section("async function launchSessionPort(", "async function launchResolvedResume(");
     expect(port).toContain("await launchFreshSuImpl(");
     const fresh = section("async function launchFreshSu(", null);
-    expect(fresh).toContain("await preflightCodexAutoPool(");
+    expect(fresh).toContain("preflightCodexAutoPoolImpl = preflightCodexAutoPool");
+    expect(fresh).toContain("await preflightCodexAutoPoolImpl(");
 
     const originalResume = section("async function resumeFlow(", null);
     const guardedOriginal = originalResume.slice(0, originalResume.indexOf('const data = await apiImpl("/api/adv/sessions/resumable")'));
     expect(guardedOriginal).toContain("await preflightCodexAutoPool(");
     expect(guardedOriginal.indexOf("await launchResume(")).toBeGreaterThan(guardedOriginal.indexOf("await preflightCodexAutoPool("));
     expect(guardedOriginal).not.toContain("tryRematerializeFromArchive");
-    expect(source.match(/await preflightCodexAutoPool\(/g) ?? []).toHaveLength(4);
+    expect(source.match(/await preflightCodexAutoPool(?:Impl)?\(/g) ?? []).toHaveLength(4);
 
     // Every call site must ACT on the verdict. A preflight that computes futility and
     // launches regardless IS the bug this guard exists for: measured 2026-09-11, the
     // warn-only ancestor printed "0 of 7 serviceable" into 342 judge launches over 3h
     // that emitted zero cards (EI-22976924584016603). Negating the call is what turns
     // the measurement into an abort, so assert the negation, not merely the call.
-    expect(source.match(/!\(await preflightCodexAutoPool\(/g) ?? []).toHaveLength(
+    expect(source.match(/!\(await preflightCodexAutoPool(?:Impl)?\(/g) ?? []).toHaveLength(
       4,
     );
     // …and each abort carries the distinguishable exit code (const + 4 call sites).
@@ -9793,12 +9794,24 @@ describe("direct su-ID tracked-session recovery", () => {
 
   it.each([
     { name: "absent agent", result: { sessions: [] } },
-    { name: "old server without exact resolution", result: { sessions: [latest] } },
+    { name: "old server without exact resolution but with an exact owner row", result: { sessions: [latest] }, expected: latest },
     { name: "different owner", result: { exact: { id: latest.id, ownerId: "su-other", requestedAgentId: owner }, sessions: [latest] } },
     { name: "different requested agent", result: { exact: { id: latest.id, ownerId: owner, requestedAgentId: "su-other" }, sessions: [latest] } },
     { name: "different row", result: { exact: { id: 999, ownerId: owner, requestedAgentId: owner }, sessions: [latest] } },
-  ])("refuses a $name response", async ({ result }) => {
-    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl: async () => result })).toBeNull();
+    { name: "legacy different owner", result: { sessions: [{ ...latest, coordOwnerId: "su-other" }] } },
+    { name: "legacy owner prefix", result: { sessions: [{ ...latest, coordOwnerId: owner + "a" }] } },
+  ])("handles a $name response", async ({ result, expected = null }) => {
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl: async () => result })).toBe(expected);
+  });
+
+  it("keeps the newest legacy registration without using mutable activity order", async () => {
+    const source = { ...latest, cwd: "/repo" };
+    const apiImpl = vi.fn(async () => ({ sessions: [
+      { ...source, id: 100, sessionId: "older-native-id" },
+      { ...source, id: 99999, coordOwnerId: "su-other" },
+      source,
+    ] }));
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBe(source);
   });
 
   it("propagates owner lookup failure instead of interpreting the su ID as a native thread", async () => {

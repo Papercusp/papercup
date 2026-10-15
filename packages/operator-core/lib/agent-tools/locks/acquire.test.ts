@@ -528,6 +528,36 @@ describe('locks:acquire — outcome branches', () => {
     }
   });
 
+  it('retries a postgres-js CONNECT_TIMEOUT before the workspace transaction starts, then acquires once', async () => {
+    const connectTimeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    });
+    txnM.mockRejectedValueOnce(connectTimeout);
+    tryAcquireM.mockResolvedValueOnce({
+      ok: true,
+      lock_id: 'L-connect-retry',
+      expires_ts: new Date('2026-02-01T00:00:00Z'),
+      held: ['a.ts'],
+    } as never);
+    routeM.mockImplementation(async (_domain, op) => ({
+      value: await op.local(),
+      via: 'local-authority',
+    }));
+
+    vi.useFakeTimers();
+    try {
+      const p = call({});
+      await vi.runAllTimersAsync();
+      const b = body(await p);
+
+      expect(b).toMatchObject({ ok: true, lock_id: 'L-connect-retry', held: ['a.ts'] });
+      expect(txnM).toHaveBeenCalledTimes(2);
+      expect(tryAcquireM).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('wake_on_grant queues a waiter for at least the maximum legal holder TTL', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
     insertM.mockResolvedValue({ ok: true, ticket_id: 'T1', wait_until: new Date(Date.now() - 1000) });

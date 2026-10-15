@@ -1761,9 +1761,8 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
   describe('frozen native initial context', () => {
     afterEach(() => setSessionConfinementResolver(undefined));
 
-    it.each(['frozen', 'unavailable', 'missing'])('excludes live guides, overrides and plan prose when policy is %s', async policy => {
-      setSessionConfinementResolver(policy === 'missing' ? undefined : () => {
-        if (policy === 'unavailable') throw new Error('private policy unavailable');
+    it('excludes live guides, overrides and plan prose for frozen context', async () => {
+      setSessionConfinementResolver(() => {
         return { denyTools: [], denyAmbientContext: true, imposedBy: 'private host', reason: 'frozen context' };
       });
       const spec = await buildLaunchSpec({ ...su, ownerId: 'su-frozen-native', planSlug: 'private-plan',
@@ -1773,6 +1772,31 @@ describe('buildSuLaunchSpec — P-022 blueprint-addressable project guide', () =
       expect(render.composeProjectGuide).toBeUndefined();
       expect(spec.promptText).toContain('SU PLAYBOOK BODY');
       expect(spec.promptText).not.toMatch(/LIVE PLAN SECRET|LIVE SOLUTION|LIVE ANSWER/);
+    });
+
+    it.each(['unavailable', 'missing'])('refuses the native launch when prompt authority is %s', async policy => {
+      setSessionConfinementResolver(policy === 'missing' ? undefined : () => { throw new Error('private policy unavailable'); });
+      await expect(buildLaunchSpec({ ...su, ownerId: 'su-frozen-native' })).rejects.toThrow(/policy/);
+      expect(renderSuPlaybookMock).not.toHaveBeenCalled();
+    });
+
+    it('selects the host-owned kernel workflow from exact confinement and refuses unfiltered fallback', async () => {
+      const { builtinBlueprintPath } = await import('@papercusp/orchestrator/blueprint');
+      setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: true,
+        denyWorkItemsOutside: { id: 'F-own', harness: 'papercup', checkout: '/proj/papercup' },
+        imposedBy: 'private host', reason: 'frozen control arm' }));
+      resolvePromptFilesMock.mockReturnValueOnce([join(dirname(builtinBlueprintPath('base')), 'prompts', 'su.md')]);
+      const spec = await buildLaunchSpec({ ...su, ownerId: 'su-host-owned' });
+      const render = renderSuPlaybookMock.mock.calls.at(-1)?.[0] as { baseText?: string; projectGuideSource?: string };
+      expect(render.baseText).toContain('The host owns this assignment');
+      expect(render.baseText).not.toContain('Declare a real intent + claim your lane');
+      expect(render.baseText).toContain('File locking is ENFORCED');
+      expect(render.projectGuideSource).toBe('');
+      expect(new URL(spec.mcpUrl).searchParams.get('superuser')).toBe('1');
+      renderSuPlaybookMock.mockClear();
+      resolvePromptFilesMock.mockReturnValueOnce([]);
+      await expect(buildLaunchSpec({ ...su, ownerId: 'su-host-owned' })).rejects.toThrow(/workflow/);
+      expect(renderSuPlaybookMock).not.toHaveBeenCalled();
     });
 
     it('retains ordinary native guidance when the host proves the session is unconfined', async () => {

@@ -69,6 +69,7 @@ import {
   DEFAULT_REINDEX_TARGETS,
   shouldRunReindex,
   reindexBloatedIndexes,
+  migrateColdArchives,
   type ReindexTarget,
 } from './telemetry-retention-action';
 import { buildTelemetryRetentionTriggerConfig } from './seed-telemetry-retention-routine';
@@ -302,6 +303,36 @@ describe('system:telemetry-retention action', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
+
+  it('runs bounded cold-archive migration through the existing archive store', async () => {
+    const readStamp = vi.fn(async () => null);
+    const store = { readStamp, readFiles: vi.fn() } as never;
+    await expect(migrateColdArchives({
+      candidates: [
+        { source_kind: 'codex', session_id: 'sid-1' },
+        { source_kind: 'codex', session_id: 'sid-2' },
+      ],
+      maxArchives: 1,
+      store,
+    })).resolves.toEqual({ scanned: 1, migrated: 0, failed: 0 });
+    expect(readStamp).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when a store cannot delete its PG rows', async () => {
+    const store = {
+      readStamp: vi.fn(async () => ({
+        workspace_id: 'default', source_kind: 'codex', session_id: 'sid-1',
+        owner: null, harness_slug: null, cwd: null, adv_session_id: null,
+        session_root: '/tmp', file_count: 1, bytes_raw: 1, bytes_stored: 1,
+        manifest: [{ relpath: 'rollout.jsonl', sha256: '0'.repeat(64), bytes_raw: 1 }], archived_by: null,
+      })),
+      readFiles: vi.fn(async () => []),
+    } as never;
+    await expect(migrateColdArchives({
+      candidates: [{ source_kind: 'codex', session_id: 'sid-1' }],
+      store,
+    })).resolves.toEqual({ scanned: 1, migrated: 0, failed: 1 });
+  });
 
   it('prunes each default target with its retention window + workspace', async () => {
     pruneMock.mockResolvedValue(okResult());

@@ -283,18 +283,23 @@ export interface RunPruneOptions {
   measureDisk?: (evidenceRoot: string) => Promise<DiskSpaceSnapshot | null>;
   /** Injectable reserve calculator; production mirrors the shared disk alarm policy. */
   reserveBytes?: (totalBytes: number, env: NodeJS.ProcessEnv) => number;
+  /** Allocated-byte ceiling for this evidence root; pins remain exempt. */
+  maxBytes?: number;
 }
 
 export interface RunPruneReport {
   preview?: {
     advisory: true;
     rootStatus: 'readable' | 'unreadable';
-    candidates: Array<{ path: string; reason: 'count' | 'pressure'; allocatedBytes: number | null }>;
+    candidates: Array<{ path: string; reason: 'count' | 'pressure' | 'size-cap'; allocatedBytes: number | null }>;
     kept: Array<{ path: string; reason: string }>;
     uncertainty: string;
   };
   removed: string[];
   runDirsSeen: number;
+  cap?: { maxBytes: number; beforeBytes: number | null; afterBytes: number | null;
+    pinnedBytes: number | null; pinnedPaths: string[]; overByBytes: number | null;
+    pinnedOverageBytes: number | null; error?: string };
   disk: {
     status: 'healthy' | 'recovered' | 'unresolved' | 'unmeasured';
     reserveBytes: number | null;
@@ -402,6 +407,40 @@ async function removeRunIfEligible(
   }
 }
 
+/** Bounded, no-follow allocated-byte census shared by preview and eviction.
+ * Count an inode once across the root, including retained and unknown entries;
+ * those entries consume space but never become deletion candidates. */
+async function retentionRootUsage(root: string): Promise<{ bytes: number; runs: Map<string, { bytes: number; newest: number }> }> {
+  let budget = 100000;
+  const seen = new Set<string>();
+  const walk = async (target: string): Promise<{ bytes: number; newest: number }> => {
+    if (--budget < 0) throw new Error('retention byte census budget exceeded');
+    const s = await lstat(target);
+    const key = `${s.dev}:${s.ino}`;
+    if (seen.has(key)) return { bytes: 0, newest: s.mtimeMs };
+    seen.add(key);
+    if (!Number.isSafeInteger(s.blocks) || s.blocks < 0) throw new Error('allocated blocks unavailable');
+    let bytes = s.blocks * 512;
+    let newest = s.mtimeMs;
+    if (s.isDirectory()) for (const name of await readdir(target)) {
+      const child = await walk(path.join(target, name));
+      bytes += child.bytes; newest = Math.max(newest, child.newest);
+    }
+    return { bytes, newest };
+  };
+  const base = await lstat(root);
+  if (!base.isDirectory() || base.isSymbolicLink()) throw new Error('unsafe retention root');
+  let bytes = base.blocks * 512;
+  seen.add(`${base.dev}:${base.ino}`);
+  const runs = new Map<string, { bytes: number; newest: number }>();
+  for (const name of (await readdir(root)).sort()) {
+    const usage = await walk(path.join(root, name));
+    bytes += usage.bytes;
+    runs.set(name, usage);
+  }
+  return { bytes, runs };
+}
+
 /**
  * Retention keeps the newest `keep` run dirs by count, then removes the oldest completed runs
  * only as needed to restore the shared critical write-headroom reserve. It always preserves
@@ -438,12 +477,28 @@ async function pruneRunsWithProtection(
     // A missing or unreadable evidence root has no safely judged candidates.
   }
   names.sort();
+  const maxBytes = options.maxBytes ?? 20 * GIB;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error('retention maxBytes must be a positive safe integer');
   const report: RunPruneReport = {
     removed: [],
     runDirsSeen: names.length,
     disk: { status: 'unmeasured', reserveBytes: null, availableBeforeBytes: null, availableAfterBytes: null },
   };
   const removed = new Set<string>();
+  let usage: Awaited<ReturnType<typeof retentionRootUsage>> | null = null;
+  try { usage = await retentionRootUsage(evidenceRoot); } catch (error) {
+    report.cap = { maxBytes, beforeBytes: null, afterBytes: null, pinnedBytes: null,
+      pinnedPaths: [], overByBytes: null, pinnedOverageBytes: null, error: String(error) };
+  }
+  const pinnedPaths = names.filter(name => isPinned(path.join(evidenceRoot, name)));
+  if (usage) {
+    const pinnedBytes = pinnedPaths.reduce((sum, name) => sum + (usage!.runs.get(name)?.bytes ?? 0), 0);
+    report.cap = { maxBytes, beforeBytes: usage.bytes, afterBytes: usage.bytes, pinnedBytes,
+      pinnedPaths: pinnedPaths.map(name => path.join(evidenceRoot, name)),
+      overByBytes: Math.max(0, usage.bytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) };
+  }
+  const capExceeded = () => usage !== null && usage.bytes > maxBytes;
+  const oldest = [...names].sort((a, b) => (usage?.runs.get(a)?.newest ?? 0) - (usage?.runs.get(b)?.newest ?? 0) || a.localeCompare(b));
   if (options.dryRun) {
     const preview: NonNullable<RunPruneReport['preview']> = {
       advisory: true, rootStatus: rootReadable ? 'readable' : 'unreadable', candidates: [], kept: [],
@@ -463,21 +518,8 @@ async function pruneRunsWithProtection(
       }
     }
     const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
-    // One shared bounded observation budget; lstat never follows symlinks.
-    let budget = 100000;
-    const allocated = async (target: string, seen = new Set<string>()): Promise<number> => {
-      if (--budget < 0) throw new Error('measurement budget exceeded');
-      const s = await lstat(target);
-      const key = `${s.dev}:${s.ino}`;
-      if (seen.has(key)) return 0;
-      seen.add(key);
-      if (!Number.isFinite(s.blocks)) throw new Error('allocated blocks unavailable');
-      let bytes = s.blocks * 512;
-      if (s.isDirectory()) for (const child of await readdir(target)) bytes += await allocated(path.join(target, child), seen);
-      return bytes;
-    };
-    for (const name of names) {
-      let reason: 'count' | 'pressure' | null = null;
+    for (const name of capExceeded() ? oldest : names) {
+      let reason: 'count' | 'pressure' | 'size-cap' | null = null;
       let kept = 'within-count';
       if (countNames.has(name)) {
         const why = await runIneligibility(evidenceRoot, name, now, false, isPinned);
@@ -487,19 +529,35 @@ async function pruneRunsWithProtection(
         const why = await runIneligibility(evidenceRoot, name, now, true, isPinned);
         if (!why) reason = 'pressure'; else kept = why;
       }
+      if (capExceeded()) {
+        const why = await runIneligibility(evidenceRoot, name, now, true, isPinned);
+        if (!why) reason = 'size-cap'; else if (!reason) kept = why;
+      }
       const target = path.resolve(evidenceRoot, name);
-      if (reason) preview.candidates.push({ path: target, reason, allocatedBytes: await allocated(target).catch(() => null) });
+      if (reason) preview.candidates.push({ path: target, reason, allocatedBytes: usage?.runs.get(name)?.bytes ?? null });
       else preview.kept.push({ path: target, reason: kept });
     }
     // Mutation completes its count pass before considering pressure candidates.
     preview.candidates.sort((a, b) => Number(a.reason === 'pressure') - Number(b.reason === 'pressure'));
     return report;
   }
-  if (keep > 0) {
-    for (const name of names.slice(0, Math.max(0, names.length - keep))) {
-      if (await removeRunIfEligible(evidenceRoot, name, now, false, isPinned)) {
+  const countNames = new Set(keep > 0 ? names.slice(0, Math.max(0, names.length - keep)) : []);
+  for (const name of capExceeded() ? oldest : names) {
+    const countVictim = countNames.has(name);
+    if (countVictim || capExceeded()) {
+      if (await removeRunIfEligible(evidenceRoot, name, now, !countVictim, isPinned)) {
         removed.add(name);
         report.removed.push(name);
+        if (usage) {
+          try {
+            usage = await retentionRootUsage(evidenceRoot);
+            report.cap!.afterBytes = usage.bytes;
+            report.cap!.overByBytes = Math.max(0, usage.bytes - maxBytes);
+          } catch (error) {
+            usage = null; report.cap!.afterBytes = null; report.cap!.overByBytes = null;
+            report.cap!.error = String(error);
+          }
+        }
       }
     }
   }

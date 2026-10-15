@@ -87,9 +87,16 @@ for arg in "$@"; do
   esac
 done
 
+# Declare the bracket phases before initialization so a failed contract can
+# record them as blocked and, more importantly, cannot fall through to the rig.
 vh_phase preflight ""
 vh_phase isolated-suite preflight
 vh_init operator-e2e-isolated "${OPERATOR_E2E_HARNESS_EVIDENCE_ROOT:-/tmp/pcv/operator-e2e-isolated}"
+vh_init_rc=$?
+if [ "$vh_init_rc" -ne 0 ]; then
+  echo "run-operator-e2e-isolated: verification harness initialization failed (rc=$vh_init_rc); refusing native rig" >&2
+  exit "$vh_init_rc"
+fi
 vh_bracket_trap
 vh_begin preflight
 DEFAULT_LEDGER_URL='postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp'

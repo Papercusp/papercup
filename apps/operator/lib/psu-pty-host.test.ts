@@ -7845,6 +7845,22 @@ describe('host handoff record (WI-38292 increment 2)', () => {
     });
   });
 
+  it('uses the owner-keyed handoff path when the successor already has PAPERCUSP_SID', () => {
+    writeHostHandoff(owner, orders);
+    expect(readHostHandoffForParentPid(process.ppid, {
+      ownerId: owner,
+      isAlive: () => false,
+    })).toMatchObject({ ...orders, ownerId: owner, parentPid: process.ppid });
+  });
+
+  it('keeps the parent-pid guard on the owner-keyed fast path', () => {
+    writeHostHandoff(owner, orders);
+    expect(readHostHandoffForParentPid(process.ppid + 1, {
+      ownerId: owner,
+      isAlive: () => false,
+    })).toBeNull();
+  });
+
   it('is SINGLE-SHOT — a crashed successor must not have the same carry replayed into every later launch', () => {
     writeHostHandoff(owner, orders);
     expect(readAsSuccessor(owner)).toBeTruthy();

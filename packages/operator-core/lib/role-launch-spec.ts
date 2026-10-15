@@ -1396,10 +1396,12 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   const spawnId = randomUUID();
   const runId = randomUUID();
   const harnessSlug = input.harnessSlug?.trim() || null;
-  const { sessionAllowsAmbientContext } = await import('./capability-envelope/session-confinement-port');
-  const ambientContextAllowed = await sessionAllowsAmbientContext({
+  const { sessionPromptPolicy } = await import('./capability-envelope/session-confinement-port');
+  const promptPolicy = await sessionPromptPolicy({
     ownerId: input.ownerId, workspaceId: input.workspaceId,
   });
+  const { ambientContextAllowed } = promptPolicy;
+  const hostManagedWorkflow = promptPolicy.workItemWorkflow === 'host-managed';
 
   // 1. cwd — the harness project dir if scoped, else the workspace root.
   //    Matches console-launcher's superuser shell: a *given* slug must
@@ -1501,7 +1503,7 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
     const blueprintPersonaEnabled = await getFlag(FLAGS.SU_BLUEPRINT_PERSONA, input.workspaceId);
-    if (!blueprintPersonaEnabled && requestedStack.layers.length > 0) {
+    if (!blueprintPersonaEnabled && (requestedStack.layers.length > 0 || hostManagedWorkflow)) {
       throw new Error('selected identity stack requires the SU blueprint persona renderer');
     }
     if (blueprintPersonaEnabled) {
@@ -1575,10 +1577,11 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
           suBaseText = composeSuStackSource({
             harnessDir,
             binding: launchBinding,
+            workItemWorkflow: hostManagedWorkflow ? 'host-managed' : undefined,
             resolveLayer: (layer) => selectedLayerDocs.get(`${layer.slot}:${layer.id}`) ?? null,
           }).text;
         } catch (e) {
-          if (modeCatalog || requestedStack.layers.length > 0) throw e;
+          if (modeCatalog || requestedStack.layers.length > 0 || hostManagedWorkflow) throw e;
           console.warn(`[role-launch-spec] su slot-stack compose failed — rendering su.md unsealed: ${e instanceof Error ? e.message : String(e)}`);
         }
       }
@@ -1586,9 +1589,11 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   } catch (error) {
     // An explicit layer or selected mode is part of the requested identity.
     // Never turn its missing document into an apparently successful plain SU.
-    if (requestedStack.layers.length > 0 || modeCatalog) throw error;
+    if (requestedStack.layers.length > 0 || modeCatalog || hostManagedWorkflow) throw error;
     /* flag/resolve miss → fall through to today's playbook (byte-identical) */
   }
+  if (hostManagedWorkflow && !suBaseText)
+    throw new Error('Host-managed workflow requires the sealed SU source renderer; unfiltered fallback is refused.');
   // P-017/P-018 persona tier: explicit ask wins; else auto-select 'fleet' for a
   // KNOWN ≤200k-window model (the sonnet-fleet death mode: full persona +
   // catalog + guide left no headroom before the first turn). An OMITTED model

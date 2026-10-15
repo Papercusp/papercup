@@ -78,6 +78,7 @@ import { hardText, LIMITS } from '../limits';
 import { isExternalLockKey, resolveExternalPathLockIdentity } from './external-path';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
+import { withPgRetry } from '../../pg-transient-retry';
 import { validateExplicitRepoPaths } from '../work_items/_derive-paths';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
@@ -375,20 +376,26 @@ export default defineTool({
     // degrades to the raw local acquire, so the worst case on the fleet's hot per-edit
     // path is exactly today's behavior. The WAIT / wake_on_grant queue below stays local
     // (cross-machine waiter coherence is a documented further step).
+    // postgres-js CONNECT_TIMEOUT is raised while opening the pool connection,
+    // before BEGIN or the lock query reaches PostgreSQL. Replay only that narrow
+    // pre-execution failure; CONNECTION_CLOSED can be post-write and is not safe.
     const localAcquire = (): Promise<Awaited<ReturnType<typeof tryAcquire>>> =>
-      inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
-        tryAcquire(tx, {
-          coordinationDomain,
-          owner: ownerId,
-          ownerLabel,
-          paths,
-          intent: args.intent,
-          ttlSec,
-          goalRef,
-          automatic: args.intent.startsWith('PreToolUse:'),
-          operation: args.hook_operation,
-        }),
-        { paths },
+      withPgRetry(
+        () => inWorkspaceTxn(coordinationDomain, ownerId, async (tx) =>
+          tryAcquire(tx, {
+            coordinationDomain,
+            owner: ownerId,
+            ownerLabel,
+            paths,
+            intent: args.intent,
+            ttlSec,
+            goalRef,
+            automatic: args.intent.startsWith('PreToolUse:'),
+            operation: args.hook_operation,
+          }),
+          { paths },
+        ),
+        { label: 'locks:acquire:workspace-txn' },
       );
 
     if (args.hook_operation) {

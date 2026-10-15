@@ -62,6 +62,26 @@ function seedReservation(
 }
 
 describe('disk reservation ledger — Node reader', () => {
+  it('keeps the shared ledger fixed when builders redirect TMPDIR', () => {
+    const scratchRoot = scratch();
+    const otherScratch = scratch();
+    const defaultLedger = '/tmp/papercusp-disk-reservations';
+    const shell = (env: NodeJS.ProcessEnv) => execFileSync('bash', [
+      '-c', 'source "$1"; papercusp_reservation_dir', 'bash', SHELL_LIB,
+    ], { env, encoding: 'utf8' });
+    const first = { ...process.env, TMPDIR: scratchRoot, PAPERCUSP_DISK_RESERVATION_DIR: '' };
+    const second = { ...first, TMPDIR: otherScratch };
+
+    expect(reservationDir(first)).toBe(defaultLedger);
+    expect(reservationDir(second)).toBe(defaultLedger);
+    expect(shell(first)).toBe(defaultLedger);
+    expect(shell(second)).toBe(defaultLedger);
+
+    const explicit = { ...second, PAPERCUSP_DISK_RESERVATION_DIR: join(scratchRoot, 'isolated-ledger') };
+    expect(reservationDir(explicit)).toBe(explicit.PAPERCUSP_DISK_RESERVATION_DIR);
+    expect(shell(explicit)).toBe(explicit.PAPERCUSP_DISK_RESERVATION_DIR);
+  });
+
   it('distinguishes measured absence from unreadable and malformed reservation evidence', () => {
     const root = scratch(), target = scratch();
     const ledger = join(root, 'ledger');
@@ -334,9 +354,8 @@ describe('disk reservation ledger — Node reader', () => {
     ).toBe(0);
   });
 
-  it('reservationDir honours the same env var the shell writer uses', () => {
+  it('reservationDir honours an explicit ledger override', () => {
     expect(reservationDir({ PAPERCUSP_DISK_RESERVATION_DIR: '/x/y' })).toBe('/x/y');
-    expect(reservationDir({ TMPDIR: '/t' })).toBe('/t/papercusp-disk-reservations');
   });
 });
 

@@ -820,6 +820,30 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(reassembleChunkedBodies(delivered)).toEqual(sections);
   });
 
+  it('finishes a chunked message after its first part persists even if the request aborts', async () => {
+    const controller = new AbortController();
+    const append = sendM.getMockImplementation()!;
+    let persistedParts = 0;
+    sendM.mockImplementation(async (...args) => {
+      const result = await append(...args);
+      persistedParts += 1;
+      if (persistedParts === 1) controller.abort();
+      return result;
+    });
+
+    const b = await bodyWithCtx({
+      to: ['bee-1'],
+      summary: 'complete this chunked message',
+      expects: 'none',
+      body: [{ text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP * 2) }],
+    }, { signal: controller.signal });
+
+    expect(persistedParts).toBeGreaterThan(1);
+    expect(b).toMatchObject({ ok: true, counts: { ok: persistedParts, failed: 0 } });
+    expect(b.results).toHaveLength(persistedParts);
+    expect(b.results.every((result: { ok: boolean }) => result.ok)).toBe(true);
+  });
+
   it('RSR-P-008-B: chunked replies to a departed sender authenticate every part without threading continuations', async () => {
     const departedSender = 'ghost-sender';
     mockResolvedTyped(

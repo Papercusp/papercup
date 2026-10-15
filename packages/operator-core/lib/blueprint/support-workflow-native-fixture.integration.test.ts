@@ -18,6 +18,7 @@ import { replacePermissionListMembers, searchOrganizationDocuments } from '../da
 import { runWithWorkspace } from '../workspace-als';
 import { resolveProjectDir } from '../spawn-config';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { readWorkflowAdministration } from './support-workflow-administration';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -123,4 +124,14 @@ describe('maintained native support seed and production cookie switching', () =>
       AND request_key='native-fixture-revoked'`;
     expect(count?.n).toBe(0);
   }, 30_000);
+
+  it('retains an unapproved local candidate without changing the native fixture approval', async () => {
+    const administration = await readWorkflowAdministration(db.adminSql, { workspaceId,
+      harness: fixture.harnessSlug, operationId: fixture.operationId, principalId: fixture.actors.admin.id });
+    expect(administration).toMatchObject({ approvedRevision: fixture.approvedRevision, version: '1',
+      accountableOwner: fixture.actors.admin.id, reviewerPrincipals: [fixture.actors.reviewer.id] });
+    expect(fixture.candidateRevision).not.toBe(fixture.approvedRevision);
+    expect(administration.retainedRevisions).toContainEqual({ revision: fixture.candidateRevision, version: '2' });
+    expect(administration.history).toEqual([]);
+  });
 });

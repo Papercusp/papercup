@@ -59,7 +59,7 @@ describe('employee support selection on Workflows', () => {
       results: [{ ...document, scope: 'organization', source: 'forbidden' }] } } });
     fireEvent.click(screen.getByRole('button', { name: 'Search allowed sources' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Invalid case search result');
-    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /^Include / })).toBeNull();
     ports.tool.mockResolvedValue({ ok: true, data: { data: { legs: { organization: { allowed: false } }, results: [] } } });
     fireEvent.click(screen.getByRole('button', { name: 'Search allowed sources' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('access was refused'));
@@ -82,7 +82,7 @@ describe('employee support selection on Workflows', () => {
     const view = renderForm(props);
     await selectEvidence();
     fireEvent.change(screen.getByRole('textbox', { name: 'Find case evidence' }), { target: { value: 'different' } });
-    expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /^Include / })).toBeNull();
     expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(true);
     ports.query.mockReturnValue({ data: [{ supportWorkflow: { ...workflow, approvedRevision: 'b'.repeat(64) } }] });
     view.rerender(<WorkflowSupportForm harnessSlug="support" operationId="handoff" {...props} />);

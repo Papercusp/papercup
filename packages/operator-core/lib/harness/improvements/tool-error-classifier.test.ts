@@ -228,6 +228,30 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
       .toBe('structural');
   });
 
+  it('classifies the canonical wrapper_missing status and code as caller-side', () => {
+    const reports = [
+      {
+        toolName: 'mcp__papercusp_su__state_read',
+        status: 'wrapper_missing',
+        message: 'In this Codex functions.exec session, tools.mcp__papercusp_su__state_read was undefined and calling it raised TypeError before dispatch. The server-side state:read capability remained reachable through the ptool fallback, which returned gate.greenCheckpoint.ownership.',
+      },
+      {
+        toolName: 'mcp__papercusp_su__state_read',
+        errorCode: 'wrapper_missing',
+        status: 'not_dispatched',
+        message: 'The normalized direct wrapper was unavailable before MCP dispatch.',
+      },
+    ];
+
+    for (const report of reports) {
+      expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+        class: 'caller',
+        direct: false,
+      });
+    }
+  });
+
   it('keeps wrapper-unavailable discovery reports caller-side and non-claimable despite structured prose', () => {
     const report = {
       toolName: 'fleet:status',

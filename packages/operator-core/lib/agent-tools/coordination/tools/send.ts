@@ -3483,12 +3483,30 @@ export default defineTool({
     }
 
     const phaseTimers = new Map<number, CoordSendPhaseTimer>();
+    // Once one chunk of a logical message is durably appended, finish the
+    // remaining chunks even if the caller disconnects. Otherwise the shared
+    // request signal aborts every later sendOne at its pre-persist boundary and
+    // leaves a permanent prefix in the inbox. If the first part is explicitly
+    // aborted before persistence, suppress the rest too, so no tail can land by
+    // itself. A returned msg_id is the append receipt (even if a later wake step
+    // makes the per-part result unsuccessful).
+    const chunkCompletion = new Map<string, 'persisted' | 'aborted-before-persist'>();
     const env = await runBulk(
       expanded,
-      async ({ msg, refusal, goalReportPreVerdict }, itemIndex): Promise<BulkItemResult> => {
+      async ({ msg, refusal, goalReportPreVerdict, chunk }, itemIndex): Promise<BulkItemResult> => {
         if (refusal) return { ok: false, to: msg.to, ...refusal };
         const phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() };
         phaseTimers.set(itemIndex, phaseTimer);
+        const priorChunkState = chunk ? chunkCompletion.get(chunk.group) : undefined;
+        if (chunk && priorChunkState === 'aborted-before-persist') {
+          return {
+            ok: false,
+            to: msg.to,
+            error: 'request_aborted',
+            message: 'coord:send was aborted before its first chunk was persisted; no parts were appended.',
+            phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer),
+          };
+        }
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
         const wasBroadcast = msg.to.includes('*');
@@ -3562,8 +3580,15 @@ export default defineTool({
           itemIndex,
           goalReportPreVerdict,
           phaseTimer,
-          ctx.signal,
+          chunk && priorChunkState === 'persisted' ? undefined : ctx.signal,
         );
+        if (chunk && priorChunkState !== 'persisted') {
+          if (typeof result.msg_id === 'string' && result.msg_id.length > 0) {
+            chunkCompletion.set(chunk.group, 'persisted');
+          } else if (result.error === 'request_aborted') {
+            chunkCompletion.set(chunk.group, 'aborted-before-persist');
+          }
+        }
         return { ...result, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };
       },
       {

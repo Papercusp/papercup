@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
-import { projectBlueprintToPg } from '../../../packages/operator-core/lib/blueprint/project-to-pg';
+import { projectBlueprintToPg, retainBlueprintSpecificationSnapshot } from '../../../packages/operator-core/lib/blueprint/project-to-pg';
 import { supportToEngineeringOperation } from '../../../packages/operator-core/lib/blueprint/support-workflow-operation';
 import { currentBenchOpenAiInputContract } from '../../../packages/operator-core/lib/external-bench/current-su';
 import { defineHostedAllocation } from '../../../packages/operator-core/lib/auth/hosted/billing/allocation-store';
@@ -120,6 +120,12 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
       dependencies: { tools: ['blueprint:read-private-input'] }, operations: [operation] });
     const specification = compileAgentSpecification({ source: blueprint });
     await projectBlueprintToPg(client, { workspaceId, harnessSlug, blueprint, specification });
+    // Candidate input for the native admin journey, never an approved pointer
+    // or accepted receipt. Only the authenticated owner may promote it.
+    const candidate = structuredClone(blueprint);
+    candidate.operations!.find(value => value.id === operationId)!.version = '2';
+    const candidateSpecification = compileAgentSpecification({ source: candidate });
+    await retainBlueprintSpecificationSnapshot(client, { workspaceId, harnessSlug, specification: candidateSpecification });
     const department = `synthetic-support-dept-${nonce}`;
     for (const [allocationId, parentAllocationId, level] of [
       [funding.organization.organizationId, null, 'organization'],
@@ -134,6 +140,7 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
     return { workspaceId, harnessSlug, operationId, supportCaseId, query, documentTitle,
       documentId: document.id, listId: list.id, externalId, sourceUrl, role, actors, identities,
       approvedRevision: specification.specificationRevision, blueprint, specification, funding,
+      candidateRevision: candidateSpecification.specificationRevision,
       input: { supportCaseId, approvedRevision: specification.specificationRevision,
         documentIds: [document.id], query, requestedAction: 'prepare-handoff' } };
   });

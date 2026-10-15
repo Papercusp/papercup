@@ -252,6 +252,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     // server defect because the target MCP handler never ran.
     class: 'caller',
     errorCodes: [
+      'wrapper_missing',
       'client_wrapper_missing',
       'unknown_tool_wrapper',
       'wrapper-unavailable',
@@ -260,6 +261,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'client-wrapper-absent',
     ],
     statuses: [
+      'wrapper_missing',
       'wrapper-unavailable',
       'client_wrapper_unavailable',
       'client-wrapper-unavailable',

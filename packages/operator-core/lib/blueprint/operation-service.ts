@@ -901,6 +901,7 @@ export interface BlueprintOperationInputReceipt {
 export function cancelBlueprintOperation(
   sql: Sql, handle: BlueprintOperationHandle, callerId: string,
   input: { requestKey: string; reason: string },
+  internal?: { inTransaction: true; requestedBy: string },
 ): Promise<BlueprintOperationInputReceipt & { effected: boolean }> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt & { effected: boolean }> => {
     const { status, items } = await readCanonicalOperation(sql, handle, callerId);
@@ -911,10 +912,10 @@ export function cancelBlueprintOperation(
       throw new BlueprintOperationRefusal('terminal', 'cannot cancel a terminal blueprint operation');
     }
     const body = { kind: 'cancel', receiptId: handle.receiptId, ...targetEventFields(handle),
-      requestedBy: callerId, requestKey: input.requestKey, reason: input.reason.trim() };
-    const receipt = await sql.begin(async (tx) => {
+      requestedBy: internal?.requestedBy ?? callerId, requestKey: input.requestKey, reason: input.reason.trim() };
+    const save = async (tx: Sql | TransactionSql) => {
       const saved = await appendControlEvent(tx, handle, eventIdentity('cancel', handle, 'once'), body);
-      const marker = JSON.stringify({ eventId: saved.id, requestedBy: callerId, reason: input.reason.trim() });
+      const marker = JSON.stringify({ eventId: saved.id, requestedBy: internal?.requestedBy ?? callerId, reason: input.reason.trim() });
       for (const item of items) {
         if (isSettledWorkItem(item)) continue;
         await tx`
@@ -926,7 +927,8 @@ export function cancelBlueprintOperation(
         `;
       }
       return saved;
-    });
+    };
+    const receipt = internal?.inTransaction ? await save(sql) : await sql.begin(save);
     const current = await readCanonicalOperation(sql, handle, callerId);
     const effected = current.status.outcome === 'cancelled';
     const wakeQueued = current.status.phase === 'terminal' ? false : await notifyControl(

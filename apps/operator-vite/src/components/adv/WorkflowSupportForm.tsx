@@ -9,6 +9,7 @@ import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import WorkflowOperationResult, { workflowOperationSeam } from './WorkflowOperationResult';
 import { runScheduleTool } from './ScheduleEditor';
+import WorkflowAdministration from './WorkflowAdministration';
 
 type CaseDocument = { id: string; source: string; externalId: string | null; title: string; snippet: string };
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -63,6 +64,7 @@ export default function WorkflowSupportForm({ harnessSlug, operationId, previous
         onAccepted={async accepted => { await setReceipt(accepted); }} seam={seam} search={search} /> :
         workflow === undefined ? <p role="status">Loading workflow declaration…</p> : null}
     {handle && <WorkflowOperationResult handle={handle} />}
+    <WorkflowAdministration harnessSlug={harnessSlug} operationId={operationId} handle={handle} />
   </>;
 }
 

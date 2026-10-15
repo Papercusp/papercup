@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { entityRef } from '@papercusp/tooldef';
 import { BusinessReviewStateSchema, OperationEventBodySchema, OperationHandleSchema } from './operation-service';
+import { WorkflowAdministrationActionSchema, WorkflowAdministrationSelectionSchema } from './support-workflow-administration';
 
 export { BLUEPRINT_OPERATION_TOOLS, type BlueprintOperationVerb } from './operation-tool-names';
 
@@ -39,6 +40,8 @@ export const SubmitArgsSchema = z.object({
 
 const review = z.literal(true).optional().describe('Read as the distinct authenticated business reviewer named by this pinned operation.');
 export const HandleArgsSchema = z.object({ handle, review }).strict();
+export const StatusArgsSchema = z.union([HandleArgsSchema,
+  WorkflowAdministrationSelectionSchema.extend({ administration: z.literal(true) }).strict()]);
 
 export const EventsArgsSchema = z.object({
   handle,
@@ -52,12 +55,14 @@ export const CancelArgsSchema = z.object({
   handle, requestKey, reason: z.string().trim().min(1).max(2_000),
 }).strict();
 
-export const SignalArgsSchema = z.object({
+export const SignalArgsSchema = z.union([z.object({
   handle,
   channel: z.string().trim().min(1).max(200).describe('Signal channel declared by the operation.'),
   payload: z.unknown().describe('Payload validated against the channel payloadSchema.'),
   requestKey,
-}).strict();
+}).strict(), WorkflowAdministrationSelectionSchema.extend({
+  administration: WorkflowAdministrationActionSchema, requestKey,
+}).strict()]);
 
 export const ResumeArgsSchema = z.object({
   handle,

@@ -119,15 +119,22 @@ describe('psu shim re-exec loop (WI-38292)', () => {
         "const counter = process.env.RUN_LOG + '.n';",
         "let n = 0; try { n = Number(readFileSync(counter, 'utf8')); } catch {}",
         'n += 1; writeFileSync(counter, String(n));',
-        "appendFileSync(process.env.RUN_LOG, 'run' + n + '\\n');",
+        "appendFileSync(process.env.RUN_LOG, JSON.stringify({ run: n, reexecCount: process.env.PAPERCUSP_PSU_REEXEC_COUNT }) + '\\n');",
         `process.exit(n <= 2 ? ${PSU_REEXEC_EXIT_CODE} : 0);`,
         '',
       ].join('\n'),
     );
 
-    const { code } = await runShim();
+    const { code } = await runShim({ PAPERCUSP_PSU_REEXEC_COUNT: '99' });
     expect(code).toBe(0);
     expect(await runCount()).toBe(3);
+    const rows = (await fs.readFile(path.join(tmp, 'runs.log'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line));
+    expect(rows).toEqual([
+      { run: 1, reexecCount: '0' },
+      { run: 2, reexecCount: '1' },
+      { run: 3, reexecCount: '2' },
+    ]);
   });
 
   it('consumes kickoff env + argv before a host-code re-exec, while preserving ordinary launch args', async () => {

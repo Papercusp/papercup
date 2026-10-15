@@ -31,9 +31,9 @@
       "observation": "The immutable acceptance report is ok:true with an empty refusal list and all four child legs exiting zero."
     },
     {
-      "id": "measuring-sources-match-candidate",
+      "id": "packaging-and-journey-sources-match-candidate",
       "passed": true,
-      "observation": "package-release.sh, publish-release.sh, release-acceptance.sh and public-package.integration.test.ts working bytes match their ce62d173 committed blobs."
+      "observation": "package-release.sh, release-acceptance.sh and public-package.integration.test.ts working bytes matched their ce62d173 committed blobs at the cold-build verification. The publisher is separately versioned below; its URL fix does not change the accepted archive."
     }
   ],
   "artifactRoot": "/tmp",
@@ -85,8 +85,38 @@
   "publication": {
     "status": "not-published",
     "previewDirectory": ".papercusp/scratch/p032-ce62-9086d",
+    "previousManifestSha256": "9454f2274951cc200a2d94b3231140a7f2569e8c380d578485530b21e1060a6c",
+    "previousSourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+    "previousArchiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "previewWithPreviousManifestPassed": true,
+    "previewUsesDistinctArchivePath": true,
+    "previewLatestSha256": "cc2d39eeccc9a408ffb6bf6035b6bcf47fa017b733ad7058cf5af612f116ea6c",
+    "previewIndexSha256": "a40a24f4419a5c683e395d49d318bfef0e2750ea983c67616aaceabe6e5ef901",
+    "sanitizedAcceptanceSha256": "d0847f1c42a46f65616ddb8f40af4e9cd2a787d1cd1188f1bd67ce83bc00470c",
     "approvalDecision": null,
     "independentProductGrade": null,
     "publicInstallEvidence": null
+  },
+  "publisher": {
+    "path": "apps/tui/scripts/publish-release.sh",
+    "sha256": "a7b7a06be60c1df116cb8804330a0bf4b31f8589b2b5fc85a8bd84625d70cd4c",
+    "testPath": "packages/operator-core/lib/pui-e2e/publish-release.test.ts",
+    "testSha256": "c07dc8dccbebffaf3695967031020aba5d713a1f1c2cd83c9e35378d7cbaf8d8",
+    "testRunId": 21259467,
+    "detachedRunId": "b8ab87ae-608c-402c-9660-a35ddf4cb920",
+    "taskId": "0mv9u3okj19385iebqe",
+    "status": "pass",
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "rootCause": "The existing 0.1.0 r14 object and the accepted 0.1.0 r15 candidate had one immutable URL but different bytes.",
+    "fix": "Versioned archive, acceptance and checksum paths include the archive SHA-256 generation. Retained platform entries accept exact legacy or matching-generation layouts.",
+    "negativeControl": {
+      "taskId": "0mv9ud9z21l7xr6lq6e",
+      "status": "refused-before-tests",
+      "exitCode": 2,
+      "reason": "The maintained mutation runner requires destructive-call isolation for the publisher's cleanup rm call. The refusal verified source integrity; it is not a caught mutant.",
+      "next": "Repeat the same existing copy-out mutation with the runner's documented --fake-destructive isolation. No native acceptance rerun."
+    }
   }
 }
