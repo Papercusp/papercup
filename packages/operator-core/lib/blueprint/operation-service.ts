@@ -75,6 +75,21 @@ export const OperationHandleSchema = z.object({
 
 export type BlueprintOperationHandle = z.infer<typeof OperationHandleSchema>;
 
+/** Display the current declaration only. Submission still rechecks this revision,
+ * admission, funding and the employee's live source permissions. */
+export async function readCurrentSupportWorkflow(sql: Sql, input: {
+  workspaceId: string; harnessSlug: string; operationId: string;
+}) {
+  return runWithWorkspace(input.workspaceId, async () => {
+    const revision = await readOrProjectBlueprintHash(sql, input.workspaceId, input.harnessSlug);
+    if (!revision) return null;
+    const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
+    if (!specification) return null;
+    const { operation } = operationFromCurrentSpecification(specification, input);
+    return supportWorkflowFromOperation(operation, input.harnessSlug, revision);
+  });
+}
+
 export interface SubmitBlueprintOperationInput {
   workspaceId: string;
   harnessSlug: string;

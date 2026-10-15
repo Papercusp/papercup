@@ -225,6 +225,10 @@ export async function projectBlueprintToPg(
       source_commit = EXCLUDED.source_commit,
       projected_at  = now()
   `;
+  // Selected Workflows declarations share the existing catalog subscription.
+  // Publish only after the pointer and immutable snapshot have been persisted.
+  const { notifySyncInvalidate } = await import('../sync-sse');
+  await notifySyncInvalidate('automation.catalog');
   return { contentHash, ...(specification ? { specification } : {}) };
 }
 

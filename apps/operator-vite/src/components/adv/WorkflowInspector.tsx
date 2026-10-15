@@ -25,6 +25,7 @@ import { relativeTime } from './workflows-model';
 import type { LedgerRow } from './workflows-ledger-model';
 import { buildWorkflowGraph, type WorkflowBindingInput } from './workflow-graph-model';
 import WorkflowOperationResult from './WorkflowOperationResult';
+import WorkflowSupportForm from './WorkflowSupportForm';
 
 export interface RunRow {
   id: number;
@@ -212,7 +213,9 @@ export default function WorkflowInspector({
         </div>
       </div>
 
-      {item.operation?.handle && <WorkflowOperationResult handle={item.operation.handle} />}
+      {item.operation && <WorkflowSupportForm key={`${item.operation.harnessSlug}:${item.operation.operationId}`}
+        harnessSlug={item.operation.harnessSlug} operationId={item.operation.operationId}
+        previousHandle={item.operation.handle} />}
 
       <div className="pc-wf__insp-sec">
         <h3 className="pc-wf__insp-h">Topology</h3>

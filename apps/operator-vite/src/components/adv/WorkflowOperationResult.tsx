@@ -18,7 +18,7 @@ const operationHost = blueprintOperationHostFromInvoker(async (name, args) => {
   return result.data;
 });
 const noBootstrap = (): never => { throw new Error('Workflows uses its existing installed harness'); };
-const defaultSeam = createPotAppSeam({ ...operationHost,
+export const workflowOperationSeam = createPotAppSeam({ ...operationHost,
   readBootstrapMarker: noBootstrap, writeBootstrapMarker: noBootstrap, ensurePot: noBootstrap,
 });
 type InspectorSeam = Pick<PotAppSeam, 'reviewOperation' | 'cancelOperation'> & {
@@ -41,7 +41,7 @@ function parseOutput(value: unknown): WorkflowDisplayOutput {
 }
 const message = (error: unknown) => error instanceof Error ? error.message : 'Operation request failed';
 
-export default function WorkflowOperationResult({ handle, seam = defaultSeam }: {
+export default function WorkflowOperationResult({ handle, seam = workflowOperationSeam }: {
   handle: BlueprintOperationHandle;
   seam?: InspectorSeam;
 }) {
