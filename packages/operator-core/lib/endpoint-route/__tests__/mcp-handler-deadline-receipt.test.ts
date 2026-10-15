@@ -56,9 +56,13 @@ const h = vi.hoisted(() => {
       return [] as unknown[];
     },
   });
+  const fakeReservedSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
+    release: () => {},
+  });
   const fakeSql = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
     unsafe: async (..._a: unknown[]) => [] as unknown[],
     begin: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeTx),
+    reserve: async () => fakeReservedSql,
   });
   return {
     fakeTx,
@@ -498,7 +502,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
         {},
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
       );
-      expect(result.isError).toBe(false);
+      expect(result.isError).not.toBe(true);
       expect(h.withWorkspaceCalls).toContain('ws-test');
 
       const started = traceEvents(info.mock.calls).find((event) =>

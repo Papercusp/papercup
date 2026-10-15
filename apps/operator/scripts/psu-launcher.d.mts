@@ -4452,6 +4452,13 @@ export function setupReminderLines(stage: any): string[] | null;
  * preflight refusal into an exception so launchSessionPort can finalize the
  * already-prepared row before the process exits. */
 export function sessionPortLaunchAbortError(args: any, failure: any, stage: any): Error | null;
+export function launchFreshSu(selections: any, args: any, { brain, preflightCodexAutoPoolImpl, apiImpl, runLaunchPreflightImpl, runWrapperImpl, }?: {
+    brain?: boolean | undefined;
+    preflightCodexAutoPoolImpl?: typeof preflightCodexAutoPool | undefined;
+    apiImpl?: typeof api | undefined;
+    runLaunchPreflightImpl?: typeof runLaunchPreflight | undefined;
+    runWrapperImpl?: typeof runWrapper | undefined;
+}): Promise<void>;
 export const AGENTS: string[];
 /** The caller/origin marker used when PUI invokes the real PSU picker. */
 export const PUI_TUI_ORIGIN: "pui";
@@ -5205,9 +5212,6 @@ declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];
 declare function sessionPortApi(path: any, opts: any): Promise<any>;
-declare function launchFreshSu(selections: any, args: any, { brain }?: {
-    brain?: boolean | undefined;
-}): Promise<void>;
 declare function launchResolvedResume(source: any, args: any, { tracked }: {
     tracked: any;
 }): Promise<void>;

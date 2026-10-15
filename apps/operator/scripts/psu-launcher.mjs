@@ -17975,10 +17975,16 @@ export function sessionPortLaunchAbortError(args, failure, stage) {
   );
 }
 
-async function launchFreshSu(selections, args, { brain = false } = {}) {
+export async function launchFreshSu(selections, args, {
+  brain = false,
+  preflightCodexAutoPoolImpl = preflightCodexAutoPool,
+  apiImpl = api,
+  runLaunchPreflightImpl = runLaunchPreflight,
+  runWrapperImpl = runWrapper,
+} = {}) {
   args = inheritFreshCodexConfiguredModel(selections.agent, args);
   if (
-    !(await preflightCodexAutoPool({
+    !(await preflightCodexAutoPoolImpl({
       agent: selections.agent,
       model: args.model,
       account: args.account,
@@ -18003,7 +18009,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
         "psu: recovered the newest isolated Codex login as the persistent default system login.",
       );
   }
-  const res = await api("/api/agent-mcp/console/bootstrap-su", {
+  const res = await apiImpl("/api/agent-mcp/console/bootstrap-su", {
     method: "POST",
     body: JSON.stringify(
       freshSuBootstrapBody(selections, args, {
@@ -18076,7 +18082,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
   // assertion + window guard — fail loud BEFORE spawning a doomed session.
   try {
-    runLaunchPreflight({
+    runLaunchPreflightImpl({
       promptFile: res.promptFile,
       contextSize: args.contextSize,
       model: args.model,
@@ -18144,11 +18150,35 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   }
   // First-class --add-dir (claude/codex) then the generic `--` passthrough — both
   // forwarded verbatim to the backend CLI after psu's own flags.
+  // A managed Codex compaction budget also owns its native override. A stale
+  // passthrough -c/--config must not replace it later in argv. Preserve every
+  // other setting and leave backends without a managed override unchanged.
+  const passthrough = args.passthrough || [];
+  const backendPassthrough = [];
+  const managedCompaction = res.agent === "codex" &&
+    extra.some((arg) => arg.startsWith("model_auto_compact_token_limit="));
+  for (let i = 0; i < passthrough.length; i++) {
+    const arg = passthrough[i];
+    if (arg === "--") {
+      backendPassthrough.push(...passthrough.slice(i));
+      break;
+    }
+    const paired = arg === "-c" || arg === "--config";
+    const config = paired ? passthrough[i + 1]
+      : arg.startsWith("--config=") ? arg.slice("--config=".length)
+      : arg.startsWith("-c") ? arg.slice(2).replace(/^=/, "") : null;
+    if (managedCompaction && typeof config === "string" &&
+        /^\s*(?:model_auto_compact_token_limit|"model_auto_compact_token_limit"|'model_auto_compact_token_limit')\s*=/.test(config)) {
+      if (paired) i++;
+      continue;
+    }
+    backendPassthrough.push(arg);
+  }
   const launchArgs = [
     ...baseArgs,
     ...extra,
     ...addDirArgs(res.agent, args.addDir || []),
-    ...(args.passthrough || []),
+    ...backendPassthrough,
   ];
   // The brain (Queen) is an AGENT riding the su launch machinery — it gets the
   // native-scheduler lockout the human su session deliberately keeps (D-003).
@@ -18320,7 +18350,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
 
   // codex's superuser bearer is baked into its per-session config.toml
   // server-side (D-006); nothing for psu to export here.
-  runWrapper({
+  runWrapperImpl({
     wrapperBin: bin,
     args: kickoff.args,
     cwd: res.cwd,
