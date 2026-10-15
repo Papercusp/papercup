@@ -118,6 +118,10 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       pgQueryTool.args.safeParse({ sql: 'SELECT 1', positiveControlSql: 'SELECT 1 AS known' }).success,
     ).toBe(true);
     expect(pgQueryTool.args.safeParse({ describe: 'harness_shared.tool_invocations' }).success).toBe(true);
+    expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1', allowUnboundedJsonSearch: true }).success).toBe(true);
+    expect(
+      pgQueryTool.args.safeParse({ describe: 'harness_shared.tool_invocations', allowUnboundedJsonSearch: false }).success,
+    ).toBe(false);
     expect(pgQueryTool.args.safeParse({ sql: 'SELECT 1', describe: 'harness_shared.tool_invocations' }).success).toBe(false);
     expect(
       pgQueryTool.args.safeParse({
@@ -130,15 +134,19 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     const json = z.toJSONSchema(pgQueryTool.args as never) as {
       anyOf?: Array<{
         required?: string[];
-        properties?: Record<string, { not?: unknown }>;
+        properties?: Record<string, { not?: unknown; type?: unknown }>;
       }>;
       oneOf?: Array<{
         required?: string[];
-        properties?: Record<string, { not?: unknown }>;
+        properties?: Record<string, { not?: unknown; type?: unknown }>;
       }>;
     };
     const branches = json.anyOf ?? json.oneOf ?? [];
     expect(branches).toHaveLength(2);
+    const sqlBranch = branches.find((branch) => branch.required?.includes('sql'));
+    const describeBranch = branches.find((branch) => branch.required?.includes('describe'));
+    expect(sqlBranch?.properties?.allowUnboundedJsonSearch).toMatchObject({ type: 'boolean' });
+    expect(describeBranch?.properties?.allowUnboundedJsonSearch).toMatchObject({ not: expect.anything() });
     expect(branches).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
