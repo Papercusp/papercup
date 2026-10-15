@@ -168,7 +168,116 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(r.rereadBytes).toBe(0);
   });
 
-  it('CLI persists the dated 24h baseline with a named source window and validates options', () => {
+  it('TE-DIAGNOSE-COHORTS: reconciles roles, stamped wakes, polling and observed durations to native sessions', async () => {
+    const prompt = (text: string, seconds: number) => ({ timestamp: time(seconds), type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
+    const f = fixture([
+      { timestamp: time(0), type: 'user', sessionId: 'claude-native', message: { content: 'quoted ⟦turn-origin:loop-fire nonce:fake⟧' } },
+      assistant('m1', 1, [use('read1', 'Read', { file_path: '/one' })]),
+      result('read1', 'one', 2),
+      assistant('m2', 3, [use('read2', 'Read', { file_path: '/one' })]),
+      result('read2', 'one', 4),
+    ], [
+      { timestamp: time(0), type: 'session_meta', payload: { id: 'codex-native' } },
+      prompt('<pasted_content id="a1">\n⟦turn-origin:loop-fire nonce:abcdef12⟧ wake\n</pasted_content id="a1">', 0),
+      { timestamp: time(0), type: 'event_msg', payload: { type: 'user_message', message: 'duplicate prompt' } },
+      usage(1, 1), usage(1, 1.1), call('w1', 'wait', { cell_id: 'x' }, 2), output('w1', 'still running', 3),
+      usage(2, 4), call('w2', 'write_stdin', { session_id: 1, yield_time_ms: 1000 }, 5), output('w2', 'done', 6),
+      prompt('owner text', 7), usage(3, 8), call('x', 'exec', 'await tools.read_file({path:"one"})', 9),
+      output('x', 'opaque', 10, true),
+    ]);
+    const r = await run(f, { sessionMetadata: [
+      { nativeSessionId: 'claude-native', role: 'su', ownerId: 'c', source: 'adv_sessions' },
+      { nativeSessionId: 'codex-native', role: 'worker', ownerId: 'x', source: 'identity-ledger' },
+      // Several historical phases corroborate one identity; they are not sessions.
+      { nativeSessionId: 'codex-native', role: 'worker', ownerId: 'x', source: 'identity-ledger' },
+    ] });
+    expect(r.drivers.coverage).toMatchObject({ activeFiles: 2, includedSessions: 2, unknownIdentitySessions: 0 });
+    expect(r.drivers.byRole.map((c) => [c.client, c.cohort, c.sessions, c.modelCalls])).toEqual([
+      ['claude', 'su', 1, 2], ['codex', 'worker', 1, 3],
+    ]);
+    const codex = r.drivers.sessions.find((s) => s.client === 'codex');
+    expect(codex).toMatchObject({ role: 'worker', observedSeconds: 10, durationBand: '<5m', wakeSource: 'mixed',
+      callsByOrigin: { 'loop-fire': 2, unmarked: 1 }, turnsByOrigin: { 'loop-fire': 1, unmarked: 1 },
+      toolCalls: 3, waitCalls: 2, shortWaitCalls: 1, waitYieldMilliseconds: { unspecified: 1, '<=1000': 1 }, readCalls: 0, opaqueExecCalls: 1 });
+    expect(r.drivers.sessions.find((s) => s.client === 'claude')).toMatchObject({
+      role: 'su', wakeSource: 'unmarked', readCalls: 2, repeatedReadCalls: 1, turnsByOrigin: { unmarked: 1 },
+    });
+    expect(r.drivers.byOwner).toEqual([
+      { client: 'claude', ownerId: 'c', nativeSessions: 1, modelCalls: 2 },
+      { client: 'codex', ownerId: 'x', nativeSessions: 1, modelCalls: 3 },
+    ]);
+    expect(r.drivers.byRoleWakeDuration.reduce((n, c) => n + c.modelCalls, 0)).toBe(5);
+    for (const cohort of [r.drivers.byRole, r.drivers.byWakeSource, r.drivers.byDuration]) {
+      expect(cohort.reduce((n, c) => n + c.modelCalls, 0)).toBe(5);
+      expect(cohort.reduce((n, c) => n + c.sessions, 0)).toBe(2);
+    }
+  });
+
+  it('TE-DIAGNOSE-COHORTS: preserves unknown/conflicting roles and excludes duplicate native files', async () => {
+    const f = fixture([assistant('m1', 0)], [
+      { timestamp: time(0), type: 'session_meta', payload: { id: 'native' } }, usage(1, 1),
+    ]);
+    const metadata = [
+      { nativeSessionId: 'native', role: 'su', ownerId: 'a' },
+      { nativeSessionId: 'native', role: 'worker', ownerId: 'b' },
+    ];
+    const r = await run(f, { sessionMetadata: metadata });
+    expect(r.drivers.coverage).toMatchObject({ unknownIdentitySessions: 1, ambiguousIdentitySessions: 1 });
+    expect(r.drivers.sessions.find((s) => s.client === 'codex').role).toBe('ambiguous');
+    writeFileSync(join(f.roots[1].path, 'rollout-copy.jsonl'), readFileSync(f.codexFile));
+    const copies = await run(f, { sessionMetadata: metadata });
+    expect(copies.clients.codex.modelCalls).toBe(2); // file observations retained
+    expect(copies.drivers.coverage).toMatchObject({ activeFiles: 3, includedSessions: 1,
+      duplicateNativeFiles: [{ nativeSessionId: 'native', excludedModelCalls: 2 }] });
+    expect(copies.drivers.sessions).toHaveLength(1);
+  });
+
+  it('TE-DIAGNOSE-PATTERN: repeated reads reset at compaction and do not count unseen exec bodies or out-of-window calls', async () => {
+    const f = fixture([
+      assistant('m1', 0, [use('r1', 'Read', { file_path: '/one' })]),
+      assistant('m2', 1, [use('r2', 'Read', { file_path: '/two' })]),
+      assistant('m3', 2, [use('r3', 'Read', { file_path: '/one' })]),
+      { timestamp: time(3), type: 'system', subtype: 'compact_boundary' },
+      assistant('m4', 4, [use('r4', 'Read', { file_path: '/one' })]),
+      { ...assistant('future', 5, [use('r5', 'Read', { file_path: '/one' })]), timestamp: new Date(NOW + 1).toISOString() },
+    ]);
+    const r = await run(f);
+    expect(r.drivers.sessions[0]).toMatchObject({ toolCalls: 4, readCalls: 4, repeatedReadCalls: 1, observedSeconds: 4 });
+  });
+
+  it('TE-DIAGNOSE-PATTERN: distinguishes repeated no-change waits from progressing output and resets at compaction', async () => {
+    const f = fixture([], [usage(1, 0),
+      call('w1', 'wait', { cell_id: 'x', yield_time_ms: 1000 }, 1), output('w1', 'running', 2),
+      call('w2', 'wait', { cell_id: 'x', yield_time_ms: 500 }, 3), output('w2', 'running', 4),
+      call('w3', 'wait', { cell_id: 'x', yield_time_ms: 30000 }, 5), output('w3', 'more output', 6),
+      { timestamp: time(7), type: 'compacted' },
+      call('w4', 'wait', { cell_id: 'x', yield_time_ms: 30000 }, 8), output('w4', 'more output', 9),
+    ]);
+    const r = await run(f);
+    expect(r.drivers.sessions[0]).toMatchObject({ waitCalls: 4, shortWaitCalls: 2, repeatedWaitCalls: 2,
+      unchangedWaitResults: 1, waitYieldMilliseconds: { '<=1000': 2, '>10000': 2 } });
+  });
+
+  it('TE-DIAGNOSE-COHORTS: replays frozen file sizes/window and exposes missing or shortened source coverage', async () => {
+    const f = fixture([assistant('m1', 0)], [usage(1, 0)]);
+    const baseline = await run(f);
+    writeFileSync(f.codexFile, readFileSync(f.codexFile, 'utf8') + JSON.stringify(usage(2, 1)) + '\n');
+    const frozen = await measure([], 1, { now: NOW + 3600_000, snapshot: baseline });
+    expect(frozen.window).toEqual(baseline.window);
+    expect(frozen.clients.codex.modelCalls).toBe(1);
+    expect((await run(f)).clients.codex.modelCalls).toBe(2);
+    expect(frozen.sourceCoverage.files.find((s) => s.client === 'codex').snapshotBytes)
+      .toBe(baseline.sourceCoverage.files.find((s) => s.client === 'codex').snapshotBytes);
+    writeFileSync(f.codexFile, '');
+    rmSync(f.claudeFile);
+    const missing = await measure([], 24, { snapshot: baseline });
+    expect(missing.drivers.coverage.includedSessions).toBe(0);
+    expect(missing.sourceCoverage.diagnostics).toMatchObject({ unreadablePaths: 2, shortenedSnapshots: 1 });
+    expect(missing.sourceCoverage.unavailableFiles).toHaveLength(2);
+  });
+
+  it('CLI persists the dated 24h baseline with a named source window and validates options', async () => {
     const f = fixture(), out = join(f.home, 'baseline.json');
     const stdout = execFileSync(process.execPath, [SCRIPT, '--since', '24h', '--claude-root', f.roots[0].path, '--codex-root', f.roots[1].path, '--out', out], { encoding: 'utf8' });
     const persisted = JSON.parse(readFileSync(out, 'utf8'));
@@ -177,6 +286,13 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(Date.parse(persisted.window.end) - Date.parse(persisted.window.start)).toBe(24 * 3600_000);
     expect(persisted.sourceCoverage.roots).toHaveLength(2);
     expect(persisted.method.bytes).toContain('No tokenizer ran');
+    const snapshot = join(f.home, 'frozen.json'), metadata = join(f.home, 'roles.json');
+    writeFileSync(snapshot, JSON.stringify(persisted));
+    writeFileSync(metadata, JSON.stringify({ capturedAt: time(), source: 'fixture', sessions: [] }));
+    const replay = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--snapshot', snapshot, '--metadata', metadata], { encoding: 'utf8' }));
+    expect(replay.window).toEqual(persisted.window);
+    expect(replay.metadataCoverage).toEqual({ capturedAt: time(), source: 'fixture', rows: 0 });
+    await expect(measure(f.roots, 24, { sessionMetadata: {} })).rejects.toThrow('sessionMetadata must be an array');
     expect(() => execFileSync(process.execPath, [SCRIPT, '--out'], { stdio: 'pipe' })).toThrow();
     expect(() => execFileSync(process.execPath, [SCRIPT, '--hours', '-1'], { stdio: 'pipe' })).toThrow();
   });

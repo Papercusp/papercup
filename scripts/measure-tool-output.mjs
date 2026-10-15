@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { walkRawTranscripts, readRawTranscript } from './lib/raw-session-corpus.mjs';
+import { ENVELOPE_RE, unwrapWholePaste } from '../packages/operator-core/lib/turn-provenance/envelope-grammar.ts';
 
 export const CAP_NAMES = ['codex-outer-exec', 'nested-shell', 'papercusp-door', 'unknown'];
 const DEFAULT_ROOTS = [
@@ -166,8 +167,8 @@ function callKind(tool) {
 function durationBand(seconds) {
   return seconds == null ? 'unknown' : seconds < 300 ? '<5m' : seconds < 1800 ? '5-30m' : seconds < 7200 ? '30-120m' : '>=2h';
 }
-function roleFor(nativeSessionId, metadata) {
-  const matches = metadata.filter((r) => r.nativeSessionId === nativeSessionId);
+export function roleFor(nativeSessionId, metadata) {
+  const matches = nativeSessionId ? metadata.filter((r) => r.nativeSessionId === nativeSessionId) : [];
   const roles = [...new Set(matches.map((r) => r.role).filter(Boolean))].sort();
   const owners = [...new Set(matches.map((r) => r.ownerId).filter(Boolean))].sort();
   const ambiguous = roles.length > 1 || owners.length > 1;
@@ -189,6 +190,7 @@ export function driverCohorts(files) {
   const duplicates = [...groups.values()].filter((g) => g.length > 1);
   const sessions = [...groups.values()].filter((g) => g.length === 1).map(([f]) => ({
     path: f.path, client: f.client, nativeSessionId: f.nativeSessionId, role: f.identity.role,
+    ownerId: f.identity.owners.length === 1 ? f.identity.owners[0] : null,
     identityStatus: f.identity.status, durationBand: durationBand(f.drivers.observedSeconds),
     ...f.drivers, modelCalls: f.modelCalls,
     wakeSource: Object.keys(f.drivers.callsByOrigin).length === 1
@@ -197,8 +199,9 @@ export function driverCohorts(files) {
   const by = (field) => {
     const rows = new Map();
     for (const s of sessions) {
-      const key = JSON.stringify([s.client, s[field]]);
-      if (!rows.has(key)) rows.set(key, { client: s.client, cohort: s[field], sessions: 0, modelCalls: 0,
+      const cohort = typeof field === 'function' ? field(s) : s[field];
+      const key = JSON.stringify([s.client, cohort]);
+      if (!rows.has(key)) rows.set(key, { client: s.client, cohort, sessions: 0, modelCalls: 0,
         waits: 0, repeatedReads: 0, calls: [] });
       const row = rows.get(key);
       row.sessions += 1; row.modelCalls += s.modelCalls; row.waits += s.waitCalls;
@@ -207,8 +210,18 @@ export function driverCohorts(files) {
     return [...rows.values()].map(({ calls, ...r }) => ({ ...r, callsPerSession: r.modelCalls / r.sessions,
       requestDistribution: distribution(calls) })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   };
+  const byOwner = new Map();
+  for (const s of sessions.filter((s) => s.ownerId)) {
+    const key = JSON.stringify([s.client, s.ownerId]);
+    if (!byOwner.has(key)) byOwner.set(key, { client: s.client, ownerId: s.ownerId, nativeSessions: 0, modelCalls: 0 });
+    const row = byOwner.get(key); row.nativeSessions += 1; row.modelCalls += s.modelCalls;
+  }
   return { sessions, byRole: by('role'), byWakeSource: by('wakeSource'), byDuration: by('durationBand'),
+    byRoleWakeDuration: by((s) => JSON.stringify([s.role, s.wakeSource, s.durationBand])),
+    byOwner: [...byOwner.values()],
     coverage: { activeFiles: active.length, includedSessions: sessions.length,
+      sessionsWithOwner: sessions.filter((s) => s.ownerId).length,
+      unidentifiedNativeFiles: sessions.filter((s) => !s.nativeSessionId).length,
       duplicateNativeFiles: duplicates.map((g) => ({ client: g[0].client, nativeSessionId: g[0].nativeSessionId,
         files: g.map((f) => f.path), excludedModelCalls: g.reduce((n, f) => n + f.modelCalls, 0) })),
       unknownIdentitySessions: sessions.filter((s) => s.identityStatus === 'unknown').length,
@@ -220,9 +233,10 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
   const calls = new Map(), seenResults = new Set(), seenRequests = new Set(), recentTruncated = new Map();
   const rows = [], segments = [0];
   const driver = { toolCalls: 0, waitCalls: 0, readCalls: 0, repeatedReadCalls: 0, opaqueExecCalls: 0,
+    shortWaitCalls: 0, repeatedWaitCalls: 0, unchangedWaitResults: 0, waitYieldMilliseconds: {},
     callsByOrigin: {}, toolCallsByOrigin: {}, turnsByOrigin: {}, callsByTool: {},
     callsWithoutTimestamp: 0, firstRecordAt: null, lastRecordAt: null };
-  const seenReads = new Set(), seenTurnNonces = new Set();
+  const seenReads = new Set(), seenTurnNonces = new Set(), seenWaits = new Set(), waitResults = new Map();
   let origin = 'unmarked';
   const coverage = { parseErrors: 0, resultsWithoutTimestamp: 0, requestsWithoutTimestamp: 0,
     duplicateResults: 0, duplicateRequests: 0, requestsWithoutIdentity: 0, unmatchedResults: 0, nativeCompactions: 0, futureResults: 0, lines: 0 };
@@ -245,7 +259,17 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
       driver.toolCalls += 1;
       driver.callsByTool[tool] = (driver.callsByTool[tool] || 0) + 1;
       driver.toolCallsByOrigin[origin] = (driver.toolCallsByOrigin[origin] || 0) + 1;
-      if (callKind(tool) === 'wait') driver.waitCalls += 1;
+      if (callKind(tool) === 'wait') {
+        driver.waitCalls += 1;
+        if (seenWaits.has(sig)) driver.repeatedWaitCalls += 1;
+        seenWaits.add(sig);
+        let args = input;
+        if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = null; } }
+        const ms = args?.yield_time_ms;
+        const band = !Number.isFinite(ms) ? 'unspecified' : ms <= 1000 ? '<=1000' : ms <= 10000 ? '1001-10000' : '>10000';
+        driver.waitYieldMilliseconds[band] = (driver.waitYieldMilliseconds[band] || 0) + 1;
+        if (Number.isFinite(ms) && ms <= 1000) driver.shortWaitCalls += 1;
+      }
       if (callKind(tool) === 'read') {
         driver.readCalls += 1;
         if (seenReads.has(sig)) driver.repeatedReadCalls += 1;
@@ -267,6 +291,11 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
     const info = calls.get(id);
     if (!info) coverage.unmatchedResults += 1;
     const tool = info?.tool || '(unmatched)', bytes = contentBytes(value);
+    if (info && callKind(tool) === 'wait') {
+      const digest = createHash('sha256').update(contentText(value)).digest('hex');
+      if (waitResults.get(info.sig) === digest) driver.unchangedWaitResults += 1;
+      waitResults.set(info.sig, digest);
+    }
     if (info?.retryOf) info.retryOf.rerunBytes += bytes;
     const row = { tool, bytes, caps: capFor(client, tool, value), segment, at: segments[segment], ts, rereadBytes: 0, reruns: 0, rerunBytes: 0 };
     rows.push(row);
@@ -294,7 +323,7 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
       ? rec.message?.content : client === 'codex' && rec.type === 'response_item'
         && p?.type === 'message' && p.role === 'user' ? p.content : null;
     if (userContent != null && !(Array.isArray(userContent) && userContent.some((b) => b?.type === 'tool_result'))) {
-      const match = /^\s*⟦turn-origin:([^\s⟧]+) nonce:([a-zA-Z0-9_-]+)⟧/.exec(contentText(userContent));
+      const match = ENVELOPE_RE.exec(unwrapWholePaste(contentText(userContent)));
       origin = match?.[1] || 'unmarked';
       if (!match || !seenTurnNonces.has(match[2])) {
         if (match) seenTurnNonces.add(match[2]);
@@ -302,7 +331,7 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
       }
     }
     if (rec.type === 'compacted' || p?.type === 'context_compacted' || (rec.type === 'system' && rec.subtype === 'compact_boundary')) {
-      coverage.nativeCompactions += 1; segment += 1; segments.push(0); recentTruncated.clear(); seenReads.clear(); continue;
+      coverage.nativeCompactions += 1; segment += 1; segments.push(0); recentTruncated.clear(); seenReads.clear(); seenWaits.clear(); waitResults.clear(); continue;
     }
     if (client === 'claude') {
       const m = rec.message;
@@ -339,6 +368,7 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
 }
 
 export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.now(), rerunSeconds = 120, snapshot, sessionMetadata = [] } = {}) {
+  if (!Array.isArray(sessionMetadata)) throw new Error('sessionMetadata must be an array');
   if (snapshot) {
     now = Date.parse(snapshot.window.end);
     hours = (now - Date.parse(snapshot.window.start)) / 3600_000;
@@ -347,6 +377,7 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
   const start = now - hours * 3600_000, end = now, rows = { claude: [], codex: [] };
   const modelCalls = { claude: 0, codex: 0 }, seenFiles = new Set(), files = [], rootCoverage = [];
   const diagnostics = { duplicatePaths: 0, unreadablePaths: 0, unknownClientFiles: 0, shortenedSnapshots: 0 };
+  const unavailableFiles = [];
   const candidates = snapshot ? [{ client: 'snapshot', path: '.', files: snapshot.sourceCoverage.files }] : roots;
   for (const root of candidates) {
     const entry = { client: root.client, path: resolve(root.path), status: 'read', files: 0, skippedBeforeWindow: 0, errors: 0 };
@@ -356,7 +387,11 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
     for await (const file of discovered) {
       if (root.client === 'codex' && !/^rollout-.*\.jsonl$/.test(file.split('/').at(-1))) continue;
       let before, canonicalPath;
-      try { before = await stat(file); canonicalPath = await realpath(file); } catch { diagnostics.unreadablePaths += 1; continue; }
+      try { before = await stat(file); canonicalPath = await realpath(file); } catch {
+        diagnostics.unreadablePaths += 1;
+        unavailableFiles.push({ path: file, ...frozen.get(file), error: 'unreadable' });
+        continue;
+      }
       if (seenFiles.has(canonicalPath)) { diagnostics.duplicatePaths += 1; continue; }
       seenFiles.add(canonicalPath);
       // Same discovery optimization as WI-6882. The actual result boundary is
@@ -375,7 +410,10 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
           snapshotBytes, mtime: new Date(before.mtimeMs).toISOString(), changedDuringRead: before.size !== after.size || before.mtimeMs !== after.mtimeMs,
           results: scanned.rows.length, modelCalls: scanned.modelCalls, coverage: scanned.coverage,
           identity: roleFor(scanned.nativeSessionId, sessionMetadata), drivers: scanned.drivers });
-      } catch { entry.errors += 1; entry.status = 'partial'; diagnostics.unreadablePaths += 1; }
+      } catch (error) {
+        entry.errors += 1; entry.status = 'partial'; diagnostics.unreadablePaths += 1;
+        unavailableFiles.push({ path: file, ...frozen.get(file), error: error.message });
+      }
     }
   }
   const clients = Object.fromEntries(Object.entries(rows).map(([client, results]) => {
@@ -396,10 +434,11 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
       reruns: 'Heuristic: next call with the same tool and canonical arguments within the declared seconds after a marked result. Delivery caps/timeouts are ignored; each repeat attaches to at most one prior result. Does not prove truncation caused the repeat. Bytes are the observed repeat result bytes.',
       coverage: 'Finite initial file-size snapshots; mtime selects candidate files, record timestamps select results/requests. Missing timestamps excluded. Overlapping real paths deduped; distinct copied/forked files are separate transcript observations.',
       drivers: 'Recorded top-level calls only; exec bodies are opaque. Repeated reads have identical canonical arguments within a native compaction segment and the window; repetition does not prove waste. Model requests are assigned to the preceding user-turn head marker; unmarked is unknown, not owner-typed. Durations are observed record spans within the window, not CPU time or full session lifetime.',
-      cohorts: 'Active native sessions with one source file, grouped separately by client/role, client/wake source and client/duration. Multiple files for one native identity are excluded explicitly. Historical identity-ledger and adv_sessions metadata are supplied as a dated sidecar; conflicting roles/owners are ambiguous, missing matches unknown. Snapshot mode reuses exact candidate files, byte limits and window; unavailable or shortened sources are exposed.',
+      waits: 'wait/write_stdin/wait_agent invocations; short means an explicitly requested yield_time_ms <=1000, not measured wall time. Repeated waits share canonical arguments in the segment/window. Unchanged means identical output text for the same invocation signature; it does not imply completion, and formatting/timing can make an unchanged process look different.',
+      cohorts: 'Active native sessions with one source file (missing native IDs are exposed), grouped by client/role, client/wake source, client/duration and their joint tuple. byOwner separately sums known owner IDs across native incarnations; unknown/ambiguous owners are excluded from that denominator. Multiple files for one native identity are excluded explicitly. Historical identity-ledger and adv_sessions metadata are supplied as a dated sidecar; conflicting roles/owners are ambiguous, missing matches unknown. Snapshot mode reuses exact candidate files, byte limits and window; unavailable or shortened sources are exposed.',
     },
     ...summary([...rows.claude, ...rows.codex]), clients, drivers: driverCohorts(files),
-    sourceCoverage: { roots: rootCoverage, files, diagnostics, ...coverage,
+    sourceCoverage: { roots: rootCoverage, files, unavailableFiles, diagnostics, ...coverage,
       changedDuringRead: files.filter((f) => f.changedDuringRead).length },
   };
 }
@@ -409,7 +448,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const snapshot = options.snapshot ? JSON.parse(await readFile(options.snapshot, 'utf8')) : undefined;
   const metadata = options.metadata ? JSON.parse(await readFile(options.metadata, 'utf8')) : undefined;
   const report = await measure(options.roots, options.hours, { rerunSeconds: options.rerunSeconds, snapshot,
-    sessionMetadata: metadata?.sessions || [] });
+    sessionMetadata: metadata ? metadata.sessions : [] });
   if (metadata) report.metadataCoverage = { capturedAt: metadata.capturedAt, source: metadata.source, rows: metadata.sessions?.length || 0 };
   if (options.out) await writeFile(options.out, JSON.stringify(report, null, 2) + '\n');
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
