@@ -221,6 +221,7 @@ function readVolatilePayloadText(uri: string): string {
 function boundedBody(result: DoorableResult): {
   text?: string;
   review?: unknown;
+  summaryNotice?: Record<string, unknown>;
   _projection: {
     cursor: Record<string, unknown>;
     next: string;
@@ -235,6 +236,7 @@ function boundedBody(result: DoorableResult): {
   return JSON.parse(textItems[0].text) as {
     text?: string;
     review?: unknown;
+    summaryNotice?: Record<string, unknown>;
     _projection: {
       cursor: Record<string, unknown>;
       next: string;
@@ -3355,6 +3357,7 @@ describe('applyResultDoor', () => {
       const doored = applyResultDoor(result, {
         toolName: 'tools:invoke',
         nestedTargetToolName: 'work_items:get',
+        effect: 'read',
         workspaceId: 'ws-1',
         runId: RUN_ID,
       });
@@ -3369,6 +3372,32 @@ describe('applyResultDoor', () => {
         "tools:invoke { name:'work_items:get', args:{ …original args, payloadTier:'full' } }",
       );
       expect(envelope.incomplete.note).not.toContain("name:'tools:invoke'");
+    });
+
+    it.each([
+      ['scorecards:emit', 'Do NOT repeat this non-idempotent emit', 'scorecard ledger'],
+      ['mail:send', 'Do NOT repeat the write', 'authoritative state'],
+    ])('does not recommend replaying nested write %s to recover an upstream projection', (target, warning, recovery) => {
+      const result = {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, created: true, issueId: 'EI-emit-1' }) }],
+        _meta: { payloadProjection },
+      };
+      const doored = applyResultDoor(result, {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: target,
+        effect: 'write',
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope.incomplete).toMatchObject({
+        reason: 'under-budget-partial-result',
+        recoverable: false,
+      });
+      expect(envelope.incomplete.note).toContain(warning);
+      expect(envelope.incomplete.note).toContain(recovery);
+      expect(envelope.incomplete.note).not.toMatch(/Re-call (scorecards:emit|mail:send) with payloadTier:'full'/);
     });
 
     it('preserves work-item field recovery when upstream projection metadata is also present', () => {
@@ -3489,7 +3518,7 @@ describe('applyResultDoor', () => {
           }],
         });
         const doored = applyResultDoor(
-          { content: [{ type: 'text' as const, text }] },
+          { content: [{ type: 'text' as const, text }], _meta: {} },
           {
             toolName,
             ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
@@ -3874,7 +3903,7 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain('capability:read');
       expect(pointer).toContain('smaller return');
       expect(pointer).toContain('bounded slices');
-      expect(boundedBody(doored).summaryNotice.rawSummaryCursor).toMatchObject({
+      expect(boundedBody(doored).summaryNotice?.rawSummaryCursor).toMatchObject({
         status: 'available',
         args: { uri: 'papercusp://scratch/ws-1/code:run/123e4567-e89b-42d3-a456-426614174000/raw-summary.json' },
       });
