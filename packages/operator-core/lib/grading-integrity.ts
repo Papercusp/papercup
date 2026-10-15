@@ -19,6 +19,8 @@ import launchAgentTool from './agent-tools/capability/launch-agent';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { findSessionTranscript } from './claude-sessions';
+import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import {
   classifyAcceptanceGraderNoFirstTurnStall,
   isAcceptanceGraderNoFirstTurnLivenessCandidate,
@@ -26,6 +28,9 @@ import {
   detectAcceptanceGraderTerminalFailure,
   readAcceptanceGraderLogMtimeMs,
   readAcceptanceGraderLogTail,
+  gradingLaunchProfile,
+  withGradingLaunchProfile,
+  type GradingLaunchProfile,
   type AcceptanceGraderTerminalFailureCode,
 } from './acceptance-grader';
 import { getRubric } from './rubrics';
@@ -479,7 +484,7 @@ export interface PendingGradingAuditDispatchReceipt {
     retiredTaskIds: string[];
     attempts: number;
     codes: GradingAuditRecoveryCode[];
-    fallback: typeof GRADING_AUDIT_FALLBACK;
+    fallback: typeof GRADING_AUDIT_FALLBACK | GradingLaunchProfile;
     /** Backend the bounded retry actually launched on (see recoveryFields). */
     routedTo: 'claude' | 'codex';
   };
@@ -555,9 +560,10 @@ export interface DispatchPendingGradingAuditsDeps {
   /** Exact native session bindings for the retained tasks' recorded session ids. */
   listNativeSessionsByTranscriptHandles?: (
     sessionIds: readonly string[],
-  ) => Promise<Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'>>>;
+  ) => Promise<Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'> & Partial<Pick<AdvSessionRow, 'id'>>>>;
   /** Resolve a Claude transcript under the retained task's exact owner identity. */
   findSessionTranscript?: typeof findSessionTranscript;
+  findCodexRolloutPath?: typeof findCodexRolloutPathByUuid;
   /** A live task is viable only while it remains the active consult answerer for its lease. */
   isCurrentSourceAuditResponder?: typeof isCurrentSourceAuditResponder;
   getTask?: typeof getTask;
@@ -1481,7 +1487,8 @@ export async function dispatchPendingGradingAudits(
 
   const readCards = deps.listScorecards ?? listScorecards;
   const resolveRubric = deps.getRubric ?? getRubric;
-  const launch = deps.launch ?? launchAgentTool.handler;
+  const profile = gradingLaunchProfile(input.ctx);
+  const launch = withGradingLaunchProfile(deps.launch ?? launchAgentTool.handler, profile);
   const reserve = deps.reserve ?? reservePendingGradingAudit;
   const confirmReservation = deps.confirmReservation ?? confirmPendingGradingAuditReservation;
   const release = deps.release ?? releasePendingGradingAudit;
@@ -1796,7 +1803,7 @@ export async function dispatchPendingGradingAudits(
     let reservationHeld = false;
     let reservationReservedAt = 'reservation-unknown';
     let priorReservation: GradingAuditReservationResult['prior'];
-    let launchBackend: 'claude' | 'codex' = 'claude';
+    let launchBackend: 'claude' | 'codex' = profile?.agent ?? 'claude';
     let routingFallback: string | undefined;
     let receipt: PendingGradingAuditDispatchReceipt | null = null;
     const generationBound = card.gradedGeneration != null;
@@ -1845,7 +1852,7 @@ export async function dispatchPendingGradingAudits(
               retiredTaskIds,
               attempts,
               codes: terminalCodes,
-              fallback: GRADING_AUDIT_FALLBACK,
+              fallback: profile ?? GRADING_AUDIT_FALLBACK,
               // `fallback` is the CONFIGURED fallback, echoed whether or not the
               // retry used it. `routedTo` is the backend the bounded retry actually
               // launched on — it stays 'claude' when the fallback provider has no
@@ -1864,7 +1871,7 @@ export async function dispatchPendingGradingAudits(
       logPath: string | null,
       maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
       allowGatewayErrorWithoutFooter = true,
-      nativeProof?: { nativeTranscriptPath: string; nativeSessionId: string },
+      nativeProof?: { nativeTranscriptPath: string; nativeSessionId: string; nativeBackend?: 'claude' | 'codex' },
     ) =>
       detectAcceptanceGraderTerminalFailure(logPath, {
         readLogTail,
@@ -2029,7 +2036,7 @@ export async function dispatchPendingGradingAudits(
         const sessionId = task.sessionId?.trim();
         return sessionId ? [sessionId] : [];
       }))];
-      let nativeSessionBindings: Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'>> = [];
+      let nativeSessionBindings: Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'> & Partial<Pick<AdvSessionRow, 'id'>>> = [];
       if (nativeSessionIds.length) {
         try {
           nativeSessionBindings = await listNativeSessionsByTranscriptHandles(nativeSessionIds);
@@ -2043,12 +2050,20 @@ export async function dispatchPendingGradingAudits(
         const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
         const taskSessionId = typeof task.sessionId === 'string' ? task.sessionId.trim() : '';
         const nativeSession = nativeSessionBindings.find((session) =>
-          session.sessionId === taskSessionId && session.coordOwnerId === taskOwnerId && session.agent === 'claude');
-        let nativeProof: { nativeTranscriptPath: string; nativeSessionId: string } | undefined;
+          session.sessionId === taskSessionId && session.coordOwnerId === taskOwnerId &&
+          (session.agent === 'claude' || session.agent === 'codex'));
+        let nativeProof: { nativeTranscriptPath: string; nativeSessionId: string; nativeBackend?: 'claude' | 'codex' } | undefined;
         if (taskOwnerId && taskSessionId && nativeSession) {
           try {
-            const nativeTranscriptPath = await resolveSessionTranscript(taskSessionId, { owner: taskOwnerId });
-            if (nativeTranscriptPath) nativeProof = { nativeTranscriptPath, nativeSessionId: taskSessionId };
+            const nativeTranscriptPath = nativeSession.agent === 'claude'
+              ? await resolveSessionTranscript(taskSessionId, { owner: taskOwnerId })
+              : typeof nativeSession.id === 'number'
+                ? await (deps.findCodexRolloutPath ?? findCodexRolloutPathByUuid)(taskSessionId, {
+                    homeOverride: codexHomeForSessionKey(nativeSession.id),
+                  })
+                : null;
+            if (nativeTranscriptPath) nativeProof = { nativeTranscriptPath, nativeSessionId: taskSessionId,
+              ...(nativeSession.agent === 'codex' ? { nativeBackend: 'codex' as const } : {}) };
           } catch {
             // The existing log-only classifier remains authoritative when native proof is unavailable.
           }

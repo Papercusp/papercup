@@ -1392,6 +1392,16 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
   });
 
+  it('pins a recovered audit launch to the routine profile without changing its independent identity', async () => {
+    const d = deps();
+    const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
+    d.listScorecards.mockResolvedValue([card('EI-pinned-audit')]);
+    await dispatchPendingGradingAudits({ targetIds: ['EI-pinned-audit'], ctx: { ...ctx, gradingLaunch: profile } as never, harness: 'papercusp' }, d);
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
+      ...profile, independent: true, members: [{ role: 'judge', ...profile }],
+    }), expect.objectContaining({ ownerId: GRADING_AUDIT_DISPATCH_ACTOR }));
+  });
+
   it('re-checks after routing before launching when settlement wins during the route', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-settled-during-route')]);
@@ -2980,6 +2990,53 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
   });
+
+  it.each(['bound', 'foreign-owner', 'resumed'])(
+    'recovers a completed Codex overload only with an owner-bound current native receipt (%s)', async (binding) => {
+      const d = deps();
+      const issueId = 'EI-native-codex-overload';
+      const ownerId = 'su-codex-auditor';
+      const sessionId = 'native-codex-overload';
+      const task = { taskId: 'task-native-codex', sessionId, workspaceId: 'ws-test',
+        class: 'agent-session', state: 'running', startedAt: new Date().toISOString(),
+        logPath: '/tmp/native-codex.log', detail: { label: 'grading-audit:' + issueId, coordOwnerId: ownerId },
+      } as unknown as TaskRow;
+      d.listScorecards.mockResolvedValue([card(issueId)]);
+      d.listTasks.mockResolvedValue([task]);
+      const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findCodexRolloutPath']>>()
+        .mockResolvedValue('/tmp/native-codex.jsonl');
+      const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+      const native = [
+        JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+          error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } }),
+        ...(binding === 'resumed' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } })] : []),
+      ].join('\n');
+      const result = await dispatchPendingGradingAudits(
+        { targetIds: [issueId], ctx, harness: 'papercusp' },
+        { ...d, findCodexRolloutPath: resolveTranscript,
+          listNativeSessionsByTranscriptHandles: async () => [{ id: 43936, sessionId, agent: 'codex',
+            coordOwnerId: binding === 'foreign-owner' ? 'su-other' : ownerId }],
+          killTask, providerCanServe: async () => true,
+          isCurrentSourceAuditResponder: async () => true,
+          readLogTail: (path) => path.endsWith('.jsonl') ? native : path.includes('native-codex')
+            ? '• Called scorecards:get\nWorking · GPT-5.6-Sol high' : 'healthy fallback boot',
+          readLogMtimeMs: () => Date.now(), terminalLogMaxRechecks: 0 },
+      );
+      if (binding === 'bound') {
+        expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, {
+          homeOverride: expect.stringMatching(/session-43936$/),
+        });
+        expect(killTask).toHaveBeenCalledExactlyOnceWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        expect(result.receipts[0]).toMatchObject({ state: 'launched', terminalRecovery: {
+          retiredTaskIds: [task.taskId], codes: ['inference_gateway_error'],
+        } });
+      } else {
+        expect(killTask).not.toHaveBeenCalled();
+        expect(d.launch).not.toHaveBeenCalled();
+        expect(result.receipts[0]).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
+      }
+    },
+  );
 
   it('preserves a recovering capacity-screen fallback after retiring a gateway-failed primary', async () => {
     const d = deps();
