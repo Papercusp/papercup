@@ -34,6 +34,7 @@ import { isHostedPrincipal, type HostedPrincipal } from '../auth/hosted-principa
 import type { OpenRouterRequestCapture, OpenRouterRequestContext } from '../agent-loop/model-port';
 import type { HostedBudgetRequest, PostgresHostedBudgetStore } from '../auth/hosted/billing/budget-store';
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
+import type { HostedBillingFailureObserver } from '../auth/hosted/billing/billing-recovery';
 import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
 import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
@@ -186,6 +187,7 @@ export type HostedOpenRouterPrincipalSource = Headers | (() => Promise<
   { readonly ok: true; readonly principal: HostedPrincipal } | { readonly ok: false }>);
 
 export interface HostedBillingRuntimeDependencies {
+  readonly observeFailure?: HostedBillingFailureObserver;
   /** The hosted-auth runtime's resolver — billing never re-implements session authority. */
   readonly resolvePrincipal: HostedPrincipalResolver;
   readonly resolveSecret?: (reference: string) => Promise<string>;
@@ -315,9 +317,9 @@ function hostedOpenRouterCapture(
   };
 }
 
-async function resolveStripe(
+export async function resolveHostedBillingStripe(
   configuration: HostedBillingRuntimeConfiguration,
-  dependencies: HostedBillingRuntimeDependencies,
+  dependencies: Pick<HostedBillingRuntimeDependencies, 'resolveSecret' | 'liveModeAllowed' | 'fetchImpl'>,
 ): Promise<{ stripe: HostedBillingStripe | null; reason: string | null }> {
   if (configuration.requireManagedSecrets) {
     assertPinnedGcpSecretReference(configuration.stripeSecretKeyRef ?? '');
@@ -380,7 +382,7 @@ export async function createHostedBillingRuntime(
   configuration: HostedBillingRuntimeConfiguration,
   dependencies: HostedBillingRuntimeDependencies,
 ): Promise<HostedBillingRuntime> {
-  const { stripe, reason } = await resolveStripe(configuration, dependencies);
+  const { stripe, reason } = await resolveHostedBillingStripe(configuration, dependencies);
   const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext);
   const usageStore = dependencies.usageStore ?? new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext);
   const routes = createHostedBillingRoutes({
@@ -388,6 +390,7 @@ export async function createHostedBillingRuntime(
     plans: configuration.plans,
     store,
     stripe,
+    observeFailure: dependencies.observeFailure,
     unavailableReason: reason,
     entitlementProvider: dependencies.entitlementProvider,
     receipts: dependencies.receipts

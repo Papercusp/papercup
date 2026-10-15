@@ -457,6 +457,18 @@ describe('blueprintOperationHostFromInvoker', () => {
     expect(Object.values(BLUEPRINT_OPERATION_TOOL_NAMES)).toEqual(expect.arrayContaining(calls.map(([n]) => n)));
   });
 
+  it('forwards the displayed approved revision without selecting another workflow', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const h = blueprintOperationHostFromInvoker(async (_name, args) => {
+      calls.push(args);
+      return { handle };
+    });
+    await h.submitBlueprintOperation({ harnessSlug: 'email', operationId: 'draft-reply', requestKey: 'approved',
+      input: {}, expectedSpecificationRevision: 'a'.repeat(64) });
+    expect(calls[0]).toMatchObject({ harness: 'email', operationId: 'draft-reply',
+      expectedSpecificationRevision: 'a'.repeat(64) });
+  });
+
   it('forwards privateInput to blueprint:submit only when the draft carries it (D-014)', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const h = blueprintOperationHostFromInvoker(async (_name, args) => {

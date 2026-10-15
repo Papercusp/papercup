@@ -191,6 +191,8 @@ export interface BlueprintOperationDraft<TInput extends JsonObject = JsonObject>
   /** Stable replay identity. Reusing it with different input must be refused by the host. */
   readonly requestKey: string;
   readonly input: TInput;
+  /** Refuse a new run if the displayed approved revision has changed. */
+  readonly expectedSpecificationRevision?: string;
   /**
    * Content for the worker that must NOT enter the durable work-item payload (e.g. a
    * call transcript the app deletes on its own schedule). Only for an operation that
@@ -621,6 +623,7 @@ export function blueprintOperationHostFromInvoker(invoke: BlueprintToolInvoke): 
         operationId: draft.operationId,
         requestKey: draft.requestKey,
         input: draft.input,
+        ...(draft.expectedSpecificationRevision === undefined ? {} : { expectedSpecificationRevision: draft.expectedSpecificationRevision }),
         ...(draft.privateInput === undefined ? {} : { privateInput: draft.privateInput }),
         ...(draft.title === undefined ? {} : { title: draft.title }),
         ...(draft.summary === undefined ? {} : { summary: draft.summary }),

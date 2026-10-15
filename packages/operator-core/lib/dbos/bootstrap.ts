@@ -379,6 +379,16 @@ async function startDbosOnce(): Promise<void> {
   // to provider-confirmed absence exactly like a GCP disk, and the registration is unit-testable.
   registerWorkspaceHostProviderFactories({ resolveHostedGcpAuth, obligationObservers });
   await import('./workspace-host-provision-workflow');
+  // P-010: the browser only enqueues; this executor owns recovery and mutations.
+  // Admission and execution share the server policy resolver (closed until the
+  // P-011 retention decision). Registration itself does not invoke providers.
+  const [{ createHostedCustomerDeletionWorkflow }, { createHostedCustomerDeletionSeams }] = await Promise.all([
+    import('./hosted-customer-deletion-workflow'),
+    import('../data-governance/hosted-customer-deletion-runtime'),
+  ]);
+  createHostedCustomerDeletionWorkflow({ seams: createHostedCustomerDeletionSeams({
+    controlPlaneWorkspaceId: process.env.PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID ?? '',
+  }) });
   // D-391: the day-long workspace-host soak runs on its OWN queue (the provisioning queue's
   // host-scoped dedup would lock lifecycle actions out for the whole soak). Registered before
   // launch so a controller restart mid-soak recovers it instead of orphaning a day of samples.

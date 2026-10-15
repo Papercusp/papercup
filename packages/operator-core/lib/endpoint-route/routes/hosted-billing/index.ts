@@ -17,6 +17,7 @@
  */
 import type { HostedPermission, HostedPrincipal } from '../../../auth/hosted-principal';
 import type { HostedBillingStore } from '../../../auth/hosted/billing/billing-store';
+import { logHostedBillingFailure, observeHostedBillingFailure, type HostedBillingFailureObserver } from '../../../auth/hosted/billing/billing-recovery';
 import type { HostedBillingUsageSource } from '../../../auth/hosted/billing/usage-service';
 import type { HostedUsageStatement } from '../../../auth/hosted/billing/usage-statement';
 import {
@@ -93,6 +94,8 @@ export interface HostedBillingStripe {
 }
 
 export interface HostedBillingRouteDependencies {
+  /** Independent of billing receipt/fact transactions. */
+  readonly observeFailure?: HostedBillingFailureObserver;
   readonly publicOrigin: string;
   readonly plans: readonly HostedBillingPlan[];
   readonly store: HostedBillingStore;
@@ -163,6 +166,7 @@ function usageView(statement: HostedUsageStatement): HostedUsageStatement {
 export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies): readonly HostedBillingRoute[] {
   const origin = new URL(deps.publicOrigin).origin;
   const clock = deps.clock ?? (() => new Date());
+  const observe = deps.observeFailure ?? logHostedBillingFailure;
   const planByKey = new Map(deps.plans.map((plan) => [plan.planKey, plan]));
   const planKeyForPrice = (priceId: string | null): string | null =>
     (priceId ? deps.plans.find((plan) => plan.priceId === priceId)?.planKey : null) ?? null;
@@ -344,6 +348,7 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       try {
         if (!parsed.ok) {
           if (!parsed.eventId || !parsed.eventType || parsed.livemode === null) {
+            await observeHostedBillingFailure(observe, 'permanent-rejection', parsed.eventId);
             return jsonError(parsed.code, 'The webhook body is not a Stripe event.', 400);
           }
           const recorded = await deps.store.recordRejectedEvent({
@@ -353,7 +358,11 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
             livemode: parsed.livemode,
             code: parsed.code,
           });
-          if (recorded === 'replay-mismatch') return jsonError('replay-mismatch', 'The event id was already received with different bytes.', 409);
+          if (recorded === 'replay-mismatch') {
+            await observeHostedBillingFailure(observe, 'replay-mismatch', parsed.eventId);
+            return jsonError('replay-mismatch', 'The event id was already received with different bytes.', 409);
+          }
+          await observeHostedBillingFailure(observe, 'permanent-rejection', parsed.eventId);
           // A permanent content refusal is acknowledged (2xx) so Stripe does not retry it for days.
           return Response.json({ ok: true, outcome: recorded === 'duplicate' ? 'duplicate' : 'rejected', code: parsed.code });
         }
@@ -364,11 +373,14 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
           planKeyForPrice,
         });
         if (result.outcome === 'replay-mismatch') {
+          await observeHostedBillingFailure(observe, 'replay-mismatch', parsed.event.eventId);
           return jsonError('replay-mismatch', 'The event id was already received with different bytes.', 409);
         }
+        if (result.outcome === 'rejected') await observeHostedBillingFailure(observe, 'permanent-rejection', parsed.event.eventId);
         return Response.json({ ok: true, outcome: result.outcome, ...(result.outcome === 'rejected' ? { code: result.code } : {}) });
       } catch {
         // Transient: a non-2xx makes Stripe redeliver, and the transaction left no partial state.
+        await observeHostedBillingFailure(observe, 'endpoint-store-unavailable', parsed.ok ? parsed.event.eventId : parsed.eventId);
         return jsonError('billing_store_unavailable', 'The event could not be recorded.', 503);
       }
     },

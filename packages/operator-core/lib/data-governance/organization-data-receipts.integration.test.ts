@@ -13,6 +13,7 @@
  *    reconciliation denies it again.
  */
 import { randomUUID } from 'node:crypto';
+import type { Sql } from 'postgres';
 import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -23,6 +24,10 @@ import { admitHostedCustomerDeletion, exportHostedOrganizationData, exportHosted
 import { authorizeHostedCustomerDeletion, freezeHostedCustomerDeletionAccess, HOSTED_DELETION_SNAPSHOT_ACTION,
   readHostedCustomerDeletionSnapshot } from './hosted-customer-deletion-store';
 import { deleteHostedCustomerDatabase } from './hosted-customer-deletion-database';
+import { createHostedCustomerDeletionSeams } from './hosted-customer-deletion-runtime';
+import { runHostedCustomerDeletion } from './hosted-customer-deletion';
+import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
+import { NotFoundException } from '@workos-inc/node';
 import { createPersonalGrant, purgePersonalSource, upsertPersonalDocuments } from '../personal-vault/store';
 import {
   CHAT_DERIVED_DOCUMENT_KINDS,
@@ -558,10 +563,10 @@ describe('organization data receipts (P-007c)', () => {
       WHERE organization_id=${organizationId}`;
     await expect(org.appSql`SELECT * FROM papercusp_auth.delete_hosted_customer_rows
       ('papercusp_auth.hosted_users',${organizationId},${request.operationId})`).rejects.toThrow('permission denied');
-    const mutate = (store: string, requestedOrganizationId: string) => service(async tx => {
+    const mutate = (requestedStore: string, requestedOrganizationId: string) => service(async tx => {
       await tx`SELECT set_config('app.organization_id',${organizationId},true)`;
       return tx`SELECT * FROM papercusp_auth.delete_hosted_customer_rows
-        (${store},${requestedOrganizationId},${request.operationId})`;
+        (${requestedStore},${requestedOrganizationId},${request.operationId})`;
     });
     await expect(mutate('papercusp_auth.hosted_users',otherOrg)).rejects.toThrow('service scope is invalid');
     await expect(mutate('papercusp_auth.legal_acceptances',organizationId)).rejects.toThrow('store is not allowed');
@@ -668,6 +673,84 @@ describe('organization data receipts (P-007c)', () => {
       WHERE id IN (${organizationId}::uuid,${otherOrg}::uuid) AND status='active'`).toHaveLength(2);
   });
 
+  it.each(['membership-first', 'freeze-first'] as const)(
+    'serializes new cross-tenant membership against the first access freeze: %s (P-010)', async ordering => {
+      const organizationId = randomUUID(), otherOrg = randomUUID(), userId = randomUUID();
+      for (const id of [organizationId, otherOrg]) await org.adminSql`
+        INSERT INTO papercusp_auth.organizations (id,external_organization_id,display_name)
+        VALUES (${id}::uuid,${`race-${id}`},'Concurrent deletion')`;
+      await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id) VALUES (${userId}::uuid)`;
+      await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id,user_id,role,created_via)
+        VALUES (${organizationId}::uuid,${userId}::uuid,'owner','organization_bootstrap')`;
+      const authority = await new PostgresHostedMembershipAuthority(org.adminSql as never).resolveActive({ userId, organizationId });
+      const session = await new HostedSessionStore(org.adminSql as never).create({ userId, organizationId,
+        permissionVersion: authority!.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: `race-${userId}`,
+        expiresAt: new Date(Date.now() + 3600000) });
+      const principal = createHostedPrincipal({ workspaceId: 'control', userId, activeOrganizationId: organizationId,
+        sessionId: session.id, sessionVersion: session.permissionVersion, permissions: authority!.permissions });
+      const policy = { approvalRef: 'scratch-race-retention', stripe: 'retain' as const, consent: 'retain' as const };
+      const service = <T>(fn: (tx: Sql) => Promise<T>): Promise<T> => org.appSql.begin(async tx => {
+        await tx`SELECT set_config('app.workspace_id','hosted-control-plane-service',true)`;
+        await tx.unsafe('SET LOCAL ROLE hosted_service'); return fn(tx as unknown as Sql);
+      }) as Promise<T>;
+      const request = await service(tx => admitHostedCustomerDeletion(tx, principal,
+        { kind: 'organization', confirmation: 'DELETE ORGANIZATION' }, async () => policy));
+      const gate = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
+      const ready = async (signal: Promise<void>, participant: Promise<unknown>, phase: string) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([signal, participant.then(() => { throw new Error(`${phase} completed before signalling`); }),
+            new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${phase} readiness timed out`)), 10000); })]);
+        } finally { clearTimeout(timer); }
+      };
+      const release = gate(), holderReady = gate(), waiterReady = gate();
+      let membershipPid = 0, freezePid = 0;
+      const membership = () => org.adminSql.begin(async tx => {
+        membershipPid = (await tx`SELECT pg_backend_pid() AS pid`)[0].pid;
+        if (ordering === 'freeze-first') waiterReady.resolve();
+        await tx`INSERT INTO papercusp_auth.organization_memberships (organization_id,user_id,role,created_via)
+          VALUES (${otherOrg}::uuid,${userId}::uuid,'owner','organization_bootstrap')`;
+        if (ordering === 'membership-first') { holderReady.resolve(); await release.promise; }
+      });
+      const freeze = () => service(async tx => {
+        freezePid = (await tx`SELECT pg_backend_pid() AS pid`)[0].pid;
+        if (ordering === 'membership-first') waiterReady.resolve();
+        const snapshot = await freezeHostedCustomerDeletionAccess(tx, request, 'control', async () => policy);
+        if (ordering === 'freeze-first') { holderReady.resolve(); await release.promise; }
+        return snapshot;
+      });
+      const holder = ordering === 'membership-first' ? membership() : freeze();
+      const participants: Promise<unknown>[] = [holder];
+      let results: PromiseSettledResult<unknown>[] = [];
+      try {
+        await ready(holderReady.promise, holder, 'holder');
+        const waiter = ordering === 'membership-first' ? freeze() : membership();
+        participants.push(waiter);
+        await ready(waiterReady.promise, waiter, 'waiter');
+        await expect.poll(async () => {
+          const pid = ordering === 'membership-first' ? freezePid : membershipPid;
+          const blocker = ordering === 'membership-first' ? membershipPid : freezePid;
+          return (await org.adminSql`SELECT ${blocker}::int = ANY(pg_blocking_pids(${pid}::int)) AS blocked`)[0].blocked;
+        }, { timeout: 10000 }).toBe(true);
+      } finally {
+        release.resolve();
+        results = await Promise.allSettled(participants);
+      }
+      expect(results[0].status).toBe('fulfilled');
+      const snapshot = await service(tx => readHostedCustomerDeletionSnapshot(tx, request));
+      expect(snapshot?.users).toEqual([{ userId, deleteUser: ordering === 'freeze-first', identities: [] }]);
+      if (ordering === 'membership-first') {
+        expect(results[1].status).toBe('fulfilled');
+        expect((await org.adminSql`SELECT status FROM papercusp_auth.hosted_users WHERE id=${userId}::uuid`)[0].status).toBe('active');
+        expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_memberships
+          WHERE organization_id=${otherOrg}::uuid AND user_id=${userId}::uuid AND status='active'`).toHaveLength(1);
+      } else {
+        expect(results[1]).toMatchObject({ status: 'rejected', reason: expect.objectContaining({ message: 'hosted customer deletion access is frozen' }) });
+        expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_memberships
+          WHERE organization_id=${otherOrg}::uuid AND user_id=${userId}::uuid`).toHaveLength(0);
+      }
+    });
+
   it('rolls back access freeze if the immutable target receipt cannot commit (P-010)', async () => {
     const organizationId = randomUUID(), userId = randomUUID();
     await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name)
@@ -704,6 +787,53 @@ describe('organization data receipts (P-007c)', () => {
       await org.adminSql.unsafe(`DROP TRIGGER p010_reject_snapshot ON papercusp_auth.organization_audit_events;
         DROP FUNCTION papercusp_auth.p010_reject_snapshot()`);
     }
+  });
+
+  it('runs the composed hosted-service executor with redacted deduplicated step audits and replays after database deletion (P-010)', async () => {
+    const organizationId = randomUUID(), userId = randomUUID();
+    await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name, status)
+      VALUES (${organizationId}::uuid, ${`org_${organizationId.replaceAll('-', '')}`}, 'Composed deletion', 'active')`;
+    await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email, status)
+      VALUES (${userId}::uuid, ${`${userId}@example.test`}, 'active')`;
+    await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
+      VALUES (${organizationId}::uuid, ${userId}::uuid, 'owner', 'organization_bootstrap')`;
+    const authority = await new PostgresHostedMembershipAuthority(org.adminSql as never).resolveActive({ userId, organizationId });
+    const session = await new HostedSessionStore(org.adminSql as never).create({ userId, organizationId,
+      permissionVersion: authority!.permissionVersion, upstreamProvider: 'workos', upstreamSessionId: `composed-${userId}`,
+      expiresAt: new Date(Date.now() + 3600000) });
+    const principal = createHostedPrincipal({ workspaceId: 'control', userId, activeOrganizationId: organizationId,
+      sessionId: session.id, sessionVersion: session.permissionVersion, permissions: authority!.permissions });
+    const runService: HostedServiceContextRunner = <T>(fn: (tx: Sql) => Promise<T>): Promise<T> => org.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return fn(tx as unknown as Sql);
+    }) as Promise<T>;
+    const policy = { approvalRef: 'scratch-composed-retention', stripe: 'retain' as const, consent: 'retain' as const };
+    const request = await runService(tx => admitHostedCustomerDeletion(tx, principal,
+      { kind: 'organization', confirmation: 'DELETE ORGANIZATION' }, async () => policy));
+    let providerReads = 0;
+    const absent = async () => { providerReads++; throw new NotFoundException({ path: '/test', requestID: 'test' }); };
+    const seams = createHostedCustomerDeletionSeams({ controlPlaneWorkspaceId: 'control', runService,
+      resolveApprovedPolicy: async () => policy, resolveWorkOSApiKey: async () => 'test-secret',
+      createWorkOSClient: () => ({ userManagement: { getUser: absent, deleteUser: async () => { throw new Error('unexpected mutation'); } },
+        organizations: { getOrganization: absent, deleteOrganization: async () => { throw new Error('unexpected mutation'); } } }),
+      stripe: async () => { throw new Error('retained billing must not resolve Stripe'); },
+    });
+    const first = await runHostedCustomerDeletion(request, seams, (_name, run) => run());
+    expect(first.steps.map(step => step.status)).toEqual(['completed', 'completed', 'skipped', 'completed', 'completed']);
+    expect(providerReads).toBe(1);
+    expect(await runHostedCustomerDeletion(request, seams, (_name, run) => run())).toEqual(first);
+    await Promise.all([1, 2].map(() => seams.audit({ request, step: 'workos', status: 'completed', detail: 'private provider text' })));
+    const stepRows = await org.adminSql<{ action: string; metadata: Record<string, unknown> }[]>`
+      SELECT action, metadata FROM papercusp_auth.organization_audit_events
+       WHERE organization_id=${organizationId}::uuid AND action LIKE 'organization.data.deletion.step.%' ORDER BY action`;
+    expect(stepRows).toHaveLength(5);
+    expect(stepRows.map(row => row.metadata.detail).sort()).toEqual([
+      'access_completed', 'database_completed', 'stripe_skipped', 'workos_completed', 'workspace_completed',
+    ]);
+    expect(JSON.stringify(stepRows)).not.toContain('private provider text');
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+      WHERE organization_id=${organizationId}::uuid AND action='organization.data.deletion'`).toHaveLength(1);
   });
 
   it('exports a member’s own user records and joined sealed-session metadata without other users or organization-level records (P-010)', async () => {

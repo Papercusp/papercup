@@ -39,6 +39,61 @@ function fakeClient() {
 }
 
 describe('workspace-host provisioning DBOS client', () => {
+  function recoveryFixture(status: string | null = 'CANCELLED') {
+    const deletion: HostedCustomerDeletionRequest = { operationId: 'delete-recover', organizationId: 'org-1', requestedBy: 'user-1',
+      target: { kind: 'organization' }, policy: { approvalRef: 'approved', stripe: 'retain', consent: 'retain' } };
+    const request = hostedCustomerDeletionEnqueueRequest(deletion);
+    const row = { workflowID: request.workflowId, workflowName: HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME,
+      workflowClassName: '', queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME, applicationVersion: 'bg-host-v1',
+      input: [deletion], status: status ?? 'ENQUEUED', createdAt: 1, priority: 0, applicationID: '' };
+    let exists = status !== null;
+    const getWorkflow = vi.fn(async () => exists ? row : undefined);
+    const resumeWorkflow = vi.fn(async () => { row.status = 'ENQUEUED'; });
+    const enqueue = vi.fn(async () => { exists = true; return { workflowID: request.workflowId }; });
+    const client = createWorkspaceHostProvisioningClient({ systemDatabaseUrl: 'postgres://fixture/db', appVersion: 'bg-host-v1',
+      createClient: async () => ({ enqueue, getWorkflow, resumeWorkflow }) });
+    return { client, deletion, request, row, getWorkflow, resumeWorkflow, enqueue };
+  }
+
+  it.each(['CANCELLED', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED'])('resumes the original %s identity and reads back acceptance', async status => {
+    const f = recoveryFixture(status);
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).resolves.toEqual({
+      operationId: f.deletion.operationId, workflowId: f.request.workflowId, outcome: 'resumed' });
+    expect(f.resumeWorkflow).toHaveBeenCalledWith(f.request.workflowId, { queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME });
+    expect(f.getWorkflow).toHaveBeenCalledTimes(2); expect(f.enqueue).not.toHaveBeenCalled();
+  });
+
+  it('repairs a missing enqueue using exactly the original request and verifies its row', async () => {
+    const f = recoveryFixture(null);
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).resolves.toMatchObject({ outcome: 'enqueued' });
+    expect(f.enqueue).toHaveBeenCalledWith(expect.objectContaining({ workflowID: f.request.workflowId,
+      appVersion: 'bg-host-v1', workflowName: HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME }), f.deletion);
+    expect(f.resumeWorkflow).not.toHaveBeenCalled();
+  });
+
+  it.each(['workflowName', 'queueName', 'applicationVersion', 'workflowID', 'workflowClassName'] as const)(
+    'refuses recovery when stored %s differs', async field => {
+      const f = recoveryFixture(); f.row[field] = 'foreign';
+      await expect(f.client.recoverCustomerDeletion(f.deletion)).rejects.toThrow('identity_mismatch');
+      expect(f.resumeWorkflow).not.toHaveBeenCalled(); expect(f.enqueue).not.toHaveBeenCalled();
+    });
+
+  it('refuses replacement input, terminal ERROR, and an unconfirmed SDK resume', async () => {
+    const f = recoveryFixture(); f.row.input = [{ ...f.deletion, requestedBy: 'other' }];
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).rejects.toThrow('identity_mismatch');
+    const failed = recoveryFixture('ERROR');
+    await expect(failed.client.recoverCustomerDeletion(failed.deletion)).rejects.toThrow('terminal_error');
+    expect(failed.resumeWorkflow).not.toHaveBeenCalled();
+    const unchanged = recoveryFixture(); unchanged.resumeWorkflow.mockImplementation(async () => {});
+    await expect(unchanged.client.recoverCustomerDeletion(unchanged.deletion)).rejects.toThrow('unconfirmed');
+  });
+
+  it.each(['PENDING', 'ENQUEUED', 'DELAYED', 'SUCCESS'])('does not reset an existing %s workflow', async status => {
+    const f = recoveryFixture(status);
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).resolves.toMatchObject({ outcome: status === 'SUCCESS' ? 'completed' : 'active' });
+    expect(f.resumeWorkflow).not.toHaveBeenCalled(); expect(f.enqueue).not.toHaveBeenCalled();
+  });
+
   it('shares its pinned pool and queue with customer deletion and preserves replay identity', async () => {
     const { enqueue, createClient } = fakeClient();
     const client = createWorkspaceHostProvisioningClient({ systemDatabaseUrl: 'postgres://example/papercusp',

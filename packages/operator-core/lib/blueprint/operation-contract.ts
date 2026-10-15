@@ -28,6 +28,8 @@ export const SubmitArgsSchema = z.object({
   }),
   operationId: z.string().trim().min(1).max(200).describe('Operation id declared by the harness blueprint.'),
   requestKey,
+  expectedSpecificationRevision: z.string().regex(/^[0-9a-f]{64}$/).optional()
+    .describe('The current approved revision shown to the employee. Refuses a changed revision before new admission; a replay stays pinned to its original receipt.'),
   input: z.record(z.string(), z.unknown()).describe('Operation input; validated against the declared inputSchema.'),
   privateInput: z.unknown().optional()
     .describe('Only for operations declaring privateInputSchema: content for the worker, kept out of the work item and deleted when it ends.'),

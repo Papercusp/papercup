@@ -22,6 +22,7 @@ import { getSystemActionEntry, listSystemActions } from '../../harness/routines/
 // routines engine's full register-system-actions set), so the check above sees them.
 import '../../harness/routines/rubric-rescore-action';
 import '../../spec-conformance/conformance-review';
+import '../../harness/routines/hosted-billing-reconcile-action';
 
 const scheduleSchema = z
   .object({

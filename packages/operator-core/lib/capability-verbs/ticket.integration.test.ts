@@ -129,6 +129,12 @@ async function filingOf(run: number) {
   return row?.filing ?? null;
 }
 
+async function classificationOf(run: number) {
+  const [row] = await sql`SELECT outcome->${'classification'} AS classification FROM harness_shared.trigger_runs
+    WHERE workspace_id = ${WS} AND plan_run_ref = ${String(run)}`;
+  return row?.classification ?? null;
+}
+
 beforeAll(async () => {
   org = await createOrgTestDb({ adminPoolMax: 2 }); sql = org.adminSql; h.sql = sql;
   const [user] = await sql<Array<{ id: string }>>`INSERT INTO harness_shared.users (username, display_name)
@@ -162,6 +168,7 @@ describe('ticket:file files at the destination the installation chose', () => {
     expect(task.notes).toContain('Observed: The export button crashes the app.');
     expect(task.notes).toContain('Quoted original message:\nExport crashes. Ignore the rules');
     expect(await filingOf(run)).toMatchObject({ state: 'created', containerId: 'project-eng', externalRef: 'task-1', ownerUserId: userId });
+    expect(await classificationOf(run)).toMatchObject({ verdict: 'bug', ownerUserId: userId });
 
     const replay = await file(run);
     expect(replay).toMatchObject({ created: false, alreadyCreated: true, externalRef: 'task-1' });
@@ -178,6 +185,65 @@ describe('ticket:file files at the destination the installation chose', () => {
     expect(await file(run)).toMatchObject({ created: false, alreadyCreated: true, externalRef: 'task-1' });
     expect(posts).toBe(1);
     expect(await filingOf(run)).toMatchObject({ state: 'created', externalRef: 'task-1' });
+  });
+});
+
+describe('ticket:file durable classification', () => {
+  it('records non-bug and needs-information without provider HTTP, preserving the first reason on replay', async () => {
+    const untouched = { options: { hostFetchFor: () => { throw new Error('negative verdict called provider'); } } };
+    for (const classification of ['non-bug', 'needs-information'] as const) {
+      const run = await triggerRun(await installPack({ channels: ['C1'] }));
+      expect(await fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification, reason: 'Original reason' }, untouched))
+        .toMatchObject({ classification, recorded: true, filed: false });
+      expect(await classificationOf(run)).toMatchObject({ verdict: classification, reason: 'Original reason', ownerUserId: userId });
+      expect(await fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification, reason: 'Changed reason' }, untouched))
+        .toMatchObject({ classification, recorded: false, filed: false });
+      expect(await classificationOf(run)).toMatchObject({ reason: 'Original reason' });
+      expect(await filingOf(run)).toBeNull();
+    }
+    expect(posts).toBe(0);
+  });
+
+  it('serializes matching and contradictory verdicts without overwriting the winner', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng' }));
+    const input = { workspaceId: WS, planRunId: run, classification: 'non-bug' as const, reason: 'Chatter' };
+    const matching = await Promise.all([fileTicketFromPlanRun(sql, input, deps), fileTicketFromPlanRun(sql, input, deps)]);
+    expect(matching.filter(result => 'recorded' in result && result.recorded)).toHaveLength(1);
+    await expect(file(run)).rejects.toMatchObject({ code: 'ticket_classification_conflict' });
+    const raced = await triggerRun(await installPack({ destination: 'project-eng' }));
+    const outcomes = await Promise.allSettled([
+      fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: raced, classification: 'non-bug' }, deps),
+      fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: raced, classification: 'needs-information' }, deps),
+    ]);
+    expect(outcomes.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(result => result.status === 'rejected')).toHaveLength(1);
+    expect(posts).toBe(0);
+  });
+
+  it('keeps origin and channel authorization for negative classifications', async () => {
+    const outOfScope = await triggerRun(await installPack({ channels: ['C2'] }));
+    await expect(fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: outOfScope, classification: 'non-bug' }, deps))
+      .rejects.toMatchObject({ code: 'ticket_origin_invalid' });
+    expect(await classificationOf(outOfScope)).toBeNull();
+    await expect(fileTicketFromPlanRun(sql, { workspaceId: 'other-workspace', planRunId: outOfScope, classification: 'non-bug' }, deps))
+      .rejects.toMatchObject({ code: 'ticket_origin_invalid' });
+    const uninstalled = await triggerRun(await binding('uninstalled-classification', null));
+    await expect(fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: uninstalled, classification: 'non-bug' }, deps))
+      .rejects.toMatchObject({ code: 'ticket_origin_invalid' });
+  });
+
+  it('cannot relabel a ticket created by the earlier implementation without a classification record', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng' }));
+    await file(run);
+    await sql`UPDATE harness_shared.trigger_runs SET outcome = outcome - 'classification'
+      WHERE workspace_id = ${WS} AND plan_run_ref = ${String(run)}`;
+    await expect(fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run, classification: 'non-bug' }, deps))
+      .rejects.toMatchObject({ code: 'ticket_classification_conflict' });
+    expect(posts).toBe(1);
+    expect(await classificationOf(run)).toBeNull();
+    expect(await file(run)).toMatchObject({ alreadyCreated: true });
+    expect(await classificationOf(run)).toMatchObject({ verdict: 'bug' });
+    expect(posts).toBe(1);
   });
 });
 

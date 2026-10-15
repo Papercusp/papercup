@@ -19,6 +19,7 @@
  * uses, so a client-enqueued provision is the same durable workflow as an in-process one.
  */
 import { DBOSClient } from '@dbos-inc/dbos-sdk';
+import { isDeepStrictEqual } from 'node:util';
 import { withDbosIdleTxGrace } from './bootstrap';
 import { hostedCustomerDeletionEnqueueRequest, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME } from './hosted-customer-deletion-workflow';
 import type { HostedCustomerDeletionRequest } from '../data-governance/hosted-customer-deletion';
@@ -44,6 +45,8 @@ export interface WorkspaceHostProvisioningDbosClient {
     },
     input: unknown,
   ): Promise<{ workflowID: string }>;
+  getWorkflow?: DBOSClient['getWorkflow'];
+  resumeWorkflow?: DBOSClient['resumeWorkflow'];
 }
 
 export interface WorkspaceHostProvisioningEnqueuer {
@@ -63,9 +66,18 @@ export interface WorkspaceHostOperationEnqueuer {
 }
 
 /** Reuses the existing version-pinned client and queue. The hosted process
- * never registers, executes or recovers the customer deletion workflow. */
+ * never registers or executes a customer deletion workflow. */
 export interface HostedCustomerDeletionEnqueuer {
   enqueueCustomerDeletion(input: HostedCustomerDeletionRequest): Promise<{ workflowId: string; operationId: string }>;
+  /** Internal support only; input MUST first be read from the admission ledger
+   * and checked against the current server policy. No replacement workflow. */
+  recoverCustomerDeletion(input: HostedCustomerDeletionRequest): Promise<HostedCustomerDeletionRecovery>;
+}
+
+export interface HostedCustomerDeletionRecovery {
+  workflowId: string;
+  operationId: string;
+  outcome: 'enqueued' | 'active' | 'completed' | 'resumed';
 }
 
 export interface WorkspaceHostProvisioningClientOptions {
@@ -118,7 +130,43 @@ export function createWorkspaceHostProvisioningClient(
     return handle.workflowID;
   };
 
+  const verifyWorkflow = (row: Awaited<ReturnType<DBOSClient['getWorkflow']>>, request: ReturnType<typeof hostedCustomerDeletionEnqueueRequest>) => {
+    if (!row || row.workflowID !== request.workflowId || row.workflowName !== HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME
+      || row.workflowClassName !== '' || row.queueName !== WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME
+      || row.applicationVersion !== appVersion || !isDeepStrictEqual(row.input, [request.workflowInput])) {
+      throw new Error('customer_deletion_recovery_identity_mismatch');
+    }
+    return row;
+  };
+
   return {
+    async recoverCustomerDeletion(input) {
+      const request = hostedCustomerDeletionEnqueueRequest(input);
+      const dbos = await connected();
+      if (!dbos.getWorkflow || !dbos.resumeWorkflow) throw new Error('customer_deletion_recovery_unavailable');
+      const row = await dbos.getWorkflow(request.workflowId);
+      const result = { workflowId: request.workflowId, operationId: input.operationId };
+      if (!row) {
+        if (await enqueueRequest(request, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME) !== request.workflowId) {
+          throw new Error('customer_deletion_recovery_identity_mismatch');
+        }
+        verifyWorkflow(await dbos.getWorkflow(request.workflowId), request);
+        return { ...result, outcome: 'enqueued' };
+      }
+      verifyWorkflow(row, request);
+      if (row.status === 'SUCCESS') return { ...result, outcome: 'completed' };
+      if (['ENQUEUED', 'PENDING', 'DELAYED'].includes(row.status)) return { ...result, outcome: 'active' };
+      // SDK 4.27.6 explicitly excludes ERROR from resumeWorkflows. Never claim
+      // recovery, fork the workflow, purge its checkpoints, or rewrite its row.
+      if (row.status === 'ERROR') throw new Error('customer_deletion_recovery_terminal_error');
+      if (!['CANCELLED', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED'].includes(row.status)) {
+        throw new Error('customer_deletion_recovery_status_invalid');
+      }
+      await dbos.resumeWorkflow(request.workflowId, { queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME });
+      const resumed = verifyWorkflow(await dbos.getWorkflow(request.workflowId), request);
+      if (!['ENQUEUED', 'PENDING', 'SUCCESS'].includes(resumed.status)) throw new Error('customer_deletion_recovery_unconfirmed');
+      return { ...result, outcome: resumed.status === 'SUCCESS' ? 'completed' : 'resumed' };
+    },
     async enqueueCustomerDeletion(input) {
       const request = hostedCustomerDeletionEnqueueRequest(input);
       return { workflowId: await enqueueRequest(request, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME), operationId: input.operationId };

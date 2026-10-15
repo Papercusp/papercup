@@ -53,7 +53,7 @@ import { hostedDelegationOrganization } from '../workspace-host/hosted-delegatio
 import { papercuspHostingGrantEffective } from '../workspace-host/hosted-gcp-hosting';
 import { HostedSessionCookieCodec } from '../auth/hosted-session';
 import { createHostedCustomerDeletionRequester, exportHostedOrganizationData, exportHostedUserData } from '../data-governance/hosted-customer-data';
-import type { HostedCustomerDeletionPolicy } from '../data-governance/hosted-customer-deletion';
+import { resolveApprovedHostedCustomerDeletionPolicy, type HostedCustomerDeletionPolicy } from '../data-governance/hosted-customer-deletion';
 import { createWorkspaceHostProvisioningClient } from '../dbos/workspace-host-provision-client';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { createHostedFirstWorkspace } from '../auth/hosted/first-workspace';
@@ -486,7 +486,7 @@ export async function createHostedRuntime(
         ?? ((principal) => runService(tx => exportHostedUserData(tx, principal))),
       requestCustomerDeletion: dependencies.hostedBrowser?.requestCustomerDeletion ?? (dbosClient
         ? createHostedCustomerDeletionRequester({ runService,
-            resolveApprovedPolicy: dependencies.resolveApprovedCustomerDeletionPolicy ?? (async () => null),
+            resolveApprovedPolicy: dependencies.resolveApprovedCustomerDeletionPolicy ?? resolveApprovedHostedCustomerDeletionPolicy,
             enqueueCustomerDeletion: request => dbosClient.enqueueCustomerDeletion(request),
           })
         : undefined),

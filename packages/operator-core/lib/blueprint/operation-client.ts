@@ -71,6 +71,7 @@ export function createProjectedBlueprintOperationPort(invoke: ProjectedToolInvok
     submit: async (input) => (await call<{ handle: BlueprintOperationHandle }>('submit', {
       harness: input.harnessSlug, operationId: input.operationId, requestKey: input.requestKey,
       input: input.input,
+      ...(input.expectedSpecificationRevision === undefined ? {} : { expectedSpecificationRevision: input.expectedSpecificationRevision }),
       ...(input.title === undefined ? {} : { title: input.title }),
       ...(input.summary === undefined ? {} : { summary: input.summary }),
     }, SubmitResultSchema)).handle,
@@ -121,6 +122,7 @@ export class BlueprintOperationClient<Operations extends OperationTypeMap> {
     operationId: K;
     input: Operations[K]['input'];
     requestKey: string;
+    expectedSpecificationRevision?: string;
     title?: string;
     summary?: string;
   }): Promise<TypedBlueprintOperationHandle<K>> {

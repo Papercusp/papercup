@@ -39,6 +39,7 @@ export const TICKET_DESTINATION_INPUT = 'destination';
 export const TICKET_CHANNELS_INPUT = 'channels';
 /** Where the filing record lives on `trigger_runs.outcome`. */
 export const TICKET_FILING_OUTCOME_KEY = 'ticketFiling';
+export const TICKET_CLASSIFICATION_OUTCOME_KEY = 'classification';
 /** Option list used when the destination input declares no `x-options` of its own. */
 export const DEFAULT_TICKET_DESTINATION_OPTIONS: ProviderOptionSource = {
   capability: TICKET_CONTAINERS_CAPABILITY,
@@ -46,6 +47,7 @@ export const DEFAULT_TICKET_DESTINATION_OPTIONS: ProviderOptionSource = {
 };
 export const TICKET_TITLE_MAX = 200;
 export const TICKET_FIELD_MAX = 5000;
+export const TICKET_REASON_MAX = 2000;
 const QUOTE_MAX = 15000;
 
 export type TicketFilingErrorCode =
@@ -56,7 +58,8 @@ export type TicketFilingErrorCode =
   | 'ticket_destination_unset'
   | 'ticket_destination_unavailable'
   | 'ticket_destination_ambiguous'
-  | 'ticket_owner_changed';
+  | 'ticket_owner_changed'
+  | 'ticket_classification_conflict';
 
 /** A refusal raised before any provider call. `code` is stable for callers to branch on. */
 export class TicketFilingError extends Error {
@@ -83,10 +86,20 @@ export interface FileTicketInput {
   workspaceId: string;
   /** The caller's own plan run; it must have been launched by a trigger-pack binding. */
   planRunId: number;
-  title: string;
-  observed: string;
-  expected: string;
+  title?: string;
+  observed?: string;
+  expected?: string;
+  classification?: TicketClassification;
+  reason?: string;
 }
+
+export type TicketClassification = 'bug' | 'non-bug' | 'needs-information';
+const Classification = z.object({
+  verdict: z.enum(['bug', 'non-bug', 'needs-information']),
+  reason: z.string().max(TICKET_REASON_MAX).optional(),
+  ownerUserId: z.string().uuid(),
+});
+export type TicketClassificationRecord = z.infer<typeof Classification>;
 
 export interface FileTicketDeps extends OutboundDispatchDeps {
   /** Overrides for reading the destination's option list (tests inject a host fetch). */
@@ -99,7 +112,8 @@ export type FileTicketResult =
     /** The provider that answered; null when an earlier call already recorded the ticket. */
     provider: string | null;
   }
-  | { triggerRunId: string; pendingReconciliation: true; error?: string };
+  | { triggerRunId: string; pendingReconciliation: true; error?: string }
+  | { triggerRunId: string; classification: Exclude<TicketClassification, 'bug'>; recorded: boolean; filed: false };
 
 interface RunRow {
   triggerRunId: string;
@@ -145,6 +159,51 @@ function existingAttempt(row: RunRow): TicketFilingAttempt | null {
   const attempt = Attempt.parse(stored);
   if (attempt.ownerUserId !== row.ownerUserId) throw new TicketFilingError('ticket_owner_changed');
   return attempt;
+}
+
+function existingClassification(row: RunRow): TicketClassificationRecord | null {
+  const stored = record(row.outcome)?.[TICKET_CLASSIFICATION_OUTCOME_KEY];
+  if (stored === undefined || stored === null) return null;
+  const classification = Classification.parse(stored);
+  if (classification.ownerUserId !== row.ownerUserId) throw new TicketFilingError('ticket_owner_changed');
+  return classification;
+}
+
+async function recordClassification(
+  sql: postgres.Sql,
+  workspaceId: string,
+  planRunId: number,
+  verdict: TicketClassification,
+  reason: string | undefined,
+): Promise<{ row: RunRow & { ownerUserId: string }; classification: TicketClassificationRecord; fresh: boolean }> {
+  const seen = await readRun(sql, workspaceId, planRunId, false);
+  assertChannelInScope(seen);
+  const prior = existingClassification(seen);
+  if (prior) {
+    if (prior.verdict !== verdict) throw new TicketFilingError('ticket_classification_conflict');
+    return { row: seen, classification: prior, fresh: false };
+  }
+  return sql.begin(async (tx) => {
+    const row = await readRun(tx, workspaceId, planRunId, true);
+    assertChannelInScope(row);
+    const filed = existingAttempt(row);
+    if (filed && verdict !== 'bug') throw new TicketFilingError('ticket_classification_conflict');
+    const raced = existingClassification(row);
+    if (raced) {
+      if (raced.verdict !== verdict) throw new TicketFilingError('ticket_classification_conflict');
+      return { row, classification: raced, fresh: false };
+    }
+    const classification: TicketClassificationRecord = {
+      verdict,
+      ...(reason ? { reason } : {}),
+      ownerUserId: row.ownerUserId,
+    };
+    await tx`UPDATE harness_shared.trigger_runs SET
+      outcome = COALESCE(outcome, '{}'::jsonb) || ${JSON.stringify({ [TICKET_CLASSIFICATION_OUTCOME_KEY]: classification })}::text::jsonb,
+      updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND id = ${row.triggerRunId}::uuid`;
+    return { row, classification, fresh: true };
+  });
 }
 
 function assertChannelInScope(row: RunRow): void {
@@ -198,16 +257,27 @@ export async function fileTicketFromPlanRun(
 ): Promise<FileTicketResult> {
   const { workspaceId, planRunId } = input;
   if (!Number.isSafeInteger(planRunId) || planRunId <= 0) throw new TicketFilingError('ticket_run_invalid');
+  const verdict = input.classification ?? 'bug';
+  const reason = text(input.reason);
+  if (!Classification.shape.verdict.safeParse(verdict).success || reason.length > TICKET_REASON_MAX) {
+    throw new TicketFilingError('ticket_content_invalid');
+  }
   const title = text(input.title);
   const observed = text(input.observed);
   const expected = text(input.expected);
-  if (!title || title.length > TICKET_TITLE_MAX || observed.length > TICKET_FIELD_MAX || expected.length > TICKET_FIELD_MAX) {
+  if (verdict === 'bug' && (!title || typeof input.observed !== 'string' || typeof input.expected !== 'string'
+    || title.length > TICKET_TITLE_MAX || observed.length > TICKET_FIELD_MAX || expected.length > TICKET_FIELD_MAX)) {
     throw new TicketFilingError('ticket_content_invalid', `title 1-${TICKET_TITLE_MAX} chars; observed/expected at most ${TICKET_FIELD_MAX}`);
   }
   if (!('begin' in sql)) throw new TicketFilingError('ticket_committing_connection_required');
 
+  // The verdict commits before provider HTTP. Negative classifications never list destinations.
+  const classified = await recordClassification(sql, workspaceId, planRunId, verdict, reason || undefined);
+  if (classified.classification.verdict !== 'bug') {
+    return { triggerRunId: classified.row.triggerRunId, classification: classified.classification.verdict, recorded: classified.fresh, filed: false };
+  }
   // 1. Resolve the destination OUTSIDE any lock: listing options is provider HTTP.
-  const seen = await readRun(sql, workspaceId, planRunId, false);
+  const seen = classified.row;
   const recorded = existingAttempt(seen);
   // `fresh` only when THIS call committed the attempt: any recorded attempt may already have POSTed,
   // so it is recovered (recoveryOnly) and never re-created.

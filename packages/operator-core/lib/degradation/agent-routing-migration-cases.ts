@@ -127,7 +127,8 @@ function launchFixture() {
     }, gatewayWholesaleThrottled: async () => false }),
     getOrgPg: () => ({ sql }), recordSpawn: async () => {
       state.records++; if (state.recordFails) throw new Error('record unavailable');
-    }, recordSpawnPid: async () => {}, heartbeatSpawns: async () => {},
+    }, spawnAccountRouteFromLaunch: () => null, recordSpawnAccountRoute: async () => {},
+    recordSpawnPid: async () => {}, heartbeatSpawns: async () => {},
     managedSetInterval: () => {
       state.timers++;
       if (state.retryTimerFails && state.timers === 2) throw new Error('retry timer unavailable');

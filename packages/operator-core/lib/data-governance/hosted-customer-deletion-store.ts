@@ -33,6 +33,30 @@ function matchesRequest(a: HostedCustomerDeletionRequest, b: HostedCustomerDelet
       || (b.target.kind === 'user' && a.target.userId === b.target.userId)) && matchesPolicy(a.policy, b.policy);
 }
 
+/** Recovery accepts ledger coordinates, never a replacement actor, target or
+ * policy. Reconstruct the original request even after local access is frozen. */
+export async function readAdmittedHostedCustomerDeletion(
+  tx: Sql, organizationId: string, operationId: string,
+  resolveApprovedPolicy: () => Promise<HostedCustomerDeletionPolicy | null>,
+): Promise<HostedCustomerDeletionRequest> {
+  assertTransaction(tx);
+  await tx`SELECT set_config('app.organization_id', ${organizationId}, true)`;
+  const rows = await tx<{ data: { actor_kind: string; actor_id: string; target_type: string; target_id: string;
+    metadata: { kind: string; policy: HostedCustomerDeletionPolicy } } }[]>`
+    SELECT data FROM papercusp_auth.read_hosted_customer_export_rows(
+      'papercusp_auth.organization_audit_events', ${organizationId})
+     WHERE data->>'action' = 'organization.data.deletion.requested'
+       AND data->'metadata'->>'operationId' = ${operationId}`;
+  const receipt = rows[0]?.data;
+  if (rows.length !== 1 || !receipt || receipt.actor_kind !== 'customer_user' || !receipt.actor_id?.trim()
+    || !receipt.metadata?.policy || !['organization', 'user'].includes(receipt.target_type)) reject('admission-mismatch');
+  const request: HostedCustomerDeletionRequest = { organizationId, operationId, requestedBy: receipt.actor_id,
+    target: receipt.target_type === 'user' ? { kind: 'user', userId: receipt.target_id } : { kind: 'organization' },
+    policy: receipt.metadata.policy };
+  await authorizeHostedCustomerDeletion(tx, request, resolveApprovedPolicy);
+  return request;
+}
+
 /** A workflow argument or an approval-ref string is not authority. Require the
  * server-owned approved values and the exact immutable admission receipt. */
 export async function authorizeHostedCustomerDeletion(
@@ -48,14 +72,14 @@ export async function authorizeHostedCustomerDeletion(
   if (request.target.kind !== 'organization' && request.target.kind !== 'user') reject('admission-mismatch');
   if (request.target.kind === 'user' && request.target.userId !== request.requestedBy) reject('admission-mismatch');
   await tx`SELECT set_config('app.organization_id', ${request.organizationId}, true)`;
-  const rows = await tx<{ data: { actor_id: string; target_id: string; target_type: string;
+  const rows = await tx<{ data: { actor_kind: string; actor_id: string; target_id: string; target_type: string;
     metadata: { kind: string; policy: HostedCustomerDeletionPolicy } } }[]>`
     SELECT data FROM papercusp_auth.read_hosted_customer_export_rows(
       'papercusp_auth.organization_audit_events', ${request.organizationId})
      WHERE data->>'action' = 'organization.data.deletion.requested'
        AND data->'metadata'->>'operationId' = ${request.operationId}`;
   const receipt = rows[0]?.data;
-  if (rows.length !== 1 || !receipt || receipt.actor_id !== request.requestedBy
+  if (rows.length !== 1 || !receipt || receipt.actor_kind !== 'customer_user' || receipt.actor_id !== request.requestedBy
     || receipt.target_type !== request.target.kind
     || receipt.target_id !== (request.target.kind === 'user' ? request.target.userId : request.organizationId)
     || receipt.metadata.kind !== request.target.kind || !receipt.metadata.policy

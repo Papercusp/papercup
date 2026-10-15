@@ -70,6 +70,7 @@ export const ACCEPTANCE_GRADING_STALL_GATE_CODES: readonly PlanAcceptanceGateCod
   'acceptance_ungraded',
   'self_graded_only',
   'independent_verification_missing',
+  'acceptance_rubric_vetted_after_grading',
 ];
 
 export type AcceptanceGradingSweepAction = 'skip' | 'dispatch' | 'escalate';

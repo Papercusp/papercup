@@ -638,7 +638,7 @@ ROUTINE_FALLBACK_MIGRATION_CASES.push({
       broadcastSevereEvent: async (input: Parameters<typeof rail.broadcastSevereEvent>[0]) => {
         broadcasts++; return rail.broadcastSevereEvent(input);
       },
-      require: () => ({ notifyAttention: async () => { pages++; throw new Error('owner page unavailable'); } }),
+      require: () => ({ notifyAttentionOnce: async () => { pages++; throw new Error('owner page unavailable'); } }),
       evaluateSilentHalt: producer.evaluateSilentHalt, hasAutonomyPosture: () => true,
       disarmEpochToken: producer.disarmEpochToken, wakeMarkerSummary: producer.wakeMarkerSummary,
       classifyEndedHolder: () => 'fixture-classification',

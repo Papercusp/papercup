@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHostedCustomerDeletionProviders } from './hosted-customer-deletion-providers';
 import type { HostedCustomerDeletionRequest } from './hosted-customer-deletion';
 import type { HostedCustomerDeletionSnapshot } from './hosted-customer-deletion-store';
+import type { StripeBillingClient } from '../auth/hosted/billing/stripe-billing-client';
 
 const request: HostedCustomerDeletionRequest = { operationId: 'operation', organizationId: 'tenant', requestedBy: 'actor',
   target: { kind: 'organization' }, policy: { approvalRef: 'approved-decision', stripe: 'delete', consent: 'retain' } };
@@ -32,7 +33,7 @@ function fixture(frozenRequest = request) {
   const readAuthorizedSnapshot = vi.fn(async () => snapshot);
   const resolveWorkOSApiKey = vi.fn(async () => 'test-secret');
   const createWorkOSClient = vi.fn(() => workos);
-  const stripeClient = { deleteCustomer: vi.fn(async () => ({ ok: true as const, customerId: 'cus_1',
+  const stripeClient = { deleteCustomer: vi.fn<StripeBillingClient['deleteCustomer']>(async () => ({ ok: true, customerId: 'cus_1',
     alreadyDeleted: false, requestIds: ['req_1'] })) };
   const stripe = vi.fn(async () => stripeClient);
   const providers = createHostedCustomerDeletionProviders({ readAuthorizedSnapshot, resolveWorkOSApiKey, createWorkOSClient, stripe });
@@ -93,7 +94,7 @@ describe('hosted customer deletion provider composition', () => {
     const f = fixture();
     await expect(f.providers.stripe(request)).resolves.toBe('stripe_customer_deleted');
     expect(f.stripeClient.deleteCustomer).toHaveBeenCalledWith({ customerId: 'cus_1', organizationId: 'tenant' });
-    f.stripeClient.deleteCustomer.mockResolvedValue({ ok: false, detail: 'private provider data' } as never);
+    f.stripeClient.deleteCustomer.mockResolvedValue({ ok: false, code: 'provider-error', status: 503, detail: 'private provider data' });
     await expect(f.providers.stripe(request)).rejects.toThrow('stripe-deletion-unconfirmed');
   });
 

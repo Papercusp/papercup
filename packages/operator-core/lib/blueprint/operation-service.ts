@@ -78,6 +78,8 @@ export interface SubmitBlueprintOperationInput {
   callerId: string;
   operationId: string;
   requestKey: string;
+  /** Compare with the current revision; never permission to select an old one. */
+  expectedSpecificationRevision?: string;
   input: Record<string, unknown>;
   /** D-014: content for the worker that must NOT enter the work-item payload.
    * Accepted only by an operation declaring privateInputSchema. */
@@ -128,7 +130,8 @@ export function submitBlueprintOperation(
     const callerId = input.callerId?.trim();
     const requestKey = input.requestKey?.trim();
     if (!input.workspaceId?.trim() || !input.harnessSlug?.trim() || !input.operationId?.trim() ||
-        !callerId || callerId.length > 200 || !requestKey || requestKey.length > 200) {
+        !callerId || callerId.length > 200 || !requestKey || requestKey.length > 200 ||
+        (input.expectedSpecificationRevision !== undefined && !/^[0-9a-f]{64}$/.test(input.expectedSpecificationRevision))) {
       throw new BlueprintOperationRefusal('invalid_request',
         'blueprint submission requires workspace, harness, operation, authenticated caller and request key');
     }
@@ -153,6 +156,30 @@ export function submitBlueprintOperation(
         internal.expectedSpecificationRevision !== previous[0].specification_revision) {
       throw new Error('blueprint operation receipt differs from the expected specification revision');
     }
+    if (input.expectedSpecificationRevision &&
+        input.expectedSpecificationRevision !== (previous[0]?.specification_revision ?? currentHash) &&
+        // A trusted program can pin an old revision; a public request cannot.
+        !(internal?.expectedSpecificationRevision === input.expectedSpecificationRevision)) {
+      throw new BlueprintOperationRefusal('input_conflict',
+        'blueprint operation revision changed; reload the approved workflow before starting a new run');
+    }
+    const expectedSpecificationRevision = internal?.expectedSpecificationRevision ?? input.expectedSpecificationRevision;
+    const beforeNewAdmission = async (tx: TransactionSql) => {
+      if (input.expectedSpecificationRevision) {
+        // Serialize with projection's UPDATE: promotion cannot race between the
+        // displayed-revision comparison and durable admission. Replays bypass
+        // this hook and retain the accepted receipt even after rollback.
+        const [current] = await tx<Array<{ content_hash: string }>>`
+          SELECT content_hash FROM harness_shared.blueprints
+           WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
+           FOR SHARE`;
+        if (current?.content_hash !== input.expectedSpecificationRevision) {
+          throw new BlueprintOperationRefusal('input_conflict',
+            'blueprint operation revision changed; reload the approved workflow before starting a new run');
+        }
+      }
+      await internal?.beforeNewAdmission?.(tx);
+    };
     const revision = previous[0]?.specification_revision ??
       internal?.expectedSpecificationRevision ??
       currentHash;
@@ -189,8 +216,8 @@ export function submitBlueprintOperation(
         callerId, requestKey, operationId: input.operationId, input: input.input,
         title: input.title?.trim() || operation.description?.trim() || operation.id,
         summary: input.summary,
-        expectedSpecificationRevision: internal?.expectedSpecificationRevision,
-        beforeNewAdmission: internal?.beforeNewAdmission,
+        expectedSpecificationRevision,
+        beforeNewAdmission,
         createdBy: callerId,
       });
       target = { kind: 'work-item', id: item.id };
@@ -198,8 +225,8 @@ export function submitBlueprintOperation(
       const run = await acceptBlueprintPlanRun(sql, {
         workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
         callerId, requestKey, operationId: input.operationId, input: input.input,
-        expectedSpecificationRevision: internal?.expectedSpecificationRevision,
-        beforeNewAdmission: internal?.beforeNewAdmission,
+        expectedSpecificationRevision,
+        beforeNewAdmission,
       });
       target = { kind: 'plan', runId: run.runId, instanceSlug: run.instanceSlug };
     }

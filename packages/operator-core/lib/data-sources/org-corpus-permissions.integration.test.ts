@@ -95,6 +95,44 @@ beforeEach(async () => {
 });
 
 describe('organization corpus permissions (R-8)', () => {
+  it('narrows a selected support case without widening live source permissions', async () => {
+    const listId = await seedChannel([SLACK_ALICE]);
+    await mapProviderIdentity(org.adminSql, WS, { ...SLACK_ALICE, userId: alice, mappedBy: 'owner' });
+    const before = await search(alice);
+    expect(before.allowed).toBe(true);
+    if (!before.allowed) return;
+    const selectedId = before.results[0]!.id;
+    await upsertOrganizationDocuments(org.adminSql, WS, listId, [{
+      source: 'slack', kind: 'message', dedupeKey: 'other-support-case',
+      title: 'Other case', text: 'A second cobalt roadmap case must not enter the selected handoff.',
+    }]);
+    const selected = (principalUserId = alice, documentIds: string[] = [selectedId]) =>
+      searchOrganizationDocuments(org.adminSql, ctx, {
+        workspaceId: WS, principalUserId, agentOwnerId: 'org-corpus-test', query: 'cobalt roadmap', documentIds,
+      });
+    const result = await selected();
+    expect(result.allowed && result.results.map((r) => r.id)).toEqual([selectedId]);
+    const empty = await selected(alice, []);
+    expect(empty.allowed && empty.results).toEqual([]);
+    const denied = await selected(bob);
+    expect(denied.allowed && denied.results).toEqual([]);
+    expect(await selected(noGrant)).toEqual({ allowed: false, reason: 'no_live_grant' });
+
+    await replacePermissionListMembers(org.adminSql, WS, listId, []);
+    const revoked = await selected();
+    expect(revoked.allowed && revoked.results).toEqual([]);
+    expect(JSON.stringify(revoked)).not.toContain('quarterly planning review');
+  });
+
+  it('refuses malformed or unbounded document selections', async () => {
+    for (const documentIds of [['not-an-id'], Array(51).fill('00000000-0000-4000-8000-000000000000')]) {
+      await expect(searchOrganizationDocuments(org.adminSql, ctx, {
+        workspaceId: WS, principalUserId: alice, agentOwnerId: 'org-corpus-test',
+        query: 'cobalt roadmap', documentIds,
+      })).rejects.toThrow(/at most 50 canonical UUIDs/);
+    }
+  });
+
   it('returns the document to a granted principal whose mapped identity is on the list', async () => {
     await seedChannel([SLACK_ALICE]);
     await mapProviderIdentity(org.adminSql, WS, { ...SLACK_ALICE, userId: alice, mappedBy: 'owner' });

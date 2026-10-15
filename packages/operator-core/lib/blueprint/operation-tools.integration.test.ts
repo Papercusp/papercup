@@ -358,6 +358,37 @@ describe('P-017 blueprint:* registration and contract projection', () => {
 });
 
 describe.each<Transport>(['http', 'mcp'])('P-017 blueprint:* lifecycle over %s', (transport) => {
+  it('refuses changed approved revisions while preserving accepted runs through promotion and rollback', async () => {
+    const original = await readBlueprintHashFromPg(db.sql, WORKSPACE, HARNESS);
+    const approved = { ...submitArgs('approved'), expectedSpecificationRevision: original };
+    const { handle } = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, approved));
+    expect(handle.specificationRevision).toBe(original);
+    const promoted = structuredClone(OPERATION_SOURCE);
+    promoted.operations[0]!.version = 'B';
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      blueprint: BlueprintSchema.parse(promoted), specification: compileAgentSpecification({ source: promoted }),
+    });
+    const next = await readBlueprintHashFromPg(db.sql, WORKSPACE, HARNESS);
+    expect(next).not.toBe(original);
+    expect(await refused(call(transport, ALPHA, T.submit, {
+      ...approved, requestKey: 'stale-new-run',
+    }))).toMatchObject({ code: 'invalid_input', message: expect.stringContaining('revision changed') });
+    expect((await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, approved))).handle).toEqual(handle);
+    const fresh = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit, {
+      ...submitArgs('new-approved'), expectedSpecificationRevision: next,
+    }));
+    expect(fresh.handle.specificationRevision).toBe(next);
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: WORKSPACE, harnessSlug: HARNESS,
+      blueprint: BlueprintSchema.parse(OPERATION_SOURCE), specification: compileAgentSpecification({ source: OPERATION_SOURCE }),
+    });
+    const stillPinned = await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.status, { handle: fresh.handle }));
+    expect(stillPinned.handle.specificationRevision).toBe(next);
+    const [{ count }] = await db.sql<{ count: number }[]>`SELECT count(*)::int AS count FROM harness_shared.blueprint_operation_invocations`;
+    expect(count).toBe(2);
+  });
+
   it('drives submit/replay/status/events/signal/resume/cancel/result through the shared contract', async () => {
     const { handle } = await ok<{ handle: BlueprintOperationHandle }>(
       call(transport, ALPHA, T.submit, submitArgs('lifecycle')));

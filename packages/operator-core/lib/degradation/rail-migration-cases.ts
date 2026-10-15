@@ -1310,14 +1310,21 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
     let estimate: number | null = 150_000, omitted = false, dead = false, healthyTranscript = false;
     const row = { workspace_id: 'fixture', owner_id: 'fixture-owner', owner_label: 'fixture',
       compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
-    const sql = (async (parts: TemplateStringsArray) => parts.join('').includes('compaction_limit IS NOT NULL') && !omitted ? [row] : []) as unknown as import('postgres').Sql;
+    const sql = (async (parts: TemplateStringsArray) => {
+      const query = parts.join('');
+      if (query.includes('FROM harness_shared.adv_sessions')) return [{ owner_id: row.owner_id }];
+      return query.includes('compaction_limit IS NOT NULL') && !omitted ? [row] : [];
+    }) as unknown as import('postgres').Sql;
+    const warnings: string[] = [];
     const flags = { CONTEXT_GAUGE: 'gauge', GATEWAY_MAINTENANCE_CARRY: 'carry', COMPACTION_WATCHDOG_FORCE_COMPACT: 'force' };
-    const producer = execute(originalModule, {
+    const producer = execute('console.warn = collectWarning;\n' + originalModule, {
+      collectWarning: (message: string) => warnings.push(message),
       ...await import('../agent-config-constants'), DEFAULT_COORD_WORKSPACE: 'fixture', hostname: () => 'fixture-host', process,
       estimateContextTokensForOwner: async () => estimate, estimateContextWindowForOwner: async () => 200_000,
       observedPromptFloorForOwner: () => null, resolveSessionRefReconciled: async () => ({ agent: 'claude', sessionId: 'current' }),
       detectContextDeathForOwner: async () => dead, detectToolReferenceDeathForOwner: async () => null,
       codexReadingProvenanceForOwner: async () => null, recordContextUsage: () => {},
+      clearContextUsage: async () => {},
       listActiveClaimFreshnessForOwner: async () => [], classifyStaleClaims: () => [],
       setContextGaugeEnabled: () => {}, setContextEstimate: async () => {}, setCompactionLimit: async () => {},
       resolveAlarm: (await import('../alarm-attention')).resolveAlarm,
@@ -1339,7 +1346,7 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
         if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
       } } };
     const run = () => producer.checkCompactionCompliance(sql, conditions);
-    await run(); expect(open.size).toBe(2);
+    await run(); expect(open.size, warnings.join('\n')).toBe(2);
     expect(open.has(producer.compactionConditionKey('fixture', 'fixture-owner', 'force-unavailable'))).toBe(true);
     await run(); expect(openedKeys).toHaveLength(2);
     omitted = true; await run(); expect(open.size).toBe(2);
@@ -1425,7 +1432,8 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
   },
 }, {
   id: 'goal-drain-original-pull-stall-and-post-open-current-member-recovery', item: 'P-014', route: 'condition',
-  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1'],
+  // Supplemental scenario for the module row bound by the obligation case above.
+  rowIds: [],
   run: async () => {
     const { expect } = await import('vitest');
     const { runGoalDrainFleetSweepOnce, readActiveFleetPullStallAlerts, resolveGoalDrainPullRecovery,
@@ -1773,7 +1781,8 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       await utimes(rollout, new Date(now - 17 * 60_000), new Date(now - 17 * 60_000));
       await checkCodexRolloutPersistence(sql, opts);
       expect(openedKeys.sort()).toEqual([key('persistence'), key('provider')].sort());
-      await checkCodexRolloutPersistence(sql, opts); expect(broadcastCount).toBe(4);
+      // Persistence refreshes each pass; the still-open provider episode dedupes.
+      await checkCodexRolloutPersistence(sql, opts); expect(broadcastCount).toBe(3);
       rows = []; await checkCodexRolloutPersistence(sql, opts); expect(resolvedKeys).toEqual([]);
       now += 1000;
       await writeFile(rollout, JSON.stringify({ timestamp: new Date(now).toISOString(), type: 'event_msg',
@@ -3194,7 +3203,9 @@ RAIL_MIGRATION_CASES.push({
     const mocks = [
       vi.spyOn(org, 'getOrgPg').mockReturnValue({ sql } as never),
       vi.spyOn(scope, 'gateWorkScope').mockResolvedValue({ allowed: true } as never),
-      vi.spyOn(blueprint, 'fireLaunchBlueprintForEvent').mockResolvedValue(null),
+      vi.spyOn(blueprint, 'fireLaunchBlueprintForEvent').mockResolvedValue({
+        spawn: { spawnId: 'fixture-fixer', runId: 'fixture-run' },
+      } as never),
       vi.spyOn(dev, 'testFlakeRollup').mockResolvedValue({ entries: [] } as never),
       vi.spyOn(console, 'log').mockImplementation(() => {}),
       vi.spyOn(console, 'warn').mockImplementation(() => {}),

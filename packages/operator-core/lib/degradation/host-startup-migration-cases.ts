@@ -82,6 +82,7 @@ export const HOST_STARTUP_MIGRATION_CASES: RailMigrationCase[] = startupSites.ma
       startOperatorStateCacheCoherence: work, backgroundSpawnerSidecarEnabled: enabled,
       backgroundWorkers: enabled, utilityHost: false, process: { env: {} },
       require: () => ({ installControlAnchorKernelResolver: () => { if (fail) throw new Error('resolver unavailable'); },
+        installGovernancePolicyEnforcement() {},
         spawnSpawnerSidecar: work, registerSpawnerSidecarShutdownHooks() {},
         ensureGatewaySidecar: work, registerGatewaySidecarShutdownHooks() {} }),
     });

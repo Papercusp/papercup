@@ -831,3 +831,7 @@ import './hosted-lifecycle-reconcile-action';
 // live origin and THROWS on a miss (routine-failure watchdog). A bespoke ephemeral (900s) cadence;
 // seeded ACTIVE by seed-hosted-public-ingress-probe-routine.ts.
 import './hosted-public-ingress-probe-action';
+// P-016: deterministic authenticated Stripe reconciliation through the existing
+// durable billing cursor/store. No agent dispatch and no production schedule is
+// armed by registration; plans:set-schedule + plans:arm-schedule owns cadence.
+import './hosted-billing-reconcile-action';
