@@ -1,8 +1,9 @@
 /** Candidate input for the existing package lifecycle suite, independent of its harness HEAD. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, copyFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — reuse the packager's JavaScript lock-path resolver.
@@ -20,6 +21,19 @@ export interface PackageResult {
 
 const INPUTS = ['PUI_PUBLIC_PACKAGE_ARCHIVE', 'PUI_PUBLIC_PACKAGE_SOURCE_SHA', 'PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256'] as const;
 const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
+
+/** Git blob bodies are file inputs, not bounded subprocess diagnostic output. */
+export function readPackageBuildLock(root: string, sourceSha: string): Record<string, { version?: string; link?: boolean }> {
+  const work = mkdtempSync(path.join(tmpdir(), 'pui-build-lock-'));
+  const file = path.join(work, 'package-lock.json');
+  try {
+    const fd = openSync(file, 'w');
+    try {
+      execFileSync('git', ['-C', root, 'show', `${sourceSha}:package-lock.json`], { stdio: ['ignore', fd, 'pipe'] });
+    } finally { closeSync(fd); }
+    return JSON.parse(readFileSync(file, 'utf8')).packages;
+  } finally { rmSync(work, { recursive: true, force: true }); }
+}
 
 /** Check the bundler's native build prerequisites before spending time in Cargo. */
 export function assertPackageBuildDependencies(root: string, packages: Record<string, { version?: string; link?: boolean }>): void {

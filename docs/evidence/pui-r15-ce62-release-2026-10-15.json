@@ -170,7 +170,23 @@
       "expandedLocalGuards": { "passed": 15, "failed": 0, "skipped": 0, "worktreeDirty": true, "logPath": "/tmp/p032-package-preflight-unit-9086d-20261015.log", "logSha256": "6a0e29f38bd701545dd7e3d65271e0a35d3a754fd6c46657d34071d6b49a8cc2" },
       "scopedTypecheck": { "files": 4, "errors": 0, "exitCode": 0, "logPath": "/tmp/p032-package-harness-types-9086d-20261015.log", "logSha256": "e678259b90164fdb92a6d7e173ea25274805227d59d9072fcde7191d2f03b35f" },
       "linkedDependencyAttempt": { "testRunId": 21261444, "status": "failed-before-lifecycle-cases", "passed": 0, "failed": 0, "skipped": 8, "worktreeDirty": false, "cause": "lint-as-committed linked dependencies exposed esbuild outside a reachable committed lock path; bundle-psu refused after predecessor compilation", "logPath": "/tmp/p032-package-pinned-clean-9086d-20261015.log" },
-      "nextPrerequisite": "Use maintained setup-release-checkout prepare-existing with an exact immutable independent-copy dependency generation, then run the committed preflight and full lifecycle against ce62/c292. No rerun is claimed here."
+      "nextPrerequisite": "Use maintained setup-release-checkout prepare-existing with an exact immutable independent-copy dependency generation, then run the committed preflight and full lifecycle against ce62/c292. No rerun is claimed here.",
+      "preparedPhysicalHarness": {
+        "root": "/tmp/pcv/papercusp-lint-as-committed-5985979eed-bMV3yW",
+        "commit": "5985979eed7f5c42d25565043b3104d02f4c1df4",
+        "dependencyGeneration": "v1-e86026a5472fdd602acfa0c712a36c5d3655488d8a4aa0fa0959a7e50dd2637b",
+        "mode": "independent-copy",
+        "setupExitCode": 0,
+        "setupLogPath": "/tmp/p032-package-5985-physical-deps-v2-9086d-20261015.log",
+        "cleanGuardTestRunId": 21261545,
+        "cleanGuardPassed": 15,
+        "sourceIntegrity": "prepare-existing preserves already object-sourced pinned checkout and submodules",
+        "lockfileReadRepair": "A direct prerequisite check caught default git stdout ENOBUFS on the 1401925-byte committed lockfile. Canonical readPackageBuildLock now streams the blob to an owned temporary file; both suite callers reuse it. Its 16 conventional tests and scoped four-file typecheck pass locally; this final reader repair still needs committed-harness full proof.",
+        "readerUnitLogPath": "/tmp/p032-package-lock-reader-unit-9086d-20261015.log",
+        "readerTypecheckLogPath": "/tmp/p032-package-lock-reader-types-9086d-20261015.log",
+        "inputPreflightLogPath": "/tmp/p032-package-5985-input-preflight-v2-9086d-20261015.log",
+        "inputPreflightScope": "Canonical repaired helper checks physical dependencies in the prepared 5985 root for ce62 and predecessor51136, and snapshots/verifies the exact c292 archive. This diagnostic passes; it is not a full clean lifecycle receipt."
+      }
     }
   },
   "barAdequacyPreparation": {
@@ -185,6 +201,13 @@
       { "specId": "PUI-EDITOR-HISTORY", "verdict": "pass", "baselineTestRunId": 21261488, "relocatedBaselineTestRunId": 21261490, "mutantTestRunId": 21261493, "bindingIds": [47928, 47929], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-history-clean-control-9086d-20261015.log", "logSha256": "602745fce09de2280bbfcac313ad01823e479c87689b79329343f1fc390eba62" },
       { "specId": "PUI-EDITOR-UNDO", "verdict": "pass", "baselineTestRunId": 21261498, "relocatedBaselineTestRunId": 21261501, "mutantTestRunId": 21261504, "bindingIds": [47934, 47935], "additionalFixtureBaselineBindingId": 47908, "withdrawnIncompleteFixtureBindingIds": [47896, 47897], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-undo-fixture-control-9086d-20261015.log", "logSha256": "b7e82dbababce0d178e7e47612db34918c3db6b2e7066700d4f4a27a1908309c" }
     ],
+    "postEditorProofCohort": {
+      "count": 48,
+      "verdicts": { "pass": 21, "fail": 8, "unknown": 19 },
+      "scope": "Current work-item proof adequacy, not a product grade. The earlier postTaskProofCohort is a historical snapshot.",
+      "staleSpecIds": ["AUTO-BAR-R-14-P-001", "AUTO-BAR-R-14-P-002", "AUTO-BAR-R-14-P-012", "PUI-COMMANDS", "PUI-FILE-CONTEXT", "PUI-QUESTION", "PUI-TOOLS-DIFF", "PUI-USAGE"],
+      "cause": "Server-measured test-file fingerprint mismatch after this session extended release-acceptance.integration.test.ts with a pinned candidate input. These bindings need refreshed committed source/fixture/control receipts; no installed product regression was measured."
+    },
     "r03HelperProof": {
       "parityTestRunId": 21259714,
       "parityPassed": 16,

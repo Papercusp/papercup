@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import { assertPackageBuildDependencies, loadPinnedPackageCandidate } from './public-package-candidate';
+import { assertPackageBuildDependencies, loadPinnedPackageCandidate, readPackageBuildLock } from './public-package-candidate';
 
 const SOURCE = 'a'.repeat(40);
 const TARGET = 'linux-x86_64';
@@ -29,6 +29,15 @@ function fixture(overrides: object = {}) {
 }
 
 describe('public package candidate identity preflight', () => {
+  test('reads the actual committed monorepo lockfile beyond the subprocess output buffer', () => {
+    const root = path.resolve(__dirname, '../../../..');
+    // This repository's committed lock is over 1 MiB; the old buffered git read
+    // failed ENOBUFS before the dependency check could run.
+    const packages = readPackageBuildLock(root, 'HEAD');
+    expect(packages['node_modules/@lydell/node-pty']?.version).toBeTruthy();
+    expect(Object.keys(packages).length).toBeGreaterThan(0);
+  });
+
   function dependencyFixture() {
     const f = fixture();
     const packages = Object.fromEntries(['esbuild', '@lydell/node-pty'].map((name) => {
