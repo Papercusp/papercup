@@ -957,6 +957,30 @@ describe('killTask — unconfined process group (EI-24635523980082322)', () => {
 });
 
 describe('killTask — subtree', () => {
+  it('reaps an API child even when its terminal parent scope is already empty', async () => {
+    row({ taskId: 'parent', state: 'exited' });
+    row({ taskId: 'api-child', rootTaskId: 'parent', parentTaskId: 'parent' });
+    const signalled: string[] = [];
+    const result = await killTask('parent', { includeSubtree: true, reapTerminalResidue: true,
+      execFileAsync: (async (_f: string, args: string[]) => {
+        if (args.includes('kill')) signalled.push(args.at(-1)!);
+        return { stdout: '', stderr: '' };
+      }) as never });
+    expect(signalled).toEqual(['pc-api-child.scope']);
+    expect(store.closed).toContainEqual(expect.objectContaining({ taskId: 'api-child', state: 'killed' }));
+    expect(result).toMatchObject({ error: 'not_live', detail: expect.stringContaining('holds no live process') });
+  });
+
+  it('does not certify an empty parent when a descendant cannot be cleaned up', async () => {
+    row({ taskId: 'parent', state: 'exited' });
+    row({ taskId: 'api-child', rootTaskId: 'parent', parentTaskId: 'parent' });
+    const result = await killTask('parent', { includeSubtree: true, reapTerminalResidue: true,
+      execFileAsync: (async () => { throw new Error('signal refused'); }) as never });
+    expect(result).toMatchObject({ ok: false, error: 'incomplete',
+      detail: expect.stringContaining('Descendant cleanup failed for api-child') });
+    expect(store.closed).toEqual([]);
+  });
+
   it('never signals ancestors or siblings when reaping a nested task', async () => {
     row({ taskId: 'parent' });
     row({ taskId: 'child', rootTaskId: 'parent', parentTaskId: 'parent' });

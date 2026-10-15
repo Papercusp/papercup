@@ -12,6 +12,7 @@ import type { Sql } from 'postgres';
 import * as bashJobs from './bash-jobs';
 import * as enrollSync from '../../task-manager/enroll-sync';
 import * as taskStore from '../../task-manager/store';
+import * as taskProvenance from './bash-task-provenance';
 import { listTasks } from '../../task-manager/store';
 
 vi.mock('./exec-sandbox', async (importOriginal) => ({
@@ -77,6 +78,24 @@ afterEach(() => {
 });
 
 describe('capability:bash — start once and yield the same durable job (P-002)', () => {
+  it('carries the API parent through validated provenance into the real child enrollment', async () => {
+    const provenance = vi.spyOn(taskProvenance, 'resolveCapabilityBashTaskProvenance').mockResolvedValue({
+      launchedBy: 'owner', sessionId: 'owner', harnessSlug: 'papercusp', workItemId: 'WI-current',
+      planSlug: null, goalRef: 'WI-current', parentTaskId: 'parent123',
+    });
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    const live = vi.spyOn(taskStore, 'listLiveTasks').mockResolvedValue([]);
+    try {
+      const raw = await bash.handler({ command: 'printf CHILD-LINEAGE', timeout: 5_000,
+        parent_task_id: 'parent123', work_item_id: 'WI-current' }, makeCtx({ codeMode: true }));
+      const result = unwrapToolResult(raw as never);
+      expect(provenance.mock.calls[0]?.[3]).toMatchObject({ explicitParentTaskId: 'parent123' });
+      expect(complete.mock.calls[0]?.[1]).toMatchObject({ parentTaskId: 'parent123', workItemId: 'WI-current' });
+      expect(result).toMatchObject({ status: 'completed', output: 'CHILD-LINEAGE' });
+    } finally { provenance.mockRestore(); complete.mockRestore(); finish.mockRestore(); live.mockRestore(); }
+  });
+
   it('dispatch correlation recovers a lost launch response without a second launch or enrollment', async () => {
     const dispatchCallId = 'server-owned-dispatch';
     const marker = join(STATE, `dispatch-correlation-${crypto.randomUUID()}.txt`);

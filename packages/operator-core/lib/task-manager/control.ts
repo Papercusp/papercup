@@ -291,6 +291,35 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   const row = await getTask(taskId);
   if (!row) return { ok: false, taskId, action: 'kill', error: 'task_not_found' };
 
+  // A parent scope can already be empty while an API-launched child owns a
+  // separate service. Reap the logical descendants before accepting an empty
+  // terminal parent as cleanup proof. Ordinary terminal-row calls still refuse.
+  if (opts.includeSubtree && (isLiveOwnedState(row.state) || opts.reapTerminalResidue)) {
+    const tree = await getSubtree(row.rootTaskId);
+    const subtreeIds = new Set([taskId]);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const task of tree) {
+        if (task.parentTaskId && subtreeIds.has(task.parentTaskId) && !subtreeIds.has(task.taskId)) {
+          subtreeIds.add(task.taskId);
+          expanded = true;
+        }
+      }
+    }
+    const descendants = tree.filter(t => t.taskId !== taskId && subtreeIds.has(t.taskId) &&
+      (isLiveOwnedState(t.state) || opts.reapTerminalResidue));
+    for (const child of descendants) {
+      const result = await killTask(child.taskId, { ...opts, includeSubtree: false });
+      const verifiedGone = result.error === 'already_gone' || (result.error === 'not_live' &&
+        result.detail?.includes('holds no live process right now; nothing to reap'));
+      if (!result.ok && !verifiedGone) {
+        return { ok: false, taskId, action: 'kill', error: 'incomplete',
+          detail: `Descendant cleanup failed for ${child.taskId}: ${result.error}: ${result.detail ?? ''}` };
+      }
+    }
+  }
+
   // Terminal row: refused by default (D-010 — residue is report-only unless a
   // caller explicitly asks to reap it AND we can positively re-verify it's real).
   let reapingResidue = false;
@@ -329,30 +358,6 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   }
 
   const signal = opts.signal ?? 'SIGTERM';
-
-  if (opts.includeSubtree) {
-    const tree = await getSubtree(row.rootTaskId);
-    // The ledger read returns the WHOLE root tree. A nested task owns only
-    // its descendants, never its ancestors or sibling scopes.
-    const subtreeIds = new Set([taskId]);
-    let expanded = true;
-    while (expanded) {
-      expanded = false;
-      for (const task of tree) {
-        if (task.parentTaskId && subtreeIds.has(task.parentTaskId) && !subtreeIds.has(task.taskId)) {
-          subtreeIds.add(task.taskId);
-          expanded = true;
-        }
-      }
-    }
-    const descendants = tree.filter(
-      (t) => t.taskId !== taskId && subtreeIds.has(t.taskId)
-        && (isLiveOwnedState(t.state) || opts.reapTerminalResidue),
-    );
-    for (const t of descendants) {
-      await killTask(t.taskId, { ...opts, includeSubtree: false });
-    }
-  }
 
   // ── the trustworthy path ────────────────────────────────────────────────
   if (row.confined && row.scopeUnit) {
