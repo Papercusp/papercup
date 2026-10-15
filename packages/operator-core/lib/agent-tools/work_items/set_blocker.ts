@@ -421,18 +421,18 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items — a condition that is NOT a work-item: an event, a gate, runtime state, or a human capability. `kind` names the trigger shape; `capability` names what is actually missing. Capability shorthands (kind:'credential') normalize to kind:'human', capability:'credential'. Pass capability whenever you know it: authority alone cannot fabricate a credential, a physical device, or an external-service action. clear:true PRESERVES history. For non-final work, use staging/current-build. A genuine deployed-only blocker needs summary or evidence naming the literal phrase 'deployed-only', what staging/current-build cannot exercise, and a concrete reason.",
+    "Set/clear typed external blockers (event, gate, runtime, human capability); internal work-item dependencies use work_items:link {rel:'blocks'}. `kind` names the trigger, `capability` what is missing. Shorthands such as `kind:'credential'` normalize to human/credential. Clear preserves history. Non-final work proceeds on staging/current-build; main/:3070 waits require final shipment or a named deployed-only property staging cannot exercise. Include literal 'deployed-only', the staging limitation, and a concrete reason in summary/evidence.",
   guidance: {
     // P-011: response documentation lives here, not in `description` — `returns` is not
     // counted against the 1500-char prompt-weight budget and is demand-loaded via
     // tools:find instead of baked into every system prompt (the WI-9334 pattern).
     returns:
       'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), ownerAsk (the real coord:ask-owner conversation and choice list opened for a credential/device/service action), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; new human rows require a closed-list capability.',
-    when: "Work cannot proceed until a named event fires, a gate changes, runtime/external state is ready, or a human capability is available. Direct credential/device/service blockers open a coord:ask-owner question with choices. For reversible judgment, use kind:'product-decision' with defaultIfUnanswered and decideBy (the deadline): this consult-backed park proceeds on silence; owner-authority topics still require the owner. Use a stable ref; name nextVerb when one exists.",
+    when: "Use only when a named external condition or human capability actually stops work. Credential/device/service blockers open coord:ask-owner. Product-decision may park with defaultIfUnanswered + decideBy; owner-authority topics still need the owner. Use a stable ref and name nextVerb when known.",
     notWhen:
-      "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source). A vague concern with no actual stop condition is a comment, not a blocker. Do not block ordinary implementation on main/:3070/green-checkpoint — staging/current-build is the acceptance plane; only final shipment or a named deployed-only property waits on the release plane. For a non-final deployed-only exception, summary or evidence must state what staging/current-build cannot exercise and give a concrete reason (because/due to/since).",
+      "Use work_items:link {rel:'blocks'} when another work-item must finish first. A vague concern is not a blocker. Do not pause ordinary non-final work for main/:3070/green-checkpoint; staging/current-build is the acceptance plane.",
     chaining:
-      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call may omit ref when the item has one matching active blocker; pass ref (and kind when reused) if the request is ambiguous.',
+      'set_blocker {id,kind,ref,…} → follow the returned disposition → set_blocker {id,ref,clear:true,evidence} when resolved. Omit ref on clear-only only when one active blocker matches.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
