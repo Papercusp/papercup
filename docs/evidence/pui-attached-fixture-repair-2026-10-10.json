@@ -248,7 +248,111 @@
             "planEnabled": true,
             "approvalEnabled": true,
             "auditRef": "thread-post:1183368",
-            "status": "running; partial/current-build release refusal expected"
+            "status": "terminal failure: native basic journey passed; restart journey blocked by a second pending native approval; partial/current-build release remains refused",
+            "terminalAt": "2026-10-15T15:13:14.133Z",
+            "exitCode": 1,
+            "rootLogSha256": "d87e1106328ea37a8d654e108945d6583f1043970c3198637aae2d02a66ae88b",
+            "codexLogPath": "/tmp/pui-acceptance-7534f/run-codex-route-preflight-20261015-1500/vitest-codex.log",
+            "codexLogSha256": "54310e04ea4b10be99306adb9348ca9f6f1e779a7570d6c294b311d4b08d5e79",
+            "verdictSha256": "604bdc6919700c17109daf5c62d9926dd6ee5609ffd92fe8bab3d799fb46833e",
+            "codexTests": { "passed": 1, "failed": 1, "skipped": 96, "childExitCode": 1 },
+            "nativeBasicJourney": {
+              "state": "passed",
+              "tag": "PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE",
+              "nativeSessionId": "01a1401e-4efd-72c2-ba6b-5cd4b4323c55",
+              "chatId": "e7abd446-e421-488d-813c-0fec75e8b1e1",
+              "evidencePath": "/tmp/pui-acceptance-7534f/run-codex-route-preflight-20261015-1500/evidence-codex.json",
+              "scope": "Installed greeting, real file tool, interrupt, continue and native resume; current-build fixture, not a matched full candidate or OS-process restart pass"
+            },
+            "nativeRestartFailure": {
+              "workItem": "EI-26058952084813820",
+              "nativeSessionId": "01a1401b-d144-7f72-bc42-cc3d0342a49e",
+              "turnId": "pui-turn-pui-1792076931615855957",
+              "firstApproval": {
+                "correlationId": "f274470f-cfdd-49e9-85cb-a3a0c46de9c5",
+                "cardReplyStatus": 200,
+                "cardClosedSequence": 28,
+                "toolCompletedSequence": 30,
+                "toolIsError": false,
+                "exactEffectAssertionPassed": true,
+                "receiptEmitted": false,
+                "scope": "The failure line follows the exact file assertion; receipt emission was incorrectly deferred until after send readiness"
+              },
+              "pendingFollowup": {
+                "correlationId": "0aca2eb1-65a5-4179-91a7-7a08d90c9f3b",
+                "cardOpenedSequence": 33,
+                "waitingForOwnerSequence": 34,
+                "reason": "May I verify the note contents and trailing newline?",
+                "tool": "Bash",
+                "answered": false
+              },
+              "failedBoundary": "waitForSendReady after the first verified effect, before greeting or operator OS restart",
+              "rootCause": "The fixture treated waiting-for-owner while a second native card was open as a completed turn",
+              "repair": "Retain the first approval receipt immediately; explicitly decline only same-turn follow-ups for this fixture file, require no open cards plus turn completion, then observe send readiness",
+              "repairFiles": [
+                "packages/operator-core/lib/pui-e2e/release-acceptance.ts",
+                "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+                "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+              ],
+              "verificationStatus": "final registered helper suite passed 79 tests with zero skips and three-file types passed; repaired native OS-restart replay running",
+              "repairVerification": {
+                "initialHelperTask": "0mv9oqsi51naw8z6gf7",
+                "initialHelperResult": "78 passed; superseded because the file-boundary guard changed during the run",
+                "finalHelperTask": "0mv9ox4hqsakaqs9apg",
+                "finalHelperLog": ".papercusp/scratch/bash-27819a93-0ed.log",
+                "finalHelperResult": "79 passed, 0 failed, 0 skipped; terminal 0 at 2026-10-15T15:26:45.127Z; source stamped after the last edit",
+                "typecheckTask": "0mv9ouy7z78epn9v9s9",
+                "typecheckLog": ".papercusp/scratch/bash-18588979-44c.log",
+                "typecheckResult": "three named files and four resolved importers checked; zero errors; terminal 0 at 2026-10-15T15:25:23.156Z",
+                "sourceSha256": {
+                  "release-acceptance.ts": "e4481f1202b22fa79c32c78173bf5a4db3b56658dbb51cc913110af5f85dbc3f",
+                  "release-acceptance.test.ts": "e52898ba106f6d69e897497e1cf64f7687a77e9367a609c9af1d7f719af0ca18",
+                  "agent-chat-pty.integration.test.ts": "fbacb40f075acae389c4e0a7a34100dc925e01201f43e0ed7eb185c25b50a990"
+                },
+                "attemptAuditRef": "thread-post:1183397",
+                "nativeReplay": {
+                  "taskId": "0mv9p2san1hq5mma1ct",
+                  "rootLogPath": ".papercusp/scratch/bash-fa0ab890-a24.log",
+                  "deadline": "2026-10-15T16:29:38.546Z",
+                  "work": "/tmp/pui-acceptance-7534f/run-codex-followup-decline-20261015-1530",
+                  "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-followup-decline-20261015-1530.partial.acceptance.json",
+                  "filter": "restores the same native conversation after the operator OS process exits",
+                  "model": "gpt-6.1-sol",
+                  "account": "auto",
+                  "mode": "auto",
+                  "planEnabled": true,
+                  "approvalEnabled": true,
+                  "status": "native restart case passed; partial/current-build release remains refused",
+                  "rootExitCode": 1,
+                  "rootTerminalAt": "2026-10-15T15:37:26.882Z",
+                  "rootLogSha256": "adce62a218c619e86964793a66fd88baae8fdee44db0fadd0d6eff482a782305",
+                  "codexLogPath": "/tmp/pui-acceptance-7534f/run-codex-followup-decline-20261015-1530/vitest-codex.log",
+                  "codexLogSha256": "de290e8c9af698aa5331422880d4c300858c7216d9ff61270163c522e90639aa",
+                  "verdictSha256": "8dd52f89591776876cdc34e8923711d6d4c088fdcf3f29d12a096297fd6c4046",
+                  "codexTests": { "passed": 1, "failed": 0, "skipped": 97, "childExitCode": 0 },
+                  "nativeApproval": {
+                    "turnId": "pui-turn-pui-1792078599549688973",
+                    "correlationId": "5bfb9b5d-ffbc-4cb3-8db5-592757b8b8b6",
+                    "cardReplyStatus": 200,
+                    "toolCompleted": true,
+                    "exactEffectVerified": true,
+                    "effectSha256": "f4bcbd31ee5e6dc2cd36b266f8e465f6c14dccbe1186f1576968f35835e9b6f9"
+                  },
+                  "nativeRestart": {
+                    "chatId": "7a6f50de-0b3e-4ee1-89aa-9ed843d2b0ad",
+                    "nativeSessionId": "01a14035-53d7-70d2-b8a8-6255f5d37884",
+                    "firstPid": 2842042,
+                    "secondPid": 2873814,
+                    "savedRuntimeGeneration": 0,
+                    "resumedRuntimeGeneration": 1,
+                    "savedAndResumedIdentityEqual": true,
+                    "accountServed": "aviynw2_codex"
+                  },
+                  "optionalFollowupDenialReceipts": 0,
+                  "scope": "The native first-approval/effect/OS-restart journey passed. This replay did not request an optional follow-up; its scoped-denial policy is covered by registered helper regressions. Runner/candidate source mismatch, partial coverage and lowercase diagnostic advertising metadata refuse the overall release verdict. This is not immutable full-candidate acceptance."
+                }
+              }
+            }
           }
         }
       }
