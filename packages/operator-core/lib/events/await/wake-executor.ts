@@ -4420,6 +4420,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const pid = fresh?.pid ?? handle.pid;
     const ended = fresh?.endedAt != null;
     const pidKnown = pid != null && pid > 0;
+    const loopDeliveryMarker = readLoopDeliveryMarker(d.payload);
+    const canUseLoopChannel2 = async (): Promise<boolean> => {
+      const loopStillArmed = await withWakeTimeout(
+        Promise.resolve().then(() => isLoopArmed(d.subscriberId)),
+        `loop status/${d.subscriberId}`,
+        1_000,
+      );
+      if (loopStillArmed !== true) return false;
+
+      const currentLiveness = await withWakeTimeout(
+        Promise.resolve().then(() =>
+          resolveMemberLiveness([{ ownerId: d.subscriberId }], { hydratePerId: true }),
+        ),
+        `session liveness/${d.subscriberId}`,
+        fleetMemberDeadLookupTimeoutMs,
+      );
+      return currentLiveness?.get(d.subscriberId)?.sessionState === 'parked';
+    };
 
     // A live interactive transcript has no detached-child exit callback. Check
     // the saved assistant-turn streak before injecting another wake. A dead
@@ -4627,6 +4645,14 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         };
       }
     }
+    // `sessionIsAlive` treats fresh presence as live when no PID is recorded.
+    // That is safe for ordinary wakes, but can strand a loop wake after its turn
+    // has ended. The shared oracle may clear that keepalive-only verdict when it
+    // confirms both an armed loop and a parked session.
+    if (isAlive && !pidKnown && loopDeliveryMarker && await canUseLoopChannel2()) {
+      isAlive = false;
+    }
+
     if (isAlive) {
       // No pid recorded but presence is fresh — the session is (very likely)
       // still open somewhere we can't see. Never concurrent-resume it; park.
@@ -4807,6 +4833,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       );
       if (forked) return { kind: 'delivered', channel: 'fresh-context-warm-inject' };
       // else fall through to the legacy resume below (fail-soft).
+    }
+
+    // Channel 2 starts a new process. Loop-fire markers may use it only while
+    // the loop is still armed and the current session is confirmed parked; a
+    // live, ended, unknown, timed-out, or failed verdict stays safely parked.
+    if (loopDeliveryMarker && !(await canUseLoopChannel2())) {
+      return {
+        kind: 'park',
+        reason: 'loop wake cannot use Channel 2 without an active loop and confirmed parked session; parked safely',
+      };
     }
 
     const resumeAgent = fresh?.agent ?? handle.agent;
