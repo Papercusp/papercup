@@ -1,6 +1,7 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { cleanupOwnedTestState } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
 
@@ -167,4 +168,90 @@ describe('private PostgreSQL independent cleanup', () => {
       f.dispose();
     }
   });
+
+  it.each(['stopping-throw', 'cleanup-callback', 'disconnected', 'stopping-callback', 'background-callback'] as const)(
+    'launcher IPC failure %s cannot skip owned stops or certify successful cleanup', async mode => {
+      const f = fixture();
+      const receiptFailure = new Error('injected launcher IPC ' + mode);
+      const exits: number[] = [];
+      const receiptFailures: Error[] = [];
+      const pendingReceipts = new Set<Promise<void>>();
+      let backgroundSent!: () => void;
+      let finishBackground!: () => void;
+      let observationStopped!: () => void;
+      const backgroundStarted = new Promise<void>(resolve => { backgroundSent = resolve; });
+      const backgroundWaiting = new Promise<void>(resolve => { finishBackground = resolve; });
+      const observationFinished = new Promise<void>(resolve => { observationStopped = resolve; });
+      const sentStages: string[] = [];
+      const source = readFileSync(resolve(import.meta.dirname, '../../../scripts/with-test-pg.mjs'), 'utf8');
+      // Run the actual launcher functions, with only OS ownership and IPC
+      // replaced. This catches failures outside the cleanup helper without
+      // allocating another database or adding a production test-only switch.
+      const stages = source.slice(source.indexOf('function cleanupStage('), source.indexOf('function observePrivatePgStop('));
+      const finish = source.slice(source.indexOf('async function finishChildOwned('), source.indexOf('\nmain().catch('));
+      const ownedCleanup = source.slice(source.indexOf('async function cleanupOwnedState('), source.indexOf('\nasync function stopPrivateManagedTasks('));
+      expect(stages).toContain('function cleanupStage(');
+      expect(finish).toContain('async function finishChildOwned(');
+      expect(ownedCleanup).toContain('async function cleanupOwnedState(');
+      let launcher!: { finishChildOwned(code: number, signal: null): Promise<void>;
+        cleanupStage(stage: string, detail?: Record<string, unknown>): Promise<void>;
+        queueCleanupStage(stage: string, detail?: Record<string, unknown>): void;
+        cleanupOwnedState(): Promise<void> };
+      const scope = {
+        ...f.resources, cleanupOwnedTestState, managedTasks: false, managedTaskCleanupEnv: null,
+        isolatedRuntime: true, cleanupStartedAt: Date.now(), runtimeId: 'test-runtime-ipc',
+        runtimeRoot: f.resources.runtimeRoot, dataDir: f.resources.dataDir, port: 12345,
+        child: f.resources.child, cleanupReceiptFailures: receiptFailures, pendingCleanupReceipts: pendingReceipts,
+        existsSync, console: { log: vi.fn() },
+        pg: { stop: async () => {
+          await f.resources.pg.stop();
+          if (mode === 'background-callback') launcher.queueCleanupStage('pg-log', { message: 'stopping' });
+        } },
+        observePrivatePgStop: () => {
+          const stop = f.resources.observePrivatePgStop();
+          return () => { stop(); observationStopped(); };
+        },
+        process: { pid: 123, env: { PC_ISOLATED_RUNTIME_PROOF: '1' }, connected: mode !== 'disconnected',
+          send: (message: { kind: string; stage?: string }, callback?: (error?: Error) => void) => {
+            if (message.stage) sentStages.push(message.stage);
+            if (mode === 'stopping-throw' && message.kind === 'isolated-runtime-stopping') throw receiptFailure;
+            if (mode === 'background-callback' && message.stage === 'pg-log') {
+              backgroundSent();
+              void backgroundWaiting.then(() => callback?.(receiptFailure));
+              return;
+            }
+            const error = mode === 'disconnected' || mode === 'cleanup-callback' && message.stage === 'pg-stop'
+              || mode === 'stopping-callback' && message.kind === 'isolated-runtime-stopping'
+              ? receiptFailure : undefined;
+            if (error && !callback) throw error;
+            queueMicrotask(() => callback?.(error));
+          },
+          exit: (code: number) => { exits.push(code); },
+        },
+        cleanup: () => launcher.cleanupOwnedState(),
+      };
+      launcher = runInNewContext(stages + '\n' + ownedCleanup + '\n' + finish
+        + '\n({ cleanupStage, queueCleanupStage, cleanupOwnedState, finishChildOwned })', scope);
+      try {
+        let failure: unknown;
+        let settled = false;
+        const cleanup = launcher.finishChildOwned(0, null).catch(error => { failure = error; })
+          .finally(() => { settled = true; });
+        if (mode === 'background-callback') {
+          await backgroundStarted;
+          await observationFinished;
+          expect(settled).toBe(false);
+          expect(sentStages).not.toContain('remove-private-state');
+          expect(existsSync(join(f.resources.dataDir, 'evidence'))).toBe(true);
+          expect(existsSync(join(f.resources.runtimeRoot, 'evidence'))).toBe(true);
+          finishBackground();
+        }
+        await cleanup;
+        expect(f.calls).toEqual(['child', 'profile', 'observe', 'pg', 'observation-stopped']);
+        expect(failure).toBeTruthy();
+        expect(exits).toEqual([]);
+        expect(existsSync(join(f.resources.dataDir, 'evidence'))).toBe(true);
+        expect(existsSync(join(f.resources.runtimeRoot, 'evidence'))).toBe(true);
+      } finally { finishBackground(); f.dispose(); }
+    });
 });

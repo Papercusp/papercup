@@ -241,6 +241,8 @@ let cleanupPromise = null;
 let terminatingSignal = null;
 let cleanupStartedAt = null;
 let managedTaskCleanupEnv = null;
+const cleanupReceiptFailures = [];
+const pendingCleanupReceipts = new Set();
 function cleanupStage(stage, detail = {}) {
   // Cleanup is operational evidence for every isolated CLI. The proof flag
   // gates original-worker admission and detailed /proc sampling, not whether
@@ -250,9 +252,31 @@ function cleanupStage(stage, detail = {}) {
     elapsedMs: Date.now() - cleanupStartedAt,
     supervisorPid: process.pid, workspace: runtimeId, runtimeRoot, dataDir, pgPort: port, ...detail };
   console.log('[with-test-pg] cleanup ' + JSON.stringify(message));
-  if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.connected && process.send) {
-    return new Promise(done => process.send(message, done));
-  }
+  return sendCleanupReceipt(message);
+}
+function sendCleanupReceipt(message) {
+  if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1') return;
+  return new Promise((resolve, reject) => {
+    if (!process.connected || !process.send) {
+      reject(new Error('private runtime proof IPC is disconnected'));
+      return;
+    }
+    process.send(message, error => error ? reject(error) : resolve());
+  });
+}
+function recordCleanupReceiptFailure(stage, cause) {
+  cleanupReceiptFailures.push(new Error(stage + '-receipt: ' + (cause?.message ?? String(cause)), { cause }));
+}
+function queueCleanupStage(stage, detail = {}) {
+  // PG logging and process sampling cannot await their receipts. Capture their
+  // failures immediately and drain every outstanding callback before removal.
+  const receipt = Promise.resolve().then(() => cleanupStage(stage, detail))
+    .catch(cause => { recordCleanupReceiptFailure(stage, cause); });
+  pendingCleanupReceipts.add(receipt);
+  void receipt.then(() => pendingCleanupReceipts.delete(receipt));
+}
+async function drainCleanupReceipts() {
+  while (pendingCleanupReceipts.size) await Promise.all(pendingCleanupReceipts);
 }
 function observePrivatePgStop() {
   if (!isolatedRuntime || process.env.PC_ISOLATED_RUNTIME_PROOF !== '1' || process.platform !== 'linux') return () => {};
@@ -272,7 +296,7 @@ function observePrivatePgStop() {
     }
     postmasterStart = pin.startTicks;
   } catch (error) {
-    cleanupStage('pg-stop-observation-unavailable', { error: error.message });
+    queueCleanupStage('pg-stop-observation-unavailable', { error: error.message });
     return () => {};
   }
   const sample = () => {
@@ -288,8 +312,8 @@ function observePrivatePgStop() {
             waitChannel: readFileSync(`/proc/${pid}/wchan`, 'utf8').trim(), io };
         } catch (error) { return { pid, unavailable: error.message }; }
       });
-      cleanupStage('pg-stop-observation', { processes });
-    } catch (error) { cleanupStage('pg-stop-observation-unavailable', { error: error.message }); }
+      queueCleanupStage('pg-stop-observation', { processes });
+    } catch (error) { queueCleanupStage('pg-stop-observation-unavailable', { error: error.message }); }
   };
   sample();
   const timer = setInterval(sample, 5000);
@@ -306,6 +330,7 @@ async function cleanupOwnedState() {
   // Keep failed exit fences visible while stopping the other owned resources.
   await cleanupOwnedTestState({ child, childLifetime, profileProcess, profileLifetime, pg,
     dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop,
+    receiptFailures: cleanupReceiptFailures, drainReceipts: drainCleanupReceipts,
     stopManagedTasks: managedTasks && managedTaskCleanupEnv ? stopPrivateManagedTasks : null });
 }
 
@@ -429,7 +454,7 @@ pg = await startEmbeddedPostgresServer({ dataDir, port, dbSqlDir: sqlDir,
         : migration ? 'migration:' + migration : null;
       if (stage) process.send({ kind: 'isolated-runtime-bootstrap-progress', stage }, () => {});
     }
-    if (cleanupStartedAt !== null) cleanupStage('pg-log', { message });
+    if (cleanupStartedAt !== null) queueCleanupStage('pg-log', { message });
 } });
 assertNotTerminating();
 console.log(`[with-test-pg] ready — ${pg.urls.admin.replace(/:[^:@]*@/, ':***@')}`);
@@ -877,14 +902,15 @@ function finishChild(code, signal) {
   });
 }
 async function finishChildOwned(code, signal) {
-  if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
-    process.send({ kind: 'isolated-runtime-stopping', childPid: child.pid, exitCode: code, signal });
+  try {
+    await sendCleanupReceipt({ kind: 'isolated-runtime-stopping', childPid: child.pid, exitCode: code, signal });
+  } catch (cause) {
+    // A failed stopping receipt must not bypass the actual owned stops.
+    recordCleanupReceiptFailure('isolated-runtime-stopping', cause);
   }
   await cleanup();
-  if (isolatedRuntime && process.env.PC_ISOLATED_RUNTIME_PROOF === '1' && process.send) {
-    await new Promise(done => process.send({ kind: 'isolated-runtime-end', childPid: child.pid,
-      exitCode: code, signal, runtimeRemoved: !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) }, done));
-  }
+  await sendCleanupReceipt({ kind: 'isolated-runtime-end', childPid: child.pid,
+    exitCode: code, signal, runtimeRemoved: !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) });
   if (signal) {
     // The forwarding handler has already run. Restore the native signal exit
     // after cleanup rather than forwarding the signal back to a dead child.
