@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { brotliDecompressSync } from 'node:zlib';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { DEFAULT_TX_ACQUIRE_DEADLINE_MS } from '@papercusp/db-org';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
@@ -92,10 +93,13 @@ const db = vi.hoisted(() => {
   };
   const sql = vi.fn((strings: readonly string[], ...values: unknown[]) =>
     fragment(strings, values) ?? query(strings, values));
+  const release = vi.fn();
+  const reserve = vi.fn(async () => sql);
+  Object.assign(sql, { reserve, release });
   /** Real queries only: a fragment build is not a round trip to PostgreSQL. */
   const queryCalls = () => sql.mock.calls.filter(([strings, ...values]) => !fragment(strings, values));
   const isBodyRead = (template: unknown) => (template as readonly string[]).join(' ').includes(BODY_READ_MARKER);
-  return { rows, sql, queryCalls, isBodyRead, bodies, bodyReads, loadOverrides, failClient: false };
+  return { rows, sql, reserve, release, queryCalls, isBodyRead, bodies, bodyReads, loadOverrides, failClient: false };
 });
 const grants = vi.hoisted(() => ({ read: vi.fn(), claim: vi.fn(async () => true), kernelThrows: false }));
 // Keep artifact validation and policy evaluation real; inject only policy I/O.
@@ -222,6 +226,8 @@ beforeEach(() => {
   heal.converge.mockReset().mockResolvedValue(false);
   setStaleArtifactConverger(heal.converge as never);
   db.sql.mockClear();
+  db.reserve.mockClear().mockImplementation(async () => db.sql);
+  db.release.mockClear();
   db.failClient = false;
   grants.read.mockReset();
   grants.claim.mockReset().mockResolvedValue(true);
@@ -292,6 +298,9 @@ describe('control-anchor kernel resolver (D-030)', () => {
               traceId: expect.stringMatching(/^[a-f0-9-]{36}$/),
               backendPid: 73142,
               queryStart,
+              poolAcquisitionMs: expect.any(Number),
+              clientQueryMs: expect.any(Number),
+              clientCompletedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
               outcome: 'fulfilled',
             }],
           },
@@ -305,6 +314,49 @@ describe('control-anchor kernel resolver (D-030)', () => {
     expect(anchorQuery.join(' ')).toContain('pg_backend_pid() AS backend_pid');
     expect(anchorQuery.join(' ')).toContain('statement_timestamp() AS query_start');
     expect(JSON.stringify(timings)).not.toMatch(/ws-a|SELECT|launch_spec/i);
+    expect(db.reserve).toHaveBeenCalledOnce();
+    expect(db.release).toHaveBeenCalledOnce();
+  });
+
+  it('bounds control-anchor pool acquisition and releases a client that arrives after the deadline', async () => {
+    vi.useFakeTimers();
+    let resolveLateConnection: (connection: unknown) => void = () => {};
+    const pendingConnection = new Promise<unknown>((resolve) => {
+      resolveLateConnection = resolve;
+    });
+    db.reserve.mockReturnValueOnce(pendingConnection as never);
+
+    try {
+      const pendingVerdict = controlAnchorKernelResolver(request());
+      await vi.advanceTimersByTimeAsync(DEFAULT_TX_ACQUIRE_DEADLINE_MS + 1);
+      const verdict = await pendingVerdict;
+
+      expect(verdict).toMatchObject({
+        decision: 'deny',
+        serverAudit: {
+          authorityTimings: {
+            controlAnchorSql: {
+              calls: 1,
+              executions: [{
+                outcome: 'rejected',
+                poolAcquisitionMs: expect.any(Number),
+                clientQueryMs: null,
+                clientCompletedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+              }],
+            },
+          },
+        },
+      });
+      expect(db.reserve).toHaveBeenCalledOnce();
+      expect(db.sql).not.toHaveBeenCalled();
+
+      resolveLateConnection(db.sql);
+      await pendingConnection;
+      await Promise.resolve();
+      expect(db.release).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('selects the verified native caller row instead of a newer re-armed predecessor', async () => {

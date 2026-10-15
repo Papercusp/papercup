@@ -18,7 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { generated, getOrgPg } from '@papercusp/db-org';
+import { generated, getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { mergeRoleQuota } from './quota-overrides';
 import { resolveDispatchPremises } from './agent-tools/premises-gate';
 import {
@@ -280,6 +280,9 @@ interface KernelAuthorityQueryTrace {
   traceId: string;
   backendPid: number | null;
   queryStart: string | null;
+  poolAcquisitionMs: number | null;
+  clientQueryMs: number | null;
+  clientCompletedAt: string | null;
   outcome: 'fulfilled' | 'rejected';
 }
 type KernelAuthorityTimingCollector = {
@@ -305,6 +308,10 @@ function recordKernelAuthorityTiming(
   sample.calls += 1;
   sample.totalMs += Math.max(0, performance.now() - startedAt);
   if (queryTrace && name === 'controlAnchorSql') collector.controlAnchorSql.executions.push(queryTrace);
+}
+
+function elapsedMsSince(startedAt: number): number {
+  return Math.round(Math.max(0, performance.now() - startedAt) * 10) / 10;
 }
 
 function attachKernelAuthorityTimings(
@@ -509,15 +516,35 @@ export async function readControlAnchorKernelState(
   const authorityUnavailableSources: AuthorityUnavailableSource[] = [];
   const authorityReadFailures: AuthorityReadFailure[] = [];
   const anchorReadStartedAt = performance.now();
+  const anchorAcquisitionStartedAt = performance.now();
+  let anchorConnection: Awaited<ReturnType<typeof sql.reserve>> | null = null;
+  let anchorQueryStartedAt: number | null = null;
   const anchorTrace: KernelAuthorityQueryTrace = {
     queryFingerprint: 'controlAnchorSql/v1',
     traceId: randomUUID(),
     backendPid: null,
     queryStart: null,
+    poolAcquisitionMs: null,
+    clientQueryMs: null,
+    clientCompletedAt: null,
     outcome: 'rejected',
   };
   try {
-    const rows = await sql<Array<{
+    anchorConnection = await withAcquisitionDeadline(
+      ({ disarm, expired }) =>
+        sql.reserve().then((reserved) => {
+          if (expired()) {
+            reserved.release();
+            throw new Error('control-anchor SQL acquisition expired before query execution');
+          }
+          anchorTrace.poolAcquisitionMs = elapsedMsSince(anchorAcquisitionStartedAt);
+          disarm();
+          return reserved;
+        }),
+      { label: 'control-anchor-sql-acquire', pool: 'org-admin' },
+    );
+    anchorQueryStartedAt = performance.now();
+    const rows = await anchorConnection<Array<{
       backend_pid?: number | string | null;
       query_start?: Date | string | null;
       control_state: unknown;
@@ -575,6 +602,7 @@ export async function readControlAnchorKernelState(
       : typeof queryStart === 'string' ? queryStart : null;
     anchorTrace.outcome = 'fulfilled';
   } catch (error) {
+    anchorTrace.poolAcquisitionMs ??= elapsedMsSince(anchorAcquisitionStartedAt);
     // Unknown authority cannot authorize a new effect. In particular, neither
     // a missing migration nor a failed join is evidence of a legacy session.
     controlReadFailed = true;
@@ -582,6 +610,9 @@ export async function readControlAnchorKernelState(
     authorityReadFailures.push(authorityReadFailure('control-anchor-query-failed', error, anchorReadStartedAt));
     stateRow = undefined;
   } finally {
+    anchorTrace.clientQueryMs = anchorQueryStartedAt === null ? null : elapsedMsSince(anchorQueryStartedAt);
+    anchorTrace.clientCompletedAt = new Date().toISOString();
+    anchorConnection?.release();
     recordKernelAuthorityTiming(timingCollector, 'controlAnchorSql', anchorReadStartedAt, anchorTrace);
   }
   if (callerAdvSessionId !== null) {
