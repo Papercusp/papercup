@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
+import type { TaskRunResult } from '@papercusp/bench-metrics';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
+import { mockResolvedTyped } from '../testing/typed-mock';
 import { currentProtocolFixture, controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
 import { startFrontierSweCurrentAssignment, readCurrentBenchRepeatedSessionControl, type CurrentTaskInput } from './run-launcher';
@@ -47,8 +49,10 @@ describe('FrontierSWE production assignment binding', () => {
     const row = { ...cost, runId: protocol.runId, taskId: 't1', arm: treatment.id, seed: 1,
       suite: 'frontier-swe', preregHash: f.host.options.preregistration.preregHash, modelId: treatment.model,
       harnessVersion: treatment.runtime.sourceRevision, priceTableVersion: protocol.priceSchedule.version,
-      graderFamily: protocol.grader.family, graderVersion: protocol.grader.version, generationStatus: 'completed' };
-    const read = vi.fn(async () => [row] as unknown as Awaited<ReturnType<typeof import('./reproducibility/store').listRunResults>>);
+      graderFamily: protocol.grader.family, graderVersion: protocol.grader.version, generationStatus: 'completed',
+      modality: 'diff', resolved: true, graderStatus: 'passed', tokensTotal: 16, wallClockMs: 10,
+      capped: false, rolloutId: 'paired-treatment-rollout', createdAt: '2026-10-15T00:00:00Z' } satisfies TaskRunResult;
+    const read = vi.fn<typeof import('./reproducibility/store').listRunResults>(async () => [row]);
     return { ...f, row, read, input: { ...f.host, task: f.input.task } };
   }
 
@@ -63,7 +67,7 @@ describe('FrontierSWE production assignment binding', () => {
     ('refuses %s paired spend before opening another native assignment', async kind => {
       const f = pairedFixture();
       if (kind === 'missing') f.read.mockResolvedValue([]);
-      if (kind === 'duplicate') f.read.mockResolvedValue([f.row, f.row] as never);
+      if (kind === 'duplicate') mockResolvedTyped(f.read, [f.row, f.row]);
       if (kind === 'foreign-protocol') f.row.preregHash = 'b'.repeat(64);
       if (kind === 'unmeasured') Object.assign(f.row.armMeta, { costUsdMeasurementMissing: true });
       if (kind === 'incomplete-source') f.row.armMeta.nativeCostAccounting.sourceCensusComplete = false;
