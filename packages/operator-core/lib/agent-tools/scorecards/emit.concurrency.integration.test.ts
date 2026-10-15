@@ -10,6 +10,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { createPhaseTracker } from '@papercusp/tooldef';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -235,6 +236,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     const applicationName = `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63);
     const postgresModule = await import('postgres');
     const holder = postgresModule.default(db.adminDsn, { max: 1, onnotice: () => {} });
+    const blockedPhases = createPhaseTracker();
     let held = false;
     let blockedOutcome: Promise<
       | { state: 'resolved'; result: Awaited<ReturnType<typeof emitScorecard>> }
@@ -248,7 +250,7 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       held = true;
       blockedOutcome = emitScorecard(
         { rubricRef: RUBRIC, ratings: RATINGS },
-        input,
+        { ...input, phases: blockedPhases },
       ).then(
         (result) => ({ state: 'resolved' as const, result }),
         (error) => ({ state: 'rejected' as const, error: String(error) }),
@@ -282,6 +284,14 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     const [blocked, unrelated] = await Promise.all([blockedOutcome, unrelatedOutcome]);
     expect(blocked).toMatchObject({ state: 'resolved', result: { ok: true, reason: 'unchanged-evidence' } });
     expect(unrelated).toMatchObject({ state: 'resolved', result: { ok: true, reason: 'unchanged-evidence' } });
+    const blockedIntervals = blockedPhases.intervals();
+    expect(blockedIntervals.map(({ phase }) => phase)).toContain('scorecards:emit:mutex:dedup:pool-reservation');
+    expect(blockedIntervals).toContainEqual(expect.objectContaining({
+      phase: 'scorecards:emit:mutex:dedup:advisory-lock',
+      durationMs: expect.any(Number),
+    }));
+    expect(blockedIntervals.find(({ phase }) => phase === 'scorecards:emit:mutex:dedup:advisory-lock')?.durationMs)
+      .toBeGreaterThan(0);
   }, 120_000);
 
   it('does not file a second audit when two direct-fallback emitters share one pending lease', async () => {
@@ -445,10 +455,11 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       }
       return true;
     };
-    const inputFor = (createdBy: string) => ({
+    const inputFor = (createdBy: string, phases?: ReturnType<typeof createPhaseTracker>) => ({
       createdBy,
       ctxHarness: SOURCE_HIVE,
       workspaceId: activeWorkspaceId(),
+      ...(phases ? { phases } : {}),
     });
     const argsFor = (ratings: typeof passRatings) => ({
       rubricRef: 'grading-integrity',
@@ -485,7 +496,8 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       );
     }
     console.info('[grading-audit concurrency fixture] starting second audit emitter');
-    const second = emitScorecard(argsFor(failRatings) as never, inputFor('su-audit-concurrency-b'), deps);
+    const secondPhases = createPhaseTracker();
+    const second = emitScorecard(argsFor(failRatings) as never, inputFor('su-audit-concurrency-b', secondPhases), deps);
     const competingReservation = reservePendingGradingAudit(
       subject.id,
       'grading-audit:competing-reclaim',
@@ -542,5 +554,9 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       createdAuditCount: 1,
       persistedAuditCount: 1,
     });
+    const secondIntervals = secondPhases.intervals();
+    expect(secondIntervals.map(({ phase }) => phase)).toContain('scorecards:emit:mutex:grading-audit-subject:pool-reservation');
+    expect(secondIntervals.find(({ phase }) => phase === 'scorecards:emit:mutex:grading-audit-subject:advisory-lock')?.durationMs)
+      .toBeGreaterThan(0);
   }, 30_000);
 });

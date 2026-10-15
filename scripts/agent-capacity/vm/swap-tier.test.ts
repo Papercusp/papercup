@@ -139,6 +139,8 @@ describe('real Luna load and swap tuning', () => {
       ' p=pathlib.Path(d)/"sessions"; p.mkdir(); f=p/"native.jsonl"',
       ' rows=[{"type":"session_meta","payload":{"id":"12345678-1234-1234-1234-123456789abc"}},{"type":"event_msg","payload":{"type":"task_started"}},{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"WARM-a1-0"}]}},{"type":"response_item","payload":{"type":"function_call_output","output":"Process exited with code 0\\nOutput:\\nabc123  dummy-data.txt\\n"}},{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"DONE-WARM-a1-0"}]}},{"type":"event_msg","payload":{"type":"task_complete"}}]',
       ' f.write_text("\\n".join(json.dumps(r) for r in rows)+"\\n")',
+      ' rows[-2]["payload"]["phase"]="final_answer"',
+      ' f.write_text("".join(json.dumps(r)+chr(10) for r in rows))',
       ' good=m.saved_codex_session(d,"abc123")',
       ' try: m.saved_codex_session(d,"wrong")',
       ' except ValueError as e: error=str(e)',
