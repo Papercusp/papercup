@@ -370,10 +370,14 @@ function innerTruncationRecoveryInstruction(
   nestedTargetToolName?: string,
 ): string {
   if (toolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
-  if (toolName === 'code:run' && markers.includes('summaryNotice.truncated')) {
-    return 'Re-run code:run with a smaller return, splitting the script output into bounded slices.';
-  }
   const recoveryTarget = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
+  if (recoveryTarget === 'code:run' && markers.includes('summaryNotice.truncated')) {
+    return (
+      'Read the original unshaped return through `summaryNotice.rawSummaryCursor` with `capability:read`, ' +
+      'following `next_cursor`; the ordinary result-door spill contains only the emitted bounded summary. ' +
+      'If `rawSummaryCursor.status` is `unavailable`, re-run code:run with a smaller return split into bounded slices.'
+    );
+  }
   if (recoveryTarget === 'work_items:get' && markers.includes('checkpointTruncated')) {
     return 'The work-item checkpoint was clipped before this result door. Read the exact stored text with work_items:get { id, checkpointOnly:true, offset:0, limit:512 }; follow checkpointPage.nextOffset and restart at offset 0 if checkpointContentHash changes. payloadTier:\'full\' cannot restore checkpoint text already clipped by the tool.';
   }
@@ -3567,7 +3571,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // consume the whole door and erase the useful script result. Keep the
       // summary ahead of that replay state while the normal result-door budget
       // continues to bound both and the spill keeps the full response recoverable.
-      ...(opts.toolName === 'code:run' ? ['summary'] : []),
+      ...(opts.toolName === 'code:run' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'code:run')
+        ? ['summary', 'summaryNotice.truncated', 'summaryNotice.rawSummaryCursor']
+        : []),
     ];
     const structuralProjectionWarning = extractStructuralProjectionWarning(result, textItems, jsonItemIndex);
     // The warning is a separate model-facing content item, so reserve its
