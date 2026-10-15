@@ -15620,10 +15620,16 @@ export function resumeFirstStepChoices(session, last) {
   ];
 }
 
-async function chooseResumeTarget(session, args) {
+export async function chooseResumeTarget(session, args, {
+  prompts = null,
+  readLastActiveModel = lastActiveModelFor,
+  fetchPortCapabilities = fetchSessionPortCapabilities,
+  readCodexModels = listCodexInstalledModels,
+  readOmpModels = fetchOmpModelCatalog,
+} = {}) {
   let last = null;
   try {
-    last = lastActiveModelFor(session);
+    last = readLastActiveModel(session);
   } catch {
     /* a transcript we can't read only costs the announce */
   }
@@ -15638,7 +15644,7 @@ async function chooseResumeTarget(session, args) {
   // model vocabulary is intentionally open/config-driven.
   if (args.model || args.agent || !args.picker)
     return resolveResumeTarget(session, args, transcriptSelection);
-  const { select, input, search } = await import("@inquirer/prompts");
+  const { select, input, search } = prompts ?? await import("@inquirer/prompts");
   const picked = await select({
     message: "Continue this session with which backend/model?",
     choices: resumeFirstStepChoices(session, last),
@@ -15649,7 +15655,7 @@ async function chooseResumeTarget(session, args) {
   // Offer only the cross-backend targets the SERVING operator can port to — a
   // newer launcher against an older operator otherwise lists "Port to claude"
   // and fails after the pick (WI-6554700010011137).
-  const portCapabilities = await fetchSessionPortCapabilities();
+  const portCapabilities = await fetchPortCapabilities();
   const hiddenTargetsNotice = unsupportedSessionPortTargetsNotice(
     session,
     portCapabilities,
@@ -15690,10 +15696,10 @@ async function chooseResumeTarget(session, args) {
   // no registry lists (claude ships no local registry at all, so its four
   // aliases plus that escape genuinely are the whole list).
   const codexModels = allowedBackends.includes("codex")
-    ? listCodexInstalledModels()
+    ? readCodexModels()
     : [];
   const ompModels = allowedBackends.includes("omp")
-    ? await fetchOmpModelCatalog(args.workspace ?? null)
+    ? await readOmpModels(args.workspace ?? null)
     : [];
   const modelRows = buildResumeModelRows({
     backends: allowedBackends,
