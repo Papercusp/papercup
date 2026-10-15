@@ -5,6 +5,76 @@
   "planSlug": "green-main-cycle-time-2026-10-08",
   "status": "astro-diagnostics-passed-source-census-matched-no-operational-acceptance",
   "referencePathConvention": "Home references use ~; originals remain unchanged.",
+  "currentOriginalParent20261015": {
+    "workItemId": "EI-26014381871948402",
+    "status": "original-parent-passed-locally-after-config-fix",
+    "cwd": "apps/papercusp-docs",
+    "command": ["npm", "run", "test"],
+    "originalScript": "astro check && vitest run",
+    "rootCause": "The app declared provide before spreading gateParticipationConfig, which now supplies the same unit provider. Astro rejected the duplicate with TS2783 before Vitest could start.",
+    "fix": "Remove the redundant app provide declaration; retain the shared gate fragment and existing injected-unit-layer assertion.",
+    "sourceAtBothRuns": "2b186d70945293fb00622e56bc252db085c6abb1",
+    "sourceProvenance": "The config fix was local at the successful run; HEAD and the 35 declared input pins were recorded, not a complete imported/runtime source population.",
+    "configBeforeSha256": "18ac79017161e9dd04f11a105e4ccd7af3748089c3672d08d916426ac0a57c0e",
+    "configAfterSha256": "abba2da7565099e2537f8d847a8b4fb0167f322168a4d7c88090f9acc1a5ddb9",
+    "declaredInputsStableWithinBothRuns": true,
+    "declaredInputDeltaBetweenRuns": ["apps/papercusp-docs/vitest.config.ts"],
+    "failedRun": {
+      "receipt": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v1.json", "sha256": "bdd11ab633f64a84f0b9d2795fb11e5b7a55905b5d24c99177056761cc1b4047"},
+      "stdout": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v1.log", "sha256": "bde2c0603e93c1a1d5d025dbc09b755d5d92c770320dae54b500c35de21cbd28"},
+      "stderr": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v1.err", "sha256": "9e94065380e49ee06b22df96b512d0f64671b05fa9ac770d0527bc056d5a8470"},
+      "exitCode": 1,
+      "parentWallMs": 8830,
+      "astroFiles": 9,
+      "astroErrors": 1,
+      "vitestStarted": false
+    },
+    "successfulRun": {
+      "receipt": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2.json", "sha256": "a192c30a142cf6eb560b5cddcd66ddf1ea6badd578bb910b876383708f17eef5"},
+      "stdout": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2.log", "sha256": "361173aa5e7a15b3370272d362b4688313ae664dd03e1f55049013df5b50f7e2"},
+      "stderr": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2.err", "sha256": "c8e66dbcdfdd47f3820ed2c5c0192dc507728e69d500f503380568f42de2fed5"},
+      "sourceMap": {"ref": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2-sources.json", "sha256": "f5628ae42119336bc64bf44b97df7ad799930b9362920162080a41cdd282bac2"},
+      "exitCode": 0,
+      "parentWallMs": 13850,
+      "astroFiles": 9,
+      "astroErrors": 0,
+      "astroWarnings": 0,
+      "astroHints": 0,
+      "vitestFilesPassed": 3,
+      "vitestTestsPassed": 10,
+      "skippedTests": 0,
+      "reporterTerminalHook": "onTestRunEnd",
+      "reporterReason": "passed",
+      "reporterUnhandledErrors": 0,
+      "reporterModulePopulationMatched": true,
+      "reporterGaps": [],
+      "persistedReusableRows": false,
+      "processArtifactDirectory": "~/.papercusp/scratch/c0523-public-docs-original-chain-20261015-v2-sources.json.processes",
+      "processArtifactPins": [
+        {"file": "439570-0.json", "sha256": "91b65970bfd0990c430d2289913573f5955bd9202ea61c31b6ed425c8e002cd3"},
+        {"file": "439924-0.json", "sha256": "bb518f836534415f0f18138693f52faf05552ccdef5aac1c4aa9c857a23f7933"},
+        {"file": "443719-0.json", "sha256": "226cd861f552ce466a9f409cec91c8511ac555f5c37cb9193add12419ef84466"},
+        {"file": "444574-0.json", "sha256": "f19a9b721a2e329eb240cacdd2bee5427d298705aa330634d8cf1c8b746a4277"},
+        {"file": "446748-0.json", "sha256": "67d0d92b8b3d9d09b18cc3856cc23415bd38f9b62116fbc128dd0e7de3c8c05f"},
+        {"file": "446769-0.json", "sha256": "e62e807c840dfc7106df67fe46cb94550e813ab0bd8bc5d37bacd410026505c7"},
+        {"file": "446775-0.json", "sha256": "55d1f64ff11d22e9cd5cf4dd9c72d6e58a56d2954f068f1d684489ae232aa735"}
+      ]
+    },
+    "recurrenceGuards": [
+      "The original npm test runs Astro checking before Vitest and rejects the duplicate configuration.",
+      "apps/papercusp-docs/lib/first-task.test.ts verifies that the executing project still injects the unit test layer."
+    ],
+    "limits": [
+      "This is an observed original parent command with native reporter/process diagnostics, not independently qualified per-step ordered-chain receipts.",
+      "The existing collectors leave bootstrap/population, engine URL to original source association, descendants, external/native inputs and loader-chain closure unmeasured.",
+      "No actual cgroup containment or independent parent-observed worker termination agreement is established by these source receipts.",
+      "Parent wall time includes capture overhead and is not a same-input performance comparison or R12 acceptance."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
   "commands": [
     {
       "task": "@papercupai/operator-docs :: test",
