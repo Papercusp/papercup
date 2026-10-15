@@ -49,9 +49,10 @@ describe('real Luna load and swap tuning', () => {
   });
 
   it('accepts the exact hash of piped input, which sha256sum labels with a dash', () => {
-    const rows = [turn('WARM-a8-0'), { type: 'response_item', payload: { type: 'function_call_output', output: 'Process exited with code 0\nOutput:\nabc123  -\n' } }, final('DONE-WARM-a8-0')];
+    const toolResult = { type: 'response_item', payload: { type: 'function_call_output', output: 'Process exited with code 0\nOutput:\nabc123  -\n' } };
+    const rows = [turn('WARM-a8-0'), toolResult, final('DONE-WARM-a8-0')];
     expect(nativeOutcome(rows).outcomes['WARM-a8-0']).toBeNull();
-    rows[1].payload.output = 'wrong abc1230  -';
+    toolResult.payload.output = 'wrong abc1230  -';
     expect(nativeOutcome(rows).outcomes['WARM-a8-0']).toContain('no successful native file-hash');
   });
 
