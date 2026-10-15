@@ -130,6 +130,9 @@ vi.mock('../compaction-usage', () => ({
   codexReadingProvenanceForOwner: codexProvenanceMock,
 }));
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true) }));
+// Original-producer observation outcomes are asserted by the canonical rail cases.
+// This unit fixture must never flush incidental observations to the live database.
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({
   readConditionEnvelopes: async () => [], computeConditionStates: () => [],
 }));

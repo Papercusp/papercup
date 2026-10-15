@@ -56,6 +56,7 @@ import { MESSAGE_GC_RETENTION_DAYS } from '../agent-tools/coordination/message-l
 import { hostname } from 'node:os';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { observeFallback } from '../degradation/fallback-observations';
 
 type CompactionConditionKind = 'context-death' | 'tool-reference-death' | 'compaction-stranding' |
   'dark-presence' | 'dark-telemetry' | 'implausible-reading' | 'frozen-codex-reading' |
@@ -1594,6 +1595,9 @@ async function maybeForceRespawn(
   // immutable inventory identity must remain on the rail itself.
   const failure = async (detail: string) => {
     if (!workspaceId?.trim() || !ownerId?.trim()) return;
+    observeFallback('compaction-force-respawn', {
+      eligible: 1, applied: 0, reason: 'force-unavailable', scope: ownerId,
+    }, { workspaceId });
     const event = { conditionKey: compactionConditionKey(workspaceId, ownerId, 'force-unavailable'),
       oneShot: true, summary: `Compaction force-unavailable: ${ownerId}`, body: detail };
     try {
@@ -1704,6 +1708,9 @@ async function maybeForceRespawn(
     });
     if (!ok) await failure('Force injection was not accepted.');
     if (ok) {
+      observeFallback('compaction-force-respawn', {
+        eligible: 1, applied: 1, reason: 'applied', scope: ownerId,
+      }, { workspaceId });
       console.warn(
         `[compaction-watchdog] FORCE-RESPAWNED ${ownerLabel} (${ownerId}) at ~${est}/${limit} tokens ` +
           `(${Math.round((est / limit) * 100)}% of the soft limit; force threshold ~${forceAt}) — ` +
