@@ -11,6 +11,16 @@ const annotationReview = JSON.parse(readFileSync(fileURLToPath(new URL('../../..
 const baseline = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../scripts/condition-rail-baseline.json', import.meta.url)), 'utf8'));
 
 describe('condition-rail immutable audit manifest (P-017)', () => {
+  it('keeps the original goal-liveness producer identity on the rail without a baseline exemption', () => {
+    const file = 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts';
+    const id = `bespoke-watchdog|${file}|<module>|1`;
+    const sites = scanSites(readFileSync(fileURLToPath(new URL('../../../../' + file, import.meta.url)), 'utf8'), file);
+    expect(manifest.rows.find((row: { id: string }) => row.id === id))
+      .toMatchObject({ disposition: 'migrate', item: 'P-014', route: 'condition' });
+    expect(sites.find(site => site.id === id), id).toMatchObject({ onRail: true });
+    expect(baseline.rowIds).not.toContain(id);
+  });
+
   it('keeps goal-drain emissions on the rail at their actual producer sites', () => {
     const file = 'packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts';
     const raw = readFileSync(fileURLToPath(new URL('../../../../' + file, import.meta.url)), 'utf8');

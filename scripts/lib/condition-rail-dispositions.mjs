@@ -175,11 +175,6 @@ export const DISPOSITIONS = Object.freeze({
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|describeGrader|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-grading-backlog-sweep.ts|defaultWakeGrader|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|2': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|3': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|4': NA_TYPE_ANNOTATION,
-  'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|5': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalatePortfolioIdle|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalate|1': NA_TYPE_ANNOTATION,
   'health-flag-no-condition|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|defaultEscalateReadiness|1': NA_TYPE_ANNOTATION,
@@ -216,7 +211,6 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/scout/watchdog-health-lane.ts': na(
     'digest lane that summarizes the system watchdog’s persisted ticks for the scout digest; a reader of watchdog output, not a watchdog',
   ),
-  'bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts': migrate('P-014'),
   'bespoke-watchdog|scripts/lib/batch-watchdog.mjs': na(
     'per-batch test timeout inside the gate runner: a hung batch is killed and reported as that task’s failure in the gate verdict, which already has an owner',
   ),
