@@ -50,6 +50,8 @@ import {
   renderFleetDependencyEscape,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
+import { changeKindsArg, changeKindReasonArg, type ChangeKind } from '../../change-kind-catalog';
+import { declareChangeKinds } from '../../work-item-change-kinds';
 import {
   authorshipRevalidationWarning,
   getClaimTimeAuthorshipRevalidationHint,
@@ -1292,12 +1294,14 @@ export default defineTool({
             reason: z.string().max(500).optional(),
             pilotRole: z.enum(PILOT_PARTICIPANT_ROLES).optional(),
             directiveRef: z.number().int().positive().optional(),
+            changeKinds: changeKindsArg().optional(),
+            changeKindReason: changeKindReasonArg().optional(),
           }),
         )
         .min(1)
         .max(200)
         .optional()
-        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, reason? }'),
+        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, reason?, changeKinds? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
       force: z
         .boolean()
@@ -1324,6 +1328,10 @@ export default defineTool({
         .describe(
           'owner-directive provenance (orders id): bind this already-existing item to the directive you are claiming it to carry out. Write-once — a claim on an item already bound to a DIFFERENT directive still claims, and reports directiveBindWarning rather than re-pointing it. Use work_items:create { directiveRef } instead when the item does not exist yet.',
         ),
+      // change-kind-declared-proof P-001 (D-001): default for the inline id / every id in `ids`;
+      // recorded only for items whose claim succeeds.
+      changeKinds: changeKindsArg().optional(),
+      changeKindReason: changeKindReasonArg().optional(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
@@ -1375,9 +1383,49 @@ export default defineTool({
           ];
     const verifiedCallerAlias = ctx.principal?.authMethod === 'spawn-url' && ctx.principal.trust === 'trusted'
       ? verifiedSpawnSessionAlias(ctx, ident.ownerId) : null;
-    const env = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias), {
+    // change-kind-declared-proof P-001 (D-001): per-item kinds (an item's own, else the
+    // top-level default), keyed by the requested id runBulk echoes on each result.
+    const declaredById = new Map<string, { kinds: ChangeKind[]; reason?: string }>();
+    const declare = (id: string, kinds: ChangeKind[] | undefined, reason: string | undefined) => {
+      if (kinds?.length) declaredById.set(id, { kinds, reason });
+    };
+    if (args.items?.length) {
+      for (const it of args.items) declare(it.id, it.changeKinds ?? args.changeKinds, it.changeKindReason ?? args.changeKindReason);
+    } else {
+      for (const it of list) declare(it.id, args.changeKinds, args.changeKindReason);
+    }
+    const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias), {
       keyOf: (it) => ({ id: it.id }),
     });
+    const env = declaredById.size
+      ? {
+          ...claimed,
+          results: await Promise.all(
+            claimed.results.map(async (r) => {
+              const declared = typeof r.id === 'string' ? declaredById.get(r.id) : undefined;
+              if (!declared) return r;
+              if (!r.ok) {
+                return {
+                  ...r,
+                  changeKinds: { recorded: false as const, error: 'changeKinds were not recorded: the claim did not succeed.' },
+                };
+              }
+              const featureId = (r.workItem as { id?: string } | undefined)?.id ?? (r.id as string);
+              return {
+                ...r,
+                changeKinds: await declareChangeKinds({
+                  workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+                  featureId,
+                  kinds: declared.kinds,
+                  step: 'claim',
+                  declaredBy: ident.ownerId,
+                  reason: declared.reason ?? null,
+                }),
+              };
+            }),
+          ),
+        }
+      : claimed;
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): piggyback a targeted memory recall for the just-claimed item(s)
     // on the response — deadline-bounded, epoch-deduped (port 'claim'),
