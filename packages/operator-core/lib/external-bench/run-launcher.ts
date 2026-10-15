@@ -62,9 +62,9 @@ import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
-  currentBenchCodexRoute, requireCurrentBenchHostBinding,
+  currentBenchCodexRoute, requireCurrentBenchHostBinding, currentBenchNativeSessionCostDelta,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
-  type CurrentBenchLockStateAllocation,
+  type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchAccountingBinding } from './current-su';
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { FrontierSweNativeAssignment } from './frontier-swe-launch-adapter';
@@ -764,6 +764,35 @@ export function currentBenchSessionRequestDelta(before: CurrentBenchTaskRequestC
   const added = after.requests.filter(row => !previous.has(row.reservationId));
   if (added.some(row => row.nativeSessionId !== nativeSessionId)) throw invalid();
   return { modelCalls: added.length, reservationIds: added.map(row => row.reservationId).sort() };
+}
+
+/** Pair one closed source receipt with exactly its new assignment requests.
+ * Returns uncached/cache tokens and normalized/billed dollars separately.
+ * An empty initial source snapshot is accepted only with an empty request census.
+ * This receipt measures usage; it does not issue a remaining session allowance.
+ */
+export function currentBenchSessionUsageDelta(input: {
+  before: CurrentBenchTaskRequestCensus; after: CurrentBenchTaskRequestCensus;
+  beforeCost: CurrentBenchNativeRunCost | null; afterCost: CurrentBenchNativeRunCost; nativeSessionId: string;
+}) {
+  const { before, after, beforeCost, afterCost, nativeSessionId } = input;
+  const invalid = () => new Error('Fresh native session usage differs from its complete assignment request census.');
+  const delta = currentBenchSessionRequestDelta(before, after, nativeSessionId);
+  const source = currentBenchNativeSessionCostDelta(beforeCost, afterCost, nativeSessionId);
+  const matches = (census: CurrentBenchTaskRequestCensus, cost: CurrentBenchNativeRunCost | null) => {
+    if (!cost) return census.requests.length === 0;
+    if (cost.armMeta.nativeCostAccounting.preregHash !== census.binding.preregHash) return false;
+    const sources = cost.armMeta.nativeCostAccounting.sources;
+    const ids = new Set(sources.map(s => s.nativeSessionId));
+    if (census.requests.some(row => !ids.has(row.nativeSessionId))) return false;
+    return sources.every(s => {
+      const rows = census.requests.filter(row => row.nativeSessionId === s.nativeSessionId);
+      const turns = [...new Set(rows.map(row => row.nativeTurnId))].sort();
+      return rows.length === s.usageEventKeys.length && canonicalJson(turns) === canonicalJson([...s.nativeTurnIds].sort());
+    });
+  };
+  if (!matches(before, beforeCost) || !matches(after, afterCost)) throw invalid();
+  return { ...source, ...delta };
 }
 
 /** Count admitted native requests, including failed sends, from that same census. */

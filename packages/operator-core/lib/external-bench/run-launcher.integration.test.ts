@@ -36,11 +36,14 @@ import {
   readCurrentBenchTaskModelCalls,
   readCurrentBenchTaskRequestCensus,
   currentBenchSessionRequestDelta,
+  currentBenchSessionUsageDelta,
   freezeCurrentBenchTaskProviderReservation,
   type CurrentTaskInput,
 } from './run-launcher';
 import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
-import { currentBenchAssignmentId } from './current-su';
+import { canonicalJson } from './reproducibility/canonical-json';
+import { currentBenchAssignmentId, currentBenchNativeCostReader } from './current-su';
+import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../inference-gateway/gateway';
 import { registerLearningLoop, reserveLearningSpend, recordLearningSpendAttemptResult,
   settleLearningSpend } from '../learning-governor/store';
@@ -145,7 +148,8 @@ describe('current provider capture host checkpoint', () => {
     const protocol = currentProtocolFixture('private-host-capture');
     for (const arm of protocol.arms) arm.account = 'private-provider-account';
     const checkoutRoot = mkdtempSync(join(tmpdir(), 'bench-host-candidate-')); roots.push(checkoutRoot);
-    const preregHash = 'b'.repeat(64), loopId = `benchmark:${preregHash}`, hostRunId = 'host-capture';
+    const preregHash = createHash('sha256').update(canonicalJson(protocol)).digest('hex');
+    const loopId = `benchmark:${preregHash}`, hostRunId = 'host-capture';
     const input: CurrentTaskInput = { options: { workspaceId: WS, runId: protocol.runId, armId: 'papercusp', seed: 1,
       agent: 'codex', model: 'configured-alias', effort: 'high', account: 'private-provider-account',
       preregistration: { preregHash, config: protocol } }, protocol, task: task('t1'), scope,
@@ -238,6 +242,53 @@ describe('current provider capture host checkpoint', () => {
     const foreign = { ...f.input, options: { ...f.input.options, armId: 'baseline' } };
     const other = await readCurrentBenchTaskRequestCensus(foreign, f.capture);
     expect(() => currentBenchSessionRequestDelta(before, other, second.nativeSessionId!)).toThrow(/foreign/);
+  });
+  it('joins fresh-session usage to the exact PG request delta without recounting prior sessions', async () => {
+    const f = await fixture(), first = f.request(), second = f.request();
+    const cost = (attempts: GatewayCarryTrialAttempt[]) => currentBenchNativeCostReader(f.input.protocol, {
+      readParticipants: async () => [{ taskId: 'solver', ownerId: 'solver', codexHome: '/private/home', terminal: true }],
+      readRuntime: async () => ({ complete: true, sessions: attempts.map(a => {
+        const transcript = [
+          { type: 'session_meta', payload: { id: a.nativeSessionId } },
+          { type: 'turn_context', payload: { turn_id: a.nativeTurnId, model: 'configured-alias' } },
+          { type: 'event_msg', payload: { type: 'token_count', info: {
+            total_token_usage: { input_tokens: 10, output_tokens: 2 },
+            last_token_usage: { input_tokens: 10, cached_input_tokens: 2, cache_write_input_tokens: 0, output_tokens: 2 },
+          } } },
+          { type: 'event_msg', payload: { type: 'task_complete', turn_id: a.nativeTurnId } },
+        ].map(row => JSON.stringify(row) + '\n').join('');
+        const file = `/private/${a.nativeSessionId}.jsonl`;
+        const population = closedCodexSessionPopulation({ transcript, file, fileGeneration: 0, nativeSessionId: a.nativeSessionId! });
+        if (!population.ok) throw new Error(population.detail);
+        return { nativeSessionId: a.nativeSessionId!, usage: { ...population, file,
+          sourceSha256: createHash('sha256').update(transcript).digest('hex') } };
+      }) }),
+      readBilled: async () => ({ complete: true, knownSubtotalUsd: 0.02 }),
+      readAttemptAccountingComplete: async () => true,
+    })();
+    const before = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    await recordedReservation(f, first);
+    const middle = await readCurrentBenchTaskRequestCensus(f.input, f.capture), firstCost = await cost([first]);
+    expect(currentBenchSessionUsageDelta({ before, after: middle, beforeCost: null, afterCost: firstCost,
+      nativeSessionId: first.nativeSessionId! })).toMatchObject({ modelCalls: 1, reservationIds: [first.attemptId],
+      tokensIn: 8, tokensCacheRead: 2, tokensOut: 2, billedCostUsd: 0.02 });
+    await recordedReservation(f, second);
+    const after = await readCurrentBenchTaskRequestCensus(f.input, f.capture), afterCost = await cost([first, second]);
+    const input = { before: middle, after, beforeCost: firstCost, afterCost, nativeSessionId: second.nativeSessionId! };
+    const delta = currentBenchSessionUsageDelta(input);
+    expect(delta).toMatchObject({ modelCalls: 1, reservationIds: [second.attemptId], tokensIn: 8,
+      tokensCacheRead: 2, tokensOut: 2, billedCostUsd: 0.02 });
+    expect(delta.normalizedCostUsd).toBeCloseTo(firstCost.costUsd, 10);
+    expect(afterCost.armMeta.nativeCostAccounting.billedCostUsd).toBe(0.04);
+    // Neither missing historical sources nor a different native turn can certify this delta.
+    expect(() => currentBenchSessionUsageDelta({ ...input, beforeCost: null })).toThrow(/non-monotone/);
+    const wrongTurn = { ...after, requests: after.requests.map(r => r.nativeSessionId === second.nativeSessionId
+      ? { ...r, nativeTurnId: randomUUID() } : r) };
+    expect(() => currentBenchSessionUsageDelta({ ...input, after: wrongTurn })).toThrow(/request census/);
+    const foreignProtocol = structuredClone(afterCost); foreignProtocol.armMeta.nativeCostAccounting.preregHash = 'e'.repeat(64);
+    expect(() => currentBenchSessionUsageDelta({ ...input, afterCost: foreignProtocol })).toThrow(/non-monotone|request census/);
+    const incomplete = structuredClone(afterCost); incomplete.costUsdMeasurementMissing = true;
+    expect(() => currentBenchSessionUsageDelta({ ...input, afterCost: incomplete })).toThrow(/incomplete/);
   });
   it.each(['nativeSessionId', 'nativeTurnId', 'bodySha256'] as const)(
     'refuses %s drift between the complete ledger and private capture', async field => {
