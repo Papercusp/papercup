@@ -219,8 +219,13 @@ def codex_record(state, row):
         # in that window can queue it into the old turn without starting a new one.
         # Only this native event admits the next prompt, never a fixed sleep.
         pending = state.pop("pending_outcome", None)
-        if pending:
+        marker = state.get("marker")
+        if marker and payload.get("error"):
+            state.setdefault("outcomes", {})[marker] = "native task failed: " + json.dumps(payload["error"])
+        elif pending:
             state.setdefault("outcomes", {})[pending["marker"]] = pending["error"]
+        elif marker:
+            state.setdefault("outcomes", {})[marker] = "native task completed without an assistant final answer"
         return
     if row.get("type") != "response_item":
         return
@@ -433,10 +438,14 @@ def warm(names, rounds, rec):
         # Real models occasionally alter a command/token. Correct only those
         # tasks, record the attempts, and keep already verified agents intact.
         for attempt in range(3):
-            state = prompt_all(missing, lambda n: f"WARM-{n}-{k}", lambda n: (
-                f"Dummy benchmark WARM-{n}-{k}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
-                f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-WARM-{n}-{k} with no other text."
-                if REAL_MODEL else f"Please do step WARM-{n}-{k} now"), 300)
+            # A previous echoed prompt must never admit a retry's Enter key.
+            # Keep retry identity inside the alphanumeric agent component so
+            # native transcript parsing recognizes the whole unique marker.
+            marker = lambda n: f"WARM-{n}{'r' + str(attempt) if attempt else ''}-{k}"
+            state = prompt_all(missing, marker, lambda n: (
+                f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
+                f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
+                if REAL_MODEL else f"Please do step {marker(n)} now"), 300)
             missing = [n for n, s in state.items() if s["tDone"] is None]
             if not missing:
                 break

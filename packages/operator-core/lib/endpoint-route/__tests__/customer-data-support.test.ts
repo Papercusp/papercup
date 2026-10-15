@@ -83,7 +83,8 @@ describe('internal operator customer-data support routes', () => {
 
   it('blocks cross-origin and cross-site browser mutations before support execution', async () => {
     const f = fixture();
-    for (const headers of [{ origin: 'https://foreign.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+    const cases: Record<string, string>[] = [{ origin: 'https://foreign.example' }, { 'sec-fetch-site': 'cross-site' }];
+    for (const headers of cases) {
       expect((await f.post('/admin/customer-data/export', { organizationId, grantId }, headers)).status).toBe(403);
     }
     expect(f.exportData).not.toHaveBeenCalled();

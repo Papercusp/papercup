@@ -319,6 +319,9 @@ CC_CONTENT_LINT_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-content-lint.mjs"
 # PostToolUse MDX compiler nudge (EI-19450114644493388): reads the complete
 # resulting .mdx file and reports a real compiler error before git-sync quarantine.
 CC_MDX_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-mdx-nudge.mjs"
+# PostToolUse launch-prose budget nudge (WI-10004682 / P-003): check prompt
+# and projected harness-doc edits immediately, before git-sync commits a breach.
+CC_LAUNCH_PROSE_NUDGE_HOOK="${CC_HOOK_DEST_DIR}/posttooluse-launch-prose-budget-nudge.mjs"
 # PostToolUse frozen-candidate edit nudge (frozen-candidate-compliance-enforcement-2026-08-30
 # P-004/P-005): you edited a path the FROZEN gate candidate is failing on, so the fix lands
 # above the judged sha and the gate cannot see it. Reads a marker file projected by the
@@ -1160,6 +1163,41 @@ with open(path, 'w') as f:
 PYEOF
 }
 
+# merge_launch_prose_nudge_hook — PostToolUse, prompt and doc-part writes only.
+# Advisory: the projection gate remains the enforcing path; this surfaces a breach
+# in the author's turn so it can be corrected before git-sync.
+merge_launch_prose_nudge_hook() {
+  python3 - "$1" "$CC_LAUNCH_PROSE_NUDGE_HOOK" <<'PYEOF'
+import json, os, sys, time
+path, hook = sys.argv[1:3]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError):
+    os.rename(path, path + '.bak.' + str(int(time.time())))
+    cfg = {}
+
+ours = {hook, os.path.basename(hook)}
+
+def drop_ours(entry):
+    kept = [h for h in (entry.get('hooks') or []) if not any(o in h.get('command', '') for o in ours)]
+    return {**entry, 'hooks': kept} if kept else None
+
+hooks = cfg.setdefault('hooks', {})
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolUse', [])) if e]
+arr.append({'matcher': 'Edit|Write|MultiEdit|apply_patch|Bash|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke', 'hooks': [{'type': 'command', 'command': hook}]})
+hooks['PostToolUse'] = arr
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+PYEOF
+}
+
 # merge_secrets_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit' (su-papercusp-way-gate
 # P-006, wired WI-5542): hard DENY backstop against a key-shaped secret reaching a shared
 # git-sync tree file.
@@ -1812,6 +1850,7 @@ if [ -x "$CC_PRE_HOOK" ]; then
   [ -x "$CC_GUARD_OPERATOR_DESKTOP_HOOK" ] && merge_guard_operator_desktop_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_CONTENT_LINT_HOOK" ] && merge_content_lint_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_MDX_NUDGE_HOOK" ] && merge_mdx_nudge_hook "$CLAUDE_SETTINGS"
+  [ -x "$CC_LAUNCH_PROSE_NUDGE_HOOK" ] && merge_launch_prose_nudge_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_FROZEN_CANDIDATE_EDIT_HOOK" ] && merge_frozen_candidate_edit_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_SECRETS_GUARD_HOOK" ] && merge_secrets_guard_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_NUL_BYTE_EDIT_GUARD_HOOK" ] && merge_nul_byte_edit_guard_hook "$CLAUDE_SETTINGS"

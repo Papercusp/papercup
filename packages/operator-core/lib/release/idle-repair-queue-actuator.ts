@@ -288,7 +288,7 @@ export interface IdleQueueFixerDispatchReceipt {
 
 export interface IdleQueueFixerHandoffDeps {
   reserve: (queue: FrozenCandidateRepairQueue) => Promise<FrozenCandidateRepairQueue | null>;
-  dispatch: () => Promise<IdleQueueFixerDispatchReceipt | null>;
+  dispatch: (reserved: FrozenCandidateRepairQueue) => Promise<IdleQueueFixerDispatchReceipt | null>;
   finalize: (
     reserved: FrozenCandidateRepairQueue,
     fired: IdleQueueFixerDispatchReceipt | null,
@@ -309,7 +309,7 @@ export async function dispatchIdleQueueFixer(
 
   let fired: IdleQueueFixerDispatchReceipt | null = null;
   try {
-    fired = await deps.dispatch();
+    fired = await deps.dispatch(reserved);
   } catch (error) {
     let released = false;
     try {
@@ -762,7 +762,8 @@ export async function checkIdleRepairQueue(
         const target = { installSlug, workspaceId };
         return dispatchIdleQueueFixer(q, {
           reserve: (current) => reserveFrozenCandidateRepairFixer(target, current),
-          dispatch: () => dispatchReleaseFixer(target, q.candidate, q.failingTests, q),
+          dispatch: (reserved) =>
+            dispatchReleaseFixer(target, reserved.candidate, reserved.failingTests, reserved),
           finalize: (reserved, fired) => finalizeFrozenCandidateRepairFixer(target, reserved, fired),
         });
       },

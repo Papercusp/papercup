@@ -2559,6 +2559,22 @@ describe('ensureCodexSkillWatchRoots', () => {
  * so these fail if the registration, its matcher, or its resume repair is dropped,
  * and the end-to-end case runs the SHIPPED script through the composed command.
  */
+describe('writeCodexLockHooks — launch-prose edit-time signal', () => {
+  it('registers the installed nudge on managed Codex edit and shell calls', async () => {
+    const dir = await installFakeHooks();
+    writeFileSync(join(dir, 'posttooluse-launch-prose-budget-nudge.mjs'), '#!/usr/bin/env node\n');
+    const { writeSuCodexHome } = await loadMod();
+    const out = writeSuCodexHome({ sessionKey: 'launch-prose', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-prose' });
+    const config = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    const entries = config.hooks.PostToolUse.filter((entry: any) => entry.hooks.some((h: any) => h.command.includes('posttooluse-launch-prose-budget-nudge.mjs')));
+    expect(entries).toHaveLength(1);
+    for (const tool of ['apply_patch', 'Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file', 'Bash']) {
+      expect(new RegExp(entries[0].matcher).test(tool), tool).toBe(true);
+    }
+    expect(new RegExp(entries[0].matcher).test('Read')).toBe(false);
+  });
+});
+
 describe('writeCodexLockHooks — Codex RTK rewrite (WI-6554700010009447)', () => {
   const REAL_HOOKS = fileURLToPath(new URL('../../../apps/operator/scripts/hooks/', import.meta.url));
   const SCRIPT = 'pretooluse-codex-rtk-rewrite.mjs';

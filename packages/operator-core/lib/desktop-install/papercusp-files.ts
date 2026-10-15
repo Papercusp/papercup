@@ -1059,6 +1059,8 @@ export const CC_HOOK_FILES = [
   // compile error immediately after an .mdx edit. PreToolUse sees only fragments and
   // cannot compile them meaningfully.
   'posttooluse-mdx-nudge.mjs',
+  // P-003: reuse launch-prose lint immediately after prompt/doc-part edits.
+  'posttooluse-launch-prose-budget-nudge.mjs',
   'posttooluse-no-proc-path-fixture-nudge.mjs',
   // EI-19359711978838614: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge
   // when a new/edited migration (libs/papercusp/libs/db/sql/*.sql) introduces a column
@@ -2997,6 +2999,11 @@ export function mergeClaudeHookSettings(
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-mdx-nudge.mjs'), {
       matcher: 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author',
       hooks: cmd('posttooluse-mdx-nudge.mjs'),
+    });
+  if (has('posttooluse-launch-prose-budget-nudge.mjs'))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-launch-prose-budget-nudge.mjs'), {
+      matcher: 'Edit|Write|MultiEdit|apply_patch|Bash|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke',
+      hooks: cmd('posttooluse-launch-prose-budget-nudge.mjs'),
     });
   // merge_no_proc_path_fixture_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19968483416347685). Advisory only, like its siblings. Closes the last gap in the

@@ -784,6 +784,14 @@ export function writeCodexLockHooks(
     });
   }
 
+  const launchProseNudge = join(dir, 'posttooluse-launch-prose-budget-nudge.mjs');
+  if (existsSync(launchProseNudge)) {
+    postToolUse.push({
+      matcher: '^(apply_patch|Edit|Write|MultiEdit|write_file|edit_file|Bash)$',
+      hooks: [{ type: 'command', command: launchProseNudge, timeout: 60 }],
+    });
+  }
+
   // Activity-bridge hook (matcher `.*`), coord-folding when `coordSid` is ALSO
   // given (SU sessions only — see the header doc for the EI-11405 merge).
   // Baked PAPERCUSP_SID = the session's identity (the activity owner/pane key

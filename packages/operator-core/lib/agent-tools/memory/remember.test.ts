@@ -162,6 +162,67 @@ beforeEach(() => {
   );
 });
 
+describe('memory:remember — surfaced outcome wiring', () => {
+  const oldId = '11111111-1111-4111-8111-111111111111';
+  const newId = '22222222-2222-4222-8222-222222222222';
+  const ctx = { ...fakeCtx, uiClientId: 'outcome-reader' };
+  const priorConflict = process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
+  const priorDedup = process.env.PAPERCUSP_MEMORY_DEDUP;
+
+  beforeEach(() => {
+    process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK = 'off';
+    process.env.PAPERCUSP_MEMORY_DEDUP = 'off';
+  });
+  afterAll(() => {
+    if (priorConflict === undefined) delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
+    else process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK = priorConflict;
+    if (priorDedup === undefined) delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    else process.env.PAPERCUSP_MEMORY_DEDUP = priorDedup;
+  });
+
+  function outcomeQueries() {
+    const sql = vi.fn(async (..._args: unknown[]) => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as unknown as ReturnType<typeof getOrgPg>);
+    return () => sql.mock.calls
+      .filter(([template]) => (template as TemplateStringsArray).join('').includes('WITH prior AS MATERIALIZED'))
+      .map(([, session, ids, outcome]) => ({ session, ids, outcome }));
+  }
+
+  it('records explicit citations as used after a successful remember, excluding bare UUIDs', async () => {
+    useBackend(fakeBackend([], [newId]));
+    const outcomes = outcomeQueries();
+    const result = await remember.handler({
+      content: `Source memory:${oldId}; repeated memory:${oldId}; unrelated ${newId}`,
+      kind: 'reference',
+    }, ctx);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, ids: [newId] });
+    expect(outcomes()).toEqual([{ session: 'outcome-reader', ids: [oldId], outcome: 'used' }]);
+  });
+
+  it.each([true, false])('records a supersession contradiction only when the validity close succeeds (%s)', async closed => {
+    const backend = fakeBackend([{ id: oldId, text: 'old preference' }], [newId]);
+    backend.invalidateEntry!.mockResolvedValue(closed);
+    useBackend(backend);
+    const outcomes = outcomeQueries();
+    const result = await remember.handler({ content: 'replacement preference', kind: 'feedback', supersede: oldId }, ctx);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, superseded: closed ? oldId : false });
+    expect(outcomes()).toEqual(closed
+      ? [{ session: 'outcome-reader', ids: [oldId], outcome: 'contradicted' }]
+      : []);
+  });
+
+  it('records no use when a cited-memory write is refused before saving', async () => {
+    const backend = fakeBackend([], [newId]);
+    backend.available.mockResolvedValue({ ok: false, reason: 'store unavailable' });
+    useBackend(backend);
+    const outcomes = outcomeQueries();
+    const result = await remember.handler({ content: `Source memory:${oldId}`, kind: 'reference' }, ctx);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false });
+    expect(backend.remember).not.toHaveBeenCalled();
+    expect(outcomes()).toEqual([]);
+  });
+});
+
 describe('memory:remember — conflict supersession (temporal-lite P-005)', () => {
   const OLD_ID = '11111111-1111-4111-8111-111111111111';
   const NEW_ID = '22222222-2222-4222-8222-222222222222';

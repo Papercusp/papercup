@@ -20,22 +20,31 @@ export interface ClauseAmendment {
 export async function propagateClauseAmendment(tx: SpecClauseSql, amendment: ClauseAmendment): Promise<void> {
   const a = amendment;
   const owningItems = [...new Set([a.planItemId, ...(a.priorPlanItemId ? [a.priorPlanItemId] : [])])];
-  // Source-plan stamps and explicit cross-plan edges are the resolver's two applicability paths.
-  // to_jsonb keeps historical sparse work-item records readable without inventing a stamp.
+  // Resolve each provenance path separately so the source-plan, payload-stamp and
+  // spec-edge indexes can bound the candidates before we lock work items. Converting
+  // the entire row to JSON here deTOASTs unrelated bodies and hides those indexes.
   const rows = await tx<Array<{ id: string; holder: string | null }>>`
-    SELECT w.feature_id AS id, to_jsonb(w)->>'taken_by' AS holder
+    WITH candidates AS (
+      SELECT feature_id AS id FROM harness_shared.work_items
+       WHERE workspace_id = ${a.workspaceId} AND harness_slug = ${a.harnessSlug}
+         AND source_plan_slug = ${a.planSlug}
+         AND source_plan_item_ids && ${owningItems}::text[]
+      UNION
+      SELECT feature_id AS id FROM harness_shared.work_items
+       WHERE workspace_id = ${a.workspaceId} AND harness_slug = ${a.harnessSlug}
+         AND payload -> 'plan_item' ->> 'plan_slug' = ${a.planSlug}
+         AND payload -> 'plan_item' ->> 'item_id' = ANY(${owningItems}::text[])
+      UNION
+      SELECT work_item_id AS id FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${a.workspaceId} AND harness_slug = ${a.harnessSlug}
+         AND plan_slug = ${a.planSlug} AND spec_id = ${a.specId}
+    )
+    SELECT w.feature_id AS id, w.taken_by AS holder
       FROM harness_shared.work_items w
      WHERE w.workspace_id = ${a.workspaceId} AND w.harness_slug = ${a.harnessSlug}
-       AND COALESCE(to_jsonb(w)->>'status', '') NOT IN ('done','dropped','resolved','closed','passed','deprecated')
-       AND (
-         (to_jsonb(w)->>'source_plan_slug' = ${a.planSlug}
-          AND COALESCE(to_jsonb(w)->'source_plan_item_ids', '[]'::jsonb) ?| ${owningItems}::text[])
-         OR (to_jsonb(w) #>> '{payload,plan_item,plan_slug}' = ${a.planSlug}
-          AND to_jsonb(w) #>> '{payload,plan_item,item_id}' = ANY(${owningItems}::text[]))
-         OR EXISTS (SELECT 1 FROM harness_shared.work_item_spec_revision_edges e
-           WHERE e.workspace_id = w.workspace_id AND e.harness_slug = w.harness_slug
-             AND e.work_item_id = w.feature_id AND e.plan_slug = ${a.planSlug} AND e.spec_id = ${a.specId})
-       ) FOR UPDATE OF w`;
+       AND COALESCE(w.status, '') NOT IN ('done','dropped','resolved','closed','passed','deprecated')
+       AND w.feature_id IN (SELECT id FROM candidates)
+     FOR UPDATE OF w`;
   if (!rows.length) return;
   const key = createHash('sha256').update(JSON.stringify([a.planSlug, a.specId])).digest('hex');
   const holders = new Map<string, string[]>();

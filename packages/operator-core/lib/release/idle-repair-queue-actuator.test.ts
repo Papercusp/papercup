@@ -98,8 +98,9 @@ describe('idle repair-queue fixer handoff', () => {
         expect(current).toBe(queue);
         return reserved;
       },
-      dispatch: async () => {
+      dispatch: async (current) => {
         calls.push('dispatch');
+        expect(current).toBe(reserved);
         return { spawnId: 'spawn-123', runId: 'run-123' };
       },
       finalize: async (current, fired) => {
@@ -125,7 +126,10 @@ describe('idle repair-queue fixer handoff', () => {
     };
     const result = await dispatchIdleQueueFixer(queue, {
       reserve: async () => reserved,
-      dispatch: async () => ({ spawnId: 'spawn-123', runId: 'run-123' }),
+      dispatch: async (current) => {
+        expect(current).toBe(reserved);
+        return { spawnId: 'spawn-123', runId: 'run-123' };
+      },
       finalize: async () => null,
     });
 
@@ -144,7 +148,10 @@ describe('idle repair-queue fixer handoff', () => {
     const calls: string[] = [];
     const result = await dispatchIdleQueueFixer(queue, {
       reserve: async () => reserved,
-      dispatch: async () => null,
+      dispatch: async (current) => {
+        expect(current).toBe(reserved);
+        return null;
+      },
       finalize: async (current, fired) => {
         calls.push('finalize');
         expect(current).toBe(reserved);

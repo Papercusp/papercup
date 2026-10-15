@@ -132,6 +132,9 @@ async function seedTenants(sql: Sql): Promise<void> {
 function serviceRunner(sql: Sql): HostedServiceContextRunner {
   return async <T>(fn: (tx: Sql) => Promise<T>): Promise<T> =>
     sql.begin(async (tx) => {
+      // Match withHostedServiceContext: SECURITY DEFINER export reads require
+      // the server-owned workspace marker as well as the service role.
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
       await tx.unsafe('SET LOCAL ROLE hosted_service');
       return fn(tx as unknown as Sql);
     }) as Promise<T>;
@@ -343,6 +346,15 @@ afterAll(async () => {
 
 describe.sequential('assembled hosted two-tenant acceptance', () => {
   it('exports customer data over private HTTP using persisted cookies and server-derived tenant and user scope', async () => {
+    // A role-only fixture must fail the same SQL guard that caused the HTTP
+    // exporter to return 503. Keep that guard intact while using the full
+    // production service context for the assembled HTTP proof below.
+    await expect(sql.begin(async tx => {
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      await tx`SELECT set_config('app.organization_id', ${ORG_A}, true)`;
+      return tx`SELECT data FROM papercusp_auth.read_hosted_customer_export_rows(
+        'harness_shared.customer_workspaces', ${ORG_A})`;
+    })).rejects.toMatchObject({ code: '42501', message: 'hosted customer export service scope is invalid' });
     const session = await createSession(plane, USER_A, ORG_A, WORKSPACE_A, 'data-export');
     const server = serve({ fetch: plane.app.fetch, hostname: '127.0.0.1', port: 0 });
     try {

@@ -2,7 +2,7 @@
 
 15 October 2026 · WI-6554700010013720 · papercusp-enterprise-readiness-roadmap-2026-10-09
 
-P-004, P-005, and P-006 each evaluated **pass**, with no blocking criteria, on the staging evaluator measured as `ce9cbd9a0e` at approximately 01:32 UTC. Their current certification cards have been filed. P-005's independent grading-integrity audit passed at 01:48 UTC. P-004 and P-006 remained pending at the 01:51 UTC current-build readback; this report does not claim complete audited acceptance or shipment.
+P-004, P-005, and P-006 now each have a passing independent grading-integrity audit. The 05:13 UTC staging readback verified that their current cards, grading criteria and cited evidence are current. This settles this finite proof-refresh lane; integrated P-022 acceptance and roadmap shipment remain outstanding.
 
 ## What changed
 
@@ -18,9 +18,9 @@ P-005 and P-006 received fresh fixture-calibrated proof, exact clause targeting,
 
 | Clause | Current replacement evidence | Passing certification card |
 | --- | --- | --- |
-| P-004 | Test `45828`, operational `45829`, mutation `45830`; baseline `21249121`, copy baseline `21249126`, caught mutant `21249137` | `EI-26007196257314461` |
+| P-004 | Test `45828`, operational `45829`, mutation `45830`; baseline `21249121`, copy baseline `21249126`, caught mutant `21249137` | `EI-26013883894209476` |
 | P-005 | Mutation `45806` from caught mutant `21249122`; operational `45786`; maintained fresh test bindings | `EI-26007212094985223` |
-| P-006 | Operational `45787`; caught mutation bindings `45799`, `45798`, `45797` from runs `21249106`, `21249111`, `21249112`; maintained fresh test bindings | `EI-26006327405705776` |
+| P-006 | Operational `45787`; caught mutation bindings `45799`, `45798`, `45797` from runs `21249106`, `21249111`, `21249112`; maintained fresh test bindings | `EI-26013577086305652` |
 
 Readback verified replacement bindings before withdrawing older proof. P-005 `45362` was withdrawn after `45806` read current. P-004 `45783`, `45788`, and `45361` were withdrawn after `45828`, `45829`, and `45830` read current. Earlier retirements are preserved in the work-item checkpoint and ledger.
 
@@ -32,9 +32,11 @@ P-004's timeline through 01:51 UTC contains its opening guard message at 01:36 U
 
 ## Verification and limits
 
-Verified: maintained focused suites and original mutation catches; fresh full-fixture bindings; current replacement readbacks before retirement; exact P-004/P-005/P-006 evaluator passes; successful current certification filing; current rubric and binding identities; P-005's independent audit pass.
+The earlier pending observations above are historical. The original P-004 card `EI-26007196257314461` was superseded by `EI-26013883894209476`; its audit `EI-26018371005866810` passed at 04:30:53 UTC. The original P-006 card `EI-26006327405705776` was superseded by `EI-26013577086305652`; its audit `EI-26016189223101293` passed at 03:56:11 UTC. P-005's card and audit remain `EI-26007212094985223` and `EI-26008140664243853`. All three returned `gradingAudit.state: passed`, `gradingAuditCurrentness.state: current`, and `evidenceBindingCurrentness.state: current` in the closure readback.
 
-Still required for final closure: independent grading-integrity verdicts for P-004 and P-006, a final read of the three cards' current audit authority, and accountable ownership of the producer-stall follow-up. WI-6554700010013720 remains open until that evidence is available.
+The fleet leader reclaimed this lane and the separate producer-recovery item `EI-26008433277408959` after the prior holder became recorded and non-wakeable. That recovery item remains owned by `su-33fb4941-fc14-4bdf-a2b5-75961587ebbf`. Its narrow Codex completed-turn failure guard and maintained regression suites were preserved. The focused typecheck for `acceptance-grader.ts` and `grading-integrity.ts` completed clean with exit 0 at source stamp `d6b1bec4fb`; `/tmp/ei260084-tsc-20261015.log` preserves the result. Both files were verified loaded on staging by blob identity. No unchanged proof matrix or mutation was rerun to recover this evidence.
+
+Verified for this lane: the saved maintained focused suites and original mutation catches; full-fixture bindings; current replacement readbacks before retirement; exact clause evaluator passes; current certification cards; and all three independent audit passes. The separate producer-recovery item's root-cause closure still requires its own completion record; it is not silently disposed of by this report.
 
 Outside this finite lane: integrated P-022 journeys, other prerequisite lanes, release promotion, deployment, and external enterprise outcomes. P-022 remains unshipped. The prior P-022b refresh remains complete.
 

@@ -92,6 +92,14 @@ describe('real Luna load and swap tuning', () => {
   const turn = (marker: string) => ({ type: 'response_item', payload: { role: 'user', content: [{ type: 'input_text', text: `Dummy task ${marker}` }] } });
   const final = (text: string) => ({ type: 'response_item', payload: { role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text }] } });
 
+  it('settles a terminal provider error without waiting for an absent final answer', () => {
+    const error = { message: 'Selected model is at capacity.', codex_error_info: 'server_overloaded' };
+    const rows = [turn('WARM-a2-2'), { type: 'event_msg', payload: { type: 'task_complete', error, last_agent_message: null } }];
+    expect(nativeOutcome(rows).outcomes['WARM-a2-2']).toContain('server_overloaded');
+    expect(nativeOutcome([turn('WARM-a2-2'), { type: 'event_msg', payload: { type: 'task_complete' } }]).outcomes['WARM-a2-2'])
+      .toContain('without an assistant final answer');
+  });
+
   it('holds a final answer until native task settlement before admitting the next prompt', () => {
     const rows = [turn('WAKE-none1a1'), final('DONE-WAKE-none1a1')];
     const expr = '(lambda s: ([m.codex_record(s, r) for r in inp], s)[1])({})';
@@ -132,18 +140,20 @@ describe('real Luna load and swap tuning', () => {
       'import importlib.util, types, json',
       `s = importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
       'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)',
-      'calls=[]; records=[]',
-      'def prompt(names, *args, **kw):',
+      'calls=[]; records=[]; markers=[]',
+      'def prompt(names, marker, *args, **kw):',
       ' calls.append(list(names))',
+      ' markers.append([marker(n) for n in names])',
       ' return {n: {"tDone": None if len(calls)==1 and n=="a2" else 1, "error": "hash mismatch"} for n in names}',
       'm.prompt_all=prompt',
       'm.warm(["a1","a2"],1,types.SimpleNamespace(rec=lambda kind, **kw: records.append({"kind":kind, **kw})))',
-      'print(json.dumps({"calls":calls,"records":records}))',
+      'print(json.dumps({"calls":calls,"records":records,"markers":markers}))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
     expect(parsed.calls).toEqual([['a1', 'a2'], ['a2']]);
+    expect(parsed.markers).toEqual([['WARM-a1-0', 'WARM-a2-0'], ['WARM-a2r1-0']]);
     expect(parsed.records[0]).toMatchObject({ kind: 'warm-retry', agents: ['a2'] });
     expect(parsed.records[1]).toMatchObject({ kind: 'warm-round', agents: 2 });
     const exhausted = spawnSync('python3', ['-c', code.replace('len(calls)==1 and n=="a2"', 'True')], { encoding: 'utf8' });
