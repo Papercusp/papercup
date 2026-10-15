@@ -26,6 +26,13 @@ export interface HostedCustomerDeletionPolicy {
   readonly consent: 'delete' | 'retain';
 }
 
+/** Shared admission/executor policy authority. P-011 has not resolved retention;
+ * an operation's serialized approvalRef is never a substitute for that decision.
+ * Replace this resolver only when the approved server policy is available. */
+export async function resolveApprovedHostedCustomerDeletionPolicy(): Promise<HostedCustomerDeletionPolicy | null> {
+  return null;
+}
+
 export interface HostedCustomerDeletionRequest {
   readonly operationId: string;
   readonly organizationId: string;
