@@ -356,7 +356,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['/var/lib/docker', '/var/lib/containers'],
     stores: ['docker:'],
     keep: { kind: 'native', manager: 'docker/podman', rule: 'build cache 24h, unreferenced images 168h, dangling anonymous volumes 24h' },
-    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '9d78516da4748a88f44cc72c92134b32be0a21950c561ddcba862046c855f6ad' }],
+    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '76d38327c9c582b5123ef78592ac3a6154799e491a21881f6028f325e72c818f' }],
     note: 'Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
   },
   {
@@ -450,7 +450,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
     maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '21114359f39606167a2c0f7d6b664bc1676243c53f5bca51eea25b76ba6e9479' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: 'b18e15f6f6be84e7aa4457555761a1489b384431f7d87a2153e0d76c1d4d1957' },
       { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
     note: 'The native owner eagerly removes every eligible dead private slot, oldest first; a 20 GiB cap receipt counts retained live/leased/recent roots and interrupted deletions. Protected overage is reported, never permission to bypass the owner guards.',

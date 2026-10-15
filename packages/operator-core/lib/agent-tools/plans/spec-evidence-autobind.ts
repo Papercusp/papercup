@@ -13,14 +13,14 @@
  * test file the requirement's LIVE block names (P-001: the plan, never the rubric copy):
  *  - the LATEST terminal run of that file in the plan's harness (pass | fail | error; mutation
  *    probes excluded — they are R-3's evidence, bound with their own causal controls);
- *  - a PASS binds, through `bindSpecEvidenceItems` — the same pipeline an agent call runs,
+ *  - a clean, commit-stamped PASS binds, through `bindSpecEvidenceItems` — the same pipeline an agent call runs,
  *    including its refusal of a run that predates the code (`test_run_source_modified_after_run`)
  *    — with `supersedeAtRevision`, so the older proof for the same file is retracted;
- *  - the run must have executed code a COMMIT contains: every measured path (the test file and
- *    its first ring of imports) is clean in the checkout at decision time. On this shared tree
- *    runs are always `worktree_dirty`, so containment is a CONTENT question: unmodified since the
- *    run started (the bind pipeline) AND committed now (here) ⇒ the run executed committed bytes.
- *    An uncommitted path DEFERS the bind; the next tick after git-sync binds it;
+ *  - the run must have executed code a COMMIT contains: the ledger records a clean checkout
+ *    and its commit, and every measured path is committed in the current checkout. A dirty run
+ *    cannot establish this from the declared path subset alone; use the existing
+ *    `lint:as-committed` runner to record a qualifying pass. Dirty/unknown passes never replace
+ *    clean proof. An uncommitted measured path DEFERS the bind until git-sync;
  *  - a FAIL or ERROR newer than a live binding's run RETRACTS that binding, whoever authored it:
  *    the store re-checks file fingerprints, not later outcomes, so without this a passing proof
  *    would stay current over a newer failure.
@@ -61,6 +61,8 @@ export interface AutobindLedgerRun {
   filePath: string;
   status: 'pass' | 'fail' | 'error';
   finishedAt: string;
+  commitSha: string | null;
+  worktreeDirty: boolean | null;
 }
 
 /** A live (un-retracted) `test` binding on the target's clause revision and work-item. */
@@ -72,7 +74,7 @@ export interface AutobindLiveBinding {
 }
 
 export type AutobindDecision =
-  | { kind: 'noop'; target: AutobindTarget; reason: 'no-terminal-run' | 'already-bound' | 'nothing-to-retract' }
+  | { kind: 'noop'; target: AutobindTarget; reason: 'no-terminal-run' | 'run-not-committed' | 'already-bound' | 'nothing-to-retract' }
   | { kind: 'bind'; target: AutobindTarget; run: AutobindLedgerRun }
   | { kind: 'retract'; target: AutobindTarget; run: AutobindLedgerRun; bindingIds: number[] };
 
@@ -97,6 +99,9 @@ export function decideAutobind(
 ): AutobindDecision {
   if (!latestRun) return { kind: 'noop', target, reason: 'no-terminal-run' };
   if (latestRun.status === 'pass') {
+    if (latestRun.worktreeDirty !== false || !/^[0-9a-f]{40,64}$/i.test(latestRun.commitSha ?? '')) {
+      return { kind: 'noop', target, reason: 'run-not-committed' };
+    }
     return live.some((binding) => binding.testRunId === latestRun.id)
       ? { kind: 'noop', target, reason: 'already-bound' }
       : { kind: 'bind', target, run: latestRun };
@@ -292,14 +297,16 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
       const harnesses = [...new Set(targets.map((t) => t.harnessSlug))];
       const files = [...new Set(targets.map((t) => normalizeTestRef(t.testFile)))];
       const rows = await withWorkspace(workspaceId, (tx) => tx<
-        { id: string | number; harness_slug: string; file_path: string; status: AutobindLedgerRun['status']; finished_at: Date | string }[]
+        { id: string | number; harness_slug: string; file_path: string; status: AutobindLedgerRun['status']; finished_at: Date | string;
+          commit_sha: string | null; worktree_dirty: boolean | null }[]
       >`
-        SELECT DISTINCT ON (harness_slug, file_path) id, harness_slug, file_path, status, finished_at
+        SELECT DISTINCT ON (harness_slug, file_path) id, harness_slug, file_path, status, finished_at, commit_sha, worktree_dirty
           FROM harness_shared.test_runs
          WHERE workspace_id = ${workspaceId}
            AND harness_slug = ANY(${harnesses}::text[])
            AND file_path = ANY(${files}::text[])
            AND status IN ('pass', 'fail', 'error')
+           AND (status <> 'pass' OR (worktree_dirty IS FALSE AND commit_sha ~* '^[0-9a-f]{40,64}$'))
            AND finished_at IS NOT NULL
            AND source <> 'mutation-probe'
            AND started_at > now() - make_interval(days => ${AUTOBIND_RUN_LOOKBACK_DAYS})
@@ -312,6 +319,8 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
             filePath: row.file_path,
             status: row.status,
             finishedAt: new Date(row.finished_at).toISOString(),
+            commitSha: row.commit_sha,
+            worktreeDirty: row.worktree_dirty,
           },
         ]),
       );

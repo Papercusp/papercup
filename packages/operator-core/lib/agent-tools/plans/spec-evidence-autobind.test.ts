@@ -27,7 +27,7 @@ const target: AutobindTarget = {
 };
 
 const run = (id: number, status: AutobindLedgerRun['status'], finishedAt = `2026-10-15T17:${String(id % 60).padStart(2, '0')}:00.000Z`) =>
-  ({ id, filePath: TEST, status, finishedAt }) satisfies AutobindLedgerRun;
+  ({ id, filePath: TEST, status, finishedAt, commitSha: 'a'.repeat(40), worktreeDirty: false }) satisfies AutobindLedgerRun;
 
 const binding = (id: number, testRunId: number | null, observedAt = '2026-10-15T17:00:00.000Z', evidenceRef = TEST) =>
   ({ id, evidenceRef, testRunId, observedAt }) satisfies AutobindLiveBinding;
@@ -88,6 +88,16 @@ describe('decideAutobind', () => {
   });
   it('is a no-op with no terminal run on the ledger', () => {
     expect(decideAutobind(target, null, [])).toMatchObject({ kind: 'noop', reason: 'no-terminal-run' });
+  });
+  it.each([
+    { worktreeDirty: true }, { worktreeDirty: null }, { commitSha: null }, { commitSha: 'not-a-commit' },
+  ])('refuses a passing run without clean commit provenance: %j', (provenance) => {
+    expect(decideAutobind(target, { ...run(10, 'pass'), ...provenance }, []))
+      .toMatchObject({ kind: 'noop', reason: 'run-not-committed' });
+  });
+  it('still invalidates older proof after a dirty failing run', () => {
+    expect(decideAutobind(target, { ...run(12, 'fail'), worktreeDirty: true }, [binding(1, 10)]))
+      .toMatchObject({ kind: 'retract', bindingIds: [1] });
   });
 });
 

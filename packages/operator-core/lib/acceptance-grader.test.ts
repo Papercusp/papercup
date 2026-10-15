@@ -591,6 +591,16 @@ const plan = {
   },
 } as never;
 
+/** A plan whose build item is still open — recruitment must refuse before reading the rubric. */
+const planWithOpenBuildItems = {
+  row: {
+    items: [
+      { id: 'P-001', text: 'Implement the thing', status: 'blocked' },
+      { id: 'P-002', text: 'Independent acceptance grading', status: 'todo' },
+    ],
+  },
+} as never;
+
 const rubric = {
   rubricId: 'acceptance-ship-the-thing',
   revision: 3,
@@ -974,10 +984,7 @@ describe('launchAcceptanceGrader', () => {
   it.each([launchAcceptanceGrader, resolveAcceptanceGrader])('refuses recruitment before reading the rubric or launching while build work is open', async recruit => {
     const launch = vi.fn();
     const d = deps(launch);
-    d.readPlan.mockResolvedValue({ row: { items: [
-      { id: 'P-001', text: 'Implement the thing', status: 'blocked' },
-      { id: 'P-002', text: 'Independent acceptance grading', status: 'todo' },
-    ] } } as never);
+    d.readPlan.mockResolvedValue(planWithOpenBuildItems);
     const result = await recruit('ship-the-thing', {} as never, d);
     expect(result).toMatchObject({ state: 'failed', openBuildItems: ['P-001'] });
     expect(result.error).toContain('build_items_open');

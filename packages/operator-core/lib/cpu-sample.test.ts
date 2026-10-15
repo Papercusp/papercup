@@ -139,7 +139,10 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
   output: () => string }) => Promise<void>, waitForStartup = false) {
   const out = mkdtempSync(join(tmpdir(), 'cpu-sample-busy-'));
   const entry = join(out, 'startup.mjs');
-  writeFileSync(entry, 'console.log("CPU_SAMPLE_BUSY_READY");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
+  // The target immediately enters a synchronous loop, so an async console.log
+  // can remain buffered in Node's pipe writer. Flush the marker before the
+  // loop to make the startup/output assertion deterministic.
+  writeFileSync(entry, 'import { writeSync } from "node:fs";writeSync(1, "CPU_SAMPLE_BUSY_READY\\n");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
   const child = spawn(process.execPath, [waitForStartup ? '--inspect-wait=127.0.0.1:0' : '--inspect=127.0.0.1:0', entry, '--probe-target'],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   const exit = once(child, 'exit');
@@ -188,10 +191,13 @@ it.skipIf(process.platform !== 'linux')('starts profiling before releasing an ex
     const result = await captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,
       resumeStartup: true, expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 });
     expect(result.startupResumed).toBe(true);
-    expect(output()).toContain('CPU_SAMPLE_BUSY_READY');
+    await vi.waitFor(() => expect(output()).toContain('CPU_SAMPLE_BUSY_READY'), { timeout: 3000 });
     const sampled = new Set(result.profile.samples);
-    expect(result.profile.nodes.some((node: { id: number; callFrame: { url: string } }) =>
-      sampled.has(node.id) && node.callFrame.url === pathToFileURL(entry).href)).toBe(true);
+    const sampledUrls = [...new Set(result.profile.nodes
+      .filter((node: { id: number }) => sampled.has(node.id))
+      .map((node: { callFrame: { url: string } }) => node.callFrame.url))];
+    expect(sampledUrls.filter(url => url && !url.startsWith('node:')))
+      .toContain(pathToFileURL(entry).href);
   }, true);
 }, 15000);
 

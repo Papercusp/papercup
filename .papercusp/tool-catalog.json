@@ -14896,7 +14896,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Native operations use current JS/TS snapshots. Discovery requires explicit bounded paths; communities are weak call components, flows are possible zero-incoming call paths, and concept-search fuses symbol/path and source-text rankings. Discovery is inferred retrieval evidence; semantic similarity and runtime execution are unmeasured. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.",
+      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.",
       "capabilities": [
         "intel:read"
       ],
@@ -14957,7 +14957,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "For \"who calls X?\", use op:\"callers\", name and bounded paths; for \"what does X call?\", use op:\"callees\". Call-site rg also matches comments and strings; use compiler topology to establish calls or change impact.",
+        "when": "For \"who calls X?\", use op:\"callers\", name and bounded paths; for \"what does X call?\", use op:\"callees\". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.",
         "notWhen": "Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.",
         "chaining": "op:\"context\" → op:\"impact\" for the change radius → op:\"trace\", target:\"name\" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:\"health\" reports index freshness; lsp:query handles references/diagnostics."
       }
@@ -18900,7 +18900,7 @@
           "POST"
         ]
       },
-      "description": "READ-ONLY TypeScript/Rust compiler intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Health describes readiness, not exhaustive references. Empty or degraded results require source/scope checks; unavailable servers return an error.",
+      "description": "READ-ONLY code intelligence. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Symbol lookups prefer hash-checked syntax snapshots; other intents and snapshot misses use pinned compilers. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Read coverage for syntax/compiler scope. Empty or degraded results require source/scope checks; unavailable servers return an error.",
       "capabilities": [
         "intel:read"
       ],
@@ -18961,7 +18961,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
+        "when": "You need declarations across boundaries/re-exports, references, implementations, diagnostics, or rename sites. Symbol answers identify syntax-only versus compiler-backed evidence.",
         "notWhen": "Use text/regex search (`rg`/`grep`, scoped to source roots — see capability:bash guidance) for text, and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
         "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
       }

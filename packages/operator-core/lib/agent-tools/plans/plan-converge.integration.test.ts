@@ -59,7 +59,9 @@ function execute(tools: Body, inputs: Body = {}) {
   return vm.runInNewContext(`(async () => {\n${script}\n})()`, { tools, inputs: checked.value.inputs }) as Promise<Body>;
 }
 function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?: Body } = {}) {
-  const evaluate = vi.fn(async (_args: Body) => ({ ok: true, rows }));
+  // Typed as the recipe sees it (an untyped tool envelope), so a case can resolve a
+  // deliberately malformed body — e.g. `{ ok: true }` with no rows — without a mock cast.
+  const evaluate = vi.fn(async (_args: Body): Promise<Body> => ({ ok: true, rows }));
   const audit = vi.fn(async () => options.audit ?? { ok: true });
   const certify = vi.fn(async (_args: Body = {}) => options.certify ?? { ok: true, counts: { filed: 0 } });
   const create = vi.fn(async () => options.filed ?? { ok: true, results: [{ ok: true, id: 'WI-gap', workItem: { id: 'WI-gap', assignee: 'converge-owner' } }] });
@@ -113,7 +115,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
   });
   it('refuses missing classification rows without filing gaps or retrying certification', async () => {
     const c = controls([]);
-    c.evaluate.mockResolvedValueOnce({ ok: true } as never);
+    c.evaluate.mockResolvedValueOnce({ ok: true });
     expect(await execute(c.tools)).toMatchObject({ ok: false, phase: 'evaluate' });
     expect(c.audit).toHaveBeenCalledOnce();
     expect(c.certify).toHaveBeenCalledOnce();
