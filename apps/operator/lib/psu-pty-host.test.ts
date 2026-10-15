@@ -6598,7 +6598,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
         order.push('prompt');
         const result = promptResults[Math.min(promptCalls, promptResults.length - 1)];
         promptCalls += 1;
-        return { capMs, ...result };
+        return { capMs, quietMs: 6000, verifier: 'supported', ...result };
       },
       recycle: async (data, opts) => {
         order.push('recycle');
@@ -6628,6 +6628,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
       sessionClass: 'gateway-claude-headless',
       reason: 'busy-gate-expired',
       capMs: 1234,
+      maxAttempts: 1,
     });
     await h.settle();
     expect(h.recycles).toEqual([
@@ -6649,7 +6650,13 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
   });
 
   it('drops terminally with rearmed:true when its bounded retry budget is exhausted', async () => {
-    const h = makeHarness({ promptResults: [{ deferred: true }], maxDrillAttempts: 1 });
+    const h = makeHarness({
+      promptResults: [
+        { deferred: true, quietMs: 1234, verifier: 'no-classifier' },
+        { deferred: true, quietMs: 4321, verifier: 'no-isolated-root' },
+      ],
+      maxDrillAttempts: 2,
+    });
     expect(h.controller.schedule(DRILL_MSG)).toBe('queued');
     await h.settle();
     expect(h.recycles).toEqual([]);
@@ -6658,8 +6665,12 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
       drillId: 'd-77',
       reason: 'busy-gate-expired',
       rearmed: true,
+      maxAttempts: 2,
+      attempts: 2,
+      quietMs: 4321,
+      verifier: 'no-isolated-root',
     });
-    expect(h.releaseCount()).toBe(1);
+    expect(h.releaseCount()).toBe(2);
     expect(h.controller.pendingCount()).toBe(0);
   });
 
