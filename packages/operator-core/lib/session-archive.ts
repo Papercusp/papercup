@@ -242,6 +242,8 @@ export interface SessionArchiveStore {
    */
   readStamp(sourceKind: string, sessionId: string): Promise<ArchiveStampRow | null>;
   readFiles(sourceKind: string, sessionId: string): Promise<ArchiveFileRow[]>;
+  /** Remove the canonical PG rows only after a verified cold export. */
+  deleteArchiveRows?(stamp: Pick<ArchiveStampRow, 'workspace_id' | 'source_kind' | 'session_id' | 'manifest'>): Promise<void>;
   stampAdvSessionArchived(advSessionId: number): Promise<void>;
   /** Capture parser compatibility before the bounded ingest-state ledger is pruned. */
   readTurnParsingOffset?(sourceKind: string, filePath: string): Promise<number | null>;
@@ -311,6 +313,51 @@ export async function exportArchiveToColdTier(
   return { root, manifestPath, fileCount: rows.length, bytesStored };
 }
 
+export interface ColdArchiveMigrationResult {
+  ok: boolean;
+  reason?: 'not_archived' | 'delete_unsupported' | 'export_failed';
+  fileCount: number;
+  bytesStored: number;
+  manifestPath?: string;
+}
+
+/**
+ * Move one complete archive out of PostgreSQL. The delete seam is deliberately
+ * optional so the pure archive stores used by older callers remain read-only;
+ * production's PG store implements it. A failed export leaves every PG row
+ * untouched, and deletion is reached only after export's readback succeeds.
+ */
+export async function migrateArchiveToColdTier(
+  sourceKind: string,
+  sessionId: string,
+  root: string = SESSION_ARCHIVE_COLD_ROOT,
+  store: SessionArchiveStore = pgSessionArchiveStore(),
+): Promise<ColdArchiveMigrationResult> {
+  const stamp = await store.readStamp(sourceKind, sessionId);
+  if (!stamp) return { ok: false, reason: 'not_archived', fileCount: 0, bytesStored: 0 };
+  if (!store.deleteArchiveRows) {
+    return { ok: false, reason: 'delete_unsupported', fileCount: stamp.file_count, bytesStored: 0 };
+  }
+  let exported: ColdArchiveExportResult;
+  try {
+    exported = await exportArchiveToColdTier(stamp, await store.readFiles(sourceKind, sessionId), root);
+  } catch {
+    return { ok: false, reason: 'export_failed', fileCount: stamp.file_count, bytesStored: 0 };
+  }
+  await store.deleteArchiveRows({
+    workspace_id: stamp.workspace_id,
+    source_kind: stamp.source_kind,
+    session_id: stamp.session_id,
+    manifest: stamp.manifest,
+  });
+  return {
+    ok: true,
+    fileCount: exported.fileCount,
+    bytesStored: exported.bytesStored,
+    manifestPath: exported.manifestPath,
+  };
+}
+
 /** Read the cold manifest used after a successful PG-row migration. */
 export async function readColdArchiveStamp(
   sourceKind: string,
@@ -345,6 +392,10 @@ export async function readColdArchiveFiles(
   for (const entry of stamp.manifest) {
     if (isUnsafeArchiveRelpath(entry.relpath)) throw new Error(`unsafe cold archive relpath: ${entry.relpath}`);
     const blob = await readFile(join(dir, `${entry.relpath}.zst`));
+    const raw = await zstdDecompress(blob);
+    if (raw.length !== entry.bytes_raw || sha256Hex(raw) !== entry.sha256) {
+      throw new Error(`cold archive integrity mismatch: ${entry.relpath}`);
+    }
     rows.push({ workspace_id: stamp.workspace_id, source_kind: stamp.source_kind, session_id: stamp.session_id,
       relpath: entry.relpath, codec: 'zstd', blob, sha256: entry.sha256, bytes_raw: entry.bytes_raw,
       bytes_stored: blob.length, mtime: null });
@@ -1034,6 +1085,25 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
         // string; the declared ArchiveFileRow contract is Date | null.
         mtime: r.mtime == null ? null : r.mtime instanceof Date ? r.mtime : new Date(r.mtime as unknown as string),
       }));
+    },
+
+    async deleteArchiveRows(stamp) {
+      const { sql } = getOrgPg();
+      await sql.begin(async (tx) => {
+        // The manifest predicate prevents deleting a newer archive that was
+        // written after the cold export began.
+        const deleted = await tx`
+          DELETE FROM harness_shared.session_archives
+           WHERE workspace_id = ${stamp.workspace_id} AND source_kind = ${stamp.source_kind}
+             AND session_id = ${stamp.session_id}
+             AND manifest = ${JSON.stringify(stamp.manifest)}::text::jsonb
+          RETURNING session_id`;
+        if (deleted.length === 0) throw new Error('archive changed during cold migration');
+        await tx`
+          DELETE FROM harness_shared.session_archive_files
+           WHERE workspace_id = ${stamp.workspace_id} AND source_kind = ${stamp.source_kind}
+             AND session_id = ${stamp.session_id}`;
+      });
     },
 
     async stampAdvSessionArchived(advSessionId) {
