@@ -736,8 +736,6 @@ export async function withFsMutex(name, fn, opts = {}) {
     ...(intent ? { intent } : {}),
   };
 
-  await measureAdmissionSubphase("root-mkdir", () => mkdir(root, { recursive: true }));
-
   // EI-21915677034576963: register a FIFO ticket BEFORE racing for the write lock, so a
   // caller that has been waiting longest is never overtaken by a newer one that simply
   // happens to poll at a luckier moment — including the SAME long-running caller
@@ -926,7 +924,6 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     mode: "read",
   };
 
-  await mkdir(root, { recursive: true });
   await mkdir(readersDir, { recursive: true });
 
   let announcedWaiting = false;

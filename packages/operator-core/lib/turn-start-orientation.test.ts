@@ -717,6 +717,12 @@ describe('turn-start-orientation — what it says', () => {
     expect(withheld).toBe(true);
     expect(getLoopStatusMock).toHaveBeenCalledTimes(1);
     expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
+
+    getLoopStatusMock.mockClear();
+    getLoopStatusMock.mockResolvedValue({ active: false });
+    expect(await defaultOrientationDeps().loopArmed('su-1')).toBe(false);
+    expect(getLoopStatusMock).toHaveBeenCalledTimes(1);
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-1');
   });
 
   it('tells an agent holding nothing to claim before editing', () => {

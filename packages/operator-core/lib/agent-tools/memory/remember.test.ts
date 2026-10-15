@@ -748,6 +748,32 @@ describe('memory:remember — runbook-shape boundary nudge (EI-2032)', () => {
 });
 
 describe('memory:remember — anchor table wiring (P-015)', () => {
+  it('persists all five governed non-file anchor kinds after a successful remember', async () => {
+    const id = '77777777-7777-7777-7777-777777777777';
+    useBackend(fakeBackend([], [id]));
+    const sql = vi.fn(async () => undefined);
+    vi.mocked(getOrgPg).mockReturnValue({ sql } as unknown as ReturnType<typeof getOrgPg>);
+    const res = await remember.handler({
+      content: 'WI-123 governed-memory-2026-10-14#D-007 fact:guard-rail:safe '
+        + 'session_turn:codex:host:session:42 report:rpt_12345678-1234-1234-1234-123456789abc',
+      kind: 'project',
+    }, fakeCtx);
+    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, ids: [id] });
+    await new Promise(resolve => setImmediate(resolve));
+    const calls = sql.mock.calls as unknown as [TemplateStringsArray, string, string[], string[]][];
+    const insert = calls.find(([template]) => template.join('').includes('INSERT INTO harness_shared.memory_anchors'));
+    expect(insert).toBeDefined();
+    expect(insert?.[1]).toBe(id);
+    const stored = insert![2].map((kind, index) => ({ kind, value: insert![3][index] }));
+    expect(stored).toEqual(expect.arrayContaining([
+      { kind: 'work-item', value: 'WI-123' },
+      { kind: 'decision', value: 'governed-memory-2026-10-14#D-007' },
+      { kind: 'fact', value: 'guard-rail:safe' },
+      { kind: 'session-turn', value: 'codex:host:session:42' },
+      { kind: 'report', value: 'rpt_12345678-1234-1234-1234-123456789abc' },
+    ]));
+  });
+
   it('hands the new memory ids + extracted anchors to the writer after a successful add', async () => {
     const b = fakeBackend([], ['77777777-7777-7777-7777-777777777777']);
     useBackend(b);

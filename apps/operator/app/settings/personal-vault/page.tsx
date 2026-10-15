@@ -319,8 +319,8 @@ export function facebookPersonalVaultConnectHref(
   providerAccountId?: string,
 ): string {
   const params = new URLSearchParams({
-    provider: "facebook",
-    plugin: "facebook-personal-vault",
+    provider: "provider:facebook",
+    plugin: "provider:facebook",
     harness: "papercusp",
     field: "owner",
   });

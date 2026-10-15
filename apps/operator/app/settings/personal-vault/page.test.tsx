@@ -835,10 +835,10 @@ describe("PersonalVaultSettingsPage", () => {
       within(card!).getByRole("button", { name: "Add Facebook Account" }),
     ).toBeTruthy();
     expect(facebookPersonalVaultConnectHref()).toBe(
-      "/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner",
+      "/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=owner",
     );
     expect(facebookPersonalVaultConnectHref("facebook-user-2")).toBe(
-      "/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=facebook-user-2",
+      "/api/oauth/start?provider=provider%3Afacebook&plugin=provider%3Afacebook&harness=papercusp&field=owner&account=facebook-user-2",
     );
     expect(
       screen.getByRole("note", { name: "Live integration privacy" })

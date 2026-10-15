@@ -84,7 +84,6 @@ export const FLEET_CONTROL_ACTIONS = new Set<string>([
  */
 export const TRIGGER_POLL_ACTIONS = new Set<string>([
   'pr-poll',
-  'facebook-personal-vault-poll',
   'connector-sync',
 ]);
 

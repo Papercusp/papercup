@@ -355,7 +355,6 @@ describe('withFsMutex', () => {
       expect(admission.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
         'lock-root.ensure': expect.any(Number),
         'lock-root.mkdir': expect.any(Number),
-        'root-mkdir': expect.any(Number),
         'queue-root-mkdir': expect.any(Number),
         'ticket-mkdir': expect.any(Number),
         'ticket-owner-write': expect.any(Number),
@@ -367,6 +366,7 @@ describe('withFsMutex', () => {
         'ticket-cleanup': expect.any(Number),
         'reader-drain': expect.any(Number),
       }));
+      expect(admission.admissionSubphaseTimingsMs).not.toHaveProperty('root-mkdir');
       expect(admission.admissionSubphaseTimingsMs?.['backoff-sleep']).toBeGreaterThan(0);
       for (const elapsedMs of Object.values(admission.admissionSubphaseTimingsMs ?? {})) {
         expect(Number.isFinite(elapsedMs)).toBe(true);

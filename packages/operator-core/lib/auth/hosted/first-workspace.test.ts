@@ -419,8 +419,8 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
       expect(sizeFor(15)).toBe('e2-standard-4');
       expect(sizeFor(16)).toBe('e2-standard-8');
       expect(sizeFor(50)).toBe('e2-standard-8');
-      expect(sizeFor(68)).toBe('e2-standard-8');
-      expect(sizeFor(69)).toBe('e2-custom-16-32768');
+      expect(sizeFor(67)).toBe('e2-standard-8');
+      expect(sizeFor(68)).toBe('e2-custom-16-32768');
       expect(sizeFor(158)).toBe('e2-custom-16-32768');
     });
 

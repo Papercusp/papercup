@@ -75,11 +75,6 @@ vi.mock('../../../external-triggers/google-workspace', async (importOriginal) =>
     googleWorkspaceOAuthField: (ref: string) => ref.replace('google-workspace:', ''),
   };
 });
-vi.mock('../../../external-triggers/facebook', () => ({
-  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN: 'facebook-personal-vault',
-  FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS: ['facebook'],
-  facebookPersonalVaultOAuthField: (ref: string) => ref.replace('facebook-personal-vault:', ''),
-}));
 vi.mock('../../../oauth/providers', () => ({
   GOOGLE_GMAIL_READONLY_SCOPE: 'https://www.googleapis.com/auth/gmail.readonly',
   GOOGLE_GMAIL_COMPOSE_SCOPE: 'https://www.googleapis.com/auth/gmail.compose',
@@ -550,7 +545,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'facebook',
         ownerUserId: 'user-1',
         providerAccountId: 'facebook-user-1',
-        credentialRef: 'facebook-personal-vault:owner-user-1',
+        credentialRef: 'provider:facebook:owner-user-1',
         status: 'connected',
         config: { coverage: ['profile', 'posts', 'photo-metadata'], displayName: 'Owner One' },
         cursor: { since: 'secret-provider-watermark', lastSyncAt: '2026-08-23T00:15:00.000Z' },
@@ -564,7 +559,7 @@ describe('Personal Vault owner routes', () => {
         kind: 'facebook',
         ownerUserId: 'user-1',
         providerAccountId: 'facebook-user-2',
-        credentialRef: 'facebook-personal-vault:owner-user-2',
+        credentialRef: 'provider:facebook:owner-user-2',
         status: 'connected',
         config: { coverage: ['profile', 'posts', 'photo-metadata'], displayName: 'Owner Two' },
         cursor: { since: 'other-secret-watermark', lastSyncAt: '2026-08-23T00:20:00.000Z' },
@@ -575,7 +570,7 @@ describe('Personal Vault owner routes', () => {
     ]);
     mocks.disconnectSources.mockResolvedValue({
       sources: 1,
-      credentialRefs: ['facebook-personal-vault:owner-user-2'],
+      credentialRefs: ['provider:facebook:owner-user-2'],
     });
 
     const statusResponse = await invoke(
@@ -629,14 +624,14 @@ describe('Personal Vault owner routes', () => {
       ['facebook'],
       'facebook-user-2',
     );
-    expect(mocks.tokenUpdate).toHaveBeenCalledWith('facebook-personal-vault', 'papercusp', {
+    expect(mocks.tokenUpdate).toHaveBeenCalledWith('provider:facebook', 'papercusp', {
       'owner-user-2': null,
       'owner-user-2_refresh': null,
       'owner-user-2_expires_at': null,
       'owner-user-2_expired': true,
     });
     expect(mocks.tokenUpdate).not.toHaveBeenCalledWith(
-      'facebook-personal-vault',
+      'provider:facebook',
       'papercusp',
       expect.objectContaining({ 'owner-user-1': null }),
     );
@@ -648,12 +643,12 @@ describe('Personal Vault owner routes', () => {
       {
         kind: 'facebook',
         providerAccountId: 'facebook-user-1',
-        credentialRef: 'facebook-personal-vault:owner-user-1',
+        credentialRef: 'provider:facebook:owner-user-1',
       },
       {
         kind: 'facebook',
         providerAccountId: 'facebook-user-2',
-        credentialRef: 'facebook-personal-vault:owner-user-2',
+        credentialRef: 'provider:facebook:owner-user-2',
       },
     ]);
     const response = await invoke(
