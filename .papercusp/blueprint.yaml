@@ -14,6 +14,12 @@ description: >-
   staging tree, coordinate through work items and plans, and ship through the
   green-checkpoint release gate.
 
+knobs:
+  releaseGate:
+    # Clones of this pot can have a GitHub default branch of `main`; keep the
+    # release gate pointed at the staging integration branch so it can promote.
+    integrationBranch: staging
+
 workItem:
   kind: feature
   idPrefix: WI

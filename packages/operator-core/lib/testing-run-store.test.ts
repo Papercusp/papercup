@@ -66,11 +66,15 @@ const spawnMock = vi.fn(() => {
 });
 const execFileSyncMock = vi.fn();
 const persistSqlMock = vi.fn();
+const RUN_STARTED_AT = '2026-10-15T10:00:00.000Z';
 const taskManagerMocks = vi.hoisted(() => ({
   begin: vi.fn(),
   complete: vi.fn(),
   finish: vi.fn(),
   scopePath: vi.fn(),
+}));
+const worktreeSnapshotMocks = vi.hoisted(() => ({
+  captureAsync: vi.fn(),
 }));
 vi.mock('node:child_process', async (orig) => {
   const actual = await orig<typeof import('node:child_process')>();
@@ -95,6 +99,18 @@ vi.mock('./task-manager/enroll-sync', () => ({
   finishSyncEnrolment: (...args: unknown[]) => taskManagerMocks.finish(...args),
   syncEnrolmentScopePath: (...args: unknown[]) => taskManagerMocks.scopePath(...args),
 }));
+vi.mock('./testing-worktree', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./testing-worktree')>();
+  return {
+    ...actual,
+    captureWorktreeSnapshotAsync: async (root: string) => {
+      if (worktreeSnapshotMocks.captureAsync.getMockImplementation()) {
+        return worktreeSnapshotMocks.captureAsync(root);
+      }
+      return actual.captureWorktreeSnapshot(root);
+    },
+  };
+});
 
 type Store = typeof import('./testing-run-store');
 function measuredPass(filePath: string, runGroupId: string | null) {
@@ -114,6 +130,7 @@ beforeEach(async () => {
   spawnMock.mockClear();
   execFileSyncMock.mockReset();
   persistSqlMock.mockReset();
+  worktreeSnapshotMocks.captureAsync.mockReset();
   Object.assign(persistSqlMock, { begin: (run: (tx: typeof persistSqlMock) => Promise<unknown>) => run(persistSqlMock) });
   taskManagerMocks.begin.mockReset();
   taskManagerMocks.complete.mockReset();
@@ -276,6 +293,37 @@ describe('startRun', () => {
       { state: 'exited', exitCode: null, exitReason: 'spawn error: spawn unavailable' },
       { scopeCgroupPath: null },
     );
+  });
+});
+
+describe('startRunAsync', () => {
+  it('waits for every worktree snapshot before spawning the child', async () => {
+    const resolvers = new Map<string, (snapshot: { commit: string; porcelain: string }) => void>();
+    worktreeSnapshotMocks.captureAsync.mockImplementation((root: string) => new Promise<{ commit: string; porcelain: string }>(resolve => {
+      resolvers.set(root, resolve);
+    }));
+
+    const pending = store.startRunAsync(req({
+      detachedReportArtifacts: [{ reportPath: '/tmp/report.json', root: '/tmp/artifact-root' }],
+    }));
+
+    await vi.waitFor(() => expect(worktreeSnapshotMocks.captureAsync).toHaveBeenCalledTimes(1));
+    expect(worktreeSnapshotMocks.captureAsync).toHaveBeenCalledWith('/tmp');
+    expect(spawnMock).not.toHaveBeenCalled();
+
+    resolvers.get('/tmp')!({ commit: 'b'.repeat(40), porcelain: '' });
+    await vi.waitFor(() => expect(worktreeSnapshotMocks.captureAsync).toHaveBeenCalledTimes(2));
+    expect(worktreeSnapshotMocks.captureAsync).toHaveBeenLastCalledWith('/tmp/artifact-root');
+    expect(spawnMock).not.toHaveBeenCalled();
+
+    resolvers.get('/tmp/artifact-root')!({ commit: 'c'.repeat(40), porcelain: '' });
+    const snapshot = await pending;
+
+    expect(snapshot.status).toBe('running');
+    expect(spawnMock).toHaveBeenCalledWith(
+      'npx', ['vitest', 'run'], expect.objectContaining({ cwd: '/tmp' }),
+    );
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 });
 
@@ -626,6 +674,7 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       workspaceId: 'ws',
       rows: oneRow(),
       runGroupId: 'g1',
+      runStartedAt: RUN_STARTED_AT,
       sql: fakeSql,
     });
     expect(captured.worktree_dirty).toBe(false);
@@ -644,10 +693,50 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       workspaceId: 'ws',
       rows: oneRow(),
       runGroupId: 'g1',
+      runStartedAt: RUN_STARTED_AT,
       worktreeDirty: true,
       sql: fakeSql,
     });
     expect(captured.worktree_dirty).toBe(true);
+  });
+
+  it('adds the caller run start to measured rows that lack reporter timing', async () => {
+    let captured: Record<string, unknown> = {};
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      captured = insertedColumns(strings, values);
+      return Promise.resolve([]);
+    }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
+    await store.persistHarnessTestRuns({
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws',
+      rows: [{ ...oneRow()[0]!, execution: { passed: 1, failed: 0, skipped: 0, collectionFailed: false } }],
+      runGroupId: 'g1',
+      runStartedAt: RUN_STARTED_AT,
+      root: '/tmp',
+      sql: fakeSql,
+    });
+    expect(captured.execution_details).toMatchObject({ runStartedAt: RUN_STARTED_AT });
+  });
+
+  it('preserves the reporter run start over the parent fallback timestamp', async () => {
+    let captured: Record<string, unknown> = {};
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      captured = insertedColumns(strings, values);
+      return Promise.resolve([]);
+    }) as Parameters<Store['persistHarnessTestRuns']>[0]['sql'];
+    const reporterStartedAt = '2026-10-15T09:59:00.000Z';
+    await store.persistHarnessTestRuns({
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws',
+      rows: [{ ...oneRow()[0]!, execution: {
+        passed: 1, failed: 0, skipped: 0, collectionFailed: false, runStartedAt: reporterStartedAt,
+      } }],
+      runGroupId: 'g1',
+      runStartedAt: RUN_STARTED_AT,
+      root: '/tmp',
+      sql: fakeSql,
+    });
+    expect(captured.execution_details).toMatchObject({ runStartedAt: reporterStartedAt });
   });
 
   it('carries the caller-supplied configuration snapshot through to the insert as an object (P-011)', async () => {
@@ -662,6 +751,7 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       workspaceId: 'ws',
       rows: oneRow(),
       runGroupId: 'g1',
+      runStartedAt: RUN_STARTED_AT,
       configurationSnapshot,
       sql: fakeSql,
     });
@@ -873,8 +963,10 @@ describe('durable detached snapshot lifecycle', () => {
       }) as unknown as Sql;
 
       const pending = store.startRunDurable(req(), sql);
-      // launchPreparedRun is synchronous, so the child handle exists even
-      // while the optional durable write is still blocked.
+      // The nonblocking provenance snapshot now settles before launch. Once
+      // that promise chain runs, the child exists while the optional durable
+      // write is still blocked.
+      await vi.advanceTimersByTimeAsync(0);
       expect(spawnMock).toHaveBeenCalledTimes(1);
 
       await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS + 1);
@@ -2167,12 +2259,16 @@ describe('fallback persistence worktree snapshots (EI-18795303393201472)', () =>
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
     process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
     try {
-      runId = store.startRun(req({ kind: 'shell' })).runId;
+      const snapshot = store.startRun(req({ kind: 'shell' }));
+      runId = snapshot.runId;
       runClosed = true;
       lastChild._emitClose(0);
       const persisted = await fallbackPersisted;
       expect(persisted.commit_sha).toBe('after-sha');
       expect(persisted.worktree_dirty).toBe(true);
+      expect(persisted.execution_details).toMatchObject({
+        runStartedAt: new Date(snapshot.startedAt).toISOString(),
+      });
       // P-011: the fallback row records the configuration the measured child ran under.
       expect(persisted.configuration_snapshot).toMatchObject({
         schemaVersion: 1,

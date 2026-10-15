@@ -29,6 +29,7 @@ import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseTestRunExecutionDetails,
+  isRecordedInstant,
   isRecordedCaseTitle,
   MAX_RECORDED_FAILED_CASES,
   MAX_RECORDED_PASSED_CASES,
@@ -40,7 +41,7 @@ import {
 } from '@papercusp/test-config/configuration-snapshot';
 import { resolveGitContext } from './testing-branch-resolve';
 import type { TestRunSource } from './testing-run-source';
-import { captureWorktreeSnapshot, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
+import { captureWorktreeSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, type WorktreeGitSnapshot } from './testing-worktree';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 import {
   beginSyncEnrolment,
@@ -1157,6 +1158,7 @@ async function reconcilePersistedReportArtifact(
         const result = await persistHarnessTestRunsWithIds({
           harnessSlug: artifact.scope!.harnessSlug, workspaceId: artifact.scope!.workspaceId,
           rows: missing, runGroupId: snapshot.runId, source: 'local',
+          runStartedAt: new Date(snapshot.startedAt).toISOString(),
           commit: artifact.worktreeBefore.commit, worktreeDirty: true,
           root: artifact.root, testNamePattern: artifact.testNamePattern ?? null, sql: scopedSql,
         });
@@ -1231,8 +1233,11 @@ interface PreparedRun {
   detachedReportArtifacts: PreparedDetachedReportArtifact[];
 }
 
-function prepareRun(req: SpawnRequest): PreparedRun {
-  evictOldRuns();
+function prepareRun(
+  req: SpawnRequest,
+  snapshots?: Pick<PreparedRun, 'cwd' | 'worktreeBefore' | 'detachedReportArtifacts'>,
+): PreparedRun {
+  if (!snapshots) evictOldRuns();
   const runId = randomUUID();
   const snapshot: RunSnapshot = {
     runId,
@@ -1252,9 +1257,9 @@ function prepareRun(req: SpawnRequest): PreparedRun {
   // Use the same integration-root resolver as agent capability tools. The
   // operator may run from the release checkout while the agent edits staging;
   // process.cwd() is therefore not a safe implicit tree for detached runs.
-  const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
-  const worktreeBefore = captureWorktreeSnapshot(cwd);
-  const detachedReportArtifacts = (req.detachedReportArtifacts ?? []).map((artifact) => ({
+  const cwd = snapshots?.cwd ?? req.cwd ?? resolveAgentWorkspaceRoot({});
+  const worktreeBefore = snapshots?.worktreeBefore ?? captureWorktreeSnapshot(cwd);
+  const detachedReportArtifacts = snapshots?.detachedReportArtifacts ?? (req.detachedReportArtifacts ?? []).map((artifact) => ({
     ...artifact,
     worktreeBefore: artifact.root === cwd ? worktreeBefore : captureWorktreeSnapshot(artifact.root),
   }));
@@ -1309,6 +1314,19 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     wrapped,
     detachedReportArtifacts,
   };
+}
+
+async function prepareRunAsync(req: SpawnRequest): Promise<PreparedRun> {
+  evictOldRuns();
+  // Resolve provenance before spawning, but await the sidecar-backed Git reads
+  // so a slow checkout cannot freeze the operator host's request loop.
+  const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
+  const worktreeBefore = await captureWorktreeSnapshotAsync(cwd);
+  const detachedReportArtifacts = await Promise.all((req.detachedReportArtifacts ?? []).map(async (artifact) => ({
+    ...artifact,
+    worktreeBefore: artifact.root === cwd ? worktreeBefore : await captureWorktreeSnapshotAsync(artifact.root),
+  })));
+  return prepareRun(req, { cwd, worktreeBefore, detachedReportArtifacts });
 }
 
 /**
@@ -1368,7 +1386,7 @@ async function persistDetachedReportArtifacts(
         }
         const rows = parseVitestJsonForHarnessRows(reportText, artifact.root);
         if (rows.length > 0 && artifact.scope) {
-          const after = captureWorktreeSnapshot(artifact.root);
+          const after = await captureWorktreeSnapshotAsync(artifact.root);
           await boundedOrgTxn(async tx => {
             const scopedSql = tx as unknown as SqlLike;
             // A task can finish before its local close callback ingests the
@@ -1384,6 +1402,7 @@ async function persistDetachedReportArtifacts(
               rows: missing,
               runGroupId: snapshot.runId,
               source: 'local',
+              runStartedAt: new Date(snapshot.startedAt).toISOString(),
               commit: after.commit,
               worktreeDirty: computeWorktreeDirty(artifact.worktreeBefore, after),
               root: artifact.root,
@@ -1540,6 +1559,11 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   return launchPreparedRun(prepareRun(req), { persistInitialSnapshot: true });
 }
 
+/** Start a Hono-hosted run after an awaited Git snapshot, keeping child-process waits off the event loop. */
+export async function startRunAsync(req: SpawnRequest): Promise<RunSnapshot> {
+  return launchPreparedRun(await prepareRunAsync(req), { persistInitialSnapshot: true });
+}
+
 /**
  * Start a detached recovery with an actionable handle before waiting on its
  * optional durable snapshot. The child must start first: a slow dynamic import
@@ -1556,7 +1580,7 @@ export async function startRunDurable(
   req: SpawnRequest,
   sqlOverride?: SqlLike,
 ): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
-  const prepared = prepareRun(req);
+  const prepared = await prepareRunAsync(req);
   const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false });
   const persistence = persistRunSnapshotWithRetry(snapshot, sqlOverride);
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1598,8 +1622,11 @@ async function persistFallbackRow(
     const finishedAtIso = s.finishedAt ? new Date(s.finishedAt).toISOString() : null;
     const duration = s.finishedAt ? s.finishedAt - s.startedAt : null;
     const outputTail = s.output ? s.output.slice(-4096) : null;
+    // This fallback has no per-file reporter counts, so persist only its
+    // trustworthy run-wide timestamp rather than inventing a full measurement.
+    const executionDetails = { runStartedAt: startedAtIso };
 
-    const worktreeAfter = captureWorktreeSnapshot(cwd);
+    const worktreeAfter = await captureWorktreeSnapshotAsync(cwd);
     const worktreeDirty = computeWorktreeDirty(worktreeBefore, worktreeAfter);
     let branch: string | null = null;
     try {
@@ -1635,11 +1662,11 @@ async function persistFallbackRow(
     await Promise.race([
       sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, configuration_snapshot)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details, configuration_snapshot)
         VALUES
           (${filePath}, ${s.kind}, ${s.status}, ${duration}, ${startedAtIso},
            ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty},
-           ${configurationSnapshot})
+           ${executionDetails}, ${configurationSnapshot})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -1832,7 +1859,7 @@ export interface HarnessTestFileRow {
   outputTail: string | null;
   /** Exact completed assertion counts when the source report exposed them. */
   execution?: Pick<TestRunExecutionDetails, 'passed' | 'failed' | 'skipped' | 'collectionFailed'
-    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'operational'>;
+    | 'failedCaseTitles' | 'passedCaseTitles' | 'passedCaseTitlesTruncated' | 'runStartedAt' | 'operational'>;
 }
 
 /** Minimal shape of the jest-compatible vitest `--reporter=json` output. */
@@ -2462,6 +2489,8 @@ export interface PersistHarnessTestRunsParams {
   workspaceId: string;
   rows: HarnessTestFileRow[];
   runGroupId: string;
+  /** Run-wide start captured before Vitest collects test modules. */
+  runStartedAt?: string;
   branch?: string | null;
   commit?: string | null;
   /** test_runs.source — must satisfy the CHECK ('ci'|'local'|'admin-ui'|'mutation-probe'); defaults to 'admin-ui'. */
@@ -2787,6 +2816,9 @@ async function persistHarnessTestRunsInternal(
   const branch = params.branch ?? null;
   const commit = params.commit ?? null;
   const worktreeDirty = params.worktreeDirty ?? Boolean(params.root);
+  if (params.runStartedAt !== undefined && !isRecordedInstant(params.runStartedAt)) {
+    throw new TypeError('persistHarnessTestRuns requires a valid runStartedAt');
+  }
   // Captured ONCE for the whole persist call (the run's persist moment), not
   // per-file-row — the lag gauge already windows/averages, and a re-sample per
   // row would be noise without adding signal.
@@ -2799,6 +2831,9 @@ async function persistHarnessTestRunsInternal(
       sql = getOrgPg().sql as unknown as SqlLike;
     }
     for (const row of rows) {
+      const runStartedAt = isRecordedInstant(row.execution?.runStartedAt)
+        ? row.execution.runStartedAt
+        : isRecordedInstant(params.runStartedAt) ? params.runStartedAt : undefined;
       // Reuse the reporter's strict versioned contract. Legacy status-only
       // records and malformed measurements stay NULL, never invented proof.
       const executionDetails = params.root && row.execution
@@ -2811,6 +2846,7 @@ async function persistHarnessTestRunsInternal(
             harnessSlug,
             testNamePattern: params.testNamePattern ?? null,
             ...row.execution,
+            ...(runStartedAt ? { runStartedAt } : {}),
             mutationPhase: params.mutationPhase ?? null,
             commitSha: commit,
             worktreeDirty,
