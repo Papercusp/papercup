@@ -135,9 +135,16 @@ it.for(['primary', 'capacity-failover'] as const)('records the exact real %s blu
         WHERE owner=${receipt.spawnId}`;
       const [locks] = await getTxPool()`SELECT count(*)::int AS count FROM agent_file_locks
         WHERE owner=${receipt.spawnId}`;
+      const [resourceLocks] = await getTxPool()`SELECT count(*)::int AS count FROM agent_resource_locks
+        WHERE owner=${receipt.spawnId}`;
+      const [granularLocks] = await getTxPool()`SELECT count(*)::int AS count FROM agent_granular_locks
+        WHERE owner=${receipt.spawnId}`;
       expect(claims.count).toBe(0);
       expect(locks.count).toBe(0);
-      receipt.sharedEffects = { ownerId: receipt.spawnId, claims: claims.count, fileLocks: locks.count };
+      expect(resourceLocks.count).toBe(0);
+      expect(granularLocks.count).toBe(0);
+      receipt.sharedEffects = { ownerId: receipt.spawnId, claims: claims.count, fileLocks: locks.count,
+        resourceLocks: resourceLocks.count, granularLocks: granularLocks.count };
       await writeFile(join(evidenceDir, 'shared-effects.json'), JSON.stringify(receipt.sharedEffects));
       console.info('BLUEPRINT_ACCOUNT_ROUTE_VERIFIED ' + JSON.stringify(receipt));
     },
