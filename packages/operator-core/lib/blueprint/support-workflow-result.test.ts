@@ -19,10 +19,11 @@ vi.mock('../data-sources/documents-corpus', () => ({ searchOrganizationDocuments
 
 const workspaceId = 'support-result-workspace', harnessSlug = 'support-result';
 const userId = '12345678-1234-4234-8234-123456789012', callerId = `${userId}/employee`;
+const reviewerId = '42345678-1234-4234-8234-123456789012';
 const document = { id: '22345678-1234-4234-8234-123456789012', source: 'slack', externalId: 'T1:CASE:1' };
 const operation = supportToEngineeringOperation({ id: 'handoff', version: '1', role: 'support-worker',
   identity: { kind: 'identity', ref: 'support-worker', revision: '1', contentHash: 'b'.repeat(64) },
-  accountableOwner: 'support-owner', reviewerPrincipals: ['reviewer'],
+  accountableOwner: 'support-owner', reviewerPrincipals: [reviewerId],
   allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000 });
 const specification = compileAgentSpecification({ source: {
   id: harnessSlug, workItem: { kind: 'task' }, roles: [{ id: 'support-worker' }],
@@ -64,11 +65,12 @@ describe('canonical support result domain gate', () => {
     expect((await runWithWorkspace(workspaceId, () => prepareDirectOperationCompletion(sql, workspaceId, item(), output))).output)
       .toEqual(output);
     const result = await runWithWorkspace('unrelated-request', () =>
-      getBlueprintOperationResult(sql, handle, 'reviewer/client', { principalId: 'reviewer' }));
+      getBlueprintOperationResult(sql, handle, `${reviewerId}/client`, { principalId: reviewerId }));
     expect(result).toMatchObject({ state: 'ready', output, businessReview: { state: 'pending' } });
     expect(ports.source).toHaveBeenLastCalledWith(sql, expect.objectContaining({ workspaceId, role: 'support-worker',
-      principal: expect.objectContaining({ kind: 'user', trust: 'verified', slug: userId, workspaceId }) }),
-    expect.objectContaining({ documentIds: [document.id], principalUserId: userId, workspaceId }));
+      principal: expect.objectContaining({ kind: 'user', trust: 'verified', slug: reviewerId, workspaceId }) }),
+    expect.objectContaining({ documentIds: [document.id], principalUserId: reviewerId, workspaceId }));
+    expect(ports.source).toHaveBeenCalledWith(sql, expect.anything(), expect.objectContaining({ principalUserId: userId }));
   });
 
   it.each([
@@ -89,8 +91,18 @@ describe('canonical support result domain gate', () => {
   it.each(['revoked', 'missing-document'] as const)('refuses %s evidence after an otherwise successful close', async reason => {
     ports.source.mockResolvedValue(reason === 'revoked' ? { allowed: false, reason: 'no_live_grant' } :
       { allowed: true, results: [], withheld: 0, disclosed: 0 });
-    expect(await getBlueprintOperationResult(sql, handle, 'reviewer/client', { principalId: 'reviewer' }))
+    expect(await getBlueprintOperationResult(sql, handle, `${reviewerId}/client`, { principalId: reviewerId }))
       .toMatchObject({ state: 'unavailable', status: { outcome: 'unverified' } });
+  });
+
+  it.each(['revoked', 'missing'])('does not treat reviewer allowlisting as corpus disclosure authority: %s', async reason => {
+    ports.source.mockImplementation(async (_sql: unknown, _ctx: unknown, params: { principalUserId: string }) =>
+      params.principalUserId === userId ? { allowed: true, results: [document], withheld: 0, disclosed: 1 } :
+        reason === 'revoked' ? { allowed: false, reason: 'no_live_grant' } :
+          { allowed: true, results: [], withheld: 0, disclosed: 0 });
+    const result = await getBlueprintOperationResult(sql, handle, `${reviewerId}/client`, { principalId: reviewerId });
+    expect(result).toMatchObject({ state: 'unavailable', status: { outcome: 'unverified' } });
+    expect(result).not.toHaveProperty('output');
   });
 
   it('re-enters the accepted workspace for completion called from another request', async () => {
