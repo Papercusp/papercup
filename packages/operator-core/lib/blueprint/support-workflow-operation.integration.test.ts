@@ -57,13 +57,13 @@ beforeAll(async () => {
     identity: { kind: 'identity', ref: 'support-worker', revision: '1', contentHash: 'b'.repeat(64) },
     accountableOwner: 'engineering-owner', reviewerPrincipals: ['engineering-reviewer'],
     allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000 });
-  const source = { id: harnessSlug, workItem: { kind: 'task' }, roles: [{ id: role }],
+  const source = BlueprintSchema.parse({ id: harnessSlug, workItem: { kind: 'task' }, roles: [{ id: role }],
     spine: { edges: { DONE: { to: 'done' } } }, dependencies: { tools: ['blueprint:read-private-input'] },
-    operations: [operation] };
+    operations: [operation] });
   const specification = compileAgentSpecification({ source });
   revision = specification.specificationRevision;
   await projectBlueprintToPg(db.adminSql, { workspaceId, harnessSlug,
-    blueprint: BlueprintSchema.parse(source), specification });
+    blueprint: source, specification });
 }, 120_000);
 afterAll(async () => db?.cleanup(), 120_000);
 
