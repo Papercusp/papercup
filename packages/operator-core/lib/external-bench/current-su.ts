@@ -2769,7 +2769,12 @@ export function liveCurrentSuBenchPorts(
       const input = { context: protocol.context, checkout: handle.worktreePath, workItemId: handle.featureId, snapshotRoot: opts.preregistration.repoRoot ?? REPO_ROOT,
         binding: { workspaceId, runId: opts.runId, preregHash: opts.preregistration.preregHash,
           assignmentId: accounting!.assignmentId, harnessSlug: handle.slug } };
-      const receipt = restoreBenchmarkContext(input);
+      // Fresh sessions keep the assignment's physical context and task edits.
+      // Only the active host-issued continuation may reuse it; re-read the
+      // exact receipt and frozen bytes rather than recreate or repair them.
+      const session = observations.sessionBudget ? requireSessionBudget(observations, opts).session : undefined;
+      const receipt = session && session.receipt.index > 0
+        ? readRestoredBenchmarkContext(input) : restoreBenchmarkContext(input);
       restored.set(handle.slug, input);
       return receipt;
     },

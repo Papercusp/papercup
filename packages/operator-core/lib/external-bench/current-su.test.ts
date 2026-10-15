@@ -2048,11 +2048,18 @@ describe('current benchmark restart and live binding', () => {
 });
 
 describe('P-019 host-issued fresh native session allowances', () => {
-  async function sessionFixture() {
+  async function sessionFixture(snapshotRoot?: string) {
     const protocol = controlledProtocolFixture();
     protocol.arms.find(arm => arm.id === 'repeated-session')!.id = 'baseline';
     for (const arm of protocol.arms) arm.generationBudget.maxTokens = 100;
-    const opts = { ...options, armId: 'baseline', preregistration: { preregHash: 'a'.repeat(64), config: protocol } };
+    if (snapshotRoot) {
+      const snapshot = readFileSync(join(snapshotRoot, 'corpus.json'));
+      protocol.context = { ...protocol.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
+        corpusHash: createHash('sha256').update(snapshot).digest('hex'),
+        memoryHash: createHash('sha256').update(readFileSync(join(snapshotRoot, 'memory.json'))).digest('hex') };
+    }
+    const opts = { ...options, armId: 'baseline', preregistration: { preregHash: 'a'.repeat(64), config: protocol,
+      ...(snapshotRoot ? { repoRoot: snapshotRoot } : {}) } };
     const controller = currentBenchGatewayController({ workspaceId: opts.workspaceId, loopId: 'session-budget-loop',
       token: 'b'.repeat(64), preregHash: opts.preregistration.preregHash, protocol, armId: opts.armId, taskId: 't1', seed: 1,
       resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
@@ -2069,6 +2076,27 @@ describe('P-019 host-issued fresh native session allowances', () => {
     const budget = { maxUsd: 2, maxTokens: 80, maxWallClockMs: 75 };
     return { protocol, opts, hosted, admit, ports, observation, budget, stop };
   }
+
+  it('reuses and revalidates the same frozen context across fresh native sessions without resetting task edits', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'bench-fresh-context-')), checkout = join(root, 'assignment');
+    mkdirSync(checkout);
+    const snapshot = JSON.stringify({ entries: [{ key: 'permitted:test', text: 'Frozen initial task context.' }] });
+    for (const name of ['corpus', 'memory']) writeFileSync(join(root, `${name}.json`), snapshot);
+    const f = await sessionFixture(root), sameHandle = { ...handle, worktreePath: checkout };
+    try {
+      const first = f.ports(f.hosted.issueSessionBudget(f.budget));
+      const context = await first.restoreContext(sameHandle, 't1');
+      await first.releaseGateway!();
+      writeFileSync(join(checkout, 'task-edit.txt'), 'Retain completed task work.');
+      const second = f.ports(f.hosted.issueSessionBudget(f.budget));
+      expect(await second.restoreContext(sameHandle, 't1')).toEqual(context);
+      expect(await second.verifyContext(sameHandle, 't1')).toEqual(context);
+      expect(readFileSync(join(checkout, 'task-edit.txt'), 'utf8')).toBe('Retain completed task work.');
+      writeFileSync(context.corpusPath, 'Changed context must not be silently restored.');
+      await expect(second.restoreContext(sameHandle, 't1')).rejects.toThrow(/snapshot bytes differ/);
+      expect(readFileSync(context.corpusPath, 'utf8')).toBe('Changed context must not be silently restored.');
+    } finally { await f.hosted.stop(); rmSync(root, { recursive: true, force: true }); }
+  });
 
   it('pins tightened execution caps separately from the frozen protocol and consumes one native start', async () => {
     const f = await sessionFixture();
