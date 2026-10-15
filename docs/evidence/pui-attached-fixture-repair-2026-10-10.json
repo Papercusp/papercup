@@ -1,5 +1,99 @@
 {
   "schemaVersion": 1,
+  "candidate6a0Acceptance": {
+    "sourceSha": "6a0f8070d6832d81e7519793579ad01d81b109b6",
+    "archiveSha256": "eb37033f0775024939604c4acde4d9068591be29e36d1d0db7372585580049a6",
+    "binarySha256": "f19165cb36daa0a032c56e5d14aaf2aee38a7a079df0ddf1054f87f8cc405375",
+    "taskId": "0mv649rimvr16ub1jf8",
+    "ok": false,
+    "terminalAt": "2026-10-13T04:12:45.931Z",
+    "rootExitCode": 1,
+    "rootLogPath": ".papercusp/scratch/bash-c5579d44-4f8.log",
+    "rootLogSha256": "223b582558f0d767128c5af4f9da496cb0abfee104ded397fd5d66b4c447ed40",
+    "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-6a0f-full-approval-20261013-0325.acceptance.json",
+    "verdictSha256": "48f12e35f2b4aec3f4fda39d55b6f8ac2750b46160a1149e50bd9cb14c9e2b0b",
+    "legs": [
+      {
+        "engine": "scripted",
+        "status": 0,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-scripted.json",
+        "rows": 66
+      },
+      {
+        "engine": "claude",
+        "status": 0,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-claude.json",
+        "rows": 5
+      },
+      {
+        "engine": "codex",
+        "status": 1,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-codex.json",
+        "rows": 1
+      },
+      {
+        "engine": "omp",
+        "status": 1,
+        "evidence": "/tmp/pui-acceptance-7534f/run-6a0f-full-approval-20261013-0325/evidence-omp.json",
+        "rows": 4
+      }
+    ],
+    "refusals": [
+      "installed-product codex test leg did not exit successfully (status 1)",
+      "installed-product omp test leg did not exit successfully (status 1)",
+      "Linux x86_64 × Codex is advertised without installed-product evidence for PUI_INSTALLED_REAL_ENGINE_ACCEPTANCE",
+      "Linux x86_64 × Codex is advertised without installed-product evidence for PUI_OPERATOR_PROCESS_ACCEPTANCE",
+      "Linux x86_64 × OMP is advertised without installed-product evidence for PUI_OPERATOR_PROCESS_ACCEPTANCE"
+    ],
+    "repair": {
+      "status": "canonical helpers pass; focused native proof in progress",
+      "files": [
+        {
+          "path": "packages/operator-core/lib/pui-e2e/vt-screen.ts",
+          "sha256": "4c368898035808418498ca89c170c3e1c1bd7fa268d5ea9a0ceba55f3749e900",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/vt-screen.test.ts",
+          "sha256": "8b52fee3f40267619c70e1773538e340c4d3edc5c3b0d26274b10c5f64ba1a96",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/native-provider-trace.ts",
+          "sha256": "b7acc0fef27bd3795ae1c0b5ecd7416fe9eabdba10a14c310fa45a8de76fa932",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/native-provider-trace.test.ts",
+          "sha256": "c4247beb14071b512ce7bbb3c35605a1e1c6b14ed77a967bbb5b0d63dbf32292",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        },
+        {
+          "path": "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts",
+          "sha256": "e4c721842a54d7b3508379c65867b9747c48c4115a9434f60a7601fba26a117c",
+          "commit": "c2e730cc31e1a78f87ae571d5ed631b3fbed7fde"
+        }
+      ],
+      "helperRunId": "f8a229b5-743a-40f6-82cf-e624e2e645b5",
+      "helperTestRunIds": [
+        21257087,
+        21257088
+      ],
+      "helperPassed": 42,
+      "helperFailed": 0,
+      "helperSkipped": 0,
+      "scopedTypecheck": "five changed files clean; exit0; no project/gate claim",
+      "diagnosticScope": "parent-operator Codex RPC receipts only; not OS-child traffic",
+      "focusedCodex": {
+        "taskId": "0mv9lekc4j4shaucxep",
+        "rootLogPath": ".papercusp/scratch/bash-2800c2d9-4ac.log",
+        "deadline": "2026-10-15T14:16:49.648Z",
+        "terminalEvent": "task:terminal:0mv9lekc4j4shaucxep",
+        "awaitId": 306341,
+        "status": "running; liveness verified; no native result yet"
+      }
+    }
+  },
   "scope": {
     "plane": "local current-build fixture",
     "backend": "claude",
