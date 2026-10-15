@@ -468,9 +468,15 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     ['testFingerprint', 'fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'].some((name) =>
       Object.prototype.hasOwnProperty.call(tupleProperties, name),
     );
+  const isPlansSetSpecsClause =
+    properties.some(([field]) => field === 'behaviorClass') &&
+    properties.some(([field]) => field === 'planItemId') &&
+    properties.some(([field]) => field === 'lifecycleStatus');
   const segmentMaxChars = isSpecEvidenceCurrentItem
     ? SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS
-    : NESTED_FIELDS_SEGMENT_MAX_CHARS;
+    : isPlansSetSpecsClause
+      ? 480
+      : NESTED_FIELDS_SEGMENT_MAX_CHARS;
   // Keep conditional lifecycle contracts ahead of descriptive/legacy fields in
   // a bounded nested object. `work_items:complete` places
   // `rootCauseVerification` after the wide `verification` record and several
@@ -488,12 +494,20 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       properties.some(([field]) => field === 'sourceHive') &&
       properties.some(([field]) => field === 'subject') &&
       properties.some(([field]) => field === 'confidence');
+    const isPlansSetSpecsFalsifier =
+      properties.some(([field]) => field === 'observation') &&
+      properties.some(([field]) => field === 'probeMethod');
     if (isObservationCapture && name === 'subject') return 110;
     // `work_items:complete.specAdequacy.current` selects the exact evidence
     // fingerprints being attested. Keep it ahead of optional clause metadata
     // so the bounded object retains the callable evidence shape.
     if (isSpecAdequacyCompletion && name === 'current') return 105;
     if (name === 'rootCauseVerification') return 100;
+    // plans:set-specs' optional falsifier carries the scenario identifier
+    // contract used by runtime validation. Keep it beside the clause's
+    // discriminator, and prioritize requiredScenarios within the falsifier.
+    if (isPlansSetSpecsClause && name === 'falsifier') return 96;
+    if (isPlansSetSpecsFalsifier && name === 'requiredScenarios') return 96;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.
     if (name === 'behaviorClass') return 95;
@@ -966,10 +980,11 @@ export function compactSchemaForResult(
 
   let text = render(withDescriptions);
   if (text.length > maxChars && withDescriptions.size > 0) {
-    // Remove low-value prose first, preserving explicit contract restrictions
-    // such as "Completion phase only" for as long as the size budget allows.
+    // Remove lower-value prose first. Keep the strongest explicit contract
+    // restriction (currently plans:audit.auditedSha's phase rule) even when
+    // clipping the final tail is necessary to fit the compact result budget.
     const removable = [...parts]
-      .filter((part) => part.description)
+      .filter((part) => part.description && part.description.priority < 200)
       .sort((a, b) => (a.description!.priority - b.description!.priority) || (a.index - b.index));
     for (const part of removable) {
       withDescriptions.delete(part.index);
