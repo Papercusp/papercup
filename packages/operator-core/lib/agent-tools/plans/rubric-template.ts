@@ -779,17 +779,81 @@ export function stripUnknownCriterionKeys(templateData: unknown): { data: unknow
   const stripped = new Set<string>();
   const criteria = record.criteria.map((criterion) => {
     if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return criterion;
-    const entries = Object.entries(criterion as Record<string, unknown>);
-    if (entries.every(([key]) => known.has(key))) return criterion;
-    return Object.fromEntries(
-      entries.filter(([key]) => {
-        if (known.has(key)) return true;
-        stripped.add(key);
-        return false;
-      }),
-    );
+    const criterionRecord = criterion as Record<string, unknown>;
+    const entries = Object.entries(criterionRecord);
+    const unknownCriterionKeys = entries.filter(([key]) => !known.has(key)).map(([key]) => key);
+    const next: Record<string, unknown> = unknownCriterionKeys.length
+      ? Object.fromEntries(entries.filter(([key]) => known.has(key)))
+      : { ...criterionRecord };
+    for (const key of unknownCriterionKeys) stripped.add(key);
+
+    // Checks are strict at every object level too. A newer writer can add a valid
+    // field under criteria[].check while this reader still understands the existing
+    // check, causing the entire rubric to disappear. Strip only unknown fields from
+    // recognized check shapes; malformed known fields and unknown check kinds still
+    // fail the normal schema parse below.
+    const check = stripUnknownRubricCheckKeys(criterionRecord.check);
+    if (check.stripped.length) {
+      next.check = check.data;
+      for (const key of check.stripped) stripped.add(key);
+    }
+
+    return unknownCriterionKeys.length || check.stripped.length ? next : criterion;
   });
   return stripped.size ? { data: { ...record, criteria }, stripped: [...stripped].sort() } : { data: templateData, stripped: [] };
+}
+
+function stripUnknownRubricCheckKeys(check: unknown): { data: unknown; stripped: string[] } {
+  if (!check || typeof check !== 'object' || Array.isArray(check)) return { data: check, stripped: [] };
+  const record = check as Record<string, unknown>;
+  const fieldsByKind: Record<string, readonly string[]> = {
+    tests: ['kind', 'files', 'testName'],
+    cargo: ['kind', 'manifestPath', 'sourceFiles', 'test'],
+    instrument: ['kind', 'instrumentKey', 'expect', 'ratingBands'],
+    probe: ['kind', 'probe', 'all', 'unit', 'ratingBands'],
+    coverage: ['kind', 'scope', 'floor'],
+    requirements: ['kind'],
+  };
+  const allowed = fieldsByKind[String(record.kind)];
+  if (!allowed) return { data: check, stripped: [] };
+
+  const stripped: string[] = [];
+  const stripRecord = (value: unknown, keys: readonly string[], path: string): Record<string, unknown> | null => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const valueRecord = value as Record<string, unknown>;
+    const result = { ...valueRecord };
+    for (const key of Object.keys(valueRecord)) {
+      if (!keys.includes(key)) {
+        delete result[key];
+        stripped.push(`${path}.${key}`);
+      }
+    }
+    return result;
+  };
+
+  const result = stripRecord(check, allowed, 'check')!;
+  if (record.kind === 'instrument' && record.expect !== undefined) {
+    const expect = stripRecord(record.expect, ['op', 'value'], 'check.expect');
+    if (expect) result.expect = expect;
+  }
+  if ((record.kind === 'instrument' || record.kind === 'probe') && Array.isArray(record.ratingBands)) {
+    result.ratingBands = record.ratingBands.map((band: unknown, index: number) => {
+      const path = `check.ratingBands[${index}]`;
+      const cleanBand = stripRecord(band, ['rating', 'expect'], path);
+      if (!cleanBand) return band;
+      if (cleanBand.expect !== undefined) {
+        const expect = stripRecord(cleanBand.expect, ['op', 'value'], `${path}.expect`);
+        if (expect) cleanBand.expect = expect;
+      }
+      return cleanBand;
+    });
+  }
+  if (record.kind === 'coverage' && record.scope !== undefined) {
+    const scope = stripRecord(record.scope, ['surfaceKind', 'sourceFiles', 'planTouched'], 'check.scope');
+    if (scope) result.scope = scope;
+  }
+
+  return stripped.length ? { data: result, stripped: stripped.sort() } : { data: check, stripped: [] };
 }
 
 /**

@@ -915,14 +915,19 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
 export function gateReuseObservations(task, decision) {
   const positiveCount = (n) => Number.isSafeInteger(n) && n > 0 ? n : 0;
   if (decision.offReason) return [{
-    eligible: positiveCount(decision.eligible) || 1,
+    // An off-path decision without a measured candidate population is an
+    // opportunity with UNKNOWN cardinality.  Do not synthesize one eligible
+    // test file: fallback-observations aggregates eligible/applied as units,
+    // and a fabricated 1 contaminates the file-level hit rate.
+    eligible: positiveCount(decision.eligible),
     applied: 0,
     reason: decision.offReason.split('(')[0].trim() || 'unavailable',
     scope: task,
   }];
   const summary = decision.summary ?? {};
   const eligible = positiveCount(summary.candidates);
-  if (!eligible) return [{ eligible: 1, applied: 0, reason: 'no-candidates', scope: task }];
+  // Zero candidates is a measured empty population, not one failed file.
+  if (!eligible) return [{ eligible: 0, applied: 0, reason: 'no-candidates', scope: task }];
   const rows = [];
   let remaining = eligible;
   const reused = Math.min(remaining, positiveCount(summary.reused));

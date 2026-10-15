@@ -20,6 +20,7 @@ const {
   formatReuseAlarmLine,
   formatTestReuseLine,
   formatTestReuseTotalLine,
+  gateReuseObservations,
   isGlobalRunnerInput,
   isRunnerAffectingScript,
   judgedTreeProofFormat,
@@ -280,6 +281,32 @@ describe('selectReusablePasses', () => {
     });
     expect(r.skip).toEqual([]);
     expect(r.summary.unknownDrift).toBe(1);
+  });
+});
+
+describe('gateReuseObservations', () => {
+  it('does not invent an eligible file for an off-path decision with unknown population', () => {
+    expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout' })).toEqual([
+      { eligible: 0, applied: 0, reason: 'dirty-checkout', scope: '@ws::test' },
+    ]);
+  });
+
+  it('keeps a measured off-path population when one is available', () => {
+    expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout', eligible: 7 })).toEqual([
+      { eligible: 7, applied: 0, reason: 'dirty-checkout', scope: '@ws::test' },
+    ]);
+  });
+
+  it('records an empty candidate population as zero units', () => {
+    expect(gateReuseObservations('@ws::test', { summary: { candidates: 0, reused: 0 } })).toEqual([
+      { eligible: 0, applied: 0, reason: 'no-candidates', scope: '@ws::test' },
+    ]);
+  });
+
+  it('keeps known file units measurable', () => {
+    expect(gateReuseObservations('@ws::test', { summary: { candidates: 20, reused: 20 } })).toEqual([
+      { eligible: 20, applied: 20, reason: 'applied', scope: '@ws::test' },
+    ]);
   });
 });
 
