@@ -91,6 +91,7 @@ export async function writeFlushFallback(input: {
   tripwires: ReadonlyArray<FlushTripwire>;
   brief: CarryBrief | null;
   nowMs?: number;
+  snapshotAllHeld?: boolean;
 }): Promise<FlushFallbackResult> {
   const nowMs = input.nowMs ?? Date.now();
   const result: FlushFallbackResult = { checkpointedItems: [] };
@@ -98,7 +99,7 @@ export async function writeFlushFallback(input: {
   const hasHeldTripwire = input.tripwires.some(
     (t) => t.kind === 'missing-checkpoint' || t.kind === 'stale-checkpoint',
   );
-  if (hasHeldTripwire) {
+  if (hasHeldTripwire || input.snapshotAllHeld) {
     try {
       const { autoCheckpointStaleHeldItems } = await import('./turn-end-tracking-io');
       const written = await autoCheckpointStaleHeldItems({
@@ -108,9 +109,11 @@ export async function writeFlushFallback(input: {
         sinceIso: input.sinceIso,
         journalNote: input.journalNote,
         nowMs,
+        ...(input.snapshotAllHeld ? { mode: 'respawn' as const } : {}),
       });
       result.checkpointedItems = written.map((w) => w.id);
-    } catch {
+    } catch (error) {
+      if (input.snapshotAllHeld) throw error;
       /* fail-soft: the loop fallback + the refusal already gave the agent a chance */
     }
   }
@@ -159,7 +162,7 @@ export interface FlushGateOutcome {
  * session and wait for another model turn. It writes the bounded mechanical
  * fallback on the first tripwire encounter and then proceeds.
  */
-export type FlushGateMode = 'deliberate' | 'forced';
+export type FlushGateMode = 'deliberate' | 'forced' | 'host-snapshot';
 
 /** Test/host seam for {@link resolveAgentToolCallsSinceNote} — mirrors the real
  *  `countAgentToolCallsInWindow`'s call shape so a unit test never opens a real
@@ -236,6 +239,24 @@ export async function runFlushGate(input: {
   countAgentToolCallsFn?: CountAgentToolCallsFn;
 }): Promise<FlushGateOutcome> {
   const clear: FlushGateOutcome = { verdict: 'clear', tripwires: [] };
+  // A requested respawn is a host-owned save, including fresh items beyond the
+  // carry preview. A failed save leaves the process intact; no model paperwork
+  // or refuse-once dance can repair an unavailable host writer.
+  if (input.mode === 'host-snapshot') {
+    const failed: FlushGateOutcome = { verdict: 'refuse', tripwires: [],
+      refusalText: 'The host could not finish the mechanical respawn checkpoint. The session remains intact; retry after host persistence is available.' };
+    const snapshot = async (): Promise<FlushGateOutcome> => {
+      try {
+        const fallback = await writeFlushFallback({ ...input, snapshotAllHeld: true,
+          brief: input.brief ?? null, journalNote: input.journalNote ?? null,
+          tripwires: detectFlushTripwires(input.brief ?? null, input.nowMs ?? Date.now(), null, input.boundary) });
+        await clearRefused(input.boundary, input.ownerId);
+        return { verdict: 'mechanical-fallback', tripwires: [], fallback };
+      } catch { return failed; }
+    };
+    return (await withBoundedTimeout(snapshot(), { fallback: failed,
+      timeoutMs: flushGateBudgetMs(), label: 'respawn-mechanical-checkpoint' })).value;
+  }
   if (!flushGateEnabled()) return clear;
   const { value } = await withBoundedTimeout(runFlushGateInner(input), {
     fallback: clear,

@@ -499,15 +499,12 @@ export default defineTool({
       ? await safeFocusAfterIntegrityCheck(brief)
       : focus;
     const rawStaleCheckpoints = staleCheckpointWarnings(brief);
-    // P-016 enforcement gate: the WARN above becomes teeth. Unflushed state
-    // (missing/stale held checkpoint, or an armed loop with no carry-note) HOLDS
-    // the boundary ONCE, naming the flush; a retry that still hasn't flushed
-    // gets a system-written mechanical fallback and proceeds. The gate is bounded,
-    // fail-OPEN, and env-disable-able (enforcement-gate-io), so it can never
-    // reintroduce the strand this tool's warn-only design was avoiding.
+    // P-013: the host saves every held item's mechanical state before building
+    // the successor. The agent contributes judgment only, with no flush bounce.
     const gateNowMs = Date.now();
     const gate = await runFlushGate({
       boundary: 'compaction',
+      mode: 'host-snapshot',
       ownerId: identity.ownerId,
       workspaceId: identity.workspaceId ?? '*',
       sessionId: identity.ownerId,
@@ -515,11 +512,9 @@ export default defineTool({
       brief,
       nowMs: gateNowMs,
     });
-    // The gate's terminal-state re-check is authoritative when it completed:
-    // do not warn the caller to checkpoint an item that is already terminal.
-    // If the gate was disabled or its bounded wrapper failed open, the
-    // provenance field is absent and the original best-effort advisory survives.
-    const staleCheckpoints = gate.droppedTerminalHeldItemIds
+    // A completed host save supersedes the pre-save warnings, including items
+    // that became terminal and disappeared from the authoritative held read.
+    const staleCheckpoints = gate.verdict === 'mechanical-fallback' ? [] : gate.droppedTerminalHeldItemIds
       ? rawStaleCheckpoints.filter(
           (warning) => !gate.droppedTerminalHeldItemIds!.includes(warning.id),
         )

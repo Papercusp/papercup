@@ -525,7 +525,8 @@ export function renderHeldItemOwnershipWarning(
 
 export interface ReadHeldWorkItemsOpts {
   sql?: Sql;
-  limit?: number;
+  /** null reads the complete held population for durable host snapshots. */
+  limit?: number | null;
   getWorkItemCheckpointWithMetaFn?: (ref: WorkItemCheckpointRef) => Promise<WorkItemCheckpointWithMeta>;
   getWorkItemCheckpointFn?: (ref: {
     harness: string | null;
@@ -545,7 +546,7 @@ export async function readHeldWorkItems(
   opts: ReadHeldWorkItemsOpts = {},
 ): Promise<CarryBriefHeldItem[]> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const limit = opts.limit ?? CARRY_BRIEF_MAX_HELD_ITEMS;
+  const limit = opts.limit === null ? null : opts.limit ?? CARRY_BRIEF_MAX_HELD_ITEMS;
   // EI-9013: canonicalize the workspace — an unscoped su session's '*' (or a raw
   // ctx pass-through) previously scoped this query + the checkpoint reads to a
   // workspace that holds no rows, so the fold showed NOTHING held.

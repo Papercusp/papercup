@@ -90,6 +90,8 @@ export async function autoCheckpointStaleHeldItems(input: {
   sinceIso: string;
   journalNote: string | null;
   nowMs?: number;
+  /** Respawn snapshots every held item, including fresh ones, without preview caps. */
+  mode?: 'respawn';
 }): Promise<AutoCheckpointResult[]> {
   try {
     const [{ readHeldWorkItems }, { setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
@@ -100,9 +102,11 @@ export async function autoCheckpointStaleHeldItems(input: {
         import('./tool-call-log'),
       ]);
     const nowMs = input.nowMs ?? Date.now();
-    const held = await readHeldWorkItems(input.ownerId, input.workspaceId);
-    const stale = held.filter((h) => isStaleHeldCheckpoint(h, nowMs)).slice(0, MAX_AUTO_CHECKPOINTS);
-    if (stale.length === 0) return [];
+    const held = await readHeldWorkItems(input.ownerId, input.workspaceId,
+      input.mode === 'respawn' ? { limit: null } : {});
+    const selected = input.mode === 'respawn' ? held
+      : held.filter((h) => isStaleHeldCheckpoint(h, nowMs)).slice(0, MAX_AUTO_CHECKPOINTS);
+    if (selected.length === 0) return [];
 
     // One tool-log render for the turn window — shared across the stale items
     // (the snapshot is holder-session-level by design; the block says so).
@@ -118,34 +122,43 @@ export async function autoCheckpointStaleHeldItems(input: {
     } catch {
       /* the block is still useful with the journal note alone */
     }
-    const block = composeMechanicalCheckpoint({
-      atIso: new Date(nowMs).toISOString(),
-      journalNote: input.journalNote,
-      toolLog,
-      sessionId: input.sessionId,
-    });
-
     const written: AutoCheckpointResult[] = [];
-    for (const item of stale) {
+    for (const item of selected) {
       try {
+        const block = composeMechanicalCheckpoint({
+          atIso: new Date(nowMs).toISOString(),
+          journalNote: input.journalNote,
+          toolLog,
+          sessionId: input.sessionId,
+          ...(input.mode === 'respawn' ? {
+            boundary: 'respawn' as const, ownerId: input.ownerId, workItemId: item.id,
+            harness: item.harness, sourcePlanSlug: item.sourcePlanSlug,
+            sourcePlanItemIds: item.sourcePlanItemIds,
+          } : {}),
+        });
         const result = await setWorkItemCheckpointWithPrior(
           { harness: item.harness, workItemId: item.id, workspaceId: input.workspaceId },
           undefined,
           {
             // The held-item read precedes tool-log IO. A newer authored update
             // must win; test this against the locked row, not another pre-read.
-            guard: (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
+            // Respawn merges into the latest LOCKED row: it carries no stale
+            // per-item judgment, and must snapshot even a concurrent fresh note.
+            guard: input.mode === 'respawn' ? undefined : (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
               ? null : 'checkpoint-changed-before-auto-snapshot',
             transform: (prior) => mergeMechanicalCheckpoint(prior, block),
           },
         );
+        if (result.blockedReason && input.mode === 'respawn') throw new Error(`${item.id}: ${result.blockedReason}`);
         if (!result.blockedReason) written.push({ id: item.id, mechanical: true });
-      } catch {
+      } catch (error) {
+        if (input.mode === 'respawn') throw error;
         /* per-item fail-soft */
       }
     }
     return written;
-  } catch {
+  } catch (error) {
+    if (input.mode === 'respawn') throw error;
     return [];
   }
 }
