@@ -6402,7 +6402,9 @@ export function isFrozenRepairQueueWriteConflict(e: unknown): e is FrozenRepairQ
   );
 }
 
-export type FrozenRepairQueueTransition = (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue;
+export type FrozenRepairQueueTransition = (
+  fresh: FrozenCandidateRepairQueue,
+) => FrozenCandidateRepairQueue | Promise<FrozenCandidateRepairQueue>;
 
 export interface FrozenRepairQueueTransitionOutcome {
   /**
@@ -6451,7 +6453,7 @@ export async function applyFrozenCandidateRepairQueueTransition(
     }
     if (read.status === 'absent') return { status: 'absent', queue: null, fresh: null, retries: attempt };
     const fresh = read.queue;
-    let next = transition(fresh);
+    let next = await transition(fresh);
     if (next === fresh) return { status: 'unchanged', queue: fresh, fresh, retries: attempt };
     if (!(next.updatedAtMs > fresh.updatedAtMs)) next = { ...next, updatedAtMs: fresh.updatedAtMs + 1 };
     try {
