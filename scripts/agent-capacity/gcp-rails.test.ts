@@ -182,6 +182,67 @@ describe('attached disks (WI-10005475 swap-tier test)', () => {
     { type: 'pd-balanced' as const, gb: 64, deviceName: 'swapbal' },
     { type: 'pd-ssd' as const, gb: 64, deviceName: 'swapssd' },
   ];
+  const hyperDisks = [
+    { type: 'hyperdisk-balanced' as const, gb: 256, deviceName: 'swap', provisionedIops: 16000, provisionedThroughputMibps: 400 },
+    { type: 'hyperdisk-balanced' as const, gb: 256, deviceName: 'db', provisionedIops: 16000, provisionedThroughputMibps: 400 },
+  ];
+
+  it('creates the fresh trial with 256 GiB each for swap and DB on the verified x86 shape', () => {
+    const args = buildCreateArgs({ ...spec, machineType: 'n4-highmem-8', diskGb: 32, extraDisks: hyperDisks });
+    expect(args.filter((a) => a.startsWith('--create-disk='))).toEqual([
+      '--create-disk=auto-delete=yes,device-name=swap,size=256GB,type=hyperdisk-balanced,provisioned-iops=16000,provisioned-throughput=400',
+      '--create-disk=auto-delete=yes,device-name=db,size=256GB,type=hyperdisk-balanced,provisioned-iops=16000,provisioned-throughput=400',
+    ]);
+    expect(flagValue(args, 'image-family')).toBe('ubuntu-2404-lts-amd64');
+    expect(flagValue(args, 'boot-disk-type')).toBe('hyperdisk-balanced');
+    const bootMonth = 32 * 0.08 + 192 * 0.005 + 9 * 0.04;
+    const compute = 8 * 0.03119 + 64 * 0.00354;
+    expect(hourlyPriceUsd('n4-highmem-8', 32)).toBeCloseTo(compute + bootMonth / 730, 8);
+    const expectedExtra = (512 * 0.08 + 2 * ((16000 - 3000) * 0.005 + (400 - 140) * 0.04)) / 730;
+    expect(hourlyPriceUsd('n4-highmem-8', 32, { extraDisks: hyperDisks }) - hourlyPriceUsd('n4-highmem-8', 32)).toBeCloseTo(expectedExtra, 8);
+    expect(() => parseMachineType('n4-highmem-16')).toThrow(/unpriced/);
+  });
+
+  it.each([[4, 2000], [5, 2500], [6, 3000]])('accepts the minimum %i GiB volume at %i IOPS', (gb, iops) => {
+    const disk = { ...hyperDisks[0], gb, provisionedIops: iops, provisionedThroughputMibps: 140 };
+    expect(buildCreateArgs({ ...spec, machineType: 'n4-highmem-8', extraDisks: [disk] })).toContain(
+      `--create-disk=auto-delete=yes,device-name=swap,size=${gb}GB,type=hyperdisk-balanced,provisioned-iops=${iops},provisioned-throughput=140`,
+    );
+    expect(() => buildCreateArgs({ ...spec, machineType: 'n4-highmem-8', extraDisks: [{ ...disk, provisionedIops: iops - 1 }] })).toThrow(/provisionedIops/);
+  });
+
+  it('admits the verified C4 fallback with its own shape, disk type and cost', () => {
+    expect(parseMachineType('c4-standard-8')).toEqual({ family: 'c4', vcpus: 8, ramGb: 30 });
+    const args = buildCreateArgs({ ...spec, machineType: 'c4-standard-8', extraDisks: hyperDisks, maxHours: 1 });
+    expect(flagValue(args, 'boot-disk-type')).toBe('hyperdisk-balanced');
+    expect(flagValue(args, 'image-family')).toBe('ubuntu-2404-lts-amd64');
+    expect(flagValue(args, 'max-run-duration')).toBe('60m');
+    expect(hourlyPriceUsd('c4-standard-8', 32)).toBeCloseTo(8 * 0.03465 + 30 * 0.003938 + (32 * 0.08 + 192 * 0.005 + 9 * 0.04) / 730, 8);
+    expect(() => parseMachineType('c4-standard-16')).toThrow(/unpriced/);
+  });
+
+  it('rejects invalid IOPS/throughput ratios and missing performance before pricing or creating', () => {
+    const create = (disk: typeof hyperDisks[number]) => buildCreateArgs({ ...spec, machineType: 'n4-highmem-8', extraDisks: [disk] });
+    expect(() => create({ ...hyperDisks[0], gb: 4, provisionedIops: 3000 })).toThrow(/2000-2000/);
+    expect(() => create({ ...hyperDisks[0], provisionedIops: 3000, provisionedThroughputMibps: 751 })).toThrow(/140-750/);
+    expect(() => create({ ...hyperDisks[0], gb: 320, provisionedIops: 160000, provisionedThroughputMibps: 624 })).toThrow(/625-2400/);
+    expect(() => create({ ...hyperDisks[0], gb: 256, provisionedIops: 128001 })).toThrow(/provisionedIops/);
+    expect(() => hourlyPriceUsd('n4-highmem-8', 32, { extraDisks: [{ type: 'hyperdisk-balanced', gb: 256, deviceName: 'swap' }] })).toThrow(/provisionedIops/);
+  });
+
+  it.each(['e2-standard-4', 'n2-standard-4', 'n2d-standard-4', 't2d-standard-4'])('does not assume Hyperdisk enablement on %s', (machineType) => {
+    expect(() => buildCreateArgs({ ...spec, machineType, extraDisks: hyperDisks })).toThrow(/not enabled/);
+    expect(() => hourlyPriceUsd(machineType, 32, { extraDisks: hyperDisks })).toThrow(/not enabled/);
+  });
+
+  it('parses explicit Hyperdisk performance without accepting it on Persistent Disk', () => {
+    expect(parseExtraDisk('hyperdisk-balanced:256:swap:16000:400')).toEqual(hyperDisks[0]);
+    for (const raw of ['hyperdisk-balanced:256:swap', 'hyperdisk-balanced:256:swap:16000', 'hyperdisk-balanced:256:swap:16000:NaN', 'hyperdisk-balanced:256:swap::400']) {
+      expect(() => parseExtraDisk(raw)).toThrow(/requires/);
+    }
+    expect(() => parseExtraDisk('pd-ssd:256:swap:16000:400')).toThrow(/only valid for Hyperdisk/);
+    expect(() => parseExtraDisk('toString:256:swap')).toThrow(/unpriced/);
+  });
 
   it('creates each data disk with the VM and auto-deletes it with the VM', () => {
     const args = buildCreateArgs({ ...spec, extraDisks: swapDisks });
@@ -217,6 +278,7 @@ describe('attached disks (WI-10005475 swap-tier test)', () => {
     expect(() => parseExtraDisk('pd-extreme:64:fast')).toThrow(/unpriced extra disk type/);
     expect(() => parseExtraDisk('pd-ssd:64')).toThrow(/<type>:<gb>:<device-name>/);
     expect(parseExtraDisk('pd-ssd:64:swapssd')).toEqual({ type: 'pd-ssd', gb: 64, deviceName: 'swapssd' });
+    expect(() => buildCreateArgs({ ...spec, extraDisks: [{ ...hyperDisks[0], provisionedIops: 2000 }] })).toThrow(/provisionedIops/);
   });
 });
 

@@ -60,6 +60,9 @@ export const PRICES_2026_09_30 = {
   c4a: { vcpuHour: 0.03086, gbRamHour: 0.00351 },
   // Z3 Titanium SSD follow-up, Cloud Billing Catalog us-central1 read 2026-10-14.
   z3: { vcpuHour: 0.0496531, gbRamHour: 0.0066553 },
+  // N4 x86 Hyperdisk trial, Cloud Billing Catalog us-central1 read 2026-10-15.
+  n4: { vcpuHour: 0.03119, gbRamHour: 0.00354 },
+  c4: { vcpuHour: 0.03465, gbRamHour: 0.003938 },
   balancedDiskGbMonth: 0.1,
 } as const;
 
@@ -76,9 +79,9 @@ export const HYPERDISK_BALANCED_2026_10_01 = {
   mibpsMonth: 0.04,
 } as const;
 
-/** Boot disk type per family: C4A takes only Hyperdisk; every other priced family uses pd-balanced. */
+/** The newer priced families use Hyperdisk boot disks; older families use pd-balanced. */
 export function bootDiskType(family: Family): 'pd-balanced' | 'hyperdisk-balanced' {
-  return family === 'c4a' || family === 'z3' ? 'hyperdisk-balanced' : 'pd-balanced';
+  return family === 'c4a' || family === 'z3' || family === 'n4' || family === 'c4' ? 'hyperdisk-balanced' : 'pd-balanced';
 }
 
 /**
@@ -115,7 +118,7 @@ export const SPOT_PRICES_2026_10_01: Partial<Record<Family, { vcpuHour: number; 
 };
 const HOURS_PER_MONTH = 730;
 
-export type Family = 'e2' | 'n2' | 'n2d' | 't2d' | 'c4a' | 'z3';
+export type Family = 'e2' | 'n2' | 'n2d' | 't2d' | 'c4a' | 'z3' | 'n4' | 'c4';
 /** C4A is Arm: it boots the arm64 build of the same Ubuntu LTS. */
 export const DEFAULT_ARM_IMAGE_FAMILY = 'ubuntu-2404-lts-arm64';
 export interface MachineShape {
@@ -135,6 +138,10 @@ export function parseMachineType(machineType: string): MachineShape {
   // Price only the exact shape verified through machine-types describe. Its
   // 3,000 GiB Titanium SSD is built into the shape and billed separately.
   if (machineType === 'z3-highmem-8-highlssd') return { family: 'z3', vcpus: 8, ramGb: 64 };
+  // Only this N4 shape has been verified with machine-types describe for P-533.
+  if (machineType === 'n4-highmem-8') return { family: 'n4', vcpus: 8, ramGb: 64 };
+  // Same-region x86 fallback after N4 stockouts; machine-types describe read 2026-10-15.
+  if (machineType === 'c4-standard-8') return { family: 'c4', vcpus: 8, ramGb: 30 };
   const predefined = /^(e2|n2|n2d)-(standard|highmem|highcpu)-(\d+)$/.exec(machineType);
   if (predefined) {
     const vcpus = Number(predefined[3]);
@@ -174,7 +181,9 @@ function spotRates(family: Family): { vcpuHour: number; gbRamHour: number } {
  * "SSD backed Local Storage" 0.08 USD/GiB-month. A Local SSD is a fixed 375 GiB device that can only
  * be added at create.
  */
-export const EXTRA_DISK_GB_MONTH_2026_10_14 = { 'pd-balanced': 0.1, 'pd-ssd': 0.17 } as const;
+export const EXTRA_DISK_GB_MONTH_2026_10_14 = { 'pd-balanced': 0.1, 'pd-ssd': 0.17, 'hyperdisk-balanced': 0.08 } as const;
+export const HYPERDISK_BALANCED_IOPS_MONTH_2026_10_15 = 0.005;
+export const HYPERDISK_BALANCED_THROUGHPUT_MONTH_2026_10_15 = 0.04;
 export type ExtraDiskType = keyof typeof EXTRA_DISK_GB_MONTH_2026_10_14;
 export const LOCAL_SSD_GB_MONTH_2026_10_14 = 0.08;
 export const LOCAL_SSD_GB = 375;
@@ -187,6 +196,8 @@ export interface ExtraDisk {
   gb: number;
   /** Becomes /dev/disk/by-id/google-<deviceName> on the VM. */
   deviceName: string;
+  provisionedIops?: number;
+  provisionedThroughputMibps?: number;
 }
 
 export interface AttachedDisks {
@@ -194,18 +205,31 @@ export interface AttachedDisks {
   localSsds?: number;
 }
 
-/** Parse `--extra-disk=<type>:<gb>:<device-name>`, refusing an unpriced type or a malformed entry. */
+/** Hyperdisk adds explicit `:<iops>:<mibps>` to the existing type:size:device CLI format. */
 export function parseExtraDisk(raw: string): ExtraDisk {
-  const [type, gb, deviceName, ...rest] = raw.split(':');
-  if (rest.length || !deviceName) throw new Error(`--extra-disk expects <type>:<gb>:<device-name>, got '${raw}'`);
-  if (!(type in EXTRA_DISK_GB_MONTH_2026_10_14)) {
+  const [type, gb, deviceName, ...performance] = raw.split(':');
+  if (!deviceName) throw new Error(`--extra-disk expects <type>:<gb>:<device-name>[:<iops>:<mibps>], got '${raw}'`);
+  if (!Object.hasOwn(EXTRA_DISK_GB_MONTH_2026_10_14, type)) {
     throw new Error(`unpriced extra disk type '${type}': one of ${Object.keys(EXTRA_DISK_GB_MONTH_2026_10_14).join(', ')}`);
   }
+  if (type === 'hyperdisk-balanced') {
+    if (performance.length !== 2 || performance.some((v) => !v.trim() || !Number.isFinite(Number(v)))) {
+      throw new Error('Hyperdisk Balanced --extra-disk requires :<iops>:<mibps>');
+    }
+    return { type, gb: Number(gb), deviceName, provisionedIops: Number(performance[0]), provisionedThroughputMibps: Number(performance[1]) };
+  }
+  if (performance.length) throw new Error('provisioned performance is only valid for Hyperdisk Balanced');
   return { type: type as ExtraDiskType, gb: Number(gb), deviceName };
 }
 
 function attachedDisksHourUsd(d: AttachedDisks): number {
-  const pd = (d.extraDisks ?? []).reduce((sum, x) => sum + x.gb * EXTRA_DISK_GB_MONTH_2026_10_14[x.type], 0);
+  const pd = (d.extraDisks ?? []).reduce((sum, x) => {
+    const capacity = x.gb * EXTRA_DISK_GB_MONTH_2026_10_14[x.type];
+    if (x.type !== 'hyperdisk-balanced') return sum + capacity;
+    const iops = Math.max(0, (x.provisionedIops ?? 3000) - 3000) * HYPERDISK_BALANCED_IOPS_MONTH_2026_10_15;
+    const throughput = Math.max(0, (x.provisionedThroughputMibps ?? 140) - 140) * HYPERDISK_BALANCED_THROUGHPUT_MONTH_2026_10_15;
+    return sum + capacity + iops + throughput;
+  }, 0);
   const lssd = (d.localSsds ?? 0) * LOCAL_SSD_GB * LOCAL_SSD_GB_MONTH_2026_10_14;
   return (pd + lssd) / HOURS_PER_MONTH;
 }
@@ -213,15 +237,38 @@ function attachedDisksHourUsd(d: AttachedDisks): number {
 /** Refuse attached disks the machine cannot take or that are malformed, before anything is priced or created. */
 function assertAttachedDisks(family: Family, d: AttachedDisks): void {
   const extra = d.extraDisks ?? [];
-  if (extra.length && family === 'c4a') throw new Error('C4A takes only Hyperdisk: no Persistent Disk data disks');
   if (extra.length && family === 'z3') throw new Error('Z3 test shape uses its built-in Titanium SSD; extra data disks are not priced here');
   const names = new Set<string>();
   for (const x of extra) {
-    if (!(x.type in EXTRA_DISK_GB_MONTH_2026_10_14)) throw new Error(`unpriced extra disk type '${x.type}'`);
-    if (!Number.isInteger(x.gb) || x.gb < 10 || x.gb > 2048) throw new Error(`extra disk ${x.deviceName}: size ${x.gb} GB must be an integer 10-2048`);
+    if (!Object.hasOwn(EXTRA_DISK_GB_MONTH_2026_10_14, x.type)) throw new Error(`unpriced extra disk type '${x.type}'`);
+    const minGb = x.type === 'hyperdisk-balanced' ? 4 : 10;
+    if (!Number.isInteger(x.gb) || x.gb < minGb || x.gb > 2048) throw new Error(`extra disk ${x.deviceName}: size ${x.gb} GB must be an integer ${minGb}-2048`);
     if (!/^[a-z][a-z0-9-]{0,61}$/.test(x.deviceName)) throw new Error(`extra disk device name '${x.deviceName}' must be [a-z][a-z0-9-]`);
     if (names.has(x.deviceName)) throw new Error(`duplicate extra disk device name '${x.deviceName}'`);
     names.add(x.deviceName);
+    if (x.type === 'hyperdisk-balanced') {
+      // Official limits read 2026-10-15: 4/5 GiB fix IOPS at 2000/2500;
+      // throughput must also fit MAX(140, IOPS/256)..MIN(2400, IOPS/4).
+      // https://cloud.google.com/compute/docs/disks/hd-types/hyperdisk-balanced
+      const iops = x.provisionedIops;
+      const minIops = x.gb < 6 ? x.gb * 500 : 3000;
+      const maxIops = Math.min(160000, x.gb * 500);
+      if (iops === undefined || !Number.isInteger(iops) || iops < minIops || iops > maxIops) {
+        throw new Error(`Hyperdisk Balanced ${x.deviceName}: provisionedIops must be ${minIops}-${maxIops}`);
+      }
+      const throughput = x.provisionedThroughputMibps;
+      const minThroughput = Math.ceil(Math.max(140, iops / 256));
+      const maxThroughput = Math.floor(Math.min(2400, iops / 4));
+      if (throughput === undefined || !Number.isInteger(throughput) || throughput < minThroughput || throughput > maxThroughput) {
+        throw new Error(`Hyperdisk Balanced ${x.deviceName}: provisionedThroughputMibps must be ${minThroughput}-${maxThroughput}`);
+      }
+      // Older families need account-team enablement; this benchmark never assumes it.
+      if (family !== 'n4' && family !== 'c4a' && family !== 'c4') throw new Error(`Hyperdisk Balanced is not enabled for family '${family}' in these rails`);
+    } else if (x.provisionedIops !== undefined || x.provisionedThroughputMibps !== undefined) {
+      throw new Error(`provisioned performance is only valid for Hyperdisk Balanced: ${x.deviceName}`);
+    } else if (family === 'c4a' || family === 'n4' || family === 'c4') {
+      throw new Error(`${family} takes only Hyperdisk: no Persistent Disk data disks`);
+    }
   }
   const n = d.localSsds ?? 0;
   if (!Number.isInteger(n) || n < 0 || n > MAX_LOCAL_SSDS) throw new Error(`localSsds ${n} must be an integer 0-${MAX_LOCAL_SSDS}`);
@@ -233,6 +280,7 @@ function assertAttachedDisks(family: Family, d: AttachedDisks): void {
 /** Hourly list price, disk included (the disk is never spot-discounted). */
 export function hourlyPriceUsd(machineType: string, diskGb = DEFAULT_DISK_GB, opts: { spot?: boolean } & AttachedDisks = {}): number {
   const shape = parseMachineType(machineType);
+  assertAttachedDisks(shape.family, opts);
   const p = opts.spot ? spotRates(shape.family) : PRICES_2026_09_30[shape.family];
   const includedLocalSsd = shape.family === 'z3' ? (3000 * LOCAL_SSD_GB_MONTH_2026_10_14) / HOURS_PER_MONTH : 0;
   return shape.vcpus * p.vcpuHour + shape.ramGb * p.gbRamHour + diskHourUsd(shape.family, diskGb) + attachedDisksHourUsd(opts) + includedLocalSsd;
@@ -337,7 +385,10 @@ export function buildCreateArgs(spec: CreateSpec): string[] {
   if (spec.spot) args.push('--provisioning-model=SPOT');
   // auto-delete=yes: the VM's own self-delete takes its data disks too, so no run leaves an orphan.
   for (const d of spec.extraDisks ?? []) {
-    args.push(`--create-disk=auto-delete=yes,device-name=${d.deviceName},size=${d.gb}GB,type=${d.type}`);
+    args.push(`--create-disk=auto-delete=yes,device-name=${d.deviceName},size=${d.gb}GB,type=${d.type}` +
+      (d.type === 'hyperdisk-balanced'
+        ? `,provisioned-iops=${d.provisionedIops},provisioned-throughput=${d.provisionedThroughputMibps}`
+        : ''));
   }
   for (let i = 0; i < (spec.localSsds ?? 0); i++) args.push('--local-ssd=interface=NVME');
   return args;
@@ -549,7 +600,7 @@ async function main(argv: string[]): Promise<number> {
       imageProject: flag(argv, 'image-project'),
       spot: argv.includes('--spot'),
       onReclaim: reclaimFlag as CreateSpec['onReclaim'],
-      // Repeatable: every --extra-disk=<type>:<gb>:<device-name> is one data disk.
+      // Repeatable: Hyperdisk adds :<iops>:<mibps> after type:size:device.
       extraDisks: argv.filter((a) => a.startsWith('--extra-disk=')).map((a) => parseExtraDisk(a.slice('--extra-disk='.length))),
       localSsds: flag(argv, 'local-ssds') ? Number(flag(argv, 'local-ssds')) : undefined,
     };
@@ -562,7 +613,7 @@ async function main(argv: string[]): Promise<number> {
     console.log(JSON.stringify(result, null, 2));
     return result.verified ? 0 : 4;
   }
-  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot [--on-reclaim=stop] --extra-disk=<pd-balanced|pd-ssd>:<gb>:<device-name> (repeatable) --local-ssds=<n>] | teardown --run=');
+  console.error('usage: gcp-rails.ts census | create --run= --name= --machine-type= --max-hours= [--zone= --disk-gb= --metadata-from-file= --image-family= --image-project= --spot [--on-reclaim=stop] --extra-disk=<pd-balanced|pd-ssd>:<gb>:<device-name> | --extra-disk=hyperdisk-balanced:<gb>:<device-name>:<iops>:<mibps> (repeatable) --local-ssds=<n>] | teardown --run=');
   return 2;
 }
 
