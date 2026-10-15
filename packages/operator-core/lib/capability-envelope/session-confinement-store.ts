@@ -39,6 +39,7 @@
  * A warm cache miss on another serving process cannot prove absence. The cache
  * remains a local boundary hint, while exact ceilings survive expiry as denials.
  */
+import { isDeepStrictEqual } from 'node:util';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
 
@@ -241,7 +242,10 @@ export async function declareSessionConfinement(args: {
   await updateOperatorState<SessionConfinementsPayload>(STATE_TABLE, {}, payload => {
   const sessions = { ...(payload.sessions ?? {}) };
   const previous = sessions[ownerId]?.confinement;
-  if (previous?.denyOutside !== undefined && JSON.stringify(previous) !== JSON.stringify(confinement))
+  // JSONB reorders object keys. Compare the persisted JSON values so an
+  // identical ceiling can be re-declared after a host/listener restart while
+  // any changed permission or assignment remains immutable.
+  if (previous?.denyOutside !== undefined && !isDeepStrictEqual(previous, JSON.parse(JSON.stringify(confinement))))
     throw new Error('An exact launch ceiling cannot be replaced; launch a fresh session');
 
   // Prune while we hold the payload — the write path is the natural place to age the table out.

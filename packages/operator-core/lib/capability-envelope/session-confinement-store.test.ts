@@ -64,6 +64,27 @@ describe('session-confinement store — installation', () => {
 });
 
 describe('exact native launch ceilings', () => {
+  it('accepts the same ceiling after JSONB reorders object keys but still refuses policy changes', async () => {
+    const confinement = { denyTools: [], denyOutside: ['work_items:get'],
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+      denyAmbientContext: true as const, reason: 'assignment', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    // JSONB preserves values and array order, but not object insertion order.
+    // The mock normally returns the original object, masking this round trip.
+    const reordered = { imposedBy: 'host', reason: 'assignment', denyAmbientContext: true as const,
+      denyWorkItemsOutside: { checkout: '/private/assignment', harness: 'bench', id: 'F-own' },
+      denyOutside: ['work_items:get'], denyTools: [] };
+    expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(confinement));
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: reordered }) } };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER,
+      confinement: { ...confinement, denyOutside: ['work_items:get', 'work_items:complete'] } }))
+      .rejects.toThrow(/cannot be replaced/);
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER,
+      confinement: { ...confinement, denyWorkItemsOutside: { ...confinement.denyWorkItemsOutside, id: 'F-other' } } }))
+      .rejects.toThrow(/cannot be replaced/);
+    expect(await readSessionConfinement(IMPLEMENTER_OWNER)).toEqual(confinement);
+  });
   it('snapshots nominated product reads, refuses broad replacement, and fails closed on corrupt stored selectors', async () => {
     const reads = { harness: 'papercusp', docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
     const confinement = { denyTools: [], denyOutside: ['docs:get', 'testing:runs'], denyProductReadsOutside: reads,
