@@ -1775,12 +1775,11 @@ export const PTOOL_SESSION_REQUEST_COMPACTION_TIMEOUT_MS = 610_000;
 // structured registration result (or timeout) is observed first.
 export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 
-// `plans:get` is the durable plan-read path used during agent wake/bootstrap. A large
-// nested plan response can spend ~28.5s through the MCP proxy even when the direct
-// operator read is healthy; the ordinary 30s ptool deadline turns that slow-but-valid
-// wrapped read into an ambiguous tools:invoke timeout. Keep the client deadline above
-// the observed proxy path without changing the ordinary deadline for unrelated tools.
-export const PTOOL_PLANS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+// `plans:get` declares timeoutSec=120 for shipReadiness; MCP's server-side deadline
+// is therefore 125s (the tool budget plus its 5s transport buffer). The former 60s
+// foreground client deadline could return -32001 while a valid read kept running and
+// later completed successfully. Keep ptool 5s beyond the server deadline.
+export const PTOOL_PLANS_GET_TIMEOUT_MS = 130_000;
 
 // EI-22774777434821469: plans:audit resolves every submitted citation and
 // then persists one completion/activation audit. A valid multi-item audit

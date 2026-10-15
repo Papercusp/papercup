@@ -3789,6 +3789,103 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     );
   });
 
+  it('names calibration states for exact fixture bindings outside the current grading cohort', () => {
+    const current = evidence({
+      id: 44282,
+      evidenceKind: 'test',
+      evidenceRef: 'test:current-calibrated-fixture',
+      testRunId: 101,
+      coverageEvidenceRef: null,
+      fingerprints: { ...evidence().fingerprints, fixtureFingerprint: 'sha256:current-fixture' },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: true,
+          fixtureFree: false,
+        },
+      },
+    });
+    const excludedUncalibrated = evidence({
+      id: 44283,
+      evidenceKind: 'test',
+      evidenceRef: 'test:excluded-uncalibrated-fixture',
+      testRunId: 102,
+      coverageEvidenceRef: null,
+      fingerprints: { ...evidence().fingerprints, fixtureFingerprint: 'sha256:excluded-fixture' },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: false,
+          fixtureFree: false,
+        },
+      },
+      currentness: {
+        ...evidence().currentness,
+        overall: 'unknown',
+        provenance: 'not-supplied',
+        comparisonSupplied: false,
+        unknownReasons: ['test-fingerprint-not-supplied'],
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [current, excludedUncalibrated],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('pass');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('outside the current grading cohort');
+    expect(result.ratings['fixture-calibration'].evidence).toContain('id=44283 fixtureCalibrated=false');
+    expect(result.ratings['fixture-calibration'].evidence).not.toContain(
+      'Current fixture bindings not attesting calibration:',
+    );
+  });
+
+  it('names a non-passing current fixture binding when another current binding passes', () => {
+    const calibrated = evidence({
+      id: 44282,
+      evidenceKind: 'test',
+      evidenceRef: 'test:current-calibrated-fixture',
+      testRunId: 101,
+      coverageEvidenceRef: null,
+      fingerprints: { ...evidence().fingerprints, fixtureFingerprint: 'sha256:current-fixture' },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: true,
+          fixtureFree: false,
+        },
+      },
+    });
+    const uncalibrated = evidence({
+      id: 45129,
+      evidenceKind: 'test',
+      evidenceRef: 'test:current-uncalibrated-fixture',
+      testRunId: 102,
+      coverageEvidenceRef: null,
+      fingerprints: { ...evidence().fingerprints, fixtureFingerprint: 'sha256:current-fixture-uncalibrated' },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          fixtureCalibrated: false,
+          fixtureFree: false,
+        },
+      },
+    });
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['integration test'] }),
+      evidence: [calibrated, uncalibrated],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['fixture-calibration'].rating).toBe('pass');
+    expect(result.ratings['fixture-calibration'].evidence).toContain(
+      'Current fixture bindings not attesting calibration: id=45129 fixtureCalibrated=false',
+    );
+  });
+
   it('requires fixture calibration when the falsifier probe method uses a fixture provider', () => {
     const row = evidence({
       evidenceKind: 'test',

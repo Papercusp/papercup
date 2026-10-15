@@ -2877,6 +2877,56 @@ export function eventLogPathForOwner(ownerId, dir = PSU_PTY_DIR) {
   return join(dir, `${sanitizeKey(ownerId)}.events.jsonl`);
 }
 
+/** Keep the PTY spawn receipt useful for route diagnosis without persisting
+ * credentials, account headers, URL userinfo, query strings, fragments, or
+ * arbitrary path segments that could contain a token. */
+function sanitizeSpawnEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 2048) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    const safePath = /^\/(?:api\/)?v\d+(?:beta\d*)?\/?$/i.test(url.pathname)
+      ? url.pathname.replace(/\/$/, '')
+      : '';
+    return url.origin + safePath;
+  } catch {
+    return null;
+  }
+}
+
+function safeSpawnProvider(value) {
+  if (typeof value !== 'string') return null;
+  const provider = value.trim();
+  return /^[a-z0-9][a-z0-9._-]{0,79}$/i.test(provider) ? provider : null;
+}
+
+function ptySpawnRouteSnapshot(env) {
+  const rawAgent = String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase();
+  const agent = ['claude', 'codex', 'omp'].includes(rawAgent) ? rawAgent : null;
+  const rawMode = String(env.PAPERCUSP_ACCOUNT_ROUTING_MODE ?? '').trim().toLowerCase();
+  const routeMode = ['default', 'auto', 'pin'].includes(rawMode) ? rawMode : null;
+  let provider = null;
+  let endpoint = null;
+
+  if (agent === 'codex') {
+    try {
+      const home = typeof env.CODEX_HOME === 'string' ? env.CODEX_HOME : '';
+      if (home) {
+        const config = require('@iarna/toml').parse(readFileSync(join(home, 'config.toml'), 'utf8'));
+        provider = safeSpawnProvider(config.model_provider);
+        endpoint = sanitizeSpawnEndpoint(config.model_providers?.[provider]?.base_url);
+      }
+    } catch {
+      // Telemetry must not turn a successful PTY spawn into a failed launch.
+    }
+  } else if (agent === 'claude') {
+    provider = 'anthropic';
+    endpoint = sanitizeSpawnEndpoint(env.ANTHROPIC_BASE_URL);
+  }
+
+  return { agent, routeMode, provider, endpoint };
+}
+
 /** Size cap for the per-owner event log — front-truncated (oldest rows dropped)
  *  on breach, same spirit as the turn-provenance ledger compaction. */
 const EVENT_LOG_MAX_BYTES = 256 * 1024;
@@ -10571,6 +10621,10 @@ export function hostThroughPty(o) {
     const spawned = spawnPty
       ? spawnPty(target.command, target.args, ptyOptions, realSpawn)
       : realSpawn(target.command, target.args, ptyOptions);
+    appendHostEvent(ownerId, 'pty-spawned', {
+      childPid: Number.isInteger(spawned.pid) ? spawned.pid : null,
+      ...ptySpawnRouteSnapshot(target.env),
+    });
     // Only a child that actually started owns the live argv: a failed spawn
     // must not rewrite what the next park/recycle mint reads.
     liveChildArgs = spawnArgs;
