@@ -2710,6 +2710,40 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
     }));
   });
 
+  it('pins only the exact repairHead for a null-origin unassigned awaiting-fixer successor', async () => {
+    const repairHead = 'c'.repeat(40);
+    const queueFor = (qualificationAttemptId: string | null): FrozenCandidateRepairQueue => ({
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      qualificationAttemptId,
+      base: 'b'.repeat(40),
+      repairHead,
+      attempts: 0,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: null,
+      failingTests: ['packages/operator-core/lib/example.test.ts'],
+      signature: [],
+    });
+    const runScheduledSuccessor = async (qualificationAttemptId: string | null) => {
+      fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ repair_queue: queueFor(qualificationAttemptId) }]));
+      readStoredQualification.mockResolvedValueOnce({
+        status: 'present',
+        transaction: { phase: 'terminal', attemptId: 'terminal-predecessor', requiredAncestorSha: null },
+      });
+      spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
+      await getSystemAction('green-checkpoint')!(ctx);
+      return beginStoredQualification.mock.calls.at(-1)![1] as Record<string, unknown>;
+    };
+
+    const eligible = await runScheduledSuccessor(null);
+    expect(eligible).toMatchObject({ requiredAncestorSha: repairHead });
+
+    const knownOrigin = await runScheduledSuccessor('another-attempt');
+    expect(knownOrigin).not.toHaveProperty('requiredAncestorSha');
+  });
+
   it('records exact begin-conflict identities and a safe next action without spawning a suite', async () => {
     beginStoredQualification.mockResolvedValueOnce({
       status: 'conflict', transaction: {
