@@ -6,6 +6,7 @@ import {
   callToolWithPressureRetry,
   callToolWithReplayRecovery,
   buildCallToolParams,
+  requireServingGeneration,
   refreshToolCallAfterStaleContract,
   canDispatchWithoutCatalog,
   buildMcpUrl,
@@ -1762,6 +1763,15 @@ describe('ptool keyed result recovery without concurrent replay', () => {
         'papercusp/servingGeneration': 'serving-generation-v1:listed',
       },
     });
+  });
+
+  it('refuses legacy tool listings that cannot enforce serving-generation compatibility', () => {
+    expect(() => requireServingGeneration({ name: 'plans:bind-spec-evidence' }))
+      .toThrow(/serving_generation_missing: plans:bind-spec-evidence .*incompatible legacy release/);
+    expect(requireServingGeneration({
+      name: 'plans:bind-spec-evidence',
+      _meta: { 'papercusp/servingGeneration': ' serving-generation-v1:listed ' },
+    })).toBe('serving-generation-v1:listed');
   });
 
   it('refreshes two consecutive stale contracts and preserves the unchanged call', async () => {
