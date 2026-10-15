@@ -36,7 +36,9 @@ const {
 } = await import('../../grading-integrity');
 const { proposeRubric, getRubric } = await import('../../rubrics');
 const {
+  acquireGradingAuditSubjectMutex,
   _closeGradingAuditSubjectMutexForTests,
+  ScorecardEmitMutexWaitTimeoutError,
   listScorecards,
   isCurrentSourceAuditResponder,
 } = await import('../../scorecards');
@@ -155,7 +157,7 @@ async function waitForScorecardMutexWait(applicationName: string): Promise<void>
 }
 
 describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
-  it('clears inherited lock timeout before waiting for an in-flight emitter', async () => {
+  it('uses a finite lock timeout above the inherited role timeout while waiting for an in-flight emitter', async () => {
     // Pass finite timeouts only to the dedicated mutex pool's sessions. ALTER
     // DATABASE would also affect any admin-pool connections opened during this
     // test and leave their inherited settings in place after RESET, making the
@@ -192,6 +194,56 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       else process.env.HARNESS_ADMIN_DATABASE_URL = previousAdminUrl;
       _resetHarnessAdminUrlCacheForTests();
     }
+  }, 120_000);
+
+  it('returns a retryable no-write result when the dedup mutex exceeds its deadline', async () => {
+    const input = {
+      createdBy: OWNER,
+      ctxHarness: SOURCE_HIVE,
+      workspaceId: activeWorkspaceId(),
+    };
+    const key = scorecardEmitMutexKey({
+      workspaceId: input.workspaceId,
+      rubricRef: TIMEOUT_RUBRIC,
+      sourceHive: SOURCE_HIVE,
+    });
+    const holder = (await import('postgres')).default(db.adminDsn, { max: 1, onnotice: () => {} });
+    let held = false;
+    try {
+      await holder`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`;
+      held = true;
+      const before = await listScorecards({ rubricRef: TIMEOUT_RUBRIC, sourceHive: SOURCE_HIVE, limit: 10 });
+      const phases = createPhaseTracker();
+      const result = await emitScorecard(
+        { rubricRef: TIMEOUT_RUBRIC, ratings: RATINGS },
+        { ...input, phases },
+        { scorecardMutexWaitTimeoutMs: 150 },
+      );
+      expect(result).toMatchObject({ ok: false, code: 'scorecard_emit_mutex_timeout', retryable: true });
+      expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+      expect(phases.intervals()).toContainEqual(expect.objectContaining({
+        phase: 'scorecards:emit:mutex:dedup:advisory-lock',
+        durationMs: expect.any(Number),
+      }));
+      const after = await listScorecards({ rubricRef: TIMEOUT_RUBRIC, sourceHive: SOURCE_HIVE, limit: 10 });
+      expect(after).toHaveLength(before.length);
+    } finally {
+      if (held) await holder`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
+      await holder.end({ timeout: 5 });
+    }
+  }, 120_000);
+
+  it('bounds grading-audit subject mutex waits and releases the timed-out connection', async () => {
+    const subject = { workspaceId: activeWorkspaceId(), subjectIssueId: 'EI-MUTEX-TIMEOUT-SUBJECT' };
+    const releaseFirst = await acquireGradingAuditSubjectMutex(subject);
+    try {
+      await expect(acquireGradingAuditSubjectMutex(subject, undefined, 150)).rejects
+        .toBeInstanceOf(ScorecardEmitMutexWaitTimeoutError);
+    } finally {
+      await releaseFirst();
+    }
+    const retryRelease = await acquireGradingAuditSubjectMutex(subject, undefined, 150);
+    await retryRelease();
   }, 120_000);
 
   it('serializes concurrent identical emits and persists exactly one scorecard', async () => {
