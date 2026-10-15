@@ -177,12 +177,13 @@ describe('test-files router', () => {
     expect(vitestConfigLoaderPolicy([], {}, []).configLoaderArgs).toEqual([]);
   });
 
-  it('loads the actual operator TS config through the native committed source boundary', () => {
+  it.each(['apps/operator/vitest.config.ts', 'packages/operator-core/vitest.integration.config.ts'])(
+    'loads actual TS config %s through the native committed source boundary', (configPath) => {
     const child = spawnSync(process.execPath, ['--import', './scripts/lib/committed-source-loader.mjs',
       '--input-type=module', '-e', `
         import { loadConfigFromFile } from 'vite';
         const config = await loadConfigFromFile({ command:'serve', mode:'test' },
-          'apps/operator/vitest.config.ts', undefined, 'silent', undefined, 'native');
+          ${JSON.stringify(configPath)}, undefined, 'silent', undefined, 'native');
         if (!config?.config?.test) throw new Error('Actual operator config did not load');
         console.log('guarded-native-config-loaded');
       `], { cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: { ...process.env, NODE_OPTIONS: '' } });
