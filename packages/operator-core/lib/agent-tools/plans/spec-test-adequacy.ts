@@ -1422,11 +1422,23 @@ function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
   const measurement = mutation === undefined
     ? null
     : repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  // Descriptors use the subject's own Git root, while a multi-repository
+  // measurement uses workspace paths. Resolve only one pinned source whose
+  // repository and exact bytes agree; a suffix or fixture match is insufficient.
+  // This normalizes identity only: the independent freshness verdict still applies.
+  const pin = readMeasurementPin(row.details);
+  const nestedSubjects = mutation !== undefined && measurement?.success
+    ? pin?.files.filter(file => file.dimension === 'source' && !file.rootHarnessSlug &&
+      file.repo !== '.' && file.path === `${file.repo}/${mutation.subjectPath}` &&
+      file.sha256 === mutation.subjectBeforeSha256 &&
+      measurement.data.sourcePaths.includes(file.path) &&
+      pin.repos.some(repo => repo.repo === file.repo && !repo.rootHarnessSlug && repo.gitlink !== null)) ?? []
+    : [];
   const mutationSubjectMeasured =
     mutation !== undefined &&
     measurement !== null &&
     measurement.success &&
-    measurement.data.sourcePaths.includes(mutation.subjectPath);
+    (measurement.data.sourcePaths.includes(mutation.subjectPath) || nestedSubjects.length === 1);
   const declaredCases = detailsOf(row).testCases ?? [];
   // A focused runner counts filtered-out cases as skipped. Credit only cases the
   // calibration row actually measured passing; an incomplete list never proves

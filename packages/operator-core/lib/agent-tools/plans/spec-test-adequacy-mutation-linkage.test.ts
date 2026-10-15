@@ -99,6 +99,44 @@ describe('ledger-derived mutation catches (R-7)', () => {
     expect(rating(row).evidence).toContain('mutationLinkage=unverified');
   });
 
+  function nestedSourceProof() {
+    const row = proof('mutation');
+    row.details.currentMeasurement = {
+      schemaVersion: 1, kind: 'repo-files', sourcePaths: ['libs/guard/src/guard.ts'], testPaths: [file],
+    };
+    row.details.measurementPin = {
+      schemaVersion: 1,
+      files: [{ path: 'libs/guard/src/guard.ts', dimension: 'source', repo: 'libs/guard',
+        sha256: mutation.subjectBeforeSha256, headBlob: null, clean: true }],
+      repos: [{ repo: 'libs/guard', head: 'e'.repeat(40), gitlink: 'e'.repeat(40) }],
+    };
+    return row;
+  }
+
+  it('credits a repository-relative subject pinned to one measured submodule source', () => {
+    expect(rating(nestedSourceProof()).rating).toBe('pass');
+  });
+
+  it.each(['missing-pin', 'different-bytes', 'fixture-only', 'unmeasured', 'different-repo', 'ambiguous'])
+    ('does not infer a nested source from incomplete or mismatched provenance: %s', defect => {
+      const row = nestedSourceProof();
+      const pin = row.details.measurementPin as {
+        files: Array<{ path: string; dimension: string; repo: string; sha256: string }>;
+        repos: Array<{ repo: string; head: string; gitlink: string }>;
+      };
+      if (defect === 'missing-pin') delete row.details.measurementPin;
+      if (defect === 'different-bytes') pin.files[0]!.sha256 = 'f'.repeat(64);
+      if (defect === 'fixture-only') pin.files[0]!.dimension = 'fixture';
+      if (defect === 'unmeasured') (row.details.currentMeasurement as { sourcePaths: string[] }).sourcePaths = ['other.ts'];
+      if (defect === 'different-repo') pin.files[0]!.repo = 'libs/other';
+      if (defect === 'ambiguous') {
+        pin.files.push({ ...pin.files[0]!, path: 'libs/other/src/guard.ts', repo: 'libs/other' });
+        pin.repos.push({ ...pin.repos[0]!, repo: 'libs/other' });
+        (row.details.currentMeasurement as { sourcePaths: string[] }).sourcePaths.push('libs/other/src/guard.ts');
+      }
+      expect(rating(row).rating).toBe('unknown');
+    });
+
   it.each(['missing', 'different', 'partial', 'incomplete', 'binder-only'])
     ('rejects a filtered baseline without canonical passing coverage: %s', defect => {
       const row = proof('mutation');
