@@ -114,15 +114,16 @@
       "limit": "The automatic restart is observed before/after. A health gap was not sampled during that restart."
     },
     "boundedObserver": {
-      "shellSession": 83056,
-      "finishedAt": "2026-10-15T23:15:38.207885Z",
-      "durationSeconds": 181.04,
-      "successfulBackgroundStatusSamples": 142,
-      "gapSamplesWithBackgroundStatus": 0,
+      "shellSession": 98190,
+      "finishedAt": "2026-10-15T23:35:22.725909Z",
+      "durationSeconds": 181.06,
+      "successfulBackgroundStatusSamples": 401,
+      "unhealthySamplesWithBackgroundStatus": 1,
+      "stoppedProcessGapSamples": 0,
       "everWrongOwner": false,
       "recoveredAfterGap": false,
-      "restartAttempt": "dev:restart refused with staging_sync_collision_staging_sync_in_flight; no collision override and no retry while the sync held its lock",
-      "limit": "This observation proves stable custody in its sampled window, not custody during a sampled outage. Several background status requests timed out."
+      "restartAttempt": "Natural staging-sync restart window was observed; the original staging PID remained alive, so no process-loss gap was measured. One 2-second staging health timeout recovered while background status remained configured3170/listeningfalse/servedByThisOperatorfalse.",
+      "limit": "This observation proves stable custody in its sampled window and records one transient health timeout, not custody across a process restart. A controlled restart-gap sample remains pending."
     },
     "localSecurity": {
       "startedAt": "2026-10-15T23:15:02.288444Z",
@@ -133,7 +134,18 @@
       "verified": "Both exact public Host and localhost on ingress41179 reject eight admin routes, reject missing JWTs, accept a private paired JWT for heartbeat/runtime-config, and reject a revoked JWT. Invalid JWT and pairing-token replay are rejected. Desktop mint advertises the protected public hostname.",
       "temporaryDeviceId": "bb6aeac4-beb0-44e6-ade6-84363b1f72d8",
       "cleanupVerified": true,
-      "probeCorrection": "The unknown-workspace probe incorrectly sent x-workspace-id and received200. Current middleware reads x-papercusp-workspace. The correction attempt timed out on its initial desktop mint before pairing, so the corrected header check remains pending; no second device was created by that attempt.",
+      "probeCorrection": "The original unknown-workspace probe used x-workspace-id, which is not the middleware header. Current middleware reads x-papercusp-workspace; the corrected probe below returned400 unknown_workspace and cleaned up its temporary device.",
+      "correctedWorkspaceProbe": {
+        "startedAt": "2026-10-15T23:27:36.962887Z",
+        "finishedAt": "2026-10-15T23:27:37.140988Z",
+        "header": "x-papercusp-workspace",
+        "status": 400,
+        "error": "unknown_workspace",
+        "passed": true,
+        "temporaryDeviceId": "120ff4ef-d33e-4ed0-93b9-08a7114b65b6",
+        "cleanupVerified": true,
+        "scope": "Authenticated request through the local protected ingress with the exact public Host; no provider or native acceptance claim."
+      },
       "limit": "Local socket proof; no public provider or native acceptance is implied."
     },
     "rawProviderRead": {
@@ -145,14 +157,13 @@
       "deviceRule": { "hostname": "api.papercuspai.com", "path": "^/api/device", "service": "http://localhost:3070", "originRequest": {} },
       "providerMutation": false
     },
-    "blocker": "Controlled health-gap sample pending; another staging sync held the restart lock",
-    "blockerEvidence": "The containing staging runtime is now serving. A second coordinated restart was safely refused while staging-sync held its exclusive checkout lock; the bounded observer finished without an outage sample.",
+    "blocker": "Controlled health-gap sample pending; observed natural health timeout did not coincide with process loss",
+    "blockerEvidence": "The accurate 2-second observer saw the original staging PID remain alive; one staging health timeout recovered, and background custody remained configured3170/listeningfalse/servedByThisOperatorfalse. A controlled process-loss gap was not sampled.",
     "remaining": [
       "Sample a coordinated restart health gap once staging-sync releases its lock, without overriding the collision guard.",
-      "Verify the unknown-workspace boundary using the current x-papercusp-workspace header.",
       "Recheck current custody and provider state before any public route correction; full P-008 remains open."
     ],
-    "ownedFollowUp": "EI-26087030423583632 source fix passes55 registered tests; completion recorded done with authority proposed pending source/test commit identity. This is not a deployed-fix claim."
+    "ownedFollowUp": "EI-26087030423583632 source fix passes55 registered tests; completion reattested with committed authority after source/test hashes matched committed bytes. This is not a deployed-fix claim."
   },
   "manualErrorRecoverySourceFix": {
     "workItem": "EI-26087030423583632",
@@ -161,6 +172,12 @@
     "behavior": "Clear the previous manual error only after an error-free listener=open result; preserve other-operator, disabled, non-serving, static-listener and Cloudflare warm-up error state.",
     "serviceSha256": "177b78ddb27da9f945ba7f99b58b90986b7d05912a4eb022eef89b144885f8b5",
     "testSha256": "827f2184301d65ae5927fcfcd9cc7e68a1710ff63fad023cd6ecb24d9255105c",
+    "committedContentVerification": {
+      "head": "05ef1d2954f4c0697b621a3cbefeb97040032e0d",
+      "sourceAndTestMatchRetainedHashes": true,
+      "completionAuthority": "committed",
+      "testsRerunForReattestation": false
+    },
     "originalSourceMap": "~/.papercusp/evidence/EI-26087030423583632-source-map-20261015T2309Z.json",
     "originalSourceMapSha256": "9ea7fbc822a459048b0990de1ff8ab246e8be8583e231fa964eec68bfd121627",
     "provenance": "Vite original-source evidence is stable and matches the changed source/test hashes. The shared checkout was dirty and moved; external/config capture is incomplete. No whole-candidate or deployment claim.",
