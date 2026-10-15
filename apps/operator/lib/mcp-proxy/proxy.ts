@@ -2166,6 +2166,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // traffic is saturated so concurrent recovery waits can actually register.
     "events:await",
     "events:cancel",
+    // A bounded events:status read lets a worker inspect await/wake state when a
+    // liveness event is silent. Keep that recovery read available during saturation.
+    "events:status",
     "work_items:checkpoint",
     "work_items:claimable",
     "work_items:complete",

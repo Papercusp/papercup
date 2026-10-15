@@ -4642,6 +4642,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("locks:release"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:await"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:cancel"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("events:status"))).toBe(true);
     expect(isReservedControlPlaneCall(call("work_items:checkpoint"))).toBe(
       true,
     );
@@ -4717,6 +4718,71 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       ),
     ).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from("{bad json"))).toBe(false);
+  });
+
+  it("keeps tools:invoke events:status available while ordinary admission is saturated", async () => {
+    let releaseOrdinary: () => void = () => {};
+    const ordinaryGate = new Promise<void>((resolve) => {
+      releaseOrdinary = resolve;
+    });
+    let ordinaryStarted: () => void = () => {};
+    const ordinaryStartedGate = new Promise<void>((resolve) => {
+      ordinaryStarted = resolve;
+    });
+    let upstreamRequests = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        upstreamRequests += 1;
+        if (upstreamRequests === 1) {
+          ordinaryStarted();
+          void ordinaryGate.then(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end('{"result":"ordinary"}');
+          });
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"events-status"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 2,
+        controlPlaneReserve: 1,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const heldOrdinary = request(
+      port(proxy),
+      JSON.stringify({ method: "tools/call", params: { name: "unit:ordinary" } }),
+    );
+    await ordinaryStartedGate;
+
+    const eventsStatus = await request(
+      port(proxy),
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "mcp__papercusp_su__events_status",
+            args: { event: "unit:liveness" },
+          },
+        },
+      }),
+    );
+    expect(eventsStatus.status).toBe(200);
+    expect(upstreamRequests).toBe(2);
+
+    releaseOrdinary();
+    await expect(heldOrdinary).resolves.toMatchObject({ status: 200 });
   });
 
   it("reserves only the bounded lexical-only recipes:search recovery form", () => {
