@@ -166,7 +166,10 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
 
   for (const testCase of RAIL_MIGRATION_CASES) {
     it(`${testCase.item}: ${testCase.id}`, async () => {
+      const blockedBefore = readRealPgRailBlocks().blocked;
       const result = await testCase.run();
+      expect(readRealPgRailBlocks().blocked, `${testCase.id}: producer dependency escaped to real PostgreSQL`)
+        .toBe(blockedBefore);
       expect(result.route).toBe(testCase.route);
       if (result.route === 'condition') {
         expect(result.openedKeys.length).toBeGreaterThan(0);

@@ -3809,6 +3809,7 @@ const alarmCases: Array<{ id: string; rowId: string; run: (deps: AlarmCapture) =
     run: async (attention) => {
       const { runDiskSpaceAlarmOnce, DEFAULT_DISK_POLICY } = await import('../storage/disk-space-alarm');
       const deps = { ...attention, emitToast: async () => {}, recentlyEscalated: async () => true,
+        readContext: async () => ({ devices: [], receipt: null }),
         attributeUsage: async () => ({ entries: [], truncated: false }) };
       const snapshot = { path: '/coverage', totalBytes: 100 * 1024 ** 3, freeBytes: 1,
         freePct: 0, totalInodes: 100, freeInodes: 100, freeInodesPct: 1 };
@@ -3821,7 +3822,7 @@ const alarmCases: Array<{ id: string; rowId: string; run: (deps: AlarmCapture) =
       const { runStorageGrowthAlarmOnce } = await import('../storage/storage-growth-alarm');
       const deps = { ...attention, emitToast: async () => {}, recentlyEscalated: async () => true,
         listTableSizes: async () => [], listDiskRootChildren: async () => ({ entries: [], truncated: false }),
-        countExemptSubsets: async () => [] };
+        countExemptSubsets: async () => [], readRetentionAges: async () => [] };
       const row: import('../storage/usage').StorageUsageRow = { id: 'coverage', label: 'Coverage',
         kind: 'pg', federation: 'local-diagnostic', trimmable: true, bloats: false,
         totalBytes: 1024 ** 4, totalRows: 1, ageBuckets: [], description: 'Coverage' };
