@@ -638,14 +638,15 @@ describe('first-party snapshot producer', () => {
     const src = tmp();
     write(src, {
       'packages/core/package.json': JSON.stringify({ name: '@fx/core' }),
-      'packages/core/lib/util.ts': 'export const u = 1;\n',
+      'packages/core/lib/util.ts': 'export function u() { return 1; }\n',
       'packages/core/lib/index.ts': "export * from './util';\n",
       'apps/web/tsconfig.json': JSON.stringify({
         compilerOptions: { paths: { '@/*': ['./*'], '@fx/core': ['../../packages/core/lib/index.ts'], '@fx/core/*': ['../../packages/core/*'] } },
       }),
-      'apps/web/page.ts': "import { u } from '@fx/core/lib/util';\nimport { h } from '@/lib/helper';\n",
+      'apps/web/package.json': JSON.stringify({ name: '@fx/web' }),
+      'apps/web/page.ts': "import { u } from '@fx/core/lib/util';\nimport { h } from '@/lib/helper';\nu();\n",
       'apps/web/lib/helper.ts': 'export const h = 1;\n',
-      'apps/other/x.ts': "import { u } from '@fx/core/lib/util';\n",
+      'apps/other/x.ts': "import { u as alias } from '@fx/core/lib/util';\nalias();\n",
       'untracked/y.ts': "import '../packages/core/lib/util';\n",
     });
     const git = (...args: string[]) =>
@@ -662,6 +663,12 @@ describe('first-party snapshot producer', () => {
     expect(r.stderr).toMatch(/GRAPH_SNAPSHOT status=written edges=4 /);
     const parsed = parseSnapshot(readFileSync(out, 'utf8'));
     expect(parsed.snapshot?.index).toMatchObject({ lastCommit: head, backend: FIRST_PARTY_BACKEND });
+    const raw = JSON.parse(readFileSync(out, 'utf8'));
+    expect(raw.symbols.schema).toBe('code-intel-symbol-snapshot-v1');
+    const symbol = raw.symbols.symbols.find((row: { name: string }) => row.name === 'u');
+    expect(symbol.callers.map((site: { spelling: string }) => site.spelling).sort()).toEqual(['alias', 'u']);
+    expect(symbol.callers.find((site: { path: string }) => site.path === 'apps/web/page.ts').workspace).toBe('@fx/web (apps/web)');
+    expect(symbol.sources.map((site: { path: string }) => site.path)).toContain('apps/web/package.json');
     expect(parsed.snapshot?.edges.map((e: { importer: string; imported: string }) => `${e.importer} -> ${e.imported}`).sort()).toEqual([
       'apps/other/x.ts -> packages/core/lib/util.ts',
       'apps/web/page.ts -> apps/web/lib/helper.ts',

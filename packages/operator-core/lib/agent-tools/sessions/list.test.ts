@@ -329,7 +329,7 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).not.toContain('spawn_id');
   });
 
-  it('pages unfiltered rows before wide metadata hydration and preserves filtered query semantics', async () => {
+  it('pages filtered and unfiltered rows before wide metadata hydration', async () => {
     const window = {
       since: '2026-07-13T13:30:00Z',
       until: '2026-07-13T14:30:00Z',
@@ -361,34 +361,42 @@ describe('sessions:list historical bounded census', () => {
     );
     const unfilteredSql = unfilteredQueries[0];
     const filteredSql = filteredQueries[0];
-    const mapStart = unfilteredSql.indexOf('session_map AS MATERIALIZED');
-    const mapEnd = unfilteredSql.indexOf('mapped_key_events AS', mapStart);
-    const pageStart = unfilteredSql.indexOf('paged_event_groups AS MATERIALIZED');
-    const pageLimit = unfilteredSql.indexOf('LIMIT', pageStart);
-    const finalMetadataSelect = unfilteredSql.indexOf('SELECT COALESCE(a.agent', pageStart);
-    const finalMetadataLookup = unfilteredSql.indexOf('FROM harness_shared.adv_sessions', finalMetadataSelect);
-    const filteredWhere = Math.max(filteredSql.lastIndexOf('e.source_kind ='), filteredSql.lastIndexOf('e.cwd ILIKE'));
-    const filteredOuterOrder = filteredSql.lastIndexOf('ORDER BY e.last_event_at DESC');
-    const filteredOuterLimit = filteredSql.lastIndexOf('LIMIT');
+    const assertLateHydration = (sql: string) => {
+      const mapStart = sql.indexOf('session_map AS MATERIALIZED');
+      const mapEnd = sql.indexOf('mapped_key_events AS', mapStart);
+      const pageStart = sql.indexOf('paged_event_groups AS MATERIALIZED');
+      const pageLimit = sql.indexOf('LIMIT', pageStart);
+      const finalMetadataSelect = sql.indexOf('SELECT COALESCE(a.agent', pageStart);
+      const finalMetadataLookup = sql.indexOf('FROM harness_shared.adv_sessions', finalMetadataSelect);
+      const membershipLookup = sql.indexOf('fleet_membership_events', finalMetadataSelect);
+
+      expect(mapStart).toBeGreaterThanOrEqual(0);
+      expect(mapEnd).toBeGreaterThan(mapStart);
+      expect(sql.slice(mapStart, mapEnd)).not.toContain('launch_spec');
+      expect(sql.slice(mapStart, mapEnd)).not.toContain('fleet_membership_events');
+      expect(pageStart).toBeGreaterThan(mapEnd);
+      expect(pageLimit).toBeGreaterThan(pageStart);
+      expect(finalMetadataSelect).toBeGreaterThan(pageLimit);
+      expect(finalMetadataLookup).toBeGreaterThan(finalMetadataSelect);
+      expect(membershipLookup).toBeGreaterThan(pageLimit);
+    };
 
     expect(unfiltered.ok).toBe(true);
     expect(unfiltered.sessions).toEqual(filtered.sessions);
     expect(unfiltered.sessions[0]).toMatchObject({ model: 'gpt-5.6', effort: 'xhigh' });
-    expect(mapStart).toBeGreaterThanOrEqual(0);
-    expect(mapEnd).toBeGreaterThan(mapStart);
-    expect(unfilteredSql.slice(mapStart, mapEnd)).not.toContain('launch_spec');
-    expect(unfilteredSql.slice(mapStart, mapEnd)).not.toContain('fleet_membership_events');
-    expect(pageStart).toBeGreaterThan(mapEnd);
-    expect(pageLimit).toBeGreaterThan(pageStart);
-    expect(finalMetadataSelect).toBeGreaterThan(pageLimit);
-    expect(finalMetadataLookup).toBeGreaterThan(finalMetadataSelect);
-    expect(unfilteredSql.indexOf('fleet_membership_events', pageStart)).toBeGreaterThan(pageStart);
+    assertLateHydration(unfilteredSql);
+    assertLateHydration(filteredSql);
 
-    expect(filteredSql).not.toContain('paged_event_groups AS MATERIALIZED');
-    expect(filteredSql).toContain('adv_launch_spec');
-    expect(filteredWhere).toBeGreaterThan(0);
-    expect(filteredWhere).toBeLessThan(filteredOuterOrder);
-    expect(filteredOuterOrder).toBeLessThan(filteredOuterLimit);
+    const filteredPageStart = filteredSql.indexOf('paged_event_groups AS MATERIALIZED');
+    const filteredSourcePredicate = filteredSql.indexOf('e.source_kind =', filteredPageStart);
+    const filteredCwdPredicate = filteredSql.indexOf('e.cwd ILIKE', filteredPageStart);
+    const filteredPageOrder = filteredSql.indexOf('ORDER BY e.last_event_at DESC', filteredPageStart);
+    const filteredPageLimit = filteredSql.indexOf('LIMIT', filteredPageStart);
+    expect(filteredSourcePredicate).toBeGreaterThan(filteredPageStart);
+    expect(filteredCwdPredicate).toBeGreaterThan(filteredPageStart);
+    expect(filteredSourcePredicate).toBeLessThan(filteredPageOrder);
+    expect(filteredCwdPredicate).toBeLessThan(filteredPageOrder);
+    expect(filteredPageOrder).toBeLessThan(filteredPageLimit);
   });
 
   it('aggregates raw event keys before mapping and splits null/non-null session joins', async () => {
