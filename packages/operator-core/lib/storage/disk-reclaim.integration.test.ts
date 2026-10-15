@@ -185,8 +185,9 @@ describe('retention on a real fixture tree', () => {
       const { getTask } = await import('../task-manager/store');
       for (const result of [streamed, listed, removed, repeated]) {
         const id = (result.detail as { taskId: string }).taskId;
-        await expect.poll(async () => (await getTask(id))?.state).toBe('exited');
-        expect(await getTask(id)).toMatchObject({ exitCode: 0 });
+        // The helper must await persistence itself. Polling here hid the window
+        // where a short-lived caller could exit and lose the terminal write.
+        expect(await getTask(id)).toMatchObject({ state: 'exited', exitCode: 0 });
       }
     } finally {
       await db.cleanup(); nativeDb.sql = undefined;
@@ -694,6 +695,12 @@ describe('retention on a real fixture tree', () => {
       expect(rows[4]!.details).toMatchObject({ root, selected: 1, processed: 1, remaining: 0, nextPath: null });
       expect(await readReclaimReceipt(sql, 'fixture-workspace')).toEqual(receipt);
       expect(await readReclaimReceipt(sql, 'fixture-workspace', receipt.id)).toEqual(receipt);
+      // JSONB changes insertion order. Verify the actual receipt values, not
+      // their string serialization, before allowing a continuation to remove.
+      expect(JSON.stringify(rows.at(-1)!.details)).not.toBe(JSON.stringify(receipt));
+      expect(await readReclaimReceipt(sql, 'fixture-workspace', receipt.id, receipt)).toEqual(receipt);
+      await expect(readReclaimReceipt(sql, 'fixture-workspace', receipt.id, { ...receipt, complete: !receipt.complete })).rejects.toThrow('exact receipt readback mismatch');
+      await expect(readReclaimReceipt(sql, 'other-workspace', receipt.id, receipt)).rejects.toThrow('exact receipt readback mismatch');
       expect(await readReclaimReceipt(sql, 'other-workspace', receipt.id)).toBeNull();
       expect(await readReclaimReceipt(sql, 'fixture-workspace', 'missing')).toBeNull();
       const dry = { ...receipt, id: 'dry-receipt', dryRun: true };

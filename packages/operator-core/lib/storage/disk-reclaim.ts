@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
@@ -113,8 +114,11 @@ export async function drainScheduledDiskReclaim(
 }
 
 export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
-/** Read an exact receipt, or the latest real pass, from the existing workspace audit ledger. */
-export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string): Promise<DiskReclaimReceipt | null> {
+/** Read an exact receipt, or the latest real pass, from the existing workspace audit ledger.
+ * Expected readbacks compare JSON values: JSONB may reorder object keys, while
+ * changed values, missing records and reordered arrays must still fail closed.
+ */
+export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string, expected?: DiskReclaimReceipt): Promise<DiskReclaimReceipt | null> {
   const rows = await sql.unsafe(
     `SELECT details FROM harness_shared.audit_log
       WHERE workspace_id = $1 AND action = 'disk-retention:receipt'
@@ -124,7 +128,9 @@ export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, i
       ORDER BY ts DESC, id DESC LIMIT 1`,
     id ? [workspaceId, id] : [workspaceId],
   ) as Array<{ details: DiskReclaimReceipt }>;
-  return rows[0]?.details ?? null;
+  const receipt = rows[0]?.details ?? null;
+  if (expected && !isDeepStrictEqual(receipt, expected)) throw new Error(`exact receipt readback mismatch ${expected.id}`);
+  return receipt;
 }
 export function reclaimReceiptHref(id: string): string {
   return `/settings/storage?reclaim=${encodeURIComponent(id)}`;
@@ -729,7 +735,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
       ? { ...detail, stderr, outputTruncated } : detail });
   };
   try {
-    await managedSpawn(command, args, {
+    const spawned = await managedSpawn(command, args, {
       class: 'other', title: 'scheduled disk retention delegate', argv: [command, ...args],
       launchedBy: 'system:disk-retention', planSlug: 'disk-headroom-standing-reclaim-2026-10-12',
       runtimeMaxSec: Math.ceil(timeoutMs / 1000), detail: { subsystem: 'storage', operation: 'retention-delegate' },
@@ -766,6 +772,9 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
         }
       },
     });
+    const result = await observed;
+    await spawned.waitForCompletion();
+    return result;
   } catch (error) { done(false, { error: message(error), taskId, output }); }
   return observed;
 }

@@ -61,6 +61,22 @@ describe.skipIf(!nativeHost)('fresh read-only kernel holder walks', () => {
       const nested = join(root, 'nested', 'file'); await writeFile(nested, 'test');
       held = await open(nested, constants.O_RDONLY);
       expect((await scan(root)).byPath[0]?.[1]).toContain(String(process.pid));
+      await held.close(); held = undefined;
+      // The full cwd iterator must cover a different live process, and must
+      // rebuild its evidence after that process exits.
+      const cwdChild = spawn(process.execPath, ['-e', 'process.chdir(process.argv[1]); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);', join(root, 'nested')], { stdio: ['ignore', 'pipe', 'pipe'] });
+      try {
+        await new Promise<void>((resolveReady, rejectReady) => {
+          cwdChild.stdout.once('data', () => resolveReady());
+          cwdChild.once('error', rejectReady);
+          cwdChild.once('exit', () => rejectReady(new Error('cwd fixture exited before readiness')));
+        });
+        expect((await scan(root)).byPath[0]?.[1]).toContain(String(cwdChild.pid));
+      } finally {
+        const exited = new Promise<void>(resolveExit => { if (cwdChild.exitCode !== null || cwdChild.signalCode !== null) resolveExit(); else cwdChild.once('exit', () => resolveExit()); });
+        cwdChild.kill(); await exited;
+      }
+      expect((await scan(root)).byPath).toEqual([]);
       const wrongControl = await request(target, process.pid, root);
       expect(wrongControl).toMatchObject({ complete: false, byPath: [] });
       expect(wrongControl.diagnostics.reason).toContain('cwd identity mismatch');

@@ -88,10 +88,13 @@ SEC("iter/task") int scan_cwds(struct bpf_iter__task *ctx) {
     if (!c || !s) return -1;
     if (!task) { s->cwd_end++; return 0; }
     s->tasks++;
-    struct fs_struct *fs = 0; struct dentry *d = 0; u32 pid = 0;
-    if (READ(fs, task, fs)) { s->failures++; return 0; }
+    /* Walk every task, with verifier-checked CO-RE loads of its cwd. These
+     * are the same fields/identities as the helper reads, not a cached census. */
+    struct fs_struct *fs = task->fs;
     if (!fs) return 0; /* Kernel threads have no userspace cwd. */
-    if (READ(d, fs, pwd.dentry) || READ(pid, task, tgid)) { s->failures++; return 0; }
+    struct dentry *d = fs->pwd.dentry;
+    u32 pid = task->tgid;
+    if (!d || !pid) { s->failures++; return 0; }
     if (pid == c->caller) {
         u64 dev = 0, ino = 0, start = 0; struct pid *identity_pid = 0; u32 level = 1;
         if (identity(d, &dev, &ino) || READ(identity_pid, task, thread_pid) || !identity_pid ||
@@ -100,6 +103,15 @@ SEC("iter/task") int scan_cwds(struct bpf_iter__task *ctx) {
          * if a coincident numeric PID and common cwd otherwise match. */
         else if (level == 0 && start / c->tick_ns == c->caller_start_ticks &&
                  dev == c->cwd_device && ino == c->cwd_inode) s->caller_seen++;
+    }
+    if (!c->directory) {
+        struct inode *i = d->d_inode;
+        if (!i) { s->failures++; return 0; }
+        if (i->i_ino != c->inode) return 0;
+        struct super_block *sb = i->i_sb;
+        if (!sb) { s->failures++; return 0; }
+        if (sb->s_dev == c->device) record(task, s);
+        return 0;
     }
     if (held(d, c, s)) record(task, s);
     return 0;

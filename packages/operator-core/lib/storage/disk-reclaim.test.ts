@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type RetentionEntry } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -19,6 +19,29 @@ const policy: RetentionClass[] = [
 ];
 const compiled = compilePolicy(policy, '/home/test');
 const entry = (path: string, classId: string, ageHours: number): RetentionEntry => ({ path, root: path.slice(0, path.lastIndexOf('/')), classId, newestWriteMs: now - ageHours * HOUR, bytes: 100, dev: 1, ino: 1 });
+
+describe('exact retention receipt readback', () => {
+  const expected: DiskReclaimReceipt = {
+    schemaVersion: 1, id: 'readback-receipt', startedAt: new Date(0).toISOString(), finishedAt: new Date(1000).toISOString(),
+    dryRun: false, complete: true, policyExhausted: true, devices: [], delegates: [], errors: [],
+    entries: ['first', 'second'].map((name) => ({ path: `/scratch/${name}`, classId: 'scratch', status: 'removed' as const, bytes: 1 })),
+  };
+  const sqlFor = (details: unknown): ReclaimSql => ({ unsafe: vi.fn().mockResolvedValue(details === null ? [] : [{ details }]) } as unknown as ReclaimSql);
+  it('accepts reordered object keys without relaxing the receipt values', async () => {
+    const reordered = { ...Object.fromEntries(Object.entries(expected).reverse()),
+      entries: expected.entries.map((value) => Object.fromEntries(Object.entries(value).reverse())) };
+    expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(expected));
+    expect(await readReclaimReceipt(sqlFor(reordered), 'workspace', expected.id, expected)).toEqual(expected);
+  });
+  it.each([
+    null,
+    { ...expected, complete: false },
+    { ...expected, entries: [...expected.entries].reverse() },
+    { ...expected, entries: expected.entries.map((value, index) => ({ ...value, bytes: index ? 1 : 2 })) },
+  ])('rejects missing or changed readback: %j', async (saved) => {
+    await expect(readReclaimReceipt(sqlFor(saved), 'workspace', expected.id, expected)).rejects.toThrow('exact receipt readback mismatch readback-receipt');
+  });
+});
 
 describe('bounded scheduled retention drain', () => {
   const partial = (overrides: Partial<DiskReclaimReceipt> = {}): DiskReclaimReceipt => ({
@@ -314,7 +337,7 @@ describe('native retention completion', () => {
       child.stdout.write('retention receipt');
       child.emit('close', code, null);
       await Promise.resolve();
-      return { child, taskId: 'fast-retention-task' };
+      return { child, taskId: 'fast-retention-task', waitForCompletion: async () => ({ status: 'recorded' }) };
     });
     await expect(nativeRetentionCommand('/repo', 'true', [])).resolves.toEqual({
       ok: code === 0, detail: { code, signal: null, taskId: 'fast-retention-task', output: 'retention receipt' },
@@ -326,7 +349,7 @@ describe('native retention completion', () => {
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'failed-retention-task');
       child.emit('error', new Error('fixture exec denied'));
-      return { child, taskId: 'failed-retention-task' };
+      return { child, taskId: 'failed-retention-task', waitForCompletion: async () => ({ status: 'recorded' }) };
     });
     await expect(nativeRetentionCommand('/repo', 'false', [])).resolves.toEqual({
       ok: false, detail: { error: 'fixture exec denied', taskId: 'failed-retention-task', output: '' },
@@ -342,7 +365,7 @@ describe('native retention completion', () => {
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'slow-retention-task');
       observed();
-      return { child, taskId: 'slow-retention-task' };
+      return { child, taskId: 'slow-retention-task', waitForCompletion: async () => ({ status: 'recorded' }) };
     });
     const result = nativeRetentionCommand('/repo', 'sleep', ['300']);
     await ready;
@@ -351,5 +374,26 @@ describe('native retention completion', () => {
       ok: false, detail: { error: 'delegate timeout', taskId: 'slow-retention-task', output: '' },
     });
     expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+  });
+
+  it('keeps a successful delegate pending until its terminal evidence is persisted', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const persistence = new Promise<void>((resolve) => { release = resolve; });
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'persisting-retention-task');
+      child.emit('close', 0, null);
+      return { child, taskId: 'persisting-retention-task', waitForCompletion: async () => {
+        entered(); await persistence; return { status: 'recorded' };
+      } };
+    });
+    let finished = false;
+    const result = nativeRetentionCommand('/repo', 'true', []).then((outcome) => { finished = true; return outcome; });
+    await waiting;
+    expect(finished).toBe(false);
+    release();
+    await expect(result).resolves.toMatchObject({ ok: true, detail: { code: 0, taskId: 'persisting-retention-task' } });
   });
 });
