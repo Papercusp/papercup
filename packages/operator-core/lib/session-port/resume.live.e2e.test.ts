@@ -78,6 +78,67 @@ function rows(sql: string, origin: string) {
     allowUnscoped: false, allowUnboundedJsonSearch: false }, origin).rows as Array<Record<string, any>>;
 }
 
+function matrixParentTaskId(env: NodeJS.ProcessEnv = process.env) {
+  const id = env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
+  if (!id || !/^[0-9a-z]{4,64}$/.test(id)) {
+    throw new Error('The final matrix requires a durable parent task before launching API fixtures');
+  }
+  return id;
+}
+
+function assertLauncherLogProgress(taskId: string, log: string) {
+  if (/JOB END: status=(?:failed|killed|timed_out)|JOB DIED|refusing to launch|session-port target bootstrap\/spawn failed/.test(log)) {
+    throw new Error(`Owned matrix launcher failed (${taskId}): ${log.slice(-4000)}`);
+  }
+}
+
+// expect.poll retries exceptions as assertion failures. A dead launcher is a
+// terminal error, so propagate it immediately rather than hiding it for 240s.
+async function waitForLauncherObservation(observe: () => boolean | Promise<boolean>, timeout: number,
+  interval = 5000) {
+  const deadline = Date.now() + timeout;
+  while (true) {
+    if (await observe()) return;
+    if (Date.now() >= deadline) throw new Error(`Owned matrix observation did not converge within ${timeout}ms`);
+    await new Promise(resolve => setTimeout(resolve, Math.min(interval, deadline - Date.now())));
+  }
+}
+
+function assertSourceAvailable(source: Session, origin: string) {
+  const active = rows(`SELECT active.id FROM harness_shared.adv_sessions active
+    WHERE active.workspace_id = ${literal(workspace)} AND active.ended_at IS NULL
+    AND (active.id = ${Number(source.id)} OR active.coord_owner_id = ${literal(source.coord_owner_id)}
+      OR active.id IN (SELECT port.target_adv_session_id FROM harness_shared.session_ports port
+        WHERE port.workspace_id = ${literal(workspace)} AND port.source_adv_session_id = ${Number(source.id)}))
+    ORDER BY active.id DESC LIMIT 10`, origin);
+  expect(active, `Source ${source.id} still has a live fixture; cleanup must finish before another launch`).toEqual([]);
+}
+
+describe('owned matrix lifetime and progress', () => {
+  it('requires the real managed parent marker', () => {
+    expect(matrixParentTaskId({ PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'parent123' })).toBe('parent123');
+    expect(() => matrixParentTaskId({})).toThrow('durable parent task');
+    expect(() => matrixParentTaskId({ PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '../bad' })).toThrow();
+  });
+  it.each(['failed', 'killed', 'timed_out'])('stops immediately when the launcher is %s', async status => {
+    let observations = 0;
+    await expect(waitForLauncherObservation(() => {
+      observations++;
+      assertLauncherLogProgress('fixture123', `[capability:bash] JOB END: status=${status} exit=1`);
+      return false;
+    }, 240_000)).rejects.toThrow('Owned matrix launcher failed');
+    expect(observations).toBe(1);
+  });
+  it('waits for a pending observation and accepts a clean launcher exit', async () => {
+    let observations = 0;
+    await waitForLauncherObservation(() => {
+      assertLauncherLogProgress('fixture123', '[capability:bash] JOB END: status=completed exit=0');
+      return ++observations === 3;
+    }, 1000, 0);
+    expect(observations).toBe(3);
+  });
+});
+
 async function native(session: Session, archivedSource = false) {
   const id = session.agent === 'omp' ? session.omp_thread_id ?? session.session_id : session.session_id;
   if (!id) return undefined;
@@ -107,6 +168,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     expect(resolveAgentWorkspaceRoot(recordContext), 'Recorder must measure this committed test tree').toBe(root);
     const owner = call('coord:whoami', {}, origin).ownerId as string;
     expect(owner).toBe(process.env.PAPERCUSP_SID);
+    const parentTaskId = matrixParentTaskId();
     const ids = profile.resumeMatrix.sourceAdvSessionIds as number[];
     expect(ids).toHaveLength(3);
     expect(ids.every(id => Number.isSafeInteger(id) && id > 0)).toBe(true);
@@ -117,6 +179,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     expect(new Set(sessions.map(session => session.agent))).toEqual(new Set(['claude', 'codex', 'omp']));
     for (const source of sessions) {
       expect(source.ended_at, `Source ${source.id} must be an ended plan fixture`).toBeTruthy();
+      assertSourceAvailable(source, origin);
       const snapshot = await native(source, true);
       expect(snapshot?.text).toContain('MATRIX-SRC');
     }
@@ -139,6 +202,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
       runtimeUnits: profile.runtimeUnits,
       run: async () => {
         const launch = async (source: Session, target?: SessionBackend) => {
+          assertSourceAvailable(source, origin);
           const startedAt = new Date().toISOString();
           const args = ['--no-picker', '--headless', `--workspace=${workspace}`, '--harness=papercusp',
             '--no-plan', '--context-size=trimmed', '--account=auto', `--launched-by=${owner}`,
@@ -161,6 +225,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             `${canonical}/apps/operator/scripts/psu-launcher.mjs`, ...args].map(shellQuote).join(' ');
           const task = call('capability:bash', { command, cwd: canonical, timeout: 900_000,
             run_in_background: true, work_item_id: 'WI-6554700010009934',
+            parent_task_id: parentTaskId,
             description: `Final matrix ${source.agent} to ${target ?? 'original backend'}` }, origin);
           expect(task.task_id).toBeTruthy();
           expect(task.log_path).toBeTruthy();
@@ -169,15 +234,13 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             let log = '';
             try { log = readFileSync(task.log_path, 'utf8'); }
             catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-            if (/JOB END: status=(?:failed|killed)|JOB DIED|refusing to launch|session-port target bootstrap\/spawn failed/.test(log)) {
-              throw new Error(`Owned matrix launcher failed (${task.task_id}): ${log.slice(-4000)}`);
-            }
+            assertLauncherLogProgress(task.task_id, log);
           };
           let primaryError: unknown;
           try {
             let resumed!: Session;
             let port: Record<string, any> | undefined;
-            await expect.poll(() => {
+            await waitForLauncherObservation(() => {
               assertLauncherProgress();
               const candidates = rows(`SELECT id, agent, coord_owner_id, session_id, omp_thread_id, ended_at,
                 port_id FROM harness_shared.adv_sessions WHERE workspace_id = ${literal(workspace)}
@@ -194,13 +257,13 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
                 AND prepared_at >= ${literal(startedAt)}::timestamptz
                 AND target_adv_session_id = ${Number(resumed.id)} ORDER BY prepared_at DESC LIMIT 1`, origin)[0];
               return port?.status === 'delivered';
-            }, { timeout: 240_000, interval: 5000 }).toBe(true);
+            }, 240_000);
             let snapshot: Awaited<ReturnType<typeof native>>;
-            await expect.poll(async () => {
+            await waitForLauncherObservation(async () => {
               assertLauncherProgress();
               snapshot = await native(resumed);
               return Boolean(snapshot?.text.includes(target ? `port-id: ${port!.id}` : 'MATRIX-SRC'));
-            }, { timeout: 120_000, interval: 5000 }).toBe(true);
+            }, 120_000);
             if (!target) expect(snapshot!.id).toBe(source.agent === 'omp'
               ? source.omp_thread_id ?? source.session_id : source.session_id);
             else {
