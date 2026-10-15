@@ -204,6 +204,7 @@ import {
   reportSessionPortDelivery,
   reportSessionPortLaunchFailure,
   sessionPortLaunchAbortError,
+  launchFreshSu,
   tryRematerializeFromArchive,
   isClaudeConfigDirLaunchReady,
   ensureInteractiveConfigViaOperator,
@@ -9313,6 +9314,52 @@ describe("suWrapperExtraArgs (P-032 omp-parity passthrough)", () => {
     });
     expect(argv).toContain('model_auto_compact_token_limit=180000');
     expect(argv).not.toContain('model_auto_compact_token_limit=784800');
+  });
+
+  it.each([
+    { label: 'registered over stale launch budget', current: 225_000, legacy: 250_000, threshold: 180_000, passthrough: [] },
+    { label: 'registered with absent launch budget', current: 225_000, legacy: null, threshold: 180_000, passthrough: [] },
+    { label: 'legacy launch budget without registered metadata', current: null, legacy: 250_000, threshold: 200_000, passthrough: [] },
+    { label: 'registered over conflicting duplicate overrides', current: 225_000, legacy: 250_000, threshold: 180_000,
+      passthrough: ['-c', 'model_auto_compact_token_limit=784800', '--config=model_auto_compact_token_limit=200000',
+        '-cmodel_auto_compact_token_limit=900000', '--config', 'model_auto_compact_token_limit=600000', '-c', 'service_tier="fast"'] },
+  ])('fresh Codex launch boundary preserves $label', async ({ current, legacy, threshold, passthrough }) => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+    const apiImpl = vi.fn(async () => ({
+      agent: 'codex', sessionId: 'budget-test', cwd: '/unused',
+      promptFile: '/unused/prompt.md', compactionLimit: current,
+      envelopeEnv: { CODEX_HOME: '/unused/codex-home' },
+    }));
+    const runWrapperImpl = vi.fn();
+    await launchFreshSu({ agent: 'codex', workspace: 'budget-test' }, {
+      model: 'gpt-6.1-sol:xhigh', account: 'auto', headless: true,
+      picker: false, noKickoff: true, compactionLimit: legacy, passthrough,
+    }, {
+      apiImpl, runWrapperImpl,
+      preflightCodexAutoPoolImpl: vi.fn(async () => true),
+      runLaunchPreflightImpl: vi.fn(),
+    });
+
+    expect(apiImpl).toHaveBeenCalledWith('/api/agent-mcp/console/bootstrap-su', expect.any(Object));
+    expect(runWrapperImpl).toHaveBeenCalledOnce();
+    const launch = runWrapperImpl.mock.calls[0][0];
+    expect(launch.envelopeEnv.CODEX_HOME).toBe('/unused/codex-home');
+    const overrides: string[] = [];
+    for (let i = 0; i < launch.args.length; i++) {
+      const arg = launch.args[i];
+      const config = arg === '-c' || arg === '--config' ? launch.args[++i]
+        : arg.startsWith('--config=') ? arg.slice('--config='.length)
+        : arg.startsWith('-c') ? arg.slice(2) : null;
+      if (config?.startsWith('model_auto_compact_token_limit=')) overrides.push(config);
+    }
+    expect(overrides).toEqual([`model_auto_compact_token_limit=${threshold}`]);
+    expect(launch.args).not.toContain('model_auto_compact_token_limit=784800');
+    if (passthrough.length) expect(launch.args).toContain('service_tier="fast"');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('psu: codex (su)'));
+    } finally {
+      log.mockRestore();
+    }
   });
 
   // The claude CLI takes effort as its own flag — a verbatim `<model>:<effort>` spec
