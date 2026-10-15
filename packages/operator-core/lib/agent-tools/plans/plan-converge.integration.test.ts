@@ -136,6 +136,29 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(refused).toMatchObject({ ok: false, phase: 'certify', proposalsOmitted: 7 });
     expect(JSON.stringify(refused).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
   });
+  it('fits a realistic worst case by measuring the serialized return, never by row count alone', async () => {
+    // The second live preview (real plan: long AUTO-BAR spec ids, several blockers per row,
+    // object-valued audit/certifier fields) returned 1676 chars after the row cap of five.
+    expect(script).toContain(`const SUMMARY_BUDGET = ${DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS};`);
+    const nested = { detail: 'y'.repeat(3000), rows: Array.from({ length: 40 }, (_, i) => ({ i, note: 'z'.repeat(50) })) };
+    const blockers = ['falsifiability', 'freshness', 'traceability', 'reachability', 'oracle'];
+    const longRows = Array.from({ length: 31 }, (_, i) => row({
+      specId: `AUTO-BAR-R-${String(i).padStart(2, '0')}-P-031-spec-driven-tooling-integration-clause`,
+      wouldBlock: blockers }));
+    const worst = controls(longRows, { audit: { ok: true, preview: nested, itemsAuditedThisPass: 1 },
+      certify: { ok: true, counts: { clauses: 31, filed: 0, notPassing: 31, byReason: nested } } });
+    for (const dryRun of [true, false]) {
+      const result = await execute(worst.tools, { dryRun });
+      expect(JSON.stringify(result).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
+      expect(result).toMatchObject({ ok: true, nonPassing: 31, byClassification: { major: 31 } });
+      expect(result.gaps.length).toBeGreaterThan(0);
+      expect(result.gaps.length + result.gapsOmitted).toBe(31);
+    }
+    const refusedWorst = await execute(controls(longRows, { certify: { ok: false, error: nested, counts: nested } }).tools);
+    expect(JSON.stringify(refusedWorst).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
+    expect(refusedWorst).toMatchObject({ ok: false, phase: 'certify' });
+    expect(refusedWorst.proposals.length + refusedWorst.proposalsOmitted).toBe(31);
+  });
 });
 
 describe('converge real PostgreSQL composition', () => {
