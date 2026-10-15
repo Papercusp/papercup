@@ -1,11 +1,9 @@
 /** Child of governance-http.integration.test.ts; never run against a shared operator. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { resolve } from 'node:path';
 import { readProcessIdentity } from '../lib/process-identity';
-import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { getOrgPg } from '@papercusp/db-org';
 import { insertHiveIfAbsent } from '../lib/hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
@@ -87,17 +85,8 @@ async function main() {
   const root = resolve(import.meta.dirname, '../../..');
   const evidenceDir = e.GOVERNANCE_HTTP_EVIDENCE_DIR!;
   assert.ok(evidenceDir && !evidenceDir.startsWith('/tmp/'));
-  const bundle = join(evidenceDir, 'hono-host.mjs');
   console.log('GOVERNANCE_HTTP_PHASE bundle-start');
-  try {
-    const out = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-    writeFileSync(join(evidenceDir, 'build.log'), out);
-  } catch (error: any) {
-    writeFileSync(join(evidenceDir, 'build.log'), String(error.stdout ?? '') + String(error.stderr ?? ''));
-    throw error;
-  }
-  const bundleSha256 = createHash('sha256').update(readFileSync(bundle)).digest('hex');
+  const { path: bundle, sha256: bundleSha256 } = buildPrivateOperatorApiBundle(root, evidenceDir);
   console.log('GOVERNANCE_HTTP_PHASE bundle-ready ' + bundleSha256);
   const hostEnv = privateBundleRuntimeEnv(e);
   host = spawn(process.execPath, [bundle], { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });

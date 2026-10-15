@@ -570,6 +570,11 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/prepare/operator-api-inputs.json',
     'phases/prepare/verifier-source.json', 'phases/execute/worker-result.json',
     'phases/execute/lifecycle-observation.json',
+    // Keep the builder's original streams and journal when the assertion tail
+    // is dominated by cleanup output. build.log also covers older fixtures.
+    'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
+    'phases/execute/build.log', 'phases/execute/operator-api-build.log',
+    'phases/execute/hono-host.mjs.build-steps.jsonl',
     'phases/execute/worker-progress.ndjson',
     'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',

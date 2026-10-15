@@ -72,11 +72,12 @@ it('allows a progressing real build beyond its checkpoint and retains its bounde
   expect(receipt.elapsedMs).toBeLessThan(2400);
 });
 
-it.each(['logs', 'repeated-step', 'incomplete-step'])('does not renew a stalled build for %s', async noise => {
+it.each(['logs', 'repeated-step', 'repeated-step-new-pid', 'incomplete-step'])('does not renew a stalled build for %s', async noise => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
   const command = noise === 'logs' ? 'echo STILL_ALIVE'
     : noise === 'repeated-step' ? 'bundle_host_run_step same true'
+    : noise === 'repeated-step-new-pid' ? '(bundle_host_run_step same true)'
     : 'printf \'{"at":\' >> "$BUNDLE_HOST_STEP_LOG"';
   await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
     args: ['-c', `source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step same true; while true; do ${command}; sleep .08; done`,

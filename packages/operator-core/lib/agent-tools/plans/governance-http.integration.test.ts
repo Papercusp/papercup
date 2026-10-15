@@ -15,6 +15,7 @@ it('ratifies through the production HTTP plans door and executes only the signed
       'scripts/lib/with-test-pg-cleanup.mjs',
       'scripts/test-files.mjs', 'scripts/lib/batch-watchdog.mjs',
       'packages/operator-core/test/isolated-integration-proof.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/lib/agent-tools/plans/governance-event.ts',
       'packages/operator-core/lib/agent-tools/plans/governance-local-action.ts',
       'packages/operator-core/lib/agent-tools/plans/governance-federation.ts',

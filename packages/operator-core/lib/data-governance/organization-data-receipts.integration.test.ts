@@ -851,9 +851,21 @@ describe('organization data receipts (P-007c)', () => {
       await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
         VALUES (${tenant}::uuid, ${id}::uuid, 'owner', 'organization_bootstrap')`;
     }
+    const hostId = `support-host-${workspaceId}`;
+    await org.adminSql`INSERT INTO harness_shared.workspace_host_connections
+      (workspace_id, id, target, label, credential_ref, status)
+      VALUES ('control', ${`support-connection-${workspaceId}`}, 'gcp', 'Support export',
+        'support-export-credential', 'connected')`;
+    await org.adminSql`INSERT INTO harness_shared.workspace_hosts
+      (workspace_id, id, name, connection_id, target, scope_label, region, size, image, disk_gib,
+       network, desired_state, observed_state)
+      VALUES ('control', ${hostId}, 'Support export host', ${`support-connection-${workspaceId}`},
+        'gcp', 'project', 'us-central1', 'e2-small', 'image', 20, 'network', 'running', 'running')`;
     await org.adminSql`INSERT INTO harness_shared.customer_workspaces
-      (workspace_id, id, organization_id, display_name)
-      VALUES ('control', ${workspaceId}::uuid, ${organizationId}::uuid, 'Support export workspace')`;
+      (workspace_id, id, organization_id, workspace_host_id, display_name,
+       state, created_by_principal_kind, created_by_principal_id)
+      VALUES ('control', ${workspaceId}::uuid, ${organizationId}::uuid, ${hostId},
+        'Support export workspace', 'active', 'user', ${userId})`;
     await org.adminSql`INSERT INTO papercusp_auth.support_access_grants
       (id, organization_id, staff_principal_id, granted_by_user_id, purpose, scopes, banner_message, starts_at, expires_at)
       VALUES (${grantId}::uuid, ${organizationId}::uuid, ${staffId}, ${userId}::uuid, 'Requested customer export',
@@ -876,7 +888,7 @@ describe('organization data receipts (P-007c)', () => {
       WHERE id = ${exported.receiptId}::uuid`;
     expect(receipt).toEqual([expect.objectContaining({ actor_kind: 'staff_admin', actor_id: staffId, purpose: 'Requested customer export' })]);
     const personal = await support.exportData(staff, { ...input, userId });
-    expect(personal.stores.find(s => s.store === 'papercusp_auth.organizations')?.rows).toEqual([]);
+    expect(personal.stores.find(s => s.store === 'papercusp_auth.organizations')?.rows ?? []).toEqual([]);
     expect(personal.stores.find(s => s.store === 'papercusp_auth.hosted_users')?.rows)
       .toEqual([expect.objectContaining({ id: userId })]);
     await expect(support.exportData({ ...staff, slug: 'another-staff-member' }, input)).rejects.toThrow('grant_inactive');

@@ -56,6 +56,9 @@ export function operationFromCurrentSpecification(
 import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
 import { BlueprintOperationRefusal } from './operation-refusal';
 import { storeOperationPrivateInput } from './operation-private-input';
+import type { PersonalToolContext } from '../personal-vault/types';
+import { assertSupportCaseInput, type SupportCaseInput } from './support-workflow-contract';
+import { supportWorkflowFromOperation } from './support-workflow-operation';
 
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationHandleSchema = z.object({
@@ -92,6 +95,8 @@ export interface SubmitBlueprintOperationInput {
  * public operation input so a caller cannot select an older definition. */
 export interface InternalBlueprintOperationSubmission {
   expectedSpecificationRevision?: string;
+  /** Verified transport identity; never a field of SubmitArgsSchema. */
+  principal?: PersonalToolContext['principal'] & { trust?: string };
   /** Trusted routine caller only; never exposed in the public submission schema. */
   beforeNewAdmission?: (tx: TransactionSql) => Promise<void>;
 }
@@ -197,6 +202,33 @@ export function submitBlueprintOperation(
     const targetKind = previous[0]?.target_kind ?? operation.target.kind;
     if (targetKind !== operation.target.kind) throw new Error('blueprint operation receipt and pinned target disagree');
 
+    let privateInput = input.privateInput;
+    const supportWorkflow = supportWorkflowFromOperation(operation, input.harnessSlug, revision);
+    if (supportWorkflow) {
+      if (input.expectedSpecificationRevision !== revision || input.privateInput !== undefined) {
+        throw new BlueprintOperationRefusal('invalid_payload',
+          'support workflow requires the displayed approved revision and server-read case content');
+      }
+      const principal = internal?.principal;
+      if (!principal?.slug || (callerId !== principal.slug && !callerId.startsWith(`${principal.slug}/`)) ||
+          principal.workspaceId !== input.workspaceId) {
+        throw new BlueprintOperationRefusal('handle_mismatch', 'support workflow requires its authenticated submitting principal');
+      }
+      let selection: SupportCaseInput;
+      try { selection = assertSupportCaseInput(supportWorkflow, input.input as unknown as SupportCaseInput); }
+      catch { throw new BlueprintOperationRefusal('invalid_payload', 'support case selection is outside the approved workflow'); }
+      const { readSelectedSupportCase } = await import('./support-workflow-case');
+      const selected = await readSelectedSupportCase(sql, {
+        workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+        role: operation.execution?.kind === 'agent' ? operation.execution.role : undefined, principal,
+      }, supportWorkflow, selection);
+      if (!selected.allowed) {
+        throw new BlueprintOperationRefusal('invalid_payload', `support case access refused: ${selected.reason}`);
+      }
+      privateInput = { supportCaseId: selection.supportCaseId,
+        documents: selected.results.map(({ id, source, externalId, title, snippet }) => ({ id, source, externalId, title, snippet })) };
+    }
+
     // D-014: private input is stored BEFORE acceptance, so the worker that claims
     // the item can always read it. Only a work-item target has a holder to read it.
     const privateInputSchema = (operation as { privateInputSchema?: Record<string, unknown> }).privateInputSchema;
@@ -207,7 +239,7 @@ export function submitBlueprintOperation(
     await storeOperationPrivateInput(sql, {
       workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, callerId,
       operationId: input.operationId, requestKey,
-    }, { schema: privateInputSchema, value: input.privateInput, alreadyAccepted: previous.length > 0 });
+    }, { schema: privateInputSchema, value: privateInput, alreadyAccepted: previous.length > 0 });
 
     let target: BlueprintOperationHandle['target'];
     if (targetKind === 'work-item') {

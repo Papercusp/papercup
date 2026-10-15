@@ -27,7 +27,7 @@ export default defineTool({
         expectedSpecificationRevision: args.expectedSpecificationRevision,
         privateInput: args.privateInput,
         title: args.title, summary: args.summary,
-      }),
+      }, { principal: ctx.principal }),
     }));
   },
 });

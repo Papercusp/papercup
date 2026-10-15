@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { checkAgainstJsonSchema } from '../json-schema-validation';
+import { supportToEngineeringOperation, supportWorkflowFromOperation } from './support-workflow-operation';
 import {
   assertApprovedSupportWorkflow,
   assertSupportCaseInput,
@@ -20,6 +23,22 @@ const output = {
 };
 
 describe('P-012b support workflow contract', () => {
+  it('declares the selected workflow on the canonical operation manifest and pins its policy', () => {
+    const operation = supportToEngineeringOperation({ id: workflow.operationId, version: '1', role: 'worker',
+      identity: { kind: 'identity', ref: 'worker-domain', revision: '1', contentHash: 'b'.repeat(64) },
+      ...workflow });
+    const source = { id: 'support-workflow', workItem: { kind: 'task' }, roles: [{ id: 'worker' }],
+      spine: { edges: { DONE: { to: 'done' } } }, dependencies: { tools: ['blueprint:read-private-input'] },
+      operations: [operation] };
+    expect(BlueprintSchema.safeParse(source).success).toBe(true);
+    const specification = compileAgentSpecification({ source });
+    expect(supportWorkflowFromOperation(operation, workflow.harnessSlug, specification.specificationRevision))
+      .toEqual({ ...workflow, approvedRevision: specification.specificationRevision });
+    expect(checkAgainstJsonSchema(operation.acceptance.resultSchema, output).ok).toBe(true);
+    expect(checkAgainstJsonSchema(operation.inputSchema, { ...selection,
+      approvedRevision: workflow.approvedRevision, query: 'cobalt roadmap', requestedAction: 'publish' }).ok).toBe(false);
+    expect(checkAgainstJsonSchema(operation.acceptance.resultSchema, { ...output, citations: [] }).ok).toBe(false);
+  });
   it('requires an accountable owner, distinct reviewer and finite maximum', () => {
     expect(() => assertApprovedSupportWorkflow({ ...workflow, reviewerPrincipals: ['reviewer-a', 'reviewer-a'] })).toThrow(/distinct/);
     expect(() => assertApprovedSupportWorkflow({ ...workflow, maximumCostMicros: 0 })).toThrow(/malformed/);

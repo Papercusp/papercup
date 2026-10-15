@@ -32,7 +32,7 @@ it('current-build bootstrap preserves registered budgets in its response, native
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
-      const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
         STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir, STAGING_FIRST_HTTP_SCENARIO: 'codex-budget',
         TMPDIR: process.env.TMPDIR ?? join(evidenceDir, 'tmp') };
       delete env.PC_HEAVY_PREEMPT_READY_FILE;

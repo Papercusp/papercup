@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import type { Plugin } from 'esbuild';
 import { parse as parseToml } from '@iarna/toml';
 import { classifyHttpError } from '@papercusp/papercusp-shared/agent';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { CODEX_REFUSAL_BODY_MAX_BYTES, codexModelRefusalDetail, isCodexModelRefusal } from '../lib/inference-gateway/codex-model-refusals';
 import { presentedSecretsFromHeaders, scrubErrorText } from '../lib/inference-gateway/error-body-scrub';
 import { ensureWorkspaceEntry, isKnownWorkspace } from '../lib/workspace-registry';
@@ -779,9 +780,9 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
             if (!Number.isFinite(step.at) || step.at < started / 1000 || !Number.isSafeInteger(step.pid) || step.pid <= 0
               || typeof step.step !== 'string' || !step.step) continue;
             const key = `${step.pid}:${step.step}`;
-            if (step.event === 'start' && !completed.has(key)) openSteps.add(key);
-            else if (step.event === 'end' && step.status === 0 && openSteps.delete(key) && !completed.has(key)) {
-              completed.add(key); lastProgressAt = Date.now();
+            if (step.event === 'start' && !completed.has(step.step)) openSteps.add(key);
+            else if (step.event === 'end' && step.status === 0 && openSteps.delete(key) && !completed.has(step.step)) {
+              completed.add(step.step); lastProgressAt = Date.now();
             }
           } catch { /* an invalid journal row cannot extend the deadline */ }
         }
@@ -791,7 +792,8 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
         try { sample(); }
         catch (error) { failure = error as Error; stopGroup(child.pid); }
       };
-      const poll = setInterval(observeProgress, builder.pollMs ?? 250);
+      const poll = managedSetInterval('private-operator-bundle-build-progress', builder.pollMs ?? 250,
+        observeProgress, { category: 'watchdog', classification: 'must-sample', instanced: true, allowInTest: true });
       let deadline: ReturnType<typeof setTimeout>;
       const expire = () => {
         observeProgress();
@@ -808,7 +810,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
       deadline = setTimeout(expire, timeoutMs);
       child.once('error', error => { failure = error; stopGroup(child.pid); });
       child.once('close', (status, signal) => {
-        clearInterval(poll); clearTimeout(deadline);
+        poll.stop(); clearTimeout(deadline);
         receipt = { ...receipt, pid: child.pid, status, signal,
           progress: { extensions, completedSteps: completed.size },
           error: failure && { code: (failure as NodeJS.ErrnoException).code, message: failure.message } };
