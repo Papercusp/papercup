@@ -1274,6 +1274,166 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
     return { route: 'condition', openedKeys, resolvedKeys };
   },
 }, {
+  id: 'goal-drain-original-independent-obligations-and-exact-subject-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const { runGoalDrainFleetSweepOnce, fleetKey, goalDrainConditionKey } =
+      await import('../system-health/goal-drain-fleet-watchdog');
+    type Goal = import('../system-health/goal-drain-fleet-watchdog').GoalDrainRowLike;
+    type Cohort = import('../system-health/goal-drain-fleet-watchdog').GoalPlanFleetCohort;
+    type FleetState = import('../system-health/goal-drain-fleet-watchdog').DrainFleetLiveness;
+    const at = 1_900_000_000_000;
+    const open = new Set<string>(), openedKeys: string[] = [], resolvedKeys: string[] = [];
+    const rail = { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true);
+      if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+      open.add(event.conditionKey!); return true;
+    }, resolve: async (event: { conditionKey: string }) => {
+      if (!open.delete(event.conditionKey)) return false;
+      resolvedKeys.push(event.conditionKey); return true;
+    } };
+    const originals: Goal[] = [null, 'dead', 'missing', 'unscoped', 'capped'].map((drainFleet, index) => ({
+      workspaceId: 'fixture', goalId: `goal-${index}`, title: `Goal ${index}`,
+      createdAtMs: at - 10_000_000, drainFleet,
+      ...(drainFleet === 'capped' ? { standing: true, drainRespawn: { deadSinceMs: at - 1000, needsHuman: true } } : {}),
+    }));
+    let goals = originals.map(goal => ({ ...goal })), unknown = false;
+    let fleets = new Map<string, FleetState>([
+      [fleetKey('fixture', 'dead'), 'dead'], [fleetKey('fixture', 'missing'), 'not-found'],
+      [fleetKey('fixture', 'unscoped'), 'alive'], [fleetKey('fixture', 'capped'), 'dead'],
+    ]);
+    let scoped = false;
+    const plan = (planSlug: string, claimed: boolean, alive: boolean) => ({ workspaceId: 'fixture', goalId: 'goal-0',
+      harnessSlug: 'pot', planSlug, itemIds: ['P-001'], targetingFleets: alive ? [
+        { fleetSlug: 'plan-fleet', liveness: 'alive' as const, liveClaimItemIds: claimed ? ['P-001'] : [] },
+      ] : [] });
+    let cohort: Cohort = { status: 'known', plans: [plan('plan-A', false, false), plan('plan-B', false, true)] };
+    const escalate = vi.fn(async () => { expect(open.size).toBeGreaterThan(0); });
+    const notify = vi.fn(async () => {});
+    const run = () => runGoalDrainFleetSweepOnce(null as unknown as import('postgres').Sql, {
+      readGoals: async () => ({ goals, holders: goals.map(goal => ({ ...goal, ownerId: 'holder', setAtMs: at - 1000 })) }),
+      resolveLiveness: async () => unknown ? new Map() : new Map([['holder', { ownerId: 'holder', sessionState: 'live',
+        wakeable: true, liveTurn: true, confirmLiveness: null, heartbeatFresh: true }]]),
+      resolveFleetLiveness: async () => unknown ? new Map() : fleets,
+      resolveFleetSpecScopes: async () => new Map(goals.map(goal => [goal.goalId, scoped ? 'goal-scoped' : 'not-goal-scoped'])),
+      flagEnabled: async () => true, now: () => at, graceMs: 1000, rail,
+      relaunchFlagEnabled: async () => false, readPullStallAlerts: async () => [], clearDrainLedger: async () => {},
+      escalate, emitDrainDead: async () => {},
+      readPlanFleetCohort: async () => cohort, escalatePlanFleet: async () => ({ opened: false }),
+      emitPlanFleet: async () => {}, notifyPlanFleetHolders: notify,
+    });
+    await run(); expect(open.size).toBe(8);
+    await run(); expect(openedKeys).toHaveLength(8); expect(notify).not.toHaveBeenCalled();
+    unknown = true; await run(); expect(open.size).toBe(8);
+    unknown = false; goals = []; await run(); expect(open.size).toBe(8);
+    goals = originals.map(goal => ({ ...goal }));
+    cohort = { status: 'unknown', plans: [] }; await run(); expect(open.size).toBe(8);
+    cohort = { status: 'known', plans: [] }; await run(); expect(open.size).toBe(8);
+    fleets = new Map(goals.filter(goal => goal.drainFleet).map(goal => [fleetKey('fixture', goal.drainFleet!), 'alive']));
+    scoped = true;
+    goals[0].drainFleet = 'new-drain'; fleets.set(fleetKey('fixture', 'new-drain'), 'alive');
+    goals[1].drainFleet = 'replacement'; fleets.set(fleetKey('fixture', 'replacement'), 'alive');
+    await run();
+    const oldFleetKey = goalDrainConditionKey(originals[1], 'drain-fleet-dead', 'dead');
+    expect(open.has(oldFleetKey)).toBe(true); // replacement is not recovery of the exact fleet
+    expect(open.size).toBe(3); // old fleet plus both unmeasured plans
+    goals[1].drainFleet = 'dead';
+    cohort = { status: 'known', plans: [plan('plan-A', true, true), plan('plan-B', true, true)] };
+    await run(); expect(open.size).toBe(0);
+    expect(new Set(resolvedKeys)).toEqual(new Set(openedKeys));
+    expect(escalate).toHaveBeenCalled();
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'goal-drain-original-pull-stall-and-post-open-current-member-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { runGoalDrainFleetSweepOnce, readActiveFleetPullStallAlerts, resolveGoalDrainPullRecovery,
+      goalDrainPullConditionKey } = await import('../system-health/goal-drain-fleet-watchdog');
+    const at = 1_900_000_000_000;
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
+    const fleet = { workspaceId: 'fixture', fleetSlug: 'drain' };
+    const key = goalDrainPullConditionKey(fleet.workspaceId, fleet.fleetSlug);
+    const rail = { broadcast: async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true); open.add(event.conditionKey!); openedKeys.push(event.conditionKey!); return true;
+    }, resolve: async (event: { conditionKey: string }) => {
+      if (!open.delete(event.conditionKey)) return false; resolvedKeys.push(event.conditionKey); return true;
+    } };
+    await runGoalDrainFleetSweepOnce(null as unknown as import('postgres').Sql, {
+      flagEnabled: async () => true, readGoals: async () => ({ goals: [], holders: [] }), rail,
+      readPullStallAlerts: async () => [{ ...fleet, liveMemberIds: ['worker'], stalledForMs: 900_000 }],
+      escalatePullStall: async () => { expect(open.has(key)).toBe(true); },
+    });
+    expect(open.size).toBe(1);
+    let latest: Record<string, unknown> | null = { condition_key: key, one_shot: true, ts: new Date(at).toISOString() };
+    const exact = async (readKey: string) => { expect(readKey).toBe(key); return latest; };
+    await resolveGoalDrainPullRecovery(fleet, at - 1, rail, exact); expect(open.size).toBe(1);
+    latest = { condition_key: 'other-fleet', one_shot: true, ts: new Date(at).toISOString() };
+    await resolveGoalDrainPullRecovery(fleet, at + 1, rail, exact); expect(open.size).toBe(1);
+    latest = null; await resolveGoalDrainPullRecovery(fleet, at + 1, rail, exact); expect(open.size).toBe(1);
+    latest = { condition_key: key, one_shot: true, ts: new Date(at).toISOString() };
+    let successes = [{ owner_id: 'departed-worker', last_success_ms: String(at + 1) }];
+    let degraded = false;
+    const sql = (async (parts: TemplateStringsArray) => parts.join('').includes('FROM harness_shared.agent_fleets')
+      ? [{ workspace_id: 'fixture', fleet_slug: 'drain' }] : successes) as unknown as import('postgres').Sql;
+    const readers = {
+      listRoster: (async () => ({ entries: [{ agentId: 'worker', agentRole: 'su', sessionState: 'live',
+        startedAt: new Date(at - 900_000).toISOString() }], degradedLegs: degraded ? ['wakeability'] : [] })) as never,
+      listEverMembers: (async () => ['worker', 'departed-worker']) as never,
+      onSuccessfulPull: (subject: typeof fleet, atMs: number) => resolveGoalDrainPullRecovery(subject, atMs, rail, exact),
+    };
+    await readActiveFleetPullStallAlerts(sql, [], at + 2, readers); expect(open.size).toBe(1);
+    successes = [{ owner_id: 'worker', last_success_ms: String(at + 1) }];
+    degraded = true; await readActiveFleetPullStallAlerts(sql, [], at + 2, readers); expect(open.size).toBe(1);
+    degraded = false; await readActiveFleetPullStallAlerts(sql, [], at + 2, readers); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'goal-plan-fleet-original-brief-read-publishes-independent-keys-and-measured-recovery', item: 'P-014', route: 'condition',
+  rowIds: ['health-flag-no-condition|packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts|readGoalPlanFleetObservation|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const { readGoalPlanFleetObservation } = await import('../system-health/goal-drain-fleet-watchdog');
+    type Cohort = import('../system-health/goal-drain-fleet-watchdog').GoalPlanFleetCohort;
+    const openedKeys: string[] = [], resolvedKeys: string[] = [], open = new Set<string>();
+    let unknown = false, omit = false, held = true, broken = true;
+    let cohort: Cohort = { status: 'known', plans: ['A', 'B'].map(planSlug => ({
+      workspaceId: 'fixture', goalId: 'goal', harnessSlug: 'pot', planSlug, itemIds: ['P-001'], targetingFleets: [],
+    })) };
+    const read = () => readGoalPlanFleetObservation(null as unknown as import('postgres').Sql,
+      { workspaceId: 'fixture', goalId: 'goal' }, {
+        readGoals: async () => { if (broken) throw new Error('read unavailable'); return {
+          goals: omit ? [] : [{ workspaceId: 'fixture', goalId: 'goal', title: 'Goal', createdAtMs: 1000, drainFleet: null }],
+          holders: [{ workspaceId: 'fixture', goalId: 'goal', ownerId: 'holder', setAtMs: 1000 }],
+        }; },
+        resolveLiveness: async () => held ? new Map([['holder', { ownerId: 'holder', sessionState: 'live',
+          wakeable: true, liveTurn: true, heartbeatFresh: true, confirmLiveness: null }]]) : new Map(),
+        readCohort: async () => unknown ? { status: 'unknown', plans: [] } : cohort,
+        rail: { broadcast: async event => {
+          expect(event.oneShot).toBe(true);
+          if (!open.has(event.conditionKey!)) openedKeys.push(event.conditionKey!);
+          open.add(event.conditionKey!); return true;
+        }, resolve: async event => {
+          if (!open.delete(event.conditionKey)) return false;
+          resolvedKeys.push(event.conditionKey); return true;
+        } },
+      });
+    expect((await read()).status).toBe('unknown'); expect(open.size).toBe(0);
+    broken = false; expect((await read()).alert?.planSlug).toBe('A'); expect(open.size).toBe(2);
+    await read(); expect(openedKeys).toHaveLength(2);
+    unknown = true; await read(); expect(open.size).toBe(2);
+    unknown = false; held = false; await read(); expect(open.size).toBe(2);
+    held = true; omit = true; await read(); expect(open.size).toBe(2);
+    omit = false;
+    cohort = { status: 'known', plans: cohort.plans.map(plan => ({ ...plan, targetingFleets: [
+      { fleetSlug: 'repaired', liveness: 'alive', liveClaimItemIds: ['P-001'] },
+    ] })) };
+    expect((await read()).alert).toBeNull(); expect(open.size).toBe(0);
+    return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
   id: 'placement-original-independent-episodes-and-exact-recovery', item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/pot/placement-watchdog.ts|<module>|1'],
   run: async () => {
