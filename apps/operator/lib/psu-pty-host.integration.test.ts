@@ -3980,6 +3980,102 @@ describe('P-020 carry-respawn drill correlation', () => {
   );
 });
 
+describe('carry-drill busy-gate metric correlation (WI-6554700010012191)', () => {
+  it('persists a tagged fake-PTY expiry measurement in the owner log and shared ledger', async () => {
+    const nonce = process.pid + '-' + Math.floor(performance.now());
+    const ownerId = 'su-busy-gate-drill-itest-' + nonce;
+    const drillId = 'fake-busy-gate-' + nonce;
+    const sessionClass = 'codex-su';
+    const sock = socketPathFor(ownerId);
+    const eventLog = eventLogPathForOwner(ownerId);
+    const ledgerPath = sharedDrillLedgerPath(PSU_PTY_DIR);
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "process.stdout.write('BOOT:'+process.pid+'\\n');",
+      "setInterval(()=>process.stdout.write('SPIN\\n'),20);",
+      "process.stdin.setEncoding('utf8');process.stdin.on('data',d=>{if(d.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),15000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '1000',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '20',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        nativePersistenceTimeoutMs: 100,
+      });
+      await vi.waitFor(() => {
+        expect(captured()).toContain('SPIN');
+      }, { timeout: 5000 });
+
+      await envelopeInject(sock, {
+        mode: 'carry-respawn',
+        ownerId,
+        data: 'SYNTHETIC_BUSY_GATE_CARRY',
+        systemPromptAddendum: 'safe fake-PTY expiry reproduction',
+        drillId,
+        sessionClass,
+      });
+      const readRows = (file: string): Array<Record<string, unknown>> =>
+        existsSync(file)
+          ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+          : [];
+      const hostMetric = await vi.waitFor(() => {
+        const row = readRows(eventLog).find((candidate) =>
+          candidate.kind === 'busy-gate-expired' && candidate.drillId === drillId);
+        expect(row).toBeDefined();
+        return row!;
+      }, { timeout: 5000 });
+      const sharedMetric = readRows(ledgerPath).find((candidate) =>
+        candidate.kind === 'busy-gate-expired' && candidate.drillId === drillId);
+
+      expect(Number.isFinite(Date.parse(String(hostMetric.ts)))).toBe(true);
+      expect(hostMetric).toMatchObject({
+        kind: 'busy-gate-expired',
+        mode: 'carry-respawn',
+        drillId,
+        sessionClass,
+        capMs: 250,
+        quietMs: 1000,
+      });
+      expect(typeof hostMetric.observedMaxQuietMs).toBe('number');
+      expect(typeof hostMetric.verifier).toBe('string');
+      expect(sharedMetric).toMatchObject({
+        kind: 'busy-gate-expired',
+        ownerId,
+        mode: 'carry-respawn',
+        drillId,
+        sessionClass,
+        capMs: 250,
+        observedMaxQuietMs: hostMetric.observedMaxQuietMs,
+        quietMs: 1000,
+        verifier: hostMetric.verifier,
+      });
+      expect(Number.isFinite(Date.parse(String(sharedMetric?.ts)))).toBe(true);
+
+      await rawInject(sock, 'QUIT\n');
+      expect(await done).toBe(0);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
+    }
+  }, 15_000);
+});
+
 describe('host-code adopted carry drill lifecycle (EI-25602595012290893)', () => {
   it('records adopted drill respawn and delivery in both lifecycle ledgers', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-adopted-carry-drill-'));
