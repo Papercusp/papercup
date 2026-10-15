@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -24,6 +25,127 @@ function py(module: string, expr: string, input: unknown): any {
 }
 
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
+
+describe('real Luna load and swap tuning', () => {
+  const nativeOutcome = (rows: unknown[]) => py(DRIVER,
+    '(lambda s: ([m.codex_record(s, r) for r in inp], s)[1])({"expected_sha256": "abc123"})', rows);
+  const turn = (marker: string) => ({ type: 'response_item', payload: { role: 'user', content: [{ type: 'input_text', text: `Dummy task ${marker}` }] } });
+  const final = (text: string) => ({ type: 'response_item', payload: { role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text }] } });
+
+  it('rejects the observed DONE after bwrap failure and a final refusal without waiting five minutes', () => {
+    const rows = [turn('WARM-a1-0'), { type: 'response_item', payload: { type: 'custom_tool_call_output', output: [{ type: 'input_text', text: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' }] } }];
+    expect(nativeOutcome([...rows, final('DONE-WARM-a1-0')]).outcomes['WARM-a1-0']).toContain('no successful native file-hash');
+    expect(nativeOutcome([...rows, final('Unable to read the file')]).outcomes['WARM-a1-0']).toContain('omitted DONE');
+  });
+
+  it('accepts actual hash output in both native tool formats, without carrying success into another warm turn', () => {
+    for (const type of ['function_call_output', 'custom_tool_call_output']) {
+      const output = type === 'function_call_output' ? 'abc123  dummy-data.txt' : [{ type: 'input_text', text: 'abc123  dummy-data.txt' }];
+      const rows = [turn('WARM-a1-0'), { type: 'response_item', payload: { type, output } }, final('DONE-WARM-a1-0')];
+      expect(nativeOutcome(rows).outcomes['WARM-a1-0']).toBeNull();
+      expect(nativeOutcome([...rows, turn('WARM-a1-1'), final('DONE-WARM-a1-1')]).outcomes['WARM-a1-1']).toContain('no successful native file-hash');
+      expect(nativeOutcome([...rows, turn('WAKE-none1a1'), final('DONE-WAKE-none1a1')]).outcomes['WAKE-none1a1']).toBeNull();
+    }
+  });
+
+  it('accepts the exact hash of piped input, which sha256sum labels with a dash', () => {
+    const rows = [turn('WARM-a8-0'), { type: 'response_item', payload: { type: 'function_call_output', output: 'Process exited with code 0\nOutput:\nabc123  -\n' } }, final('DONE-WARM-a8-0')];
+    expect(nativeOutcome(rows).outcomes['WARM-a8-0']).toBeNull();
+    rows[1].payload.output = 'wrong abc1230  -';
+    expect(nativeOutcome(rows).outcomes['WARM-a8-0']).toContain('no successful native file-hash');
+  });
+
+  it('corrects only failed dummy tasks with a bounded retry budget and records the evidence', () => {
+    const code = [
+      'import importlib.util, types, json',
+      `s = importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'calls=[]; records=[]',
+      'def prompt(names, *args, **kw):',
+      ' calls.append(list(names))',
+      ' return {n: {"tDone": None if len(calls)==1 and n=="a2" else 1, "error": "hash mismatch"} for n in names}',
+      'm.prompt_all=prompt',
+      'm.warm(["a1","a2"],1,types.SimpleNamespace(rec=lambda kind, **kw: records.append({"kind":kind, **kw})))',
+      'print(json.dumps({"calls":calls,"records":records}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.calls).toEqual([['a1', 'a2'], ['a2']]);
+    expect(parsed.records[0]).toMatchObject({ kind: 'warm-retry', agents: ['a2'] });
+    expect(parsed.records[1]).toMatchObject({ kind: 'warm-round', agents: 2 });
+    const exhausted = spawnSync('python3', ['-c', code.replace('len(calls)==1 and n=="a2"', 'True')], { encoding: 'utf8' });
+    expect(exhausted.status).not.toBe(0);
+    expect(exhausted.stderr).toContain('warm round 0 never finished');
+  });
+
+  it('provisions the documented distro sandbox without disabling global user-namespace restrictions', () => {
+    const bootstrap = readFileSync(join(HERE, 'swap-tier-bootstrap.sh'), 'utf8');
+    expect(bootstrap).toContain('bubblewrap apparmor-profiles apparmor-utils');
+    expect(bootstrap).toContain('apparmor_parser -r "$profile"');
+    expect(bootstrap).not.toContain('apparmor_restrict_unprivileged_userns=0');
+  });
+
+  it('fails the native sandbox preflight on the observed namespace error before spending model calls', () => {
+    const code = [
+      'import importlib.util, types',
+      `s = importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'm.subprocess.run = lambda *a, **kw: types.SimpleNamespace(returncode=1, stdout="", stderr="bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted")',
+      'm.codex_sandbox_preflight("agent", types.SimpleNamespace(rec=lambda *a, **kw: None))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('native read-only sandbox preflight failed: bwrap: loopback');
+  });
+
+  it('counts an actual assistant final answer instead of an echoed prompt or tool invocation', () => {
+    const row = { type: 'response_item', payload: { role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'DONE-WARM-a1-0' }] } };
+    expect(py(DRIVER, 'm.final_reply_text(inp)', row)).toBe('DONE-WARM-a1-0');
+    expect(py(DRIVER, 'm.final_reply_text(inp)', { ...row, payload: { ...row.payload, role: 'user' } })).toBe('');
+    expect(py(DRIVER, 'm.final_reply_text(inp)', { ...row, payload: { ...row.payload, phase: 'commentary' } })).toBe('');
+    expect(py(DRIVER, 'm.final_reply_text(inp)', { type: 'response_item', payload: { type: 'function_call', arguments: 'echo DONE-WARM-a1-0' } })).toBe('');
+  });
+
+  it('refuses another load attempt when an interrupted run leaves the owned slice active', () => {
+    const code = [
+      'import importlib.util, types',
+      `s = importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'm.sh = lambda argv, check=True: types.SimpleNamespace(stdout="active\\n" if "is-active" in argv else "", returncode=0)',
+      'm.stop_agents()',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('refusing a duplicate launch');
+  });
+
+  it('recognizes the observed native input frame even when context-left is absent', () => {
+    const screen = '>_ OpenAI Codex (v0.162.1)\n› Ask Codex to do anything\ngpt-6-luna low · ~/work/a1 · ← for agents';
+    expect(py(DRIVER, 'm.codex_ready(inp, "gpt-6-luna")', screen)).toBe(true);
+    expect(py(DRIVER, 'm.codex_ready(inp, "gpt-6-luna")', screen.replace('gpt-6-luna', 'GPT-6-Luna'))).toBe(true);
+    expect(py(DRIVER, 'm.codex_ready(inp, "gpt-6-luna")', 'Sign in to ChatGPT · gpt-6-luna')).toBe(false);
+    expect(py(DRIVER, 'm.codex_ready(inp, "gpt-6-luna")', screen.replace('gpt-6-luna', 'gpt-6-sol'))).toBe(false);
+  });
+
+  it('pins model and low effort without copying cloud credentials or using stub responses', () => {
+    const config = py(DRIVER, 'm.codex_config(*inp)', ['gpt-6-luna', 'low', 'http://127.0.0.1:18788/v1', 'benchmark-owner', '/home/agent/work/a1']);
+    expect(config).toContain('model = "gpt-6-luna"');
+    expect(config).toContain('model_reasoning_effort = "low"');
+    expect(config).toContain('wire_api = "responses"');
+    expect(config).toContain('requires_openai_auth = false');
+    expect(() => py(DRIVER, 'm.codex_config(*inp)', ['gpt-6-luna', 'low', 'https://example.com/v1', 'benchmark-owner', '/work'])).toThrow(/loopback SSH/);
+  });
+
+  it('keeps independently measured compressor, readahead and batched disk arms distinguishable', () => {
+    expect(py(DRIVER, '[m.parse_arm(x) for x in inp]', ['zram:lz4', 'titanium@pc0=/dev/nvme0n1', 'titanium-batch5=/dev/nvme0n1'])).toEqual([
+      { name: 'zram-lz4', kind: 'zram', algorithm: 'lz4' },
+      { name: 'titanium-pc0', kind: 'device', device: '/dev/nvme0n1', pageCluster: 0 },
+      { name: 'titanium-batch5', kind: 'device', device: '/dev/nvme0n1', batch: 5 },
+    ]);
+    expect(() => py(DRIVER, 'm.parse_arm(inp)', 'titanium@pc9=/dev/nvme0n1')).toThrow(/page-cluster/);
+  });
+});
 const user = (text: string) => ({ role: 'user', content: [{ type: 'text', text }] });
 const toolResult = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'file body' }] };
 const toolUse = { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] };

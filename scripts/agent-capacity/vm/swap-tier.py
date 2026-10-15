@@ -29,8 +29,11 @@ Run as root (cgroup writes, swapon); the agents run as --user (claude refuses by
 import argparse
 import errno
 import glob
+import hashlib
 import json
 import os
+import re
+import shlex
 import statistics
 import subprocess
 import sys
@@ -42,6 +45,8 @@ TMUX = ["tmux", "-L", "swaptier"]
 PORT = 8899
 KEY = "swaptier-stub-not-a-real-credential-000000"
 IDLE_SEC = int(os.environ.get("SWAPTIER_IDLE_SEC", "60"))
+REAL_MODEL = False
+CODEX_SESSIONS = {}
 WAKE_TIMEOUT = float(os.environ.get("SWAPTIER_WAKE_TIMEOUT", "300"))
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -136,7 +141,176 @@ def press_enter(name):
     subprocess.run(TMUX + ["send-keys", "-t", name, "Enter"], check=True)
 
 
-def start_agents(n, user, rec):
+def codex_config(model, effort, gateway_url, owner, work):
+    """Real model traffic uses the existing gateway over a loopback SSH tunnel.
+
+    No upstream credential is copied to the test VM. Keep API authority at the
+    original gateway and record model completion separately from input echo.
+    """
+    if not re.fullmatch(r"http://127\.0\.0\.1:\d+/v1", gateway_url):
+        raise ValueError("benchmark gateway must be a loopback SSH tunnel URL")
+    if effort not in ("low", "medium", "high"):
+        raise ValueError("unsupported reasoning effort")
+    q = json.dumps
+    return "\n".join([
+        f"model = {q(model)}", f"model_reasoning_effort = {q(effort)}",
+        'model_provider = "benchmark-gateway"', 'check_for_update_on_startup = false',
+        f"[projects.{q(work)}]", 'trust_level = "trusted"',
+        '[features]', 'plugins = false', 'auth_elicitation = false',
+        '[model_providers.benchmark-gateway]', 'name = "Benchmark gateway tunnel"',
+        f"base_url = {q(gateway_url)}", f"model_catalog_url = {q(gateway_url + '/models')}",
+        'wire_api = "responses"', 'requires_openai_auth = false',
+        'experimental_bearer_token = "papercusp-gateway"',
+        'http_headers = { originator = "codex_cli_rs", "x-papercusp-owner" = ' + q(owner) + ' }', "",
+    ])
+
+
+def codex_ready(text, model):
+    # The native statusline is configurable and may omit context-left entirely.
+    # Require both the selected model and the interactive input, not that setting.
+    return model.lower() in text.lower() and "Ask Codex to do anything" in text
+
+
+def codex_sandbox_preflight(user, rec):
+    """Exercise the native read-only sandbox before launching any model sessions."""
+    home = f"/home/{user}"
+    cmd = ["setpriv", f"--reuid={user}", f"--regid={user}", "--init-groups", "--",
+           "env", "-i", f"HOME={home}", f"USER={user}", f"LOGNAME={user}",
+           "PATH=/usr/local/bin:/usr/bin:/bin", "codex", "-c", 'sandbox_mode="read-only"',
+           "sandbox", "--", "/bin/echo", "SWAPTIER_SANDBOX_OK"]
+    result = subprocess.run(cmd, cwd=home, text=True, capture_output=True, timeout=60)
+    if result.returncode or result.stdout.strip() != "SWAPTIER_SANDBOX_OK":
+        raise RuntimeError(f"native read-only sandbox preflight failed: {result.stderr.strip()} {result.stdout.strip()}")
+    rec.rec("sandbox-preflight", cli="codex", sandbox="read-only", success=True)
+
+
+def final_reply_text(row):
+    payload = row.get("payload", {})
+    if (row.get("type") != "response_item" or payload.get("role") != "assistant"
+            or payload.get("phase") != "final_answer"):
+        return ""
+    return "".join(c.get("text", "") for c in payload.get("content", []) if c.get("type") == "output_text")
+
+
+class NativeTaskError(RuntimeError):
+    pass
+
+
+def codex_record(state, row):
+    """Validate native tool evidence, including function and code-mode outputs.
+
+    A model can emit DONE after a failed shell call. The unpredictable file hash
+    must actually appear in a tool result during THIS warm turn before admission.
+    """
+    if row.get("type") != "response_item":
+        return
+    payload = row.get("payload", {})
+    if payload.get("role") == "user":
+        text = "".join(c.get("text", "") for c in payload.get("content", []))
+        match = re.search(r"(?:WARM-[A-Za-z0-9]+-\d+|WAKE-[A-Za-z0-9]+)", text)
+        if match:
+            state["marker"], state["tool_ok"] = match.group(), False
+    if payload.get("type") in ("function_call_output", "custom_tool_call_output"):
+        output = payload.get("output", "")
+        text = output if isinstance(output, str) else json.dumps(output)
+        expected = state.get("expected_sha256")
+        if expected and re.search(r"(?<![0-9a-f])" + re.escape(expected) + r"(?![0-9a-f])", text):
+            state["tool_ok"] = True
+    text = final_reply_text(row)
+    marker = state.get("marker")
+    if text and marker:
+        error = None
+        if "DONE-" + marker not in text:
+            error = f"native final answer omitted DONE-{marker}: {text[:240]}"
+        elif marker.startswith("WARM-") and not state.get("tool_ok"):
+            error = f"{marker} has no successful native file-hash tool result"
+        state.setdefault("outcomes", {})[marker] = error
+
+
+def codex_completed(name, marker):
+    """Read only newly appended native records, not the echoed input prompt.
+
+    The observed Codex 0.162.1 final-answer record distinguishes an assistant
+    result from a user prompt or tool command containing the same marker.
+    """
+    state = CODEX_SESSIONS[name]
+    if not state.get("file"):
+        paths = [p for p in glob.glob(state["root"] + "/**/*.jsonl", recursive=True)
+                 if os.path.getmtime(p) >= state["started"]]
+        if not paths:
+            return False
+        state["file"] = max(paths, key=os.path.getmtime)
+        state["offset"] = 0
+    with open(state["file"]) as f:
+        f.seek(state["offset"])
+        while True:
+            offset = f.tell()
+            line = f.readline()
+            if not line or not line.endswith("\n"):
+                f.seek(offset)
+                break
+            try:
+                codex_record(state, json.loads(line))
+            except ValueError:
+                continue
+        state["offset"] = f.tell()
+    outcomes = state.get("outcomes", {})
+    if marker in outcomes and outcomes[marker]:
+        raise NativeTaskError(f"{name}: {outcomes[marker]}")
+    return marker in outcomes
+
+
+def stop_agents():
+    """Terminal shutdown alone doesn't reap sibling systemd scope processes."""
+    sh(TMUX + ["kill-server"], check=False)
+    sh(["systemctl", "stop", SLICE + ".slice"], check=False)
+    status = sh(["systemctl", "is-active", SLICE + ".slice"], check=False)
+    if status.stdout.strip() == "active":
+        raise RuntimeError("benchmark agent slice is still active; refusing a duplicate launch")
+
+
+def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
+    home = f"/home/{user}"
+    names = [f"a{k}" for k in range(1, n + 1)]
+    for name in names:
+        work, config = f"{home}/work/{name}", f"{home}/codex-homes/{name}"
+        os.makedirs(work, exist_ok=True)
+        os.makedirs(config, exist_ok=True)
+        # Actual tool output builds CLI context; no synthetic resident-memory padding.
+        with open(work + "/dummy-data.txt", "w") as f:
+            for k in range(512):
+                f.write(hashlib.sha256(f"{name}-{k}".encode()).hexdigest() + "\n")
+        with open(config + "/config.toml", "w") as f:
+            f.write(codex_config(model, effort, gateway_url, owner, work))
+        with open(work + "/dummy-data.txt", "rb") as f:
+            expected_sha256 = hashlib.sha256(f.read()).hexdigest()
+        CODEX_SESSIONS[name] = {"root": config + "/sessions", "started": time.time(),
+                                "expected_sha256": expected_sha256}
+        sh(["chown", "-R", f"{user}:{user}", work, config])
+        env = f"env -i HOME={home} USER={user} LOGNAME={user} CODEX_HOME={config} PATH=/usr/local/bin:/usr/bin:/bin TERM=tmux-256color LANG=C.UTF-8"
+        cmd = (f"systemd-run --scope --quiet --unit={SLICE}-{name} --slice={SLICE} -p MemoryAccounting=yes -- "
+               f"setpriv --reuid={user} --regid={user} --init-groups -- {env} codex "
+               f"--no-alt-screen --sandbox read-only --ask-for-approval never --model {shlex.quote(model)}")
+        sh(TMUX + ["new-session", "-d", "-s", name, "-x", "160", "-y", "50", "-c", work, cmd])
+        time.sleep(0.15)
+    deadline, pending = time.time() + 180, set(names)
+    while pending and time.time() < deadline:
+        for name in list(pending):
+            text = pane(name)
+            if codex_ready(text, model):
+                pending.discard(name)
+        time.sleep(0.5)
+    if pending:
+        raise RuntimeError(f"Codex agents never ready: {sorted(pending)}; first pane: {pane(sorted(pending)[0])}")
+    rec.rec("agents-started", agents=len(names), cli="codex", model=model, effort=effort, inference="real")
+    return names
+
+
+def start_agents(n, user, rec, cli="claude", model="gpt-6-luna", effort="low", gateway_url=None, owner=None):
+    if cli == "codex":
+        if not gateway_url or not owner:
+            raise ValueError("real Codex benchmark requires --gateway-url and --owner")
+        return start_codex_agents(n, user, rec, model, effort, gateway_url, owner)
     home = f"/home/{user}"
     claude = f"{home}/.local/bin/claude"
     cfg_path = f"{home}/.claude.json"
@@ -187,12 +361,14 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
     Returns {name: {t0, tEcho, tEnter, tDone}} (None where a step never happened)."""
     state = {}
     for name in names:
-        state[name] = {"t0": time.time(), "tEcho": None, "tEnter": None, "tDone": None}
+        if REAL_MODEL:
+            CODEX_SESSIONS[name].get("outcomes", {}).pop(marker_for(name), None)
+        state[name] = {"t0": time.time(), "tEcho": None, "tEnter": None, "tDone": None, "error": None}
         type_text(name, prompt_for(name))
     deadline = time.time() + timeout
-    while time.time() < deadline and any(s["tDone"] is None for s in state.values()):
+    while time.time() < deadline and any(s["tDone"] is None and not s["error"] for s in state.values()):
         for name, s in state.items():
-            if s["tDone"] is not None:
+            if s["tDone"] is not None or s["error"]:
                 continue
             text = pane(name)
             if s["tEnter"] is None:
@@ -200,20 +376,40 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
                     s["tEcho"] = time.time()
                     press_enter(name)
                     s["tEnter"] = time.time()
-            elif "DONE-" + marker_for(name) in text:
-                s["tDone"] = time.time()
-                if on_done:
-                    on_done(name, s)
+            else:
+                try:
+                    completed = codex_completed(name, marker_for(name)) if REAL_MODEL else "DONE-" + marker_for(name) in text
+                except NativeTaskError as e:
+                    s["error"] = str(e)
+                    continue
+                if completed:
+                    s["tDone"] = time.time()
+                    if on_done:
+                        on_done(name, s)
         time.sleep(0.02)
     return state
 
 
 def warm(names, rounds, rec):
     for k in range(rounds):
-        state = prompt_all(names, lambda n: f"WARM-{n}-{k}", lambda n: f"Please do step WARM-{n}-{k} now", 300)
-        missing = [n for n, s in state.items() if s["tDone"] is None]
+        t0 = time.time()
+        missing = names
+        # Real models occasionally alter a command/token. Correct only those
+        # tasks, record the attempts, and keep already verified agents intact.
+        for attempt in range(3):
+            state = prompt_all(missing, lambda n: f"WARM-{n}-{k}", lambda n: (
+                f"Dummy benchmark WARM-{n}-{k}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
+                f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-WARM-{n}-{k} with no other text."
+                if REAL_MODEL else f"Please do step WARM-{n}-{k} now"), 300)
+            missing = [n for n, s in state.items() if s["tDone"] is None]
+            if not missing:
+                break
+            rec.rec("warm-retry", round=k, attempt=attempt + 1, agents=missing,
+                    errors={n: state[n].get("error") for n in missing})
         if missing:
             raise RuntimeError(f"warm round {k} never finished for {missing}")
+        rec.rec("warm-round", round=k, agents=len(names), seconds=time.time() - t0,
+                nativeToolVerified=REAL_MODEL)
     rec.rec("warmed", rounds=rounds, agents={n: agent_stats(n) for n in names})
 
 
@@ -240,10 +436,21 @@ def parse_arm(spec):
     """`none` | `zram` | `<label>=<block device>`."""
     if spec in ("none", "zram"):
         return {"name": spec, "kind": spec}
+    if spec in ("zram:lz4", "zram:lzo-rle", "zram:zstd"):
+        return {"name": spec.replace(":", "-"), "kind": "zram", "algorithm": spec.split(":")[1]}
     label, sep, device = spec.partition("=")
     if not sep or not label or not device:
         raise ValueError(f"--arm expects none, zram or <label>=<device>, got '{spec}'")
-    return {"name": label, "kind": "device", "device": device}
+    arm = {"name": label, "kind": "device", "device": device}
+    if "@pc" in label:
+        label, pc = label.rsplit("@pc", 1)
+        if pc not in ("0", "1", "2", "3"):
+            raise ValueError("disk swap page-cluster must be 0..3")
+        arm.update(name=label + "-pc" + pc, pageCluster=int(pc))
+    match = re.search(r"-batch([1-9]\d*)$", label)
+    if match:
+        arm["batch"] = int(match.group(1))
+    return arm
 
 
 def swap_off():
@@ -257,14 +464,14 @@ def swap_on(arm, ram_gb):
         return None
     if arm["kind"] == "zram":
         sh(["modprobe", "zram"])
-        dev = sh(["zramctl", "--find", "--size", f"{ram_gb}G", "--algorithm", "zstd"]).stdout.strip()
+        dev = sh(["zramctl", "--find", "--size", f"{ram_gb}G", "--algorithm", arm.get("algorithm", "zstd")]).stdout.strip()
         sh(["mkswap", dev])
         sh(["swapon", "-p", "100", dev])
         write("/proc/sys/vm/page-cluster", "0")  # zram: no swap-in readahead (the common zram setting)
         return dev
     sh(["mkswap", "-f", arm["device"]])
     sh(["swapon", "-p", "100", arm["device"]])
-    write("/proc/sys/vm/page-cluster", "3")  # kernel default: 8-page swap-in clusters
+    write("/proc/sys/vm/page-cluster", str(arm.get("pageCluster", 3)))
     return arm["device"]
 
 
@@ -305,14 +512,18 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log):
         rec.rec("idle", arm=arm["name"], seconds=IDLE_SEC, before=before_idle, after={n: agent_stats(n) for n in names},
                 host=host_stats())
         rec.rec("phase", arm=arm["name"], phase="idle", edge="end")
-    nonce = f"{arm['name'].replace('-', '')[:6]}{int(time.time()) % 100000}"
+    nonce = f"{re.sub('[^A-Za-z0-9]', '', arm['name'])[:6]}{int(time.time()) % 100000}"
 
-    def wake(group, phase):
+    def wake(group, phase, emit_phase=True):
         pre = {n: agent_stats(n) for n in group}
         host_pre = host_stats()
-        rec.rec("phase", arm=arm["name"], phase=phase, edge="start")
-        state = prompt_all(group, lambda n: f"WAKE-{nonce}{n}", lambda n: f"Wake up WAKE-{nonce}{n} please", WAKE_TIMEOUT)
-        rec.rec("phase", arm=arm["name"], phase=phase, edge="end")
+        if emit_phase:
+            rec.rec("phase", arm=arm["name"], phase=phase, edge="start")
+        state = prompt_all(group, lambda n: f"WAKE-{nonce}{n}", lambda n: (
+            f"Dummy wake task WAKE-{nonce}{n}. Compute 17+25 mentally. Reply exactly DONE-WAKE-{nonce}{n} with no other text."
+            if REAL_MODEL else f"Wake up WAKE-{nonce}{n} please"), WAKE_TIMEOUT)
+        if emit_phase:
+            rec.rec("phase", arm=arm["name"], phase=phase, edge="end")
         time.sleep(2)
         for n in group:
             s = state[n]
@@ -323,7 +534,14 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log):
     for n in names[:single]:
         wake([n], "single")
         time.sleep(1)
-    wake(names[single:], "storm")
+    storm = names[single:]
+    if arm.get("batch"):
+        rec.rec("phase", arm=arm["name"], phase="storm", edge="start")
+        for offset in range(0, len(storm), arm["batch"]):
+            wake(storm[offset:offset + arm["batch"]], "storm", emit_phase=False)
+        rec.rec("phase", arm=arm["name"], phase="storm", edge="end")
+    else:
+        wake(storm, "storm")
     time.sleep(20)
     rec.rec("arm-end", arm=arm["name"], host=host_stats(), agents={n: agent_stats(n) for n in names})
     t0 = time.time()
@@ -520,28 +738,32 @@ def probe(out_path):
 # ---------------------------------------------------------------- main
 
 def run(a):
+    global REAL_MODEL
+    REAL_MODEL = a.cli == "codex"
     rec = Recorder(a.out)
     arms = [parse_arm(s) for s in a.arm]
     stub_log = os.path.join(a.out, "stub.jsonl")
     warm_files = sorted(glob.glob("/usr/lib/python3*/*.py"), key=os.path.getsize, reverse=True)[:16]
-    procs = [
-        subprocess.Popen([sys.executable, os.path.join(HERE, "swap-tier-stub-api.py"), "--port", str(PORT), "--log", stub_log,
-                          "--warm-files", *warm_files], stdout=open(os.path.join(a.out, "stub.out"), "a"), stderr=subprocess.STDOUT),
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "probe", "--out", os.path.join(a.out, "probe.csv")]),
-    ]
+    procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "probe", "--out", os.path.join(a.out, "probe.csv")])]
+    if not REAL_MODEL:
+        procs.append(subprocess.Popen([sys.executable, os.path.join(HERE, "swap-tier-stub-api.py"), "--port", str(PORT), "--log", stub_log,
+                                     "--warm-files", *warm_files], stdout=open(os.path.join(a.out, "stub.out"), "a"), stderr=subprocess.STDOUT))
     try:
         time.sleep(1)
         swap_off()
         rec.rec("run-start", agents=a.agents, warm=a.warm, single=a.single, arms=arms, idleSec=IDLE_SEC,
-                kernel=os.uname().release, host=host_stats())
-        sh(TMUX + ["kill-server"], check=False)
-        names = start_agents(a.agents, a.user, rec)
+                kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
+                effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
+        stop_agents()
+        if REAL_MODEL:
+            codex_sandbox_preflight(a.user, rec)
+        names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner)
         warm(names, a.warm, rec)
         for arm in arms:
             run_arm(arm, names, a.single, a.ram_gb, rec, stub_log)
         rec.rec("run-end")
     finally:
-        sh(TMUX + ["kill-server"], check=False)
+        stop_agents()
         for p in procs:
             p.terminate()
         swap_off()
@@ -559,6 +781,11 @@ def main(argv=None):
     r.add_argument("--ram-gb", type=int, default=16)
     r.add_argument("--user", default="agent")
     r.add_argument("--arm", action="append", required=True)
+    r.add_argument("--cli", choices=["claude", "codex"], default="claude")
+    r.add_argument("--model", default="gpt-6-luna")
+    r.add_argument("--effort", choices=["low", "medium", "high"], default="low")
+    r.add_argument("--gateway-url")
+    r.add_argument("--owner")
     b = sub.add_parser("bench-disk")
     b.add_argument("--device", required=True)
     b.add_argument("--label", required=True)
