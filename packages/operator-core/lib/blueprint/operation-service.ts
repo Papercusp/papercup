@@ -279,7 +279,7 @@ export const BusinessReviewStateSchema = z.object({
 export interface BlueprintOperationReviewAccess { principalId: string }
 
 export function assertBusinessReviewer(principalId: string, submitterId: string,
-  policy: { reviewerPrincipals: string[] }, workerId?: string | null): void {
+  policy: { readonly reviewerPrincipals: readonly string[] }, workerId?: string | null): void {
   if (!principalId.trim() || !policy.reviewerPrincipals.includes(principalId) ||
       submitterId === principalId || submitterId.startsWith(`${principalId}/`) ||
       workerId === principalId || workerId?.startsWith(`${principalId}/`)) {
@@ -1437,7 +1437,7 @@ async function readBusinessReview(sql: Sql, handle: BlueprintOperationHandle, ou
 
 function reviewBlueprintOperation(sql: Sql, handle: BlueprintOperationHandle, callerId: string,
   input: { payload: unknown; requestKey: string }, access?: BlueprintOperationReviewAccess): Promise<BlueprintOperationInputReceipt> {
-  return runWithWorkspace(handle.workspaceId, async () => {
+  return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt> => {
     if (!access || !input.requestKey?.trim()) throw new BlueprintOperationRefusal('invalid_request', 'business review requires an authenticated reviewer and request key');
     const parsed = BusinessReviewInputSchema.safeParse(input.payload);
     if (!parsed.success) throw new BlueprintOperationRefusal('invalid_payload', 'business review requires decision, reason and exact result fingerprint');
