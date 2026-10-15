@@ -63,14 +63,14 @@ describe('ship gate without a vetting attestation', () => {
     ['self-review', { exists: true, critiquePosts: 1, critics: ['author'] }],
     ['declined', { exists: true, critiquePosts: 0, critics: ['reviewer'] }],
   ])('refuses %s consult evidence', async (_label, answer) => {
-    expect(await readCurrentAcceptanceRubricCritique(rubric, 4, [], {
+    expect(await readCurrentAcceptanceRubricCritique(rubric, 4, {
       candidates: async () => [{ consultId: 'consult-review', request: 'Vet acceptance-plan criteriaHash current-hash', createdAt: critique.createdAt }],
       consult: async () => answer,
     })).toBeNull();
   });
 
   it('admits the independent work-item critique channel directly', async () => {
-    expect(await readCurrentAcceptanceRubricCritique(rubric, 4, [], {
+    expect(await readCurrentAcceptanceRubricCritique(rubric, 4, {
       candidates: async () => [{ workItemId: 'WI-review', request: 'Vet acceptance-plan revision 4', createdAt: critique.createdAt }],
       workItem: async () => ({ exists: true, critiquePosts: 1, critics: ['reviewer'] }),
     })).toMatchObject({ workItemId: 'WI-review', critics: ['reviewer'] });

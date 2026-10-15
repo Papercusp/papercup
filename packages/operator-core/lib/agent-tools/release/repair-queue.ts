@@ -57,8 +57,8 @@ import {
 } from '../../release/hunk-exact-admission';
 import { integrationBranch } from '../../release/judged-sha-containment';
 import { realAdmissionGit } from '../../release/repair-head-admission';
-// WI-10005223: every admission git sequence below runs on the admission worker thread, never
-// on the operator main thread (a single admit measured up to 61.8s of blocked event loop).
+// WI-10005223: admission and frozen-lineage Git work runs on the admission worker thread,
+// never on the operator main thread (a single admit measured up to 61.8s of blocked event loop).
 import {
   AdmissionOffthreadTimeoutError,
   AdmissionOffthreadTimeoutUnavailableError,
@@ -576,16 +576,22 @@ async function reconcileQueueRowWithLineage(
   ledger: { status: string; reconciled: number; detail: string } | null;
 }> {
   try {
-    const { reconcileFrozenRepairQueueWithLineageRef } = await import('../../release/frozen-lineage-ledger-reconcile');
     const { applyFrozenCandidateRepairQueueTransition } = await import('../../harness/routines/release-actions');
-    const probe = reconcileFrozenRepairQueueWithLineageRef(queue, { root });
+    const reconcile = (fresh: FrozenCandidateRepairQueue) =>
+      runAdmissionJob(
+        { kind: 'reconcile-lineage', queue: fresh, root },
+        { timeoutMs: 120_000, stepName: 'lineage-reconcile' },
+      );
+    // This job only reads Git state, so it is safe to abandon on timeout. The timeout also
+    // prevents the admission worker's load-failure fallback from running sync Git inline.
+    const probe = await reconcile(queue);
     if (probe.status === 'in-sync') return { queue, ledger: null };
     if (probe.status !== 'reconciled') {
       return { queue, ledger: { status: probe.status, reconciled: 0, detail: probe.detail } };
     }
     let last = probe;
-    const outcome = await applyFrozenCandidateRepairQueueTransition(queueTarget, (fresh) => {
-      last = reconcileFrozenRepairQueueWithLineageRef(fresh, { root });
+    const outcome = await applyFrozenCandidateRepairQueueTransition(queueTarget, async (fresh) => {
+      last = await reconcile(fresh);
       return last.queue;
     });
     return {

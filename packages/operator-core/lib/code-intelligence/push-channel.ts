@@ -60,24 +60,25 @@ export function firstTouchPaths(input: PushInput): string[] {
 
 /** Existing P-016 anchors and P-015 measurement recipes; these are links, not proof of acceptance. */
 export async function readPushSourceLinks(input: PushInput, paths: string[], sql = getOrgPg().sql): Promise<Pick<FirstTouchContext, 'docs' | 'specs' | 'byPath'>> {
-  if (!input.harness || !paths.length) return { docs: null, specs: null };
+  const harness = input.harness;
+  if (!harness || !paths.length) return { docs: null, specs: null };
   return sql.begin(async tx => {
     await tx`SELECT set_config('statement_timeout', '75ms', true)`;
     const docs = await tx<{ doc_id: string; anchor_paths: string[] }[]>`SELECT doc_id, anchor_paths FROM harness_shared.harness_docs
-      WHERE workspace_id = ${input.workspace} AND harness_slug = ${input.harness}
+      WHERE workspace_id = ${input.workspace} AND harness_slug = ${harness}
         AND anchor_paths && ${paths}::text[] ORDER BY doc_id LIMIT 3`;
     const specs = await tx<{ path: string; plan_slug: string; spec_id: string; spec_revision: number }[]>`
       SELECT DISTINCT p.path, plan_slug, spec_id, spec_revision FROM harness_shared.spec_evidence_bindings b
       CROSS JOIN unnest(${paths}::text[]) p(path)
-      WHERE workspace_id = ${input.workspace} AND harness_slug = ${input.harness}
+      WHERE workspace_id = ${input.workspace} AND harness_slug = ${harness}
         AND b.retracted_at IS NULL
         AND ((b.details->'currentMeasurement'->>'kind' = 'repo-files'
-          AND COALESCE(b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${input.harness}
+          AND COALESCE(b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness}
           AND COALESCE(b.details->'currentMeasurement'->'sourcePaths', '[]'::jsonb) ? p.path)
           OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.details->'measurementPin'->'files') = 'array'
             THEN b.details->'measurementPin'->'files' ELSE '[]'::jsonb END) f
             WHERE f->>'dimension' = 'source' AND f->>'path' = p.path
-              AND COALESCE(f->>'rootHarnessSlug', b.harness_slug) = ${input.harness}))
+              AND COALESCE(f->>'rootHarnessSlug', b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${harness}))
       ORDER BY p.path, plan_slug, spec_id, spec_revision DESC LIMIT 12`;
     return { docs: null, specs: null, byPath: Object.fromEntries(paths.map(path => [path, {
       docs: docs.filter(row => row.anchor_paths.includes(path)).map(row => row.doc_id),
@@ -109,24 +110,16 @@ export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
     const sourceLinks = context?.byPath?.[path] ?? context;
     const locks = context?.locks?.filter(lock => lock.owner !== input.owner && lock.coordinationDomain === input.root && seen.has(lock.path));
     const suggestedCall = tests.length ? `testing:run ${JSON.stringify({ files: tests.slice(0, 2), harness: input.harness })}` : undefined;
-    const sources = new Map(symbols.flatMap(symbol => symbol.sources ?? []).map(source => [source.path, source.sha256]));
-    const fileHash = snapshot.hashes.get(path);
-    if (fileHash) sources.set(path, fileHash);
-    for (const file of seen) {
-      const sha = snapshot.hashes.get(file);
-      if (sha) sources.set(file, sha);
-    }
     const exports = symbols.slice(0, 3).map(symbol => `${symbol.name}:${symbol.line} >=${symbol.callers.length} static calls`
       + (symbol.callers.some(site => site.workspace) ? ` [${[...new Set(symbol.callers.map(site => site.workspace ?? 'workspace unknown'))].slice(0, 2).join(', ')}]` : ' [workspace unknown]'));
     const links = (values: readonly string[] | null | undefined) => values?.length ? values.slice(0, 2).join(', ') : 'unknown';
     facts.push({ leg: 'first-touch', subject: path, citedPaths: [path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
-      ...(sources.size && symbols.every(symbol => symbol.sources?.length) ? { sourceHashes: [...sources].map(([path, sha256]) => ({ path, sha256 })) } : {}),
       text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
         + `\nExports (up to 3): ${exports.join('; ') || 'unknown'}.`
         + `\nTests with static import reach${queue.length ? ' (bounded search)' : ''}: ${suggestedCall || 'unknown'}.`
         + `\nAnchored docs: ${links(sourceLinks?.docs)}. Spec evidence links: ${links(sourceLinks?.specs)} (currentness unknown).`
         + `\nLive consumer locks/claims: ${locks?.length ? locks.slice(0, 2).map(lock => `${lock.path}: ${lock.owner}${lock.goalRef ? ' ' + lock.goalRef : ''}`).join('; ') : 'unknown'}.`
-        + '\nStatic lower bounds only; unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' });
+        + '\nSnapshot lower bounds only; current source hashes, unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' });
   }
   return facts;
 };

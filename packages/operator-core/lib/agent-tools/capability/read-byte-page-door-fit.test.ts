@@ -126,7 +126,9 @@ describe('EI-25801373601150765: capability:read async filesystem contract', () =
     expect(source).toMatch(/await\s+open\(abs,\s*['\"]r['\"]\)/);
     expect(source).toMatch(/await\s+fd\.read\(/);
     expect(source).toMatch(/await\s+fd\.close\(\)/);
-    expect(source).toMatch(/await\s+readFile\(abs\)/);
+    expect(source).toMatch(
+      /await\s+(?:readFile\(abs\)|trackScratchAsync\(\s*['"]file-read['"],\s*\(\)\s*=>\s*readFile\(abs\)\s*\))/,
+    );
 
     for (const syncApi of ['openSync', 'readSync', 'closeSync', 'statSync', 'readFileSync']) {
       expect(source).not.toMatch(new RegExp(`\\b${syncApi}\\b`));

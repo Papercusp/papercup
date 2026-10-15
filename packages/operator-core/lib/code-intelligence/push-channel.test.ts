@@ -117,6 +117,16 @@ describe('shared snapshot-backed push channel', () => {
     } finally { warning.mockRestore(); }
   });
 
+  it('an Edit still receives its snapshot-qualified brief after changing the source', async () => {
+    const d = deps();
+    d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg]]);
+    const changed = { ...input, root: '/now-changed', calls: [{ tool: 'Edit', toolInput: { file_path: 'lib/target.ts' } }] };
+    const text = await codeIntelPushText(changed, 0, d);
+    expect(text).toContain('Snapshot lower bounds only');
+    expect(text).toContain('current source hashes');
+    expect(d.commit).toHaveBeenCalledOnce();
+  });
+
   it('delivers immediately from an available snapshot and gives memory its budget first', async () => {
     const d = deps();
     expect(await codeIntelPushText(input, 350, d)).toContain('Static consumer');

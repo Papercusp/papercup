@@ -80,6 +80,7 @@ const mocks = vi.hoisted(() => ({
   population: vi.fn(),
   admissionJobOptions: vi.fn(),
   admissionGit: vi.fn(),
+  lineage: vi.fn(),
   retract: vi.fn(),
   containment: vi.fn(),
   presence: vi.fn(),
@@ -128,12 +129,7 @@ vi.mock('../../harness/routines/hive-release-env', () => ({
     extraEnv: { PAPERCUSP_INTEGRATION_ROOT: '/drill' }, clearEnv: [] })),
 }));
 vi.mock('../../release/frozen-lineage-ledger-reconcile', () => ({
-  reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => ({
-    status: 'in-sync',
-    queue: current,
-    detail: 'fixture lineage is in sync',
-    reconciled: [],
-  }),
+  reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => mocks.lineage(current),
 }));
 vi.mock('../../release/admission-fix-precheck', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/admission-fix-precheck')>()),
@@ -387,11 +383,20 @@ beforeEach(() => {
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
   mocks.write.mockResolvedValue(undefined);
-  mocks.transition.mockImplementation(async (_target, transition) => ({
-    status: 'written',
-    queue: transition((mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue),
-    fresh: (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue,
-    retries: 0,
+  mocks.transition.mockImplementation(async (_target, transition) => {
+    const fresh = (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue;
+    return {
+      status: 'written',
+      queue: await transition(fresh),
+      fresh,
+      retries: 0,
+    };
+  });
+  mocks.lineage.mockImplementation((current: unknown) => ({
+    status: 'in-sync',
+    queue: current,
+    detail: 'fixture lineage is in sync',
+    reconciled: [],
   }));
   mocks.presence.mockResolvedValue(undefined);
   mocks.retract.mockReturnValue(true);
@@ -518,6 +523,23 @@ describe('release:repair-queue', () => {
       status: 'not-applicable',
       authorized: null,
     });
+  });
+
+  it('runs both lineage probes through the admission worker, including the fresh CAS reducer', async () => {
+    mocks.lineage.mockImplementation((current: typeof queue) => ({
+      status: 'reconciled',
+      queue: { ...current, updatedAtMs: current.updatedAtMs + 1 },
+      refHead: NEW_HEAD,
+      detail: 'fixture lineage was rebuilt',
+      reconciled: [],
+    }));
+    await tool.handler({ op: 'get' } as never, { role: 'su' } as never);
+    expect(mocks.admissionJobOptions).toHaveBeenCalledTimes(2);
+    for (const [job, options] of mocks.admissionJobOptions.mock.calls) {
+      expect(job).toMatchObject({ kind: 'reconcile-lineage', root: '/repo' });
+      expect(options).toMatchObject({ timeoutMs: 120_000, stepName: 'lineage-reconcile' });
+    }
+    expect(mocks.lineage).toHaveBeenCalledTimes(2);
   });
 
   it('keeps delegated-fixer authorization visible when a large queue diagnostic is bounded', () => {

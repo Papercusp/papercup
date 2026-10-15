@@ -479,7 +479,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
 describe('native P015 compiler dependency evidence', () => {
   it('first-touch source links join canonical evidence and docs without leaking another source or tenant', async () => {
     const { readPushSourceLinks } = await import('../../code-intelligence/push-channel');
-    await applyMigrationForTest(db, migration('172-harness-docs.sql'));
+    await applyMigrationForTest(db.sql, migration('172-harness-docs.sql'));
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
     const args = bindTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan',
@@ -488,6 +488,15 @@ describe('native P015 compiler dependency evidence', () => {
         measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'] } } });
     const bound = await bindTool.handler(args as never, CTX) as { data: { results: Array<{ ok: boolean }> } };
     expect(bound.data.results[0]?.ok, JSON.stringify(bound.data.results)).toBe(true);
+    await specs.setSpecClause(clause({ specId: 'SPEC-003-02', sourceValId: 'VAL-003-02', mutationRequired: false }));
+    const foreign = await evidenceStore.bindSpecEvidence({ harnessSlug: HARNESS, planSlug: 'reconnect-plan',
+      workItemId: 'WI-101', specId: 'SPEC-003-02', specRevision: 1, evidenceKind: 'manual', evidenceRef: 'foreign-root-proof',
+      sourceFingerprint: 'foreign-root-fixture', actorId: 'su-test', details: {
+        currentMeasurement: { schemaVersion: 1, kind: 'repo-files', rootHarnessSlug: 'portal', sourcePaths: ['src/reconnect.ts'] },
+        measurementPin: { schemaVersion: 1, repos: [], files: [{ path: 'src/reconnect.ts', dimension: 'source',
+          sha256: 'b'.repeat(64), gitBlob: 'c'.repeat(40), repo: '.', headBlob: null, clean: null }] },
+      } });
+    expect(foreign.status).toBe('created');
     await db.sql`INSERT INTO harness_shared.harness_docs (workspace_id,harness_slug,doc_id,source,anchor_paths)
       VALUES (${WORKSPACE},${HARNESS},'guides/reconnect.md','manual',${['src/reconnect.ts']}::text[]),
              (${OTHER_WORKSPACE},${HARNESS},'guides/foreign.md','manual',${['src/reconnect.ts']}::text[])`;

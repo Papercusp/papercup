@@ -4460,13 +4460,19 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       // The caller's snapshot (`queue`, repairHead c…, updatedAtMs 2) is NOT what the reducer
       // sees: it is applied to the row as it stands (repairHead d…, updatedAtMs 10). The reducer
       // does not move the version, so the writer bumps it; the first CAS misses and is re-read.
-      const outcome = await applyFrozenCandidateRepairQueueTransition(target, (row) => ({
-        ...row,
-        phase: 'ready-to-verify' as const,
-      }));
+      let reductions = 0;
+      const outcome = await applyFrozenCandidateRepairQueueTransition(target, async (row) => {
+        reductions += 1;
+        await Promise.resolve();
+        return {
+          ...row,
+          phase: 'ready-to-verify' as const,
+        };
+      });
       expect(outcome).toMatchObject({ status: 'written', retries: 1 });
       expect(outcome.queue).toMatchObject({ repairHead: 'd'.repeat(40), phase: 'ready-to-verify', updatedAtMs: 11 });
       expect(updates).toHaveLength(2);
+      expect(reductions).toBe(2);
       for (const u of updates) expect(u.params[4]).toBe('10');
       expect((rowNow as { repairHead: string; updatedAtMs: number }).repairHead).toBe('d'.repeat(40));
       expect((rowNow as { updatedAtMs: number }).updatedAtMs).toBe(11);

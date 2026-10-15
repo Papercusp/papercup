@@ -144,6 +144,15 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
   };
 }
 
+function expectBehaviorClassInBothShapes(schema: string) {
+  const specStart = schema.indexOf('spec?:object{');
+  const itemsStart = schema.indexOf('; items?:array', specStart);
+  expect(specStart).toBeGreaterThanOrEqual(0);
+  expect(itemsStart).toBeGreaterThan(specStart);
+  expect(schema.slice(specStart, itemsStart)).toContain('behaviorClass:enum(');
+  expect(schema.slice(itemsStart)).toContain('behaviorClass:enum(');
+}
+
 beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
@@ -523,8 +532,23 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(plansSetSpecs.name).toBe('plans:set-specs');
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('plans:set-specs')) ?? '';
-    expect(compact).toMatch(/spec\?:object\{[^}]*behaviorClass:enum\(/);
-    expect(compact).toMatch(/items\?:array[^;]*\{[^}]*behaviorClass:enum\(/);
+    expectBehaviorClassInBothShapes(compact);
+  });
+
+  it('preserves the nested plans:set-specs falsifier scenario pattern in compact discovery', async () => {
+    const proofObligationIdPattern = '~/^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/';
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:set-specs')) ?? '';
+
+    expect(compact).toMatch(/falsifier\?:object(?:\|null)?\{[^}]*requiredScenarios\?:array/);
+    expect(compact).toContain(proofObligationIdPattern);
+
+    const out = await callHandler({ query: 'plans:set-specs', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'plans:set-specs');
+    const argSchema = hit?.argSchema ?? '';
+    expect(argSchema).toMatch(/falsifier\?:object(?:\|null)?\{[^}]*requiredScenarios\?:array/);
+    expect(argSchema).toContain(proofObligationIdPattern);
+    expectBehaviorClassInBothShapes(argSchema);
   });
 
   it('publishes work_items:get resume exclusivity before dispatch', async () => {

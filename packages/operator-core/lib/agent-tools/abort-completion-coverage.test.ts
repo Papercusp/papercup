@@ -11,6 +11,7 @@ import gradeIdea from './scout/grade-idea';
 import repairQueue from './release/repair-queue';
 import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
+import workItemsSetBlocker from './work_items/set_blocker';
 import codeRun from './code/run';
 import testingRun, { testingRunAbortCompletionReceipt } from './testing/run';
 import docsAuthor from './docs/author';
@@ -56,6 +57,8 @@ const LATE_RETURN_MUTATORS = {
   'docs:author': docsAuthor,
   // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
   'work_items:create': workItemsCreate,
+  // EI-25996559668652955: a completed blocker mutation exceeded its dispatch deadline after persisting.
+  'work_items:set_blocker': workItemsSetBlocker,
   // EI-25288245178425318: a delivered coord:send must expose its persisted message id after a late return.
   'coord:send': coordSend,
   // EI-25922563546988521: dispatch must receipt only proven message and assignment effects.

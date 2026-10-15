@@ -39,8 +39,13 @@ describe('on-demand su reference sections', () => {
     const actualBytes = Buffer.byteLength(compact.text);
     console.info('SU_REFERENCE_SIZE', JSON.stringify({ agent, plane: 'composed-auto', baselineBytes, actualBytes }));
     expect(actualBytes).toBeLessThanOrEqual(baselineBytes * 0.7);
+    const routeStart = full.text.indexOf('### The papercusp-way routing gate');
+    const routeEnd = full.text.indexOf('\n## ', routeStart + 1);
+    expect(compact.text).toContain(full.text.slice(routeStart, routeEnd));
     const seal = '<!-- PAPERCUSP-KERNEL:SEAL -->';
-    const kernel = full.text.slice(full.text.indexOf(seal), full.text.indexOf('## The deploy pipeline is ASYNC'));
+    const sealAt = full.text.indexOf(seal);
+    const notesAt = full.text.indexOf('## The deploy pipeline is ASYNC', sealAt);
+    const kernel = full.text.slice(sealAt, notesAt < 0 ? full.text.length : notesAt);
     expect(kernel.length).toBeGreaterThan(10_000);
     expect(compact.text).toContain(kernel);
   });
