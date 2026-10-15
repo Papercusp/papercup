@@ -1,11 +1,12 @@
 import { createServer, request } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, saveFixtureReceipt, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 import { advanceFixtureDeviceClock, DEVICE_EXPIRY_OFFSET_MS } from './native-device-fixture-clock';
 
@@ -20,6 +21,73 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('publishes complete private runtime receipts while an independent reader is active', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fixture-receipt-'));
+    const path = join(directory, 'runtime.json');
+    const state = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
+    const receipt = (generation: number) => ({ generation, payload: String(generation).repeat(8192) });
+    saveFixtureReceipt(directory, receipt(0));
+    const reader = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      const { readFileSync } = require('node:fs');
+      const state = new Int32Array(workerData.state);
+      let reads = 0, failures = 0, firstFailure;
+      parentPort.postMessage('ready');
+      while (!Atomics.load(state, 0)) {
+        try {
+          const value = JSON.parse(readFileSync(workerData.path, 'utf8'));
+          if (!Number.isInteger(value.generation) || value.payload !== String(value.generation).repeat(8192)) {
+            throw new Error('Incomplete receipt generation');
+          }
+          reads++;
+        } catch (error) {
+          failures++;
+          firstFailure ??= error.message;
+        }
+        Atomics.add(state, 1, 1);
+      }
+      parentPort.postMessage({ reads, failures, firstFailure });
+    `, { eval: true, workerData: { path, state: state.buffer } });
+    const ready = new Promise<void>((done, reject) => {
+      reader.on('message', value => { if (value === 'ready') done(); });
+      reader.once('error', reject);
+    });
+    const finished = new Promise<{ reads: number; failures: number; firstFailure?: string }>((done, reject) => {
+      reader.on('message', value => { if (value !== 'ready') done(value); });
+      reader.once('error', reject);
+    });
+    try {
+      await ready;
+      const before = Atomics.load(state, 1);
+      for (let generation = 1; generation <= 200; generation++) saveFixtureReceipt(directory, receipt(generation));
+      const duringWrites = Atomics.load(state, 1) - before;
+      Atomics.store(state, 0, 1);
+      const result = await finished;
+      expect(duringWrites).toBeGreaterThan(0);
+      expect(result.reads).toBeGreaterThan(0);
+      expect(result, 'Concurrent readers must never observe partial JSON').toMatchObject({ failures: 0 });
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(receipt(200));
+      chmodSync(path, 0o644);
+      saveFixtureReceipt(directory, receipt(201));
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readdirSync(directory)).toEqual(['runtime.json']);
+    } finally {
+      Atomics.store(state, 0, 1);
+      await reader.terminate();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('removes its unpublished receipt after a failed rename', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fixture-receipt-failure-'));
+    mkdirSync(join(directory, 'runtime.json'));
+    try {
+      expect(() => saveFixtureReceipt(directory, { ready: true })).toThrow();
+      expect(readdirSync(directory)).toEqual(['runtime.json']);
+      expect(statSync(join(directory, 'runtime.json')).isDirectory()).toBe(true);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('expires an actually signed device JWT only in the owned child and accepts a newly signed token', async () => {
     const parentBefore = Date.now();
     const root = fileURLToPath(new URL('../../../', import.meta.url));

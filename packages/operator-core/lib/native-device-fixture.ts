@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
-import { existsSync, mkdirSync, openSync, closeSync, fstatSync, readSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
@@ -19,6 +19,25 @@ import type { WorkspaceRegistry } from './workspace-registry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+
+export function saveFixtureReceipt(evidence: string, receipt: Record<string, unknown>): void {
+  const path = resolve(evidence, 'runtime.json');
+  const data = JSON.stringify(receipt, null, 2) + '\n';
+  // Follow writeRegistry's unique sibling + rename convention: readers see a
+  // complete old or new generation, including during readiness/cleanup updates.
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const fd = openSync(temporary, 'wx', 0o600);
+  try {
+    try {
+      writeFileSync(fd, data);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+}
 
 export function fixtureFailure(error: unknown) {
   const detail = error instanceof Error ? error : new Error(String(error));
@@ -292,7 +311,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
     startedAt: new Date().toISOString(), ready: false, cleanupVerified: false,
     scope: deviceExpiry ? 'Disposable loopback device-expiry fixture; no public resources or release acceptance' :
       'Disposable public HTTPS fixture; no native UI, cloud relay or release acceptance claimed' };
-  const save = () => writeFileSync(resolve(evidence, 'runtime.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
+  const save = () => saveFixtureReceipt(evidence, receipt);
   let host: ChildProcess | undefined, connector: ChildProcess | undefined;
   let removal: (RemovalTarget & { tunnelName: string }) | undefined;
   let stopped = false;
