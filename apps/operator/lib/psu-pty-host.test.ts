@@ -10,6 +10,39 @@ import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
 
 describe('Codex hook observation transaction', () => {
+  it('keeps visible cells on ED3 and rejects partial scrollback-erasure paint', () => {
+    const raw = '\x1b[2J\x1b[H› owner draft\x1b[3J\x1b[3;1HReady · GPT-6-Sol medium · Context 100% left · staging';
+    expect(realHost.renderTerminalScreen(raw, { rows: 24, cols: 80 })[0]).toBe('› owner draft');
+    expect(realHost.codexHooksObservationScreen('\x1b[3JHooks\r\nEsc to close', { rows: 24, cols: 80 }).fullPaint).toBe(false);
+    expect(realHost.codexHooksObservationScreen(raw, { rows: 24, cols: 80 }).emptyComposer).toBe(false);
+  });
+
+  it('rejects a historical empty prompt beside an active nonempty or second composer', () => {
+    const raw = '\x1b[2J\x1b[H›\r\n› /hooks\r\nReady · GPT-6-Sol medium · Context 100% left · staging';
+    expect(realHost.codexHooksObservationScreen(raw, { rows: 24, cols: 80 }).emptyComposer).toBe(false);
+    expect(realHost.codexHooksObservationScreen(raw.replace('› /hooks', '›'), { rows: 24, cols: 80 }).emptyComposer).toBe(false);
+  });
+
+  it('captures admission lifetime and owner epoch before any delayed mutex boundary', async () => {
+    let time = 0; let epoch = 0;
+    const admission = realHost.makeHooksObservationAdmission({ expiresAtMs: 100 }, { now: () => time, ownerEpoch: () => epoch });
+    expect(admission.alive()).toBe(true);
+    const mutex = realHost.makeInjectMutex();
+    const release = await mutex.acquire();
+    expect(mutex.pendingCount()).toBe(1);
+    const queued = mutex.acquire();
+    time = 101;
+    release();
+    const next = await queued;
+    expect(admission.alive()).toBe(false);
+    next();
+    const cancelled = realHost.makeHooksObservationAdmission({ expiresAtMs: 200 }, { now: () => time, ownerEpoch: () => epoch });
+    cancelled.close(); expect(cancelled.alive()).toBe(false);
+    const ownerChanged = realHost.makeHooksObservationAdmission({ expiresAtMs: 200 }, { now: () => time, ownerEpoch: () => epoch });
+    epoch++; expect(ownerChanged.alive()).toBe(true);
+    expect(ownerChanged.ownerUnchanged()).toBe(false);
+    expect(mutex.pendingCount()).toBe(0);
+  });
   const request = { mode: 'hooks-observe', observationVersion: 1, ownerId: 'su-observer',
     expectedAdvSessionId: '42', expectedNativeSessionId: 'native', expectedHostStartedAt: 100,
     expectedChildGeneration: 3, expectedHostCodeVersion: 'host-sha' };
@@ -59,6 +92,19 @@ describe('Codex hook observation transaction', () => {
     expect(f.writes).toEqual(['/hooks']);
   });
 
+  it('emits zero bytes when admission expired after a delayed mutex grant', async () => {
+    const f = fixture({ admissionAlive: () => false });
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false });
+    expect(f.writes).toEqual([]);
+  });
+
+  it('refuses an initial composer reconstructed only from partial paint', async () => {
+    const f = fixture({ readCurrent: () => composer.replace('\x1b[2J', '\x1b[3J') });
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
+      reason: 'observation-not-at-empty-composer' });
+    expect(f.writes).toEqual([]);
+  });
+
   it('never submits an unsupported slash command and clears only its leased draft', async () => {
     const f = fixture();
     f.options.write = (bytes: string) => {
@@ -76,6 +122,73 @@ describe('Codex hook observation transaction', () => {
     expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
       reason: 'observation-interrupted', inputReleased: true });
     expect(f.writes).toEqual(['/hooks', '\x15']);
+  });
+
+  it('keeps same-live-request cleanup available when owner epoch changes during the leased draft', async () => {
+    let epoch = 0;
+    const admission = realHost.makeHooksObservationAdmission({ expiresAtMs: Date.now() + 20_000 },
+      { ownerEpoch: () => epoch });
+    const f = fixture({ admissionAlive: admission.alive, interrupted: () => !admission.ownerUnchanged(),
+      sleep: async () => { epoch++; } });
+    expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
+      reason: 'observation-interrupted', inputReleased: true });
+    expect(f.writes).toEqual(['/hooks', '\x15']);
+  });
+
+  it.each(['disconnect', 'expiry'] as const)(
+    'writes no submit or cleanup bytes after real request %s during the leased draft', async (cause) => {
+      let time = 0;
+      const admission = realHost.makeHooksObservationAdmission({ expiresAtMs: 100 }, { now: () => time });
+      const f = fixture({ admissionAlive: admission.alive, now: () => time,
+        sleep: async () => { if (cause === 'disconnect') admission.close(); else time = 100; } });
+      expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ ok: false,
+        reason: 'stale-observation-identity', inputReleased: false });
+      expect(f.writes).toEqual(['/hooks']);
+    },
+  );
+
+  it.each(['disconnect', 'expiry'] as const)(
+    'keeps queued owner bytes held after %s without fresh paint, then replays once', async (cause) => {
+      let time = 0;
+      const admission = realHost.makeHooksObservationAdmission({ expiresAtMs: 100 }, { now: () => time });
+      const f = fixture({ admissionAlive: admission.alive, now: () => time,
+        sleep: async () => { if (cause === 'disconnect') admission.close(); else time = 100; } });
+      // The real startup buffer can still contain this OLD empty full paint
+      // when /hooks emits no output. Recovery must not consume it.
+      f.options.write = (bytes: string) => { f.writes.push(bytes); };
+      expect(await realHost.runCodexHooksObservation(f.options)).toMatchObject({ inputReleased: false });
+      const queued = ['first', 'second'];
+      const close = vi.fn();
+      f.setOutput(composer);
+      expect(f.options.readTap()).toBe(composer);
+      const recovery = realHost.makeHooksObservationRecovery({ request, identity: () => custody,
+        tap: { read: f.options.readTap, reset: f.options.resetTap, close },
+        screenDims: f.options.screenDims, takeQueued: () => queued.splice(0) });
+      // The stale startup frame was present before recovery was created; the
+      // recovery constructor must discard it and wait for post-failure paint.
+      expect(recovery.takeReady()).toBeNull();
+      expect(queued).toEqual(['first', 'second']);
+      f.setOutput(composer.replace('\x1b[2J', '\x1b[3J'));
+      expect(recovery.takeReady()).toBeNull();
+      f.setOutput(composer);
+      expect(recovery.takeReady()).toEqual(['first', 'second']);
+      expect(recovery.takeReady()).toEqual([]);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(f.writes).toEqual(['/hooks']);
+    },
+  );
+
+  it('does not replay a failed lease into a changed child even after a fresh empty paint', () => {
+    const queued = ['owner text'];
+    const f = fixture();
+    const recovery = realHost.makeHooksObservationRecovery({ request,
+      identity: () => ({ ...custody, childGeneration: 4 }),
+      tap: { read: f.options.readTap, reset: f.options.resetTap, close: vi.fn() },
+      screenDims: f.options.screenDims, takeQueued: () => queued.splice(0) });
+    f.setOutput(composer);
+    expect(recovery.takeReady()).toBeNull();
+    expect(recovery.canClean()).toBe(false);
+    expect(queued).toEqual(['owner text']);
   });
 
   it('permits another Escape only after a newly painted hook browser remains visible', async () => {
