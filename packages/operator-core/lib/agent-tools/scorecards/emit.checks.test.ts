@@ -21,6 +21,7 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
 const resolvePlanHarness = vi.fn();
+const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn(async () => ({})));
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -61,6 +62,10 @@ vi.mock('../../workspace-registry', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../workspace-registry')>();
   return { ...real, activeWorkspaceId: () => 'ws-test' };
 });
+vi.mock('../../grading-integrity', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../grading-integrity')>();
+  return { ...real, dispatchPendingGradingAudits: (...args: unknown[]) => dispatchPendingGradingAudits(...args) };
+});
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...real, getOrgPg: () => ({ sql: {} }) };
@@ -94,6 +99,8 @@ import scorecardEmitTool, {
   SCORECARD_EMIT_TIMEOUT_SEC,
   SCORECARD_TEST_CHECK_TIMEOUT_MS,
 } from './emit';
+// Register the real judge-readable target in the projected-tool contract used by probes.
+import './get';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
@@ -376,6 +383,7 @@ const emitArgs = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  dispatchPendingGradingAudits.mockClear();
   getRubric.mockReset().mockImplementation(async (id: unknown) =>
     id === 'ar-checked-plan' ? CHECKED_RUBRIC : null,
   );
@@ -849,9 +857,9 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     const phases = createPhaseTracker();
     const probe = {
       kind: 'tool' as const,
-      tool: 'acceptance:read',
-      args: {},
-      schemaRevision: 'synthetic-read-revision',
+      tool: 'scorecards:get',
+      args: { issueId: 'EI-phase-bridge-probe' },
+      schemaRevision: 'live',
       expect: { path: '$.count', op: 'eq' as const, value: 2 },
     };
     getRubric.mockResolvedValue({
@@ -870,7 +878,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
       phases,
     } as never);
 
-    expect(result.ok).toBe(true);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
     expect(dispatchTool).toHaveBeenCalledOnce();
     expect(phases.intervals().map(({ phase }) => phase)).toContain('scorecards:emit:checks:probe');
   });
