@@ -6,6 +6,7 @@ import type { BlueprintOperationHandle, PotAppSeam } from '@papercusp/pot-app-se
 import { assertSupportCaseInput, type ApprovedSupportWorkflow } from
   '@papercusp/operator-core/lib/blueprint/support-workflow-contract';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
 import WorkflowOperationResult, { workflowOperationSeam } from './WorkflowOperationResult';
 import { runScheduleTool } from './ScheduleEditor';
 
@@ -32,8 +33,8 @@ async function searchCase(query: string, sources: readonly string[]): Promise<Ca
   // ACL and disclosure path; no source content is copied into the submit input.
   const result = await runScheduleTool('documents:search', { query, sources: [...sources], legs: ['organization'], limit: 50 });
   if (!result.ok || !result.data) throw new Error(result.message ?? 'Case search failed');
-  const data = result.data as { legs?: { organization?: { allowed?: boolean } }; results?: unknown[]; error?: string };
-  if (data.error || data.legs?.organization?.allowed !== true || !Array.isArray(data.results)) {
+  const data = result.data.data as { legs?: { organization?: { allowed?: boolean } }; results?: unknown[]; error?: string } | undefined;
+  if (!data || data.error || data.legs?.organization?.allowed !== true || !Array.isArray(data.results)) {
     throw new Error('Support sources are unavailable or access was refused');
   }
   return data.results.map((value) => {
@@ -50,24 +51,25 @@ export default function WorkflowSupportForm({ harnessSlug, operationId, previous
   harnessSlug: string; operationId: string; previousHandle?: BlueprintOperationHandle | null;
   seam?: Pick<PotAppSeam, 'submitOperations'>; search?: typeof searchCase;
 }) {
+  const [receipt, setReceipt] = useQueryState('wfRun', parseAsJson(receiptFromUrl));
+  const handle = receipt?.harnessSlug === harnessSlug && receipt.operationId === operationId ? receipt : previousHandle;
   const declaration = useSyncQuery<{ supportWorkflow: ApprovedSupportWorkflow | null }>({
     queryName: 'automation.catalog', args: { supportWorkflow: { harnessSlug, operationId } },
   });
   const workflow = declaration.data?.[0]?.supportWorkflow;
-  if (declaration.error) return <p role="alert">Unable to load the current support workflow.</p>;
-  if (workflow === null) return previousHandle ? <WorkflowOperationResult handle={previousHandle} /> : null;
-  if (!workflow) return <p role="status">Loading workflow declaration…</p>;
-  return <SupportSelection key={JSON.stringify(workflow)} workflow={workflow} previousHandle={previousHandle}
-    seam={seam} search={search} />;
+  return <>
+    {declaration.error ? <p role="alert">Unable to load the current support workflow.</p> :
+      workflow ? <SupportSelection key={JSON.stringify(workflow)} workflow={workflow}
+        onAccepted={async accepted => { await setReceipt(accepted); }} seam={seam} search={search} /> :
+        workflow === undefined ? <p role="status">Loading workflow declaration…</p> : null}
+    {handle && <WorkflowOperationResult handle={handle} />}
+  </>;
 }
 
-function SupportSelection({ workflow, previousHandle, seam, search }: {
-  workflow: ApprovedSupportWorkflow; previousHandle?: BlueprintOperationHandle | null;
+function SupportSelection({ workflow, onAccepted, seam, search }: {
+  workflow: ApprovedSupportWorkflow; onAccepted: (handle: BlueprintOperationHandle) => Promise<void>;
   seam: Pick<PotAppSeam, 'submitOperations'>; search: typeof searchCase;
 }) {
-  const [receipt, setReceipt] = useQueryState('wfRun', parseAsJson(receiptFromUrl));
-  const handle = receipt?.harnessSlug === workflow.harnessSlug && receipt.operationId === workflow.operationId
-    ? receipt : previousHandle;
   const [caseId, setCaseId] = useState('');
   const [query, setQuery] = useState('');
   const [searchedQuery, setSearchedQuery] = useState('');
@@ -77,7 +79,6 @@ function SupportSelection({ workflow, previousHandle, seam, search }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const requestKeys = useRef(new Map<string, string>());
   const active = useRef(true);
   const inFlight = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
@@ -102,17 +103,20 @@ function SupportSelection({ workflow, previousHandle, seam, search }: {
       }
       const input = assertSupportCaseInput(workflow, { supportCaseId: caseId.trim(), query: searchedQuery,
         approvedRevision: workflow.approvedRevision, documentIds: [...selected].sort(), requestedAction: action });
-      const identity = JSON.stringify(input);
-      const requestKey = requestKeys.current.get(identity) ?? `support:${crypto.randomUUID()}`;
-      requestKeys.current.set(identity, requestKey);
       inFlight.current = true; setBusy(true);
+      // A reload after an uncertain network response must replay the same
+      // caller-bound receipt for the same selection and approved revision.
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify({
+        harnessSlug: workflow.harnessSlug, operationId: workflow.operationId, input,
+      })));
+      const requestKey = 'support:' + [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
       const [accepted] = await seam.submitOperations([{ harnessSlug: workflow.harnessSlug, operationId: workflow.operationId,
         expectedSpecificationRevision: workflow.approvedRevision, requestKey,
         input: { ...input, documentIds: [...input.documentIds] } }]);
       if (!accepted || accepted.harnessSlug !== workflow.harnessSlug || accepted.operationId !== workflow.operationId ||
           accepted.specificationRevision !== workflow.approvedRevision) throw new Error('Operation returned an unexpected receipt');
       if (active.current) {
-        await setReceipt(accepted);
+        await onAccepted(accepted);
         setNotice('Preparation accepted. A distinct reviewer must decide the business outcome.');
       }
     } catch (cause) { if (active.current) setError(message(cause)); }
@@ -146,15 +150,13 @@ function SupportSelection({ workflow, previousHandle, seam, search }: {
         <span>{document.snippet}</span>
       </label>)}
       <label>Requested action
-        <select value={action} disabled={busy} onChange={e => setAction(e.target.value)}>
-          {workflow.allowedActions.map(value => <option key={value} value={value}>{value}</option>)}
-        </select>
+        <Select value={action} disabled={busy} onChange={setAction} ariaLabel="Requested action"
+          options={workflow.allowedActions.map(value => ({ value, label: value }))} />
       </label>
       <button type="button" className="pc-wf__btn" disabled={busy || !caseId.trim() || !selected.length}
         onClick={() => void submit()}>Prepare handoff</button>
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
     </section>
-    {handle && <WorkflowOperationResult handle={handle} />}
   </>;
 }

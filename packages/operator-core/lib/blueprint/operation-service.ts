@@ -1442,7 +1442,8 @@ async function readValidatedCanonicalOperation(
     if (handle.target.kind !== 'work-item' || !items[0]) return invalid('support result has no accepted case');
     const { pin } = await readAcceptedBlueprintDirectWorkItem(sql, handle.workspaceId, items[0]);
     const { validateSupportOperationResult } = await import('./support-workflow-case');
-    try { await validateSupportOperationResult(sql, handle.workspaceId, operation, pin, output); }
+    try { await validateSupportOperationResult(sql, handle.workspaceId, operation, pin, output,
+      reviewAccess?.principalId ?? callerId.split('/')[0]); }
     catch (error) {
       if (error instanceof BlueprintOperationRefusal) return invalid(error.message);
       throw error;

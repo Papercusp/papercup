@@ -24,7 +24,6 @@ import type { AutomationItem, AutomationTrigger } from './workflows-model';
 import { relativeTime } from './workflows-model';
 import type { LedgerRow } from './workflows-ledger-model';
 import { buildWorkflowGraph, type WorkflowBindingInput } from './workflow-graph-model';
-import WorkflowOperationResult from './WorkflowOperationResult';
 import WorkflowSupportForm from './WorkflowSupportForm';
 
 export interface RunRow {

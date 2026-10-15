@@ -5389,7 +5389,22 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // number — there is no FK from a usage row to its spawning routine, and inventing
   // one would present a guess as a fact (see the module header).
   'automation.catalog': {
-    resolve: async () => {
+    // A selected support operation needs its current declaration, not another
+    // workspace-wide schedule/spend scan. Keep this on the existing catalog.
+    argsSchema: z.object({ supportWorkflow: z.object({
+      harnessSlug: z.string().trim().min(1).max(120),
+      operationId: z.string().trim().min(1).max(200),
+    }).strict().optional() }).strict().optional(),
+    resolve: async (raw) => {
+      const args = raw as { supportWorkflow?: { harnessSlug: string; operationId: string } } | undefined;
+      if (args?.supportWorkflow) {
+        const [{ readCurrentSupportWorkflow }, { getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+          import('../blueprint/operation-service'), import('@papercusp/db-org'), import('../workspace-registry'),
+        ]);
+        return [{ supportWorkflow: await readCurrentSupportWorkflow(getOrgPg().sql, {
+          workspaceId: activeWorkspaceId(), ...args.supportWorkflow,
+        }) }];
+      }
       const { getAutomationCatalog } = await import('../automation/catalog');
       return [await getAutomationCatalog()];
     },
