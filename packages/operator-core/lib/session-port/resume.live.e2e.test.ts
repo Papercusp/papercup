@@ -32,7 +32,7 @@ function verifiedEmptyCleanup(name: string, args: Record<string, unknown>, statu
 }
 
 function call(name: string, args: Record<string, unknown>, origin: string) {
-  const env = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
+  const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
   delete env.PAPERCUSP_SCRATCH_ROOT;
   const result = spawnSync(process.execPath, [resolve(root, 'apps/operator/scripts/ptool.mjs'),
     'tools:invoke', `--url=${origin}`, '--json', '-'], {
@@ -52,6 +52,7 @@ function call(name: string, args: Record<string, unknown>, origin: string) {
       `exit=${result.status} signal=${result.signal} error=${result.error?.message ?? 'none'}\n` +
       result.stderr.slice(-1000));
   }
+  if (!value) throw new Error(`MCP ${name} returned no readable receipt`);
   return value;
 }
 
