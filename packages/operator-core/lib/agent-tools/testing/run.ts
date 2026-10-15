@@ -1934,6 +1934,8 @@ export interface RouterOutcome extends TestProcessOutcome {
   aborted: boolean;
   spawnError?: string;
   output: string;
+  /** Original file-backed diagnostics; retain until a measured successful verdict. */
+  outputLogPaths?: string[];
   actualDemand?: ResourceDemand;
   /** Managed task identity, surfaced when termination cannot be confirmed in time. */
   taskId?: string;
@@ -2466,7 +2468,6 @@ function runTestProcess(
               } catch {
                 /* spawn may have failed before creating output */
               }
-              void rm(routerOutputPath, { force: true });
             };
             // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
             // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
@@ -2502,8 +2503,8 @@ function runTestProcess(
               }
               if (onAbort) childSignal.removeEventListener('abort', onAbort);
               void sampler.stop({ diskBytes: outputBytes }).then(
-                (actualDemand) => resolve({ ...outcome, actualDemand }),
-                () => resolve({ ...outcome, actualDemand: plannedDemand }),
+                (actualDemand) => resolve({ ...outcome, outputLogPaths: [routerOutputPath], actualDemand }),
+                () => resolve({ ...outcome, outputLogPaths: [routerOutputPath], actualDemand: plannedDemand }),
               );
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
@@ -2857,11 +2858,13 @@ export function noReportDiagnostics(
   output: string,
   routerExit: number | null,
   reportDirEntries: readonly string[],
-): { routerExit: number | null; reportDirEntries: string[]; markerSeen: boolean; summarySeen: 'node' | 'vitest' | 'none' } {
+  outputLogPaths: readonly string[] = [],
+): { routerExit: number | null; reportDirEntries: string[]; markerSeen: boolean; summarySeen: 'node' | 'vitest' | 'none'; routerLogPaths?: string[] } {
   const text = output.replace(ANSI_SGR, '');
   return {
     routerExit,
     reportDirEntries: [...reportDirEntries].slice(0, 20),
+    ...(outputLogPaths.length ? { routerLogPaths: [...outputLogPaths] } : {}),
     markerSeen: /^TEST_FILE_RESULT\b/m.test(text),
     summarySeen: /^\s*(?:ℹ|#)?\s*tests\s+\d+\s*$/m.test(text)
       ? 'node'
@@ -3403,6 +3406,8 @@ export async function runTestFilesCore(opts: {
   const reportPath = join(dir, 'report.json');
   const failureDetailsPath = join(dir, TEST_FAILURE_DETAILS_FILENAME);
   let preserveRunArtifacts = false;
+  let outputLogPaths: string[] = [];
+  let measuredSuccess = false;
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
@@ -3512,6 +3517,7 @@ export async function runTestFilesCore(opts: {
         signal: outcomes.find((entry) => entry.signal)?.signal ?? null,
         timedOut: outcomes.some((entry) => entry.timedOut),
         aborted: outcomes.some((entry) => entry.aborted),
+        outputLogPaths: outcomes.flatMap((entry) => entry.outputLogPaths ?? []),
         output: outcomes
           .map((entry) => entry.output)
           .join('\n')
@@ -3519,6 +3525,7 @@ export async function runTestFilesCore(opts: {
       };
     }
 
+    outputLogPaths = outcome.outputLogPaths ?? [];
     preserveRunArtifacts = outcome.hostShutdownDetached === true;
 
     if (outcome.terminationUnconfirmed) {
@@ -3569,7 +3576,10 @@ export async function runTestFilesCore(opts: {
         timeoutMs,
         ...(opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures }),
       });
-      if (completed) return completed;
+      if (completed) {
+        measuredSuccess = completed.ok;
+        return completed;
+      }
 
       // The foreground process group has already been terminated by
       // runTestProcess. Start a NEW, independently pollable store run for the
@@ -3656,6 +3666,7 @@ export async function runTestFilesCore(opts: {
         root,
         error: 'no_report',
         routerOutput: outcome.output.slice(-2000),
+        diagnostics: noReportDiagnostics(outcome.output, outcome.code, await readdir(dir).catch(() => []), outputLogPaths),
       };
     }
 
@@ -3686,6 +3697,7 @@ export async function runTestFilesCore(opts: {
       if (routerResult) {
         const executedNothing = zeroExecutedRefusal(routerResult, { runId, root });
         if (executedNothing) return executedNothing;
+        measuredSuccess = routerResult.failed === 0 && outcome.code === 0;
         return boundTestRunPayload(
           {
             ok: routerResult.failed === 0 && outcome.code === 0, runId, root,
@@ -3703,7 +3715,7 @@ export async function runTestFilesCore(opts: {
         root,
         error: 'no_report',
         routerOutput: outcome.output.slice(-2000),
-        diagnostics: noReportDiagnostics(outcome.output, outcome.code, reportDirEntries),
+        diagnostics: noReportDiagnostics(outcome.output, outcome.code, reportDirEntries, outputLogPaths),
       };
     }
 
@@ -3726,7 +3738,10 @@ export async function runTestFilesCore(opts: {
       root,
       routerOutput: outcome.output,
     });
-    if (emptyReport) return emptyReport;
+    if (emptyReport) return {
+      ...emptyReport,
+      diagnostics: noReportDiagnostics(outcome.output, outcome.code, reportDirEntries, outputLogPaths),
+    };
     const run = mergeDistilledRuns(distilledRuns, { maxFailures: opts.maxFailures });
 
     // External Vitest checkouts have no Papercusp reporter to write the
@@ -3783,11 +3798,18 @@ export async function runTestFilesCore(opts: {
     // LIST COUNT and so cannot bound bytes at all — one long assertion diff
     // outweighs fifty terse failures. Counts stay complete and a cut is stated
     // explicitly, so `failures.length` is never readable as "how many failed".
+    measuredSuccess = run.failed === 0 && outcome.code === 0;
     return boundTestRunPayload({
       ok: run.failed === 0 && outcome.code === 0, runId, root,
       ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
     }, run) as TestFilesCoreResult;
   } finally {
+    // An unmeasured run's original cause may precede the bounded output tail.
+    // Keep its existing namespaced temp log for diagnosis; ordinary retention
+    // owns expiry. Successful runs leave no extra log behind.
+    if (measuredSuccess) {
+      await Promise.all(outputLogPaths.map((path) => rm(path, { force: true }).catch(() => {})));
+    }
     if (!preserveRunArtifacts) {
       await rm(dir, { recursive: true, force: true }).catch(() => {
         /* best-effort */
