@@ -1241,6 +1241,9 @@ export async function probeMcpProxyCodeDrift(now: number = Date.now()): Promise<
     {
       name: PORTLESS_PROBE_NAMES.mcpProxyCode,
       unit: process.env.PAPERCUSP_MCP_PROXY_UNIT || 'papercup-mcp-proxy',
+      // systemd tracks the npx wrapper as MainPID; the actual tsx listener
+      // reports its own PID, so match the self-report to the owner of :9071.
+      listenerPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071),
       hotPaths: MCP_PROXY_HOT_PATHS,
       evaluate: evaluateMcpProxyCodeDrift,
       platformNote: 'mcp-proxy code-drift probe is Linux/systemd-only — not applicable on this platform',
@@ -1288,6 +1291,8 @@ async function probeCodeDrift(
   spec: {
     name: string;
     unit: string;
+    /** Match runtime-vintage against an actual listener when systemd MainPID is a wrapper. */
+    listenerPort?: number;
     hotPaths: readonly string[];
     artifactPaths?: readonly string[];
     evaluate: (
@@ -1349,13 +1354,21 @@ async function probeCodeDrift(
     let loadedIdentity: LoadedCodeIdentity | null = null;
     try {
       const rows = await readRuntimeVintageForServiceHealth();
-      const processPid = svc.mainPid ?? null;
-      if (processPid !== null) {
+      let processPids: number[];
+      if (spec.listenerPort !== undefined) {
+        const { sockets } = await listListeningSockets({ port: spec.listenerPort });
+        processPids = sockets.filter((socket) => socket.ownerVisible).flatMap((socket) => socket.pids);
+      } else {
+        processPids = svc.mainPid === undefined || svc.mainPid === null ? [] : [svc.mainPid];
+      }
+      if (processPids.length > 0) {
+        const processPidSet = new Set(processPids);
         const row = rows.find((candidate) => {
           const reportedAtMs = Date.parse(candidate.reportedAt);
           return (
             candidate.host === hostname() &&
-            candidate.pid === processPid &&
+            candidate.pid !== null &&
+            processPidSet.has(candidate.pid) &&
             Number.isFinite(reportedAtMs) &&
             reportedAtMs >= bootMs
           );
