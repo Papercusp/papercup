@@ -17,8 +17,10 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
+  const nativeProof = '../lib/external-bench/current-su-native.integration.test.ts';
+  const preparationProofs = [routingProof, nativeProof];
   for (const file of [...readdirSync(import.meta.dirname).filter(name =>
-    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), routingProof]) {
+    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), ...preparationProofs]) {
     const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
       ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
@@ -29,11 +31,11 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
       }
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
         && (node.expression.text === 'buildPrivateOperatorApiBundle'
-          || file === routingProof && node.expression.text === 'preparePrivateOperatorApiBundle')) {
+          || preparationProofs.includes(file) && node.expression.text === 'preparePrivateOperatorApiBundle')) {
         callers.push(file);
         expect(ts.isAwaitExpression(node.parent), `${file} must await build completion`).toBe(true);
         let policy: ts.Expression | undefined = node.arguments[2];
-        if (file === routingProof && policy && ts.isObjectLiteralExpression(policy))
+        if (preparationProofs.includes(file) && policy && ts.isObjectLiteralExpression(policy))
           policy = policy.properties.find((property): property is ts.PropertyAssignment =>
             ts.isPropertyAssignment(property) && property.name.getText(source) === 'builder')?.initializer;
         expect(policy && ts.isObjectLiteralExpression(policy), `${file} needs a bounded progress policy`).toBe(true);
@@ -49,7 +51,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     };
     visit(source);
   }
-  expect(callers.sort()).toEqual([routingProof, 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, nativeProof, 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
     'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
