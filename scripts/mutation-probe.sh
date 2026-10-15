@@ -989,7 +989,7 @@ trap 'finish 143' TERM
 # mutex root can allocate its metadata. Check both before spending a baseline,
 # and use the existing root resolver rather than deriving a second lock domain.
 if ! node --input-type=module - "$SCRATCH" "$FILE" "$TEST_CMD" "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/lib/fs-mutex.mjs" <<'JS'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const [scratch, subject, guard, mutexModule] = process.argv.slice(2);
@@ -1005,6 +1005,26 @@ function checkRoot(root, copySubject) {
   }
 }
 try {
+  // A native CommonJS import bypasses Vitest's module transforms. Propagating
+  // the committed-source loader through NODE_OPTIONS therefore refuses the
+  // intentional mutant before any assertion runs (EI-26005614073216227).
+  // Keep that boundary strict; diagnose the incompatible command before its
+  // expensive baseline, and preserve the explicit-import launcher route.
+  const nodeGuard = /\b(?:node|npm|npx|pnpm)(?:\s|$)/.test(guard);
+  let inheritedLoader = nodeGuard && String(process.env.NODE_OPTIONS ?? '').includes('committed-source-loader.mjs');
+  if (/\b(?:npm|pnpm)\s+run\s+test:file\b/.test(guard)) {
+    const packagePath = join(process.cwd(), 'package.json');
+    if (existsSync(packagePath)) {
+      const script = JSON.parse(readFileSync(packagePath, 'utf8')).scripts?.['test:file'];
+      inheritedLoader ||= typeof script === 'string' && script.includes('NODE_OPTIONS=')
+        && script.includes('committed-source-loader.mjs');
+    }
+  }
+  if (/\.(?:cjs|cts)$/.test(subject) && inheritedLoader) {
+    console.error('MUTATION_PROBE_RESULT verdict=harness-error phase=preflight reason=commonjs-committed-loader');
+    console.error('mutation-probe: the guard propagates the committed-source loader into CommonJS test workers, which would refuse the mutant before assertions. Keep the loader strict. Use the maintained launcher-only route: node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs <test path>, with no committed-source loader in inherited NODE_OPTIONS; the router still runs its restricted-source preflight.');
+    process.exit(2);
+  }
   checkRoot(scratch, true);
   const managedGuard = /\b(?:npm|npx|pnpm|bun)(?:\s|$)|(?:^|[\s/])(?:test-files\.mjs|npm-install-safe\.mjs|pc-heavy\.sh)(?:\s|$)/.test(guard);
   if (managedGuard && process.env.PAPERCUSP_DISABLE_FS_MUTEX !== '1') {
@@ -1019,7 +1039,7 @@ try {
 }
 JS
 then
-  die "scratch preflight failed; no baseline guard was started"
+  die "guard preflight failed; no baseline guard was started"
 fi
 if [ "$IN_TREE" -eq 1 ]; then
   printf '%s\0%s\0%s\0%s\0' "$ADMISSION_ROOT" "$FILE" "$BASE" "$$" >"$PROBE_MANIFEST" ||

@@ -162,6 +162,55 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
 }
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it('refuses a CommonJS npm guard that propagates the committed loader before starting its baseline', () => {
+    const repo = join(dir, 'cjs-npm-guard');
+    mkdirSync(repo);
+    const modulePath = join(repo, 'subject.cjs');
+    const marker = join(repo, 'guard-started');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: {
+      'test:file': `NODE_OPTIONS="--import=./scripts/lib/committed-source-loader.mjs" node -e "require('node:fs').writeFileSync('${marker}', 'started')"`,
+    } }));
+    const { code, out } = runProbeIO([
+      '--file', modulePath, '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'test -f {} && npm run test:file -- provider.test.ts',
+    ], process.env, repo);
+    expect(code, out).toBe(2);
+    expect(out).toContain('reason=commonjs-committed-loader');
+    expect(out).toContain('node --import ./scripts/lib/committed-source-loader.mjs scripts/test-files.mjs');
+    expect(out).not.toContain('running baseline guard');
+    expect(existsSync(marker)).toBe(false);
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it('runs the CommonJS mutant in a child while keeping an explicit loader on its committed launcher', () => {
+    const repo = join(dir, 'cjs-launcher-only');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    const launcher = join(repo, 'launcher.mjs');
+    writeFileSync(launcher, [
+      "import { spawnSync } from 'node:child_process';",
+      'const child = spawnSync(process.execPath, [\'-e\', "require(\'node:assert/strict\').equal(require(process.argv[1]), 1)", process.argv[2]], { stdio: \'inherit\' });',
+      'process.exit(child.status ?? 2);',
+    ].join('\n'));
+    git(repo, ['add', 'subject.cjs', 'launcher.mjs']);
+    git(repo, ['commit', '-qm', 'committed guarded launcher']);
+    const loader = resolve(__dirname, '../../../scripts/lib/committed-source-loader.mjs');
+    const { code, out } = runProbeIO([
+      '--file', modulePath, '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', `node --import ${JSON.stringify(loader)} ${JSON.stringify(launcher)} {}`,
+    ], process.env, repo);
+    expect(code, out).toBe(0);
+    expect(out).toContain('verdict=caught');
+    expect(out).toContain('AssertionError');
+    expect(out).not.toContain('COMMITTED_SOURCE refused');
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
   it('runs disposable CJS guards without substituting source or changing parent loader custody', () => {
     const repo = join(dir, 'loader-custody-repo');
     mkdirSync(repo);
