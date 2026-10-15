@@ -63,6 +63,20 @@ afterAll(async () => {
 });
 
 describe('provider manifest declaration', () => {
+  it('loads an explicit reauthorization policy and rejects unknown expiry policies', async () => {
+    for (const refreshPolicy of ['refresh-token', 'reauthorize']) {
+      const d = descriptor();
+      (d.oauth as Record<string, unknown>).refreshPolicy = refreshPolicy;
+      const result = await loadPluginFromDir(await makeProviderPlugin(`fixture-${refreshPolicy}`, d), 'global');
+      assert(!('error' in result), JSON.stringify(result));
+    }
+    const bad = descriptor();
+    (bad.oauth as Record<string, unknown>).refreshPolicy = 'ignore-expiry';
+    const result = await loadPluginFromDir(await makeProviderPlugin('fixture-ignore-expiry', bad), 'global');
+    assert('error' in result);
+    assert.match(result.error, /refreshPolicy/);
+  });
+
   it('loads a valid provider plugin and exposes descriptor + adapter', async () => {
     const dir = await makeProviderPlugin('fixture-provider-ok', descriptor());
     const r = await loadPluginFromDir(dir, 'global');
