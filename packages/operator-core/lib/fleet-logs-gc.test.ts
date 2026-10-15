@@ -71,6 +71,45 @@ describe('runFleetLogsGc', () => {
     expect(existsSync(pinned)).toBe(true);
     expect(existsSync(unpinned)).toBe(false);
     expect(result.dirs[0]!.bytesRemaining).toBe(100);
+    expect(result.dirs[0]!.cap).toMatchObject({ root: dir, classId: 'fleet-logs', maxBytes: 0,
+      beforeBytes: 200, afterBytes: 100, pinnedBytes: 100, pinnedPaths: [pinned],
+      overByBytes: 100, pinnedOverageBytes: 100 });
+  });
+
+  it('reports pinned fresh and open logs even when no deletion is attempted', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const pinned = writeAged(dir, 'fresh.log', 100, 1000);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'active evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 200,
+      scanOpenPaths: async () => ({ complete: false, byPath: new Map([[pinned, ['123']]]) }) });
+    expect(result.dirs[0]!.cap).toMatchObject({ beforeBytes: 100, afterBytes: 100,
+      pinnedBytes: 100, pinnedPaths: [pinned], overByBytes: 0, pinnedOverageBytes: 0 });
+    expect(existsSync(pinned)).toBe(true);
+  });
+
+  it('expired pins stop contributing to the cap receipt and dry-run predicts the actual retained bytes', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const path = writeAged(dir, 'expired.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
+    const now = Date.now();
+    createRetentionPin({ path, owner: 'reviewer', reason: 'old evidence', expiresAt: new Date(now - 1000).toISOString() }, { nowMs: now - 2000 });
+    const preview = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0, dryRun: true });
+    expect(existsSync(path)).toBe(true);
+    const actual = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
+    expect(actual.dirs[0]!.cap).toEqual(preview.dirs[0]!.cap);
+    expect(actual.dirs[0]!.cap).toMatchObject({ beforeBytes: 100, afterBytes: 0,
+      pinnedBytes: 0, pinnedPaths: [], overByBytes: 0, pinnedOverageBytes: 0 });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('keeps logs and reports unknown pin accounting when the pin store is corrupt', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const path = writeAged(dir, 'stale.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
+    mkdirSync(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT!, { recursive: true });
+    writeFileSync(join(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT!, 'lease-agent-pin-broken.tsv'), 'not a lease');
+    const result = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
+    expect(existsSync(path)).toBe(true);
+    expect(result.dirs[0]!.cap).toBeNull();
+    expect(result.dirs[0]!.errors).toContainEqual(expect.objectContaining({ error: expect.stringContaining('retention pins unreadable') }));
   });
 
   it('defaults are sane: 3-day age window, 10 GiB ceiling', () => {

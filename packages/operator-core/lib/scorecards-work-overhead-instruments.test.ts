@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { resolveScorecardInstrumentSnapshots, evaluateScorecardInstrumentContract } from './scorecards';
 import { getRegisteredInstrument } from './rubric-instrument-registry';
 import { WORK_OVERHEAD_INSTRUMENT_KEYS, summarizeWorkOverhead, type WorkOverheadEvent } from './agent-work-overhead-metrics';
+import * as workOverheadModule from './agent-work-overhead-metrics';
 import type { Rubric } from './rubrics';
 
 const keys = WORK_OVERHEAD_INSTRUMENT_KEYS;
@@ -19,6 +20,24 @@ const rows = Array.from({ length: 31 }, (_, i): WorkOverheadEvent => ({
 }));
 
 describe('ledger-owned work overhead instruments', () => {
+  it('uses the same frozen measurement and verdict for scheduled ledger checks', async () => {
+    const measure = vi.spyOn(workOverheadModule, 'measureWorkOverheadWindow')
+      .mockResolvedValue(summarizeWorkOverhead(window, rows));
+    try {
+      for (const key of Object.values(keys)) {
+        const instrument = getRegisteredInstrument(key);
+        if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('missing scheduled resolver');
+        expect(instrument.rescore.scope).toBe('harness');
+        expect(await instrument.rescore.resolve(window)).toMatchObject({ verdict: 'pass' });
+        const result = await instrument.rescore.resolve(window);
+        expect(JSON.parse(result.detail)).toMatchObject({ metrics: { window, population: { sessions: 1 } } });
+        expect(await instrument.rescore.resolve({ ...window, harnessSlug: undefined })).toMatchObject({ verdict: 'unknown' });
+      }
+      expect(measure).toHaveBeenCalledTimes(4);
+      expect(measure).toHaveBeenCalledWith(window);
+    } finally { measure.mockRestore(); }
+  });
+
   it('registers both keys and measures their common cohort once', async () => {
     Object.values(keys).forEach(key => expect(getRegisteredInstrument(key)?.evaluator).toBe('platform'));
     const workOverhead = vi.fn(async () => summarizeWorkOverhead(window, rows));

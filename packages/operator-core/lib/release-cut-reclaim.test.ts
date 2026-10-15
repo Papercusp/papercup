@@ -40,6 +40,8 @@ import {
   type RetentionLease,
   type TreeProbe,
 } from './release-cut-reclaim';
+import { createRetentionPin } from './storage/retention-pins';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 
 const NOW = Date.parse('2026-09-30T04:00:00Z');
 const DAY = 86_400_000;
@@ -837,6 +839,62 @@ describe('gather + execute against a real temporary repo', () => {
     });
     expect(held).toMatchObject({ ok: true, results: [{ removed: false, reason: 'in use: pid 9 cwd' }] });
     expect(fs.existsSync(tree)).toBe(true);
+  });
+
+  it('re-reads agent pins under the executor mutex when a pin lands after planning', async () => {
+    const tree = path.join(tmp, 'relcut-pin-race');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const previousRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+    process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = ret;
+    try {
+      // The plan is intentionally captured before the pin exists: this is the
+      // read-to-delete race that a plan-only check cannot close.
+      const plan = await gather();
+      createRetentionPin({ path: tree, owner: 'test-owner', reason: 'race regression',
+        expiresAt: new Date(Date.now() + DAY).toISOString() }, { dir: ret });
+      const result = await executeCutReclaim(plan, [tree], {
+        scanHolders: () => ({ verified: true, holders: new Map() }),
+        archiveDir: path.join(ret, 'archive'),
+        appendAudit: () => {},
+      });
+      expect(result).toMatchObject({ ok: true, results: [{ path: tree, removed: false, reason: 'active retention pin' }] });
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+      else process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = previousRoot;
+    }
+  });
+
+  it('waits for a pin writer before its final protection read', async () => {
+    const tree = path.join(tmp, 'relcut-pin-writer');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    const envKeys = ['PAPERCUSP_RELEASE_RETENTION_ROOT', 'PAPERCUSP_FS_MUTEX_LOCK_DIR', 'PAPERCUSP_DISABLE_FS_MUTEX'] as const;
+    const saved = envKeys.map((key) => process.env[key]);
+    process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = ret;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = path.join(tmp, 'mutexes');
+    delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    let execution!: ReturnType<typeof executeCutReclaim>;
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        execution = executeCutReclaim(plan, [tree], {
+          scanHolders: () => ({ verified: true, holders: new Map() }),
+          archiveDir: path.join(ret, 'archive'), appendAudit: () => {},
+        });
+        // An executor that reads before waiting or never takes the mutex would
+        // miss this pin. The writer still owns the lock for the whole delay.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        createRetentionPin({ path: tree, owner: 'test-writer', reason: 'pin while executor waits',
+          expiresAt: new Date(Date.now() + DAY).toISOString() }, { dir: ret });
+      });
+      expect(await execution).toMatchObject({ ok: true, results: [{ removed: false, reason: 'active retention pin' }] });
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally {
+      await execution?.catch(() => {});
+      envKeys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i];
+      });
+    }
   });
 });
 

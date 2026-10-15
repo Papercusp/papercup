@@ -37,6 +37,11 @@ it('retires the roster worker auth listener before its shared database pools', (
   expect(pools, 'all db-org pools must retire after the listener stops').toBeGreaterThan(auth);
   expect(phases[auth].body).toContain('await _stopInvalidationListenerForTests()');
   expect(phases[pools].body).toContain('_resetForTests()');
+  const census = phases.findIndex(phase => phase.name === 'database-census');
+  const closed = phases.findIndex(phase => phase.name === 'database-resources-closed');
+  expect(census, 'capture actual pool labels before retiring query pools').toBeLessThan(pools);
+  expect(closed, 'verify referenced private sockets after pool close callbacks').toBeGreaterThan(pools);
+  expect(phases[closed].body).toContain('assert.equal(retained.length, 0');
 });
 
 it('keeps request fixtures on the bounded progress-aware builder path', () => {
@@ -85,6 +90,7 @@ it('prepares every roster API bundle before the private execute phase', () => {
   const file = join(import.meta.dirname, '../lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts');
   const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
   let contracts = 0;
+  let cleanupProofs = 0;
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
       && node.expression.text === 'recordIsolatedIntegrationProof') {
@@ -93,6 +99,13 @@ it('prepares every roster API bundle before the private execute phase', () => {
         const properties = Object.fromEntries(contract.properties.flatMap(property =>
           ts.isPropertyAssignment(property) ? [[property.name.getText(source), property.initializer]] : []));
         if (properties.sourcePaths?.getText(source).includes('roster-stop-http-fixture.ts')) {
+          if (properties.execute?.getText(source).includes("'--health-cleanup-proof'")) {
+            // This original worker path only seeds readers and exits through
+            // cleanup; it never starts an API or needs an API bundle.
+            expect(properties.prepare).toBeUndefined();
+            cleanupProofs++;
+            return;
+          }
           contracts++;
           const line = source.getLineAndCharacterOfPosition(contract.getStart(source)).line + 1;
           const context = `roster proof at line ${line}`;
@@ -140,6 +153,7 @@ it('prepares every roster API bundle before the private execute phase', () => {
   };
   visit(source);
   expect(contracts).toBe(17);
+  expect(cleanupProofs).toBe(1);
 });
 
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {

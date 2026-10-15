@@ -273,10 +273,10 @@ describe('retention on a real fixture tree', () => {
       const input = JSON.stringify(Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`));
       expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
       const streamed = await nativeRetentionCommand(repoRoot, process.execPath, ['--input-type=module', '-e',
-        "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length}));"],
-      { stdin: input, stdoutOnly: true });
+      "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length,mutexHeld:process.env.PAPERCUSP_DISK_RETENTION_MUTEX_HELD}));"],
+      { stdin: input, stdoutOnly: true, env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' } });
       expect(streamed, JSON.stringify(streamed)).toMatchObject({ ok: true });
-      expect(JSON.parse((streamed.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000 });
+      expect(JSON.parse((streamed.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000, mutexHeld: '1' });
       const listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run']);
       expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true });
       expect(listed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`would reap: ${dead}`) });

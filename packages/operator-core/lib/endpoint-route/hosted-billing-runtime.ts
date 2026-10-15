@@ -36,7 +36,7 @@ import type { HostedBudgetRequest, PostgresHostedBudgetStore } from '../auth/hos
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import type { HostedBillingFailureObserver } from '../auth/hosted/billing/billing-recovery';
 import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
-import { readHostedAllocationReport, readHostedAllocationAccountingExport } from '../auth/hosted/billing/allocation-store';
+import { defineHostedAllocation, readHostedAllocationReport, readHostedAllocationAccountingExport } from '../auth/hosted/billing/allocation-store';
 import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
 import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
 import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
@@ -50,6 +50,7 @@ import {
   type HostedBillingPlan,
   type HostedBillingReceiptSource,
   type HostedBillingAllocationSource,
+  type HostedBillingAllocationAdmin,
   type HostedBillingRoute,
   type HostedBillingStripe,
 } from './routes/hosted-billing';
@@ -208,6 +209,7 @@ export interface HostedBillingRuntimeDependencies {
   /** Trusted server source overrides and collectors; no request can install a collector. */
   readonly usage?: HostedBillingUsageSource;
   readonly allocations?: HostedBillingAllocationSource;
+  readonly allocationAdmin?: HostedBillingAllocationAdmin;
   readonly usageStore?: Pick<PostgresHostedUsageStore, 'append' | 'readRecords' | 'readOpenRouterBindings'>
     & Partial<Pick<PostgresHostedUsageStore, 'createOpenRouterRequestCapture'>>;
   /** Optional authenticated native-host composition. No reader = no admission.
@@ -395,6 +397,12 @@ export function hostedBillingAllocationSource(
   });
 }
 
+export function hostedBillingAllocationAdmin(
+  run: HostedServiceContextRunner = withHostedServiceContext,
+): HostedBillingAllocationAdmin {
+  return input => run(async sql => ({ organization: input.organization, result: await defineHostedAllocation(sql, input) }));
+}
+
 export async function createHostedBillingRuntime(
   configuration: HostedBillingRuntimeConfiguration,
   dependencies: HostedBillingRuntimeDependencies,
@@ -423,6 +431,7 @@ export async function createHostedBillingRuntime(
       maximumAgeMs: 5 * 60_000,
     }),
     allocations: dependencies.allocations ?? hostedBillingAllocationSource(dependencies.runService),
+    allocationAdmin: dependencies.allocationAdmin ?? hostedBillingAllocationAdmin(dependencies.runService),
     clock: dependencies.clock,
   });
   const mounted = routes.map((route) => `${route.method} ${route.path}`);

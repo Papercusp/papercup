@@ -229,7 +229,7 @@ describe('actual admission-rule cohort query', () => {
     const payload = { standingPr: { url: 'https://github.com/acme/subject/pull/7' } };
     const [rule] = await sql`INSERT INTO harness_shared.admission_rules
       (workspace_id, data_source_id, title, match, harness_slug, enabled, created_by, lifecycle)
-      VALUES ('papercusp-workspace', ${source}, 'member route', '{}', ${member}, true, 'fixture', '{}') RETURNING id`;
+      VALUES ('papercusp-workspace', ${source}, 'member route', '{"labels":{"contains":"bug"}}', ${member}, true, 'fixture', '{}') RETURNING id`;
     await sql`INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, authority, payload)
       VALUES ('papercusp-workspace', ${home}, ${id}, 'home issue', 'home issue', ${state}, 'bug', 'committed', ${sql.json(payload)})`;

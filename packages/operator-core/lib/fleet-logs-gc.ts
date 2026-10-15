@@ -195,6 +195,9 @@ export interface FleetLogsGcDirResult {
   bytesRemaining: number;
   skippedOpen: number;
   skippedRaced: number;
+  /** Logical-byte ceiling, matching bytesRemaining. Null when protection
+   * could not be read; unknown protection must never look like zero pins. */
+  cap: RetentionCapReceipt | null;
   errors: Array<{ path: string; error: string }>;
 }
 
@@ -260,6 +263,7 @@ async function gcOneDir(
   retentionMs: number,
   maxTotalBytes: number,
   dryRun: boolean,
+  isPinned: (path: string) => boolean,
 ): Promise<FleetLogsGcDirResult> {
   const errors: Array<{ path: string; error: string }> = [];
   const cutoff = Date.now() - retentionMs;
@@ -270,13 +274,19 @@ async function gcOneDir(
   let wouldUnlinkBytes = 0;
   const open = new Set<string>();
   const raced = new Set<string>();
+  // Account for every retained pin, including fresh/open files that neither
+  // deletion pass visits. The caller holds the shared pin mutex throughout.
+  const pinned = files.filter((file) => isPinned(file.path));
+  const pinnedBytes = pinned.reduce((total, file) => total + file.size, 0);
+  const beforeBytes = files.reduce((total, file) => total + file.size, 0);
   const unlink = async (f: FleetLogFile): Promise<boolean> => {
+    if (isPinned(f.path)) return false;
     if (!scan.complete) return false;
     if (scan.byPath.get(f.path)?.length) { open.add(f.path); return false; }
     // No async gap between this identity check and unlink. Reject replacements,
     // symlinks, new writes and parent swaps since the holder scan's snapshot.
     try {
-      return await withUnpinnedPath(f.path, () => {
+      return (() => {
         const parent = lstatSync(dir);
         const st = lstatSync(f.path);
         const old = f.stat;
@@ -291,7 +301,7 @@ async function gcOneDir(
           if (st.nlink === 1) allocatedBytesUnlinked += st.blocks * 512;
         }
         return true;
-      });
+      })();
     } catch (e) {
       errors.push({ path: f.path, error: (e as Error)?.message ?? String(e) });
       return false;
@@ -334,6 +344,10 @@ async function gcOneDir(
     bytesRemaining: total,
     skippedOpen: open.size,
     skippedRaced: raced.size,
+    cap: { root: dir, classId: 'fleet-logs', maxBytes: maxTotalBytes, beforeBytes,
+      afterBytes: total, pinnedBytes, pinnedPaths: pinned.map((file) => file.path),
+      overByBytes: Math.max(0, total - maxTotalBytes),
+      pinnedOverageBytes: Math.max(0, pinnedBytes - maxTotalBytes) },
     errors,
   };
 }
@@ -360,7 +374,18 @@ export async function runFleetLogsGc(opts: FleetLogsGcOptions = {}): Promise<Fle
   }
   const results: FleetLogsGcDirResult[] = [];
   for (const { dir, identity, files } of snapshots) {
-    results.push(await gcOneDir(dir, identity, files, scan, retentionMs, maxTotalBytes, dryRun));
+    try {
+      results.push(await withRetentionPinProtection((isPinned) =>
+        gcOneDir(dir, identity, files, scan, retentionMs, maxTotalBytes, dryRun, isPinned)));
+    } catch (error) {
+      // Preserve the best-effort API while refusing every deletion in this
+      // directory when pin protection is unknown. A null receipt is explicit.
+      results.push({ dir, scanned: files.length, removedByAge: 0, removedByCeiling: 0,
+        bytesUnlinked: 0, allocatedBytesUnlinked: 0, wouldUnlinkBytes: 0,
+        bytesRemaining: files.reduce((total, file) => total + file.size, 0),
+        skippedOpen: 0, skippedRaced: 0, cap: null,
+        errors: [{ path: dir, error: error instanceof Error ? error.message : String(error) }] });
+    }
   }
   return {
     dirs: results,

@@ -3,12 +3,12 @@
  * (pure ladder: ./enforcement-gate.ts; seams: session:request-compaction,
  * coord:handoff).
  *
- * Contract, in one sentence: the gate can only ever ADD a bounded, single-bounce
+ * Advisory contract: the gate can only ever ADD a bounded, single-bounce
  * refusal — it is bounded (FLUSH_GATE_BUDGET_MS), fail-OPEN (any error ⇒ `clear`),
  * env-disable-able (PAPERCUSP_FLUSH_GATE=off), and its `mechanical-fallback` verdict
  * always PROCEEDS after writing state. No path permanently blocks a compaction or a
- * handoff, so it cannot reintroduce the strand session:request-compaction's
- * warn-only design was avoiding.
+ * handoff. A host-snapshot is mandatory persistence instead: it must settle
+ * before the caller may queue a cut, and a failed save leaves the session intact.
  */
 import { withBoundedTimeout } from './bounded-timeout';
 import {
@@ -131,7 +131,8 @@ export async function writeFlushFallback(input: {
         `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a flush boundary; replace it with a real loop:checkpoint.\n\n${note}`,
       );
       result.loopCarryNoteWritten = input.brief.loop.harness;
-    } catch {
+    } catch (error) {
+      if (input.snapshotAllHeld) throw error;
       /* fail-soft */
     }
   }
@@ -153,6 +154,8 @@ export interface FlushGateOutcome {
   refusalText?: string;
   /** Present on `mechanical-fallback` — what the system wrote. */
   fallback?: FlushFallbackResult;
+  /** Safe diagnostics for a failed mandatory save; never includes storage URLs or messages. */
+  snapshotFailure?: { phase: 'checkpoint-write'; code: string; elapsedMs: number };
 }
 
 /**
@@ -218,7 +221,7 @@ async function resolveAgentToolCallsSinceNote(
  *   - clear  → proceed (also when the gate is env-disabled or errors — fail-open);
  *   - refuse → the caller must NOT perform the operation; marks the refusal marker;
  *   - mechanical-fallback → writes durable state, clears the marker, caller proceeds.
- * Never throws; fail-open to `clear` on any error.
+ * Never throws. Advisory modes fail open; a failed mandatory host save refuses.
  */
 export async function runFlushGate(input: {
   boundary: GateBoundary;
@@ -243,19 +246,25 @@ export async function runFlushGate(input: {
   // carry preview. A failed save leaves the process intact; no model paperwork
   // or refuse-once dance can repair an unavailable host writer.
   if (input.mode === 'host-snapshot') {
-    const failed: FlushGateOutcome = { verdict: 'refuse', tripwires: [],
-      refusalText: 'The host could not finish the mechanical respawn checkpoint. The session remains intact; retry after host persistence is available.' };
-    const snapshot = async (): Promise<FlushGateOutcome> => {
-      try {
-        const fallback = await writeFlushFallback({ ...input, snapshotAllHeld: true,
-          brief: input.brief ?? null, journalNote: input.journalNote ?? null,
-          tripwires: detectFlushTripwires(input.brief ?? null, input.nowMs ?? Date.now(), null, input.boundary) });
-        await clearRefused(input.boundary, input.ownerId);
-        return { verdict: 'mechanical-fallback', tripwires: [], fallback };
-      } catch { return failed; }
-    };
-    return (await withBoundedTimeout(snapshot(), { fallback: failed,
-      timeoutMs: flushGateBudgetMs(), label: 'respawn-mechanical-checkpoint' })).value;
+    const startedAt = Date.now();
+    try {
+      // This is the cut's prerequisite, not an advisory sweep. Racing a running
+      // save against the advisory timer returned a refusal while writes kept
+      // going, and a retry started the same all-held save again. Await its real
+      // receipt under the request's existing operation deadline instead.
+      const fallback = await writeFlushFallback({ ...input, snapshotAllHeld: true,
+        brief: input.brief ?? null, journalNote: input.journalNote ?? null,
+        tripwires: detectFlushTripwires(input.brief ?? null, input.nowMs ?? Date.now(), null, input.boundary) });
+      await clearRefused(input.boundary, input.ownerId);
+      return { verdict: 'mechanical-fallback', tripwires: [], fallback };
+    } catch (error) {
+      const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
+      const code = typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
+        ? rawCode : 'checkpoint-write-failed';
+      return { verdict: 'refuse', tripwires: [],
+        refusalText: `The host checkpoint write failed (${code}). The session remains intact; inspect host persistence before retrying.`,
+        snapshotFailure: { phase: 'checkpoint-write', code, elapsedMs: Date.now() - startedAt } };
+    }
   }
   if (!flushGateEnabled()) return clear;
   const { value } = await withBoundedTimeout(runFlushGateInner(input), {

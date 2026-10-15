@@ -530,6 +530,7 @@ export default defineTool({
               error: 'flush-required',
               tripwires: gate.tripwires,
               note: gate.refusalText,
+              ...(gate.snapshotFailure ? { snapshotFailure: gate.snapshotFailure } : {}),
             }),
           },
         ],

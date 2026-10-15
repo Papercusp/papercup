@@ -7,7 +7,7 @@
 import { lstat, readFile, readdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
@@ -46,6 +46,8 @@ export interface RetentionCapReceipt {
 }
 export interface DiskReclaimReceipt {
   schemaVersion: 1; id: string; startedAt: string; finishedAt: string; dryRun: boolean;
+  /** Native machine identity; legacy hostless receipts cannot certify a host soak. */
+  host?: string;
   complete: boolean;
   /** Unknown for partial runs; a successful run drained every unprotected selected entry. */
   policyExhausted: boolean | null;
@@ -554,7 +556,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   const started = options.nowMs ?? Date.now();
   const runDeadline = Date.now() + (options.runBudgetMs ?? 15 * 60_000);
   const receipt: DiskReclaimReceipt = {
-    schemaVersion: 1, id: randomUUID(), startedAt: new Date(started).toISOString(), finishedAt: '',
+    schemaVersion: 1, id: randomUUID(), host: hostname(), startedAt: new Date(started).toISOString(), finishedAt: '',
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
   };
   const home = options.home ?? homedir();
@@ -860,6 +862,8 @@ finally:
 export async function nativeRetentionCommand(repoRoot: string, command: string, args: string[], options: {
   /** Candidate lists can exceed the kernel's per-argument limit; keep them off argv. */
   stdin?: string;
+  /** Per-invocation context for a native owner, without mutating process.env. */
+  env?: NodeJS.ProcessEnv;
   stdoutOnly?: boolean; outputLimit?: number; timeoutMs?: number;
 } = {}) {
   const { managedSpawn } = await import('../task-manager/managed-spawn');
@@ -882,7 +886,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
       launchedBy: 'system:disk-retention', planSlug: 'disk-headroom-standing-reclaim-2026-10-12',
       runtimeMaxSec: Math.ceil(timeoutMs / 1000), detail: { subsystem: 'storage', operation: 'retention-delegate' },
     }, {
-      spawnOptions: { cwd: repoRoot, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] },
+      spawnOptions: { cwd: repoRoot, env: options.env, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] },
       onSpawn: (child, id) => {
         taskId = id;
         timer = setTimeout(() => {
@@ -952,7 +956,12 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     } },
     { classId: 'cargo-target-slots', run: (dryRun) => nativeRetentionCommand(repoRoot, '/bin/bash', [
       join(repoRoot, 'papercusp-desktop/bin/reap-private-target-slots.sh'), ...(dryRun ? ['--dry-run'] : []),
-    ]) },
+    ], {
+      // runDiskReclaimOnce invokes delegates while holding the pin mutex. The
+      // shell's public entrypoints otherwise acquire it themselves. Keep this
+      // internal reuse context scoped to this one enrolled child.
+      env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' },
+    }) },
     { classId: 'release-cut-worktrees', run: async (dryRun) => {
       const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
@@ -965,7 +974,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
           return rows.map((row) => ({ version: row.version, gitSha: row.git_sha, cutAtMs: new Date(row.cut_at).getTime(), publishedAtMs: row.published_at ? new Date(row.published_at).getTime() : null }));
         },
       });
-      const detail = await reclaimCutWorktrees(plan, { dryRun });
+      const detail = await reclaimCutWorktrees(plan, { dryRun }, { retentionMutexHeld: true });
       return { ok: detail.ok, detail };
     } },
     { classId: 'unregistered-workspaces', run: async () => {

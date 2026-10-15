@@ -20,6 +20,19 @@ import { startPrivateCupboardCatalog } from './portal-cupboard-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
+const healthCleanupProof = process.argv.includes('--health-cleanup-proof');
+const socketOrigins = new Map<number, string>();
+const originalConnect = net.Socket.prototype.connect;
+// Use the same creation-stack/census evidence as the native current-build
+// fixture. A completed cleanup await alone cannot prove the worker will exit.
+net.Socket.prototype.connect = function(this: net.Socket, ...args: unknown[]) {
+  const stack = new Error('Private roster PG connection creation').stack ?? '';
+  this.once('connect', () => {
+    if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT) && this.localPort)
+      socketOrigins.set(this.localPort, stack);
+  });
+  return Reflect.apply(originalConnect, this, args);
+} as typeof originalConnect;
 const requestedBrowserProof = process.argv.find(value => value.startsWith('--browser-proof='))?.slice('--browser-proof='.length);
 if (requestedBrowserProof) {
   assert.ok(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'].includes(requestedBrowserProof));
@@ -37,7 +50,7 @@ assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
 const preparedApiBundle = resolvePreparedPrivateApiBundle(process.argv, evidence);
 const apiBundle = preparedApiBundle ?? join(evidence, 'hono-host.mjs');
-const portalSourceRoot = process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1'
+const portalSourceRoot = !healthCleanupProof && (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1')
   ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
 // Keep the mutable socket namespace short and retain its identity in the receipt.
@@ -215,6 +228,13 @@ async function coordCanary(health: unknown) {
         { ...current, panels: { ...panels, workItems: { ...panels.workItems, summary: 'private-health-transition' } } });
       writeFileSync(join(evidence, 'portal-health-seed.json'), JSON.stringify({ current, foreignWorkspace, conditionId: condition.id,
         scope: 'Initial supplied snapshot/history; real private needs-human row drives subsequent Work-items collector ticks' }, null, 2));
+    }
+    if (healthCleanupProof) {
+      // Exercise the original Health seed and browser import graph without
+      // building/starting an API or replaying the browser journey.
+      await import('./portal-roster-browser-fixture');
+      console.log('ROSTER_HEALTH_CLEANUP_SEEDED ' + JSON.stringify({ workspace }));
+      return;
     }
     let harnesses: { hive: string; selected: string; neighbor: string; foreign: string } | undefined;
     if (process.env.ROSTER_WORK_BROWSER_PROOF === '1') {
@@ -648,6 +668,14 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
+  if (healthCleanupProof) {
+    const prepared = preparePrivateHttpWorkspaces();
+    assert.equal(prepared.workspace, workspace);
+    assert.equal(process.env.ROSTER_HEALTH_BROWSER_PROOF, '1');
+    assert.equal(process.env.ROSTER_COORD_BROWSER_PROOF, '1');
+    await coordCanary({ cleanupProof: true });
+    return;
+  }
   if (process.env.ROSTER_CUPBOARD_BROWSER_PROOF === '1') {
     cupboardCatalog = await startPrivateCupboardCatalog(evidence);
     process.env.PAPERCUSP_CUPBOARD_URL = cupboardCatalog.base;
@@ -817,8 +845,30 @@ finally {
     const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
     await _stopInvalidationListenerForTests();
   });
+  let pgConnections: Array<{ client_port: number; application_name: string; state: string }> = [];
+  await cleanupPhase('database-census', async () => {
+    pgConnections = await sql`SELECT client_port, application_name, state
+      FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`;
+  });
   await cleanupPhase('database-close', () => sql.end({ timeout: 5 }));
   await cleanupPhase('db-org-pools-reset', () => _resetForTests());
+  await cleanupPhase('database-resources-closed', async () => {
+    await new Promise<void>(done => setImmediate(done));
+    const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
+    const sockets = (report.libuv ?? []).filter(handle => handle.type === 'tcp').map(handle => {
+      const local = handle.localEndpoint as { port?: number } | undefined;
+      return { active: handle.is_active, referenced: handle.is_referenced,
+        local, remote: handle.remoteEndpoint,
+        creationStack: socketOrigins.get(local?.port ?? 0) ?? null,
+        pgConnection: pgConnections.find(row => row.client_port === local?.port) ?? null };
+    });
+    const retained = sockets.filter(socket => socket.referenced &&
+      (socket.remote as { port?: number } | undefined)?.port === Number(process.env.PAPERCUSP_PG_PORT));
+    writeFileSync(join(evidence, 'roster-stop-resources.json'), JSON.stringify({
+      activeResources: process.getActiveResourcesInfo(), pgConnections, sockets, retained }, null, 2));
+    assert.equal(retained.length, 0, 'private PG sockets remain after roster worker cleanup; see roster-stop-resources.json');
+  });
+  net.Socket.prototype.connect = originalConnect;
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
   if (failures.length) throw new AggregateError(failures, 'Private roster cleanup failed');

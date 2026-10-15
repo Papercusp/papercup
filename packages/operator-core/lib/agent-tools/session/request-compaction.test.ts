@@ -160,12 +160,14 @@ vi.mock('../../harness/routines/loop', async (importOriginal) => {
   };
 });
 const getLoopCarryNoteWithMeta = vi.fn();
+const setLoopCarryNote = vi.fn();
 const setLoopCarryNoteWithPrior = vi.fn();
 vi.mock('../../carry-note', async () => {
   const actual = await vi.importActual<typeof import('../../carry-note')>('../../carry-note');
   return {
     ...actual,
     getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
+    setLoopCarryNote: (...a: unknown[]) => setLoopCarryNote(...a),
     setLoopCarryNoteWithPrior: (...a: unknown[]) => setLoopCarryNoteWithPrior(...a),
   };
 });
@@ -348,6 +350,7 @@ beforeEach(async () => {
     intervalSec: 60,
     changed: true,
   });
+  setLoopCarryNote.mockResolvedValue(undefined);
   setLoopCarryNoteWithPrior.mockImplementation(async (_ref: unknown, note: unknown) => ({
     stored: typeof note === 'string' ? note : null,
     priorLength: 0,
@@ -1040,6 +1043,29 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     expect(b.error).toBe('flush-required');
     expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
+
+  it.each([
+    ['08006', '08006'],
+    ['postgresql://fixture:never-emit@invalid/database', 'checkpoint-write-failed'],
+  ])('reports safe host persistence diagnostics for code %s without queueing a cut', async (code, expectedCode) => {
+    autoCheckpointStaleHeldItems.mockRejectedValueOnce(Object.assign(
+      new Error('postgresql://fixture:never-emit@invalid/database'), { code },
+    ));
+    findLiveHost.mockReturnValue(carryHost);
+
+    const b = body(await call({ focus: 'resume after a verified host save' }));
+
+    expect(b).toMatchObject({
+      ok: false, requested: false, error: 'flush-required',
+      snapshotFailure: { phase: 'checkpoint-write', code: expectedCode, elapsedMs: expect.any(Number) },
+    });
+    expect(JSON.stringify(b)).not.toContain('never-emit');
+    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
+  });
 });
 
 /**
@@ -1432,6 +1458,9 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     });
     const b = body(await call({ focus: 'x' }));
     expect(b).toMatchObject({ ok: true, requested: true });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      { harness: 'papercusp', ownerId: 'su-caller' }, expect.stringContaining('auto-checkpoint mechanical'),
+    );
     expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 

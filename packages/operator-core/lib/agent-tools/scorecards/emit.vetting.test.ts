@@ -13,6 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getRubric = vi.fn();
+const readRubric = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
 // WI-1393208: criteriaHash is read via a SEPARATE exported function
@@ -58,6 +59,7 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
+    readRubric: (...a: unknown[]) => readRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     getRubricEvidenceIdentity: (...a: unknown[]) => getRubricEvidenceIdentity(...a),
     getRubricCriteriaHash: (...a: unknown[]) => getRubricCriteriaHash(...a),
@@ -172,6 +174,13 @@ beforeEach(() => {
     if (id === 'meta-acceptance-rubric') return META_RUBRIC;
     if (id === 'ar-some-plan') return ACCEPTANCE_RUBRIC;
     return null;
+  });
+  // emit uses the fail-closed reader for vetting subjects. Keep that path on the
+  // same deterministic rubric fixtures instead of reaching the real PG-backed read.
+  readRubric.mockReset().mockImplementation(async (id: unknown) => {
+    if (id === 'meta-acceptance-rubric') return { kind: 'found', rubric: META_RUBRIC };
+    if (id === 'ar-some-plan') return { kind: 'found', rubric: ACCEPTANCE_RUBRIC };
+    return { kind: 'missing' };
   });
   getRubricPlanRevision.mockReset().mockResolvedValue(7);
   getRubricEvidenceIdentity.mockReset().mockImplementation(async (...a: unknown[]) => ({
@@ -338,6 +347,7 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
       },
     );
     expect(res).toMatchObject({ ok: true, created: true });
+    expect(readRubric).toHaveBeenCalledWith('ar-some-plan');
     expect(resolveAcceptanceSeatSuccession).not.toHaveBeenCalled();
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: { vetting?: Record<string, unknown> } };

@@ -47,6 +47,7 @@ import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { mapWithConcurrency } from './gym/concurrency';
 import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag,
+  withRetentionPinProtection,
   type RetentionLease } from '../../../scripts/lib/retention-pins.mjs';
 export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag };
 export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
@@ -1029,6 +1030,10 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
 // ---------------------------------------------------------------- removal (effectful)
 
 export interface ReclaimExecDeps {
+  /** Set by a caller that already holds papercusp-disk-retention (the scheduled adapter). */
+  retentionMutexHeld?: boolean;
+  /** Re-read under the retention mutex immediately before destructive work. */
+  pinProtection?: (path: string) => boolean;
   nowMs?: () => number;
   scanHolders?: (targets: HolderTarget[]) => HolderScan | Promise<HolderScan>;
   archive?: (tree: string, outFile: string) => void | Promise<void>;
@@ -1116,7 +1121,7 @@ export async function archiveTreeDiffs(tree: string, outFile: string): Promise<v
   }
 }
 
-export async function executeCutReclaim(
+async function executeCutReclaimUnlocked(
   plan: ReclaimPlan,
   targets: readonly string[],
   deps: ReclaimExecDeps = {},
@@ -1135,10 +1140,15 @@ export async function executeCutReclaim(
   const archiveDir = deps.archiveDir ?? path.join(defaultRetentionDir(), 'reclaim-archive');
   const auditFile = deps.auditFile ?? path.join(defaultRetentionDir(), 'deletion-audit.tsv');
   const results: ReclaimExecResult[] = [];
+  const isPinned = deps.pinProtection ?? (() => false);
   for (const v of resolved.verdicts) {
     const started = now();
     const done = (r: Omit<ReclaimExecResult, 'path' | 'ms'>) => results.push({ path: v.path, ms: now() - started, ...r });
     const real = v.realPath ?? v.path;
+    if (isPinned(v.path) || (real !== v.path && isPinned(real))) {
+      done({ removed: false, reason: 'active retention pin' });
+      continue;
+    }
     const offloaded = real !== v.path;
     // realpath can differ because a PARENT is symlinked. Only a symlink at
     // the worktree itself needs unlinking after the real directory is moved.
@@ -1229,6 +1239,20 @@ export async function executeCutReclaim(
     done({ removed: true, archive });
   }
   return { ok: true, results };
+}
+
+/** Direct release:cut callers must serialize the final pin read and deletion with storage:pin.
+ * The scheduled disk-reclaim adapter already owns this mutex and opts out to avoid a nested
+ * lock deadlock. The re-read closes the plan/read-to-delete race when a pin lands after planning. */
+export async function executeCutReclaim(
+  plan: ReclaimPlan,
+  targets: readonly string[],
+  deps: ReclaimExecDeps = {},
+): Promise<{ ok: false; refused: true; problems: string[] } | { ok: true; results: ReclaimExecResult[] }> {
+  if (deps.retentionMutexHeld) return executeCutReclaimUnlocked(plan, targets, deps);
+  return withRetentionPinProtection((isPinned) =>
+    executeCutReclaimUnlocked(plan, targets, { ...deps, retentionMutexHeld: true, pinProtection: isPinned }),
+  );
 }
 
 /** The scheduled adapter holds the pin mutex across discovery and this owner call.

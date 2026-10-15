@@ -23,7 +23,7 @@ import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
 import { runLocksCacheGc } from '../locks-cache-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
-import { formatBm25MaintenanceReport, runOrgBm25Maintenance } from '../search/lexical/bm25-maintenance';
+import { runBm25MaintenanceStep, type Bm25MaintenanceStepResult } from './bm25-maintenance-step';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
@@ -216,25 +216,10 @@ DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: 
 // their only compactor. runBm25Maintenance never throws; the catch below is the same
 // belt-and-braces as embedBackfill (a throw would exhaust maxRecoveryAttempts and stop
 // the schedule).
-async function bm25MaintenanceTick(): Promise<void> {
-  await DBOS.runStep(
-    async () => {
-      try {
-        const startedAt = Date.now();
-        const report = await runOrgBm25Maintenance();
-        const finishedAt = Date.now();
-        const line = formatBm25MaintenanceReport(report, {
-          startedAtMs: startedAt,
-          finishedAtMs: finishedAt,
-          durationMs: Math.max(0, finishedAt - startedAt),
-        });
-        if (line) console.log(line);
-      } catch (err) {
-        console.warn(`[bm25-maintenance] run skipped (non-fatal): ${(err as Error).message}`);
-      }
-    },
-    { name: 'bm25-maintenance' },
-  );
+async function bm25MaintenanceTick(): Promise<Bm25MaintenanceStepResult> {
+  // Return the report from the step so DBOS operation_outputs records what ran;
+  // previously the callback returned void and successful runs were opaque.
+  return DBOS.runStep(() => runBm25MaintenanceStep(), { name: 'bm25-maintenance' });
 }
 const bm25MaintenanceWorkflow = idempotentRegisterWorkflow('bm25Maintenance', () =>
   DBOS.registerWorkflow(bm25MaintenanceTick, {
