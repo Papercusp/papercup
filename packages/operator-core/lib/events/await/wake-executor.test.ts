@@ -40,6 +40,7 @@ import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 // timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
 // by engine.ts, so hosting it here would close a wake-executor↔engine import cycle.
 import { wakeSummaryHeadline } from './timeout-fallback';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { PtyError } from '../../pty-bridge';
 import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
@@ -467,6 +468,12 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // default reads the live SU-lock table at the delivery boundary.
     readLockGrantOwnership: vi.fn(async () => true),
     getCurrentWorkItem: vi.fn(async () => null) as never,
+    // Keep the Channel 2 grading-audit checks hermetic by default. Only their
+    // focused freshness tests should provide task/scorecard rows; the production
+    // readers open the live org database.
+    readGradingAuditTasks: vi.fn(async () => []) as never,
+    readGradingAuditTarget: vi.fn(async () => null) as never,
+    cancelGradingAuditAwait: vi.fn(async () => undefined) as never,
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
     // WI-6860: hermetic by default — the real getLoopStatus opens a live PG
@@ -3582,6 +3589,195 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
     expect(forceResume).toHaveBeenCalledWith(9999);
     expect(spawnDetached).toHaveBeenCalledTimes(1);
+  });
+
+  describe('grading-audit Channel 2 freshness guard', () => {
+    const nativeSessionId = 'native-grading-auditor-session';
+    const issueId = 'EI-grading-audit-resume';
+    const reservation = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-14T17:27:26.871Z' };
+
+    function fixture(gradingAudit: Record<string, unknown> = {
+      state: 'pending', dispatchReservation: reservation,
+    }) {
+      const order: string[] = [];
+      const task = {
+        workspaceId: 'ws', taskId: 'grading-auditor-task', class: 'agent-session',
+        sessionId: nativeSessionId,
+        detail: {
+          coordOwnerId: 'su-abc',
+          gradingAudit: { issueId, evidenceFingerprint: 'evidence-v1', reservation },
+        },
+      };
+      const readGradingAuditTasks = vi.fn(async () => {
+        order.push('tasks');
+        return [task];
+      });
+      const readGradingAuditTarget = vi.fn(async () => {
+        order.push('target');
+        return { issueId, evidenceFingerprint: 'evidence-v1', gradingAudit };
+      });
+      const cancelGradingAuditAwait = vi.fn(async () => undefined);
+      const claimResume = vi.fn(async () => {
+        order.push('claim');
+        return true;
+      });
+      const spawnDetached = vi.fn(() => {
+        order.push('spawn');
+        return 4321;
+      });
+      const delivery = work({ awaitId: 515, wakeHandle: advHandle({ sessionId: nativeSessionId }) });
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: readGradingAuditTasks as never,
+        readGradingAuditTarget: readGradingAuditTarget as never,
+        cancelGradingAuditAwait: cancelGradingAuditAwait as never,
+        claimResume,
+        spawnDetached,
+      });
+      return { order, task, delivery, common, readGradingAuditTasks, readGradingAuditTarget,
+        cancelGradingAuditAwait, claimResume, spawnDetached };
+    }
+
+    it('allows the exact pending reservation and validates it before the resume claim', async () => {
+      const f = fixture();
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(f.order.slice(0, 4)).toEqual(['tasks', 'target', 'claim', 'spawn']);
+      expect(f.readGradingAuditTasks).toHaveBeenCalledWith({
+        workspaceId: 'ws', subscriberId: 'su-abc', sessionId: nativeSessionId,
+      });
+      expect(f.claimResume).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    it('drops a settled target and cancels only this delivery await before claiming resume', async () => {
+      const f = fixture({ state: 'passed' });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('settled (passed)') });
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledWith({
+        awaitId: 515,
+        subscriberId: 'su-abc',
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      });
+      expect(f.claimResume).not.toHaveBeenCalled();
+      expect(f.spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('drops a replaced reservation and cancels only this delivery await', async () => {
+      const f = fixture({
+        state: 'pending',
+        dispatchReservation: { key: reservation.key, reservedAt: '2026-10-14T17:35:00.000Z' },
+      });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('newer dispatch reservation') });
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledWith({
+        awaitId: 515,
+        subscriberId: 'su-abc',
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      });
+      expect(f.claimResume).not.toHaveBeenCalled();
+      expect(f.spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('drops changed evidence before the resume claim', async () => {
+      const f = fixture();
+      f.readGradingAuditTarget.mockResolvedValue({
+        issueId,
+        evidenceFingerprint: 'evidence-v2',
+        gradingAudit: { state: 'pending', dispatchReservation: reservation },
+      });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('changed evidence fingerprint') });
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledWith({
+        awaitId: 515,
+        subscriberId: 'su-abc',
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      });
+      expect(f.claimResume).not.toHaveBeenCalled();
+      expect(f.spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the pending target has no current reservation', async () => {
+      const f = fixture({ state: 'pending' });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(f.claimResume).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the scorecard target is absent', async () => {
+      const f = fixture();
+      const readGradingAuditTarget = vi.fn(async () => null);
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: f.readGradingAuditTasks as never,
+        readGradingAuditTarget: readGradingAuditTarget as never,
+        cancelGradingAuditAwait: f.cancelGradingAuditAwait as never,
+        claimResume: f.claimResume,
+        spawnDetached: f.spawnDetached,
+      });
+      const out = await executeWake(f.delivery, common);
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(readGradingAuditTarget).toHaveBeenCalledTimes(1);
+      expect(f.claimResume).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the scorecard lookup is unavailable', async () => {
+      const f = fixture();
+      const readGradingAuditTarget = vi.fn(async () => { throw new Error('scorecard store unavailable'); });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: f.readGradingAuditTasks as never,
+        readGradingAuditTarget: readGradingAuditTarget as never,
+        cancelGradingAuditAwait: f.cancelGradingAuditAwait as never,
+        claimResume: f.claimResume,
+        spawnDetached: f.spawnDetached,
+      });
+      try {
+        const out = await executeWake(f.delivery, common);
+        expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+        expect(readGradingAuditTarget).toHaveBeenCalledTimes(1);
+        expect(f.claimResume).toHaveBeenCalledTimes(1);
+        expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+          `grading-audit target/${issueId} failed: scorecard store unavailable`,
+        ));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('fails open when the task lookup is unavailable', async () => {
+      const f = fixture();
+      const readGradingAuditTasks = vi.fn(async () => { throw new Error('task ledger unavailable'); });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: readGradingAuditTasks as never,
+        claimResume: f.claimResume,
+        spawnDetached: f.spawnDetached,
+      });
+      try {
+        const out = await executeWake(f.delivery, common);
+        expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+        expect(readGradingAuditTasks).toHaveBeenCalledTimes(1);
+        expect(f.claimResume).toHaveBeenCalledTimes(1);
+        expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+          'grading-audit task binding/su-abc failed: task ledger unavailable',
+        ));
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('Channel 2 lost resume claim → parks before spawning an exact-session writer', async () => {
