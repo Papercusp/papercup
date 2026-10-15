@@ -125,7 +125,9 @@ describe('focused runner startup tracing', () => {
         JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
       const pin = rows.find(row => row.event === 'node-exit').streams.stdout;
       expect(pin).toMatchObject({ captureComplete: false, observedByteLength: stdout.length, byteLength: 16 * 1024 * 1024 });
-      expect(readFileSync(join(`${out}.native-processes`, pin.ref))).toEqual(stdout.subarray(0, pin.byteLength));
+      // Compare bytes directly: generic deep equality enumerates a 16 MiB Buffer
+      // as millions of properties and can exhaust the test's own deadline.
+      expect(readFileSync(join(`${out}.native-processes`, pin.ref)).equals(stdout.subarray(0, pin.byteLength))).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
