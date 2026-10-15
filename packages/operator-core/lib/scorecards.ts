@@ -1481,8 +1481,12 @@ export interface ScorecardEvidenceRow {
 }
 
 export interface ScorecardAuditTargetStatus {
-  /** true only when the card and every applicable read-time currentness relation are current. */
-  current: boolean;
+  /**
+   * True when the card and all applicable read-time relations are current; false
+   * when it is known stale, superseded, or retracted; null when currentness is
+   * unresolved and no known stale condition already answers the question.
+   */
+  current: boolean | null;
   superseded: boolean;
   supersededBy: string | null;
   retracted: boolean;
@@ -1927,12 +1931,18 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
   }
   const supersededBy = row.superseded_by ?? null;
   const retracted = Boolean(observation.retracted);
+  const applicableCurrentnessStates = [
+    subjectRubricCurrentness?.state,
+    evidenceBindingCurrentness?.state,
+  ];
+  const auditTargetCurrent =
+    supersededBy !== null || retracted || applicableCurrentnessStates.includes('stale')
+      ? false
+      : applicableCurrentnessStates.includes('unknown')
+        ? null
+        : true;
   const auditTarget: ScorecardAuditTargetStatus = {
-    current:
-      supersededBy === null &&
-      !retracted &&
-      (subjectRubricCurrentness === null || subjectRubricCurrentness.state === 'current') &&
-      (evidenceBindingCurrentness === undefined || evidenceBindingCurrentness.state === 'current'),
+    current: auditTargetCurrent,
     superseded: supersededBy !== null,
     supersededBy,
     retracted,
