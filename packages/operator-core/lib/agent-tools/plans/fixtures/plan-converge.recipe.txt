@@ -2,6 +2,21 @@
 // with outer dryRun:false: THIS recipe owns its side-effect-free preview mode.
 const { planSlug, harness, classRef, auditItems } = inputs;
 const dryRun = inputs.dryRun !== false;
+// orchestrate:run caps the returned summary (~1250 chars), so every return is
+// bounded: pick small fields, clip strings, cap the gap rows and say how many
+// were omitted. Aggregate counts always cover the full set.
+const MAX_GAPS = 5;
+const clip = value => typeof value === "string" && value.length > 240 ? value.slice(0, 240) + "…" : value;
+const brief = (value, keys) => {
+  if (!value || typeof value !== "object") return clip(value);
+  const out = {};
+  for (const key of keys) if (key in value) out[key] = clip(value[key]);
+  return out;
+};
+const FAILURE_KEYS = ["ok", "error", "code", "message", "status", "reason"];
+const compactGaps = list => list.slice(0, MAX_GAPS).map(gap => ({ specId: gap.specId,
+  revision: gap.revision, classification: gap.classification, severity: gap.severity,
+  blockers: gap.blockers, action: gap.action, ...(gap.id ? { id: gap.id } : {}) }));
 if (!planSlug || !harness || !classRef || !Array.isArray(auditItems) || auditItems.length === 0) {
   return { ok: false, error: "scope_and_reviewed_auditItems_required" };
 }
@@ -9,13 +24,14 @@ const evaluation = await tools.plans.evaluateSpecTestAdequacy({
   harness, slug: planSlug, classRef, includeDraft: true, detail: "full",
 });
 if (evaluation.ok !== true || !Array.isArray(evaluation.rows)) {
-  return { ok: false, phase: "evaluate", evaluation };
+  return { ok: false, phase: "evaluate", evaluation: brief(evaluation, FAILURE_KEYS) };
 }
 const audit = await tools.plans.audit({
   harness, slug: planSlug, phase: "completion", items: auditItems, dryRun,
 });
 if (audit.ok !== true || audit.partial || (audit.rejectedItemIds || []).length) {
-  return { ok: false, phase: "code-truth", audit };
+  return { ok: false, phase: "code-truth",
+    audit: brief(audit, [...FAILURE_KEYS, "partial", "rejectedItemIds"]) };
 }
 const rows = evaluation.rows;
 const proposals = [];
@@ -49,7 +65,9 @@ const certification = await tools.plans.certifySpecClauses({ harness, slug: plan
   specIds: certifiable.length ? certifiable : rows.map(row => row.specId),
   includeDraft: true, dryRun: dryRun || certifiable.length === 0 });
 if (certification.ok !== true || (certification.counts && certification.counts.refused > 0)) {
-  return { ok: false, phase: "certify", certification, proposals };
+  return { ok: false, phase: "certify",
+    certification: brief(certification, [...FAILURE_KEYS, "counts"]),
+    proposals: compactGaps(proposals), proposalsOmitted: Math.max(0, proposals.length - MAX_GAPS) };
 }
 const identity = dryRun ? null : await tools.coord.whoami({});
 const gapOwner = inputs.gapOwner || (identity && identity.ownerId);
@@ -68,9 +86,14 @@ for (const proposal of proposals) {
   if (!filed.ok || !outcome || !outcome.ok || !outcome.workItem
       || !(outcome.workItem.assignee || outcome.workItem.terminalOwner)
       || (outcome.inlineLinkWarnings || []).length > 0) {
-    return { ok: false, phase: "file", filed, gaps };
+    return { ok: false, phase: "file", filed: brief(filed, FAILURE_KEYS),
+      gaps: compactGaps(gaps), gapsOmitted: Math.max(0, gaps.length - MAX_GAPS) };
   }
   gaps.push({ ...proposal, action: outcome.conditionUpsert ? "reused" : "filed", id: outcome.id || outcome.workItem.id });
 }
-return { ok: true, dryRun, planSlug, evaluated: rows.length, nonPassing: gaps.length,
-  audit, certification, gaps };
+const byClassification = {};
+for (const gap of gaps) byClassification[gap.classification] = (byClassification[gap.classification] || 0) + 1;
+return { ok: true, dryRun, planSlug, evaluated: rows.length, nonPassing: gaps.length, byClassification,
+  audit: brief(audit, ["ok", "preview", "itemsAuditedThisPass", "partial", "rejectedItemIds"]),
+  certification: brief(certification, ["ok", "counts"]),
+  gaps: compactGaps(gaps), gapsOmitted: Math.max(0, gaps.length - MAX_GAPS) };

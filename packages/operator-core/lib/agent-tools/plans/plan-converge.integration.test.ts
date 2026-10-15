@@ -12,6 +12,7 @@ import evaluateTool from './evaluate-spec-test-adequacy';
 import auditTool from './audit';
 import certifyTool from './certify-spec-clauses';
 import { validateRecipeBindings } from '../../recipe-contract';
+import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { bindSpecEvidence, measureRepoFilesEvidenceDetailedAtCommit } from './spec-evidence-store';
 import { createOneWorkItem } from '../work_items/_create-core';
@@ -118,6 +119,22 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     const links = controls([row()], { filed: { ok: true, results: [{ ok: true,
       workItem: { id: 'WI-unlinked', assignee: 'converge-owner' }, inlineLinkWarnings: ['link refused'] }] } });
     expect(await execute(links.tools, { dryRun: false })).toMatchObject({ ok: false, phase: 'file' });
+  });
+  it('keeps every return within the orchestrate:run summary budget and counts what it omits', async () => {
+    // A live preview on a real plan returned 2237 chars and orchestrate:run refused it.
+    const bulky = 'x'.repeat(5000);
+    const many = Array.from({ length: 12 }, (_, i) => row({ specId: `SPEC-${i}` }));
+    const big = controls(many, { audit: { ok: true, preview: true, itemsAuditedThisPass: 1, detail: bulky },
+      certify: { ok: true, counts: { clauses: 12, filed: 0, notPassing: 12 }, rows: bulky } });
+    const preview = await execute(big.tools);
+    expect(preview).toMatchObject({ ok: true, nonPassing: 12, gapsOmitted: 7, byClassification: { major: 12 },
+      audit: { preview: true, itemsAuditedThisPass: 1 }, certification: { counts: { clauses: 12 } } });
+    expect(preview.gaps).toHaveLength(5);
+    expect(JSON.stringify(preview).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
+    const failing = controls(many, { certify: { ok: false, error: bulky } });
+    const refused = await execute(failing.tools);
+    expect(refused).toMatchObject({ ok: false, phase: 'certify', proposalsOmitted: 7 });
+    expect(JSON.stringify(refused).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
   });
 });
 
