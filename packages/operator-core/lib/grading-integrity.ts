@@ -2269,12 +2269,14 @@ export async function dispatchPendingGradingAudits(
         };
         return receipt;
       }
-      const routed = generationBound || evaluatorBuildBound
+      const routed = profile || generationBound || evaluatorBuildBound
         ? {
             state: 'fallback' as const,
-            reason: generationBound
-              ? 'generation-bound card requires a fresh judge launched from this compatible dispatcher build'
-              : 'evaluator-build-bound card requires a fresh judge launched from this exact evaluator build',
+            reason: profile
+              ? 'explicit routine grading profile requires a fresh judge with the pinned model'
+              : generationBound
+                ? 'generation-bound card requires a fresh judge launched from this compatible dispatcher build'
+                : 'evaluator-build-bound card requires a fresh judge launched from this exact evaluator build',
           }
         : await (deps.route ?? routeSourceGradingAudit)(
             {

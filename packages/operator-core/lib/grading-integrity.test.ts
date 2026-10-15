@@ -1397,6 +1397,7 @@ describe('dispatchPendingGradingAudits', () => {
     const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
     d.listScorecards.mockResolvedValue([card('EI-pinned-audit')]);
     await dispatchPendingGradingAudits({ targetIds: ['EI-pinned-audit'], ctx: { ...ctx, gradingLaunch: profile } as never, harness: 'papercusp' }, d);
+    expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
       ...profile, independent: true, members: [{ role: 'judge', ...profile }],
     }), expect.objectContaining({ ownerId: GRADING_AUDIT_DISPATCH_ACTOR }));
