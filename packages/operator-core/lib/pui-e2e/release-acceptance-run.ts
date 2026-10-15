@@ -25,6 +25,9 @@ import {
 import type { EvidenceFile } from './release-acceptance-reporter';
 import { startDedicatedNativePg } from '@papercusp/test-config/pg';
 import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
+import { parseSseStream } from '@papercusp/sse';
+import { codexGatewayPort } from '@papercusp/orchestrator/codex-gateway-config';
+import { codexModelRefusalDetail, isCodexModelRefusal } from '../inference-gateway/codex-model-refusals';
 
 /**
  * One dedicated native Postgres shared by every leg (WI-10004247 H4). Without
@@ -516,8 +519,51 @@ function listedDigest(unit: string, file: string): string | null {
   return line ? line.split(/\s+/)[0] : null;
 }
 
-/** Reject a missing routed-account fixture before the long scripted leg starts. */
-function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
+/** Use the same auto route as the native home. A catalog row or HTTP 200 is
+ * insufficient: retain the terminal inference outcome before the long suites.
+ * Only a definitive model refusal blocks; inconclusive probes remain explicit. */
+export async function probeRoutedCodexModel(
+  model: string,
+  ownerId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ model: string; verdict: 'completed' | 'refused' | 'unmeasured'; status?: number;
+  terminal?: string; account?: string; detail?: string }> {
+  if (!ownerId.trim()) throw new Error('Routed Codex model preflight requires the calling PAPERCUSP_SID');
+  const result = { model, verdict: 'unmeasured' as 'completed' | 'refused' | 'unmeasured' };
+  try {
+    const response = await fetchImpl(`http://127.0.0.1:${codexGatewayPort()}/v1/responses`, {
+      method: 'POST', signal: AbortSignal.timeout(20_000),
+      headers: { authorization: 'Bearer papercusp-gateway', 'content-type': 'application/json',
+        originator: 'codex_cli_rs', 'x-papercusp-owner': ownerId },
+      body: JSON.stringify({ model, stream: true, store: false, instructions: 'This is a model readiness probe.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply with OK.' }] }],
+        tools: [], tool_choice: 'auto', reasoning: { effort: 'low' } }),
+    });
+    const receipt = { ...result, status: response.status,
+      account: response.headers.get('x-papercusp-routed-account') ?? undefined };
+    if (!response.ok) {
+      const body = await response.text();
+      return { ...receipt, verdict: isCodexModelRefusal(response.status, body) ? 'refused' : 'unmeasured',
+        detail: codexModelRefusalDetail(body) };
+    }
+    for await (const frame of parseSseStream(response.body)) {
+      let event: { type?: string; response?: { error?: unknown }; error?: unknown };
+      try { event = JSON.parse(frame.data); } catch { continue; }
+      if (event.type === 'response.completed') return { ...receipt, verdict: 'completed', terminal: event.type };
+      if (['response.failed', 'response.incomplete', 'error'].includes(event.type ?? '')) {
+        const body = JSON.stringify(event.response?.error ?? event.error ?? {});
+        return { ...receipt, terminal: event.type,
+          verdict: isCodexModelRefusal(400, body) ? 'refused' : 'unmeasured', detail: codexModelRefusalDetail(body) };
+      }
+    }
+    return { ...receipt, detail: 'Stream ended without completed inference' };
+  } catch (error) {
+    return { ...result, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Reject missing routed accounts or a refused model before opening an archive. */
+async function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): Promise<void> {
   for (const leg of real ?? []) {
     const account = leg.env?.PUI_REAL_ACCOUNT ?? process.env.PUI_REAL_ACCOUNT;
     if (account !== 'auto') continue;
@@ -542,6 +588,13 @@ function preflightRoutedAccountCatalog(real: RealLeg[] | undefined): void {
     })) {
       throw new Error(`PUI_NATIVE_ACCOUNT_CATALOG must contain nonempty accounts:list accounts with valid id/provider metadata: ${catalogPath}`);
     }
+    if (leg.backend === 'codex' && leg.model) {
+      const receipt = await probeRoutedCodexModel(leg.model, process.env.PAPERCUSP_SID ?? '');
+      console.info('PUI_ROUTED_CODEX_MODEL_PREFLIGHT', JSON.stringify(receipt));
+      if (receipt.verdict === 'refused') {
+        throw new Error(`Native Codex model preflight refused ${leg.model}: ${receipt.detail}`);
+      }
+    }
   }
 }
 
@@ -563,7 +616,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   if (process.env.PUI_CAPTURE_BASELINE === '1' || options.real?.some(leg => leg.env?.PUI_CAPTURE_BASELINE === '1')) {
     throw new Error('PUI_CAPTURE_BASELINE=1 captures a pre-fix counterexample and must not be enabled for installed release acceptance; run that historical calibration separately');
   }
-  preflightRoutedAccountCatalog(options.real);
+  await preflightRoutedAccountCatalog(options.real);
   prepareOperatorRuntimePackages();
   const archive = path.resolve(options.archive);
   const work = options.work ?? mkdtempSync(path.join(tmpdir(), 'pui-release-acceptance-'));

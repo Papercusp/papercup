@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import type postgres from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { allCapabilities, currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
 import { preregister } from './reproducibility/prereg';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { currentBenchAssignmentId, currentBenchGatewayController, type CurrentSuBenchOptions } from './current-su';
@@ -51,12 +51,19 @@ beforeAll(async () => {
 });
 afterAll(async () => { await db?.cleanup(); if (root) rmSync(root, { recursive: true, force: true }); });
 
-async function refusedAssignment(name: string, problemStatement: string, inContainer = false) {
+async function refusedAssignment(name: string, problemStatement: string, inContainer = false, freshSessions = 1) {
   const repoRoot = join(root, `protocol-${name}`), checkout = join(root, `checkout-${name}`); mkdirSync(repoRoot); mkdirSync(checkout);
   // Lifecycle proof, not a performance budget: the refusal ends Codex ~0.3s after its first
   // request, but sandboxed cold start (bwrap + SRT + two /v1/models probes) took 2.7-4.3s at
   // load ~140 and exceeded an 8s cap at load ~180 (WI-10007969). Keep a wide margin.
   const config = currentProtocolFixture(`PRIVATE-STOCK-NATIVE-${name}`, 30000);
+  if (freshSessions > 1) {
+    const shared = { solverGroup: 'private-stock', solverToolsHash: 'f'.repeat(64) };
+    config.arms[0].control = { ...shared, topology: 'solo', capabilities: allCapabilities('on') };
+    config.arms[1].control = { ...shared, topology: 'repeated-session', capabilities: allCapabilities('off'),
+      repeatedSession: { matchedCostOf: 'papercusp', maxSessions: freshSessions,
+        workspace: 'same-task', sessionContext: 'fresh-native', submission: 'last-session' } };
+  }
   const corpus = JSON.stringify({ entries: [{ key: 'permitted:test', text: 'Permitted frozen context.' }] });
   for (const name of ['corpus', 'memory']) writeFileSync(join(repoRoot, `${name}.json`), corpus);
   config.context = { ...config.context, corpusRef: 'corpus.json', memoryRef: 'memory.json',
@@ -114,13 +121,37 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
         originRewrites: [{ from: `http://127.0.0.1:${port}`, to: egress.originFor('gw') }] };
       console.info('STOCK_NATIVE_PHASE', JSON.stringify({ phase: 'native-start', container }));
     }
-    const factory = createCurrentStockBenchHarness(opts, ctx, { ...hosted,
-      ...(containerExec ? { containerExec } : {}),
-      admit: async () => ({ admitted: true, receiptRef: 'private-no-spend-admission' }), observeIdentity: async () => null }, { sql: h.sql as never });
-    const result = await factory.spinRunAndCost({ blueprintId: 'native-codex',
-      task: { benchmark: 'swe-bench-pro', instanceId: 't1', problemStatement, graderMeta: {} },
-      checkout: { dir: checkout, repo: 'fixture/private', baseCommit: 'fixture', cleanup: async () => {} },
-      budget: config.arms[1].generationBudget });
+    // Exercise the real native session/grant lifecycle independently of the
+    // matched-cost loop: a refusal has no complete cost receipt and that loop
+    // must stop rather than pretend it observed a successful free generation.
+    const nativeSessionIds: string[] = [];
+    const checkpoint = join(checkout, 'retained-workspace.txt');
+    const started = Date.now();
+    let result!: Awaited<ReturnType<ReturnType<typeof createCurrentStockBenchHarness>['spinRunAndCost']>>;
+    for (let index = 0; index < freshSessions; index++) {
+      const budget = { ...config.arms[1].generationBudget,
+        maxWallClockMs: config.arms[1].generationBudget.maxWallClockMs! - (Date.now() - started) };
+      const sessionBudget = freshSessions > 1 ? hosted.issueSessionBudget(budget) : undefined;
+      const factory = createCurrentStockBenchHarness(opts, ctx, { ...hosted,
+        ...(containerExec ? { containerExec } : {}), ...(sessionBudget ? { sessionBudget } : {}),
+        admit: async () => ({ admitted: true, receiptRef: 'private-no-spend-admission' }), observeIdentity: async () => null }, { sql: h.sql as never });
+      result = await factory.spinRunAndCost({ blueprintId: 'native-codex',
+        task: { benchmark: 'swe-bench-pro', instanceId: 't1', problemStatement, graderMeta: {} },
+        checkout: { dir: checkout, repo: 'fixture/private', baseCommit: 'fixture', cleanup: async () => {} },
+        budget: sessionBudget?.budget ?? config.arms[1].generationBudget });
+      expect(result.telemetry.stopReason, JSON.stringify(result)).not.toBe('done');
+      expect(result.telemetry.armMeta?.costUsdMeasurementMissing, JSON.stringify(result)).toBe(true);
+      const observed = await h.sql`SELECT a.session_id FROM harness_shared.adv_sessions a
+        JOIN harness_shared.task_ledger t ON t.workspace_id=a.workspace_id
+          AND t.detail->>'coordOwnerId'=a.coord_owner_id AND t.session_id=a.session_id
+        WHERE a.workspace_id=${workspaceId}
+          AND t.detail->>'assignmentId'=${currentBenchAssignmentId(config.runId, 'baseline', 't1', 1)}`;
+      expect(observed).toHaveLength(index + 1);
+      const added = observed.filter(row => !nativeSessionIds.includes(row.session_id));
+      expect(added).toHaveLength(1); nativeSessionIds.push(added[0].session_id);
+      if (index) expect(readFileSync(checkpoint, 'utf8')).toBe('Preserve the task checkpoint across fresh sessions.');
+      else if (freshSessions > 1) writeFileSync(checkpoint, 'Preserve the task checkpoint across fresh sessions.');
+    }
     if (inContainer) console.info('STOCK_NATIVE_PHASE', JSON.stringify({ phase: 'native-ended',
       requests: bodies.length, stopReason: result.telemetry.stopReason, generationError: result.telemetry.generationError }));
     // The listener supplies no model answer or billed identity. Refusal must
@@ -135,17 +166,31 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
       FROM harness_shared.task_ledger t JOIN harness_shared.adv_sessions a
         ON a.workspace_id=t.workspace_id AND a.coord_owner_id=t.detail->>'coordOwnerId' AND a.session_id=t.session_id
       WHERE t.workspace_id=${workspaceId} AND t.detail->>'assignmentId'=${currentBenchAssignmentId(config.runId, 'baseline', 't1', 1)}`;
-    expect(rows).toHaveLength(1); expect(rows[0].session_id).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(rows).toHaveLength(freshSessions);
+    expect(new Set(rows.map(row => row.id)).size).toBe(freshSessions);
+    expect(new Set(rows.map(row => row.session_id)).size).toBe(freshSessions);
     // managedSpawn persists exit asynchronously after its cgroup handoff
     // barrier. Observe its authoritative terminal row, not the stream's exit.
     await expect.poll(async () => {
-      const [terminal] = await h.sql`SELECT ended_at FROM harness_shared.task_ledger WHERE task_id=${rows[0].task_id}`;
-      return terminal?.ended_at;
-    }, { timeout: 10000, interval: 50 }).toBeInstanceOf(Date);
-    expect(rows[0].session_ended_at).not.toBeNull();
+      const terminals = await h.sql`SELECT ended_at FROM harness_shared.task_ledger
+        WHERE workspace_id=${workspaceId} AND task_id IN ${h.sql(rows.map(row => row.task_id))}`;
+      return terminals.length === freshSessions && terminals.every(row => row.ended_at instanceof Date);
+    }, { timeout: 10000, interval: 50 }).toBe(true);
+    for (const row of rows) {
+      expect(row.session_id).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(row.session_ended_at).not.toBeNull();
+      const home = join(h.homes, String(row.id));
+      for (const file of ['AGENTS.md', 'hooks.json', 'auth.json']) expect(existsSync(join(home, file))).toBe(false);
+    }
     const files = await h.sql`SELECT file_path, byte_offset FROM harness_shared.interactive_usage_files WHERE workspace_id=${workspaceId}`;
     expect(files.length).toBeGreaterThan(0);
-    expect(files.some(file => file.file_path.includes(join(h.homes, String(rows[0].id), 'sessions')))).toBe(true);
+    for (const row of rows)
+      expect(files.some(file => file.file_path.includes(join(h.homes, String(row.id), 'sessions')))).toBe(true);
+    if (freshSessions > 1) {
+      expect(() => hosted.issueSessionBudget(config.arms[1].generationBudget)).toThrow(/exhausted/);
+      expect(bodies).toHaveLength(freshSessions);
+      for (const body of bodies) expect(JSON.stringify(body.input)).toContain(checkout);
+    }
     if (inContainer) {
       const home = join(h.homes, String(rows[0].id));
       expect(egress!.stats().gw.connections).toBeGreaterThan(0);
@@ -162,7 +207,7 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
     span.setCacheShape(Buffer.from(JSON.stringify(bodies[0])));
     const cache = span.finish('gateway-error', 400)!.cache;
     const text = JSON.stringify(bodies[0].input);
-    return { cache, checkout, body: bodies[0], checkoutInInput: text.includes(checkout) };
+    return { cache, checkout, body: bodies[0], checkoutInInput: text.includes(checkout), nativeSessionIds };
   } catch (error) {
     primaryError = error;
     throw error;
@@ -192,6 +237,12 @@ it('runs the clean stock native CLI in /app through internal-network egress with
 
 it('retains a real native UUID and terminal ingestion after local refusal without provider forwarding', async () => {
   await refusedAssignment('lifecycle', 'Describe the empty repository.');
+}, 120000);
+
+it('opens distinct clean native sessions on one task workspace and host gateway with retired session allowances', async () => {
+  const result = await refusedAssignment('fresh-sessions', 'Describe the same task workspace.', false, 2);
+  expect(result.nativeSessionIds).toHaveLength(2);
+  expect(new Set(result.nativeSessionIds).size).toBe(2);
 }, 120000);
 
 it('keeps source-bound native instruction templates across distinct isolated assignments', async () => {

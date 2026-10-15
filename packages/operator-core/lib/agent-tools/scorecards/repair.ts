@@ -46,6 +46,16 @@ export const scorecardRepairArgs = z
       .max(120)
       .optional()
       .describe('Harness that owns the pending scorecards; pass it when this operator session is not harness-scoped.'),
+    gradingLaunch: z
+      .object({
+        agent: z.literal('codex'),
+        model: z.literal('gpt-6.1-sol'),
+        effort: z.literal('xhigh'),
+        account: z.literal('auto'),
+      })
+      .strict()
+      .optional()
+      .describe('Optional existing grading launch profile: pin independent auditors to codex/gpt-6.1-sol/xhigh through account auto, as in the acceptance-grading sweep.'),
   })
   .strict();
 
@@ -55,6 +65,7 @@ export default defineTool({
   description:
     'Immediately reconcile pending grading-integrity audits by dispatching independent auditors through the bounded, idempotency-keyed pending-audit dispatcher. ' +
     `Pass targetIds for a pending scorecard named by a refusal; omitting them dispatches ${SCORECARD_REPAIR_NO_TARGET_SELECTION}. ` +
+    'Pass gradingLaunch to use the same pinned model profile as the acceptance-grading sweep. ' +
     'This is the callable repair path behind scorecards:emit and the acceptance-grading sweep.',
   guidance: {
     when: 'scorecards:emit or a completion gate says a scorecard must be re-opened through the pending-audit dispatcher, or a known pending grading-integrity backlog needs an immediate bounded retry instead of waiting for the periodic sweep.',
@@ -75,7 +86,7 @@ export default defineTool({
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
     const input: DispatchPendingGradingAuditsInput = {
-      ctx: ctx as DispatchPendingGradingAuditsInput['ctx'],
+      ctx: (args.gradingLaunch ? { ...ctx, gradingLaunch: args.gradingLaunch } : ctx) as DispatchPendingGradingAuditsInput['ctx'],
       ...(args.targetIds ? { targetIds: args.targetIds } : {}),
       ...(args.harness ? { harness: args.harness } : {}),
     };

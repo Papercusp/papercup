@@ -39,4 +39,33 @@ describe('URL-only directive completion evidence (R-20)', () => {
     expect(result).toEqual({ ok: false, error: URL_ONLY_DISPOSITION_ERROR });
     expect(sql).not.toHaveBeenCalled();
   });
+
+  // Positive controls: without them the refusal above stays green even if the guard
+  // refused every note (rubric vetting conv-mv9mm3e2, finding C).
+  it('accepts a done disposition whose note carries an outcome beside a URL and writes it', async () => {
+    const sql = vi.fn().mockRejectedValue(new Error('datastore write reached'));
+    await expect(
+      dispositionOwnerDirective(
+        {
+          id: 1,
+          status: 'done',
+          note: 'The regression suite passed. [Report](https://example.test/report)',
+          dispositionedBy: 'su-test',
+        },
+        sql as never,
+      ),
+    ).rejects.toThrow('datastore write reached');
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the URL-only rule to successful dispositions only, not to a decline', async () => {
+    const sql = vi.fn().mockRejectedValue(new Error('datastore write reached'));
+    await expect(
+      dispositionOwnerDirective(
+        { id: 1, status: 'declined', note: 'https://example.test/why', dispositionedBy: 'su-test' },
+        sql as never,
+      ),
+    ).rejects.toThrow('datastore write reached');
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
 });

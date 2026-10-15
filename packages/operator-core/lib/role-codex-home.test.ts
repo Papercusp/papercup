@@ -295,6 +295,7 @@ describe('writeRoleCodexHome', () => {
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('[mcp_servers.papercusp]');
     expect(toml).toContain(`url = "${url}"`);
+    expect(toml).toContain(`[mcp_servers.papercusp]\nurl = "${url}"\ntool_timeout_sec = 1090`);
     const logDir = join(out.codexHome, 'log');
     expect(out.sqliteHome).toBe(join(fakeHome, 'codex-sqlite-homes', 'session-42'));
     expect(toml).toContain(`sqlite_home = "${out.sqliteHome}"`);

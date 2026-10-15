@@ -42,7 +42,7 @@ import { nativeProviderRequestSignal, nativeProviderTraceOrigin, nativeRpcReceip
 import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
-import { throwIfProviderRateLimited } from '../su-session-attached-live-rate-limit';
+import { throwIfProviderRefused } from '../su-session-attached-live-rate-limit';
 import { isClaudeConfigDirLaunchReady, sessionProcessHolder, sessionTranscriptFile } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
@@ -1109,7 +1109,7 @@ class PuiPane {
 
   private checkProviderCapacity(stage: string): void {
     if (scriptedEngine.real) {
-      throwIfProviderRateLimited(scriptedEngine.events.slice(this.providerEventsBefore), stage);
+      throwIfProviderRefused(scriptedEngine.events.slice(this.providerEventsBefore), stage);
     }
   }
 
@@ -1186,13 +1186,18 @@ class PuiPane {
 
   async waitForReply(needle: string | RegExp): Promise<void> {
     try {
-      await vi.waitFor(() => {
+      const outcome = await pollUntil(() => {
         // Match the rendered assistant bubble itself. History can scroll the
         // echoed owner request away (especially after a long interrupted reply),
         // and a context-dependent answer need not occur in the request at all.
         this.settleSuToolApproval();
-        expect(screenHasAssistantReply(this.screen(), needle)).toBe(true);
-      }, { timeout: 120_000, interval: 100 });
+        return screenHasAssistantReply(this.screen(), needle);
+      }, {
+        timeoutMs: 120_000, intervalMs: 100,
+        beforeCheck: () => this.checkProviderCapacity('Waiting for the rendered native reply'),
+      });
+      this.observerMaxLateMs = Math.max(this.observerMaxLateMs, outcome.maxLateMs);
+      expect(outcome.ok).toBe(true);
     } catch (cause) {
       const engineState = scriptedEngine.engines.map((engine) => ({ pid: engine.pid(),
         lifecycle: engine.adapter.host.descriptor().lifecycle,
@@ -1694,13 +1699,29 @@ async function waitForCorrelatedReply(
   const chat = await waitForSavedTurn(prompt);
   const command = chat.transcript.find((turn) => turn.content === prompt)?.su_command?.command;
   if (command?.type !== 'owner_turn') throw new Error('Greeting/follow-up lacks a durable owner-turn receipt');
-  await vi.waitFor(() => expect(events).toEqual(expect.arrayContaining([
+  const acceptedSequence = events.find((event) => event.type === 'command_result'
+    && event.commandId === command.commandId)?.sequence ?? 0;
+  const outcome = await pollUntil(() => events.some((event) => event.type === 'transcript'
+    && event.phase === 'completed' && event.role === 'assistant' && event.channel === 'text'
+    && event.turnId === command.turnId
+    && (typeof reply === 'string' ? event.content === reply : reply.test(event.content ?? ''))), {
+    timeoutMs: 120_000, intervalMs: 100,
+    // vi.waitFor retries thrown errors, including a definitive provider refusal.
+    // Keep that evidence outside the retrying assertion and scope it to this turn.
+    beforeCheck: () => {
+      if (scriptedEngine.real) throwIfProviderRefused(
+        events.filter((event) => event.sequence >= acceptedSequence), 'Waiting for the correlated native reply',
+      );
+    },
+  });
+  expect(outcome.ok).toBe(true);
+  expect(events).toEqual(expect.arrayContaining([
     expect.objectContaining({
       type: 'transcript', phase: 'completed', role: 'assistant', channel: 'text',
       content: typeof reply === 'string' ? reply : expect.stringMatching(reply),
       turnId: command.turnId, session: command.target,
     }),
-  ])), { timeout: 120_000, interval: 100 });
+  ]));
   return chat;
 }
 
@@ -7876,7 +7897,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const questionCards = () => pendingNativeCards().filter((pending) => !isSuToolApprovalCard(pending));
         const cardDeadline = Date.now() + 120_000;
         while (questionCards().length === 0 && Date.now() < cardDeadline) {
-          throwIfProviderRateLimited(scriptedEngine.events, 'Native question');
+          throwIfProviderRefused(scriptedEngine.events, 'Native question');
           pane.settleSuToolApproval();
           const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
           // An SU tool approval parks the turn too; the pane answers it.
@@ -8075,7 +8096,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const approvalWait = await pollUntil(() => {
           pane.settleSuToolApproval();
           if (scriptedEngine.real) {
-            throwIfProviderRateLimited(first.events.slice(approvalEventsBefore), 'Native tool approval');
+            throwIfProviderRefused(first.events.slice(approvalEventsBefore), 'Native tool approval');
           }
           const pending = pendingCards();
           if (pending.some((card) => cardMentions(card, approvalFixturePath))) return true;
@@ -9028,7 +9049,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             nextProgressFrame += 15_000;
           }
           const events = scriptedEngine.events.slice(eventsBefore);
-          if (scriptedEngine.real) throwIfProviderRateLimited(events, `P-005 ${label}`);
+          if (scriptedEngine.real) throwIfProviderRefused(events, `P-005 ${label}`);
           const replies = events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.channel === 'text');
           // Only delta/completed transcript events carry `content`; `started` has none.
           const blocked = reviewBlockingReason(replies.map((event) => ('content' in event ? String(event.content ?? '') : '')).join('\n'));
@@ -9252,7 +9273,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             const state = engine?.adapter.host.descriptor().lifecycle;
             if (state && lifecycle.at(-1)?.[1] !== state) lifecycle.push([at(), state]);
             const events = scriptedEngine.events.slice(eventsBefore);
-            if (scriptedEngine.real) throwIfProviderRateLimited(events, `P-012 launch ${run}`);
+            if (scriptedEngine.real) throwIfProviderRefused(events, `P-012 launch ${run}`);
             if (record.ownerTurnMs === undefined && events.some((e) => e.type === 'transcript' && e.role === 'owner')) {
               record.ownerTurnMs = at();
             }

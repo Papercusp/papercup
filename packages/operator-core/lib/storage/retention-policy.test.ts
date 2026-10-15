@@ -4,7 +4,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  AGENT_MAX_AGE_HOURS,
+  BUILD_DIR_MAX_AGE_HOURS,
+  CACHEDIR_TAG_SIGNATURE,
   RETENTION_POLICY,
+  buildDirsEligible,
+  isBuildDirName,
+  isCacheDirTag,
   compilePolicy,
   classifyPath,
   deletionClassFor,
@@ -213,6 +219,117 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
       return !file.startsWith('papercusp/') || !existsSync(join(repoRoot, file.slice('papercusp/'.length)));
     });
     expect(broken).toEqual([]);
+  });
+
+  describe('agent files expire by default (disk-durable-headroom-2026-10-15 R-3)', () => {
+    it('no agent max-age class outlives the 3-day ceiling, and the validator refuses one that would', () => {
+      expect(AGENT_MAX_AGE_HOURS).toBe(72);
+      expect(BUILD_DIR_MAX_AGE_HOURS).toBe(24);
+      const ages = RETENTION_POLICY.flatMap((c) => (c.origin === 'agent' && c.keep.kind === 'max-age' ? [[c.id, c.keep.maxAgeHours] as const] : []));
+      expect(ages.length).toBeGreaterThan(5);
+      for (const [id, hours] of ages) expect(hours, id).toBeLessThanOrEqual(AGENT_MAX_AGE_HOURS);
+      const longLived: RetentionClass = { id: 'long', title: 't', origin: 'agent', roots: ['/a'], keep: { kind: 'max-age', maxAgeHours: 4 * 24 }, enforcers: [{ kind: 'standing-reclaim' }] };
+      expect(validatePolicy([longLived], HOME).join('\n')).toMatch(/exceeds the 72h agent ceiling/);
+      const badBuild: RetentionClass = { ...longLived, id: 'bb', keep: { kind: 'max-age', maxAgeHours: 1, buildDirMaxAgeHours: 2 } };
+      expect(validatePolicy([badBuild], HOME).join('\n')).toMatch(/build-dir bound 2h exceeds the class bound 1h/);
+    });
+
+    it('an unclassified path under every agent root resolves to that root’s deletable class, never keep', () => {
+      const cases: Array<[string, string]> = [
+        [`${HOME}/.papercusp/scratch/brand-new-probe/out.json`, 'papercusp-scratch'],
+        [`${HOME}/.papercusp/evidence/never-seen-before/run.log`, 'agent-evidence'],
+        [`${HOME}/.papercusp/artifacts/new-bundle`, 'agent-evidence'],
+        [`${HOME}/papercupai-workspace/any-checkout/.papercusp/scratch/x`, 'repo-scratch'],
+        [`${HOME}/papercupai-workspace/any-checkout/.papercusp/vitest-tmp/x`, 'repo-scratch'],
+        [`${HOME}/papercupai-workspace/any-checkout/.papercusp/tsx-1000/x`, 'repo-scratch'],
+        [`${HOME}/papercupai-workspace/any-checkout/.papercusp/node-compile-cache/x`, 'repo-scratch'],
+        [`${HOME}/papercupai-workspace/any-checkout/.papercusp/spawn-results/x`, 'repo-scratch'],
+        ['/tmp/unknown-agent-dir', 'tmp-scratch'],
+        ['/mnt/data/offload/wi10007751-copy/x', 'offload-work-copies'],
+      ];
+      for (const [path, cls] of cases) {
+        expect(del(path), path).toBe(cls);
+        const rule = policy.classes.get(cls)!.keep;
+        expect(rule.kind === 'max-age' ? rule.maxAgeHours : -1, path).toBeLessThanOrEqual(AGENT_MAX_AGE_HOURS);
+      }
+    });
+
+    it('expires plan-item, work-item and date-stamped run output at the top of ~/.papercusp', () => {
+      for (const name of [
+        'p046-r26-publication',
+        'p303-bootc-spike',
+        'p304',
+        'tutorial-mcp-wi7747',
+        'cache-reclaim-preserve-EI-21047688909295463',
+        'db-perf-scout-2026-08-02',
+        'cloud-e2e-20261009',
+      ]) {
+        // The matched run dir is the class root: what expires is everything inside it.
+        expect(classifyPath(`${HOME}/.papercusp/${name}`, policy), name).toMatchObject({ classId: 'papercusp-home-run-dirs' });
+        expect(del(`${HOME}/.papercusp/${name}/out/run.log`), name).toBe('papercusp-home-run-dirs');
+      }
+    });
+
+    it('never expires credentials, keys, backups or live state in ~/.papercusp, even with a date or an id in the name', () => {
+      for (const name of [
+        'db-encryption-key',
+        'claude-token',
+        'aws-console-login',
+        'gcloud-auth',
+        'marketplace-keys',
+        'deploy-credentials',
+        'claude-memory-backup-20260608-072510.tar.gz',
+        'canonical-store-backup-20260608-074702.jsonl',
+        'ei339-cleanup-backup',
+        'signing-2026-10-01',
+        'pot-git',
+        'hives',
+        'compaction-strategy.md',
+      ]) {
+        expect(del(`${HOME}/.papercusp/${name}`), name).toBeNull();
+        expect(del(`${HOME}/.papercusp/${name}/inner`), name).toBeNull();
+      }
+      // Release-cut work dirs are review, even when the name carries a work-item id.
+      expect(classifyPath(`${HOME}/.papercusp/wh-release-wi10008217`, policy)).toMatchObject({ classId: 'papercusp-home-release-dirs' });
+      expect(del(`${HOME}/.papercusp/wh-release-wi10008217/x`)).toBeNull();
+    });
+
+    it('keeps a checkout’s harness state outside its agent roots', () => {
+      for (const rel of ['blueprint.yaml', 'memory/m.md', 'state/s.json', 'dependency-generations/g1/node_modules/x', 'worktrees/w/x']) {
+        const path = `${HOME}/papercupai-workspace/papercusp/.papercusp/${rel}`;
+        expect(del(path), path).toBeNull();
+      }
+    });
+
+    it('protects the cold tier: owner copies and backups on the HDDs are never deletable', () => {
+      for (const p of ['/mnt/cold-a/Backup/kopia-repo/p/abc', '/mnt/cold-b/Debug_JAMES/x', '/mnt/cold-b/Debug/y', '/mnt/cold-b/back/z']) {
+        expect(classifyPath(p, policy), p).toMatchObject({ classId: 'owner-data-mnt' });
+        expect(del(p), p).toBeNull();
+      }
+      expect(classifyPath('/mnt/cold-a/meta/kopia-seed.log', policy)).toMatchObject({ classId: 'cold-tier' });
+      expect(del('/mnt/cold-b/anything-else')).toBeNull();
+    });
+
+    it('build dirs go after 1 day without a write to their entry; only node_modules or a CACHEDIR.TAG dir counts', () => {
+      expect(isBuildDirName('node_modules')).toBe(true);
+      expect(isBuildDirName('target')).toBe(false);
+      expect(isBuildDirName('src')).toBe(false);
+      expect(isCacheDirTag(`${CACHEDIR_TAG_SIGNATURE}\n# This file is a cache directory tag created by cargo.\n`)).toBe(true);
+      expect(isCacheDirTag('Signature: something else')).toBe(false);
+      expect(isCacheDirTag(null)).toBe(false);
+      const scratch = policy.classes.get('papercusp-scratch')!.keep;
+      const now = Date.UTC(2026, 9, 15, 12);
+      const hours = (h: number) => now - h * 3_600_000;
+      expect(buildDirsEligible(scratch, hours(25), now)).toBe(true);
+      expect(buildDirsEligible(scratch, hours(23), now)).toBe(false);
+      // A keep or review class never yields build dirs, nor does a max-age rule without the bound.
+      expect(buildDirsEligible({ kind: 'keep', reason: 'r' }, hours(1000), now)).toBe(false);
+      expect(buildDirsEligible({ kind: 'max-age', maxAgeHours: 4 }, hours(1000), now)).toBe(false);
+      for (const cls of ['papercusp-scratch', 'repo-scratch', 'agent-evidence', 'papercusp-home-run-dirs', 'offload-work-copies']) {
+        const rule = policy.classes.get(cls)!.keep;
+        expect(rule.kind === 'max-age' && rule.buildDirMaxAgeHours, cls).toBe(BUILD_DIR_MAX_AGE_HOURS);
+      }
+    });
   });
 
   it('only max-age, newest and lease rules are deletable', () => {

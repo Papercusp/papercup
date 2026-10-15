@@ -998,12 +998,11 @@ NATIVE_CARGO_TARGET=""
 NATIVE_CARGO_NEED_GB=0
 preflight_native_cargo() {
   [ "$PREPARE_ONLY" != "1" ] || return 0
-  local target need inherited="${PAPERCUSP_DISK_RESERVATION_FILE:-}"
-  PAPERCUSP_DESKTOP_TARGET_ROOT="$DESKTOP_DIR" . "$DESKTOP_DIR/bin/lib/claim-target-dir.sh" || return $?
-  . "$DESKTOP_DIR/bin/lib/disk-preflight.sh" || return $?
+  local target need
+  PAPERCUSP_DESKTOP_NATIVE_DEV=1 PAPERCUSP_DESKTOP_TARGET_ROOT="$DESKTOP_DIR" \
+    . "$DESKTOP_DIR/bin/lib/claim-target-dir.sh" || return $?
   target="$(papercusp_cargo_target_root "$DESKTOP_DIR/src-tauri")" || return $?
   need="$(papercusp_native_dev_cargo_need_gb "$target")" || return $?
-  papercusp_require_disk_reservation "$target" "$need" "native dev Cargo build" "$inherited" >&2 || return $?
   NATIVE_CARGO_TARGET="$target"
   NATIVE_CARGO_NEED_GB="$need"
   NATIVE_CARGO_DISK_RESERVATION_FILE="${PAPERCUSP_DISK_RESERVATION_FILE:-}"

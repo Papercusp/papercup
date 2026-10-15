@@ -188,8 +188,68 @@
           "mode": "auto",
           "planEnabled": true,
           "approvalEnabled": true,
-          "status": "running; partial/current-build release refusal expected",
-          "auditRef": "thread-post:1183327"
+          "status": "terminal1; provider also rejected catalog-listed gpt-5.4; no native acceptance rows",
+          "auditRef": "thread-post:1183327",
+          "terminalAt": "2026-10-15T14:48:01.281Z",
+          "rootExitCode": 1,
+          "nativePassed": 0,
+          "nativeFailed": 2,
+          "nativeSkipped": 96,
+          "nativeEvidenceRows": 0,
+          "nativeLogSha256": "b17cd034016f44dec3e7006e60a9c372fc28f8e6e03035b4e7741d1bd49b50f3",
+          "verdictSha256": "8f168df139d0b8ec9506daaa329aff5320a7435b6647117fb2a204ba45ed791a",
+          "providerRefusal": "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+          "correction": "Catalog presence did not establish account access; earlier supported-model wording is retracted. Native missing-card root remains unconfirmed.",
+          "gatewayEvidence": {
+            "owner": "su-eec55cf8-e464-4273-a160-aaa2b7d69eb3",
+            "model": "gpt-5.4",
+            "finalStatus": 400,
+            "attempts": 6,
+            "failovers": 5,
+            "requestId": "2b07b96e-d53e-4d98-a1d5-973aca64fe95:24505"
+          },
+          "guardRepair": {
+            "cause": "Direct vi.waitFor correlated/rendered reply waits retried definitive provider errors until timeout",
+            "fix": "Reuse pollUntil beforeCheck refusal guard; preserve exact turn/session assertions",
+            "testRunId": "35897309-0cf8-46c8-9d42-185e8642163c",
+            "testRunIds": [21257312, 21257313],
+            "passed": 25,
+            "failed": 0,
+            "skipped": 0
+          },
+          "automaticPreflightRepair": {
+            "surfaceReused": "Existing routed-account release preflight, gateway port resolver, SSE parser and Codex refusal classifier",
+            "behavior": "Probe the selected model on the same auto route before archive/setup/long suites; stop definitive model refusal; require response.completed for a successful probe; keep interrupted and unavailable probes unmeasured",
+            "testRunId": "9aef4719-91d4-40b0-af8f-ad623043dab0",
+            "testRunIds": [21257320],
+            "passed": 66,
+            "failed": 0,
+            "skipped": 0
+          },
+          "completedModelProbe": {
+            "startedAt": "2026-10-15T14:53:53.177Z",
+            "finishedAt": "2026-10-15T14:53:55.621Z",
+            "owner": "su-7534ff62-a124-4ac1-a913-a60b3107d8e7",
+            "model": "gpt-6.1-sol",
+            "status": 200,
+            "routedAccount": "aviynw2_codex",
+            "terminal": "response.completed",
+            "scope": "Gateway inference only; not installed native PUI acceptance"
+          },
+          "nextProbe": {
+            "taskId": "0mv9nz2uz13y4kx4bsj",
+            "rootLogPath": ".papercusp/scratch/bash-434883c9-4d3.log",
+            "deadline": "2026-10-15T15:58:46.008Z",
+            "work": "/tmp/pui-acceptance-7534f/run-codex-route-preflight-20261015-1500",
+            "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-6a0f8070d6832d81e7519793579ad01d81b109b6/pui-codex-route-preflight-20261015-1500.partial.acceptance.json",
+            "model": "gpt-6.1-sol",
+            "account": "auto",
+            "mode": "auto",
+            "planEnabled": true,
+            "approvalEnabled": true,
+            "auditRef": "thread-post:1183368",
+            "status": "running; partial/current-build release refusal expected"
+          }
         }
       }
     }

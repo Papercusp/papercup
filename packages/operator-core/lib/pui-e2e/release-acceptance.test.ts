@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
-  legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
+  legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, probeRoutedCodexModel, remeasureCloudDeviceStart, remeasureStockMachines,
   RELEASE_ACCEPTANCE_REPORTER_ARGS, runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
@@ -630,6 +630,58 @@ describe('release acceptance evidence parsing', () => {
 });
 
 describe('release acceptance account preflight', () => {
+  it('requires completed inference and attributes the auto route without pinning an account', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+      + 'data: {"type":"response.completed"}\n\n',
+      { headers: { 'content-type': 'text/event-stream', 'x-papercusp-routed-account': 'codex-account' } },
+    ));
+    await expect(probeRoutedCodexModel('catalog-model', 'probe-owner', fetchImpl))
+      .resolves.toMatchObject({ model: 'catalog-model', verdict: 'completed', terminal: 'response.completed', account: 'codex-account' });
+    const init = fetchImpl.mock.calls[0][1]!;
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-papercusp-owner')).toBe('probe-owner');
+    expect(headers.has('x-papercusp-account')).toBe(false);
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'catalog-model', stream: true, store: false });
+  });
+
+  it('does not count an opened or incomplete stream as completed inference', async () => {
+    for (const body of ['data: {"type":"response.created"}\n\n', 'data: {"type":"response.incomplete"}\n\n']) {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+      await expect(probeRoutedCodexModel('catalog-model', 'probe-owner', fetchImpl))
+        .resolves.toMatchObject({ verdict: 'unmeasured' });
+    }
+  });
+
+  it.each([400, 401, 429, 503])('distinguishes model refusal from an inconclusive HTTP %s', async (status) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ detail: "The 'old-model' model is not supported when using Codex with a ChatGPT account." }), { status },
+    ));
+    await expect(probeRoutedCodexModel('old-model', 'probe-owner', fetchImpl))
+      .resolves.toMatchObject({ status, verdict: status === 400 ? 'refused' : 'unmeasured' });
+  });
+
+  it('stops a refused model before the archive and expensive suites are opened', async () => {
+    const work = mkdtempSync(path.join(tmpdir(), 'pui-model-preflight-'));
+    const catalog = path.join(work, 'accounts.json');
+    writeFileSync(catalog, '{"accounts":[{"id":"codex-account","provider":"codex"}]}');
+    const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      '{"detail":"unsupported model"}', { status: 400 },
+    ));
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.stubEnv('PAPERCUSP_SID', 'probe-owner');
+    try {
+      await expect(runReleaseAcceptance({ archive: path.join(work, 'missing.tar.gz'), advertise: [],
+        real: [{ backend: 'codex', model: 'old-model', env: {
+          PUI_REAL_ACCOUNT: 'auto', PUI_NATIVE_ACCOUNT_CATALOG: catalog,
+        } }] })).rejects.toThrow('Native Codex model preflight refused old-model');
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith('PUI_ROUTED_CODEX_MODEL_PREFLIGHT', expect.stringContaining('"verdict":"refused"'));
+    } finally {
+      request.mockRestore(); info.mockRestore(); vi.unstubAllEnvs(); rmSync(work, { recursive: true, force: true });
+    }
+  });
+
   it('refuses historical baseline capture before opening a current candidate or running suites', async () => {
     const options = { archive: '/missing-pui-current-candidate.tar.gz', advertise: [] };
     vi.stubEnv('PUI_CAPTURE_BASELINE', '1');

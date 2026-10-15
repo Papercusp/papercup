@@ -17,6 +17,11 @@
  *   - D-005 [owner 2026-10-13]: every rule runs on its own schedule, not
  *     only when free space is low. So a deletable class must name a scheduled
  *     enforcer: an existing scheduled one, or the standing reclaim.
+ *   - R-3 of disk-durable-headroom-2026-10-15 [owner 2026-10-15]: agent-made
+ *     folders are deleted 3 days after their last write ({@link AGENT_MAX_AGE_HOURS});
+ *     build output inside them after 1 day ({@link BUILD_DIR_MAX_AGE_HOURS}). Every
+ *     path under an agent root that no narrower class claims inherits that
+ *     root's expiry; owner and system data stay on the explicit protected list.
  *
  * Reuse: deletable classes point at the existing enforcers (scratch-gc,
  * session-dir-gc, fleet-logs-gc, reclaim-docker-disk.sh, reclaim-tmp-scratch-
@@ -37,8 +42,15 @@ export type RetentionOrigin = 'agent' | 'owner' | 'system';
 
 /** One keep rule per class (R-2: "exactly one keep rule"). */
 export type KeepRule =
-  /** each direct child entry is eligible this long after its newest write. */
-  | { kind: 'max-age'; maxAgeHours: number }
+  /**
+   * each direct child entry is eligible this long after its newest write.
+   * `buildDirMaxAgeHours`: rebuildable build output inside an entry (see
+   * {@link isBuildDirName} / {@link isCacheDirTag}) is eligible earlier, once the
+   * whole ENTRY has had no write for that long. The entry's newest write decides,
+   * not the build dir's own, so an agent still working in a copy keeps its
+   * node_modules even when the install itself is old.
+   */
+  | { kind: 'max-age'; maxAgeHours: number; buildDirMaxAgeHours?: number }
   /** keep the newest `keep` children (by newest write); older ones are eligible. */
   | { kind: 'newest'; keep: number; maxAgeHours?: number }
   /** kept while a live record (lease, registration, live session) names it, then a grace period. */
@@ -78,6 +90,78 @@ export interface RetentionClass {
 const DAY = 24;
 
 /**
+ * The ceiling for every agent-made folder: deleted 3 days after its last write
+ * (owner 2026-10-15, session 956a3058 turn 9, plan disk-durable-headroom-2026-10-15
+ * R-3). Agents pin anything they need longer (P-006). A class may expire sooner
+ * (shared /tmp keeps 4 h); {@link validatePolicy} refuses a max-age class above it.
+ */
+export const AGENT_MAX_AGE_HOURS = 3 * DAY;
+
+/**
+ * Build output inside an agent entry (node_modules, Cargo target dirs) is
+ * rebuildable, so it goes after 1 day without a write to the entry
+ * [derived from the approved plan design, R-3].
+ */
+export const BUILD_DIR_MAX_AGE_HOURS = DAY;
+
+/** Directory names that only ever hold rebuildable build output. */
+export const BUILD_DIR_NAMES: readonly string[] = ['node_modules'];
+
+/**
+ * First line of a CACHEDIR.TAG per the Cache Directory Tagging spec
+ * (https://bford.info/cachedir/). A directory holding a tag that starts with
+ * this line declares itself regenerable; Cargo writes one in every target dir,
+ * whatever the dir is named (`target`, `cargo-target`, a slot path).
+ */
+export const CACHEDIR_TAG_SIGNATURE = 'Signature: 8a477f597d28d172789f06886806bc55';
+
+/** True for a directory name that is always build output. */
+export function isBuildDirName(name: string): boolean {
+  return BUILD_DIR_NAMES.includes(name);
+}
+
+/** True when `tagContents` (a CACHEDIR.TAG file's text) carries the spec signature. */
+export function isCacheDirTag(tagContents: string | null | undefined): boolean {
+  return typeof tagContents === 'string' && tagContents.startsWith(CACHEDIR_TAG_SIGNATURE);
+}
+
+/**
+ * Whether build dirs inside an entry of a class with `rule` may go now: the rule
+ * names a build-dir bound and the entry's newest write is older than it.
+ */
+export function buildDirsEligible(rule: KeepRule, entryNewestWriteMs: number, nowMs: number): boolean {
+  if (rule.kind !== 'max-age' || rule.buildDirMaxAgeHours === undefined) return false;
+  return nowMs - entryNewestWriteMs > rule.buildDirMaxAgeHours * 3_600_000;
+}
+
+/**
+ * Names that never denote disposable run output, whatever else they contain:
+ * a backup, key, credential, login, signing or custody dir/file is kept even
+ * when it carries a date or a work-item id. `wh-release-` names belong to
+ * their own review class; a regex root would otherwise outrank its glob.
+ */
+const PROTECTED_NAME = '(?!.*(?:[Bb]ackup|BACKUP|[Kk]ey|[Cc]red|[Aa]uth|[Ss]ecret|[Tt]oken|[Ll]ogin|[Ss]igning|[Cc]ustody|[Pp]assword|wal-)|wh-release-)';
+
+/**
+ * Run-output naming conventions at the top of ~/.papercusp: a plan-item prefix
+ * (`p046-r26-publication`), a work-item id (`tutorial-mcp-wi7747`,
+ * `cache-reclaim-preserve-EI-21047688909295463`) or a date stamp
+ * (`db-perf-scout-2026-08-02`, `cloud-e2e-20261009`).
+ */
+export const HOME_RUN_DIR_PATTERNS: readonly string[] = [
+  `~/.papercusp/re:${PROTECTED_NAME}p[0-9]{3}(?:[-_.].*)?`,
+  `~/.papercusp/re:${PROTECTED_NAME}(?:.*[-_.])?(?:wi|WI|ei|EI)-?[0-9]{3,}(?:[-_.].*)?`,
+  `~/.papercusp/re:${PROTECTED_NAME}.*20[0-9]{2}-?[01][0-9]-?[0-3][0-9].*`,
+];
+
+/** The max-age rule every agent root gets unless it needs a shorter bound. */
+const AGENT_DEFAULT_RULE: KeepRule = {
+  kind: 'max-age',
+  maxAgeHours: AGENT_MAX_AGE_HOURS,
+  buildDirMaxAgeHours: BUILD_DIR_MAX_AGE_HOURS,
+};
+
+/**
  * The policy. Order does not matter (specificity decides), but classes are
  * grouped: protected owner/system data first, then agent classes with an
  * existing enforcer, then agent classes the standing reclaim enforces, then
@@ -96,9 +180,23 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
       '/mnt/data/db',
       '/mnt/data/back',
       '/mnt/data/MEMORYSTORE',
+      // The HDD cold tier (disk-durable-headroom-2026-10-15 P-004): backups on
+      // cold-a, owner copies on cold-b. /mnt/data/<name> is left as a symlink.
+      '/mnt/cold-a/Backup',
+      '/mnt/cold-b/Debug*',
+      '/mnt/cold-b/back',
     ],
     keep: { kind: 'keep', reason: 'owner data, never automatic (D-002)' },
     enforcers: [{ kind: 'none' }],
+  },
+  {
+    id: 'cold-tier',
+    title: 'The HDD cold tier (/mnt/cold-a, /mnt/cold-b) and its move logs',
+    origin: 'system',
+    roots: ['/mnt/cold-a', '/mnt/cold-b'],
+    keep: { kind: 'keep', reason: 'archive volumes: only deliberate moves land here, each under its own class' },
+    enforcers: [{ kind: 'none' }],
+    note: 'Never a target for build output or agent scratch (plan disk-durable-headroom-2026-10-15, R-7).',
   },
   {
     id: 'owner-home',
@@ -253,12 +351,12 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     title: 'Tool and agent scratch under ~/.papercusp/scratch',
     origin: 'agent',
     roots: ['~/.papercusp/scratch'],
-    keep: { kind: 'max-age', maxAgeHours: 14 * DAY },
+    keep: AGENT_DEFAULT_RULE,
     enforcers: [
       { kind: 'existing', ref: 'papercusp/packages/operator-core/lib/scratch-gc.ts', schedule: 'DBOS scratchGc, daily 03:00 (workspace run dirs, 24h)' },
       { kind: 'standing-reclaim' },
     ],
-    note: 'scratch-gc deletes workspace run dirs after 24h but never ad-hoc top-level dirs; the standing reclaim applies the 14-day bound to those.',
+    note: 'scratch-gc deletes workspace run dirs after 24h but never ad-hoc top-level dirs; the standing reclaim applies the 3-day bound to those.',
   },
   {
     id: 'session-dirs',
@@ -336,26 +434,54 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['/mnt/data/cargo-target/.papercusp-target-slots'],
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: 'c72a58ccc0fce910827b4534b693ddbc4d87ad85bf392ae041ebb2b3bc48e142' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '27353fcb4de3df8425f80602ea2df0f0b951ff860f16606ffc19c80cb6d66dd7' },
       { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
   },
   {
     id: 'repo-scratch',
-    title: 'In-tree agent scratch and tmp (.papercusp/scratch, .papercusp/tmp)',
+    title: 'In-tree agent scratch, tmp and tool caches under a checkout’s .papercusp',
     origin: 'agent',
-    roots: ['~/papercupai-workspace/*/.papercusp/scratch', '~/papercupai-workspace/*/.papercusp/tmp'],
-    keep: { kind: 'max-age', maxAgeHours: 14 * DAY },
+    roots: [
+      '~/papercupai-workspace/*/.papercusp/scratch',
+      '~/papercupai-workspace/*/.papercusp/tmp',
+      '~/papercupai-workspace/*/.papercusp/vitest-tmp',
+      '~/papercupai-workspace/*/.papercusp/tsx-*',
+      '~/papercupai-workspace/*/.papercusp/node-compile-cache',
+      '~/papercupai-workspace/*/.papercusp/spawn-results',
+      '~/papercupai-workspace/*/.papercusp/evidence',
+      '~/papercupai-workspace/*/.papercusp/artifacts',
+    ],
+    keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
-    note: 'Entries with an open file or a running process cwd inside are skipped.',
+    note: 'Entries with an open file or a running process cwd inside are skipped. The rest of a checkout’s .papercusp is harness state (blueprint, memory, state, dependency generations) and stays under source-checkouts.',
   },
   {
     id: 'agent-evidence',
     title: 'Evidence, test-evidence and artifact bundles under ~/.papercusp',
     origin: 'agent',
     roots: ['~/.papercusp/evidence', '~/.papercusp/test-evidence', '~/.papercusp/artifacts'],
-    keep: { kind: 'max-age', maxAgeHours: 30 * DAY },
+    keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
+    note: 'Evidence an open work item still needs is pinned (P-006), not kept by a longer class bound.',
+  },
+  {
+    id: 'papercusp-home-run-dirs',
+    title: 'Per-run agent output at the top of ~/.papercusp (plan-item, work-item or date-stamped names)',
+    origin: 'agent',
+    roots: HOME_RUN_DIR_PATTERNS,
+    keep: AGENT_DEFAULT_RULE,
+    enforcers: [{ kind: 'standing-reclaim' }],
+    note:
+      '~/.papercusp itself is mixed state: credentials (gcloud-auth, aws-console-login, marketplace-keys), keys, configs and live stores sit beside run output, and code does not reference all of them. So it is not an expire-by-default parent; run output is matched by its naming convention instead, and names that look like a backup, key, credential or login never match.',
+  },
+  {
+    id: 'papercusp-home-release-dirs',
+    title: 'Workspace-host release-cut work dirs at the top of ~/.papercusp',
+    origin: 'agent',
+    roots: ['~/.papercusp/wh-release-*'],
+    keep: { kind: 'review', reason: 'release-cut work dirs; the release tool exports their evidence before the rebuildable parts may go' },
+    enforcers: [{ kind: 'none' }],
   },
   {
     id: 'workspace-db-dumps',
@@ -370,7 +496,7 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     title: 'Restore staging dirs and app snapshots in a workspace',
     origin: 'agent',
     roots: ['~/.papercusp-workspaces/*/.restored', '~/.papercusp-workspaces/*/.papercusp/apps-snap-*'],
-    keep: { kind: 'max-age', maxAgeHours: 14 * DAY },
+    keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
   },
   {
@@ -393,7 +519,7 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
       '/mnt/data/offload/papercusp-scratch-*',
       '/mnt/data/offload/pub-*',
     ],
-    keep: { kind: 'max-age', maxAgeHours: 30 * DAY },
+    keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
     note: 'Only names that tie an entry to a work item, gate run, release cut or publish run. Every other offload entry is review.',
   },
@@ -718,6 +844,15 @@ export function validatePolicy(policy: readonly RetentionClass[] = RETENTION_POL
         (e) => e.kind === 'standing-reclaim' || (e.kind === 'existing' && e.schedule.trim().length > 0),
       );
       if (!scheduled) problems.push(`${cls.id}: deletable class has no scheduled enforcer (D-005)`);
+      // R-3 (owner 2026-10-15): no agent folder outlives 3 days after its last write; pins cover longer needs.
+      if (cls.keep.kind === 'max-age') {
+        if (cls.keep.maxAgeHours > AGENT_MAX_AGE_HOURS) {
+          problems.push(`${cls.id}: max-age ${cls.keep.maxAgeHours}h exceeds the ${AGENT_MAX_AGE_HOURS}h agent ceiling (R-3)`);
+        }
+        if (cls.keep.buildDirMaxAgeHours !== undefined && cls.keep.buildDirMaxAgeHours > cls.keep.maxAgeHours) {
+          problems.push(`${cls.id}: build-dir bound ${cls.keep.buildDirMaxAgeHours}h exceeds the class bound ${cls.keep.maxAgeHours}h`);
+        }
+      }
     } else if (cls.keep.kind === 'keep' || cls.keep.kind === 'review') {
       if (cls.enforcers.some((e) => e.kind === 'standing-reclaim' || e.kind === 'existing')) {
         problems.push(`${cls.id}: a ${cls.keep.kind} class must not name a deleter`);

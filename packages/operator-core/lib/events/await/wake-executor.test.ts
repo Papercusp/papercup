@@ -2341,6 +2341,37 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     expect(out).not.toContain('SHOULD NOT APPEAR');
   });
 
+  it('keeps carried probe and reference deltas visible when a long checkpoint fills the injection door', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Verified WI-1234. ' + 'Earlier verification detail. '.repeat(180),
+      insight: 'Historical context. '.repeat(140),
+      checks: [{ claim: 'status is green', recheck: 'read status', probe: {
+        kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict', schemaRevision: 'rev-test',
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      } as never }],
+    });
+    const probeDelta = '  ✗ CHANGED — status is green [loop #status]: observed "red"';
+    const refDelta = '  ↻ CHANGED — work-item:WI-1234 [loop note]: open → done';
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-carry-budget' });
+    const composed = await rehydrateLoopWakeText(d, STALE_TEXT.repeat(100), {
+      getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() - 1_000 }),
+      getLoopStatusFn: async () => null,
+      carriedProbeBlockFn: async () => `🧪 CARRIED PROBES — 1 changed:\n${probeDelta}`,
+      carryRefBlockFn: async () => `🔗 CARRIED REFERENCES — 1 changed:\n${refDelta}`,
+    });
+    const delivered = applyInjectionDoor(d, composed);
+    try {
+      expect(composed.indexOf(probeDelta)).toBeLessThan(composed.indexOf('Current verified loop:checkpoint'));
+      expect(delivered).toContain(probeDelta);
+      expect(delivered).toContain(refDelta);
+      expect(delivered).toContain('[injection-door:');
+    } finally {
+      const spill = delivered.match(/in full at (\S+) \(see its section index\)/);
+      if (spill) rmSync(spill[1], { force: true });
+    }
+  });
+
   it('does not run the probe runner when no carried check has a probe', async () => {
     const { renderCarryNote } = await import('../../carry-note');
     const note = renderCarryNote({ did: 'x', checks: [{ claim: 'prose-only claim', recheck: 'look' }] });

@@ -5372,13 +5372,13 @@
           "at": "2026-10-14T15:25:55.186Z",
           "agent": "codex",
           "model": "sol",
-          "detail": "convert of su-85495d04-6cd8-44fb-bbbe-5fcce4212557 → codex/sol as su-ac3197a1-41ea-4992-ac33-466603782ab8: live host registered after 2ms (log /home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-ac3197a1-41ea-515324-1791991539230.log).",
+          "detail": "convert of su-85495d04-6cd8-44fb-bbbe-5fcce4212557 → codex/sol as su-ac3197a1-41ea-4992-ac33-466603782ab8: live host registered after 2ms (workspace fleet log path redacted).",
           "attempts": [
             {
               "rank": 3,
               "agent": "codex",
               "model": "sol",
-              "detail": "convert of su-85495d04-6cd8-44fb-bbbe-5fcce4212557 → codex/sol as su-ac3197a1-41ea-4992-ac33-466603782ab8: live host registered after 2ms (log /home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-ac3197a1-41ea-515324-1791991539230.log).",
+              "detail": "convert of su-85495d04-6cd8-44fb-bbbe-5fcce4212557 → codex/sol as su-ac3197a1-41ea-4992-ac33-466603782ab8: live host registered after 2ms (workspace fleet log path redacted).",
               "outcome": "dispatched",
               "operation": "convert"
             }

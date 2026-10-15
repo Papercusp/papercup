@@ -42,6 +42,7 @@ import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { readOrientationToolSurfaces, type OrientationToolSurface } from '../turn-start-orientation';
+import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 
 /** Supervisor beat is ~60s; fresh within 3× ⇒ the process is alive. */
 const DEFAULT_SUPERVISOR_FRESH_MS = 3 * 60_000; // 3 min
@@ -313,14 +314,14 @@ export async function checkMcpDark(
 // known (≈ its interval), so staleness is judged against it; without a loop,
 // fresh pty activity + a long-stale presence beat is the (weaker) signal.
 //
-// THE HEAL is in-place, not kill+resume: inject mode:'mcp-reconnect' into the
-// session's own pty host (the /mcp dialog macro, psu-pty-host P-003) —
-// rate-capped, judged ONLY by transport truth (the presence beat advancing on a
-// later pass, never the socket write), and falling back to the notify posture
-// when the host is old/absent or the cap is exhausted. A misfire is benign by
-// construction: the macro is prompt-gated and Esc's out of an all-connected
-// dialog. On a confirmed heal, ONE follow-up wake turn tells the agent to
-// re-arm (its events:await registrations died with the old transport) and
+// THE HEAL preserves headed sessions in place: inject mode:'mcp-reconnect' into
+// the session's own pty host (the /mcp dialog macro, psu-pty-host P-003). A
+// headless host has no interactive dialog, so only that class may use its
+// advertised carry-respawn capability (kill + resume with a watchdog-tagged
+// continuation). Both are rate-capped and judged ONLY by transport truth (the
+// presence beat advancing on a later pass, never the socket write); an old or
+// incapable host falls back to a mode-specific notification. On confirmed
+// recovery, ONE follow-up wake tells the agent to re-arm lost awaits and
 // re-park state.
 
 /** Distinct escalation prefix — 'mcp-dark:%' (bee) does NOT match this, so the
@@ -614,6 +615,59 @@ export async function taggedHealedWakeText(
   }
 }
 
+/** The carry prompt delivered when the watchdog resumes a headless session. */
+export function headlessMcpRecoveryWakeText(ownerId: string, staleMins: number): string {
+  return (
+    `⚠ MCP transport auto-recovery (mcp-dark-watchdog P-005): headless session ${ownerId} had no ` +
+    `Papercusp MCP call for ~${staleMins}m. Its psu host resumed this same conversation with a ` +
+    `watchdog-tagged carry. Re-read the active work-item and loop checkpoints, then continue. If ` +
+    `Papercusp tools still fail, report the exact error. Do not start a second CLI for this session.`
+  );
+}
+
+/** Register the headless carry prompt before the host submits it as a turn. */
+export async function taggedHeadlessMcpRecoveryWakeText(
+  ownerId: string,
+  staleMins: number,
+  options: { dir?: string; nowMs?: number } = {},
+): Promise<string> {
+  const text = headlessMcpRecoveryWakeText(ownerId, staleMins);
+  try {
+    const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
+    return (
+      await tagTurnForInjection({
+        sid: ownerId,
+        origin: 'watchdog',
+        text,
+        ...(options.dir ? { dir: options.dir } : {}),
+        ...(options.nowMs != null ? { nowMs: options.nowMs } : {}),
+      })
+    ).taggedText;
+  } catch {
+    return text;
+  }
+}
+
+/** Owner-actionable recovery guidance for the two supported session classes. */
+export function interactiveDarkRecoveryInstructions(
+  sessionClass: 'headed' | 'headless',
+  cause: string,
+): string {
+  if (sessionClass === 'headless') {
+    return (
+      `This headless host has no interactive /mcp dialog, and carry-respawn was unavailable (${cause}). ` +
+      `If its old process is still running, stop it first; then resume the SAME conversation with ` +
+      `psu --resume <session-id> so Papercusp MCP initializes at launch. Do not start a second CLI ` +
+      `against the live host.`
+    );
+  }
+  return (
+    `The in-place /mcp auto-heal did not land (${cause}). Fix: type /mcp in that session's terminal ` +
+    `and reconnect papercusp-su; the session keeps its context. If the window is gone, resume it ` +
+    `with psu --resume and let the transport initialize at launch.`
+  );
+}
+
 const interactiveHealState = new Map<string, OwnerHealState>();
 const interactiveHealBudget: InteractiveHealBudgetState = {
   attemptsMs: [],
@@ -765,6 +819,7 @@ export async function checkInteractiveMcpDark(
         opts.maxAttempts ?? DEFAULT_HEAL_MAX_ATTEMPTS,
         sharedBudget,
       );
+      const hostByOwner = new Map(hosts.map((host) => [host.ownerId, host]));
 
       for (const step of plan) {
         const v = verdictByOwner.get(step.ownerId);
@@ -773,7 +828,13 @@ export async function checkInteractiveMcpDark(
             const jitterMs = interactiveHealJitterMs(step.ownerId, now, opts.jitterMaxMs ?? DEFAULT_HEAL_JITTER_MAX_MS);
             if (jitterMs > 0) await new Promise((resolve) => setTimeout(resolve, jitterMs));
           }
-          await runInteractiveHealStep(step, v, { sql, discovery, out, now });
+          await runInteractiveHealStep(step, v, {
+            sql,
+            discovery,
+            out,
+            now,
+            host: hostByOwner.get(step.ownerId),
+          });
         } catch (e) {
           // One owner's failure must not abort the rest of the pass (live incident
           // 2026-07-14: the workspace_id NOT NULL crash killed every later step).
@@ -832,9 +893,10 @@ async function runInteractiveHealStep(
     discovery: typeof import('../events/await/psu-pty-discovery');
     out: InteractiveMcpDarkResult;
     now: number;
+    host: PsuPtyHost | undefined;
   },
 ): Promise<void> {
-  const { sql, discovery, out, now } = ctx;
+  const { sql, discovery, out, now, host } = ctx;
   if (step.action === 'defer-budget') {
     out.budgetDeferred.push(step.ownerId);
     console.warn(
@@ -873,7 +935,25 @@ async function runInteractiveHealStep(
     } catch {
       // Never let config repair block the heal it is trying to enable.
     }
-    const sent = await discovery.mcpReconnectViaPty(step.ownerId);
+    const headless = discovery.sessionClassForHost(host) === 'claude-headless';
+    let sent: 'sent' | 'no-host' | 'no-cap' | 'send-failed';
+    if (headless) {
+      if (!host) {
+        sent = 'no-host';
+      } else if (!discovery.hostSupports(host, 'carry-respawn')) {
+        sent = 'no-cap';
+      } else {
+        const carry = await taggedHeadlessMcpRecoveryWakeText(step.ownerId, v?.staleMins ?? 0);
+        const accepted = await discovery.injectIntoHost(host.sock, {
+          mode: 'carry-respawn',
+          data: carry,
+          ownerId: step.ownerId,
+        });
+        sent = accepted ? 'sent' : 'send-failed';
+      }
+    } else {
+      sent = await discovery.mcpReconnectViaPty(step.ownerId);
+    }
     console.warn(
       `[mcp-dark-watchdog] interactive DARK ${step.ownerId} — heal ${sent}` +
         `${repaired ? ' (config dir REPAIRED — was config-caused dark)' : ''}: ${v?.reason ?? ''}`,
@@ -888,12 +968,24 @@ async function runInteractiveHealStep(
       const st = interactiveHealState.get(step.ownerId);
       if (st && !st.notified) {
         st.notified = true;
-        await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', `heal unavailable (${sent})`);
+        await notifyInteractiveDark(
+          sql,
+          step.ownerId,
+          v?.reason ?? 'transport dead',
+          `heal unavailable (${sent})`,
+          headless ? 'headless' : 'headed',
+        );
         out.notified.push(step.ownerId);
       }
     }
   } else if (step.action === 'notify') {
-    await notifyInteractiveDark(sql, step.ownerId, v?.reason ?? 'transport dead', 'heal attempts exhausted');
+    await notifyInteractiveDark(
+      sql,
+      step.ownerId,
+      v?.reason ?? 'transport dead',
+      'heal attempts exhausted',
+      discovery.sessionClassForHost(host) === 'claude-headless' ? 'headless' : 'headed',
+    );
     out.notified.push(step.ownerId);
   } else if (step.action === 'announce-healed') {
     out.healed.push(step.ownerId);
@@ -916,9 +1008,14 @@ async function runInteractiveHealStep(
   }
 }
 
-/** Claim + notify for one interactive dark owner (owner-actionable copy: the fix
- *  is literally typing /mcp in that window; a peer cannot do it). */
-async function notifyInteractiveDark(sql: Sql, ownerId: string, reason: string, cause: string): Promise<void> {
+/** Claim + notify for one MCP-dark session with class-specific recovery guidance. */
+async function notifyInteractiveDark(
+  sql: Sql,
+  ownerId: string,
+  reason: string,
+  cause: string,
+  sessionClass: 'headed' | 'headless' = 'headed',
+): Promise<void> {
   const now = Date.now();
   // workspace_id is NOT NULL on harness_escalations (live crash 2026-07-14:
   // "null value in column workspace_id … violates not-null constraint" — the
@@ -932,31 +1029,28 @@ async function notifyInteractiveDark(sql: Sql, ownerId: string, reason: string, 
       kind: 'mcp-dark-watchdog-interactive',
       owner_id: ownerId,
       emitted_at: now,
-      detail: `Interactive session ${ownerId} is MCP-dark (${cause}): ${reason}`,
+      detail: `${sessionClass} session ${ownerId} is MCP-dark (${cause}): ${reason}`,
     })}, ${now}, ${workspaceId})
     ON CONFLICT (harness_slug, phase) DO NOTHING
     RETURNING phase`;
   if (claimed.length !== 1) return; // already claimed — cross-process exactly-once
+  const recoveryInstructions = interactiveDarkRecoveryInstructions(sessionClass, cause);
   try {
     const { notifyAttention } = await import('../attention-notify');
     await notifyAttention({
       kind: 'intervention',
-      title: `Interactive session ${ownerId.slice(0, 12)}… is MCP-dark (auto-heal ${cause})`,
-      body:
-        `${reason}\n\nThe in-place /mcp auto-heal did not land (${cause}). Fix: type /mcp in that session's ` +
-        `terminal and reconnect papercusp-su — the session keeps its context. If the window is gone, resume it ` +
-        `(psu --resume) and the transport re-initializes at launch.`,
+      title: `${sessionClass === 'headless' ? 'Headless' : 'Interactive'} session ${ownerId.slice(0, 12)}… is MCP-dark (auto-heal ${cause})`,
+      body: `${reason}\n\n${recoveryInstructions}`,
       importance: 'high',
-      data: { ownerId, cause },
+      data: { ownerId, cause, sessionClass },
     });
   } catch (e) {
     console.warn(`[mcp-dark-watchdog] interactive notify failed: ${e instanceof Error ? e.message : e}`);
   }
   await broadcastSevereEvent({
-    summary: `Interactive session ${ownerId} MCP-dark — in-place heal ${cause}; owner action needed (/mcp in its terminal).`,
+    summary: `${sessionClass === 'headless' ? 'Headless' : 'Interactive'} session ${ownerId} MCP-dark — auto-heal ${cause}; recovery action needed.`,
     body:
-      `${reason}\n\nIts pty host is alive, so the session is NOT dead — only its MCP transport is. It cannot read ` +
-      `its own inbox (that needs MCP). Do not kill it: the owner types /mcp in that window, or resumes it if closed.`,
+      `${reason}\n\n${recoveryInstructions} The session cannot read its own inbox while MCP is down.`,
     category: 'severe-event',
   });
 }

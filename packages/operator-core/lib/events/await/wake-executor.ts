@@ -2132,11 +2132,14 @@ export async function rehydrateLoopWakeText(
       `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 / EI-20230529647745311 — this delivery may have been ` +
       `queued/staged, so the checkpoint/walls text below can be a stale snapshot from when the wake FIRED, not ` +
       `from now). Freshest carry-note is ${ageStr} old.\n\n` +
+      // Delivery deltas need their own sections ahead of the narrative. Otherwise the
+      // packer inherits the note's final heading and can spill a changed/failed check
+      // together with historical prose while keeping the stale claim visible.
+      (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
+      (refsNow ? `## Carried reference changes\n${refsNow}\n\n` : '') +
       checkpointState +
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
-      (probesNow ? `${probesNow}\n` : '') +
-      (refsNow ? `${refsNow}\n` : '') +
       // EI-21988107654213811: the delivery read is ordered only to its own
       // readAt instant. A newer loop:checkpoint can be written immediately
       // afterward, so the authority claim must not make a recipient trust this

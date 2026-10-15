@@ -16,6 +16,9 @@ import {
   markHealSent,
   healedWakeText,
   taggedHealedWakeText,
+  headlessMcpRecoveryWakeText,
+  taggedHeadlessMcpRecoveryWakeText,
+  interactiveDarkRecoveryInstructions,
   checkInteractiveMcpDark,
   type McpDarkSnapshot,
   type InteractiveDarkSnapshot,
@@ -24,16 +27,28 @@ import { parseEnvelope } from '../turn-provenance/turn-provenance';
 
 // checkInteractiveMcpDark lazily `await import()`s this module — mock it so the
 // recovery-sweep tests below never touch the real FS/pty layer.
-const listLiveHostsMock = vi.fn<() => Array<{ ownerId: string; startedAt: number; lastActivityAt?: number | null }>>(
-  () => [],
-);
+type MockLiveHost = {
+  ownerId: string;
+  startedAt: number;
+  lastActivityAt?: number | null;
+  bridgeTty?: boolean | null;
+  caps?: string[] | null;
+  sock?: string;
+};
+const listLiveHostsMock = vi.fn<() => MockLiveHost[]>(() => []);
 const mcpReconnectViaPtyMock = vi.fn(async () => 'sent' as const);
+const injectIntoHostMock = vi.fn(async (_sock: string, _message: { mode: string; data: string; ownerId: string }) => true);
 vi.mock('../events/await/psu-pty-discovery', () => ({
   listLiveHosts: (...args: unknown[]) => listLiveHostsMock(...(args as [])),
   listLiveHostsAsync: async (...args: unknown[]) => listLiveHostsMock(...(args as [])),
   mcpReconnectViaPty: (...args: unknown[]) => mcpReconnectViaPtyMock(...(args as [])),
+  sessionClassForHost: (host: MockLiveHost | null | undefined) =>
+    host?.bridgeTty === false ? 'claude-headless' : 'claude-interactive',
+  hostSupports: (host: MockLiveHost | null | undefined, cap: string) =>
+    Array.isArray(host?.caps) && host.caps.includes(cap),
   findLiveHost: () => null,
-  injectIntoHost: async () => true,
+  injectIntoHost: (...args: unknown[]) =>
+    injectIntoHostMock(...(args as [string, { mode: string; data: string; ownerId: string }])),
 }));
 
 // The interactive heal step repairs the session's CLAUDE_CONFIG_DIR first
@@ -353,6 +368,47 @@ describe('healedWakeText', () => {
   });
 });
 
+describe('headlessMcpRecoveryWakeText', () => {
+  it('gives a resumed headless conversation its recovery context and avoids a second CLI', () => {
+    const text = headlessMcpRecoveryWakeText('su-headless', 45);
+    expect(text).toContain('P-005');
+    expect(text).toContain('headless session su-headless');
+    expect(text).toContain('~45m');
+    expect(text).toContain('Re-read the active work-item and loop checkpoints');
+    expect(text).toContain('Do not start a second CLI');
+  });
+
+  it('writes watchdog provenance before returning the carry text', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-headless-provenance-'));
+    try {
+      const tagged = await taggedHeadlessMcpRecoveryWakeText('su-headless', 45, { dir, nowMs: INOW });
+      const parsed = parseEnvelope(tagged);
+      expect(parsed?.origin).toBe('watchdog');
+      expect(parsed?.payload.trimStart()).toBe(headlessMcpRecoveryWakeText('su-headless', 45));
+
+      const ledger = readFileSync(join(dir, 'su-headless.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { sid: string; nonce: string; origin: string; ts: number });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({ sid: 'su-headless', nonce: parsed?.nonce, origin: 'watchdog', ts: INOW });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives headless owners psu-resume guidance and headed owners the in-place /mcp action', () => {
+    const headless = interactiveDarkRecoveryInstructions('headless', 'no-cap');
+    expect(headless).toContain('no interactive /mcp dialog');
+    expect(headless).toContain('psu --resume <session-id>');
+    expect(headless).toContain('Do not start a second CLI');
+
+    const headed = interactiveDarkRecoveryInstructions('headed', 'no-cap');
+    expect(headed).toContain('type /mcp in that session\'s terminal');
+    expect(headed).not.toContain('carry-respawn');
+  });
+});
+
 describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12059 / su-39f079d3)', () => {
   // EI-12059 root cause: the per-owner heal ladder only ever visits owners in
   // `hosts` (currently-live psu-pty sessions). Once an interactive session
@@ -423,7 +479,72 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
   beforeEach(() => {
     listLiveHostsMock.mockReset().mockReturnValue([]);
     mcpReconnectViaPtyMock.mockReset().mockResolvedValue('sent');
+    injectIntoHostMock.mockReset().mockResolvedValue(true);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('uses carry-respawn only for headless hosts and keeps headed sessions on /mcp', async () => {
+    const headedOwner = 'su-headed-dark';
+    const headlessOwner = 'su-headless-dark';
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-headless-dispatch-'));
+    const previousProvenanceDir = process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+    process.env.PAPERCUSP_TURN_PROVENANCE_DIR = dir;
+    const { tag } = fakeSql({
+      openPhases: [],
+      presenceByOwner: {
+        [headedOwner]: INOW - 45 * M,
+        [headlessOwner]: INOW - 45 * M,
+      },
+    });
+    listLiveHostsMock.mockReturnValue([
+      {
+        ownerId: headedOwner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: true,
+        caps: ['mcp-reconnect', 'carry-respawn'],
+        sock: '/tmp/headed-dark.sock',
+      },
+      {
+        ownerId: headlessOwner,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+        bridgeTty: false,
+        caps: ['carry-respawn'],
+        sock: '/tmp/headless-dark.sock',
+      },
+    ]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+      });
+
+      expect(out.healSent).toEqual(expect.arrayContaining([headedOwner, headlessOwner]));
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledTimes(1);
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(headedOwner);
+      expect(injectIntoHostMock).toHaveBeenCalledTimes(1);
+      const [sock, message] = injectIntoHostMock.mock.calls[0];
+      expect(sock).toBe('/tmp/headless-dark.sock');
+      expect(message).toMatchObject({ mode: 'carry-respawn', ownerId: headlessOwner });
+      const parsed = parseEnvelope(message.data);
+      expect(parsed?.origin).toBe('watchdog');
+      expect(parsed?.payload).toContain(`headless session ${headlessOwner}`);
+
+      const ledger = readFileSync(join(dir, `${headlessOwner}.jsonl`), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { sid: string; nonce: string; origin: string });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({ sid: headlessOwner, nonce: parsed?.nonce, origin: 'watchdog' });
+    } finally {
+      vi.useRealTimers();
+      if (previousProvenanceDir == null) delete process.env.PAPERCUSP_TURN_PROVENANCE_DIR;
+      else process.env.PAPERCUSP_TURN_PROVENANCE_DIR = previousProvenanceDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('ZERO live hosts still clears a stale escalation for an ENDED session (the exact EI-12059 shape)', async () => {
