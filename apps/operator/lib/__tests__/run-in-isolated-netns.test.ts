@@ -7,7 +7,7 @@
  * AppArmor userns grant for bwrap; they are skipped (not passed) where the namespace
  * cannot be built, and the skip reason says so.
  */
-import { mkdtempSync, rmSync, symlinkSync, existsSync, readlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, symlinkSync, existsSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -104,38 +104,79 @@ describe.skipIf(!ISOLATION_AVAILABLE)(`run-in-isolated-netns.sh — isolation ${
     const receipt = join(dir, 'receipt.json');
     const commit = 'a'.repeat(40);
     writeFileSync(receipt, JSON.stringify({ schemaVersion: 'verifier-source-v1', sourceCommit: commit }));
-    const native = spawn(process.execPath, ['-e', 'console.log("READY"); setInterval(() => {}, 1000)']);
+    const native = spawn(process.execPath, ['-e', 'console.log("READY"); setInterval(() => {}, 1000)'], {
+      env: { ...process.env, DISPLAY: ':91', OPERATOR_DEV_PORT: '12345',
+        PAPERCUSP_SID: 'fixture-owner', PAPERCUSP_TAURI_LAUNCH_PROVENANCE: 'fixture-provenance' },
+    });
     await new Promise<void>((done, reject) => {
       native.stdout.once('data', () => done());
       native.once('error', reject);
     });
     const module = pathToFileURL(join(REPO_ROOT, 'packages/operator-core/lib/testing-native-runtime.ts')).href;
     try {
+      const verifier = readFileSync(join(REPO_ROOT, 'scripts/verify-tauri-headless.sh'), 'utf8');
+      const generator = verifier.match(/write_liveness_check_script\(\) \{[\s\S]*?\n\}/)?.[0];
+      if (!generator) throw new Error('Maintained native liveness generator was not found');
+      const generated = spawnSync('bash', ['-c', `${generator}\nwrite_liveness_check_script`], {
+        env: { ...process.env, WORK: dir, BRIDGE_PID: String(native.pid), LOG: join(dir, 'native.log'),
+          DISPLAY_NUM: '91', DEV_PORT: '12345', TAURI_OWNER_SID: 'fixture-owner',
+          TAURI_LAUNCH_PROVENANCE: 'fixture-provenance', VERIFY_SCOPE_ENABLED: '0', TAURI_SCOPE_UNIT: '' },
+        encoding: 'utf8',
+      });
+      expect(generated.status, generated.stderr).toBe(0);
+      const liveness = join(dir, 'check-live.sh');
+      const original = readFileSync(liveness, 'utf8');
+      writeFileSync(liveness, original.replace('EXPECTED_PROVENANCE="fixture-provenance"',
+        'EXPECTED_PROVENANCE="foreign-provenance"'));
+      const refused = wrap([process.execPath, '-e', 'console.log("ASSERTION_MUST_NOT_START")'], {
+        PAPERCUSP_E2E_NETNS: 'required', VERIFY_TAURI_PID: String(native.pid),
+        OPERATOR_SOURCE_ROOT: REPO_ROOT, VERIFY_TAURI_SOURCE_REF: commit,
+        VERIFY_TAURI_SOURCE_RECEIPT: receipt, VERIFY_TAURI_LIVENESS_CHECK: liveness,
+      });
+      expect(refused.status, refused.stderr).toBe(98);
+      expect(refused.stderr).toContain('native liveness preparation failed');
+      expect(refused.stderr).toContain('launch provenance');
+      expect(refused.stdout).not.toContain('ASSERTION_MUST_NOT_START');
+      writeFileSync(liveness, original);
       const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
         const child = spawn(WRAPPER, ['--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', `
           import assert from 'node:assert/strict';
-          import { statSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, statSync, writeFileSync } from 'node:fs';
           import { prepareNativeRuntimeReader } from ${JSON.stringify(module)};
           assert.throws(() => statSync('/proc/' + process.env.VERIFY_TAURI_PID + '/exe'), { code: 'EACCES' });
+          assert.throws(() => readFileSync('/proc/' + process.env.VERIFY_TAURI_PID + '/environ'), { code: 'EACCES' });
           const read = prepareNativeRuntimeReader(${JSON.stringify(REPO_ROOT)}, ${JSON.stringify(commit)});
           const before = read();
           assert.match(before.fingerprint, /^[a-f0-9]{64}$/);
           assert.deepEqual(before.units, ['verify-tauri-headless:' + process.env.VERIFY_TAURI_PID]);
           assert.equal(read().fingerprint, before.fingerprint);
           assert.throws(() => prepareNativeRuntimeReader(${JSON.stringify(REPO_ROOT)}, 'b'.repeat(40)), /source receipt mismatch/);
+          const check = process.env.VERIFY_TAURI_LIVENESS_CHECK;
+          const original = readFileSync(check, 'utf8');
+          const checkLive = () => execFileSync('bash', [check], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+          assert.match(checkLive(), /verifier bridge alive/);
+          const wrongMarker = original.replace('EXPECTED_PROVENANCE="fixture-provenance"', 'EXPECTED_PROVENANCE="foreign-provenance"');
+          assert.notEqual(wrongMarker, original);
+          writeFileSync(check, wrongMarker);
+          assert.throws(checkLive, /launch provenance/);
+          writeFileSync(check, original);
+          assert.match(checkLive(), /verifier bridge alive/);
+          console.log('LIVENESS_VERIFIED');
           console.log('WITNESS_READY');
           const deadline = Date.now() + 10000;
           const poll = setInterval(() => {
-            if (read() === null) { clearInterval(poll); console.log('EXIT_REFUSED'); }
+            if (read() === null) { clearInterval(poll); assert.throws(checkLive); console.log('EXIT_REFUSED'); }
             else if (Date.now() > deadline) { clearInterval(poll); process.exitCode = 9; }
           }, 100);
         `], { cwd: REPO_ROOT, env: { ...process.env,
           PAPERCUSP_E2E_NETNS: 'required', VERIFY_TAURI_PID: String(native.pid),
           PAPERCUSP_VERIFY_TAURI_ISOLATED: '1', OPERATOR_SOURCE_ROOT: REPO_ROOT,
+          VERIFY_TAURI_LIVENESS_CHECK: join(dir, 'check-live.sh'),
           VERIFY_TAURI_SOURCE_REF: commit, VERIFY_TAURI_SOURCE_RECEIPT: receipt } });
         let stdout = '';
         let stderr = '';
-        const timeout = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('native witness guard timed out')); }, 45_000);
+        const timeout = setTimeout(() => { child.kill('SIGTERM'); reject(new Error(`native witness guard timed out\nstdout: ${stdout}\nstderr: ${stderr}`)); }, 45_000);
         child.stdout.on('data', chunk => { stdout += chunk; if (stdout.includes('WITNESS_READY')) native.kill('SIGTERM'); });
         child.stderr.on('data', chunk => { stderr += chunk; });
         child.once('error', error => { clearTimeout(timeout); reject(error); });
@@ -143,6 +184,7 @@ describe.skipIf(!ISOLATION_AVAILABLE)(`run-in-isolated-netns.sh — isolation ${
       });
       expect(result.code, result.stderr).toBe(0);
       expect(result.stderr).toContain('RUN_IN_ISOLATED_NETNS isolated=1');
+      expect(result.stdout).toContain('LIVENESS_VERIFIED');
       expect(result.stdout).toContain('WITNESS_READY');
       expect(result.stdout).toContain('EXIT_REFUSED');
     } finally { native.kill('SIGTERM'); }
