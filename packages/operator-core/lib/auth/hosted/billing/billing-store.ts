@@ -23,6 +23,7 @@ import { appendOrganizationAuditEvent } from '../governance';
 import { isHostedSubscriptionStatus, type HostedSubscriptionSnapshot } from './entitlement-seam';
 import { subscriptionOrderKey, type HostedBillingEvent, type HostedBillingFact } from './stripe-billing-events';
 import type { StripeBillingEventPageEvidence } from './stripe-billing-client';
+import type { HostedBillingRecoveryTarget, HostedBillingDeliveryIssue } from './billing-recovery';
 
 export interface HostedBillingCustomer {
   readonly organizationId: string;
@@ -85,6 +86,8 @@ export interface HostedBillingReconciliationCheckpoint {
 
 /** Recovery is a server-only extension of the same billing transaction store. */
 export interface HostedBillingRecoveryStore extends HostedBillingStore {
+  reconciliationTargets(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingRecoveryTarget[]>;
+  deliveryIssues(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingDeliveryIssue[]>;
   beginReconciliation(input: {
     organizationId: string; accountId: string; expectedLivemode: boolean;
     createdFrom: number; createdBefore: number;
@@ -142,6 +145,33 @@ const toDate = (v: Date | string | null): Date | null => (v === null ? null : v 
 
 export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
   constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn)) {}
+
+  async reconciliationTargets(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingRecoveryTarget[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('billing_recovery_invalid_limit');
+    return this.run(async sql => {
+      const rows = await sql<Array<{ organization_id: string; reconciliation_checkpoint: HostedBillingReconciliationCheckpoint | null }>>`
+        SELECT organization_id::text, reconciliation_checkpoint FROM papercusp_auth.hosted_billing_customers
+         WHERE livemode = ${input.expectedLivemode}
+         ORDER BY (reconciliation_checkpoint->>'createdBefore')::bigint ASC NULLS FIRST, organization_id
+         LIMIT ${input.limit}
+      `;
+      return rows.map(row => ({ organizationId: row.organization_id, checkpoint: row.reconciliation_checkpoint }));
+    });
+  }
+
+  async deliveryIssues(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingDeliveryIssue[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('billing_recovery_invalid_limit');
+    return this.run(async sql => {
+      const rows = await sql<Array<{ provider_event_id: string; outcome: string; rejection_code: string | null }>>`
+        SELECT provider_event_id, outcome, rejection_code FROM papercusp_auth.hosted_billing_webhook_events
+         WHERE livemode = ${input.expectedLivemode} AND (outcome = 'rejected' OR body_digest IS NULL)
+         ORDER BY received_at, provider_event_id COLLATE "C" LIMIT ${input.limit}
+      `;
+      return rows.map(row => ({ eventId: row.provider_event_id,
+        failureClass: row.outcome === 'rejected'
+          ? row.rejection_code === 'unknown_customer' ? 'customer-unmapped' : 'permanent-rejection' : 'undelivered' }));
+    });
+  }
 
   async beginReconciliation(input: {
     organizationId: string; accountId: string; expectedLivemode: boolean; createdFrom: number; createdBefore: number;

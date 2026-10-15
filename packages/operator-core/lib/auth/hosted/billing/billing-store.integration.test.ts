@@ -213,6 +213,33 @@ describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
     await db?.cleanup();
   });
 
+  it('independently detects API-only deliveries and permanent refusals in the real hosted-service role', async () => {
+    const s = store(); const f = await fixture(s);
+    const pin = await startRecovery(f, s);
+    const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active' });
+    const eventId = parsed(raw).eventId;
+    await applyPage(pin, recoveryPage(pin, [raw]), s);
+    const rejectedId = `evt_${hex()}`;
+    await s.recordRejectedEvent({ eventId: rejectedId, eventType: 'customer.subscription.updated',
+      bodyDigest: 'a'.repeat(64), livemode: false, code: 'missing-organization' });
+    expect(await s.deliveryIssues({ expectedLivemode: false, limit: 100 })).toEqual(expect.arrayContaining([
+      { eventId, failureClass: 'undelivered' }, { eventId: rejectedId, failureClass: 'permanent-rejection' },
+    ]));
+    expect(await s.deliveryIssues({ expectedLivemode: true, limit: 100 })).toEqual([]);
+    expect(await s.reconciliationTargets({ expectedLivemode: false, limit: 100 })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ organizationId: f.organizationId, checkpoint: expect.objectContaining({ complete: true }) }),
+    ]));
+    // The API fact commitment is not the signed-delivery receipt. A genuine
+    // later delivery clears only its own missing-delivery classification.
+    await deliver(s, raw);
+    expect(await s.deliveryIssues({ expectedLivemode: false, limit: 100 })).not.toEqual(expect.arrayContaining([
+      { eventId, failureClass: 'undelivered' },
+    ]));
+    expect(await s.deliveryIssues({ expectedLivemode: false, limit: 100 })).toEqual(expect.arrayContaining([
+      { eventId: rejectedId, failureClass: 'permanent-rejection' },
+    ]));
+  });
+
   it('keeps exactly one customer per organization (insert-or-keep, the earlier winner stays)', async () => {
     const organizationId = randomUUID();
     const first = await store().recordCustomer({ organizationId, stripeCustomerId: `cus_${hex()}`, livemode: false });
