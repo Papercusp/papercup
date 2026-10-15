@@ -19,6 +19,7 @@ import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
 import {
   RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
+  retentionRootSizeCap,
   type CompiledPolicy, type RetentionClass, type RetentionPinProtection,
 } from './retention-policy';
 
@@ -32,10 +33,16 @@ const effectBudgetError = (root: string) => `incomplete retention effects:${root
 export interface RetentionEntry {
   path: string; root: string; classId: string;
   newestWriteMs: number; bytes: number; dev: number; ino: number;
+  protectedReason?: string;
 }
 export interface ReclaimDelegate {
   classId: string;
   run: (dryRun: boolean) => Promise<{ ok: boolean; detail: unknown }>;
+}
+export interface RetentionCapReceipt {
+  root: string; classId: string; maxBytes: number; beforeBytes: number;
+  pinnedBytes: number; pinnedPaths: string[]; afterBytes: number;
+  overByBytes: number; pinnedOverageBytes: number;
 }
 export interface DiskReclaimReceipt {
   schemaVersion: 1; id: string; startedAt: string; finishedAt: string; dryRun: boolean;
@@ -46,6 +53,7 @@ export interface DiskReclaimReceipt {
   entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string }>;
   delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
   errors: string[];
+  caps?: RetentionCapReceipt[];
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
   roots?: Array<{ path: string; classId: string; aliases: string[] }>;
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
@@ -65,6 +73,8 @@ export interface DiskReclaimOptions {
   nowMs?: number; maxEntries?: number; budgetMs?: number;
   /** Per-root wall time for holder checks, audit waits and removals. In-flight operations finish safely. */
   effectBudgetMs?: number;
+  /** Whole-pass deadline, including all roots and delegates. */
+  runBudgetMs?: number;
   sample?: () => Promise<DiskSnapshot[]>;
   scanHolders?: (paths: readonly string[]) => Promise<OpenWriterScan>;
   registeredWorkspaces?: () => string[];
@@ -78,6 +88,9 @@ export interface DiskReclaimOptions {
   record?: (phase: string, details: unknown) => Promise<void>;
   /** Production reuses the streaming native census for complete max-age trees. */
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
+  /** Production supplies an enrolled privileged remover. Only policy-selected,
+   * remeasured agent children reach it, after fresh host holder evidence. */
+  removeEntry?: (entry: RetentionEntry, timeoutMs: number) => Promise<void>;
 }
 
 /** The workflow checkpoints each callback separately. Only safe, productive
@@ -379,28 +392,50 @@ export function createRetentionHolderScanner(deps: {
 }
 
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
-export function selectRetentionEntries(entries: readonly RetentionEntry[], policy: CompiledPolicy, nowMs: number): RetentionEntry[] {
+export function selectRetentionEntries(entries: readonly RetentionEntry[], policy: CompiledPolicy, nowMs: number,
+  caps?: RetentionCapReceipt[]): RetentionEntry[] {
   const groups = new Map<string, RetentionEntry[]>();
+  const unpinnedPolicy = { ...policy, pins: [] };
   for (const entry of entries) {
-    const cls = deletionClassFor(entry.path, policy, nowMs);
+    const cls = deletionClassFor(entry.path, unpinnedPolicy, nowMs);
     if (!cls || cls.id !== entry.classId || containsClassRoot(entry.path, policy)) continue;
     const key = `${entry.classId}\0${entry.root}`;
     const group = groups.get(key) ?? [];
     group.push(entry); groups.set(key, group);
   }
-  const selected: RetentionEntry[] = [];
+  const selected = new Set<RetentionEntry>();
   for (const group of groups.values()) {
     group.sort((a, b) => b.newestWriteMs - a.newestWriteMs || a.path.localeCompare(b.path));
-    const rule = policy.classes.get(group[0]!.classId)!.keep;
+    const cls = policy.classes.get(group[0]!.classId)!;
+    const rule = cls.keep;
     for (let index = 0; index < group.length; index++) {
       const entry = group[index]!;
+      if (entry.protectedReason || !deletionClassFor(entry.path, policy, nowMs)) continue;
       const age = nowMs - entry.newestWriteMs;
-      if (rule.kind === 'max-age' && age > rule.maxAgeHours * HOUR) selected.push(entry);
-      if (rule.kind === 'newest' && (index >= rule.keep || (rule.maxAgeHours !== undefined && age > rule.maxAgeHours * HOUR))) selected.push(entry);
+      if (rule.kind === 'max-age' && age > rule.maxAgeHours * HOUR) selected.add(entry);
+      if (rule.kind === 'newest' && (index >= rule.keep || (rule.maxAgeHours !== undefined && age > rule.maxAgeHours * HOUR))) selected.add(entry);
       // Lease classes run through their owning program, never through a generic age delete.
     }
+    const maxBytes = retentionRootSizeCap(cls);
+    if (maxBytes !== undefined) {
+      const pinned = group.filter((entry) => !deletionClassFor(entry.path, policy, nowMs));
+      const beforeBytes = group.reduce((sum, entry) => sum + entry.bytes, 0);
+      let remaining = beforeBytes;
+      // The UNION of age and cap effects is oldest-first. Do not subtract
+      // planned age deletions before choosing cap victims: doing so could skip
+      // an older entry while evicting a newer age-selected sibling.
+      for (const entry of [...group].reverse()) {
+        if (remaining <= maxBytes) break;
+        if (entry.protectedReason || !deletionClassFor(entry.path, policy, nowMs)) continue;
+        selected.add(entry); remaining -= entry.bytes;
+      }
+      const pinnedBytes = pinned.reduce((sum, entry) => sum + entry.bytes, 0);
+      caps?.push({ root: group[0]!.root, classId: cls.id, maxBytes, beforeBytes, pinnedBytes,
+        pinnedPaths: pinned.map((entry) => entry.path), afterBytes: beforeBytes,
+        overByBytes: Math.max(0, beforeBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) });
+    }
   }
-  return selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
+  return [...selected].sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
 }
 
 function overlap(a: string, b: string): boolean {
@@ -517,6 +552,7 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
 
 export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Promise<DiskReclaimReceipt> {
   const started = options.nowMs ?? Date.now();
+  const runDeadline = Date.now() + (options.runBudgetMs ?? 15 * 60_000);
   const receipt: DiskReclaimReceipt = {
     schemaVersion: 1, id: randomUUID(), startedAt: new Date(started).toISOString(), finishedAt: '',
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
@@ -531,9 +567,17 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   const before = await snapshots();
   try {
     await options.record?.('started', receipt);
-    await withFsMutex('papercusp-disk-retention', async () => {
+    await withFsMutex('papercusp-disk-retention', async (mutex) => {
+      // Pins and native cleanup share this writer lock. Yield only between
+      // operations; an admitted holder check/removal must finish before release.
+      const yieldToWaiter = async () => {
+        if (!await mutex?.hasWaiters()) return false;
+        receipt.errors.push('retention yielded to queued writer');
+        return true;
+      };
       const protection = await options.readProtection?.();
       policy.pins = protection?.pins ?? [];
+      const censusPolicy = { ...policy, pins: [] };
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
       receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
@@ -541,11 +585,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       const protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
+        if (Date.now() >= runDeadline) { receipt.errors.push('retention run budget exhausted'); break; }
+        if (await yieldToWaiter()) return;
         const rootProtectedPaths = protectedPaths.flatMap((path) => root.aliases.map((alias) =>
           path === alias || path.startsWith(alias + '/') ? root.path + path.slice(alias.length) : path));
         const scanRoot = (paths: readonly string[]) => scanRetentionRootHolders(root, paths, scan);
-        const budget = { left: options.maxEntries ?? 100_000, deadline: Date.now() + (options.budgetMs ?? 60_000), progress };
-        const budgetExpired = () => budget.left <= 0 || Date.now() >= budget.deadline;
+        const budget = { left: options.maxEntries ?? 100_000, deadline: Math.min(runDeadline, Date.now() + (options.budgetMs ?? 60_000)), progress };
+        const budgetExpired = () => budget.left <= 0 || Date.now() >= Math.min(budget.deadline, runDeadline);
         // Each root gets the same inspection allowance. Holder scans retain
         // their own native deadline; effect waits do not spend that allowance.
         const outsideInspectionBudget = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -563,17 +609,22 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (budgetExpired()) { stopAtBudget(root.path); continue; }
         let entries: RetentionEntry[] = [];
         const keep = policy.classes.get(root.classId)?.keep;
+        const maxBytes = retentionRootSizeCap(policy.classes.get(root.classId)!);
+        const capped = maxBytes !== undefined;
         const retainAfterMs = keep?.kind === 'max-age' ? started - keep.maxAgeHours * HOUR : undefined;
         try {
           const names = await readdir(root.path);
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
             (root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
-            rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath)) ||
-            !deletionClassFor(path, policy, started) || containsClassRoot(path, policy));
-          if (options.inspectTrees && retainAfterMs !== undefined) {
+            (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) ||
+            !deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy));
+          if (options.inspectTrees && (retainAfterMs !== undefined || capped)) {
             // Native find bounds the complete walk by elapsed time while streaming
             // metadata. It avoids permanently restarting a large tree at a JS node cap.
-            const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, { retainAfterMs, excludedPaths: excluded }));
+            const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, {
+              retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped,
+              excludedPaths: excluded, timeoutMs: Math.max(1, budget.deadline - Date.now()),
+            }));
             progress.inspectedNodes += census.inspectedNodes;
             progress.retainedRecentTrees += census.retainedRecentTrees;
             receipt.entries.push(...census.retained.map((entry) => ({ ...entry, classId: root.classId, status: 'protected' as const, bytes: 0 })));
@@ -583,6 +634,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               continue;
             }
             entries = census.entries.map((entry) => ({ ...entry, root: root.path, classId: root.classId }));
+            if (capped) entries.push(...census.retained.filter((entry) => entry.entry && !excluded.includes(entry.path))
+              .map((entry) => ({ ...entry.entry!, root: root.path, classId: root.classId, protectedReason: entry.reason })));
           } else {
             const inspected = await mapWithConcurrency(names, 16, async (name) => {
             if (budgetStopped) return null;
@@ -592,11 +645,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               receipt.entries.push({ path, classId: root.classId, status, bytes: 0, reason });
             };
             if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
-            if (rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
+            if (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
-            if (!deletionClassFor(path, policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
+            if (!deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
-              return await inspectEntry(path, root.path, root.classId, budget, retainAfterMs, retain);
+              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain);
             }
             catch (err) {
               if (budgetExpired()) { stopAtBudget(root.path); return null; }
@@ -613,10 +666,29 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // An incomplete class census cannot establish oldest-first selection.
         // Leave its entries untouched and retain the independent owner delegates.
         if (budgetStopped) continue;
-        const selected = selectRetentionEntries(entries, policy, started);
-        if (!selected.length) continue;
+        for (const entry of entries) {
+          if (rootProtectedPaths.some((path) => overlap(entry.path, path))) entry.protectedReason = 'live retention lease';
+        }
+        const rootCaps: RetentionCapReceipt[] = [];
+        const selected = selectRetentionEntries(entries, policy, started, rootCaps);
+        (receipt.caps ??= []).push(...rootCaps);
+        const cap = rootCaps[0];
+        const ageOnlyPolicy = { ...policy, classes: new Map([...policy.classes].map(([id, cls]) => [id, { ...cls, maxBytes: undefined }])) };
+        const agePaths = new Set(selectRetentionEntries(entries, ageOnlyPolicy, started).map((entry) => entry.path));
+        if (cap && cap.beforeBytes > cap.maxBytes) {
+          // A holder/change may prevent an earlier planned eviction. Continue
+          // oldest-first through the remaining eligible entries until the
+          // measured retained usage, rather than a planned total, meets the cap.
+          const picked = new Set(selected.map((entry) => entry.path));
+          selected.push(...entries.filter((entry) => !picked.has(entry.path) && !entry.protectedReason && deletionClassFor(entry.path, policy, started)));
+          selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
+        }
+        if (!selected.length) {
+          if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
+          continue;
+        }
         const effectStarted = Date.now();
-        const effectDeadline = effectStarted + (options.effectBudgetMs ?? 60_000);
+        const effectDeadline = Math.min(runDeadline, effectStarted + (options.effectBudgetMs ?? 60_000));
         const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 };
         const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
           nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false, timings };
@@ -642,12 +714,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
+        if (await yieldToWaiter()) { effect.stopped = true; await recordProgress(); return; }
         const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path))));
         if (!holders.complete) {
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
         }
         for (const entry of selected) {
+          if (await yieldToWaiter()) { effect.stopped = true; await recordProgress(); return; }
+          if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) { effect.processed++; continue; }
           if (budgetExpired()) { stopAtBudget(root.path); break; }
           if (stopEffects()) break;
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
@@ -664,9 +739,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // lstat. Preserve that check without spawning the tree inspector
             // for every file; directories still require its complete walk.
             const fresh = await measureEffect('reinspectionMs', async () => {
-              const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
-              if (options.inspectTrees && retainAfterMs !== undefined && !regularFile) {
-                const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, { retainAfterMs, paths: [entry.path] }));
+              const regularFile = options.inspectTrees && !options.removeEntry && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
+              if (options.inspectTrees && (retainAfterMs !== undefined || capped) && !regularFile) {
+                const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, {
+                  retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path],
+                  timeoutMs: Math.max(1, effectDeadline - Date.now()),
+                }));
                 if (census.error) throw new Error(census.error);
                 const current = census.entries.find((candidate) => candidate.path === entry.path);
                 if (!current) outcome.reason = census.retained[0]?.reason ?? 'recent write';
@@ -684,10 +762,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               continue;
             }
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
-            if (receipt.dryRun) { outcome.status = 'would-remove'; continue; }
-            await measureEffect('removalMs', () => outsideInspectionBudget(() => rm(entry.path, { recursive: true, force: false })));
+            if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes) { outcome.status = 'changed'; continue; }
+            if (receipt.dryRun) { outcome.status = 'would-remove'; if (cap) cap.afterBytes -= entry.bytes; continue; }
+            await measureEffect('removalMs', () => outsideInspectionBudget(() => options.removeEntry
+              ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now())) : rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
+            if (cap) cap.afterBytes -= entry.bytes;
             await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', outcome)));
           } catch (err) {
             if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
@@ -702,8 +782,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           }
         }
         await recordProgress();
+        if (cap) {
+          cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
+          if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
+        }
       }
       for (const delegate of options.delegates ?? []) {
+        if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
+        if (await yieldToWaiter()) return;
         try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
         catch (err) { receipt.delegates.push({ classId: delegate.classId, ok: false, detail: message(err) }); }
       }
@@ -727,6 +813,43 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   try { await options.record?.('receipt', receipt); }
   catch (err) { receipt.complete = false; receipt.policyExhausted = null; receipt.errors.push(`receipt write:${message(err)}`); }
   return receipt;
+}
+
+/** Elevated deletion stays within a held directory descriptor and refuses an
+ * identity change. Python's fd-based rmtree never follows swapped symlinks.
+ * Reuse the existing enrolled/timeout-bounded subprocess route. */
+export async function removePrivilegedRetentionEntry(entry: RetentionEntry, timeoutMs: number,
+  execute: typeof nativeRetentionCommand = nativeRetentionCommand): Promise<void> {
+  if (resolve(entry.root) !== entry.root || dirname(entry.path) !== entry.root || entry.path === entry.root ||
+      !Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino)) throw new Error('unsafe privileged retention target');
+  const root = await lstat(entry.root);
+  if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('unsafe privileged retention root');
+  const worker = `
+import json, os, shutil, stat, sys
+e = json.load(sys.stdin)
+fd = os.open(e['root'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    root = os.fstat(fd)
+    if (root.st_dev, root.st_ino) != (e['rootDev'], e['rootIno']):
+        raise RuntimeError('retention root identity changed')
+    name = os.path.basename(e['path'])
+    s = os.stat(name, dir_fd=fd, follow_symlinks=False)
+    if (s.st_dev, s.st_ino) != (e['dev'], e['ino']) or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
+        raise RuntimeError('retention candidate identity changed')
+    if stat.S_ISDIR(s.st_mode):
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise RuntimeError('fd-safe retention removal unavailable')
+        shutil.rmtree(name, dir_fd=fd)
+    else:
+        os.unlink(name, dir_fd=fd)
+finally:
+    os.close(fd)
+`;
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const result = await execute(repoRoot, '/usr/bin/sudo', ['-n', '/usr/bin/python3', '-c', worker], {
+    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino }), timeoutMs,
+  });
+  if (!result.ok) throw new Error(`privileged retention removal failed:${JSON.stringify(result.detail)}`);
 }
 
 /** Bounded, enrolled execution of an existing native cleaner. */
@@ -860,9 +983,17 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     } },
   ];
   let runId = '';
-  const { inspectRetentionTrees } = await import('./disk-consumer-census');
+  const { inspectRetentionTrees, resolveCensusSudo } = await import('./disk-consumer-census');
+  // No unprivileged fallback: permission loss must be a visible incomplete
+  // receipt, rather than silently retaining every foreign-owned agent tree.
+  const sudo = await resolveCensusSudo();
+  const inspectTrees: typeof inspectRetentionTrees = (root, options) => {
+    if (!sudo && process.getuid?.() !== 0) throw new Error('privileged retention census unavailable');
+    return inspectRetentionTrees(root, { ...options, sudo });
+  };
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees: inspectRetentionTrees, scanHolders: holders.scan, record: async (phase, detail) => {
+  try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees,
+    removeEntry: removePrivilegedRetentionEntry, scanHolders: holders.scan, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } }); } finally { await holders.close(); }

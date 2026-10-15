@@ -13,7 +13,7 @@ import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm'
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type ReclaimSql } from './disk-reclaim';
+import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
@@ -77,6 +77,60 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  it('continues past a held oldest entry until actual retained usage meets the cap', async () => {
+    const { root, options } = await setup();
+    const paths = ['old-held', 'middle', 'new'].map((name) => join(root, name));
+    for (const [index, path] of paths.entries()) { await writeFile(path, Buffer.alloc(4096)); await utimes(path, 1, index + 1); }
+    // ctime is also part of newest-write: measure exact census ordering rather
+    // than assuming write scheduling produces distinct clock ticks.
+    const census = await inspectRetentionTrees(root, { retainAfterMs: 0, includeRecent: true });
+    const ordered = [...census.entries].sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
+    const held = ordered[0]!.path;
+    const policy = options.policy.map((cls) => ({ ...cls, maxBytes: 4096, keep: { kind: 'max-age' as const, maxAgeHours: 24 } }));
+    const receipt = await runDiskReclaimOnce({ ...options, policy, nowMs: Date.now(), inspectTrees: inspectRetentionTrees,
+      scanHolders: async () => ({ complete: true, byPath: new Map([[held, ['123']]]) }) });
+    expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 12288, afterBytes: 4096, overByBytes: 0 });
+    expect(receipt.entries.filter((entry) => entry.status === 'removed').map((entry) => entry.path)).toEqual(ordered.slice(1).map((entry) => entry.path));
+    expect(await stat(held)).toBeTruthy();
+  });
+
+  it('counts a live pin in the cap receipt and reports its exempt overage', async () => {
+    const { root, options } = await setup(); const pin = join(root, 'pinned'), disposable = join(root, 'disposable');
+    await writeFile(pin, Buffer.alloc(8192)); await writeFile(disposable, Buffer.alloc(4096));
+    const receipt = await runDiskReclaimOnce({ ...options, policy: options.policy.map((cls) => ({ ...cls, maxBytes: 4096 })),
+      inspectTrees: inspectRetentionTrees, nowMs: Date.now(), readProtection: async () => ({ paths: [],
+        pins: [{ paths: [pin], expiresAt: new Date(Date.now() + 60_000).toISOString() }] }) });
+    expect(receipt.complete).toBe(true); expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 12288, afterBytes: 8192, pinnedBytes: 8192, pinnedPaths: [pin], overByBytes: 4096, pinnedOverageBytes: 4096 });
+    expect(await stat(pin)).toBeTruthy(); await expect(stat(disposable)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('writes an incomplete receipt when its whole-pass deadline is already exhausted', async () => {
+    const { root, options } = await setup(); const path = join(root, 'retain'); await writeFile(path, 'keep');
+    const record = vi.fn(); const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 0, record });
+    expect(receipt.complete).toBe(false); expect(receipt.errors).toContain('retention run budget exhausted');
+    expect(record).toHaveBeenLastCalledWith('receipt', receipt); expect(await stat(path)).toBeTruthy();
+  });
+
+  it('uses bounded privileged census and fd-safe removal for a root-owned unreadable agent tree', async () => {
+    const { root, options } = await setup(); const path = join(root, 'foreign'); await mkdir(path);
+    await writeFile(join(path, 'payload'), 'expired');
+    const run = (command: string, args: string[], input?: string) => execFileSync(command, args, { input, timeout: 10_000, stdio: ['pipe', 'pipe', 'pipe'] });
+    run('/usr/bin/sudo', ['-n', '/bin/chown', '-R', 'root:root', path]);
+    run('/usr/bin/sudo', ['-n', '/bin/chmod', '700', path]);
+    try {
+      const execute: typeof nativeRetentionCommand = async (_repo, command, args, opts) => {
+        expect(opts?.timeoutMs).toBeGreaterThan(0); expect(opts?.timeoutMs).toBeLessThanOrEqual(60_000);
+        run(command, args, opts?.stdin); return { ok: true, detail: 'completed' };
+      };
+      const receipt = await runDiskReclaimOnce({ ...options,
+        inspectTrees: (root, opts) => inspectRetentionTrees(root, { ...opts, sudo: '/usr/bin/sudo' }),
+        removeEntry: (entry, ms) => removePrivilegedRetentionEntry(entry, ms, execute) });
+      expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path, status: 'removed' }));
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { run('/usr/bin/sudo', ['-n', '/bin/rm', '-rf', '--', path]); }
+  });
   it('loads new pin protection only after acquiring the mutex shared with pin writers', async () => {
     const { root, options } = await setup();
     const path = join(root, 'pinned-during-wait'); await writeFile(path, 'retain');
@@ -407,6 +461,38 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 0, nextPath: null, stopped: false, elapsedMs: 10_000 });
       await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { now.mockRestore(); }
+  });
+  it('finishes an admitted removal then yields the real mutex to a queued writer', async () => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let entered!: () => void, finish!: () => void, queued!: () => void;
+    const removing = new Promise<void>((resolve) => { entered = resolve; });
+    const finishRemoval = new Promise<void>((resolve) => { finish = resolve; });
+    const waiting = new Promise<void>((resolve) => { queued = resolve; });
+    const delegate = vi.fn(async () => ({ ok: true, detail: 'fixture owner' }));
+    const reclaim = runDiskReclaimOnce({ ...options, delegates: [{ classId: 'fixture-owner', run: delegate }],
+      removeEntry: async (entry) => { entered(); await finishRemoval; await rm(entry.path); } });
+    await removing;
+    let peerEntered = false;
+    const peer = withFsMutex('papercusp-disk-retention', async () => { peerEntered = true; },
+      { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
+    try {
+      await waiting;
+      expect(peerEntered).toBe(false);
+    } finally { finish(); }
+    const receipt = await reclaim;
+    await peer;
+    expect(peerEntered).toBe(true);
+    expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+    expect(receipt.errors).toContain('retention yielded to queued writer');
+    expect(receipt.entries.filter((entry) => entry.status === 'removed')).toHaveLength(1);
+    expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, stopped: true });
+    expect(delegate).not.toHaveBeenCalled();
+    const resumed = await runDiskReclaimOnce(options);
+    expect(resumed.complete).toBe(true);
+    expect(resumed.entries.filter((entry) => entry.status === 'removed')).toHaveLength(1);
+    for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
   it('serializes overlapping fixture passes with the real mutex and preserves the losing pass', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
