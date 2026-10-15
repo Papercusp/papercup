@@ -213,9 +213,17 @@ def codex_record(state, row):
     A model can emit DONE after a failed shell call. The unpredictable file hash
     must actually appear in a tool result during THIS warm turn before admission.
     """
+    payload = row.get("payload", {})
+    if row.get("type") == "event_msg" and payload.get("type") == "task_complete":
+        # A final answer precedes native turn settlement. Sending the next prompt
+        # in that window can queue it into the old turn without starting a new one.
+        # Only this native event admits the next prompt, never a fixed sleep.
+        pending = state.pop("pending_outcome", None)
+        if pending:
+            state.setdefault("outcomes", {})[pending["marker"]] = pending["error"]
+        return
     if row.get("type") != "response_item":
         return
-    payload = row.get("payload", {})
     if payload.get("role") == "user":
         text = "".join(c.get("text", "") for c in payload.get("content", []))
         match = re.search(r"(?:WARM-[A-Za-z0-9]+-\d+|WAKE-[A-Za-z0-9]+)", text)
@@ -235,7 +243,7 @@ def codex_record(state, row):
             error = f"native final answer omitted DONE-{marker}: {text[:240]}"
         elif marker.startswith("WARM-") and not state.get("tool_ok"):
             error = f"{marker} has no successful native file-hash tool result"
-        state.setdefault("outcomes", {})[marker] = error
+        state["pending_outcome"] = {"marker": marker, "error": error}
 
 
 def codex_completed(name, marker):

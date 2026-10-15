@@ -57,9 +57,21 @@ describe('real Luna load and swap tuning', () => {
   });
 
   const nativeOutcome = (rows: unknown[]) => py(DRIVER,
-    '(lambda s: ([m.codex_record(s, r) for r in inp], s)[1])({"expected_sha256": "abc123"})', rows);
+    '(lambda s: ([m.codex_record(s, r) for r in inp], s)[1])({"expected_sha256": "abc123"})', rows.flatMap((row: any) =>
+      row.payload?.phase === 'final_answer' ? [row, { type: 'event_msg', payload: { type: 'task_complete' } }] : [row]));
   const turn = (marker: string) => ({ type: 'response_item', payload: { role: 'user', content: [{ type: 'input_text', text: `Dummy task ${marker}` }] } });
   const final = (text: string) => ({ type: 'response_item', payload: { role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text }] } });
+
+  it('holds a final answer until native task settlement before admitting the next prompt', () => {
+    const rows = [turn('WAKE-none1a1'), final('DONE-WAKE-none1a1')];
+    const expr = '(lambda s: ([m.codex_record(s, r) for r in inp], s)[1])({})';
+    const pending = py(DRIVER, expr, rows);
+    expect(pending.outcomes).toBeUndefined();
+    expect(pending.pending_outcome).toEqual({ marker: 'WAKE-none1a1', error: null });
+    const settled = py(DRIVER, expr, [...rows, { type: 'event_msg', payload: { type: 'task_complete' } }]);
+    expect(settled.outcomes).toEqual({ 'WAKE-none1a1': null });
+    expect(settled.pending_outcome).toBeUndefined();
+  });
 
   it('rejects the observed DONE after bwrap failure and a final refusal without waiting five minutes', () => {
     const rows = [turn('WARM-a1-0'), { type: 'response_item', payload: { type: 'custom_tool_call_output', output: [{ type: 'input_text', text: 'bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted' }] } }];
