@@ -10,12 +10,17 @@
  */
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createServer, Socket } from 'node:net';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import postgres from 'postgres';
-import EmbeddedPostgres from 'embedded-postgres';
 import { startEmbeddedPostgresServer } from '@papercusp/embedded-postgres-server';
+
+// A workspace-local install can give the server its own embedded-postgres copy.
+// Inject failures into that exact constructor, not the root test dependency.
+const serverRequire = createRequire(import.meta.resolve('@papercusp/embedded-postgres-server'));
+const { default: EmbeddedPostgres } = await import(serverRequire.resolve('embedded-postgres'));
 
 const cleanups: Array<() => Promise<unknown>> = [];
 
@@ -141,6 +146,7 @@ describe('embedded-PG postmaster supervision (WI-10003688)', () => {
     const stop = vi.spyOn(EmbeddedPostgres.prototype, 'stop').mockRejectedValueOnce(cause);
     try {
       await expect(handle.stop()).rejects.toBe(cause);
+      expect(stop).toHaveBeenCalledOnce();
       expect(handle.health()).toMatchObject({ state: 'stopped' });
       expect(isAlive(pid)).toBe(true);
       expect(await selectOne(port, handle.password)).toBe(true);
