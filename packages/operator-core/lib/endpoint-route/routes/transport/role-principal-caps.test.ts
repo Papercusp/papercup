@@ -24,6 +24,16 @@ function fakeTx(rows: Array<{ capabilities: unknown }>): Sql {
 }
 
 describe('loadRoleCapabilities', () => {
+  test('judge can reproduce autoloop status only through its read capability', async () => {
+    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+    const { default: status } = await import('../../../agent-tools/autoloop/status.js');
+
+    expect(status.agentRoles).toContain('judge');
+    expect(status.capability).toBe('autoloop:read');
+    expect(caps.has('autoloop:read')).toBe(true);
+    expect(caps.has('autoloop:write')).toBe(false);
+  });
+
   test.each(['papercup', 'papercup-deep'])('%s can read the public manual without receiving a docs write grant', async (role) => {
     const caps = await loadRoleCapabilities(fakeTx([]), 'ws', role);
     expect(caps.has('docs:read')).toBe(true);
@@ -313,6 +323,7 @@ describe('loadRoleCapabilities', () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
       const [
         { default: docsGet },
+        { default: getTemplateData },
         { default: reportsGet },
         { default: pgQuery },
         { default: pgMutate },
@@ -320,6 +331,7 @@ describe('loadRoleCapabilities', () => {
         { default: lspApply },
       ] = await Promise.all([
         import('../../../agent-tools/docs/get'),
+        import('../../../agent-tools/plans/get-template-data'),
         import('../../../agent-tools/reports/get'),
         import('../../../agent-tools/dev/pg_query'),
         import('../../../agent-tools/dev/pg_mutate'),
@@ -330,6 +342,9 @@ describe('loadRoleCapabilities', () => {
       expect(docsGet.agentRoles).toContain('judge');
       expect(docsGet.capability).toBe('docs:read');
       expect(caps.has(docsGet.capability as string)).toBe(true);
+      expect(getTemplateData.agentRoles).toContain('judge');
+      expect(getTemplateData.capability).toBe('plans:read');
+      expect(caps.has(getTemplateData.capability as string)).toBe(true);
       expect(reportsGet.agentRoles).toContain('judge');
       expect(reportsGet.capability).toBe('reports:read');
       expect(caps.has('reports:read')).toBe(true);

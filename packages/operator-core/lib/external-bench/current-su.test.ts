@@ -53,7 +53,46 @@ describe('source-bound current benchmark cost', () => {
     expect(result).toMatchObject({ tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, tokensCacheWrite: 0, turns: 1, costUsdMeasurementMissing: false });
     expect(result.costUsd).toBeCloseTo(0.00011, 10);
     expect(result.armMeta).toMatchObject({ nativeCostAccounting: { basis: 'frozen-normalized-native-source',
-      normalizedCostUsd: result.costUsd, billedCostUsd: 0.002, billedKnownSubtotalUsd: 0.002, missingSources: 0, missingBills: 0 } });
+      normalizedCostUsd: result.costUsd, billedCostUsd: 0.002, billedKnownSubtotalUsd: 0.002, missingSources: 0, missingBills: 0,
+      sources: [{ nativeSessionId: 'native-cost-1', sourceSha256: f.usage.sourceSha256, sourceComplete: true,
+        usageEventKeys: f.usage.events.map(event => event.usageEventKey), nativeTurnIds: ['turn-cost-1'],
+        tokensIn: 80, tokensOut: 10, tokensCacheRead: 20, tokensCacheWrite: 0, turns: 1,
+        normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd: 0.002, billedCostUsd: 0.002 }] } });
+  });
+  it('retains separately metered fresh-session rows across cumulative reads', async () => {
+    const f = costFixture(), first = await f.read();
+    const secondUsage = structuredClone(f.usage);
+    secondUsage.sourceSha256 = 'b'.repeat(64);
+    secondUsage.nativeTurnIds = ['turn-cost-2'];
+    secondUsage.events = secondUsage.events.map(event => ({ ...event, usageEventKey: event.usageEventKey + '/second',
+      turnId: 'turn-cost-2', usage: { ...event.usage, inputTokens: 160, outputTokens: 20, cacheReadTokens: 40 } }));
+    f.runtime.sessions.push({ nativeSessionId: 'native-cost-2', usage: secondUsage });
+    vi.mocked(f.ports.readBilled).mockImplementation(async (_participant, id) =>
+      ({ knownSubtotalUsd: id === 'native-cost-2' ? 0.005 : 0.002, complete: true }));
+    const second = await f.read();
+    expect(first).toMatchObject({ tokensIn: 80, tokensOut: 10, turns: 1 });
+    expect(second).toMatchObject({ tokensIn: 240, tokensOut: 30, tokensCacheRead: 60, turns: 2,
+      armMeta: { nativeCostAccounting: { billedCostUsd: 0.007, sources: [
+        { nativeSessionId: 'native-cost-1', tokensIn: 80, tokensOut: 10, billedCostUsd: 0.002 },
+        { nativeSessionId: 'native-cost-2', sourceSha256: 'b'.repeat(64), sourceComplete: true,
+          usageEventKeys: secondUsage.events.map(event => event.usageEventKey), nativeTurnIds: ['turn-cost-2'],
+          tokensIn: 160, tokensOut: 20, tokensCacheRead: 40, turns: 1,
+          normalizedCostUsd: expect.closeTo(first.costUsd * 2, 10), billedCostUsd: 0.005 },
+      ] } } });
+    // The retained first read must not acquire the next session's identities.
+    expect(first.armMeta).toMatchObject({ nativeCostAccounting: { sources: [
+      { nativeSessionId: 'native-cost-1', nativeTurnIds: ['turn-cost-1'] },
+    ] } });
+  });
+  it.each(['bill', 'attempts', 'census'] as const)('does not certify a session bill from incomplete %s evidence', async missing => {
+    const f = costFixture();
+    if (missing === 'bill') vi.mocked(f.ports.readBilled).mockResolvedValue({ knownSubtotalUsd: 0.001, complete: false });
+    if (missing === 'attempts') vi.mocked(f.ports.readAttemptAccountingComplete!).mockResolvedValue(false);
+    if (missing === 'census') f.runtime.complete = false;
+    expect(await f.read()).toMatchObject({ costUsdMeasurementMissing: true, armMeta: { nativeCostAccounting: {
+      billedCostUsd: null, sources: [{ nativeSessionId: 'native-cost-1', tokensIn: 80, tokensOut: 10,
+        billedKnownSubtotalUsd: missing === 'bill' ? 0.001 : 0.002, billedCostUsd: null }],
+    } } });
   });
   it('preserves a known billed subtotal without treating an incomplete provider bill as complete', async () => {
     const f = costFixture(); vi.mocked(f.ports.readBilled).mockResolvedValue({ knownSubtotalUsd: 0.001, complete: false });

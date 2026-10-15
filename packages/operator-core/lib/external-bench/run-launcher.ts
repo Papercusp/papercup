@@ -62,10 +62,10 @@ import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
-  currentBenchCodexRoute,
+  currentBenchCodexRoute, requireCurrentBenchHostBinding,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation,
-  type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions } from './current-su';
+  type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchAccountingBinding } from './current-su';
 import { getLearningSpendPositions, registerLearningLoop, type LearningReservationResourceBudget } from '../learning-governor/store';
 import type { FrontierSweNativeAssignment } from './frontier-swe-launch-adapter';
 import type { FrontierSweEnvHandle } from './frontier-swe-seam';
@@ -664,7 +664,7 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
 
 /** The shared production assignment authority used by host and in-container native runs. */
 export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): Promise<
-  Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls'>> {
+  Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls' | 'readRequestCensus'>> {
   const { options, protocol, task, context, scope, resources, loopId } = input;
   const capture = await currentBenchTaskProviderCapture(input);
   const currentArm = protocol.arms.find(arm => arm.id === options.armId)!;
@@ -688,13 +688,33 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): 
       workspaceId: options.workspaceId, gatewayBaseUrl: host.nativeGateway.baseURL }, undefined, host);
     const observations = { ...host, observeIdentity,
       admit: async () => ({ admitted: !options.signal?.aborted, receiptRef: `governor:${options.workspaceId}/${loopId}#${options.preregistration.preregHash}` }) };
-    return { options, observations, stop, readModelCalls: () => readCurrentBenchTaskModelCalls(input, capture) };
+    const readRequestCensus = async () => {
+      // Session accounting inherits the existing controller-issued lifetime.
+      // A copied gateway or a stopped assignment cannot issue fresh evidence.
+      requireCurrentBenchHostBinding(observations, options);
+      const census = await readCurrentBenchTaskRequestCensus(input, capture);
+      requireCurrentBenchHostBinding(observations, options);
+      return census;
+    };
+    return { options, observations, stop, readRequestCensus,
+      readModelCalls: async () => (await readRequestCensus()).requests.length };
   } catch (error) { await stop(); throw error; }
 }
 
-/** Count admitted native requests from the complete governor census, bound to private host captures. */
-export async function readCurrentBenchTaskModelCalls(input: CurrentTaskInput,
-  capture: Pick<Awaited<ReturnType<typeof currentBenchTaskProviderCapture>>, 'readCapture'>): Promise<number> {
+/** Complete reservation-ledger coverage, not proof that no inference bypassed
+ * the gateway. These receipts measure usage; they grant no session/spend authority. */
+export interface CurrentBenchTaskRequestCensus {
+  readonly binding: Readonly<CurrentBenchAccountingBinding>;
+  readonly populationSha256: string;
+  readonly requests: readonly Readonly<{
+    reservationId: string; nativeSessionId: string; nativeTurnId: string; bodySha256: string;
+  }>[];
+}
+
+/** Retain the complete host-captured request population so repeated sessions
+ * can measure a delta rather than summing successive cumulative call counts. */
+export async function readCurrentBenchTaskRequestCensus(input: CurrentTaskInput,
+  capture: Pick<Awaited<ReturnType<typeof currentBenchTaskProviderCapture>>, 'readCapture'>): Promise<CurrentBenchTaskRequestCensus> {
   const { options, scope, loopId, task } = input;
   const { sql, ws } = resolveDb(scope);
   if (ws !== options.workspaceId) throw new Error('Native request census workspace differs from its assignment.');
@@ -703,21 +723,53 @@ export async function readCurrentBenchTaskModelCalls(input: CurrentTaskInput,
     { workspaceId: options.workspaceId, loopId, includeReservations: true });
   if (!census || census.status !== 'complete') throw new Error('Native model request census is unavailable.');
   const ids = new Set<string>();
-  let calls = 0;
+  const requests: CurrentBenchTaskRequestCensus['requests'][number][] = [];
+  const binding = Object.freeze({ workspaceId: options.workspaceId, loopId, runId: options.runId,
+    preregHash: options.preregistration.preregHash, assignmentId });
   for (const row of census.reservations) {
     if (row.workspaceId !== options.workspaceId || row.loopId !== loopId || ids.has(row.id))
       throw new Error('Native model request census has duplicate or foreign reservations.');
     ids.add(row.id);
     if (row.resources?.armId !== assignmentId) continue;
     const note = JSON.parse(row.note ?? 'null'), attempt = note?.nativeGatewayAttempt;
+    const captured = capture.readCapture(row.id);
     if (!attempt || attempt.attemptId !== row.id || attempt.armId !== assignmentId ||
-        attempt.manifestSha256 !== options.preregistration.preregHash || !capture.readCapture(row.id))
+        attempt.manifestSha256 !== options.preregistration.preregHash || !captured ||
+        canonicalJson(captured.accountingBinding) !== canonicalJson(binding) ||
+        attempt.nativeSessionId !== captured.nativeSessionId || attempt.nativeTurnId !== captured.nativeTurnId ||
+        attempt.bodySha256 !== captured.bodySha256)
       throw new Error('Native model request census differs from its frozen input capture.');
     // Each reservation is one admitted native model request. Include retries,
     // failed responses and refused sends; do not infer calls from agent turns.
-    calls++;
+    requests.push(Object.freeze({ reservationId: row.id, nativeSessionId: captured.nativeSessionId,
+      nativeTurnId: captured.nativeTurnId, bodySha256: captured.bodySha256 }));
   }
-  return calls;
+  return Object.freeze({ binding, populationSha256: census.populationSha256,
+    requests: Object.freeze(requests.sort((a, b) => a.reservationId.localeCompare(b.reservationId))) });
+}
+
+/** A fresh session may add only its own requests. Earlier reservations must
+ * remain present and retain their native identity, including incomplete sends.
+ * Ledger settlement may change between reads; request identity may not. */
+export function currentBenchSessionRequestDelta(before: CurrentBenchTaskRequestCensus,
+  after: CurrentBenchTaskRequestCensus, nativeSessionId: string): { modelCalls: number; reservationIds: string[] } {
+  const invalid = () => new Error('Fresh native session request census is foreign, reused or non-monotone.');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeSessionId) ||
+      canonicalJson(before.binding) !== canonicalJson(after.binding)) throw invalid();
+  const previous = new Map(before.requests.map(row => [row.reservationId, row]));
+  const current = new Map(after.requests.map(row => [row.reservationId, row]));
+  if (previous.size !== before.requests.length || current.size !== after.requests.length ||
+      before.requests.some(row => row.nativeSessionId === nativeSessionId ||
+        canonicalJson(current.get(row.reservationId) ?? null) !== canonicalJson(row))) throw invalid();
+  const added = after.requests.filter(row => !previous.has(row.reservationId));
+  if (added.some(row => row.nativeSessionId !== nativeSessionId)) throw invalid();
+  return { modelCalls: added.length, reservationIds: added.map(row => row.reservationId).sort() };
+}
+
+/** Count admitted native requests, including failed sends, from that same census. */
+export async function readCurrentBenchTaskModelCalls(input: CurrentTaskInput,
+  capture: Pick<Awaited<ReturnType<typeof currentBenchTaskProviderCapture>>, 'readCapture'>): Promise<number> {
+  return (await readCurrentBenchTaskRequestCensus(input, capture)).requests.length;
 }
 
 async function liveCurrentTask(input: CurrentTaskInput) {

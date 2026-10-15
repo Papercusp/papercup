@@ -22,7 +22,7 @@ import type { Sql } from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { qualifyingScoreOf, snapshotCandidateQualifies } from './relevance-router';
-import { consultAmendmentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
+import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { gradingCascadeMetaFromRouting, gradingCascadeWakeCopy, sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy } from './grading-cascade';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
@@ -192,7 +192,7 @@ export type CascadeWakeCopyWriter = (ctx: CascadeWakeContext) => CascadeWakeCopy
  * and the typed-reply protocol. */
 export function cascadeWakeBody(input: CascadeWakeContext): string {
   const { next } = input;
-  const reviewCopy = consultAmendmentReviewContext(input.policy);
+  const reviewCopy = consultCurrentReviewContext(input.policy);
   const why =
     next.via === 'minimum'
       ? `Selected as BEST-AVAILABLE reviewer (relevance ${qualifyingScoreOf(next).toFixed(2)}, sim ${next.similarity.toFixed(2)} — BELOW the relevance floor). This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context.`

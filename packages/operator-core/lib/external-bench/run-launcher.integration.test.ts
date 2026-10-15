@@ -34,6 +34,8 @@ import {
   _resetActiveRunsForTests,
   currentBenchTaskProviderCapture,
   readCurrentBenchTaskModelCalls,
+  readCurrentBenchTaskRequestCensus,
+  currentBenchSessionRequestDelta,
   freezeCurrentBenchTaskProviderReservation,
   type CurrentTaskInput,
 } from './run-launcher';
@@ -209,6 +211,42 @@ describe('current provider capture host checkpoint', () => {
     await sql`UPDATE harness_shared.learning_spend_reservations SET note = '{}' WHERE id = ${attempt.attemptId}`;
     await expect(readCurrentBenchTaskModelCalls(f.input, f.capture)).rejects.toThrow(/frozen input capture/);
   });
+  it('counts fresh-session deltas without counting the first session again, retaining incomplete attempts', async () => {
+    const f = await fixture(), first = f.request(), second = f.request();
+    const before = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    await recordedReservation(f, first);
+    const middle = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    await recordedReservation(f, second, { settled: false, completed: false });
+    const after = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    expect(currentBenchSessionRequestDelta(before, middle, first.nativeSessionId!)).toEqual({
+      modelCalls: 1, reservationIds: [first.attemptId] });
+    expect(currentBenchSessionRequestDelta(middle, after, second.nativeSessionId!)).toEqual({
+      modelCalls: 1, reservationIds: [second.attemptId] });
+    expect(await readCurrentBenchTaskModelCalls(f.input, f.capture)).toBe(2);
+    expect(Object.isFrozen(after.requests[0])).toBe(true);
+    expect(Object.isFrozen(after.requests)).toBe(true);
+    expect(Object.isFrozen(after.binding)).toBe(true);
+  });
+  it('refuses session replay, late requests from an earlier session, and a shrinking census', async () => {
+    const f = await fixture(), first = f.request(), second = f.request();
+    const before = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    await recordedReservation(f, first);
+    const after = await readCurrentBenchTaskRequestCensus(f.input, f.capture);
+    expect(() => currentBenchSessionRequestDelta(after, after, first.nativeSessionId!)).toThrow(/reused/);
+    expect(() => currentBenchSessionRequestDelta(before, after, second.nativeSessionId!)).toThrow(/foreign/);
+    expect(() => currentBenchSessionRequestDelta(after, before, second.nativeSessionId!)).toThrow(/non-monotone/);
+    const foreign = { ...f.input, options: { ...f.input.options, armId: 'baseline' } };
+    const other = await readCurrentBenchTaskRequestCensus(foreign, f.capture);
+    expect(() => currentBenchSessionRequestDelta(before, other, second.nativeSessionId!)).toThrow(/foreign/);
+  });
+  it.each(['nativeSessionId', 'nativeTurnId', 'bodySha256'] as const)(
+    'refuses %s drift between the complete ledger and private capture', async field => {
+      const f = await fixture(), attempt = f.request(); await recordedReservation(f, attempt);
+      await sql`UPDATE harness_shared.learning_spend_reservations SET note = jsonb_set(note::jsonb,
+        ${['nativeGatewayAttempt', field]}::text[], ${JSON.stringify(field === 'bodySha256' ? 'e'.repeat(64) : randomUUID())}::text::jsonb)::text
+        WHERE id = ${attempt.attemptId}`;
+      await expect(readCurrentBenchTaskRequestCensus(f.input, f.capture)).rejects.toThrow(/frozen input capture/);
+    });
   it('settled reservation freezes exact final note bytes in the existing checkpoint after checkout cleanup', async () => {
     const f = await fixture(), attempt = f.request(); await recordedReservation(f, attempt);
     await sql`UPDATE harness_shared.bench_runs SET status = 'done' WHERE id = ${f.input.hostRunId} AND workspace_id = ${WS}`;

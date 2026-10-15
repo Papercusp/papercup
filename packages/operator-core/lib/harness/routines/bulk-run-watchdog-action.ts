@@ -34,6 +34,8 @@ export const BULK_RUN_WATCHDOG_INTERVAL_SEC = 300;
 export const BULK_RUN_WATCHDOG_ACTOR = 'system:bulk-run-watchdog';
 
 registerSystemAction('bulk-run-watchdog', async (ctx) => {
+  let observed = false;
+  try {
   const [
     { classifyRunLiveness, readWatchdogRunRows, reconcileRunCounters, strandStaleRun },
     { runBulkRunWatchdog },
@@ -89,7 +91,10 @@ registerSystemAction('bulk-run-watchdog', async (ctx) => {
     strandRun: ({ runId, reason }) => strandStaleRun({ runId, reason }),
     reconcileCounters: ({ runId }) => reconcileRunCounters(runId),
     note: (line) => notes.push(line),
-    observe: (decision) => observeFallback('bulk-run-watchdog', decision, { workspaceId: ctx.workspaceId }),
+    observe: (decision) => {
+      observed = true;
+      observeFallback('bulk-run-watchdog', decision, { workspaceId: ctx.workspaceId });
+    },
   });
 
   if (result.stranded.length || result.deferred.length || result.countersReconciled.length || result.errors.length) {
@@ -103,5 +108,12 @@ registerSystemAction('bulk-run-watchdog', async (ctx) => {
     for (const e of result.errors) {
       console.warn(`[bulk-run-watchdog] ${e.runId}: ${e.error}`);
     }
+  }
+  } catch (error) {
+    // Include failures before the core starts, without counting its census error twice.
+    if (!observed) observeFallback('bulk-run-watchdog',
+      { eligible: 1, applied: 0, reason: 'routine-failed', scope: 'sweep' },
+      { workspaceId: ctx.workspaceId });
+    throw error;
   }
 });

@@ -147,7 +147,10 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
     const participants = await io.readParticipants();
     let complete = participants.length > 0 && participants.length < 1000;
     const ids = new Set<string>(), bindings = new Set<string>(), homes = new Map<string, string>(), eventKeys = new Set<string>(), nativeSessions = new Set<string>();
-    const sources: { nativeSessionId: string; sourceSha256: string }[] = [];
+    const sources: { nativeSessionId: string; sourceSha256: string; sourceComplete: boolean;
+      usageEventKeys: string[]; nativeTurnIds: string[]; tokensIn: number; tokensOut: number;
+      tokensCacheRead: number; tokensCacheWrite: number; turns: number; normalizedCostUsd: number;
+      billedKnownSubtotalUsd: number | null; billedCostUsd: number | null }[] = [];
     const accountingSources: NativeAccountingSource[] = [];
     let missingSources = 0, missingBills = 0, billedKnownSubtotalUsd = 0;
     for (const participant of participants) {
@@ -182,17 +185,28 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
           for (const event of usage.events) priced += priceRun({ tokensIn: event.usage.inputTokens, tokensOut: event.usage.outputTokens,
             tokensCacheRead: event.usage.cacheReadTokens, tokensCacheWrite: event.usage.cacheCreationTokens }, event.model, table);
         } catch { missingSources++; complete = false; continue; }
+        const session = { nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256,
+          sourceComplete: source.usage.ok, usageEventKeys: usage.events.map(event => event.usageEventKey),
+          nativeTurnIds: [...usage.nativeTurnIds], tokensIn: 0, tokensOut: 0, tokensCacheRead: 0,
+          tokensCacheWrite: 0, turns: usage.nativeTurnIds.length, normalizedCostUsd: priced,
+          billedKnownSubtotalUsd: null as number | null, billedCostUsd: null as number | null };
         for (const event of usage.events) {
           eventKeys.add(event.usageEventKey); result.tokensIn += event.usage.inputTokens; result.tokensOut += event.usage.outputTokens;
           result.tokensCacheRead! += event.usage.cacheReadTokens; result.tokensCacheWrite! += event.usage.cacheCreationTokens;
+          session.tokensIn += event.usage.inputTokens; session.tokensOut += event.usage.outputTokens;
+          session.tokensCacheRead += event.usage.cacheReadTokens; session.tokensCacheWrite += event.usage.cacheCreationTokens;
         }
         result.turns += usage.nativeTurnIds.length; result.costUsd += priced;
-        sources.push({ nativeSessionId: source.nativeSessionId, sourceSha256: usage.sourceSha256 });
+        sources.push(session);
         const billed = await io.readBilled(participant, source.nativeSessionId, usage).catch(() => ({ knownSubtotalUsd: 0, complete: false }));
         if (source.usage.ok) accountingSources.push({ participant, nativeSessionId: source.nativeSessionId, usage,
           billed: { ...billed, ...('samples' in billed && billed.samples ? { samples: billed.samples.map(sample => ({ ...sample })) } : {}) } });
         if (!Number.isFinite(billed.knownSubtotalUsd) || billed.knownSubtotalUsd < 0) missingBills++;
-        else { billedKnownSubtotalUsd += billed.knownSubtotalUsd; if (!billed.complete) missingBills++; }
+        else {
+          session.billedKnownSubtotalUsd = billed.knownSubtotalUsd;
+          if (source.usage.ok && billed.complete) session.billedCostUsd = billed.knownSubtotalUsd;
+          billedKnownSubtotalUsd += billed.knownSubtotalUsd; if (!billed.complete) missingBills++;
+        }
       }
     }
     let participantCensusStable = canonicalJson(participants) === canonicalJson(await io.readParticipants());
@@ -208,6 +222,10 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
       new Set(participants.map(p => p.taskId)).size === participants.length && !missingTimingTaskIds.length
       ? concurrencyTimelineFromIntervals(participants.map(p => ({ startedAtMs: p.startedAtMs!, endedAtMs: p.endedAtMs! }))) : null;
     result.costUsdMeasurementMissing = !complete || missingSources > 0 || missingBills > 0 || !attemptsComplete;
+    // Fresh-session controls consume these source-bound rows, never subtract
+    // two cumulative agent totals. A partial census or unreconciled attempt
+    // population cannot certify even one session's bill as complete.
+    if (result.costUsdMeasurementMissing) for (const source of sources) source.billedCostUsd = null;
     result.armMeta = { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: protocol.priceSchedule.version,
       normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd,
       billedCostUsd: complete && !missingBills && attemptsComplete ? billedKnownSubtotalUsd : null,

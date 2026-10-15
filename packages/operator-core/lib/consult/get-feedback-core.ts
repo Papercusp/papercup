@@ -39,7 +39,7 @@ import type { SessionState } from '../agent-tools/coordination/presence-wakeabil
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
 import { selectConsultEvidenceSource } from './consult-dispatch';
-import { consultAmendmentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
+import { consultCurrentReviewContext, consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
 import { proseProfilePredicateSql } from '../search/prose-vector-dims';
 
@@ -1587,7 +1587,7 @@ export async function getFeedbackCore(
   const briefFor = (candidate: RoutingCandidate, via: SelectionVia | null) => {
     // consult-backed-parking D-013: a decision-review cascade uses the default consult copy.
     const auditCopy = req.cascade?.flavor === 'grading-integrity' ? sourceAuditWakeCopy(req.cascade, opened.conversation_id) : null;
-    const reviewCopy = consultAmendmentReviewContext(req.policy);
+    const reviewCopy = consultCurrentReviewContext(req.policy);
     return {
       summary:
         auditCopy?.summary ??

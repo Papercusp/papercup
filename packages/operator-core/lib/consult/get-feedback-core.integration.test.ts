@@ -1250,10 +1250,13 @@ describe('recoverable interactive feedback requests', () => {
 });
 
 describe('getFeedbackCore — routed', () => {
-  it.each(['floor', 'minimum', 'lexical'] as const)(
-    'delivers the complete amendment request on the initial %s route',
-    async (selection) => {
-      const policy = 'acceptance-bar-amendment-review';
+  it.each([
+    ['acceptance-bar-amendment-review', 'floor'], ['acceptance-bar-amendment-review', 'minimum'],
+    ['acceptance-bar-amendment-review', 'lexical'], ['rubric-vetting', 'floor'],
+    ['rubric-vetting', 'minimum'], ['rubric-vetting', 'lexical'],
+  ] as const)(
+    'delivers the complete current review request for %s on the initial %s route',
+    async (policy, selection) => {
       const question = 'Review the new acceptance amendment. Historical cleanup is background only.\n' +
         '{"requirement":{"key":"r-006","verification":{"check":{"kind":"tests","files":["soak.test.ts"]}}}}\n' +
         'Preserve the deployed literal 24-hour soak. Approval: thread-post:12345.';
@@ -1269,7 +1272,8 @@ describe('getFeedbackCore — routed', () => {
       const result = asOk(await getFeedbackCore({ ...baseReq, question, policy, archiveFloor: 2 }, fixture.deps));
       expect(fixture.reached).toHaveLength(1);
       expect(fixture.reached[0].body).toContain(question);
-      expect(fixture.reached[0].body).toContain('CURRENT AMENDMENT');
+      expect(fixture.reached[0].body).toContain(policy === 'rubric-vetting' ? 'CURRENT RUBRIC' : 'CURRENT AMENDMENT');
+      expect(fixture.reached[0].body).toContain('results[0].conversation.body');
       expect(fixture.reached[0].body).toContain('do not decline solely');
       expect(fixture.reached[0].body).not.toContain('Answer FROM the transcript');
       expect((await stateRow(result.conversation_id)).routing).toMatchObject({ policy });

@@ -2004,19 +2004,23 @@ export function consultDispatchBrief(input: {
   const provenance =
     input.operation === 'fork'
       ? `You are a FORK of ${input.sourceOwnerId}'s session: their history is above, and you are a NEW ` +
-        `identity running alongside them. They were NOT notified and must not be — you answer from the ` +
-        `transcript you inherited.`
+        `identity running alongside them. They were NOT notified and must not be. The inherited ` +
+        `transcript is historical evidence.`
       : input.operation === 'brief'
       ? `You are a FRESH answering session, briefed with turns CITED from ${input.sourceOwnerId}'s transcript. ` +
-        `You did NOT inherit or continue their session: you have only the quoted turns below, as evidence. ` +
+        `You did NOT inherit or continue their session: the quoted turns below are historical evidence. ` +
         `You are a NEW identity; their claims, locks, modes and work stay with them. They were NOT notified ` +
-        `and must not be. Answer from the cited turns, and say so when they do not cover the question.`
+        `and must not be.`
       : `You are an isolated answering session using ${input.sourceOwnerId}'s exact transcript: their history ` +
         `was carried across as evidence. You are a NEW identity; their claims, locks, modes and work stay ` +
-        `with them. They were NOT notified and must not be. Answer from the transcript.`;
+        `with them. They were NOT notified and must not be.`;
   return (
     `🧭 CONSULT — you were launched to answer ONE question, on consult conversation ${input.conversationId}.\n` +
     `${provenance}\n\n` +
+    `The request below sets the review subject and evidence standard. Transcript provenance does not ` +
+    `restrict a current-subject or first-principles review to older history. Read the complete request ` +
+    `and cited evidence, distinguish what you verified from what you cannot ground, and never treat ` +
+    `an unrelated transcript as proof of the current subject.\n\n` +
     // P-004 answer-only posture. The brief is the ONLY thing that shapes this
     // session's behaviour — it boots with a fresh identity, no fleet, no loop
     // and no claims — so the posture has to be stated here or the inherited

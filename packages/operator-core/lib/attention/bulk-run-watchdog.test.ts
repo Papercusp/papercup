@@ -218,7 +218,10 @@ describe('runBulkRunWatchdog', () => {
       { eligible: 1, applied: 0, reason: 'effect-failed', scope: 'sweep' },
       { eligible: 1, applied: 0, reason: 'census-failed', scope: 'sweep' },
     ]);
-    expect(observeFallback).toHaveBeenCalledWith('bulk-run-watchdog', expect.objectContaining({ eligible: 1 }));
+    vi.mocked(observeFallback).mockClear();
+    await runBulkRunWatchdog(deps([]));
+    expect(observeFallback).toHaveBeenCalledExactlyOnceWith('bulk-run-watchdog',
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' });
   });
 });
 

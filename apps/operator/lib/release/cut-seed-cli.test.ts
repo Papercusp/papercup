@@ -1036,6 +1036,23 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     expect(sleep).toHaveBeenCalledTimes(2);
   });
 
+  it('refuses a quarantine that appears during a changing backlog instead of waiting forever', async () => {
+    const states = [
+      { undrained: 5, quarantined: 0, first_quarantined_id: null },
+      { undrained: 9, quarantined: 1, first_quarantined_id: '42' },
+    ];
+    let calls = 0;
+    const pg = vi.fn(async (strings: TemplateStringsArray) => {
+      expect(strings.join('?')).toContain("to_jsonb(o.*) ->> 'quarantined_at'");
+      return [states[Math.min(calls++, states.length - 1)]];
+    }) as never;
+    const sleep = vi.fn(async () => {});
+    await expect(waitForOperatorDrain({ ...base, pg, sleep, warn: () => {} }))
+      .rejects.toThrow(/1 QUARANTINED.*first id=42.*waiting for zero cannot complete/);
+    expect(calls).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
   it('resets the stall clock when an external refill raises the backlog', async () => {
     // A second writer can refill rows after the first cut has reached a low-water mark.
     // The refill is new progress to wait on; the old low-water-only detector would throw
@@ -1211,9 +1228,40 @@ describe('openSourceStoreForCut (WI-4487 — readOnly is a point-in-time snapsho
     hive: 'papercusp',
     sparse: false,
     wantRefresh: true,
-    pg: {} as never,
+    pg: (async () => []) as never,
     warn: () => {},
   };
+
+  it('refuses existing quarantined rows BEFORE backfill, drain, or opening a read-only snapshot', async () => {
+    const { calls, openStore } = harness({ locked: true });
+    const backfillImpl = vi.fn();
+    const waitImpl = vi.fn();
+    const pg = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      expect(sql).toContain('drained_at IS NULL');
+      expect(sql).toContain("to_jsonb(o.*) ->> 'quarantined_at'");
+      expect(values).toEqual(['ws', 'papercusp']);
+      return [{ quarantined: 2, first_quarantined_id: '41' }];
+    });
+    await expect(openSourceStoreForCut({
+      ...base, pg: pg as never, openStore,
+      backfillImpl: backfillImpl as never, waitImpl: waitImpl as never,
+    })).rejects.toThrow(/2 QUARANTINED.*first id=41.*refusing to omit them/);
+    expect(backfillImpl).not.toHaveBeenCalled();
+    expect(waitImpl).not.toHaveBeenCalled();
+    expect(calls).toEqual(['open:rw']);
+  });
+
+  it('propagates quarantine preflight read failures without enqueueing a backfill', async () => {
+    const { openStore } = harness({ locked: true });
+    const backfillImpl = vi.fn();
+    await expect(openSourceStoreForCut({
+      ...base, openStore,
+      pg: (async () => { throw new Error('quarantine inspection unavailable'); }) as never,
+      backfillImpl: backfillImpl as never,
+    })).rejects.toThrow('quarantine inspection unavailable');
+    expect(backfillImpl).not.toHaveBeenCalled();
+  });
 
   it('on a LIVE-operator box opens read-only only AFTER the drain completes — the seed must not be a pre-drain snapshot', async () => {
     const { calls, openStore } = harness({ locked: true });

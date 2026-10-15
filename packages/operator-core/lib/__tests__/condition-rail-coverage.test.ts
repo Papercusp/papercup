@@ -9,6 +9,15 @@ import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradat
 import { original, execute } from '../degradation/host-startup-migration-cases';
 
 const manifest = JSON.parse(readFileSync(fileURLToPath(new URL('../../../../docs/evidence/condition-rail-inventory-seed-2026-10-11.json', import.meta.url)), 'utf8'));
+let currentTree: ReturnType<typeof inventoryTree> | undefined;
+function currentInventory(): ReturnType<typeof inventoryTree> {
+  if (currentTree) return currentTree;
+  const startedAt = Date.now();
+  console.info('[condition-rail-coverage] current-tree census started');
+  currentTree = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+  console.info(`[condition-rail-coverage] current-tree census finished in ${Date.now() - startedAt}ms`);
+  return currentTree;
+}
 
 // Some real producers import configuration whose readiness promise reads the
 // operator-state store during module evaluation. Install this dependency seam
@@ -53,7 +62,7 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
     let mechanisms: string[];
     let baselineProblems: string[];
     beforeAll(() => {
-      live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+      live = currentInventory();
       mechanisms = listDegradationMechanisms().map((entry) => entry.mechanism);
       baselineProblems = acceptanceProblems(manifest, live, RAIL_MIGRATION_CASES, mechanisms);
       expect(live.unreadable).toBe(0);
@@ -145,7 +154,7 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
   });
 
   it('retains each implemented P-011, P-013 and P-014 original site identity on the rail', () => {
-    const live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+    const live = currentInventory();
     expect(live.unreadable).toBe(0);
     for (const testCase of RAIL_MIGRATION_CASES.filter((entry) => ['P-011', 'P-013', 'P-014'].includes(entry.item))) {
       for (const id of testCase.rowIds) {

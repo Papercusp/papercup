@@ -262,6 +262,11 @@ describe('automations model', () => {
         outcomeState: "completed",
       },
     });
+    expect(operation?.operation?.handle).toEqual({
+      workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', receiptId: 41,
+      operationId: 'triage-message', specificationRevision: 'a'.repeat(64),
+      target: { kind: 'work-item', id: 'WI-41' },
+    });
     expect(
       buildAutomationActivity(input).find(
         (row) => row.id === "external-run:run-operation",
@@ -319,6 +324,11 @@ describe('automations model', () => {
         outcomeDetail: "Failed · Failed · spec bbbbbbbb",
         outcomeState: "failed",
       },
+    });
+    expect(operation?.operation?.handle).toEqual({
+      workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', receiptId: 42,
+      operationId: 'daily-triage', specificationRevision: 'b'.repeat(64),
+      target: { kind: 'plan', runId: 88, instanceSlug: 'daily-triage@run-88' },
     });
   });
 });

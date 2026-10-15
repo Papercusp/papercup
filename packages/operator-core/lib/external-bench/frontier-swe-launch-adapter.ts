@@ -12,6 +12,7 @@ import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle, type Frontier
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { generationStatusForStopReason, type GenerationBudget, type TaskCheckout } from './types';
 import type { AgentRunOutput, RunAgentInput } from './run-topology';
+import type { CurrentBenchTaskRequestCensus } from './run-launcher';
 import { assertBenchWorkspace } from './bench-workspace';
 
 export interface FrontierSweNativeAssignment {
@@ -21,6 +22,10 @@ export interface FrontierSweNativeAssignment {
   checkout: TaskCheckout;
   /** Exact pre-registered caps. Remaining wall headroom uses options.driveTimeoutMs. */
   generationBudget?: GenerationBudget;
+  /** Complete controller-issued reservation/capture population. Repeated
+   * sessions consume deltas from this value; they never re-sum a cumulative
+   * request count or widen the frozen assignment budget. */
+  readRequestCensus?(): Promise<CurrentBenchTaskRequestCensus>;
   /** Exact native request count from this assignment's accounting ledger, including failed requests. */
   readModelCalls(): Promise<number>;
   stop(): Promise<void>;
@@ -149,7 +154,10 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
         const usage = result.telemetry;
         let modelCalls = 0, measurementError: string | undefined;
         try {
-          modelCalls = await assignment.readModelCalls();
+          if (assignment.readRequestCensus) {
+            const census = await assignment.readRequestCensus();
+            modelCalls = census.requests.length;
+          } else modelCalls = await assignment.readModelCalls();
           if (!Number.isSafeInteger(modelCalls) || modelCalls < 0) throw new Error('FrontierSWE native model-call count is unmeasured.');
         } catch (error) {
           modelCalls = 0; measurementError = error instanceof Error ? error.message : String(error);

@@ -1,12 +1,12 @@
 /** Real request-worker alarm lifecycle in the maintained private operator profile. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { readProcessIdentity } from '../lib/process-identity';
-import { privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { writeSharedSnapshot } from '../lib/derived-reads/shared-snapshot';
 import { createPrivateHealthSnapshot } from './private-http-workspace-preflight';
 import type { AgentStrandHealth } from '../lib/system-health/agent-strand-census';
@@ -59,17 +59,10 @@ async function main() {
   const fingerprint = () => Object.fromEntries(sources.map(path => [path,
     createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
   const sourceBefore = fingerprint();
-  const bundle = join(evidenceDir, 'hono-host.mjs');
   console.log('LIVENESS_ALARM_HTTP_PHASE bundle-start');
-  try {
-    const output = execFileSync('bash', [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', bundle],
-      { cwd: root, env: e, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024 });
-    writeFileSync(join(evidenceDir, 'build.log'), output);
-  } catch (error) {
-    const failure = error as { stdout?: unknown; stderr?: unknown };
-    writeFileSync(join(evidenceDir, 'build.log'), String(failure.stdout ?? '') + String(failure.stderr ?? ''));
-    throw error;
-  }
+  // The outer execution budget is 480s. Reserve 60s for startup and assertions;
+  // only distinct successful build steps can extend the original 240s checkpoint.
+  const { path: bundle } = await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
   const bytes = readFileSync(bundle);
   assert.ok(bytes.includes(Buffer.from('system-health/liveness-alarm.ts')), 'alarm missing from executed artifact');
   assert.ok(bytes.includes(Buffer.from('agentStrandObservation')), 'runtime observation missing from executed artifact');

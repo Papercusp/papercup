@@ -58,6 +58,72 @@ it('preserves the timeout when the final journal append is partial', () => {
   expect(receipt).toMatchObject({ error: { code: 'ETIMEDOUT' }, steps: { active: 'syntax-check', unreadableRows: [2] } });
 });
 
+it('allows a progressing real build beyond its checkpoint and retains its bounded success', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  const result = await buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .25; done; echo bundle > "$3"',
+      '_', common, journal, join(evidenceDir, 'hono-host.mjs')], timeoutMs: 600, maxMs: 2400, pollMs: 20 });
+  expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt).toMatchObject({ status: 0, signal: null, progress: { extensions: expect.any(Number) } });
+  expect(receipt.elapsedMs).toBeGreaterThan(600);
+  expect(receipt.progress.extensions).toBeGreaterThan(0);
+  expect(receipt.elapsedMs).toBeLessThan(2400);
+});
+
+it.each(['logs', 'repeated-step', 'incomplete-step'])('does not renew a stalled build for %s', async noise => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  const command = noise === 'logs' ? 'echo STILL_ALIVE'
+    : noise === 'repeated-step' ? 'bundle_host_run_step same true'
+    : 'printf \'{"at":\' >> "$BUNDLE_HOST_STEP_LOG"';
+  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', `source "$1"; BUNDLE_HOST_STEP_LOG="$2"; bundle_host_run_step same true; while true; do ${command}; sleep .08; done`,
+      '_', common, journal], timeoutMs: 600, maxMs: 2400, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*progress-stalled/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt).toMatchObject({ error: { code: 'ETIMEDOUT' }, watchdog: { completedSteps: 1, reason: 'progress-stalled' } });
+  expect(receipt.elapsedMs).toBeLessThan(2400);
+});
+
+it('stops the entire async builder group when no completed progress exists', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  const childFile = join(evidenceDir, 'descendant.pid');
+  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'source "$2"; BUNDLE_HOST_STEP_LOG="$3"; bundle_host_run_step stuck bash -c \'sleep 60 & echo $! > "$1"; echo CHILD_READY; wait\' _ "$1"',
+      '_', childFile, common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
+    timeoutMs: 600, maxMs: 2400, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*progress-unknown/);
+  const descendant = Number(readFileSync(childFile, 'utf8'));
+  await expect.poll(() => {
+    try { return readFileSync(`/proc/${descendant}/stat`, 'utf8').split(') ')[1].split(' ')[0]; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'gone'; throw error; }
+  }).toMatch(/^(?:gone|Z|X)$/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt.watchdog).toMatchObject({ reason: 'progress-unknown', completedSteps: 0, extensions: 0 });
+  expect(readFileSync(join(evidenceDir, 'operator-api-build.log'), 'utf8')).toContain('CHILD_READY');
+});
+
+it('enforces the absolute build ceiling despite distinct successful step progress', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; i=0; while true; do i=$((i+1)); bundle_host_run_step "step-$i" sleep .08; done',
+      '_', common, join(evidenceDir, 'hono-host.mjs.build-steps.jsonl')],
+    timeoutMs: 600, maxMs: 1200, pollMs: 20 })).rejects.toThrow(/ETIMEDOUT.*absolute-ceiling/);
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt.watchdog).toMatchObject({ reason: 'absolute-ceiling', extensions: 1 });
+  expect(receipt.watchdog.completedSteps).toBeGreaterThan(1);
+});
+
+it('retains and rejects an async builder launch failure without waiting for the ceiling', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
+  await expect(buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, {
+    command: join(evidenceDir, 'missing-builder'), args: [], timeoutMs: 600, maxMs: 2400,
+  })).rejects.toMatchObject({ code: 'ENOENT' });
+  const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(receipt.error).toMatchObject({ code: 'ENOENT' });
+  expect(receipt.progress).toEqual({ extensions: 0, completedSteps: 0 });
+});
+
 it.each(['--import=tsx', '--import "tsx"', '--loader=tsx/esm', '--require tsx/cjs',
   '--import="file:///repo/node_modules/tsx/dist/loader.mjs"'])('removes %s and preserves guarded plain Node options', preload => {
   const guard = '--import="/repo with spaces/scripts/lib/committed-source-loader.mjs"';

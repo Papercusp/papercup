@@ -62,6 +62,31 @@ describe('the amendment request remains answerable after a cascade', () => {
   });
 });
 
+describe('current review evidence survives the dispatch frame', () => {
+  for (const policy of ['rubric-vetting', 'acceptance-bar-amendment-review']) {
+    for (const via of ['floor', 'minimum'] as const) {
+      it.each(['fork', 'convert', 'brief'] as const)(`${policy}/${via} reviews current evidence on a %s launch`, (operation) => {
+        const conversationId = 'conv-current-review';
+        const copy = cascadeWakeCopyForRouting({ policy })({
+          question: 'Review the current mobile rubric revision; replay probes are in observed/tried.',
+          conversationId, position: 2, menuSize: 2, digest: [],
+          next: { ownerId: 'su-unrelated-history', score: 0.1, relevance: 0.1, similarity: 0.1, via, liveness: 'ended' },
+        });
+        const brief = consultDispatchBrief({
+          conversationId, sourceOwnerId: 'su-unrelated-history', operation, ...copy,
+        });
+        expect(brief).toContain('results[0].conversation.body');
+        expect(brief).toContain('results[0].posts');
+        expect(brief).toContain('do not decline solely');
+        expect(brief).toContain('Cite the evidence you actually checked');
+        expect(brief).not.toMatch(/you answer from the transcript you inherited|Answer from the cited turns|Answer from the transcript\.|answer FROM your transcript/);
+        expect(brief).toContain('ANSWER-ONLY');
+        expect(brief).toContain('Do not claim work-items');
+      });
+    }
+  }
+});
+
 describe('the consult responder verb menu names the read door', () => {
   it('names conversations:get, and says what a wrong-door read looks like', () => {
     const line = consultReadDoorLine('conv-abc');

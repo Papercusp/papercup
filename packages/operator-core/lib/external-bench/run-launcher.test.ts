@@ -24,6 +24,7 @@ vi.mock('../task-manager/store', () => ({ listTasks: io.list }));
 vi.mock('../task-manager/control', () => ({ killTask: io.kill }));
 
 import { currentBenchLaunchSelection, launchBenchRun, cancelBenchRun, _resetActiveRunsForTests,
+  currentBenchSessionRequestDelta,
   type LaunchBenchRunInput, type CurrentTaskInput } from './run-launcher';
 
 const workspaceId = 'bench-host-launch-private';
@@ -79,6 +80,34 @@ describe('current host selection', () => {
   });
 });
 
+describe('repeated native session census', () => {
+  const binding = Object.freeze({ workspaceId: 'bench', loopId: 'loop', runId: 'run', preregHash: 'a'.repeat(64), assignmentId: 'bench-assignment:run:arm:task:1' });
+  const row = (reservationId: string, nativeSessionId: string) => Object.freeze({
+    reservationId, nativeSessionId, nativeTurnId: `turn-${reservationId}`, bodySha256: 'b'.repeat(64),
+  });
+  it('returns only the new session-owned requests from a monotone census', () => {
+    const empty = Object.freeze({ binding, populationSha256: 'c'.repeat(64), requests: Object.freeze([]) });
+    const first = row('reservation-1', '11111111-1111-4111-8111-111111111111');
+    const second = row('reservation-2', '22222222-2222-4222-8222-222222222222');
+    const one = Object.freeze({ ...empty, requests: Object.freeze([first]) });
+    const two = Object.freeze({ ...empty, requests: Object.freeze([first, second]) });
+    expect(currentBenchSessionRequestDelta(empty, one, first.nativeSessionId)).toEqual({
+      modelCalls: 1, reservationIds: ['reservation-1'],
+    });
+    expect(currentBenchSessionRequestDelta(one, two, second.nativeSessionId)).toEqual({
+      modelCalls: 1, reservationIds: ['reservation-2'],
+    });
+  });
+  it.each(['reused session', 'shrinking census'])('%s is refused', scenario => {
+    const one = row('reservation-1', '11111111-1111-4111-8111-111111111111');
+    const two = row('reservation-2', '22222222-2222-4222-8222-222222222222');
+    const before = { binding, populationSha256: 'c'.repeat(64), requests: [one] };
+    const after = { ...before, requests: scenario === 'reused session' ? [one, two] : [] };
+    expect(() => currentBenchSessionRequestDelta(before, after,
+      scenario === 'reused session' ? one.nativeSessionId : two.nativeSessionId)).toThrow(/reused|non-monotone/);
+  });
+});
+
 describe('current launcher owns its assignment runtime', () => {
   const deps = () => ({ scope: scope(), currentContext: context, assertEnabled: async () => {},
     loadBacklog: async () => [task('t2'), task('t1')],
@@ -115,11 +144,19 @@ describe('current launcher owns its assignment runtime', () => {
       grading: { score: 0.5, status: 'failed', family: 'frontier-swe' } });
     expect(io.task.mock.calls.some(([, row]) => row.taskStatus === 'graded' && row.resolved === false)).toBe(true);
   });
-  it('refuses an unbound FrontierSWE native reference before persisting a run or selecting a legacy arm', async () => {
-    config.grader.family = 'frontier-swe'; const currentFrontierArm = vi.fn();
-    await expect(launchBenchRun({ ...input, arm: 'baseline', suite: 'frontier-swe' },
-      { ...deps(), currentFrontierArm })).rejects.toThrow(/stock-native reference is not bound/);
-    expect(io.upsert).not.toHaveBeenCalled(); expect(currentFrontierArm).not.toHaveBeenCalled();
+  it('routes the bound FrontierSWE stock reference through the current container arm without a legacy launch', async () => {
+    config.grader.family = 'frontier-swe';
+    const currentFrontierArm: NonNullable<Parameters<typeof launchBenchRun>[1]>['currentFrontierArm'] = vi.fn(async req => ({
+      arm: req.spec.arm, runId: req.runId, startedAtMs: 0, finishedAtMs: 1, rows: [], modelCallsSpent: 0,
+      tokensSpent: 0, costUsdSpent: 0, budgetExhausted: false, attemptedTaskIds: [], skippedTaskIds: ['t1', 't2'],
+    }));
+    const loadBacklog = async () => [task('t1'), task('t2')].map(value => ({ ...value, benchmark: 'frontier-swe' }));
+    await (await launchBenchRun({ ...input, arm: 'baseline', suite: 'frontier-swe' },
+      { ...deps(), loadBacklog, currentFrontierArm })).done;
+    expect(currentFrontierArm).toHaveBeenCalledWith(expect.objectContaining({
+      spec: expect.objectContaining({ arm: 'baseline' }), launch: expect.objectContaining({ protocolRunId: config.runId }),
+    }));
+    expect(io.upsert).toHaveBeenCalled(); expect(io.legacyRun).not.toHaveBeenCalled(); expect(io.legacyBind).not.toHaveBeenCalled();
   });
   it('passes native-codex to the stock assignment driver and never binds a Queen', async () => {
     const requests: string[] = [];

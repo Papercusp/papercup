@@ -4762,6 +4762,13 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
   it('waits for a delayed predecessor exit notification before spawning the successor', async () => {
     const ownerId = `su-recycle-exit-fence-${process.pid}-${Math.floor(performance.now())}`;
     const { captured, io } = fakeIo();
+    const signalSource = new EventEmitter();
+    const delayedExits: Array<() => void> = [];
+    let exitsReleased = false;
+    const releaseExits = () => {
+      exitsReleased = true;
+      for (const notify of delayedExits.splice(0)) notify();
+    };
     let spawns = 0;
     const done = hostThroughPty({
       command: execPath,
@@ -4771,6 +4778,7 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       ownerId,
       io,
       bridgeTty: false,
+      signalSource,
       hostCodeStalenessFn: () => ({ stale: false }),
       mintRecycleArgs: (args: string[]) => ({ args, nativeId: null }),
       spawnPty: (file, args, options, realSpawn) => {
@@ -4782,7 +4790,8 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
               if (property === 'onExit') {
                 return (handler: (event: { exitCode: number; signal: number }) => void) =>
                   onExit((event: { exitCode: number; signal: number }) => {
-                    setTimeout(() => handler(event), 2_000);
+                    if (exitsReleased) handler(event);
+                    else delayedExits.push(() => handler(event));
                   });
               }
               const value = Reflect.get(target, property, target);
@@ -4800,18 +4809,26 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       await controlInject(socketPathFor(ownerId), 'recycle', '');
       await vi.waitFor(() => expect(events().some((e) => e.kind === 'respawn-predecessor-force-kill'))
         .toBe(true), { timeout: 8_000 });
-      // Cross the old one-second cap while node-pty's exit callback is still
-      // delayed. A queued SIGKILL alone cannot authorize a second writer.
-      await sleep(1_200);
+      // Observe both the REAL child's exit and the old one-second diagnostic
+      // cap while its notification is withheld. Wall-clock sleeps cannot prove
+      // which of those phases ran first, especially in a whole-file run.
+      await vi.waitFor(() => {
+        expect(delayedExits.length).toBeGreaterThan(0);
+        expect(events().some((e) => e.kind === 'respawn-predecessor-stop-pending')).toBe(true);
+      }, { timeout: 5_000 });
       expect(spawns).toBe(1);
       expect(events().some((e) => e.kind === 'respawn-predecessor-stop-finished')).toBe(false);
+      releaseExits();
       await vi.waitFor(() => expect(spawns).toBe(2), { timeout: 5_000 });
       const lifecycle = events();
       const stopped = lifecycle.findIndex((e) => e.kind === 'respawn-predecessor-stop-finished');
       expect(lifecycle[stopped]).toMatchObject({ exitObserved: true, forceKillRequested: true, signal: 'SIGKILL' });
       expect(lifecycle.findIndex((e) => e.kind === 'respawned')).toBeGreaterThan(stopped);
     } finally {
-      await rawInject(socketPathFor(ownerId), 'QUIT\n');
+      releaseExits();
+      // Teardown must not depend on the successor having installed its stdin
+      // reader, or a dropped QUIT waits for the child's 15s safety timer.
+      signalSource.emit('SIGTERM');
       await done;
     }
   }, 25_000);
@@ -5614,6 +5631,9 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       const ownerId = `su-orphan-eof-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
+      const childLog = join(PSU_PTY_DIR, `${ownerId}.child.jsonl`);
+      const signalSource = new EventEmitter();
+      const spawnEvidence: Array<{ pid: number; data: string; exit: unknown }> = [];
       let captured = '';
       const stdout = { columns: 80, rows: 24, write: (d: Buffer | string) => { captured += d.toString(); }, on() {}, off() {} };
       const stdin = Object.assign(new EventEmitter(), { isTTY: true, resume() {}, pause() {}, setRawMode() {} });
@@ -5621,6 +5641,7 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
       // Long-lived child (20s net) that would keep the host alive forever if the
       // terminal-close teardown didn't fire.
       const childCode =
+        "require('node:fs').writeFileSync(process.env.ORPHAN_CHILD_LOG,JSON.stringify({phase:'js-start',pid:process.pid})+'\\n');" +
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
         'process.stdin.on(\'data\',()=>{});' +
         'setTimeout(()=>process.exit(0),20000);';
@@ -5630,34 +5651,45 @@ describe('orphan / vanished-terminal teardown (WI-3141)', () => {
         command: execPath,
         args: ['-e', childCode],
         cwd: '/tmp',
-        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, TERM: 'xterm-256color', ORPHAN_CHILD_LOG: childLog },
         ownerId,
         io: { stdin, stdout },
         bridgeTty: true,
+        signalSource,
+        spawnPty: (file, args, options, realSpawn) => {
+          const spawned = realSpawn(file, args, options);
+          const evidence = { pid: spawned.pid, data: '', exit: null as unknown };
+          spawnEvidence.push(evidence);
+          spawned.onData((data: string) => { evidence.data = `${evidence.data}${data}`.slice(-4096); });
+          spawned.onExit((event: unknown) => { evidence.exit = event; });
+          return spawned;
+        },
         onExit: (c: number) => { exitCode = c; },
       });
 
-      // Poll for BOOT rather than a fixed sleep — fork/pty-startup latency
-      // varies under load; a fixed 500ms sleep flakes on a busy box (the
-      // 2026-07-26 red-test watchdog catch, EI-18679045634730262: this file's
-      // other tests already use this poll instead of a fixed sleep for the
-      // same reason).
-      const bootDeadline = Date.now() + 5_000;
-      while (Date.now() < bootDeadline && !captured.includes('BOOT:')) {
-        await sleep(20);
+      try {
+        await vi.waitFor(() => expect(captured).toContain('BOOT:'), { timeout: 5_000 });
+        expect(existsSync(sock)).toBe(true);
+
+        // Close the live terminal before the child's 20s safety timer.
+        (stdin as EventEmitter).emit('close');
+
+        const code = await done;
+        expect(code).toBe(0);
+        expect(exitCode).toBe(0);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } catch (error) {
+        console.error('[orphan EOF child evidence]', JSON.stringify({
+          ownerId, spawnEvidence, captured,
+          childLog: existsSync(childLog) ? readFileSync(childLog, 'utf8') : 'not-written',
+          events: existsSync(eventLogPathForOwner(ownerId)) ? readFileSync(eventLogPathForOwner(ownerId), 'utf8') : 'not-written',
+        }));
+        throw error;
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
       }
-      expect(existsSync(sock)).toBe(true);
-      expect(captured).toContain('BOOT:');
-
-      // The terminal closes: stdin hits EOF/close. The host must tear down promptly
-      // (well inside this test's budget — not the child's 20s safety net).
-      (stdin as EventEmitter).emit('close');
-
-      const code = await done;
-      expect(code).toBe(0);
-      expect(exitCode).toBe(0);
-      expect(existsSync(sock)).toBe(false);
-      expect(existsSync(meta)).toBe(false);
     },
     20_000,
   );

@@ -83,6 +83,9 @@ const fakeFetch =
   async (ids: string[]): Promise<Map<string, WakeabilitySignals>> =>
     new Map(ids.filter((id) => id in signals).map((id) => [id, signals[id]]));
 
+const noSelfWake = async () => new Map();
+const noRecordedEnded = async () => new Set<string>();
+
 it('fleet:assignments opts out of the dispatcher ambient workspace transaction', () => {
   expect((fleetAssignmentsTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
 });
@@ -219,7 +222,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('the exact EI-6077 evidence: heartbeat-alive but no live inbox-wake await → sessionState ended, alive downgraded', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('ended');
     expect(out.alive).toBe(false);
   });
@@ -229,7 +232,7 @@ describe('reconcileWakeability (EI-6077)', () => {
     // successor is already doing work even though its inbox wake is not armed.
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: false, liveTurn: true } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']));
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('live');
     expect(out.alive).toBe(true);
   });
@@ -268,7 +271,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('heartbeat-alive AND wakeable with a running turn → sessionState live, alive stays true', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: true } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('live');
     expect(out.alive).toBe(true);
   });
@@ -276,7 +279,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('heartbeat-alive, wakeable, but idle (no running turn) → sessionState parked, alive stays true', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('parked');
     expect(out.alive).toBe(true);
   });
@@ -375,7 +378,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('WI-4400: stale wakeable holder gets confirmLiveness before takeover', async () => {
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('draining');
     expect(out.confirmLiveness).toBe(true);
     expect(out.alive).toBe(false);
@@ -388,7 +391,7 @@ describe('reconcileWakeability (EI-6077)', () => {
       heartbeatAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
     });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('suspect');
     expect(out.wakeable).toBe(true);
     expect(out.alive).toBe(false);
@@ -400,7 +403,7 @@ describe('reconcileWakeability (EI-6077)', () => {
     // cold for an hour → the DEAD-ceiling backstop forces `ended`, not `parked`.
     const agent = baseAgent({ alive: false, heartbeatAt: new Date(Date.now() - 72 * 60_000).toISOString() });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: false } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBe('ended');
     expect(out.alive).toBe(false);
   });
@@ -408,7 +411,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('no wakeability signal for the agent (e.g. a federated peer) — leaves alive/sessionState untouched', async () => {
     const agent = baseAgent({ alive: true });
     const fetchFn = fakeFetch({});
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']));
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(['su-agent-1']), noSelfWake, noRecordedEnded);
     expect(out.sessionState).toBeUndefined();
     expect(out.alive).toBe(true);
   });
@@ -416,7 +419,7 @@ describe('reconcileWakeability (EI-6077)', () => {
   it('never REVIVES an already-dead (heartbeat-stale) agent', async () => {
     const agent = baseAgent({ alive: false });
     const fetchFn = fakeFetch({ 'su-agent-1': { wakeable: true, liveTurn: true } });
-    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set());
+    const [out] = await reconcileWakeability([agent], fetchFn, async () => new Set(), noSelfWake, noRecordedEnded);
     // stale:true (since !alive) with wakeable+liveTurn still resolves 'parked' per
     // deriveSessionState (liveTurn && !stale is required for 'live') — the point
     // pinned here is it does NOT flip a heartbeat-dead agent back to alive:true.

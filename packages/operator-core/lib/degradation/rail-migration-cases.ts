@@ -1220,6 +1220,72 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
 }];
 
 export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+  id: 'bulk-run-original-core-and-routine-ticks-heal-race-failure-and-healthy',
+  item: 'P-015', route: 'observation', mechanism: 'bulk-run-watchdog',
+  rowIds: [
+    'bespoke-watchdog|packages/operator-core/lib/attention/bulk-run-watchdog.ts|<module>|1',
+    'bespoke-watchdog|packages/operator-core/lib/harness/routines/bulk-run-watchdog-action.ts|<module>|1',
+  ],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const { runBulkRunWatchdog } = await import('../attention/bulk-run-watchdog');
+    const recorder = await import('./fallback-observations');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row, options) => {
+      expect(mechanism).toBe('bulk-run-watchdog');
+      expect(row.scope).toBe('sweep');
+      if (options) expect(options.workspaceId).toBe('fixture');
+      observations.push(row); return true;
+    });
+    const zero = { autoResolved: 0, recommended: 0, skipped: 0, failed: 0 };
+    let failRead = false, failWrite = false, marked = 2;
+    let rows: import('../attention/bulk-run-watchdog').WatchdogRunFacts[] = [];
+    const listRuns = async () => { if (failRead) throw new Error('census unavailable'); return rows; };
+    const strandRun = async () => { if (failWrite) throw new Error('write unavailable'); return { marked }; };
+    const reconcileCounters = async () => {};
+    const core = () => runBulkRunWatchdog({ listRuns, strandRun, reconcileCounters });
+    await core();
+    rows = [{ runId: 'fixture-run', phase: 'running', undecided: 2,
+      liveness: { state: 'stale', ageMs: 900_000, measuredFrom: 'heartbeat' }, stored: zero, derived: zero }];
+    await core(); marked = 0; await core();
+    failWrite = true; await core(); failWrite = false;
+    failRead = true; await expect(core()).rejects.toThrow('census unavailable'); failRead = false;
+
+    // Execute the actual registered action and its dependency wiring, without
+    // importing the shared routine registry or opening a database.
+    let action: ((ctx: { workspaceId: string }) => Promise<unknown>) | undefined;
+    let importFailed = false;
+    await execute(original('packages/operator-core/lib/harness/routines/bulk-run-watchdog-action.ts',
+      "registerSystemAction('bulk-run-watchdog'", 'expression'), {
+      registerSystemAction: (_name: string, fn: typeof action) => { action = fn; },
+      observeFallback: recorder.observeFallback,
+      require: (name: string) => {
+        if (importFailed) throw new Error('adapter import unavailable');
+        if (name.endsWith('/bulk-run-store')) return {
+          readWatchdogRunRows: listRuns,
+          classifyRunLiveness: () => ({ state: 'stale', ageMs: 900_000, measuredFrom: 'heartbeat' }),
+          strandStaleRun: strandRun, reconcileRunCounters: reconcileCounters,
+        };
+        if (name.endsWith('/bulk-run-watchdog')) return { runBulkRunWatchdog };
+        if (name.endsWith('/presence-wakeability')) return { fetchWakeability: async () => new Map() };
+        throw new Error(`Unexpected bulk-run action dependency: ${name}`);
+      },
+    });
+    rows = []; await action!({ workspaceId: 'fixture' });
+    rows = [{ runId: 'fixture-run', phase: 'running', undecided: 2,
+      liveness: { state: 'stale', ageMs: 900_000, measuredFrom: 'heartbeat' }, stored: zero, derived: zero }];
+    marked = 2; await action!({ workspaceId: 'fixture' });
+    failRead = true; await expect(action!({ workspaceId: 'fixture' })).rejects.toThrow('census unavailable');
+    failRead = false; importFailed = true;
+    await expect(action!({ workspaceId: 'fixture' })).rejects.toThrow('adapter import unavailable');
+    expect(observations.map(row => [row.applied, row.reason])).toEqual([
+      [1, 'healthy'], [0, 'heal-strand'], [1, 'healthy'], [0, 'effect-failed'], [0, 'census-failed'],
+      [1, 'healthy'], [0, 'heal-strand'], [0, 'census-failed'], [0, 'routine-failed'],
+    ]);
+    sink.mockRestore();
+    return { route: 'observation', mechanism: 'bulk-run-watchdog', observations };
+  },
+}, {
   id: 'goal-liveness-original-independent-reasons-unknown-preservation-and-measured-recovery',
   item: 'P-014', route: 'condition',
   rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1'],
@@ -1299,8 +1365,7 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
   },
 }, {
   id: 'compaction-original-independent-episodes-force-fallback-and-measured-recovery', item: 'P-014', route: 'condition',
-  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1',
-    'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1'],
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|<module>|1'],
   run: async () => {
     const { expect } = await import('vitest');
     const ts = (await import('typescript')).default;
@@ -1325,8 +1390,9 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       detectContextDeathForOwner: async () => dead, detectToolReferenceDeathForOwner: async () => null,
       codexReadingProvenanceForOwner: async () => null, recordContextUsage: () => {},
       clearContextUsage: async () => {},
+      observeFallback: () => true,
       listActiveClaimFreshnessForOwner: async () => [], classifyStaleClaims: () => [],
-      setContextGaugeEnabled: () => {}, setContextEstimate: async () => {}, setCompactionLimit: async () => {},
+      setContextGaugeEnabled: () => {}, setContextEstimate: async () => true, setCompactionLimit: async () => {},
       resolveAlarm: (await import('../alarm-attention')).resolveAlarm,
       require: (name: string) => {
         if (name === '@papercusp/flags') return { FLAGS: flags };
@@ -1357,6 +1423,53 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
     healthyTranscript = true; await run(); expect(open.size).toBe(0);
     expect(resolvedKeys.sort()).toEqual([...openedKeys].sort());
     return { route: 'condition', openedKeys, resolvedKeys };
+  },
+}, {
+  id: 'compaction-original-force-observation-failures-primary-and-deliberate-exclusions',
+  item: 'P-014', route: 'observation', mechanism: 'compaction-force-respawn',
+  rowIds: ['log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1'],
+  run: async () => {
+    const { expect } = await import('vitest');
+    const observations: Array<{ eligible: number; applied: number; reason: string; scope?: string | null }> = [];
+    let enabled = true, noHost = true, supported = true, transcript = true, spec = true, accepted = true;
+    let agent = 'claude', lookupFails = false, injects = 0;
+    const producer = execute(original('packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts',
+      'async function maybeForceRespawn(', 'function'), {
+      observeFallback: (mechanism: string, row: typeof observations[number], options: { workspaceId?: string }) => {
+        expect(mechanism).toBe('compaction-force-respawn'); expect(options.workspaceId).toBe('fixture');
+        expect(row.scope).toBe('fixture-owner'); observations.push(row); return true;
+      },
+      noHostWarned: new Set(), FORCE_COMPACT_FRACTION: 1.3,
+      compactionConditionKey: () => 'alarm:fixture-compaction', broadcastSevereEvent: async () => true,
+      resolveSessionRefReconciled: async () => ({ agent, sessionId: 'fixture-session' }),
+      mechanicalPreflushForWatchdog: async () => {}, forceCompactContinueNote: () => 'continue',
+      tagWatchdogContinuation: async () => 'continue',
+      require: (name: string) => {
+        if (name === '@papercusp/flags/server') return { getFlag: async () => enabled };
+        if (name === '@papercusp/flags') return { FLAGS: { COMPACTION_WATCHDOG_FORCE_COMPACT: 'force' } };
+        if (name === '../events/await/psu-pty-discovery') return {
+          findLiveHostAsync: async () => { if (lookupFails) throw new Error('host lookup unavailable'); return noHost ? null : { sock: 'fixture' }; },
+          hostSupports: () => supported, injectIntoHost: async () => { injects++; return accepted; },
+        };
+        if (name === '../claude-sessions') return { findSessionTranscript: async () => transcript ? 'fixture.jsonl' : null,
+          newestTranscriptUnderOwner: () => null };
+        if (name === '../carry-respawn') return { buildOwnerRespawnLaunchSpec: async () => spec ? { firstPrompt: 'continue' } : null };
+        throw new Error(`Unexpected force observation dependency: ${name}`);
+      },
+    }, 'maybeForceRespawn') as (...args: unknown[]) => Promise<boolean>;
+    const run = () => producer('fixture-owner', 'fixture', 'fixture', 200_000, 150_000, 100_000);
+    expect(await run()).toBe(false); expect(await run()).toBe(false); // log dedupe cannot suppress observations
+    noHost = false; supported = false; expect(await run()).toBe(false);
+    supported = true; transcript = false; expect(await run()).toBe(false);
+    transcript = true; spec = false; expect(await run()).toBe(false);
+    spec = true; accepted = false; expect(await run()).toBe(false);
+    accepted = true; expect(await run()).toBe(true); expect(injects).toBe(2);
+    lookupFails = true; expect(await run()).toBe(false); lookupFails = false;
+    expect(observations.map(row => row.applied)).toEqual([0, 0, 0, 0, 0, 0, 1, 0]);
+    enabled = false; expect(await run()).toBe(false);
+    enabled = true; agent = 'omp'; expect(await run()).toBe(false);
+    expect(observations).toHaveLength(8); expect(injects).toBe(2);
+    return { route: 'observation', mechanism: 'compaction-force-respawn', observations };
   },
 }, {
   id: 'goal-drain-original-independent-obligations-and-exact-subject-recovery', item: 'P-014', route: 'condition',

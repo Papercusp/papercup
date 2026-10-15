@@ -1,6 +1,6 @@
 /** Registry preflight shared by standalone private HTTP workers and their cheap guard. */
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
+import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncOptions } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
@@ -17,6 +17,8 @@ import { PANEL_LABELS, type PanelKey, type SystemHealth } from '../lib/system-he
 import { readVerifierSourceReceiptSync, verifierSourceFiles, type VerifierSourceFile } from '../lib/verifier-source';
 import type { CommittedReaderObservationCohort, CommittedReaderObservationIdentity,
   CommittedReaderPreparationHandoff } from './isolated-integration-proof';
+// @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
+import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 
 /** Retain the actual provider refusal before a disposable journey asserts success.
  * Drain a clone, preserving the consumer's original body. Successful model content
@@ -702,45 +704,39 @@ function assertPrivatePreparationEvidence() {
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
-export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string, builder?: {
-  command: string; args: string[]; timeoutMs: number;
-}) {
+type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number };
+type PrivateBundleReceipt = { path: string; sha256: string };
+export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
+  builder: PrivateBundleBuilder & { maxMs: number }): Promise<PrivateBundleReceipt>;
+export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
+  builder?: PrivateBundleBuilder): PrivateBundleReceipt;
+export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string, builder?: PrivateBundleBuilder) {
   const path = join(evidenceDir, 'hono-host.mjs');
+  const stepPath = `${path}.build-steps.jsonl`;
+  const timeoutMs = builder?.timeoutMs ?? 240_000;
+  assert.ok(Number.isSafeInteger(timeoutMs) && timeoutMs > 0, 'Private builder deadline must be positive');
+  if (builder?.maxMs !== undefined) {
+    assert.ok(Number.isSafeInteger(builder.maxMs) && builder.maxMs >= timeoutMs, 'Private builder ceiling must cover its checkpoint');
+    assert.ok(builder.pollMs === undefined || Number.isSafeInteger(builder.pollMs) && builder.pollMs > 0);
+    assert.ok(!existsSync(stepPath), 'Progress build requires a fresh retained step journal');
+  }
   // Write both streams directly to retained evidence: a timeout, signal or
   // parent failure must not erase the compiler/census's original diagnostics.
   const log = openSync(join(evidenceDir, 'operator-api-build.log'), 'w', 0o600);
   const started = Date.now();
   let receipt: Record<string, unknown> = { startedAt: new Date(started).toISOString() };
-  try {
-    // The shell starts compiler, checker and guard descendants. Killing just
-    // the shell on timeout lets them keep changing the failed run's evidence.
-    // Node's synchronous spawn supports detached process groups; the pinned
-    // typings expose that option only on SpawnOptions.
-    const buildOptions: SpawnSyncOptions & Pick<SpawnOptions, 'detached'> = {
-      cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true,
-      timeout: builder?.timeoutMs ?? 240_000, killSignal: 'SIGKILL',
-    };
-    const result = spawnSync(builder?.command ?? 'bash',
-      builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path],
-      buildOptions);
-    receipt = { ...receipt, pid: result.pid, status: result.status, signal: result.signal,
-      error: result.error && { code: (result.error as NodeJS.ErrnoException).code, message: result.error.message } };
-    if (result.error || result.status !== 0) {
-      if (result.pid) {
-        try { process.kill(-result.pid, 'SIGKILL'); receipt.groupStop = 'signaled'; }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-          receipt.groupStop = 'already-exited';
-        }
-      }
-      throw result.error ?? new Error(`Private operator builder exited ${result.status}/${result.signal}; see operator-api-build.log`);
+  const stopGroup = (pid?: number) => {
+    if (!pid) return;
+    try { process.kill(-pid, 'SIGKILL'); receipt.groupStop = 'signaled'; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      receipt.groupStop = 'already-exited';
     }
-  } finally {
+  };
+  const finish = () => {
     closeSync(log);
-    const stepPath = `${path}.build-steps.jsonl`;
     if (existsSync(stepPath)) {
-      // A timeout may interrupt the final append. Keep the original journal,
-      // record that incomplete tail, and retain the last complete step.
+      // A timeout may interrupt the final append. Preserve the original journal.
       const lines = readFileSync(stepPath, 'utf8').trim().split('\n');
       const steps: Array<{ at: number; pid: number; step: string; event: string; status?: number }> = [];
       const unreadableRows: number[] = [];
@@ -758,6 +754,91 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
     }
     writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ ...receipt,
       endedAt: new Date().toISOString(), elapsedMs: Date.now() - started }));
+  };
+  const command = builder?.command ?? 'bash';
+  const args = builder?.args ?? [join(root, 'apps/operator/bin/bundle-host.sh'), 'bin/hono-host.ts', path];
+  if (builder?.maxMs !== undefined) {
+    const maxMs = builder.maxMs;
+    return new Promise<PrivateBundleReceipt>((resolveBuild, reject) => {
+      let child: ChildProcess;
+      try { child = spawn(command, args, { cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true }); }
+      catch (error) { finish(); reject(error); return; }
+      const completed = new Set<string>();
+      const openSteps = new Set<string>();
+      let rowsSeen = 0;
+      let lastProgressAt: number | null = null;
+      let failure: Error | undefined;
+      let extensions = 0;
+      const sample = () => {
+        if (!existsSync(stepPath)) return;
+        // Only fully appended rows can advance. Nested shell steps may interleave.
+        const lines = readFileSync(stepPath, 'utf8').split('\n').slice(0, -1);
+        for (const line of lines.slice(rowsSeen)) {
+          try {
+            const step = JSON.parse(line);
+            if (!Number.isFinite(step.at) || step.at < started / 1000 || !Number.isSafeInteger(step.pid) || step.pid <= 0
+              || typeof step.step !== 'string' || !step.step) continue;
+            const key = `${step.pid}:${step.step}`;
+            if (step.event === 'start' && !completed.has(key)) openSteps.add(key);
+            else if (step.event === 'end' && step.status === 0 && openSteps.delete(key) && !completed.has(key)) {
+              completed.add(key); lastProgressAt = Date.now();
+            }
+          } catch { /* an invalid journal row cannot extend the deadline */ }
+        }
+        rowsSeen = lines.length;
+      };
+      const observeProgress = () => {
+        try { sample(); }
+        catch (error) { failure = error as Error; stopGroup(child.pid); }
+      };
+      const poll = setInterval(observeProgress, builder.pollMs ?? 250);
+      let deadline: ReturnType<typeof setTimeout>;
+      const expire = () => {
+        observeProgress();
+        if (failure) return;
+        const decision = decideWatchdogExpiry({ elapsedMs: Date.now() - started, maxMs,
+          lastProgressAgeMs: lastProgressAt === null ? null : Date.now() - lastProgressAt,
+          stallWindowMs: timeoutMs, extensionMs: timeoutMs });
+        if (decision.action === 'extend') { extensions++; deadline = setTimeout(expire, decision.extendByMs); return; }
+        receipt.watchdog = { ...decision, extensions, completedSteps: completed.size, timeoutMs, maxMs };
+        failure = Object.assign(new Error(`Private operator builder ETIMEDOUT (${decision.reason}); see operator-api-build.log`),
+          { code: 'ETIMEDOUT' });
+        stopGroup(child.pid);
+      };
+      deadline = setTimeout(expire, timeoutMs);
+      child.once('error', error => { failure = error; stopGroup(child.pid); });
+      child.once('close', (status, signal) => {
+        clearInterval(poll); clearTimeout(deadline);
+        receipt = { ...receipt, pid: child.pid, status, signal,
+          progress: { extensions, completedSteps: completed.size },
+          error: failure && { code: (failure as NodeJS.ErrnoException).code, message: failure.message } };
+        try {
+          if (failure || status !== 0) stopGroup(child.pid);
+          finish();
+          if (failure || status !== 0) reject(failure ?? new Error(`Private operator builder exited ${status}/${signal}; see operator-api-build.log`));
+          else resolveBuild({ path, sha256: digestBytes(readFileSync(path)) });
+        } catch (error) { reject(failure ?? error); }
+      });
+    });
+  }
+  try {
+    // The shell starts compiler, checker and guard descendants. Killing just
+    // the shell on timeout lets them keep changing the failed run's evidence.
+    // Node's synchronous spawn supports detached process groups; the pinned
+    // typings expose that option only on SpawnOptions.
+    const buildOptions: SpawnSyncOptions & Pick<SpawnOptions, 'detached'> = {
+      cwd: root, env: process.env, stdio: ['ignore', log, log], detached: true,
+      timeout: timeoutMs, killSignal: 'SIGKILL',
+    };
+    const result = spawnSync(command, args, buildOptions);
+    receipt = { ...receipt, pid: result.pid, status: result.status, signal: result.signal,
+      error: result.error && { code: (result.error as NodeJS.ErrnoException).code, message: result.error.message } };
+    if (result.error || result.status !== 0) {
+      stopGroup(result.pid);
+      throw result.error ?? new Error(`Private operator builder exited ${result.status}/${result.signal}; see operator-api-build.log`);
+    }
+  } finally {
+    finish();
   }
   return { path, sha256: digestBytes(readFileSync(path)) };
 }

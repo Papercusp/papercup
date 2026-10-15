@@ -1133,6 +1133,21 @@ export async function openSourceStoreForCut(inp: {
     }
   }
 
+  if (wantRefresh && !sourceWritable) {
+    // The live drainer intentionally never selects quarantined rows. Refuse
+    // before backfill adds a new corpus to a queue that cannot reach zero.
+    const pg = inp.pg ?? getOrgPg().sql;
+    const [state] = await pg<SeedOutboxQuarantine[]>`
+      SELECT count(*)::int AS quarantined, min(id)::text AS first_quarantined_id
+        FROM harness_shared.substrate_outbox o
+       WHERE workspace_id = ${inp.workspaceId!}
+         AND harness_slug = ${inp.hive}
+         AND drained_at IS NULL
+         AND (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL
+    `;
+    refuseQuarantinedSeedOutbox(state, inp.workspaceId!, inp.hive);
+  }
+
   if (wantRefresh && sourceWritable) {
     // Quiesced box: we own the store, so refresh in-process exactly as before.
     const pg = inp.pg ?? getOrgPg().sql;
@@ -1441,6 +1456,22 @@ export async function openSourceStoreForCut(inp: {
 const BGHOST_RECYCLE_ENVELOPE_MS = 510_000; // BOOT_GRACE_MS (8min) + POLL_MS (30s), measured above
 export const CUT_SEED_DRAIN_STALL_MS = BGHOST_RECYCLE_ENVELOPE_MS + DRAIN_PASS_TIMEOUT_MS * 2 + 60_000; // 510s + 300s = 810s
 
+type SeedOutboxQuarantine = { quarantined?: number; first_quarantined_id?: string | null };
+
+function refuseQuarantinedSeedOutbox(
+  state: SeedOutboxQuarantine | undefined,
+  workspaceId: string,
+  hive: string,
+): void {
+  if (!state?.quarantined) return;
+  throw new Error(
+    `[cut-seed] ${workspaceId}::${hive} has ${state.quarantined} QUARANTINED undrained outbox row(s)` +
+      ` (first id=${state.first_quarantined_id ?? 'unknown'}). The live operator deliberately skips them, ` +
+      'so waiting for zero cannot complete. Resolve their quarantine through the outbox recovery runbook ' +
+      'before retrying; refusing to omit them or mark them delivered on the operator\'s behalf.',
+  );
+}
+
 export async function waitForOperatorDrain(inp: {
   readonly pg: postgres.Sql;
   readonly workspaceId: string;
@@ -1471,13 +1502,19 @@ export async function waitForOperatorDrain(inp: {
   let lastWarnAt = 0;
 
   for (;;) {
-    const [{ undrained }] = await inp.pg<{ undrained: number }[]>`
-      SELECT count(*)::int AS undrained
-        FROM harness_shared.substrate_outbox
+    const [state] = await inp.pg<({ undrained: number } & SeedOutboxQuarantine)[]>`
+      SELECT count(*)::int AS undrained,
+             count(*) FILTER (WHERE (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL)::int AS quarantined,
+             min(id) FILTER (WHERE (to_jsonb(o.*) ->> 'quarantined_at') IS NOT NULL)::text AS first_quarantined_id
+        FROM harness_shared.substrate_outbox o
        WHERE workspace_id = ${inp.workspaceId}
          AND harness_slug = ${inp.hive}
          AND drained_at IS NULL
     `;
+    // Quarantine can also occur after the pre-backfill check. Changing counts
+    // from other writers must not keep this impossible wait alive indefinitely.
+    refuseQuarantinedSeedOutbox(state, inp.workspaceId, inp.hive);
+    const { undrained } = state;
     if (undrained === 0) return { undrained: 0, waitedMs: now() - started };
 
     // A refill from another writer is just as meaningful as a decrease: the prior
