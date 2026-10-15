@@ -8,7 +8,6 @@ import { gateParticipationConfig, sharedHostWorkerCap } from '@papercusp/test-co
 export default defineConfig({
   test: {
     include: ['lib/**/*.test.ts'],
-    provide: { papercuspTestLayer: 'unit' },
     ...sharedHostWorkerCap(),
     ...gateParticipationConfig(),
   },
