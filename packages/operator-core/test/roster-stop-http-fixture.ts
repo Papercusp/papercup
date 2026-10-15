@@ -2,13 +2,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
@@ -678,7 +678,7 @@ async function main() {
     assert.equal(built.path, bundle);
   }
   const log = (chunk: Buffer) => process.stdout.write(chunk);
-  api = spawn(process.execPath, [bundle], { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  api = spawn(process.execPath, [bundle], { cwd: root, env: privateBundleRuntimeEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] });
   api.stdout!.on('data', log); api.stderr!.on('data', log);
   let health: any;
   await until(async () => {
@@ -777,18 +777,40 @@ async function main() {
 try { await main(); }
 catch (error: any) { console.error('ROSTER_STOP_HTTP_FAILURE ' + JSON.stringify({ message: error.message, stack: error.stack })); process.exitCode = 1; }
 finally {
-  for (const session of sessions) if (!session.closed) await shutdownViaPty(session.owner, { reason: 'Private acceptance cleanup', force: true });
-  await Promise.all(sessions.map(session => session.done));
-  await Promise.all(endings);
-  if (api?.exitCode === null && api.signalCode === null) {
-    const closed = new Promise<void>(done => api!.once('close', () => done()));
-    api.kill('SIGTERM');
-    const timer = setTimeout(() => api!.kill('SIGKILL'), 5_000);
-    await closed; clearTimeout(timer);
-  }
-  await inboxInvalidationListener?.unlisten();
-  await cupboardCatalog?.close();
-  await sql.end({ timeout: 5 });
-  rmSync(discovery, { recursive: true });
+  const failures: unknown[] = [];
+  const cleanupPhase = async (stage: string, run: () => Promise<unknown>) => {
+    const started = Date.now();
+    const record = (status: string, error?: unknown) => {
+      const row = { stage, status, elapsedMs: Date.now() - started,
+        ...(error ? { error: String(error) } : {}) };
+      appendFileSync(join(evidence, 'roster-stop-cleanup.jsonl'), JSON.stringify(row) + '\n');
+      console.log('ROSTER_STOP_HTTP_CLEANUP_PHASE ' + JSON.stringify(row));
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    record('start');
+    try {
+      await Promise.race([run(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Private roster cleanup stalled: ${stage}`)), 15_000);
+      })]);
+      record('complete');
+    } catch (error) { failures.push(error); record('failed', error); }
+    finally { clearTimeout(timer); }
+  };
+  // Retain the first stuck stage and continue releasing the other private
+  // resources. A supervisor timeout must not erase which cleanup await stalled.
+  await cleanupPhase('native-shutdown', async () => {
+    for (const session of sessions) if (!session.closed)
+      assert.equal(await shutdownViaPty(session.owner, { reason: 'Private acceptance cleanup', force: true }), 'sent');
+  });
+  await cleanupPhase('native-exit', () => Promise.all(sessions.map(session => session.done)));
+  await cleanupPhase('session-end-records', () => Promise.all(endings));
+  await cleanupPhase('api-stop', async () => { if (api) await stopPrivateOperatorHost(api); });
+  await cleanupPhase('listeners-stop', async () => {
+    await inboxInvalidationListener?.unlisten();
+    await cupboardCatalog?.close();
+  });
+  await cleanupPhase('database-close', () => sql.end({ timeout: 5 }));
+  if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
+  if (failures.length) throw new AggregateError(failures, 'Private roster cleanup failed');
 }
