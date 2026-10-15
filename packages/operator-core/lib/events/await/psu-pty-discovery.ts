@@ -1026,6 +1026,19 @@ export interface InjectHostResult {
    *  shutdown path reads it (to tell an owner-attended REFUSAL apart from a
    *  transport miss); every other caller branches on `ok` exactly as before. */
   reason?: string | null;
+  /** Present only for a pinned, confirmed hooks-observe receipt. */
+  observation?: Record<string, unknown>;
+}
+
+export function qualifyHooksObservationAck(request: Record<string, unknown>, ack: Record<string, unknown>): boolean {
+  const identity = ack.identity as Record<string, unknown> | undefined;
+  const coverage = ack.coverage as Record<string, unknown> | undefined;
+  return ack.ok === true && ack.inputReleased === true && !!identity &&
+    identity.ownerId === request.ownerId && String(identity.advSessionId) === request.expectedAdvSessionId &&
+    identity.nativeSessionId === request.expectedNativeSessionId && identity.hostStartedAt === request.expectedHostStartedAt &&
+    identity.childGeneration === request.expectedChildGeneration && identity.hostCodeVersion === request.expectedHostCodeVersion &&
+    coverage?.scope === 'fresh-hook-browser-viewport' && coverage.complete === false &&
+    Array.isArray(ack.visibleRows) && ack.visibleRows.every((row) => typeof row === 'string');
 }
 
 /**
@@ -1365,6 +1378,7 @@ export async function injectIntoHostWithConfirmation(
     expectedAdvSessionId?: string;
     expectedNativeSessionId?: string;
     expectedHostCodeVersion?: string;
+    expiresAtMs?: number;
     provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
@@ -1442,6 +1456,10 @@ export async function injectIntoHostWithConfirmation(
   timeoutMs = 2000,
 ): Promise<InjectHostResult> {
   if (msg.mode === 'hooks-observe') {
+    // The receipt follows bounded command, browser and cleanup paints. A
+    // legacy 2s delivery-ACK budget would expire before that receipt exists.
+    timeoutMs = Math.min(30_000, Math.max(20_000, Number.isFinite(timeoutMs) ? timeoutMs : 20_000));
+    msg = { ...msg, expiresAtMs: Date.now() + timeoutMs };
     const host = msg.ownerId ? await findLiveHostAsync(msg.ownerId) : null;
     if (!host || host.sock !== sock || !hostSupports(host, 'codex-hooks-observe-v1') ||
       msg.observationVersion !== 1 || !msg.expectedNativeSessionId || !msg.expectedHostCodeVersion ||
@@ -1463,6 +1481,7 @@ export async function injectIntoHostWithConfirmation(
     expectedAdvSessionId?: string;
     expectedNativeSessionId?: string;
     expectedHostCodeVersion?: string;
+    expiresAtMs?: number;
     provenanceIssuedAtMs?: number;
     focus?: string;
     systemPromptAddendum?: string;
@@ -1495,6 +1514,7 @@ export async function injectIntoHostWithConfirmation(
   if (msg.expectedAdvSessionId !== undefined) envelope.expectedAdvSessionId = msg.expectedAdvSessionId;
   if (msg.expectedNativeSessionId !== undefined) envelope.expectedNativeSessionId = msg.expectedNativeSessionId;
   if (msg.expectedHostCodeVersion !== undefined) envelope.expectedHostCodeVersion = msg.expectedHostCodeVersion;
+  if (msg.expiresAtMs !== undefined) envelope.expiresAtMs = msg.expiresAtMs;
   if (msg.provenanceIssuedAtMs !== undefined) envelope.provenanceIssuedAtMs = msg.provenanceIssuedAtMs;
   if (msg.focus !== undefined) envelope.focus = msg.focus;
   if (msg.systemPromptAddendum !== undefined) envelope.systemPromptAddendum = msg.systemPromptAddendum;
@@ -1525,6 +1545,7 @@ export async function injectIntoHostWithConfirmation(
       confirmation: InjectConfirmation,
       reason?: string,
       transportErrorCode?: string,
+      observation?: Record<string, unknown>,
     ) => {
       if (settled) return;
       settled = true;
@@ -1546,7 +1567,8 @@ export async function injectIntoHostWithConfirmation(
       }
       // Omit `reason` entirely when the host sent none, so this stays shape-compatible
       // with every existing exact-equality assertion on InjectHostResult.
-      resolve(reason === undefined ? { ok, confirmation } : { ok, confirmation, reason });
+      resolve({ ok, confirmation, ...(reason === undefined ? {} : { reason }),
+        ...(observation ? { observation } : {}) });
     };
     if (Buffer.byteLength(payload, 'utf8') > MAX_CONTROL_PAYLOAD_BYTES) {
       finish(false, 'oversize');
@@ -1580,6 +1602,13 @@ export async function injectIntoHostWithConfirmation(
         ) {
           ackReceived = true;
           const ackReason = (parsed as { reason?: unknown }).reason;
+          if (msg.mode === 'hooks-observe' && (parsed as { ok: boolean }).ok) {
+            const receipt = parsed as Record<string, unknown>;
+            const qualified = qualifyHooksObservationAck(msg, receipt);
+            finish(qualified, 'acked', qualified ? 'observed' : 'observation-unqualified-receipt',
+              undefined, qualified ? receipt : undefined);
+            return;
+          }
           finish(
             (parsed as { ok: boolean }).ok,
             'acked',
@@ -1599,7 +1628,8 @@ export async function injectIntoHostWithConfirmation(
       // before writing back. Either way this is the EXACT pre-fix fallback:
       // bare close alone still resolves true. Once a real ack DID arrive,
       // `finish` already ran above and this is a no-op (the `settled` guard).
-      if (!ackReceived) finish(true, 'assumed-close');
+      if (!ackReceived) finish(msg.mode !== 'hooks-observe', 'assumed-close',
+        msg.mode === 'hooks-observe' ? 'observation-unconfirmed' : undefined);
     });
     const t = setTimeout(() => {
       try {
