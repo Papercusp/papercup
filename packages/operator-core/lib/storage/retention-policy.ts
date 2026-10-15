@@ -83,6 +83,9 @@ export interface RetentionClass {
   /** non-path census keys this class owns, matched by prefix (`docker:`, `postgres:`). */
   stores?: string[];
   keep: KeepRule;
+  /** Allocated-byte ceiling per physical root for age/count collectors. Pins
+   * count toward usage but remain exempt from eviction. */
+  maxBytes?: number;
   /** every enforcer that acts on the class; the first is primary. */
   enforcers: Enforcer[];
   note?: string;
@@ -98,6 +101,14 @@ const DAY = 24;
  * (shared /tmp keeps 4 h); {@link validatePolicy} refuses a max-age class above it.
  */
 export const AGENT_MAX_AGE_HOURS = 3 * DAY;
+
+/** Default per-root ceiling for agent age/count collectors. Native/lease
+ * collectors retain their owning program's admission and size limits. */
+export const AGENT_ROOT_MAX_BYTES = 20 * 1024 ** 3;
+export function retentionRootSizeCap(cls: RetentionClass): number | undefined {
+  return cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest')
+    ? cls.maxBytes : undefined;
+}
 
 /**
  * Build output inside an agent entry (node_modules, Cargo target dirs) is
@@ -169,7 +180,7 @@ const AGENT_DEFAULT_RULE: KeepRule = {
  * existing enforcer, then agent classes the standing reclaim enforces, then
  * review-only classes.
  */
-export const RETENTION_POLICY: readonly RetentionClass[] = [
+const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Protected: owner data (D-002) ────────────────────────────────────────
   {
     id: 'owner-data-mnt',
@@ -652,6 +663,12 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
   },
 ];
 
+/** Keep the ceilings alongside the existing policy, rather than maintaining a
+ * second root registry. Owners of native/lease classes enforce their own limits. */
+export const RETENTION_POLICY: readonly RetentionClass[] = BASE_RETENTION_POLICY.map((cls) =>
+  cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest')
+    ? { ...cls, maxBytes: AGENT_ROOT_MAX_BYTES } : cls);
+
 // ── Matching ───────────────────────────────────────────────────────────────
 
 const DELETABLE_KINDS = new Set<KeepRule['kind']>(['max-age', 'newest', 'lease']);
@@ -836,6 +853,10 @@ export function validatePolicy(policy: readonly RetentionClass[] = RETENTION_POL
     if (ids.has(cls.id)) problems.push(`${cls.id}: duplicate class id`);
     ids.add(cls.id);
     if (!cls.keep) problems.push(`${cls.id}: no keep rule`);
+    if (cls.maxBytes !== undefined && (!Number.isSafeInteger(cls.maxBytes) || cls.maxBytes <= 0 ||
+        cls.origin !== 'agent' || !['max-age', 'newest'].includes(cls.keep.kind))) {
+      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count class`);
+    }
     if (cls.roots.length === 0 && (cls.stores ?? []).length === 0) problems.push(`${cls.id}: no roots`);
     if (cls.enforcers.length === 0) problems.push(`${cls.id}: no enforcer entry`);
     for (const enforcer of cls.enforcers) {
