@@ -37,6 +37,7 @@
  * tie between two different classes is a CONFLICT and fails closed.
  */
 import { homedir } from 'node:os';
+import { normalize } from 'node:path';
 
 export type RetentionOrigin = 'agent' | 'owner' | 'system';
 
@@ -469,7 +470,7 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
     id: 'papercusp-home-run-dirs',
     title: 'Per-run agent output at the top of ~/.papercusp (plan-item, work-item or date-stamped names)',
     origin: 'agent',
-    roots: HOME_RUN_DIR_PATTERNS,
+    roots: [...HOME_RUN_DIR_PATTERNS],
     keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
     note:
@@ -613,9 +614,9 @@ export const RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'db-dumps',
-    title: 'Papercusp database dumps on /mnt/backup/db-dumps',
+    title: 'Papercusp database dumps on the cold-a volume and retained legacy tree',
     origin: 'system',
-    roots: ['/mnt/backup/db-dumps'],
+    roots: ['/mnt/cold-a/Backup/db-dumps', '/mnt/backup/db-dumps'],
     keep: { kind: 'keep', reason: 'the db-backup job writes and rotates these; it is the only writer' },
     enforcers: [{ kind: 'none' }],
   },
@@ -690,14 +691,25 @@ interface CompiledRoot {
   score: number;
 }
 
+export interface RetentionPinProtection { paths: readonly string[]; expiresAt: string }
+
+/** Protect a pin's descendants and the containing entry, without sibling-prefix matches. */
+export function retentionPinProtectsPath(path: string, pins: readonly RetentionPinProtection[], nowMs = Date.now()): boolean {
+  const candidate = normalize(path);
+  const contains = (outer: string, inner: string) => outer === '/' || outer === inner || inner.startsWith(outer + '/');
+  return pins.some((pin) => Date.parse(pin.expiresAt) > nowMs && pin.paths.some((p) =>
+    contains(normalize(p), candidate) || contains(candidate, normalize(p))));
+}
+
 export interface CompiledPolicy {
   classes: ReadonlyMap<string, RetentionClass>;
   roots: CompiledRoot[];
   stores: Array<{ classId: string; prefix: string }>;
+  pins?: readonly RetentionPinProtection[];
 }
 
 /** Compile a policy against a home directory (default: the current user's). */
-export function compilePolicy(policy: readonly RetentionClass[] = RETENTION_POLICY, home: string = homedir()): CompiledPolicy {
+export function compilePolicy(policy: readonly RetentionClass[] = RETENTION_POLICY, home: string = homedir(), pins: readonly RetentionPinProtection[] = []): CompiledPolicy {
   const classes = new Map<string, RetentionClass>();
   const roots: CompiledRoot[] = [];
   const stores: Array<{ classId: string; prefix: string }> = [];
@@ -711,7 +723,7 @@ export function compilePolicy(policy: readonly RetentionClass[] = RETENTION_POLI
     }
     for (const prefix of cls.stores ?? []) stores.push({ classId: cls.id, prefix });
   }
-  return { classes, roots, stores };
+  return { classes, roots, stores, pins };
 }
 
 export type Classification =
@@ -765,7 +777,8 @@ export function containsClassRoot(path: string, compiled: CompiledPolicy): boole
  * keep, review and native classes, and on the class root itself (a deleter
  * removes entries under a root, never the root).
  */
-export function deletionClassFor(path: string, compiled: CompiledPolicy): RetentionClass | null {
+export function deletionClassFor(path: string, compiled: CompiledPolicy, nowMs = Date.now()): RetentionClass | null {
+  if (retentionPinProtectsPath(path, compiled.pins ?? [], nowMs)) return null;
   const c = classifyPath(path, compiled);
   if (c.status !== 'class') return null;
   const cls = compiled.classes.get(c.classId);

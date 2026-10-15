@@ -91,7 +91,7 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     expect(del('/mnt/data/tmp/agent-fixture/expired')).toBe('tmp-scratch');
   });
 
-  it('protects the owner macOS VM and deletes nothing on /mnt/backup (WI-6554700010011387)', () => {
+  it('protects the owner macOS VM and both database dump roots (WI-6554700010011387)', () => {
     // The owner-protected VM: the OSX-KVM disk, its recovery images and the backup-source link.
     for (const p of [
       '/mnt/backup/offload/macos-vm/OSX-KVM/mac_hdd_ng.img',
@@ -104,6 +104,11 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     // The more specific protected root wins over the generic offload review class.
     expect(classifyPath('/mnt/backup/offload/WI-2146953/x', policy)).toMatchObject({ classId: 'backup-offload-other' });
     expect(classifyPath('/mnt/backup/db-dumps/papercusp-state.dump', policy)).toMatchObject({ classId: 'db-dumps' });
+    expect(classifyPath('/mnt/cold-a/Backup/db-dumps/pg/papercusp-state.dump', policy)).toMatchObject({
+      classId: 'db-dumps',
+    });
+    expect(del('/mnt/backup/db-dumps/pg/papercusp-state.dump')).toBeNull();
+    expect(del('/mnt/cold-a/Backup/db-dumps/pg/papercusp-state.dump')).toBeNull();
     expect(classifyPath('/mnt/backup/cloud-e2e-workspace-host-20261009r2/source/x', policy)).toMatchObject({
       classId: 'backup-agent-trees',
     });
@@ -152,6 +157,18 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     expect(del('/tmp/vitest-123')).toBe('tmp-scratch');
     expect(del('docker:build-cache')).toBeNull();
     expect(classifyPath('docker:build-cache', policy)).toMatchObject({ classId: 'container-storage' });
+  });
+
+  it('honours live pins in the deletion selector and stops protecting at their expiry', () => {
+    const now = Date.UTC(2026, 9, 15);
+    const pinnedPath = `${HOME}/.papercusp/evidence/run/output`;
+    const pinned = compilePolicy(RETENTION_POLICY, HOME, [{ paths: [pinnedPath], expiresAt: new Date(now + 3600_000).toISOString() }]);
+    expect(deletionClassFor(`${pinnedPath}/proof.json`, pinned, now)).toBeNull();
+    expect(deletionClassFor(`${HOME}/.papercusp/evidence/run`, pinned, now)).toBeNull();
+    expect(deletionClassFor(`${pinnedPath}-other`, pinned, now)?.id).toBe('agent-evidence');
+    expect(deletionClassFor(pinnedPath, pinned, now + 3600_000)?.id).toBe('agent-evidence');
+    const rootPin = compilePolicy(RETENTION_POLICY, HOME, [{ paths: ['/'], expiresAt: new Date(now + 1).toISOString() }]);
+    expect(deletionClassFor('/tmp/output', rootPin, now)).toBeNull();
   });
 
   it('fails closed on a conflict between two classes at the same specificity', () => {
