@@ -6239,12 +6239,36 @@ describe('applyInjectionDoor (deterministic-context-carry P-006 leg (b))', () =>
     const m = out.match(/in full at (\S+) \(see its section index\)/);
     expect(m).not.toBeNull();
     const spillPath = m![1];
-    expect(spillPath).toContain(join('.papercusp', 'wake-spills', 'su-door-test', 'delivery-990001.md'));
+    expect(spillPath).toContain(join('.papercusp', 'wake-spills', 'su-door-test', 'delivery-990001-'));
     const spilled = readFileSync(spillPath, 'utf8');
     expect(spilled).toContain(text); // the WHOLE original, not just the overflow
     expect(spilled).toContain('## Section index');
     expect(spilled).toMatch(/LEFT OUT — "carry-note paragraph \d+/);
     rmSync(spillPath, { force: true });
+  });
+
+  it('preserves each retry snapshot when delivery-time evidence changes', () => {
+    const d = work({ id: 990_003, subscriberId: 'su-door-retry-test' });
+    const narrative = Array.from({ length: 400 }, (_, i) => `Historical paragraph ${i}: ${'detail '.repeat(30)}`).join('\n\n');
+    const first = `HEADLINE first delivery read\n\n${narrative}`;
+    const second = `HEADLINE later delivery read\n\n${narrative}`;
+    const pointer = (out: string) => out.match(/in full at (\S+) \(see its section index\)/)?.[1];
+    const firstPath = pointer(applyInjectionDoor(d, first));
+    const secondPath = pointer(applyInjectionDoor(d, second));
+    try {
+      expect(firstPath).toBeTruthy();
+      expect(secondPath).toBeTruthy();
+      expect(secondPath).not.toBe(firstPath);
+      expect(readFileSync(firstPath!, 'utf8')).toContain(first);
+      expect(readFileSync(firstPath!, 'utf8')).not.toContain('HEADLINE later delivery read');
+      expect(readFileSync(secondPath!, 'utf8')).toContain(second);
+      const original = readFileSync(secondPath!, 'utf8');
+      expect(pointer(applyInjectionDoor(d, second))).toBe(secondPath);
+      expect(readFileSync(secondPath!, 'utf8')).toBe(original);
+    } finally {
+      if (firstPath) rmSync(firstPath, { force: true });
+      if (secondPath) rmSync(secondPath, { force: true });
+    }
   });
 
   it('kill-switch PAPERCUSP_INJECTION_DOOR_OFF=1 bypasses the door entirely', () => {

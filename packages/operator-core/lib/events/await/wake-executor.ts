@@ -34,6 +34,7 @@
  */
 
 import { spawn as childSpawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   closeSync,
   existsSync,
@@ -2184,7 +2185,8 @@ function injectionDoorTokens(subscriberId: string | null | undefined): number {
  * by priority (headline, then next-action / owner / blocker sections, then document
  * order) and names every section it left out in one `[injection-door: …]` pointer; the
  * FULL original plus a section index is spilled to
- * `~/.papercusp/wake-spills/<subscriber>/delivery-<id>.md`. Nothing is cut mid-section.
+ * `~/.papercusp/wake-spills/<subscriber>/delivery-<id>-<content hash>.md`. Retries
+ * with different delivery-time reads preserve earlier evidence. Nothing is cut mid-section.
  * FAIL-SOFT: a spill write failure delivers the FULL untrimmed text (a lost wake tail is
  * worse than a fat hop), and the kill-switch env bypasses entirely. Applied BEFORE
  * provenance tagging so the envelope is never sheared.
@@ -2201,18 +2203,27 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
       'wake-spills',
       String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'),
     );
-    const file = join(dir, `delivery-${d.id}.md`);
+    // A delivery can retry after its live reads change. Its pointer must continue
+    // to identify that attempt's evidence, rather than a later retry's snapshot.
+    const contentHash = createHash('sha256').update(`${doorTokens}\n${text}`).digest('hex');
+    const file = join(dir, `delivery-${d.id}-${contentHash}.md`);
     const packed = packWakeText(text, budgetChars, doorTokens, file);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      file,
-      `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
-        `The composed wake exceeded the per-hop injection door (~${doorTokens} tokens), so ` +
-        `${packed.omitted.length} whole section(s) were left out of the delivered text. ` +
-        `This file carries the FULL original text. Safe to delete after reading.\n\n` +
-        `## Section index\n\n${renderSectionIndex(packed)}\n\n---\n\n${text}\n`,
-      { mode: 0o600 },
-    );
+    try {
+      writeFileSync(
+        file,
+        `# Wake spill — delivery #${d.id} (event ${d.eventKey})\n\n` +
+          `The composed wake exceeded the per-hop injection door (~${doorTokens} tokens), so ` +
+          `${packed.omitted.length} whole section(s) were left out of the delivered text. ` +
+          `This file carries the FULL original text. Safe to delete after reading.\n\n` +
+          `## Section index\n\n${renderSectionIndex(packed)}\n\n---\n\n${text}\n`,
+        { mode: 0o600, flag: 'wx' },
+      );
+    } catch (error) {
+      // Identical retries share the same immutable snapshot; every other write
+      // failure retains the existing fail-soft full-text delivery below.
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    }
     recordWakePack(packed.omitted.length);
     console.info(
       `[wake-budget] delivery #${d.id} for ${d.subscriberId}: ${packed.omitted.length} section(s) left out whole ` +
