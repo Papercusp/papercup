@@ -1661,6 +1661,54 @@ describe('wakeTurnText', () => {
       expect(sent[0].summary).toBe(`[await-event] ${DONE_KEY} fired — delivered to your coord inbox (no live pty)`);
     });
 
+    it('does not report a loop fire as delivered when only an inbox notice was written', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+
+      const outcome = await degradeToInboxOrDrop(
+        work({
+          eventKey: 'coord:inbox-wake:su-loop',
+          source: 'loop:rt-loop',
+          payload: { carry: 'warm', wakeCount: 6, harness: 'papercusp', routineId: 'rt-loop' },
+        }),
+        'no live pty',
+        send,
+      );
+
+      expect(outcome).toMatchObject({
+        kind: 'drop',
+        reason: expect.stringContaining('loop turn delivery cannot fall back to inbox'),
+      });
+      expect(sent).toHaveLength(0);
+    });
+
+    it('allows a mixed wake to use inbox after its stale loop component is stripped', async () => {
+      const sent: { summary?: string; body?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+
+      const outcome = await degradeToInboxOrDrop(
+        work({
+          eventKey: DONE_KEY,
+          payload: {
+            coalesced: true,
+            events: [{ event: DONE_KEY, payload: { msg_id: 'm-1' } }],
+            latest: { event: DONE_KEY, payload: { msg_id: 'm-1' } },
+          },
+        }),
+        'stale loop component stripped',
+        send,
+      );
+
+      expect(outcome).toEqual({ kind: 'delivered', channel: 'inbox' });
+      expect(sent).toHaveLength(1);
+    });
+
     it('labels a positive lock grant as a snapshot when it is deferred to the inbox', async () => {
       const sent: { summary?: string; body?: string }[] = [];
       const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
@@ -3218,6 +3266,55 @@ describe('executeWake — the liveness ladder', () => {
     );
   });
 
+  it('releases only the exact current-host accepted delivery after a host-ending terminal drop', async () => {
+    const ownerId = 'su-host-ending-drop';
+    const deliveryId = '782698';
+    const startedAt = Date.parse('2026-10-15T10:00:00.000Z');
+    const terminal = (id: string, ts: string) => ({
+      kind: 'wake-rearm-dropped',
+      mode: 'turn',
+      reason: 'host-ending',
+      deliveryIds: [id],
+      ts,
+    });
+    const ledgerReads = [
+      [terminal('another-delivery', '2026-10-15T10:01:00.000Z')],
+      [terminal(deliveryId, '2026-10-15T09:59:59.999Z')],
+      [terminal(deliveryId, '2026-10-15T10:01:00.000Z')],
+    ];
+    const readPsuHostEventTailAsync = vi.fn(async () => ledgerReads.shift() ?? []);
+    const injectPsuHostWithConfirmation = vi.fn(async () => ({
+      ok: true,
+      confirmation: 'acked' as const,
+      reason: 'accepted',
+    }));
+    const d = deps({
+      findPsuHost: vi.fn(async () => ({ sock: '/tmp/host-ending-drop.sock', ownerId, startedAt })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      readPsuHostEventTailAsync,
+    });
+    const delivery = work({ id: Number(deliveryId), subscriberId: ownerId, wakeHandle: null });
+
+    const first = await executeWake(delivery, d);
+    expect(first).toMatchObject({ kind: 'park', hostCommitPending: true });
+
+    const wrongId = await executeWake({ ...delivery, attempts: 8, lastError: first.kind === 'park' ? first.reason : null }, d);
+    expect(wrongId).toMatchObject({ kind: 'park', hostCommitPending: true });
+
+    const oldHost = await executeWake({ ...delivery, attempts: 8, lastError: wrongId.kind === 'park' ? wrongId.reason : null }, d);
+    expect(oldHost).toMatchObject({ kind: 'park', hostCommitPending: true });
+
+    const ended = await executeWake({ ...delivery, attempts: 8, lastError: oldHost.kind === 'park' ? oldHost.reason : null }, d);
+    expect(ended).toMatchObject({
+      kind: 'park',
+      reason: expect.stringContaining('terminal host-ending drop confirmed'),
+    });
+    expect(ended.kind === 'park' && ended.hostCommitPending).toBeFalsy();
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(3);
+    expect(readPsuHostEventTailAsync).toHaveBeenCalledTimes(3);
+  });
+
   describe('turn-start proof on the confirming psu path (P-006/D-004)', () => {
     const confirmingDeps = (caps: string[] | undefined, reason: string) => {
       const injectPsuHostWithConfirmation = vi.fn(async () => ({ ok: true, confirmation: 'acked' as const, reason }));
@@ -3320,6 +3417,7 @@ describe('executeWake — the liveness ladder', () => {
     const results = [
       { ok: true, confirmation: 'acked' as const, reason: 'accepted' },
       { ok: true, confirmation: 'acked' as const, reason: 'pending-delivery-id' },
+      { ok: true, confirmation: 'acked' as const, reason: 'coalesced-into-pending-turn' },
       { ok: true, confirmation: 'acked' as const, reason: 'duplicate-delivery-id' },
     ];
     const injectPsuHostWithConfirmation = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(
@@ -3342,12 +3440,18 @@ describe('executeWake — the liveness ladder', () => {
       hostCommitPending: true,
       reason: expect.stringContaining('pending-delivery-id'),
     });
+    expect(await executeWake(delivery, wakeDeps)).toMatchObject({
+      kind: 'park',
+      hostCommitPending: true,
+      reason: expect.stringContaining('coalesced-into-pending-turn'),
+    });
     expect(await executeWake(delivery, wakeDeps)).toEqual({
       kind: 'delivered',
       channel: 'psu-socket-inject',
     });
-    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(3);
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(4);
     expect(injectPsuHostWithConfirmation.mock.calls.map((call) => call[1].deliveryId)).toEqual([
+      '901',
       '901',
       '901',
       '901',
