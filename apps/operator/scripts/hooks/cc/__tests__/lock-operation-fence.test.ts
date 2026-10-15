@@ -284,7 +284,7 @@ describe('native hook operation fence', () => {
     const result = await hook('pretooluse-locks-acquire.sh', payload());
     const decision = JSON.parse(result.stdout).hookSpecificOutput;
     expect(decision.permissionDecision).toBe('deny');
-    expect(decision.permissionDecisionReason).toContain('rejected the operation scope');
+    expect(decision.permissionDecisionReason).toContain('rejected the native operation scope before authority was prepared');
     expect(protocolCache()).toEqual([]);
     expect(acquires().length).toBeGreaterThan(0);
     expect(acquires().every(r => r.args.hook_operation)).toBe(true);
