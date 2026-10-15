@@ -9,6 +9,7 @@ import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp'
 import type { IdentityGrantPolicy } from './capability-envelope/identity-grants-port';
 import { isLazyIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
 import * as servingIdentity from './serving-host-identity';
+import { mockReturnOnceTyped } from './testing/typed-mock';
 
 const db = vi.hoisted(() => {
   const rows: unknown[][] = [];
@@ -320,11 +321,12 @@ describe('control-anchor kernel resolver (D-030)', () => {
 
   it('bounds control-anchor pool acquisition and releases a client that arrives after the deadline', async () => {
     vi.useFakeTimers();
-    let resolveLateConnection: (connection: unknown) => void = () => {};
-    const pendingConnection = new Promise<unknown>((resolve) => {
+    type ReservedConnection = Awaited<ReturnType<typeof db.reserve>>;
+    let resolveLateConnection: (connection: ReservedConnection) => void = () => {};
+    const pendingConnection = new Promise<ReservedConnection>((resolve) => {
       resolveLateConnection = resolve;
     });
-    db.reserve.mockReturnValueOnce(pendingConnection as never);
+    mockReturnOnceTyped(db.reserve, pendingConnection);
 
     try {
       const pendingVerdict = controlAnchorKernelResolver(request());
