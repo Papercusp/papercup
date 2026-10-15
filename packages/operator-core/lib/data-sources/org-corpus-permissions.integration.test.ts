@@ -14,6 +14,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createPersonalGrant, searchPersonalDocuments, upsertPersonalDocuments } from '../personal-vault/store';
 import { personalVaultRefusal } from '../pg-read-query';
 import { readSelectedSupportCase } from '../blueprint/support-workflow-case';
+import { parseSupportToEngineeringResult } from '../blueprint/support-workflow-contract';
 import {
   ORGANIZATION_CORPUS_SCOPE,
   mapProviderIdentity,
@@ -108,9 +109,17 @@ describe('organization corpus permissions (R-8)', () => {
     const input = { supportCaseId: 'case-1', approvedRevision: workflow.approvedRevision, documentIds: [id],
       query: 'cobalt roadmap', requestedAction: 'prepare-handoff' };
     const current = { ...ctx, principal: { kind: 'user', trust: 'verified', slug: alice, workspaceId: WS } };
-    expect((await readSelectedSupportCase(org.adminSql, current, workflow, input))).toMatchObject({
+    const selected = await readSelectedSupportCase(org.adminSql, current, workflow, input);
+    expect(selected).toMatchObject({
       allowed: true, results: [{ id }],
     });
+    if (!selected.allowed) throw new Error('expected selected case permission');
+    const citation = { id, source: selected.results[0]!.source, externalId: selected.results[0]!.externalId };
+    const output = { supportCaseId: input.supportCaseId, summary: 'Cobalt planning needs an engineering handoff',
+      reproduction: ['Read the selected support case'], checklist: [], suggestedRole: 'engineer', citations: [citation] };
+    expect(parseSupportToEngineeringResult(output, input, selected.results).citations).toEqual([citation]);
+    expect(() => parseSupportToEngineeringResult({ ...output,
+      citations: [{ ...citation, externalId: 'forged-other-case' }] }, input, selected.results)).toThrow(/evidence/);
     await expect(readSelectedSupportCase(org.adminSql,
       { ...current, principal: { ...current.principal, workspaceId: 'other-workspace' } }, workflow, input))
       .rejects.toThrow(/current workspace/);
@@ -127,6 +136,11 @@ describe('organization corpus permissions (R-8)', () => {
     await grantOrganization(alice);
     await replacePermissionListMembers(org.adminSql, WS, listId, []);
     await expect(readSelectedSupportCase(org.adminSql, current, workflow, input)).rejects.toThrow(/revoked/);
+    const revoked = await searchOrganizationDocuments(org.adminSql, ctx, {
+      workspaceId: WS, principalUserId: alice, agentOwnerId: alice, query: input.query, documentIds: input.documentIds,
+    });
+    if (!revoked.allowed) throw new Error('expected live organization grant');
+    expect(() => parseSupportToEngineeringResult(output, input, revoked.results)).toThrow(/evidence/);
   });
 
   it('narrows a selected support case without widening live source permissions', async () => {
