@@ -15,6 +15,7 @@ import codeRun from './code/run';
 import testingRun, { testingRunAbortCompletionReceipt } from './testing/run';
 import docsAuthor from './docs/author';
 import coordSend from './coordination/tools/send';
+import coordDispatch from './coordination/tools/dispatch';
 import agentReview from './improvements/agent-review';
 import storagePrune from './storage/prune';
 
@@ -56,6 +57,8 @@ const LATE_RETURN_MUTATORS = {
   'work_items:create': workItemsCreate,
   // EI-25288245178425318: a delivered coord:send must expose its persisted message id after a late return.
   'coord:send': coordSend,
+  // EI-25922563546988521: dispatch must receipt only proven message and assignment effects.
+  'coord:dispatch': coordDispatch,
   // EI-25374615774698673: a late review claim/resubmission must name its completed effect.
   'improvements:agent-review': agentReview,
   // EI-25430676827648397: prune can commit deletes before its slow maintenance tail returns.

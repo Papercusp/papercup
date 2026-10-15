@@ -7,6 +7,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   createDispatchPhaseInstrumentation,
   composeDispatch,
+  coordDispatchAbortCompletionReceipt,
   finalizePilotDispatchReceipt,
   runInstrumentedDispatch,
   type DispatchArgs,
@@ -18,7 +19,7 @@ import type { RefResolvers } from '../ref-hydrate-resolve';
 import type { StableAgentTargetState } from '../actionable-work-item-dispatch';
 import { AdmissionRecoveryRefused } from '../../../work-item-admission-recovery';
 import { lookupByMcpName, papercuspGateBypass } from '@papercusp/agent-mcp';
-import { runDispatchStack } from '@papercusp/tooldef';
+import { runDispatchStack, type ToolResult } from '@papercusp/tooldef';
 
 const recoveryIO = vi.hoisted(() => ({ request: vi.fn(), target: vi.fn() }));
 vi.mock('../../../work-item-admission-recovery', async (original) => ({
@@ -178,6 +179,114 @@ const sendEnv = (to: string, wake: Record<string, unknown>, msg_id = 'm-1') => (
   ok: true,
   results: [{ ok: true, to: [to], msg_id, ts: 't', wake }],
   counts: { ok: 1, failed: 0 },
+});
+
+describe('coord:dispatch abort-completion receipt', () => {
+  const attempt = { callId: 'dispatch-call-1', toolName: 'coord:dispatch' };
+  const result = (payload: unknown) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  }) as ToolResult;
+  const base = {
+    ok: true,
+    to: 'su-target',
+    sessionState: 'parked',
+    wakeable: true,
+    assigned: null,
+    workItems: null,
+    delivered: 'message-1',
+    woken: 0,
+    queued: 1,
+    pickupConfirmed: false,
+  };
+
+  it('records a persisted message id from the completed dispatch result', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result(base), attempt)).toEqual({
+      status: 'recorded',
+      effectRef: 'coord-dispatch:dispatch-call-1:message:message-1',
+    });
+  });
+
+  it('records only plan assignments whose row and canonical assignment identity agree', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'builder-1' }, result({
+      ...base,
+      delivered: null,
+      assigned: {
+        planSlug: 'plan-a', items: ['P-001'], requested: 1, assigned: 1, failed: 0, partial: false,
+        results: [{
+          ok: true, plan: 'plan-a', item: 'P-001',
+          assignment: { planSlug: 'plan-a', itemId: 'P-001', assigneeName: 'builder-1' },
+        }],
+      },
+    }), attempt)).toEqual({
+      status: 'recorded',
+      effectRef: 'coord-dispatch:dispatch-call-1:plan-item:plan-a#P-001',
+    });
+  });
+
+  it('records successful atomic work-item claims and the delivered note together', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result({
+      ...base,
+      workItems: {
+        ok: true, targetAgent: 'su-target', requested: ['EI-1'], actionable: ['EI-1'],
+        assigned: ['EI-1'], retained: [], skipped: [], failed: [], executionWorkItemIds: ['EI-1'],
+      },
+    }), attempt)).toEqual({
+      status: 'recorded',
+      effectRef: 'coord-dispatch:dispatch-call-1:message:message-1,work-item:EI-1',
+    });
+  });
+
+  it('keeps a proven message visible but marks an unproven assignment recovery incomplete', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'builder-1' }, result({
+      ...base,
+      assigned: {
+        planSlug: 'plan-a', items: ['P-001'], requested: 1, assigned: 1, failed: 0, partial: false,
+        results: [{ ok: true, plan: 'plan-a', item: 'P-001' }],
+      },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      effectRef: 'coord-dispatch:dispatch-call-1:message:message-1',
+      failures: ['unresolved-plan-assignment-outcomes'],
+    });
+  });
+
+  it('fails closed when a failed claim may have committed before its error', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result({
+      ...base,
+      delivered: null,
+      workItems: {
+        ok: false, targetAgent: 'su-target', requested: ['EI-1'], actionable: ['EI-1'],
+        assigned: [], retained: [], skipped: [],
+        failed: [{ workItemId: 'EI-1', code: 'claim_failed', reason: 'connection closed' }],
+        executionWorkItemIds: [],
+      },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['unresolved-work-item-assignment-outcomes'],
+    });
+  });
+
+  it('proves the no-op frontier did not deliver or assign anything', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result({
+      ...base,
+      assigned: null,
+      workItems: {
+        ok: true, targetAgent: 'su-target', requested: ['EI-1'], actionable: [],
+        assigned: [], retained: [], skipped: [{ workItemId: 'EI-1', code: 'blocked' }],
+        failed: [], executionWorkItemIds: [],
+      },
+      delivered: null,
+    }), attempt)).toEqual({
+      status: 'not-recorded',
+      reason: 'coord:dispatch found no executable work-items and performed no delivery',
+    });
+  });
+
+  it('rejects a receipt for the wrong tool attempt', () => {
+    expect(coordDispatchAbortCompletionReceipt({ to: 'su-target' }, result(base), {
+      ...attempt, toolName: 'coord:send',
+    })).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-attempt-identity'] });
+  });
 });
 
 describe('directed-pair pilot dispatch receipt', () => {

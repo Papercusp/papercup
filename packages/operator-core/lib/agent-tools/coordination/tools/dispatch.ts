@@ -26,6 +26,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-parser';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
@@ -49,6 +50,7 @@ import {
   type PilotParticipantDispatchReceipt,
   type PersistPilotParticipantDispatchInput,
 } from '../../../pilot-participant-receipts';
+import { asRecord, completedResultPayload } from '../../abort-completion-payload';
 
 export interface DispatchArgs {
   to: string;
@@ -907,6 +909,166 @@ export async function runInstrumentedDispatch(
   }
 }
 
+/**
+ * Resolve a late coord:dispatch completion only from effects the returned dispatch
+ * summary proves. Assignment counts alone are not receipts: plan-item rows must
+ * carry their canonical assignment, work-item ids must come from successful atomic
+ * claims, and a message id must identify a persisted inbox row.
+ */
+export function coordDispatchAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'coord:dispatch' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'coord:dispatch receipt is missing its dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'coord:dispatch result did not contain a structured completion summary',
+      failures: ['missing-dispatch-result'],
+    };
+  }
+
+  const effects: string[] = [];
+  const unresolved: string[] = [];
+  const delivered = payload.delivered;
+  if (typeof delivered === 'string' && delivered.trim()) {
+    effects.push(`message:${delivered.trim()}`);
+  } else if (delivered !== null) {
+    unresolved.push('unresolved-message-outcome');
+  }
+
+  let noExecutableWorkItems = false;
+  const rawAssigned = payload.assigned;
+  if (rawAssigned === undefined) {
+    unresolved.push('missing-plan-assignment-outcome');
+  } else if (rawAssigned !== null) {
+    const summary = asRecord(rawAssigned);
+    const planSlug = typeof summary?.planSlug === 'string' ? summary.planSlug.trim() : '';
+    const items = Array.isArray(summary?.items) && summary.items.every((item) => typeof item === 'string' && item.trim())
+      ? summary.items as string[]
+      : null;
+    const rows = Array.isArray(summary?.results) ? summary.results : null;
+    if (
+      !summary || !planSlug || !items || items.length === 0 || !rows ||
+      summary.requested !== items.length || rows.length !== items.length
+    ) {
+      unresolved.push('unresolved-plan-assignment-outcomes');
+    } else {
+      const remaining = new Map<string, number>();
+      for (const item of items) remaining.set(item, (remaining.get(item) ?? 0) + 1);
+      let provenAssigned = 0;
+      let knownRefused = 0;
+      for (const value of rows) {
+        const row = asRecord(value);
+        const item = typeof row?.item === 'string' ? row.item : '';
+        const available = remaining.get(item) ?? 0;
+        if (!row || row.plan !== planSlug || available < 1) {
+          unresolved.push('unresolved-plan-assignment-outcomes');
+          continue;
+        }
+        remaining.set(item, available - 1);
+        if (row.ok === true) {
+          const assignment = asRecord(row.assignment);
+          const expectedAssignee = asRecord(_args)?.to;
+          if (
+            assignment?.planSlug === planSlug && assignment.itemId === item &&
+            typeof expectedAssignee === 'string' && assignment.assigneeName === expectedAssignee
+          ) {
+            effects.push(`plan-item:${planSlug}#${item}`);
+            provenAssigned += 1;
+          } else {
+            unresolved.push('unresolved-plan-assignment-outcomes');
+          }
+        } else if (row.ok === false && typeof row.refused === 'string' && row.refused.trim()) {
+          knownRefused += 1;
+        } else {
+          // A thrown/errored assignment can race its durable upsert.
+          unresolved.push('unresolved-plan-assignment-outcomes');
+        }
+      }
+      if (
+        [...remaining.values()].some((count) => count !== 0) ||
+        summary.assigned !== provenAssigned || summary.failed !== knownRefused ||
+        summary.partial !== (provenAssigned > 0 && knownRefused > 0)
+      ) unresolved.push('unresolved-plan-assignment-outcomes');
+    }
+  }
+
+  let workItemsPresent = false;
+  const rawWorkItems = payload.workItems;
+  if (rawWorkItems === undefined) {
+    unresolved.push('missing-work-item-assignment-outcome');
+  } else if (rawWorkItems !== null) {
+    workItemsPresent = true;
+    const workItems = asRecord(rawWorkItems);
+    const readIds = (value: unknown): string[] | null =>
+      Array.isArray(value) && value.every((id) => typeof id === 'string' && id.trim()) ? value as string[] : null;
+    const requested = readIds(workItems?.requested);
+    const assigned = readIds(workItems?.assigned);
+    const retained = readIds(workItems?.retained);
+    const execution = readIds(workItems?.executionWorkItemIds);
+    const failed = Array.isArray(workItems?.failed) ? workItems.failed : null;
+    const unique = (ids: string[]) => new Set(ids).size === ids.length;
+    const requestedSet = new Set(requested ?? []);
+    const assignedSet = new Set(assigned ?? []);
+    const retainedSet = new Set(retained ?? []);
+    const expectedExecution = (requested ?? []).filter((id) => assignedSet.has(id) || retainedSet.has(id));
+    if (
+      !workItems || !requested || !assigned || !retained || !execution || !failed ||
+      !unique(requested) || !unique(assigned) || !unique(retained) || !unique(execution) ||
+      assigned.some((id) => !requestedSet.has(id)) || retained.some((id) => !requestedSet.has(id)) ||
+      retained.some((id) => assignedSet.has(id)) ||
+      execution.length !== expectedExecution.length || execution.some((id, index) => id !== expectedExecution[index])
+    ) {
+      unresolved.push('unresolved-work-item-assignment-outcomes');
+    } else {
+      for (const id of assigned) effects.push(`work-item:${id}`);
+      for (const value of failed) {
+        const row = asRecord(value);
+        if (!row || typeof row.workItemId !== 'string' || !requestedSet.has(row.workItemId)) {
+          unresolved.push('unresolved-work-item-assignment-outcomes');
+        } else if (row.code !== 'claim_refused') {
+          // claim_failed may have raced a committed claim; refusal is the only
+          // failure outcome that proves the atomic assignment did not land.
+          unresolved.push('unresolved-work-item-assignment-outcomes');
+        }
+      }
+      noExecutableWorkItems = execution.length === 0 && assigned.length === 0 && retained.length === 0;
+    }
+  }
+
+  const effectRef = effects.length > 0
+    ? `coord-dispatch:${context.callId}:${[...new Set(effects)].join(',')}`
+    : undefined;
+  const failures = [...new Set(unresolved)];
+  if (failures.length > 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: `coord:dispatch has ${effects.length} proven effect(s), but its completed summary leaves an outcome ambiguous`,
+      failures,
+      ...(effectRef ? { effectRef } : {}),
+    };
+  }
+  if (effectRef) return { status: 'recorded', effectRef };
+  if (workItemsPresent && noExecutableWorkItems && delivered === null && rawAssigned === null) {
+    return { status: 'not-recorded', reason: 'coord:dispatch found no executable work-items and performed no delivery' };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'coord:dispatch completion did not prove a delivered message or durable assignment',
+    failures: ['no-proven-dispatch-effect'],
+  };
+}
+
 export default defineTool({
   name: 'coord:dispatch',
   description:
@@ -921,6 +1083,7 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  abortCompletionReceipt: coordDispatchAbortCompletionReceipt,
   // Composite marker (tool-call-batching-wrappers P-010): the primitives this bundles.
   replaces: ['coord:presence', 'plan_items:assign', 'work_items:claim', 'coord:send', 'events:emit'],
   args: z
