@@ -311,8 +311,8 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
       (isLiveOwnedState(t.state) || opts.reapTerminalResidue));
     for (const child of descendants) {
       const result = await killTask(child.taskId, { ...opts, includeSubtree: false });
-      const verifiedGone = result.error === 'already_gone' || (result.error === 'not_live' &&
-        result.detail?.includes('holds no live process right now; nothing to reap'));
+      const verifiedGone = !result.ok && (result.error === 'already_gone' || (result.error === 'not_live' &&
+        result.detail?.includes('holds no live process right now; nothing to reap')));
       if (!result.ok && !verifiedGone) {
         return { ok: false, taskId, action: 'kill', error: 'incomplete',
           detail: `Descendant cleanup failed for ${child.taskId}: ${result.error}: ${result.detail ?? ''}` };
