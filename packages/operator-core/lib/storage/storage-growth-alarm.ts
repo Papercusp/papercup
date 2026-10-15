@@ -60,6 +60,7 @@ import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
 import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
 import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
 import { CENSUS_RETENTION_DAYS } from './disk-consumer-census';
+import { samplePgTableSizes, recordPgTableSizeSample } from './pg-table-growth';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
@@ -774,22 +775,16 @@ async function defaultReadRetentionAges(
 
 /** Default undeclared-table scan: the catalog, NOT the category list. */
 async function defaultListTableSizes(): Promise<TableSizeRow[]> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const sql = getOrgPg().sql as unknown as (
-    strings: TemplateStringsArray,
-    ...v: unknown[]
-  ) => Promise<Array<{ table: string; total_bytes: string | number; rows: string | number }>>;
-  const rows = await sql`
-    SELECT relname AS table,
-           pg_total_relation_size(relid) AS total_bytes,
-           n_live_tup AS rows
-      FROM pg_stat_user_tables
-     WHERE schemaname = 'harness_shared'`;
-  return rows.map((r) => ({
-    table: String(r.table),
-    totalBytes: Number(r.total_bytes),
-    rows: Number(r.rows),
-  }));
+  const { activeWorkspaceId } = await import('../workspace-registry');
+  const sql = getOrgPg().sql;
+  const sample = await samplePgTableSizes(sql, activeWorkspaceId());
+  try {
+    await recordPgTableSizeSample(sql, sample);
+  } catch (error) {
+    // A history-write failure must not suppress the existing catalog alarm leg.
+    console.warn(`[storage-growth-alarm] table-size history unavailable (growth UNKNOWN): ${String(error)}`);
+  }
+  return sample.tables.map(t => ({ table: t.name, totalBytes: t.totalBytes, rows: t.rows ?? 0 }));
 }
 
 /** One read-only pass: size every storage category, toast on any breach. Never

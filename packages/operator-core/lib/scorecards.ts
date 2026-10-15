@@ -34,6 +34,7 @@ import {
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
+import { PG_TABLE_GROWTH_INSTRUMENT_KEY, measurePgTableGrowthWindow } from './storage/pg-table-growth';
 import {
   NATIVE_ADOPTION_VERSION,
   measureNativeAdoptionWindow,
@@ -411,6 +412,7 @@ export async function resolveScorecardInstrumentSnapshots(
     readArtifact?: (path: string) => Promise<string>;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
+    pgTableGrowth?: (input: Parameters<typeof measurePgTableGrowthWindow>[1]) => ReturnType<typeof measurePgTableGrowthWindow>;
     /** Native code-intelligence adoption for one workspace window (P-033). */
     nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
@@ -543,6 +545,26 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    if (key === PG_TABLE_GROWTH_INSTRUMENT_KEY) {
+      const evidenceRef = 'harness_shared.audit_log:storage:pg-table-sizes';
+      const workspaceId = input.rubric.workspaceId;
+      const scopedWindow = { ...window, workspaceId };
+      if (subject.kind !== 'plan' || input.rubric.subjectPlan !== subject.ref || !workspaceId ||
+          end - start < 24 * 3_600_000 || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('Require a completed plan window of at least 24h and canonical workspace.'),
+          evidenceRef, window: scopedWindow };
+        continue;
+      }
+      try {
+        const measure = deps.pgTableGrowth ?? (request => measurePgTableGrowthWindow(getOrgPg().sql, request));
+        const measurement = await measure({ workspaceId, windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        snapshots[key] = { verdict: measurement.verdict, measuredAt, provenance: 'platform-computed',
+          evidenceRef, window: scopedWindow, value: { resolver: key, resolverVersion: 1, ...measurement } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Table-growth ledger unavailable: ${String(error)}`), evidenceRef, window: scopedWindow };
+      }
       continue;
     }
     if (key === DISK_HEADROOM_SOAK_INSTRUMENT_KEY) {

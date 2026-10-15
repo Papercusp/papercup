@@ -60,6 +60,7 @@ import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/e
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { withInlinedSchemaRefs } from '../schema-ref-inline';
+import { readServingGeneration } from '../../serving-generation';
 
 /**
  * The result-door is a per-tool-result budget, not a per-field budget. A
@@ -1407,7 +1408,7 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, servingGeneration (the exact operator generation that produced these schemas; pass it unchanged to tools:invoke), activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (registered output schema projection, otherwise authored fallback, otherwise null), returnsSource:"registered-output-schema"|"authored-tool-guidance"|null, via }], omittedTools? (explicit names missing from hits because of ranking/result limits), howToCall }. ' +
       'Each hit carries that tool\'s ARG schema AND its resolved RESPONSE shape (registered output schemas outrank authored prose), so you can write a code:run batch over a tool without calling it once just to learn its field names. ' +
       'Exact colon-form tool names in a query are prioritized. If `omittedTools` is present, query each listed name individually. ALWAYS read `activated` + `howToCall` rather than assuming a direct call resolves.',
     seeAlso: [
@@ -1482,6 +1483,7 @@ export default defineTool({
       semantic: z.unknown().optional(),
       registry: z.unknown().optional(),
       activated: z.unknown().optional(),
+      servingGeneration: z.string().nullable().optional(),
       hits: z.unknown().optional(),
       omittedTools: z.unknown().optional(),
       howToCall: z.unknown().optional(),
@@ -1510,6 +1512,8 @@ export default defineTool({
       source: PROJECTED_TOOL_REGISTRY_SOURCE,
       revision,
     };
+    const generation = await readServingGeneration({ toolRegistryRevision: revision });
+    const servingGeneration = generation.state === 'known' ? generation.revision : null;
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
       fullCorpus,
@@ -1574,13 +1578,16 @@ export default defineTool({
     const exactNameRecoveryNote = exactNames.length > 0
       ? ' Exact names are prioritized; if `omittedTools` is present, query each listed name individually.'
       : '';
+    const generationBindingInstruction = servingGeneration
+      ? ' This result includes `servingGeneration`; pass it unchanged as `servingGeneration` to tools:invoke. Dispatch refuses a different or unknown server generation before the target runs.'
+      : ' The server generation is unknown; do not send this schema through a different operator. Refresh tools/list or use a direct call on the same connection.';
     const activatedHowToCall =
       (hasToolsInvokeHit
         ? 'Server requested a tool-list refresh. Use tools:invoke directly for a different target; do not route tools:invoke through itself.'
-        : 'Server requested a tool-list refresh. Use tools:invoke {name:"<exact tool name from hits>", args:{...}} now; direct wrappers may appear next turn.') + exactNameRecoveryNote;
+        : 'Server requested a tool-list refresh. Use tools:invoke {name:"<exact tool name from hits>", args:{...}} now; direct wrappers may appear next turn.') + generationBindingInstruction + exactNameRecoveryNote;
     const inactiveHowToCall = hasToolsInvokeHit
-      ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.' + exactNameRecoveryNote
-      : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.' + exactNameRecoveryNote;
+      ? 'Use tools:invoke directly for a different target; do not route tools:invoke through itself.' + generationBindingInstruction + exactNameRecoveryNote
+      : 'activated:false: direct wrappers may be unavailable. Use tools:invoke {name:"<exact tool name from hits>", args:{...}}.' + generationBindingInstruction + exactNameRecoveryNote;
 
     // Bound the candidate names before activating them in the ordinary tier.
     // An explicit full-tier request carries every hit in the raw result; the
@@ -1590,6 +1597,7 @@ export default defineTool({
       query: args.query,
       semantic,
       registry,
+      servingGeneration,
       activated: true,
       howToCall: activatedHowToCall,
       totalMatches: hits.length,
@@ -1620,7 +1628,7 @@ export default defineTool({
           omittedTools: exactNames.filter((name) => !projectedHits.some((hit) => hit.tool.toLowerCase() === name)),
         }
       : boundDiscoveryHits(
-          { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
+          { query: args.query, semantic, registry, servingGeneration, activated, howToCall, totalMatches: hits.length },
           projectedHits,
           exactNames,
         );
@@ -1640,6 +1648,7 @@ export default defineTool({
             truncated: bounded.truncated || noHitFits,
             semantic,
             registry,
+            servingGeneration,
             // true ⇒ the server-side session allowlist grew and emitted the
             // standard list_changed request. It cannot prove the client has
             // consumed that notification and materialized wrappers yet.

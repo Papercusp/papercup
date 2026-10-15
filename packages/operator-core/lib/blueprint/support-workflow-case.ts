@@ -54,7 +54,8 @@ export async function readSelectedSupportCase(
  * completion and later result/reviewer reads use the accepted selection and a
  * fresh canonical corpus read; worker output never supplies its own evidence. */
 export async function validateSupportOperationResult(sql: Sql, workspaceId: string,
-  operation: ReturnType<typeof operationFromSpecification>['operation'], pin: AcceptedOperationPin, output: unknown): Promise<void> {
+  operation: ReturnType<typeof operationFromSpecification>['operation'], pin: AcceptedOperationPin, output: unknown,
+  viewerPrincipalId?: string): Promise<void> {
   const workflow = supportWorkflowFromOperation(operation, pin.harnessSlug, pin.specificationRevision);
   if (!workflow) return;
   await runWithWorkspace(workspaceId, async () => {
@@ -69,6 +70,19 @@ export async function validateSupportOperationResult(sql: Sql, workspaceId: stri
     catch (error) {
       throw new BlueprintOperationRefusal('invalid_payload',
         `support result is invalid: ${error instanceof Error ? error.message : 'invalid evidence'}`);
+    }
+    // Business-review allowlisting grants a decision, never disclosure of source
+    // content. Preserve employee revocation checks and independently authorize
+    // the current viewer before returning the derived handoff to that reviewer.
+    if (viewerPrincipalId && viewerPrincipalId !== pin.callerId?.split('/')[0]) {
+      const visible = await readSelectedSupportCase(sql, { workspaceId, harnessSlug: pin.harnessSlug,
+        role: operation.execution?.kind === 'agent' ? operation.execution.role : undefined,
+        principal: { kind: 'user', trust: 'verified', workspaceId, slug: viewerPrincipalId },
+      }, workflow, selection);
+      if (!visible.allowed) throw new BlueprintOperationRefusal('invalid_payload', 'support reviewer source access was refused');
+      try { parseSupportToEngineeringResult(output, selection, visible.results); }
+      catch (error) { throw new BlueprintOperationRefusal('invalid_payload',
+        `support reviewer evidence is invalid: ${error instanceof Error ? error.message : 'invalid evidence'}`); }
     }
   });
 }

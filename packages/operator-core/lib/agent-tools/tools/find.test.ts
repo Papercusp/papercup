@@ -82,12 +82,20 @@ const pluginHostMocks = vi.hoisted(() => ({
   getPluginHost: vi.fn(),
 }));
 
+const servingGenerationMocks = vi.hoisted(() => ({
+  read: vi.fn(),
+}));
+
 vi.mock('../../hive-federation', () => ({
   potHomeSlugForHarness: hiveMocks.potHomeSlugForHarness,
 }));
 
 vi.mock('../../plugin-host-runtime', () => ({
   getPluginHost: pluginHostMocks.getPluginHost,
+}));
+
+vi.mock('../../serving-generation', () => ({
+  readServingGeneration: servingGenerationMocks.read,
 }));
 
 import toolFind, {
@@ -121,6 +129,7 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
     count: number;
     semantic: 'on' | 'warming' | 'lexical-only';
     registry: { source: string; revision: string };
+    servingGeneration: string | null;
     hits: Array<{
       tool: string;
       description: string | null;
@@ -140,6 +149,14 @@ beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   pluginHostMocks.getPluginHost.mockReset();
   pluginHostMocks.getPluginHost.mockResolvedValue({ loaded: [] });
+  servingGenerationMocks.read.mockReset();
+  servingGenerationMocks.read.mockResolvedValue({
+    state: 'known',
+    revision: 'serving-generation-v1:test',
+    buildSha: 'test-build',
+    appliedMigrationDigest: 'test-migrations',
+    toolRegistryRevision: 'test-registry',
+  });
 });
 
 describe('tools:find tool registration', () => {
@@ -207,6 +224,26 @@ describe('tools:find tool registration', () => {
     const withoutHint = await callHandler({ query: 'feature flag' });
     const withHint = await callHandler({ query: 'feature flag', harness: 'some-other-harness', workspace: 'some-other-workspace' });
     expect(withHint.hits.map((h) => h.tool)).toEqual(withoutHint.hits.map((h) => h.tool));
+  });
+
+  it('binds returned schemas to the serving generation and explains the tools:invoke check', async () => {
+    const out = await callHandler({ query: 'coord:inbox', limit: 1 });
+
+    expect(out.servingGeneration).toBe('serving-generation-v1:test');
+    expect(out.howToCall).toContain('pass it unchanged as `servingGeneration` to tools:invoke');
+    expect(servingGenerationMocks.read).toHaveBeenCalledWith({
+      toolRegistryRevision: out.registry.revision,
+    });
+  });
+
+  it('warns against cross-operator dispatch when the serving generation is unknown', async () => {
+    servingGenerationMocks.read.mockResolvedValueOnce({ state: 'unknown', reason: 'build-sha-unknown' });
+
+    const out = await callHandler({ query: 'coord:inbox', limit: 1 });
+
+    expect(out.servingGeneration).toBeNull();
+    expect(out.howToCall).toContain('server generation is unknown');
+    expect(out.howToCall).toContain('do not send this schema through a different operator');
   });
 });
 

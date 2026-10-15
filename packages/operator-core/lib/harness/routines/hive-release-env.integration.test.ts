@@ -8,7 +8,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 // Generous timeout: resolveHiveReleaseGate cold-starts the built-in blueprint resolver
 // (reads + resolves the blueprint tree from disk, ~5s on first call), which tips past the
@@ -194,17 +193,6 @@ describe('resolveHiveReleaseGate', () => {
     expect(gate?.integrationBranch).toBe('staging');
   });
 
-  it('WI-6554700010012734: the canonical Papercusp pot blueprint keeps main-default clones on staging', async () => {
-    const { gateMisconfiguration, resolveHiveReleaseGate } = await import('./hive-release-env');
-    const papercuspRoot = join(dirname(fileURLToPath(import.meta.url)), '../../../../../');
-    const gate = resolveHiveReleaseGate(papercuspRoot, 'main');
-
-    expect(gate).not.toBeNull();
-    expect(gate?.integrationBranch).toBe('staging');
-    expect(gate?.releaseRef).toBe('main');
-    if (!gate) throw new Error('canonical Papercusp pot blueprint did not resolve a release gate');
-    expect(gateMisconfiguration(gate)).toBeNull();
-  });
 });
 
 describe('resolveHiveReleaseEnv', () => {

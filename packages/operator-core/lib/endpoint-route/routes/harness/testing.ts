@@ -31,8 +31,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { readFileSync, rmSync } from 'node:fs';
+import { createControlPlaneTempFile } from '../../../control-plane-temp.mjs';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseVitestJsonForHarnessRows, persistHarnessTestRuns, computeWorktreeDirty } from '../../../testing-run-store';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
@@ -46,7 +46,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { valRetirementRefusal, type ValRetirementRefusalCode } from '../../../agent-tools/plans/val-retirement';
 import { runGovernedOperation } from '../../../resource-governor/execution';
-import { startRun, getRunAsync, cancelRunAsync } from '../../../testing-run-store';
+import { startRunAsync, getRunAsync, cancelRunAsync } from '../../../testing-run-store';
 
 interface HarnessTestRow {
   id: string;
@@ -302,7 +302,7 @@ const run = defineTool({
     const gitBefore = gitSnapshot();
     const started = Date.now();
     const runId = `h-${started}`;
-    const jsonOut = join(tmpdir(), `psu-harness-vitest-${started}-${Math.random().toString(36).slice(2)}.json`);
+    const jsonOut = createControlPlaneTempFile('psu-harness-vitest-', '.json', 'payload');
     const executionResult = await runGovernedOperation(
       {
         workspaceId: activeWorkspaceId(),
@@ -361,6 +361,7 @@ const run = defineTool({
             workspaceId: activeWorkspaceId(),
             rows,
             runGroupId: runId,
+            runStartedAt: new Date(started).toISOString(),
             branch,
             commit: gitAfter.commit,
             worktreeDirty,
@@ -405,7 +406,7 @@ const runDetached = defineTool({
     if (!filePath || !/^[A-Za-z0-9_./*-]+$/.test(filePath) || filePath.includes('..')) {
       return Response.json({ error: 'filePath is required and must be repo-relative' }, { status: 400 });
     }
-    const snapshot = startRun({
+    const snapshot = await startRunAsync({
       kind: 'vitest',
       label: `vitest ${filePath}`,
       filePath,
