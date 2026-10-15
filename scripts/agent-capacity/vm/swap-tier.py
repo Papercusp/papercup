@@ -38,6 +38,8 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 SLICE = "swaptier"
 CG_ROOT = "/sys/fs/cgroup/swaptier.slice"
@@ -47,6 +49,7 @@ KEY = "swaptier-stub-not-a-real-credential-000000"
 IDLE_SEC = int(os.environ.get("SWAPTIER_IDLE_SEC", "60"))
 REAL_MODEL = False
 CODEX_SESSIONS = {}
+GATEWAY_CHECK = None
 WAKE_TIMEOUT = float(os.environ.get("SWAPTIER_WAKE_TIMEOUT", "300"))
 
 
@@ -180,6 +183,32 @@ def codex_ready(text, model):
     # The native statusline is configurable and may omit context-left entirely.
     # Require both the selected model and the interactive input, not that setting.
     return model.lower() in text.lower() and "Ask Codex to do anything" in text
+
+
+def gateway_preflight(gateway_url, owner, rec):
+    """Check the same private Codex route used by the agents, including its auth headers.
+
+    A surviving remote listener alone does not prove that an SSH reverse forward
+    still reaches the gateway. Record transport failures before launching or
+    retrying another expensive batch; never print credentials or response bodies.
+    """
+    if not re.fullmatch(r"http://127\.0\.0\.1:\d+/v1", gateway_url):
+        raise ValueError("benchmark gateway must be a loopback SSH tunnel URL")
+    request = urllib.request.Request(gateway_url + "/models", headers={
+        "Authorization": "Bearer papercusp-gateway",
+        "originator": "codex_cli_rs", "x-papercusp-owner": owner,
+    })
+    status = None
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            status = response.status
+            if status != 200:
+                raise RuntimeError(f"gateway returned HTTP {status}")
+    except (OSError, RuntimeError) as error:
+        status = getattr(error, "code", status)
+        rec.rec("gateway-preflight", success=False, status=status, error=type(error).__name__)
+        raise RuntimeError("private Codex gateway route is unavailable; refusing a batch") from error
+    rec.rec("gateway-preflight", success=True, status=status)
 
 
 def codex_sandbox_preflight(user, rec):
@@ -400,6 +429,9 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
     """Type a prompt into every agent, press Enter once its echo shows, wait for DONE-<marker>.
 
     Returns {name: {t0, tEcho, tEnter, tDone}} (None where a step never happened)."""
+    if GATEWAY_CHECK:
+        GATEWAY_CHECK()
+    next_gateway_check = time.monotonic() + 15
     state = {}
     for name in names:
         if REAL_MODEL:
@@ -408,6 +440,9 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
         type_text(name, prompt_for(name))
     deadline = time.time() + timeout
     while time.time() < deadline and any(s["tDone"] is None and not s["error"] for s in state.values()):
+        if GATEWAY_CHECK and time.monotonic() >= next_gateway_check:
+            GATEWAY_CHECK()
+            next_gateway_check = time.monotonic() + 15
         for name, s in state.items():
             if s["tDone"] is not None or s["error"]:
                 continue
@@ -783,9 +818,10 @@ def probe(out_path):
 # ---------------------------------------------------------------- main
 
 def run(a):
-    global REAL_MODEL
+    global REAL_MODEL, GATEWAY_CHECK
     REAL_MODEL = a.cli == "codex"
     rec = Recorder(a.out)
+    GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec)) if REAL_MODEL else None
     arms = [parse_arm(s) for s in a.arm]
     stub_log = os.path.join(a.out, "stub.jsonl")
     warm_files = sorted(glob.glob("/usr/lib/python3*/*.py"), key=os.path.getsize, reverse=True)[:16]
@@ -801,6 +837,7 @@ def run(a):
                 effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
         stop_agents()
         if REAL_MODEL:
+            GATEWAY_CHECK()
             codex_sandbox_preflight(a.user, rec)
         names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner)
         warm(names, a.warm, rec)

@@ -27,6 +27,56 @@ function py(module: string, expr: string, input: unknown): any {
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
 describe('real Luna load and swap tuning', () => {
+  it.each([200, 429])('checks the authenticated Codex route before accepting HTTP %s', (status) => {
+    const code = [
+      'import importlib.util, json, threading, types',
+      'from http.server import BaseHTTPRequestHandler, HTTPServer',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'headers={}; rows=[]; error=None',
+      'class Handler(BaseHTTPRequestHandler):',
+      ' def log_message(self, *args): pass',
+      ' def do_GET(self):',
+      '  headers.update({k.lower():v for k,v in self.headers.items()}); headers["path"]=self.path',
+      `  self.send_response(${status}); self.end_headers(); self.wfile.write(b"{}")`,
+      'server=HTTPServer(("127.0.0.1",0),Handler)',
+      'thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()',
+      'try: m.gateway_preflight(f"http://127.0.0.1:{server.server_port}/v1","benchmark-owner",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
+      'except RuntimeError as e: error=str(e)',
+      'finally: server.shutdown(); server.server_close(); thread.join()',
+      'print(json.dumps({"headers":headers,"rows":rows,"error":error}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.headers).toMatchObject({
+      path: '/v1/models', originator: 'codex_cli_rs',
+      'x-papercusp-owner': 'benchmark-owner', authorization: 'Bearer papercusp-gateway',
+    });
+    expect(receipt.rows).toEqual([expect.objectContaining({ kind: 'gateway-preflight', status, success: status === 200 })]);
+    expect(receipt.error === null).toBe(status === 200);
+  });
+
+  it('refuses another prompt batch after a previously healthy tunnel disappears', () => {
+    const code = [
+      'import importlib.util, json, socket, types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'server=socket.socket(); server.bind(("127.0.0.1",0)); port=server.getsockname()[1]; server.close()',
+      'rows=[]; typed=[]',
+      'm.GATEWAY_CHECK=lambda: m.gateway_preflight(f"http://127.0.0.1:{port}/v1","benchmark-owner",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
+      'm.type_text=lambda *args: typed.append(args)',
+      'try: m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",1)',
+      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows,"typed":typed}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.error).toContain('refusing a batch');
+    expect(receipt.typed).toEqual([]);
+    expect(receipt.rows).toEqual([{ kind: 'gateway-preflight', success: false, status: null, error: 'URLError' }]);
+  });
+
   it('keeps each native runtime in its measured scope without requiring a daemon socket', () => {
     const code = [
       'import importlib.util, types, json, io, builtins',
