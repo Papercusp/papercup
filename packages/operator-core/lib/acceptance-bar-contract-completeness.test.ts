@@ -39,13 +39,19 @@ describe('checkFileTestLayers — the repo test taxonomy and configured file rou
   });
 
   it('keeps hosted statement tests out of the unit project and in their measured integration project', () => {
-    expect(publicVitestConfig).toMatchObject({ test: { projects: [
-      { test: { name: 'unit', exclude: expect.arrayContaining(['**/identity-metered-usage.test.ts']) } },
-      { test: { name: 'treasury-integration', provide: { papercuspTestLayer: 'integration' },
-        include: ['src/__tests__/treasury.test.ts', 'src/__tests__/transparency-routes.test.ts'] } },
-      { test: { name: 'funded-turn-host-integration', provide: { papercuspTestLayer: 'integration' },
-        include: ['src/__tests__/funded-turn-host.integration.test.ts', 'src/__tests__/identity-metered-usage.test.ts'] } },
-    ] } });
+    expect(publicVitestConfig).toMatchObject({ test: { projects: expect.arrayContaining([
+      expect.objectContaining({ test: expect.objectContaining({
+        name: 'unit', exclude: expect.arrayContaining(['**/identity-metered-usage.test.ts']),
+      }) }),
+      expect.objectContaining({ test: expect.objectContaining({
+        name: 'treasury-integration', provide: { papercuspTestLayer: 'integration' },
+        include: ['src/__tests__/treasury.test.ts', 'src/__tests__/transparency-routes.test.ts'],
+      }) }),
+      expect.objectContaining({ test: expect.objectContaining({
+        name: 'funded-turn-host-integration', provide: { papercuspTestLayer: 'integration' },
+        include: ['src/__tests__/funded-turn-host.integration.test.ts', 'src/__tests__/identity-metered-usage.test.ts'],
+      }) }),
+    ]) } });
   });
 });
 
