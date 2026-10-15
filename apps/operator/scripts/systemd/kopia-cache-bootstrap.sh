@@ -91,6 +91,100 @@ kopia_as_root() {
   "$sudo_bin" -n -- /usr/bin/env "KOPIA_LOG_DIR=$log_dir" "$@"
 }
 
+# EI-25985604292707665: every snapshot create expires older snapshots. Pin
+# everything before capture, always pin its new manifest, then remove ONLY our
+# pin under a fresh no-hold table lease. Capture never holds the table lock.
+KOPIA_RETENTION_PIN='papercusp-legal-hold-retention'
+
+kopia_retention_ids() {
+  local sudo_bin="$1" kopia_bin="$2" raw
+  raw=$(kopia_as_root "$sudo_bin" "$kopia_bin" snapshot list --all --json) || return
+  /usr/bin/python3 -c 'import json,re,sys
+rows=json.load(sys.stdin)
+if not isinstance(rows,list) or any(not isinstance(r,dict) or not isinstance(r.get("id"),str) or not re.fullmatch("[a-f0-9]+",r["id"]) for r in rows):
+ raise ValueError("malformed Kopia snapshot list; expiry refused")
+print("\n".join(r["id"] for r in rows))' <<<"$raw"
+}
+
+kopia_retention_pin_all() {
+  local sudo_bin="$1" kopia_bin="$2" operation="$3" ids id
+  ids=$(kopia_retention_ids "$sudo_bin" "$kopia_bin") || return
+  local -a batch=()
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    batch+=("$id")
+    if [ "${#batch[@]}" -ge 100 ]; then
+      kopia_as_root "$sudo_bin" "$kopia_bin" snapshot pin "--$operation=$KOPIA_RETENTION_PIN" "${batch[@]}" || return
+      batch=()
+    fi
+  done <<<"$ids"
+  [ "${#batch[@]}" -eq 0 ] || kopia_as_root "$sudo_bin" "$kopia_bin" snapshot pin "--$operation=$KOPIA_RETENTION_PIN" "${batch[@]}"
+}
+
+# Run a short filesystem/repository destructive callback while this SAME psql
+# session holds SHARE on the hold table. INSERT/UPDATE/DELETE (even direct hold
+# writers) wait until it exits. Any startup/query/malformed-state failure refuses
+# the callback. The callback receives 't' for any active hold, otherwise 'f'.
+kopia_with_hold_lease() (
+  local database="$1" callback="$2" line="" held="" pid="" input="" output=""
+  shift 2
+  coproc KOPIA_HOLD_PSQL {
+    exec "${KOPIA_HOLD_SUDO_BIN:-/usr/bin/sudo}" -n -u postgres \
+      "${KOPIA_HOLD_PSQL_BIN:-/usr/bin/psql}" -X -q -v ON_ERROR_STOP=1 -At \
+      -h /var/run/postgresql -d "$database"
+  }
+  pid="${KOPIA_HOLD_PSQL_PID:-}"
+  input="${KOPIA_HOLD_PSQL[1]:-}"
+  output="${KOPIA_HOLD_PSQL[0]:-}"
+  [ -n "$pid" ] && [ -n "$input" ] && [ -n "$output" ] || return 1
+  trap 'exec {input}>&-; wait "$pid" 2>/dev/null || true' EXIT
+  printf '%s\n' 'BEGIN;' "SET LOCAL lock_timeout = '30s';" \
+    'LOCK TABLE harness_shared.data_source_legal_holds IN SHARE MODE;' \
+    'SELECT EXISTS (SELECT 1 FROM harness_shared.data_source_legal_holds WHERE released_at IS NULL);' \
+    '\echo PAPERCUSP_HOLD_READY' >&"$input" || return 1
+  while IFS= read -r -t 35 -u "$output" line; do
+    case "$line" in
+      t|f) held="$line" ;;
+      PAPERCUSP_HOLD_READY) break ;;
+      *) echo "backup retention: malformed hold lease response; refused" >&2; return 1 ;;
+    esac
+  done
+  [ "$line" = PAPERCUSP_HOLD_READY ] && [ -n "$held" ] || {
+    echo 'backup retention: legal holds unreadable; destructive operation refused' >&2
+    return 1
+  }
+  "$callback" "$held" "$@"
+)
+
+kopia_retention_expire_if_unheld() {
+  local held="$1" sudo_bin="$2" kopia_bin="$3"
+  if [ "$held" = t ]; then
+    echo 'backup retention: active legal hold; safety pins retained' >&2
+    return 0
+  fi
+  kopia_retention_pin_all "$sudo_bin" "$kopia_bin" remove || return
+  kopia_as_root "$sudo_bin" "$kopia_bin" snapshot expire --all --delete
+}
+
+kopia_retention_finish() {
+  kopia_with_hold_lease "${KOPIA_HOLD_DATABASE:-papercusp}" kopia_retention_expire_if_unheld "$@"
+}
+
+# The directory producer must preserve its old dump even if it has never made
+# it into Kopia. Move it into the same snapshotted tree under a hold; release
+# permits ordinary rotation of these archives on the next successful dump.
+kopia_install_dump_if_held() {
+  local held="$1" out="$2" archive="$2.legal-hold" saved
+  if [ "$held" = t ] && [ -e "$out" ]; then
+    mkdir -p -- "$archive" || return
+    saved=$(mktemp -d "$archive/held.XXXXXXXX") || return
+    mv -- "$out" "$saved/dump" || return
+  elif [ "$held" = f ]; then
+    rm -rf -- "$archive" "$out" || return
+  fi
+  mv -f -- "$out.tmp" "$out"
+}
+
 # ── STOP KOPIA WITHOUT DISCARDING WHAT IT FINISHED (EI-25211496463956189) ─────
 # This lives here because it is the one helper every Kopia entrypoint already
 # sources and that is already linked into ~/.config/kopia; a new file would add

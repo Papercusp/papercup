@@ -88,6 +88,7 @@ ionice -c3 -p $$ >/dev/null 2>&1 || true
 
 run_kopia_snapshot() {
   local output_file="$LOG_DIR/snapshot-all-output.$$" sudo_pid="" rc=0
+  kopia_retention_pin_all "$SUDO_BIN" "$KOPIA_BIN" add || return
   rm -f -- "$PID_FILE" "$output_file"
   printf '%s\n' "$output_file" >"$OUTPUT_POINTER"
 
@@ -96,7 +97,7 @@ run_kopia_snapshot() {
     shift
     printf "%s\n" "$$" >"$pid_file"
     exec "$@"
-  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--parallel=1" "$@" >"$output_file" 2>&1 &
+  ' bash "$PID_FILE" "$KOPIA_BIN" snapshot create "--pin=$KOPIA_RETENTION_PIN" "--parallel=1" "$@" >"$output_file" 2>&1 &
   sudo_pid=$!
   wait "$sudo_pid"
   rc=$?
@@ -105,6 +106,7 @@ run_kopia_snapshot() {
   record_sweep_progress "$output_file"
   cat "$output_file"
   rm -f -- "$output_file" "$PID_FILE" "$OUTPUT_POINTER"
+  [ "$rc" -ne 0 ] || kopia_retention_finish "$SUDO_BIN" "$KOPIA_BIN" || rc=$?
   return "$rc"
 }
 
