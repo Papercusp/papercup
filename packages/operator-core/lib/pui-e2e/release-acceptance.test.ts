@@ -280,6 +280,7 @@ describe('Docker create/start release preflight', () => {
     const calls: string[][] = [];
     const listed = [
       'pui-release-preflight-111-1790766510125-1',
+      'pui-release-preflight-111-1790766510125-smoke-0',
       'pui-release-preflight-222-1790766530190-2',
       `pui-release-preflight-${process.pid}-1790766550268-3`,
       'other-pui-release-preflight-333-1-1',
@@ -289,9 +290,9 @@ describe('Docker create/start release preflight', () => {
       calls.push(args);
       return args[0] === 'ps' ? { status: 0, stdout: `${listed}\n` } : { status: 0 };
     }, (pid) => pid === 222);
-    expect(removed).toEqual(['pui-release-preflight-111-1790766510125-1']);
+    expect(removed).toEqual(['pui-release-preflight-111-1790766510125-1', 'pui-release-preflight-111-1790766510125-smoke-0']);
     expect(calls[0]).toEqual(expect.arrayContaining(['ps', '--all', '--filter', 'name=pui-release-preflight-']));
-    expect(calls[1]).toEqual(['rm', '--force', 'pui-release-preflight-111-1790766510125-1']);
+    expect(calls[1]).toEqual(['rm', '--force', ...removed]);
     expect(calls).toHaveLength(2);
   });
 
@@ -375,6 +376,18 @@ describe('Docker create/start release preflight', () => {
       expect(machines[0].unmeasured).toBeUndefined();
       expect(stockMachinesBlockLegs(machines)).toBe(status !== 0);
       expect(run).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a Docker invocation without a terminal status unmeasured', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-stock-interrupted-'));
+    try {
+      const machines = runStockMachineSmoke(root, ['ubuntu:24.04'], () => null, () => ({ status: null }));
+      expect(machines[0]).toMatchObject({ status: null, unmeasured: true });
+      expect(stockMachinesBlockLegs(machines)).toBe(false);
+      expect(stockMachineRefusal(machines[0])).toContain('was not measured');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

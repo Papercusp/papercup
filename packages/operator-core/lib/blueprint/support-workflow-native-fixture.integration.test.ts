@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { runInNewContext } from 'node:vm';
+import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import type { ZodTypeAny } from 'zod';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -11,9 +12,12 @@ import authLogin from '../endpoint-route/routes/auth/login';
 import authMe from '../endpoint-route/routes/auth/me';
 import { principalFromCookie } from '../auth/principal/from-cookie';
 import { submitBlueprintOperation } from './operation-service';
+import { resolveAcceptedOperationWorkerBinding } from './operation-worker-binding';
 import { readHostedAllocationReport } from '../auth/hosted/billing/allocation-store';
 import { replacePermissionListMembers, searchOrganizationDocuments } from '../data-sources/documents-corpus';
 import { runWithWorkspace } from '../workspace-als';
+import { resolveProjectDir } from '../spawn-config';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -83,6 +87,21 @@ describe('maintained native support seed and production cookie switching', () =>
       requestKey, expectedSpecificationRevision: fixture.approvedRevision, input: fixture.input }, { principal });
     const handle = await submit('native-fixture-employee');
     expect(handle).toMatchObject({ workspaceId, specificationRevision: fixture.approvedRevision });
+    if (handle.target.kind !== 'work-item') throw new Error('Native fixture must admit a worker target');
+    const worker = await resolveAcceptedOperationWorkerBinding({ sql: db.adminSql, workspaceId,
+      harnessSlug: fixture.harnessSlug, workItemId: handle.target.id, role: fixture.role,
+      repoDir: fileURLToPath(new URL('../../../../', import.meta.url)) });
+    expect(worker).toMatchObject({ workItemId: handle.target.id,
+      identity: { ref: 'blueprint-operation-worker' },
+      modelPolicy: { mode: 'exact', models: ['gpt-6.1-sol'], effort: 'medium' },
+      requiredTools: ['blueprint:read-private-input'] });
+    // Bootstrap reads the registry and role prompt after resolving the pin.
+    // Admission and a resolvable identity alone do not make a runnable worker.
+    const projectDir = await resolveProjectDir(fixture.harnessSlug, workspaceId);
+    expect(projectDir).toBe(fileURLToPath(new URL('../../../../', import.meta.url)));
+    if (!projectDir) throw new Error('Native support fixture has no registered launch checkout');
+    expect(() => assembleRolePrompt({ slug: fixture.harnessSlug, role: fixture.role,
+      projectDir, mode: 'chat', featureId: handle.target.id })).not.toThrow();
     expect(await submit('native-fixture-employee')).toEqual(handle);
     await replacePermissionListMembers(db.adminSql, workspaceId, fixture.listId, [fixture.identities.reviewer]);
     await expect(submit('native-fixture-revoked')).rejects.toThrow(/unavailable|revoked/);
