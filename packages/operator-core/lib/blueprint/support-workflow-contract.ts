@@ -13,7 +13,7 @@ export interface ApprovedSupportWorkflow {
   readonly reviewerPrincipals: readonly string[];
   readonly allowedSources: readonly string[];
   readonly allowedActions: readonly string[];
-  /** Server/provider-enforced maximum, in micro-USD. */
+  /** Required maximum in micro-USD; declaration alone does not enforce spend. */
   readonly maximumCostMicros: number;
 }
 
