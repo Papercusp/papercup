@@ -61,7 +61,8 @@
     "https://cloud.google.com/compute/disks-image-pricing",
     "https://cloud.google.com/compute/docs/disks/hd-types/hyperdisk-balanced",
     "https://aws.amazon.com/ebs/pricing/",
-    "https://docs.aws.amazon.com/ebs/latest/userguide/provisioned-iops.html"
+    "https://docs.aws.amazon.com/ebs/latest/userguide/provisioned-iops.html",
+    "https://docs.aws.amazon.com/ebs/latest/userguide/general-purpose.html"
   ],
   "monthlyConventionHours": 730,
   "excludes": [
