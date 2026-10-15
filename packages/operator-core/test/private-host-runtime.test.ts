@@ -48,6 +48,52 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 
+it('prepares every roster API bundle before the private execute phase', () => {
+  const file = join(import.meta.dirname, '../lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts');
+  const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  let contracts = 0;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === 'recordIsolatedIntegrationProof') {
+      const contract = node.arguments[0];
+      if (contract && ts.isObjectLiteralExpression(contract)) {
+        const properties = Object.fromEntries(contract.properties.flatMap(property =>
+          ts.isPropertyAssignment(property) ? [[property.name.getText(source), property.initializer]] : []));
+        if (properties.sourcePaths?.getText(source).includes('roster-stop-http-fixture.ts')) {
+          contracts++;
+          const line = source.getLineAndCharacterOfPosition(contract.getStart(source)).line + 1;
+          const context = `roster proof at line ${line}`;
+          let preparationCalls = 0;
+          const inspectPreparation = (child: ts.Node) => {
+            if (ts.isCallExpression(child) && ts.isIdentifier(child.expression)
+              && child.expression.text === 'preparePrivateOperatorApiBundle') preparationCalls++;
+            ts.forEachChild(child, inspectPreparation);
+          };
+          if (properties.prepare) inspectPreparation(properties.prepare);
+          expect(preparationCalls, `${context} must compile before private allocation`).toBe(1);
+          for (const path of ['apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'])
+            expect(properties.sourcePaths.getText(source), `${context} must pin its preparation source`).toContain(path);
+          const inspectExecution = (child: ts.Node) => {
+            if (ts.isCallExpression(child) && ts.isIdentifier(child.expression) && child.expression.text === 'fork'
+              && child.getText(source).includes('roster-stop-http-fixture.ts')) {
+              const argv = child.arguments[1];
+              expect(argv && ts.isArrayLiteralExpression(argv), `${context} must declare worker arguments`).toBe(true);
+              if (argv && ts.isArrayLiteralExpression(argv)) expect(argv.elements.some(argument =>
+                ts.isBinaryExpression(argument) && ts.isStringLiteral(argument.left)
+                  && argument.left.text === '--prepared-api-sha='), `${context} must consume the prepared bundle`).toBe(true);
+            }
+            ts.forEachChild(child, inspectExecution);
+          };
+          if (properties.execute) inspectExecution(properties.execute);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(contracts).toBe(17);
+});
+
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const childFile = join(evidenceDir, 'descendant.pid');
