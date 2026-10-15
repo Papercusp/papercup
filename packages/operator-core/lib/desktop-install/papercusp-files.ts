@@ -2829,12 +2829,12 @@ type HookEntry = { matcher?: string; hooks: HookCommand[] };
  *  command on a real live settings.json (EI-8997 follow-up) — this is the fix. Mirrors
  *  the python is_ours filter used by every merge_* helper in install-standalone-mcp.sh
  *  (KEEP THE TWO IN SYNC — see that script's own merge_* comments). */
-function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh: HookEntry): HookEntry[] {
+function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh?: HookEntry): HookEntry[] {
   const isOursCmd = (h: HookCommand) => ours.some((o) => String(h?.command ?? '').includes(o));
   const filtered = arr
     .map((e) => (Array.isArray(e?.hooks) ? { ...e, hooks: e.hooks.filter((h) => !isOursCmd(h)) } : e))
     .filter((e) => Array.isArray(e?.hooks) && e.hooks.length > 0);
-  return [...filtered, fresh];
+  return fresh ? [...filtered, fresh] : filtered;
 }
 
 /**
@@ -2965,11 +2965,9 @@ export function mergeClaudeHookSettings(
   // (EI-19374535041074908). Advisory only: it can never deny, because adding a required
   // field is usually correct. Reports to the AUTHOR while it is still their turn — the one
   // moment the signal is both correct (HEAD is still pre-edit) and actionable.
-  if (has('posttooluse-required-field-strand-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
-      hooks: cmd('posttooluse-required-field-strand-nudge.mjs'),
-    });
+  // P-037: these modules remain installed as shared injector dependencies. Retire
+  // their independent delivery entries, including entries from an older install.
+  hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'));
   // merge_behavioural_strand_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-20022235111425919). The BEHAVIOURAL sibling of the block above: that one catches a
   // required field stranding construction sites, this one catches an added CALL stranding
@@ -2978,11 +2976,7 @@ export function mergeClaudeHookSettings(
   // a filter. Registered here rather than merely copied: the file shipped in hooks/cc
   // unregistered, which orphaned-cc-hooks.test.ts flags precisely because a copied-but-
   // unregistered hook is inert while looking installed.
-  if (has('posttooluse-behavioural-strand-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-behavioural-strand-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
-      hooks: cmd('posttooluse-behavioural-strand-nudge.mjs'),
-    });
+  hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-behavioural-strand-nudge.mjs'));
   // merge_ts_parse_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19457231269012320 / EI-19457320059999661). Advisory only, and this one MUST stay
   // advisory: a multi-step refactor legitimately passes through unparseable intermediate
