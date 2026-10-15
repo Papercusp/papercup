@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:net';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
@@ -46,6 +47,7 @@ vi.mock('../task-manager/enabled', async (original) => ({
 const fixtureMutex = vi.hoisted(() => ({
   name: `disk-retention-fixture-${crypto.randomUUID()}`,
   requested: [] as string[],
+  onRequest: undefined as (() => void) | undefined,
 }));
 // Exercise the real mutex on fixture resources. Other infrastructure mutexes
 // retain their original identity; the scheduled actor owns the production name.
@@ -55,13 +57,14 @@ vi.mock('../../../../scripts/lib/fs-mutex.mjs', async (original) => {
     ...actual,
     withFsMutex: (...args: Parameters<typeof actual.withFsMutex>) => {
       fixtureMutex.requested.push(args[0]);
+      fixtureMutex.onRequest?.();
       return actual.withFsMutex(args[0] === 'papercusp-disk-retention' ? fixtureMutex.name : args[0], args[1], args[2]);
     },
   };
 });
 
 let fixture: string | undefined;
-afterEach(async () => { inspectionProbe.before = undefined; if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
+afterEach(async () => { fixtureMutex.onRequest = undefined; inspectionProbe.before = undefined; if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
 
 async function setup() {
   fixture = await mkdtemp(join(tmpdir(), 'disk-retention-'));
@@ -74,6 +77,35 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  it('loads new pin protection only after acquiring the mutex shared with pin writers', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'pinned-during-wait'); await writeFile(path, 'retain');
+    let release!: () => void, ready!: () => void, requested!: () => void;
+    const releaseGate = new Promise<void>((r) => { release = r; });
+    const readyGate = new Promise<void>((r) => { ready = r; });
+    const requestGate = new Promise<void>((r) => { requested = r; });
+    const writer = withFsMutex('papercusp-disk-retention', async () => { ready(); await releaseGate; });
+    await readyGate;
+    let read = false;
+    fixtureMutex.onRequest = requested;
+    const reclaim = runDiskReclaimOnce({ ...options, readProtection: async () => {
+      read = true; return { paths: [path] };
+    } });
+    try { await requestGate; expect(read).toBe(false); }
+    finally { fixtureMutex.onRequest = undefined; release(); await writer; }
+    const receipt = await reclaim;
+    expect(read).toBe(true); expect(receipt.complete).toBe(true);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path, status: 'protected' }));
+    expect(await readFile(path, 'utf8')).toBe('retain');
+  });
+
+  it('fails closed when the pin store cannot be read', async () => {
+    const { root, options } = await setup(); const path = join(root, 'stale'); await writeFile(path, 'retain');
+    const receipt = await runDiskReclaimOnce({ ...options, readProtection: async () => { throw new Error('corrupt pin'); } });
+    expect(receipt.complete).toBe(false); expect(receipt.errors).toContain('corrupt pin');
+    expect(await readFile(path, 'utf8')).toBe('retain');
+  });
+
   it('reclaims an arbitrarily named expired tree while retaining held, leased, fresh and unknown trees', async () => {
     const { root, options } = await setup();
     const old = join(root, 'random-build-copy');

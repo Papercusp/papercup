@@ -19,7 +19,7 @@ import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
 import {
   RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
-  type CompiledPolicy, type RetentionClass,
+  type CompiledPolicy, type RetentionClass, type RetentionPinProtection,
 } from './retention-policy';
 
 export const DISK_RECLAIM_STEP = 'disk-retention-reclaim';
@@ -71,6 +71,8 @@ export interface DiskReclaimOptions {
   delegates?: readonly ReclaimDelegate[];
   /** Additional leases are resolved by the runtime before this planner runs. */
   protectedPaths?: readonly string[];
+  /** Resolve leases after acquiring the reclaim mutex, shared with pin mutations. */
+  readProtection?: () => Promise<{ paths: readonly string[]; pins?: readonly RetentionPinProtection[] }>;
   expectedDevices?: readonly string[];
   /** Production writes to audit_log before an effect and after the completed pass. */
   record?: (phase: string, details: unknown) => Promise<void>;
@@ -380,7 +382,7 @@ export function createRetentionHolderScanner(deps: {
 export function selectRetentionEntries(entries: readonly RetentionEntry[], policy: CompiledPolicy, nowMs: number): RetentionEntry[] {
   const groups = new Map<string, RetentionEntry[]>();
   for (const entry of entries) {
-    const cls = deletionClassFor(entry.path, policy);
+    const cls = deletionClassFor(entry.path, policy, nowMs);
     if (!cls || cls.id !== entry.classId || containsClassRoot(entry.path, policy)) continue;
     const key = `${entry.classId}\0${entry.root}`;
     const group = groups.get(key) ?? [];
@@ -530,11 +532,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   try {
     await options.record?.('started', receipt);
     await withFsMutex('papercusp-disk-retention', async () => {
+      const protection = await options.readProtection?.();
+      policy.pins = protection?.pins ?? [];
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
       receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
-      const protectedPaths = (options.protectedPaths ?? []).map((path) => resolve(path));
+      const protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
         const rootProtectedPaths = protectedPaths.flatMap((path) => root.aliases.map((alias) =>
@@ -565,7 +569,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
             (root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
             rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath)) ||
-            !deletionClassFor(path, policy) || containsClassRoot(path, policy));
+            !deletionClassFor(path, policy, started) || containsClassRoot(path, policy));
           if (options.inspectTrees && retainAfterMs !== undefined) {
             // Native find bounds the complete walk by elapsed time while streaming
             // metadata. It avoids permanently restarting a large tree at a JS node cap.
@@ -590,7 +594,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
             if (rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
-            if (!deletionClassFor(path, policy) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
+            if (!deletionClassFor(path, policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
               return await inspectEntry(path, root.path, root.classId, budget, retainAfterMs, retain);
             }
@@ -796,10 +800,16 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');
   const { readRetentionLeases, isLeaseLive, defaultRetentionDir } = await import('../release-cut-reclaim');
-  const leaseRead = readRetentionLeases(defaultRetentionDir());
-  // Unknown/malformed leases are a hard refusal, rather than disappearing from protection.
-  if (leaseRead.errors.length) throw new Error(`retention leases unreadable: ${leaseRead.errors.join('; ')}`);
-  const protectedPaths = leaseRead.leases.filter((lease) => isLeaseLive(lease, Date.now())).flatMap((lease) => lease.paths);
+  const readProtection = async () => {
+    const dir = defaultRetentionDir();
+    const leaseRead = readRetentionLeases(dir);
+    const { readRetentionPins } = await import('./retention-pins');
+    const pinRead = readRetentionPins({ dir });
+    const errors = [...leaseRead.errors, ...pinRead.errors];
+    // Unknown/malformed leases are a hard refusal, rather than disappearing from protection.
+    if (errors.length) throw new Error(`retention leases unreadable: ${errors.join('; ')}`);
+    return { paths: leaseRead.leases.filter((lease) => isLeaseLive(lease, Date.now())).flatMap((lease) => lease.paths), pins: pinRead.pins };
+  };
   const require = createRequire(import.meta.url);
   const delegates: ReclaimDelegate[] = [
     { classId: 'sidecar-failed-stages', run: async (dryRun) => {
@@ -848,7 +858,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   let runId = '';
   const { inspectRetentionTrees } = await import('./disk-consumer-census');
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, delegates, protectedPaths, inspectTrees: inspectRetentionTrees, scanHolders: holders.scan, record: async (phase, detail) => {
+  try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees: inspectRetentionTrees, scanHolders: holders.scan, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } }); } finally { await holders.close(); }

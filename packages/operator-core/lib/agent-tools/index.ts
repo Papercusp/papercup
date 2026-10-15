@@ -1808,6 +1808,7 @@ import './lexicon/active_pack';
 import './storage/usage';
 import './storage/census';
 import './storage/prune';
+import './storage/pin';
 
 // access:* (external-app-access-to-workspaces-2026-09-29 P-012) — local-only list /
 // create / pause / revoke of the keys outside apps use. Hard-denied to every app key.
