@@ -6640,6 +6640,7 @@ export function decodeControl(payload) {
         expectedHostStartedAt: o.expectedHostStartedAt,
         expectedChildGeneration: o.expectedChildGeneration,
         expectedHostCodeVersion: o.expectedHostCodeVersion,
+        expiresAtMs: o.expiresAtMs,
       };
       if (o.mode === 'raw')
         return { mode: 'raw', data: String(o.data ?? ''), gated: false, ...decodeOwnerIdentity(o) };
@@ -6772,11 +6773,25 @@ export function codexHooksObservationScreen(raw, dims) {
   const rows = renderTerminalScreen(raw, dims).map((row) => row.trimEnd());
   const heading = rows.some((row) => /^\s*(?:[│╭─ ]*)?(?:Hooks|Hook browser)\s*(?:[│─]*)$/i.test(row));
   const dismiss = rows.some((row) => /\b(?:esc|escape)\b.*\b(?:close|back|cancel)\b/i.test(row));
-  const emptyComposer = !heading && rows.some((row) => /^\s*[›❯>]\s*$/.test(row)) &&
-    codexFooterStateFromOutput(raw, dims) === 'ready';
+  const prompts = rows.map((row, index) => ({ row, index })).filter(({ row }) => /^\s*[›❯>](?:\s|$)/.test(row));
+  const footerIndex = rows.findLastIndex((row) => codexStatusFooterState(row) === 'ready');
+  const emptyComposer = !heading && prompts.length === 1 && /^\s*[›❯>]\s*$/.test(prompts[0].row) &&
+    footerIndex > prompts[0].index && footerIndex - prompts[0].index <= 4;
   const commandOffered = rows.some((row) => /^\s*[›❯>]?\s*\/hooks\s+.*\b(?:view|show|manage|inspect)\b.*\bhooks?\b/i.test(row));
   return { rows, browser: heading && dismiss, emptyComposer, commandOffered,
-    fullPaint: /\x1b\[(?:2|3)J/.test(raw) };
+    fullPaint: /\x1b\[2J/.test(raw) };
+}
+
+/** Capture request lifetime BEFORE admission; custody alone cannot authorize
+ * an expired/disconnected observation or reset its owner-input epoch. */
+export function makeHooksObservationAdmission(request, { now = Date.now, ownerEpoch = () => 0 } = {}) {
+  const epoch = ownerEpoch();
+  const receivedAt = now();
+  const deadline = request.expiresAtMs;
+  let closed = false;
+  return { close: () => { closed = true; }, alive: () => !closed &&
+    Number.isFinite(deadline) && deadline > receivedAt && deadline - receivedAt <= 30_000 &&
+    now() < deadline && ownerEpoch() === epoch };
 }
 
 /** Bounded viewport observation. It cannot certify all hooks, enabled policy,
@@ -6784,8 +6799,8 @@ export function codexHooksObservationScreen(raw, dims) {
  * state-driven: a second Escape is permitted only after a fresh browser paint. */
 export async function runCodexHooksObservation({ request, identity, canStart, interrupted,
   write, readTap, resetTap, readCurrent, screenDims, sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
-  now = Date.now, timeoutMs = 3000, crDelayMs = 200 }) {
-  const same = () => hooksObservationIdentityMatches(request, identity());
+  now = Date.now, timeoutMs = 3000, crDelayMs = 200, admissionAlive = () => true }) {
+  const same = () => admissionAlive() && hooksObservationIdentityMatches(request, identity());
   const screen = (raw) => codexHooksObservationScreen(raw, screenDims());
   if (!same()) return { ok: false, reason: 'stale-observation-identity', inputReleased: true };
   if (!canStart() || !screen(readCurrent()).emptyComposer)
@@ -7901,7 +7916,7 @@ export function renderTerminalScreen(output, { rows = 24, cols = 80 } = {}) {
             } else if (mode === 1) {
               eraseCells(row, 0, col);
               for (let r = 0; r < row; r += 1) eraseCells(r, 0, C - 1);
-            } else {
+            } else if (mode === 2) {
               for (let r = 0; r < R; r += 1) eraseCells(r, 0, C - 1);
             }
             break;
@@ -9133,11 +9148,14 @@ export function makeInjectMutex({
   onStuck = () => {},
 } = {}) {
   let tail = Promise.resolve();
+  let pending = 0;
   return {
+    pendingCount: () => pending,
     /** Resolve to a release() fn once the lock is free (FIFO), or once the
      *  watchdog force-releases a wedged holder (see the doc block above).
      *  Caller MUST call the returned release(). */
     async acquire() {
+      pending++;
       const prev = tail;
       /** The `resolve` of `tail`, captured synchronously by the executor below.
        *  Annotated, and initialised to the explicit `undefined` that a bare
@@ -9193,7 +9211,8 @@ export function makeInjectMutex({
           forceTimer.unref?.();
         }
       });
-      return release; // caller releases → frees the next FIFO waiter
+      let released = false;
+      return () => { if (!released) { released = true; pending--; release(); } };
     },
   };
 }
@@ -13644,6 +13663,13 @@ export function hostThroughPty(o) {
         return { ok: false, reason: 'observation-input-lease-held' };
       if (msg.mode === 'hooks-observe') {
         if (env.PAPERCUSP_AGENT !== 'codex') return { ok: false, reason: 'observation-unsupported-backend' };
+        const admission = makeHooksObservationAdmission(msg, { ownerEpoch: () => ownerInputGeneration });
+        conn.once('close', admission.close);
+        conn.once('error', admission.close);
+        // Refuse a busy admission rather than queue an observation that could
+        // outlive its requester behind a long-running turn or carry.
+        if (!admission.alive() || injectMutex.pendingCount() > 0)
+          return { ok: false, reason: 'observation-admission-unavailable' };
         const identity = () => ({ ownerId, advSessionId: baseMeta.advSessionId,
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
           hostStartedAt: baseMeta.startedAt, childGeneration, hostCodeVersion: baseMeta.hostCodeVersion });
@@ -13653,6 +13679,7 @@ export function hostThroughPty(o) {
         const tap = makeOutputTap();
         const ownerEpoch = ownerInputGeneration;
         try {
+          if (!admission.alive()) return { ok: false, reason: 'observation-admission-expired' };
           if (hooksObservationActive || hooksObservationInputHeld || machineTurnActive || nativeStartPending.size ||
             carryRearm.pendingCount('carry-respawn') || ownerComposerGate.hasPending() ||
             nativeExecutionBlocksInjection(currentNativeExecution()))
@@ -13666,6 +13693,7 @@ export function hostThroughPty(o) {
           hooksObservationActive = true;
           hooksObservationInputHeld = true;
           const result = await runCodexHooksObservation({ request: msg, identity,
+            admissionAlive: admission.alive,
             canStart: () => !ownerComposerGate.hasPending() && !nativeExecutionBlocksInjection(currentNativeExecution()),
             interrupted: () => ownerInputGeneration !== ownerEpoch,
             write: (bytes) => child.write(bytes), readTap: tap.read, resetTap: tap.reset,
