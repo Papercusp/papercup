@@ -75,9 +75,11 @@ export function assertSupportCaseInput(
   return Object.freeze({ ...input, documentIds: Object.freeze([...input.documentIds]) });
 }
 
-/** App parse gate for the judged operation result. */
+/** App parse gate for the judged operation result. canonicalDocuments must come
+ * from the current ACL-checked case read, never from the worker's output. */
 export function parseSupportToEngineeringResult(value: unknown,
-  selection: Pick<SupportCaseInput, 'supportCaseId' | 'documentIds'>): SupportToEngineeringResult {
+  selection: Pick<SupportCaseInput, 'supportCaseId' | 'documentIds'>,
+  canonicalDocuments: SupportToEngineeringResult['citations']): SupportToEngineeringResult {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('support result must be an object');
   const result = value as Record<string, unknown>;
   if (result.supportCaseId !== selection.supportCaseId || !text(result.summary, 20_000) ||
@@ -88,12 +90,26 @@ export function parseSupportToEngineeringResult(value: unknown,
       result.reproduction.length > 50 || result.checklist.length > 50) {
     throw new Error('support result does not match the approved output contract');
   }
+  const selectedIds = new Set(selection.documentIds);
+  if (!selectedIds.size || selectedIds.size !== selection.documentIds.length || selectedIds.size > 50 ||
+      !Array.isArray(canonicalDocuments) || canonicalDocuments.length !== selectedIds.size ||
+      canonicalDocuments.some((document) => !document || !UUID.test(document.id) ||
+        !selectedIds.has(document.id) || !text(document.source, 120) ||
+        (document.externalId !== null && !text(document.externalId, 500)))) {
+    throw new Error('support result requires complete canonical evidence for the selected case');
+  }
+  const documentsById = new Map(canonicalDocuments.map((document) => [document.id, document]));
+  if (documentsById.size !== selectedIds.size ||
+      new Set(result.citations.map((citation) => citation?.id)).size !== result.citations.length) {
+    throw new Error('support result contains ambiguous evidence');
+  }
   const strings = (items: unknown[]) => items.every((item) => text(item, 2000));
   if (!strings(result.reproduction) || !strings(result.checklist) || result.citations.some((citation) => {
     if (!citation || typeof citation !== 'object' || Array.isArray(citation)) return true;
     const row = citation as Record<string, unknown>;
+    const document = typeof row.id === 'string' ? documentsById.get(row.id) : undefined;
     return !text(row.id, 120) || !UUID.test(row.id) || !selection.documentIds.includes(row.id) ||
-      !text(row.source, 120) || (row.externalId !== null && !text(row.externalId, 500));
+      !document || row.source !== document.source || row.externalId !== document.externalId;
   })) throw new Error('support result contains malformed evidence');
   return Object.freeze({
     supportCaseId: selection.supportCaseId, summary: result.summary,

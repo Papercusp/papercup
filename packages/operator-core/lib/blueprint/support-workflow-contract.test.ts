@@ -12,6 +12,12 @@ const workflow: ApprovedSupportWorkflow = {
   allowedSources: ['slack'], allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000,
 };
 const id = '00000000-0000-4000-8000-000000000001';
+const selection = { supportCaseId: 'case-1', documentIds: [id] };
+const evidence = [{ id, source: 'slack', externalId: 'T1:C1:123' }];
+const output = {
+  supportCaseId: 'case-1', summary: 'A bounded summary', reproduction: ['step'], checklist: ['check'],
+  suggestedRole: 'engineer', citations: evidence,
+};
 
 describe('P-012b support workflow contract', () => {
   it('requires an accountable owner, distinct reviewer and finite maximum', () => {
@@ -34,14 +40,37 @@ describe('P-012b support workflow contract', () => {
       supportCaseId: 'case-1', approvedRevision: workflow.approvedRevision,
       documentIds: ['not-a-uuid'], query: 'x', requestedAction: 'prepare-handoff',
     })).toThrow(/canonical/);
-    const parsed = parseSupportToEngineeringResult({
-      supportCaseId: 'case-1', summary: 'A bounded summary', reproduction: ['step'], checklist: ['check'],
-      suggestedRole: 'engineer', citations: [{ id, source: 'slack', externalId: null }],
-    }, { supportCaseId: 'case-1', documentIds: [id] });
+    const parsed = parseSupportToEngineeringResult(output, selection, evidence);
     expect(parsed.supportCaseId).toBe('case-1');
     expect(() => parseSupportToEngineeringResult({ supportCaseId: 'case-2' },
-      { supportCaseId: 'case-1', documentIds: [id] })).toThrow(/contract/);
+      selection, evidence)).toThrow(/contract/);
     expect(() => parseSupportToEngineeringResult(parsed,
-      { supportCaseId: 'case-1', documentIds: [] })).toThrow(/evidence/);
+      { supportCaseId: 'case-1', documentIds: [] }, evidence)).toThrow(/evidence/);
+  });
+
+  it.each([
+    { source: 'github' },
+    { externalId: 'another-case' },
+    { externalId: null },
+  ])('refuses a valid selected document id with forged citation metadata %j', (patch) => {
+    expect(() => parseSupportToEngineeringResult({ ...output, citations: [{ ...evidence[0], ...patch }] },
+      selection, evidence)).toThrow(/evidence/);
+  });
+
+  it('requires the complete unambiguous ACL-checked evidence population', () => {
+    for (const documents of [[], [evidence[0], evidence[0]],
+      [{ ...evidence[0], id: '00000000-0000-4000-8000-000000000002' }]]) {
+      expect(() => parseSupportToEngineeringResult(output, selection, documents)).toThrow(/evidence/);
+    }
+    expect(() => parseSupportToEngineeringResult({ ...output, citations: [evidence[0], evidence[0]] },
+      selection, evidence)).toThrow(/evidence/);
+  });
+
+  it('accepts canonical nullable external ids and copies evidence before exposing the result', () => {
+    const documents = [{ ...evidence[0], externalId: null }];
+    const parsed = parseSupportToEngineeringResult({ ...output, citations: documents }, selection, documents);
+    documents[0].source = 'changed-after-parse';
+    expect(parsed.citations).toEqual([{ id, source: 'slack', externalId: null }]);
+    expect(Object.isFrozen(parsed.citations[0])).toBe(true);
   });
 });
