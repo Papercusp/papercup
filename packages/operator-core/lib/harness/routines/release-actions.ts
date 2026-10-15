@@ -2841,11 +2841,31 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     qualificationAtLaunch.status === 'present' && qualificationAtLaunch.transaction.phase !== 'terminal'
       ? qualificationAtLaunch.transaction
       : null;
+  // Read the queue once for both the eligibility pin and fixer-liveness probe. A pin from this
+  // snapshot is only a request: beginStoredQualification re-reads the same routine row FOR UPDATE
+  // and compares the exact repairHead before preserving the queue, so a moved head stays blocked.
+  const repairQueueRead = await readFrozenCandidateRepairQueueState(ctx).catch(() => null);
+  const repairQueue = repairQueueRead?.status === 'value' ? repairQueueRead.queue : null;
+  // A null-origin legacy queue has no provenance to hand forward. Supply that missing link only
+  // for the exact unassigned awaiting-fixer shape the locked reconciliation can preserve; all
+  // other rows retain the existing fail-closed behavior.
+  const nullOriginAwaitingFixerRepairHead =
+    qualificationAtLaunch.status === 'present' &&
+    qualificationAtLaunch.transaction.phase === 'terminal' &&
+    repairQueue !== null &&
+    repairQueue.qualificationAttemptId === null &&
+    repairQueue.phase === 'awaiting-fixer' &&
+    repairQueue.fixerSpawnId === null &&
+    repairQueue.dispatchReservation == null
+      ? repairQueue.repairHead
+      : undefined;
   // WI-10007408: successor reconciliation is pure, so a dead ASSIGNED fixer is only provable by
   // a probe taken here. Bound to the exact spawn id read, so a fixer swapped in between this
   // read and the locked mutation is never vouched for; any read/probe failure stays 'unknown'
   // (old fail-closed behaviour).
-  const assignedFixerLiveness = await probeAssignedFrozenRepairFixer(ctx).catch(() => null);
+  const assignedFixerLiveness = repairQueueRead
+    ? await probeAssignedFrozenRepairFixer(ctx, { readQueue: async () => repairQueueRead }).catch(() => null)
+    : null;
   // Route active attempts through the same locked-row reconciliation as fresh ones. It is
   // idempotent for a live runner, while a dead unstarted placeholder can safely adopt a newly
   // admitted, never-judged repairHead before this fire reserves its physical slot.
@@ -2855,6 +2875,9 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       attemptId: activeAttempt?.attemptId ?? gateFireId,
       evidenceRefs: [`gate-fire:${gateFireId}`],
       assignedFixerLiveness,
+      ...(nullOriginAwaitingFixerRepairHead
+        ? { requiredAncestorSha: nullOriginAwaitingFixerRepairHead }
+        : {}),
     },
     { reconcileTerminalRepairQueueForSuccessor: true },
   );
