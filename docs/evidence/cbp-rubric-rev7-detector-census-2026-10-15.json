@@ -38,7 +38,7 @@
     "subjectPlanRevision": 67
   },
   "sourceCommit": "2ee93add213a76f562140b9107f8b7a80242d42d",
-  "sourcePinStatus": "Source review corpus measured from current canonical tree. sourceCommit is the HEAD baseline; per-file pin marks uncommitted working-tree bytes explicitly. This map does not claim a clean committed test run.",
+  "sourcePinStatus": "All 18 file SHA256 values were rechecked against immutable sourceCommit 2ee93add213a76f562140b9107f8b7a80242d42d and canonical HEAD 978ec1ba9d5be8b80ae7fb687307b233965e4914 on 2026-10-15; all matched. This static detector map does not claim a new test execution or native-live verdict.",
   "files": [
     {
       "path": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
@@ -880,7 +880,30 @@
         "rubricRef": "acceptance-consult-backed-parking-2026-10-12",
         "detail": "full"
       },
-      "precondition": "Require revision9 and criteriaHash 56087bfce171766fec576170b5f7dfab14e58e86a51a4c5ecdb6474f14d53883; if moved, do not silently substitute."
+      "precondition": "Require revision10 and criteriaHash f18f2e230a4080a3cd338fb611ab8d26dc034ffc4df62bcaff4fad0fd8fdbf32, matching currentRubric; if moved, do not silently substitute."
+    },
+    "committedSourceReader": {
+      "tool": "capability:git-evidence",
+      "dispatch": "tools:invoke",
+      "args": {
+        "op": "readFileAtCommit",
+        "rootHarnessSlug": "papercusp",
+        "commitSha": "2ee93add213a76f562140b9107f8b7a80242d42d",
+        "path": "<exact files[].path>",
+        "byte_offset": 0,
+        "byte_limit": 4096
+      },
+      "continuation": "Decode canonical base64 data and follow the returned next_cursor args through eof. Verify SHA256 against files[].sha256; read criteria[].detectors[].testCase and its assertion in that exact file. A missing case or an assertion that cannot detect its drift is a failing detector. All 18 pins are committed."
+    },
+    "decisionReader": {
+      "tool": "plans:get",
+      "args": {
+        "slug": "consult-backed-parking-2026-10-12",
+        "harness": "papercusp",
+        "mode": "full",
+        "heading": "Decisions"
+      },
+      "precondition": "Require plan revision67/contentHash fba8a27181b2e562ebdb0666c3444a1d753aaa0a33b455c3b034b1d7ec2ce204. If the response is bounded, select each exact D-001 through D-024 with decisionId, or follow the returned source reference; never treat the excerpt as the complete decision corpus."
     },
     "source": "git show <sourceCommit>:<files[].path>; verify SHA256 and Git blob id against files[]; read each named detector and assertion.",
     "tests": "PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- <bound files>; integration/live classes require their maintained runtime route. A static detector census is not a claim that all tests or the live matrix ran."
@@ -1065,6 +1088,6 @@
     "Current proof bindings invalidated by rev8/rev9/rev10 amendments must be refreshed before certification.",
     "Independent current-revision vetting and grading-integrity audit remain required.",
     "In persisted rebuttal coverage cascade transport is stubbed; production persistence, blocker status and verdict awaits are real. External owner-answer reads are supplied by the test; production owner-question creation and answer persistence are real.",
-    "Working-tree pins require a clean committed refresh before they support clean-source acceptance evidence; focused PUI passes and the local picker run are not a full-suite or native-live verdict."
+    "The static 18-file committed pin check is not a test pass or a native-live verdict; historical run evidence must be read from its exact test-run ledger selectors."
   ]
 }
