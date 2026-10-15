@@ -14,6 +14,31 @@ const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
+it('retires the roster worker auth listener before its shared database pools', () => {
+  const file = 'roster-stop-http-fixture.ts';
+  const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const cleanup = source.statements.find((node): node is ts.TryStatement =>
+    ts.isTryStatement(node) && Boolean(node.finallyBlock));
+  expect(cleanup?.finallyBlock, 'worker cleanup must also run after a rejected browser assertion').toBeDefined();
+  const phases: Array<{ name: string; body: string }> = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === 'cleanupPhase' && ts.isStringLiteral(node.arguments[0])) {
+      expect(ts.isAwaitExpression(node.parent), 'worker cleanup must await owned resources').toBe(true);
+      phases.push({ name: node.arguments[0].text, body: node.arguments[1].getText(source) });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(cleanup!.finallyBlock!);
+  const auth = phases.findIndex(phase => phase.name === 'auth-invalidation-listener-stop');
+  const pools = phases.findIndex(phase => phase.name === 'db-org-pools-reset');
+  expect(auth, 'lazy principal LISTEN must not keep the proof worker alive').toBeGreaterThanOrEqual(0);
+  expect(pools, 'all db-org pools must retire after the listener stops').toBeGreaterThan(auth);
+  expect(phases[auth].body).toContain('await _stopInvalidationListenerForTests()');
+  expect(phases[pools].body).toContain('_resetForTests()');
+});
+
 it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
