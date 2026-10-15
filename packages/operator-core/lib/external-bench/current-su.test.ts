@@ -12,7 +12,7 @@ import {
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
   currentBenchOpenAiInputContract, currentBenchOpenAiInputReader,
   currentBenchCodexSubscriptionContract, currentBenchCodexSubscriptionInputReader, currentBenchCodexSubscriptionTarget,
-  currentBenchNativeCostReader, type CurrentBenchNativeCostReaderPorts,
+  currentBenchNativeCostReader, currentBenchNativeSessionCostDelta, type CurrentBenchNativeCostReaderPorts,
   currentBenchAttemptPopulationMatches,
   type CurrentBenchNativeInputCeiling,
   type CurrentBenchIdentity, type CurrentBenchTask, type CurrentSuBenchOptions, type CurrentSuBenchPorts,
@@ -83,6 +83,57 @@ describe('source-bound current benchmark cost', () => {
     expect(first.armMeta).toMatchObject({ nativeCostAccounting: { sources: [
       { nativeSessionId: 'native-cost-1', nativeTurnIds: ['turn-cost-1'] },
     ] } });
+    const delta = currentBenchNativeSessionCostDelta(first, second, 'native-cost-2');
+    expect(delta).toMatchObject({ nativeSessionId: 'native-cost-2', tokensIn: 160, tokensOut: 20,
+      tokensCacheRead: 40, turns: 1, normalizedCostUsd: expect.closeTo(first.costUsd * 2, 10), billedCostUsd: 0.005 });
+    // A consumer cannot mutate either retained cumulative receipt through the delta.
+    delta.nativeTurnIds.push('untrusted-turn');
+    expect(second.armMeta.nativeCostAccounting.sources[1].nativeTurnIds).toEqual(['turn-cost-2']);
+    expect(() => currentBenchNativeSessionCostDelta(second, second, 'native-cost-2')).toThrow(/reused/);
+    expect(() => currentBenchNativeSessionCostDelta(null, second, 'native-cost-2')).toThrow(/non-monotone/);
+  });
+  it('selects a first session from a complete source receipt without conflating normalized and billed cost', async () => {
+    const f = costFixture(), first = await f.read();
+    expect(currentBenchNativeSessionCostDelta(null, first, 'native-cost-1')).toMatchObject({
+      tokensIn: 80, tokensCacheRead: 20, tokensOut: 10, billedCostUsd: 0.002,
+      normalizedCostUsd: expect.closeTo(0.00011, 10),
+    });
+  });
+  it.each(['bill', 'attempts', 'census', 'aggregate', 'duplicate-event', 'source-hash', 'turns', 'price', 'source-total', 'protocol-hash'] as const)(
+    'refuses a fresh-session delta with invalid %s evidence', async field => {
+      const f = costFixture(), cost = await f.read(), a = cost.armMeta.nativeCostAccounting;
+      if (field === 'bill') a.sources[0].billedCostUsd = null;
+      if (field === 'attempts') a.attemptAccountingComplete = false;
+      if (field === 'census') a.sourceCensusComplete = false;
+      if (field === 'aggregate') cost.tokensIn++;
+      if (field === 'duplicate-event') a.sources[0].usageEventKeys.push(a.sources[0].usageEventKeys[0]);
+      if (field === 'source-hash') a.sources[0].sourceSha256 = '';
+      if (field === 'turns') a.sources[0].nativeTurnIds.push(a.sources[0].nativeTurnIds[0]);
+      if (field === 'price') a.normalizedCostUsd += 1;
+      if (field === 'source-total') a.sources[0].tokensCacheRead++;
+      if (field === 'protocol-hash') a.preregHash = '';
+      expect(() => currentBenchNativeSessionCostDelta(null, cost, 'native-cost-1')).toThrow(/incomplete/);
+    });
+  it('refuses changed historical source evidence and a changed frozen price schedule', async () => {
+    const f = costFixture(), first = await f.read();
+    const secondUsage = structuredClone(f.usage);
+    secondUsage.sourceSha256 = 'b'.repeat(64);
+    secondUsage.nativeTurnIds = ['turn-cost-2'];
+    secondUsage.events = secondUsage.events.map(event => ({ ...event,
+      usageEventKey: event.usageEventKey + '/second', turnId: 'turn-cost-2' }));
+    f.runtime.sessions.push({ nativeSessionId: 'native-cost-2', usage: secondUsage });
+    const second = await f.read();
+    expect(currentBenchNativeSessionCostDelta(first, second, 'native-cost-2').tokensIn).toBe(80);
+    const altered = structuredClone(second);
+    altered.armMeta.nativeCostAccounting.sources[0].sourceSha256 = 'c'.repeat(64);
+    expect(() => currentBenchNativeSessionCostDelta(first, altered, 'native-cost-2')).toThrow(/non-monotone/);
+    altered.armMeta.nativeCostAccounting.sources[0].sourceSha256 = f.usage.sourceSha256;
+    altered.armMeta.nativeCostAccounting.priceTableVersion = 'other-price-schedule';
+    expect(() => currentBenchNativeSessionCostDelta(first, altered, 'native-cost-2')).toThrow(/non-monotone/);
+    altered.armMeta.nativeCostAccounting.priceTableVersion = first.armMeta.nativeCostAccounting.priceTableVersion;
+    altered.armMeta.nativeCostAccounting.preregHash = 'd'.repeat(64);
+    expect(() => currentBenchNativeSessionCostDelta(first, altered, 'native-cost-2')).toThrow(/non-monotone/);
+    expect(() => currentBenchNativeSessionCostDelta(second, first, 'native-cost-3')).toThrow(/non-monotone/);
   });
   it.each(['bill', 'attempts', 'census'] as const)('does not certify a session bill from incomplete %s evidence', async missing => {
     const f = costFixture();

@@ -137,9 +137,79 @@ export interface CurrentBenchNativeCostReaderPorts {
   readAttemptAccountingComplete?(population: NativeAccountingPopulation): Promise<boolean>;
 }
 
+export interface CurrentBenchNativeSessionCost {
+  nativeSessionId: string; sourceSha256: string; sourceComplete: boolean;
+  usageEventKeys: string[]; nativeTurnIds: string[];
+  /** Uncached input; cache tokens remain separate, as in BenchRunCost. */
+  tokensIn: number; tokensOut: number; tokensCacheRead: number; tokensCacheWrite: number; turns: number;
+  normalizedCostUsd: number; billedKnownSubtotalUsd: number | null; billedCostUsd: number | null;
+}
+export interface CurrentBenchNativeCostAccounting {
+  basis: 'frozen-normalized-native-source'; priceTableVersion: string;
+  /** Canonical frozen protocol content id, shared with the request census binding. */
+  preregHash: string;
+  normalizedCostUsd: number; billedKnownSubtotalUsd: number; billedCostUsd: number | null;
+  sourceCensusComplete: boolean; attemptAccountingComplete: boolean; missingSources: number; missingBills: number;
+  participantTaskIds: string[]; sources: CurrentBenchNativeSessionCost[];
+  taskLedgerConcurrency?: Record<string, unknown>;
+}
+export interface CurrentBenchNativeRunCost extends BenchRunCost {
+  armMeta: { nativeCostAccounting: CurrentBenchNativeCostAccounting };
+}
+
+/** Select one new closed session from complete cumulative source receipts.
+ * This is measured usage, not permission to launch or spend. The host must
+ * separately bind it to its complete assignment request census.
+ */
+export function currentBenchNativeSessionCostDelta(before: CurrentBenchNativeRunCost | null,
+  after: CurrentBenchNativeRunCost, nativeSessionId: string): CurrentBenchNativeSessionCost {
+  const invalid = () => new Error('Fresh native session usage is incomplete, reused or non-monotone.');
+  const validate = (cost: CurrentBenchNativeRunCost) => {
+    const a = cost.armMeta?.nativeCostAccounting;
+    const money = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+    const count = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+    const sameMoney = (a: number, b: number) => Math.abs(a - b) <= 1e-10 * Math.max(1, a, b);
+    if (cost.costUsdMeasurementMissing !== false || !a || a.basis !== 'frozen-normalized-native-source' ||
+        !a.sourceCensusComplete || !a.attemptAccountingComplete || a.missingSources !== 0 || a.missingBills !== 0 ||
+        !a.priceTableVersion || !/^[a-f0-9]{64}$/.test(a.preregHash) || !money(a.billedCostUsd) || !money(a.billedKnownSubtotalUsd) ||
+        !money(a.normalizedCostUsd) || !hasValidBenchRunCost(cost) || !Array.isArray(a.sources) || !a.sources.length) throw invalid();
+    const ids = new Set<string>(), events = new Set<string>();
+    for (const s of a.sources) {
+      if (!s.nativeSessionId || ids.has(s.nativeSessionId) || !s.sourceComplete || !/^[a-f0-9]{64}$/.test(s.sourceSha256) ||
+          !Array.isArray(s.usageEventKeys) || !s.usageEventKeys.length ||
+          s.usageEventKeys.some(key => typeof key !== 'string' || !key || events.has(key)) ||
+          new Set(s.usageEventKeys).size !== s.usageEventKeys.length || !Array.isArray(s.nativeTurnIds) ||
+          !s.nativeTurnIds.length || s.nativeTurnIds.some(id => typeof id !== 'string' || !id) ||
+          new Set(s.nativeTurnIds).size !== s.nativeTurnIds.length || s.turns !== s.nativeTurnIds.length ||
+          ![s.tokensIn, s.tokensOut, s.tokensCacheRead, s.tokensCacheWrite, s.turns].every(count) ||
+          !money(s.normalizedCostUsd) || !money(s.billedCostUsd) || s.billedCostUsd !== s.billedKnownSubtotalUsd) throw invalid();
+      ids.add(s.nativeSessionId); for (const key of s.usageEventKeys) events.add(key);
+    }
+    for (const key of ['tokensIn', 'tokensOut', 'tokensCacheRead', 'tokensCacheWrite', 'turns'] as const) {
+      const total = a.sources.reduce((sum, s) => sum + s[key], 0);
+      if (!count(total) || total !== (cost[key] ?? 0)) throw invalid();
+    }
+    const normalized = a.sources.reduce((sum, s) => sum + s.normalizedCostUsd, 0);
+    const billed = a.sources.reduce((sum, s) => sum + s.billedCostUsd!, 0);
+    if (!money(normalized) || !money(billed) || !sameMoney(normalized, cost.costUsd) ||
+        !sameMoney(normalized, a.normalizedCostUsd) || !sameMoney(billed, a.billedCostUsd) ||
+        !sameMoney(billed, a.billedKnownSubtotalUsd)) throw invalid();
+    return a;
+  };
+  const current = validate(after), previous = before ? validate(before) : null;
+  if (!nativeSessionId || previous && (previous.priceTableVersion !== current.priceTableVersion ||
+      previous.preregHash !== current.preregHash)) throw invalid();
+  const old = new Map(previous?.sources.map(s => [s.nativeSessionId, s]) ?? []);
+  if (old.has(nativeSessionId) || [...old].some(([id, source]) =>
+    canonicalJson(current.sources.find(s => s.nativeSessionId === id) ?? null) !== canonicalJson(source))) throw invalid();
+  const added = current.sources.filter(s => !old.has(s.nativeSessionId));
+  if (added.length !== 1 || added[0].nativeSessionId !== nativeSessionId) throw invalid();
+  return structuredClone(added[0]);
+}
+
 /** Reuses native source proofs and frozen pricing. Actual provider cost stays
  * separately labelled; neither SQL estimates nor the normalized sum are bills. */
-export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProtocol, ports: CurrentBenchNativeCostReaderPorts): () => Promise<BenchRunCost> {
+export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProtocol, ports: CurrentBenchNativeCostReaderPorts): () => Promise<CurrentBenchNativeRunCost> {
   const protocol = currentBenchmarkProtocolSchema.parse(protocolInput);
   const io = { ...ports };
   return async () => {
@@ -147,10 +217,7 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
     const participants = await io.readParticipants();
     let complete = participants.length > 0 && participants.length < 1000;
     const ids = new Set<string>(), bindings = new Set<string>(), homes = new Map<string, string>(), eventKeys = new Set<string>(), nativeSessions = new Set<string>();
-    const sources: { nativeSessionId: string; sourceSha256: string; sourceComplete: boolean;
-      usageEventKeys: string[]; nativeTurnIds: string[]; tokensIn: number; tokensOut: number;
-      tokensCacheRead: number; tokensCacheWrite: number; turns: number; normalizedCostUsd: number;
-      billedKnownSubtotalUsd: number | null; billedCostUsd: number | null }[] = [];
+    const sources: CurrentBenchNativeSessionCost[] = [];
     const accountingSources: NativeAccountingSource[] = [];
     let missingSources = 0, missingBills = 0, billedKnownSubtotalUsd = 0;
     for (const participant of participants) {
@@ -226,7 +293,8 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
     // two cumulative agent totals. A partial census or unreconciled attempt
     // population cannot certify even one session's bill as complete.
     if (result.costUsdMeasurementMissing) for (const source of sources) source.billedCostUsd = null;
-    result.armMeta = { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: protocol.priceSchedule.version,
+    return { ...result, armMeta: { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: protocol.priceSchedule.version,
+      preregHash: createHash('sha256').update(canonicalJson(protocol)).digest('hex'),
       normalizedCostUsd: result.costUsd, billedKnownSubtotalUsd,
       billedCostUsd: complete && !missingBills && attemptsComplete ? billedKnownSubtotalUsd : null,
       sourceCensusComplete: complete, attemptAccountingComplete: attemptsComplete, missingSources, missingBills,
@@ -237,8 +305,7 @@ export function currentBenchNativeCostReader(protocolInput: CurrentBenchmarkProt
         participantCensusStable, missingTimingTaskIds,
         startedAtMs: timing?.startedAtMs ?? null, endedAtMs: timing?.endedAtMs ?? null,
         wallClockMs: timing?.wallClockMs ?? null, participantWallClockMs: timing?.participantWallClockMs ?? null,
-        concurrencyTimeline: timing?.concurrencyTimeline ?? null } } };
-    return result;
+        concurrencyTimeline: timing?.concurrencyTimeline ?? null } } } };
   };
 }
 
