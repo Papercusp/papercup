@@ -727,5 +727,339 @@
   ],
   "limits": "Original command-local execution and declared inputs only. Imported scripts, installed dependencies and final transformed runtime closure remain unmeasured. No ABBA or operational acceptance; full plan unshipped.",
   "qualifiedAt": "2026-10-14T18:21:37.690037+00:00",
-  "headAtQualification": "fe8513e46a8391054895bca57a8fd336102b7c82"
+  "headAtQualification": "fe8513e46a8391054895bca57a8fd336102b7c82",
+  "currentOriginalParent20261015": {
+    "workItemId": "EI-26017756441275528",
+    "status": "original-parent-exit0-declared-population-stable-conditional-skips",
+    "command": [
+      "npm",
+      "run",
+      "test"
+    ],
+    "originalScript": "npm run test:config && npm run test:shell && npm run test:installed-model-inference && npm run test:candidate-install-upgrade && npm run test:mac-minimum-os && npm run test:mac-signing && npm run test:linux-finalize-deb && npm run test:selftests",
+    "startedAt": "2026-10-15T04:37:08.186418+00:00",
+    "finishedAt": "2026-10-15T04:53:26.413089+00:00",
+    "childWallMs": 973933,
+    "exitCode": 0,
+    "normalEnvironment": "NODE_OPTIONS removed before child spawn; no diagnostic preload or optional packet injection",
+    "headAtStart": "7adab27b62a58260dc8d72881f694a46e25351d5",
+    "headAtEnd": "a9a08d8758ba00cde995b65219e711925349e7ef",
+    "desktopHeadAtStart": "3a127698941e026d4b5f12a9eca9f0ec4ee2abba",
+    "desktopHeadAtEnd": "ca415ae8d0998c3a47e07ff50e340a69f16fd01a",
+    "rawReceipt": {
+      "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v3.json",
+      "sha256": "3897ab3fd9eda3929c0f78fbc458d48c7664788df2744dd5e5a398232b895ce0"
+    },
+    "logs": {
+      "stdout": {
+        "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v3.log",
+        "sha256": "3f766cff46a0a8ad1233eeb7b4aa08a12f75c138b1609d5ee3f5b56078f129fc"
+      },
+      "stderr": {
+        "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v3.err",
+        "sha256": "6b172b591bfbf9cdab43747d3ae0a76b38a72da122378befb3a4bb9dd40b3ef8"
+      }
+    },
+    "declaredInputs": {
+      "before": 3733,
+      "after": 3733,
+      "independentlyEnumerated": true,
+      "delta": {
+        "added": [],
+        "removed": [],
+        "changed": []
+      },
+      "unchanged": true,
+      "recipe": "desktop git ls-files --cached --others --exclude-standard, independently enumerated at this boundary; plus four named external bootstrap inputs; not transitive/runtime closure",
+      "limits": "Declared desktop repository paths plus four named external bootstrap paths only; not the transitive dependency or runtime population."
+    },
+    "repairedInputPins": [
+      {
+        "path": "papercusp-desktop/test/build-artifact-atomicity.test.js",
+        "sha256": "f7636b3602e158fb740f6835fe3fc6a221c43dc289f9062233f86e9c752c856f"
+      },
+      {
+        "path": "papercusp-desktop/test/innoextract-compat-preflight.test.js",
+        "sha256": "50cbc980ffa045502d08089b6aa812a809dc8ad10699f2162f6dfd0eb4e19905"
+      },
+      {
+        "path": "papercusp-desktop/test/release-baked-host-bytes.test.js",
+        "sha256": "7f03e0729ab904a46eacb4b3c09e211630ef20af2b8cebf15e839c0e7bd0c246"
+      },
+      {
+        "path": "papercusp-desktop/test/wsl-sidecar-launch-paths.test.js",
+        "sha256": "abd676bc67a7ebc9980deb97c6894e5f8229e5531559b3ad31261e501f827e3e"
+      },
+      {
+        "path": "papercusp-desktop/test/build-desktop-sidecar-lock.test.js",
+        "sha256": "ed7e584d2b8f42f492ed9b55c2dc793912e413490afdf1e7a6105706374be8c5"
+      }
+    ],
+    "focusedVerification": {
+      "command": "node --test --test-global-setup=test/monorepo-host-preflight.mjs test/build-artifact-atomicity.test.js test/innoextract-compat-preflight.test.js test/release-baked-host-bytes.test.js test/wsl-sidecar-launch-paths.test.js test/build-desktop-sidecar-lock.test.js",
+      "preloadAbsent": true,
+      "passed": 62,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "stdout": {
+        "path": "~/.papercusp/scratch/c0523-desktop-fivefiles-green-v1.log",
+        "sha256": "0bfeda4b84f67bdc2903568e8e3f1b79e12caf9206f67a0cc1617918844a09ab"
+      },
+      "causalLockControl": {
+        "path": "~/.papercusp/scratch/c0523-lock-marker-control-red.log",
+        "sha256": "9e48d83d6feb63e8fb5ecff37efac063a3e5b104d082932a7fa915409d30716c"
+      },
+      "causalResult": "A delayed marker after unlock reproduces the original immediate assertion failure even though the writer acquires successfully. Existing bounded waitForFile acknowledgement passes. Other maintained controls reject mismatched prepared Git HEAD, absent/unknown/candidate SPA, and poisoned Rust signature mentions; executable Windows guard is copied from the maintained producer."
+    },
+    "slowHarnessAudit": "v1 inherited diagnostic preload invalidated original-command qualification. v2 clean failures exposed stale fixtures, unanchored source extraction and asynchronous completion assertion. Before v3, pass exact five maintained suites, remove NODE_OPTIONS before original spawn, assert optional packet injection absent, and independently enumerate/hash the declared population at both boundaries. Failed v1/v2 receipts are retained unchanged.",
+    "steps": [
+      {
+        "script": "test:config",
+        "nodeStdoutSummary": {
+          "tests": 114,
+          "pass": 111,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 3
+        }
+      },
+      {
+        "script": "test:shell",
+        "nodeStdoutSummary": {
+          "tests": 1576,
+          "pass": 1575,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 1
+        }
+      },
+      {
+        "script": "test:installed-model-inference",
+        "nodeStdoutSummary": {
+          "tests": 4,
+          "pass": 2,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 2
+        }
+      },
+      {
+        "script": "test:candidate-install-upgrade",
+        "nodeStdoutSummary": {
+          "tests": 6,
+          "pass": 6,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:mac-minimum-os",
+        "nodeStdoutSummary": {
+          "tests": 7,
+          "pass": 7,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:mac-signing",
+        "nodeStdoutSummary": {
+          "tests": 36,
+          "pass": 36,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:linux-finalize-deb",
+        "nodeStdoutSummary": {
+          "tests": 10,
+          "pass": 10,
+          "fail": 0,
+          "cancelled": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "script": "test:selftests",
+        "nodeStdoutSummary": {}
+      }
+    ],
+    "selftestVerdicts": [
+      {
+        "script": "federation-asserts.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-artifacts.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-content-identity.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-tag-pin.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "gen-latest-manifest.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "live-federation-gate-reaper.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "release-local-leg-reaper.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "local-matrix-starvation.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "rig-bank-logs.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "local-matrix-bank.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "vm-run-env.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "seat-offer-diag.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b9-attestation-precondition.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b3-revocation-kcut.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b5-restart.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "b6-concurrent.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "matrix-scenario-adapters.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "matrix-verdict-states.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "matrix-pass-transcript.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "replication-soak-diagnostics.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "restart-settle-barrier.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "rig-wait-converged.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "roster-scope.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "deployed-state-guards.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "inno-legacy-reaper.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "inno-uninstall-cleanup.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "rust-path-remap.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "disk-preflight.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "mac-vm-fresh-state.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "streak-escalation.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "remote-object-state.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "offline-installer-evidence-redaction.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "vm-port-alloc.selftest.sh",
+        "verdict": "PASS"
+      },
+      {
+        "script": "vm-boot-extra-drives.selftest.sh",
+        "verdict": "PASS"
+      }
+    ],
+    "conditionalSkips": [
+      "﹣ real Inno packages the mandatory stamp and refuses a missing input (0.199853ms) # native producer leg: set PAPERCUSP_TEST_REAL_INNO=1 and PAPERCUSP_INNOEXTRACT",
+      "﹣ real Inno upgrade replaces owned payload, preserves data, and rolls back a failed copy (0.215624ms) # native producer leg: set PAPERCUSP_TEST_REAL_INNO=1",
+      "﹣ native webview zoom responds to keyboard shortcuts and survives reload (0.424163ms) # SKIP",
+      "﹣ live current-build Mac worker executes from transported hash-bound bytes (2.632786ms) # SKIP",
+      "﹣ actual bound embeddinggemma-300m-ONNX worker inference (1.57077ms) # requires exact payload/installed binding",
+      "﹣ actual bound harrier-oss-v1-0.6b-ONNX worker inference (0.191598ms) # requires exact payload/installed binding"
+    ],
+    "failedPreparations": [
+      {
+        "kind": "preload-contaminated; original-behavior claim RETRACTED",
+        "receipt": {
+          "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v1.json",
+          "sha256": "a2d98c6b9bc6338b3f645237040dd4174151961372b510a355b39e0d25e2a244"
+        }
+      },
+      {
+        "kind": "clean-parent-exit1-nine-shell-failures; reused-path-list population limitation",
+        "receipt": {
+          "path": "~/.papercusp/scratch/c0523-desktop-original-parent-20261015-v2.json",
+          "sha256": "cfcff519e2751a8a3da2ef7828dcfcc108ed39e8a3f97e02c3097e51d9ea80df"
+        }
+      }
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped",
+    "limits": [
+      "Native npm parent exit and its declared source population are measured; node summaries are stdout observations, not qualified per-step/report bindings.",
+      "Six conditional tests were skipped; no zero-skip qualification or applicability ruling is inferred.",
+      "Complete bootstrap, engine source bytes, descendants, external/native dependencies, final transforms and containment closure remain unmeasured.",
+      "No ABBA comparison, R-12 throughput acceptance, live gate verdict, or shipment is established. Engine archive change EI-26014170316247986 remains mandatory-review-pending."
+    ]
+  }
 }

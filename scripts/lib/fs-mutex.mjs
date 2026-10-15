@@ -577,9 +577,14 @@ async function reclaimAbandonedLock(lockDir, staleMs) {
 
 /**
  * The ticket that has been waiting LONGEST for `name`'s write lock, after
- * reclaiming any abandoned tickets — or null when the queue directory cannot be
- * read. Fail-open: no ordering information ⇒ the caller falls back to racing for
- * the lock directly, so a broken/unreadable queue can never deadlock acquisition.
+ * reclaiming abandoned tickets at the head — or null when the queue directory
+ * cannot be read. Ticket ids sort in FIFO order, so a stale ticket behind the
+ * first live ticket cannot block admission yet; leave it for the scan when it
+ * reaches the head. This keeps each poll from doing owner-file and process
+ * liveness I/O for every waiter in a wide queue.
+ *
+ * Fail-open: no ordering information ⇒ the caller falls back to racing for the
+ * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
 async function oldestTicketDir(ticketsDir, staleMs) {
   let entries;
@@ -588,21 +593,25 @@ async function oldestTicketDir(ticketsDir, staleMs) {
   } catch {
     return null;
   }
-  const ticketDirs = entries
+  const ticketNames = entries
     .filter((entry) => entry.isDirectory())
-    .map((entry) => join(ticketsDir, entry.name));
-  for (const ticketDir of ticketDirs)
-    await reclaimAbandonedLock(ticketDir, staleMs);
-  let remaining;
-  try {
-    remaining = (await readdir(ticketsDir, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-  } catch {
-    return null;
+    .map((entry) => entry.name)
+    .sort();
+  for (const ticketName of ticketNames) {
+    const ticketDir = join(ticketsDir, ticketName);
+    if (await reclaimAbandonedLock(ticketDir, staleMs)) continue;
+    try {
+      // Another waiter may have cleaned this candidate after our directory
+      // snapshot. Skip that vanished entry and continue through the ordered
+      // prefix instead of treating it as the live head.
+      if (!(await lstat(ticketDir)).isDirectory()) continue;
+    } catch (error) {
+      if (error?.code === "ENOENT") continue;
+      return null;
+    }
+    return ticketDir;
   }
-  return remaining.length ? join(ticketsDir, remaining[0]) : null;
+  return null;
 }
 
 async function writerLockIsHeld(lockDir, staleMs) {

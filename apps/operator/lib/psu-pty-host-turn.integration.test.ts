@@ -94,6 +94,15 @@ function uniqueOwner(suffix: string): string {
   return `su-turn-itest-${process.pid}-${Math.floor(performance.now())}-${suffix}`;
 }
 
+/** Preserve the host's refusal reason before fixture teardown removes its log. */
+function hostTestDiagnostics(ownerId: string, captured: () => string): string {
+  const log = eventLogPathForOwner(ownerId);
+  const events = existsSync(log)
+    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).slice(-12).map((line) => JSON.parse(line))
+    : [];
+  return JSON.stringify({ output: captured().slice(-2000), events });
+}
+
 it.each(['retry', 'late-native', 'rearmed-late-native', 'replaced', 'replaced-after-reconcile', 'rearmed-replaced'] as const)(
   'keeps a repainting tagged wake pending until native submission: %s',
   async (scenario) => {
@@ -560,7 +569,9 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
       const freshCode = [
         "const fs=require('node:fs');process.stdin.setRawMode(true);",
         "process.stdout.write('FRESH-BOOT\\n');",
-        scenario === 'not-ready' ? '' : "setTimeout(()=>process.stdout.write('100% context left\\n'),150);",
+        // A tagged initial kickoff requires a probe followed by a configured
+        // model frame; context-left chrome alone cannot authorize submission.
+        scenario === 'not-ready' ? '' : "setTimeout(()=>process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n100% context left\\n'),150);",
         "setInterval(()=>process.stdout.write('IDLE-REPAINT\\n'),15);",
         // The composer echoes typed text like the real Codex TUI: a fresh launch
         // kickoff is only submitted once its turn-origin marker is visible.
@@ -598,6 +609,9 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           PAPERCUSP_PSU_PTY_CODEX_RESUBMIT_CR_MS: '10',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          // This composer fixture never emits quota errors. Keep its receipt
+          // phase explicit instead of inheriting the production 10s grace.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '20',
         }),
         ownerId,
         io,
@@ -618,11 +632,19 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
         }
         expect(await waitForOutput(captured, 'FRESH-BOOT')).toBe(true);
         if (scenario === 'launch-ready') {
-          expect(await waitForOutput(captured, 'SUBMITTED')).toBe(true);
+          const submitted = await waitForOutput(captured, 'SUBMITTED');
+          expect(submitted, hostTestDiagnostics(ownerId, captured)).toBe(true);
           const deadline = Date.now() + 2000;
           while (!readFileSync(proofPath, 'utf8') && Date.now() < deadline) await sleep(20);
-          expect(JSON.parse(readFileSync(proofPath, 'utf8'))).toMatchObject({ persisted: true });
+          const receipt = readFileSync(proofPath, 'utf8');
+          expect(receipt, hostTestDiagnostics(ownerId, captured)).not.toBe('');
+          expect(JSON.parse(receipt)).toMatchObject({ persisted: true });
           expect(readFileSync(nativePath, 'utf8').trim().split('\n')).toHaveLength(1);
+          const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line));
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'backend-session-frame-observed', msSinceMachineTurnWriteStarted: null,
+          }));
           return;
         }
         if (scenario === 'terminal-reply') type('\u001b[12;40R');
@@ -1328,8 +1350,9 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
       const emitted: Array<{ ownerId: string; focus: string; nativeId: string | null }> = [];
       const childCode = [
         "const fs=require('node:fs');process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
-        "process.stdout.write('FRESH-BOOT\\n');",
-        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString()){",
+        "process.stdout.write('FRESH-BOOT\\n\\x1b[6nmodel: GPT-6.1-Sol xhigh\\n');",
+        // Terminal capability replies are not composer input.
+        "let line='';process.stdin.on('data',data=>{let echo='';for(const c of data.toString().replace(/\\x1b\\[[0-9;]*R/g,'')){",
         "if(c==='\\u0004'){process.stdout.write('EOT_RECEIVED\\n',()=>process.exit(0));return;}",
         "if(c==='\\r'){if(line){",
         "fs.appendFileSync(process.env.CARRY_NATIVE_PATH,JSON.stringify({type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:line}]}})+'\\n');",
@@ -1398,7 +1421,8 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
         expect(captured()).not.toContain('SUBMITTED');
         if (mappingConfirmed) {
           confirmBinding!();
-          expect(await waitForOutput(captured, 'SUBMITTED', 5_000)).toBe(true);
+          const submitted = await waitForOutput(captured, 'SUBMITTED', 5_000);
+          expect(submitted, hostTestDiagnostics(ownerId, captured)).toBe(true);
         }
 
         const terminalDeadline = Date.now() + 2_000;
@@ -1418,6 +1442,9 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
         }
 
         expect(reportedIds).toEqual([nativeId]);
+        expect(events, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
+          kind: 'backend-session-frame-observed', msSinceMachineTurnWriteStarted: null,
+        }));
         if (mappingConfirmed) {
           expect(readFileSync(nativePath, 'utf8')).toContain(marker);
           const unannounced = events.find((event) => event.kind === 'respawn-compaction-unannounced');
@@ -1438,7 +1465,7 @@ describe('host-code-adopted carry with a late Codex native id (EI-24961854655864
           expect(emitted).toHaveLength(0);
           expect(existsSync(nativePath)).toBe(false);
           expect(captured()).not.toContain('SUBMITTED');
-          expect(events).toContainEqual(expect.objectContaining({
+          expect(events, hostTestDiagnostics(ownerId, captured)).toContainEqual(expect.objectContaining({
             kind: 'respawn-binding-unconfirmed',
             nativeId,
             reason: 'successor-reanchor-unconfirmed',

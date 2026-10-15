@@ -7,6 +7,7 @@ const osState = vi.hoisted(() => ({ userHome: null as string | null }));
 const fileWrites = vi.hoisted(() => ({
   beforeWrite: null as null | ((path: string) => Promise<void>),
   beforeSymlink: null as null | ((path: string) => Promise<void>),
+  beforeReadFile: null as null | ((path: string) => void),
 }));
 
 vi.mock('node:os', async importOriginal => {
@@ -24,6 +25,10 @@ vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      fileWrites.beforeReadFile?.(String(args[0]));
+      return actual.readFile(...args);
+    },
     symlink: async (...args: Parameters<typeof actual.symlink>) => {
       await fileWrites.beforeSymlink?.(String(args[1]));
       return actual.symlink(...args);
@@ -50,6 +55,7 @@ const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
 afterEach(async () => {
   fileWrites.beforeWrite = null;
   fileWrites.beforeSymlink = null;
+  fileWrites.beforeReadFile = null;
   osState.userHome = null;
   if (originalDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
@@ -921,6 +927,43 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     expect(result).toBe('done');
     expect(elapsed).toBeLessThan(2_000);
     await rm(dir, { recursive: true, force: true });
+  });
+
+  it('checks only the live FIFO head in a wide queue instead of reading every waiter owner', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-wide-queue-'));
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const name = 'bounded-ticket-scan';
+    const queueDir = join(dir, `${name}.queue`);
+    await mkdir(queueDir, { recursive: true });
+    for (let index = 0; index < 64; index += 1) {
+      const ticketDir = join(
+        queueDir,
+        `${String(index + 1).padStart(16, '0')}-${process.pid}-live-${String(index).padStart(3, '0')}.ticket`,
+      );
+      await mkdir(ticketDir);
+      await writeFile(join(ticketDir, 'owner.json'), JSON.stringify({
+        pid: process.pid,
+        host: hostname(),
+        startedAt: new Date().toISOString(),
+        name,
+      }));
+    }
+
+    let ticketOwnerReads = 0;
+    fileWrites.beforeReadFile = path => {
+      if (path.startsWith(`${queueDir}/`) && path.endsWith('/owner.json')) ticketOwnerReads += 1;
+    };
+    try {
+      await expect(withFsMutex(name, async () => 'unreachable', {
+        timeoutMs: 0,
+        retryMs: 5,
+        staleMs: 10_000,
+      })).rejects.toThrow(/Timed out after 0ms waiting for fs-mutex/);
+      expect(ticketOwnerReads).toBe(1);
+    } finally {
+      fileWrites.beforeReadFile = null;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('reclaims a ticket with no owner.json (crash between mkdir and write) once it is stale', async () => {
