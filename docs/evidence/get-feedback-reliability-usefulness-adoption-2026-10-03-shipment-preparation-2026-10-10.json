@@ -5127,5 +5127,297 @@
     },
     "remaining": "EI259448 D029 source candidate qualifies in clean committed CPU21244560, startup21244562 and router21244563; EI259558 startup logging completion is DONE/COMMITTED. Original native424 has scoped typed child/caller-row/native-carrier evidence above, but actor/ABA/system/filesystem/wake/retention acceptance remains open. Original warmup/deletion, whole graph/independent/full source-backend matrix/R6 and exactR7 shipment remain open. Earlier DB-target stderr severity is source-complete under EI259485 with committed scoped6pass. All prior receipts and original538eeb7/960d986 remain immutable. No HEAD/maps-only replay."
   },
+  "nativeD029Acceptance20261014": {
+    "capturedAt": "2026-10-14T15:30:00Z",
+    "lane": "WI-10007521 / EI-25944855432360344; no LIVE_GATE_OPS",
+    "inconclusiveOriginal": {
+      "conversationId": "conv-request-2a5a1e09d5a3a572ba1faf51ac0596101e835426cc99250cb02c9a9789440db3",
+      "requestKey": "gf-d029-native-primary-issue-20261014-1508",
+      "build": "b60d3444e2",
+      "state": "no_qualified_responder",
+      "wakesUsed": 0,
+      "payloadFile": "/tmp/d029-native-payload.json",
+      "resultFile": "/tmp/d029-native-result.json",
+      "rootCause": "Caller used subject_ref D-029 as an experiment tag. It is an exact transcript-text filter applied before retrieval. Empty nativePool/candidates/sources and absent subjectValidation do not measure D029 semantics.",
+      "contractFollowup": "EI-25968889187816552"
+    },
+    "corrected": {
+      "conversationId": "conv-request-4f3e4a8d4fc38523472f88d6d35bd51440d7b05095da7199df7b2898517ecbb3",
+      "requestKey": "gf-d029-native-primary-issue-unfiltered-20261014-1526",
+      "resultFile": "/tmp/d029-native-unfiltered-result.json",
+      "persistedReceiptFile": "/tmp/d029-native-unfiltered-routing-envelope.json",
+      "stateAtCapture": "active",
+      "build": "6bc34f406b",
+      "routerSourceSha256": "489823234a6d7695f2ceb1c07fc950bcde405f3f817f3581cde03b25933d7860",
+      "sourceVerification": "git show 6bc34f406b:packages/operator-core/lib/consult/relevance-router.ts | sha256sum matches D029 qualified router. New native build is distinct from earlier b60d receipt.",
+      "requestCorrection": "Same exact question, tried/observed/decision and codex-to-codex/live/nonempty-plan-claim constraints; omit only subject_ref; fresh request key.",
+      "coverage": {
+        "limit": 8,
+        "subject": "For native isolated session-port consults, what evidence distinguishes child mutation of source plan leases from legitimate source renewal, system cleanup, and mutate-then-revert? I need a concrete actor-correlated before/after audit that preserves the original native receipt when timeout cleanup runs.",
+        "subjects": [
+          "For native isolated session-port consults, what evidence distinguishes child mutation of source plan leases from legitimate source renewal, system cleanup, and mutate-then-revert? I need a concrete actor-correlated before/after audit that preserves the original native receipt when timeout cleanup runs."
+        ],
+        "evaluated": 7,
+        "threshold": 0.5,
+        "unmeasured": 0,
+        "unresolved": []
+      },
+      "pool": [
+        {
+          "owner": "su-85495d04-6cd8-44fb-bbbe-5fcce4212557",
+          "relevance": 0.5467095491932887,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.4391865947424814
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:06:49.604Z",
+              "sim": 0.6327935457229614,
+              "turn_idx": 5,
+              "session_id": "01a13aeb-1192-7f70-a29b-1253784667f2"
+            },
+            {
+              "ts": "2026-10-14T15:17:26.218Z",
+              "sim": 0.5728734731674194,
+              "turn_idx": 8,
+              "session_id": "01a13aeb-1192-7f70-a29b-1253784667f2"
+            },
+            {
+              "ts": "2026-10-14T15:18:41.377Z",
+              "sim": 0.5217509269714355,
+              "turn_idx": 9,
+              "session_id": "01a13aeb-1192-7f70-a29b-1253784667f2"
+            }
+          ]
+        },
+        {
+          "owner": "su-424d5476-0b13-401a-a926-0aaa9f212391",
+          "relevance": 0.5297589722801657,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.1725898126377591
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:06:00.986Z",
+              "sim": 0.5914456844329834,
+              "turn_idx": 3,
+              "session_id": "01a13af0-643f-7e81-a327-6882d1e5370e"
+            }
+          ]
+        },
+        {
+          "owner": "su-34e04dbe-24fc-4579-a522-1610ae9761f7",
+          "relevance": 0.5095823804537455,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.43714066929510303
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:06:02.218Z",
+              "sim": 0.5754151940345764,
+              "turn_idx": 2,
+              "session_id": "01a13af2-49c5-75d3-b38d-5f04158b3ff4"
+            },
+            {
+              "ts": "2026-10-14T15:08:10.989Z",
+              "sim": 0.49554061863068544,
+              "turn_idx": 3,
+              "session_id": "01a13af2-49c5-75d3-b38d-5f04158b3ff4"
+            }
+          ]
+        },
+        {
+          "owner": "su-6c29fd94-ae38-453e-86e6-e81f44a698c5",
+          "relevance": 0.5087703553073788,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.43521219685975365
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:02:10.859Z",
+              "sim": 0.5777253084696924,
+              "turn_idx": 2,
+              "session_id": "01a13aee-342a-72f1-b4aa-8e0fd49686ff"
+            },
+            {
+              "ts": "2026-10-14T15:09:43.957Z",
+              "sim": 0.5724347829818726,
+              "turn_idx": 5,
+              "session_id": "01a13aee-342a-72f1-b4aa-8e0fd49686ff"
+            },
+            {
+              "ts": "2026-10-14T15:06:16.222Z",
+              "sim": 0.5518495008900616,
+              "turn_idx": 4,
+              "session_id": "01a13aee-342a-72f1-b4aa-8e0fd49686ff"
+            }
+          ]
+        },
+        {
+          "owner": "su-2b9c0938-1963-4a3e-829d-8c9270b7d27e",
+          "relevance": 0.4833748130237355,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.27864597979426464
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:07:55.447Z",
+              "sim": 0.6561247110366821,
+              "turn_idx": 2,
+              "session_id": "01a13af3-386b-7eb1-9427-942810921ac1"
+            }
+          ]
+        },
+        {
+          "owner": "su-2564a37a-107c-48a0-a6fe-d97929063a1f",
+          "relevance": 0.44578448463888726,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.45251567712532387
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:07:47.850Z",
+              "sim": 0.5980305671691895,
+              "turn_idx": 4,
+              "session_id": "01a13aee-881f-7cb3-93ea-84ee02d0cb24"
+            }
+          ]
+        },
+        {
+          "owner": "su-a92ec1b4-ca99-4f52-b6ec-6195ba4d4e3a",
+          "relevance": 0.4277266579515794,
+          "subjectStatus": "mismatch",
+          "subjectScores": [
+            0.48507058991221313
+          ],
+          "evidence": [
+            {
+              "ts": "2026-10-14T15:00:17.608Z",
+              "sim": 0.570123016834259,
+              "turn_idx": 4,
+              "session_id": "01a13aea-b5a0-7200-b758-8e34223452eb"
+            },
+            {
+              "ts": "2026-10-14T15:08:29.962Z",
+              "sim": 0.5509898601782528,
+              "turn_idx": 8,
+              "session_id": "01a13aea-b5a0-7200-b758-8e34223452eb"
+            },
+            {
+              "ts": "2026-10-14T14:58:37.457Z",
+              "sim": 0.5385178327560425,
+              "turn_idx": 3,
+              "session_id": "01a13aea-b5a0-7200-b758-8e34223452eb"
+            }
+          ]
+        },
+        {
+          "owner": "su-29c0fedf-c614-4bca-a6ca-7028d99055aa",
+          "relevance": 0.3151262402534485,
+          "subjectStatus": "absent",
+          "subjectScores": [],
+          "evidence": [
+            {
+              "ts": "2026-10-14T14:54:30.309Z",
+              "sim": 0.4870132803916931,
+              "turn_idx": 4,
+              "session_id": "01a139b1-9618-7882-952e-97038b0c3035"
+            }
+          ]
+        }
+      ],
+      "selection": {
+        "max": 3,
+        "min": 1,
+        "selected": [
+          {
+            "via": "minimum",
+            "score": 0.5467095491932887,
+            "ownerId": "su-85495d04-6cd8-44fb-bbbe-5fcce4212557",
+            "evidence": [
+              {
+                "ts": "2026-10-14T15:06:49.604Z",
+                "sim": 0.6327935457229614,
+                "turn_idx": 5,
+                "session_id": "01a13aeb-1192-7f70-a29b-1253784667f2"
+              },
+              {
+                "ts": "2026-10-14T15:17:26.218Z",
+                "sim": 0.5728734731674194,
+                "turn_idx": 8,
+                "session_id": "01a13aeb-1192-7f70-a29b-1253784667f2"
+              },
+              {
+                "ts": "2026-10-14T15:18:41.377Z",
+                "sim": 0.5217509269714355,
+                "turn_idx": 9,
+                "session_id": "01a13aeb-1192-7f70-a29b-1253784667f2"
+              }
+            ],
+            "liveness": "live",
+            "relevance": 0.5467095491932887,
+            "similarity": 0.6327935457229614,
+            "answeringOwnerId": "su-ac3197a1-41ea-4992-ac33-466603782ab8"
+          }
+        ]
+      },
+      "dispatchAttempts": [
+        {
+          "at": "2026-10-14T15:25:55.186Z",
+          "agent": "codex",
+          "model": "sol",
+          "detail": "convert of su-85495d04-6cd8-44fb-bbbe-5fcce4212557 → codex/sol as su-ac3197a1-41ea-4992-ac33-466603782ab8: live host registered after 2ms (log /home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-ac3197a1-41ea-515324-1791991539230.log).",
+          "attempts": [
+            {
+              "rank": 3,
+              "agent": "codex",
+              "model": "sol",
+              "detail": "convert of su-85495d04-6cd8-44fb-bbbe-5fcce4212557 → codex/sol as su-ac3197a1-41ea-4992-ac33-466603782ab8: live host registered after 2ms (log /home/builduser/.papercusp-workspaces/papercusp-workspace/.papercusp/fleet-logs/consult-convert-su-ac3197a1-41ea-515324-1791991539230.log).",
+              "outcome": "dispatched",
+              "operation": "convert"
+            }
+          ],
+          "verified": true,
+          "operation": "convert",
+          "dispatched": true,
+          "sourceOwnerId": "su-85495d04-6cd8-44fb-bbbe-5fcce4212557",
+          "answeringOwnerId": "su-ac3197a1-41ea-4992-ac33-466603782ab8"
+        }
+      ],
+      "reply": {
+        "postId": 1181245,
+        "author": "su-ac3197a1-41ea-4992-ac33-466603782ab8",
+        "contentScope": "First-principles audit guidance; explicitly states inherited refs 01a13aeb-1192-7f70-a29b-1253784667f2#5/#8/#9 contain no concrete lease audit.",
+        "interpretation": "Seven above-floor candidates were measured, all mismatch and none unmeasured. Existing min=1 policy chose a labelled minimum-fill responder, not a floor-qualified expert. This supports rejection for this measured population; true-expert retention/native actor/ABA/system/filesystem/wake isolation and shipment remain open."
+      }
+    },
+    "contractGuard": {
+      "source": "packages/operator-core/lib/agent-tools/testing/native-consult.ts",
+      "test": "packages/operator-core/lib/consult/relevance-router.integration.test.ts",
+      "testRunId": 21245173,
+      "passed": 1,
+      "failed": 0,
+      "unselectedSkipped": 47,
+      "scope": "Focused real-PG scoped run, conventional existing rubric-filter regression extended with absent D-029 filter and scorer-not-called guard. Local current-tree receipt; no committed/native/shipment relabel.",
+      "originalNoMatchRun": 21245172,
+      "originalNoMatchState": "name_filter_no_match / 0 selected / 48 skipped; not a pass",
+      "nativeContractRun": {
+        "testRunId": 21245185,
+        "passed": 3,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    "limits": [
+      "Prior original424/538/960 receipts and all checkpoint checks unchanged.",
+      "Original source mutation/ABA/system/filesystem/wake/custody, cold warmup, retention/deletion cause, full matrix, full executed graph, independent acceptance, original R6 and exact R7 shipment remain OPEN."
+    ]
+  },
   "reuse": "Extends the existing docs/evidence manual-provenance surface. This preparation inventory supplies references for the required final R7 shipment artifact; it is not that final artifact."
 }
