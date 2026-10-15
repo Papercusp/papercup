@@ -185,7 +185,7 @@ def codex_ready(text, model):
     return model.lower() in text.lower() and "Ask Codex to do anything" in text
 
 
-def gateway_preflight(gateway_url, owner, rec):
+def gateway_preflight(gateway_url, owner, rec, catalog=True):
     """Check the same private Codex route used by the agents, including its auth headers.
 
     A surviving remote listener alone does not prove that an SSH reverse forward
@@ -194,7 +194,11 @@ def gateway_preflight(gateway_url, owner, rec):
     """
     if not re.fullmatch(r"http://127\.0\.0\.1:\d+/v1", gateway_url):
         raise ValueError("benchmark gateway must be a loopback SSH tunnel URL")
-    request = urllib.request.Request(gateway_url + "/models", headers={
+    # Catalog refresh can be slow while model requests are active. /healthz
+    # checks the transport without refreshing the model catalog; even its 503
+    # (for an unrelated provider pool) proves the private route is responding.
+    url = gateway_url + "/models" if catalog else gateway_url.removesuffix("/v1") + "/healthz"
+    request = urllib.request.Request(url, headers={
         "Authorization": "Bearer papercusp-gateway",
         "originator": "codex_cli_rs", "x-papercusp-owner": owner,
     })
@@ -202,13 +206,18 @@ def gateway_preflight(gateway_url, owner, rec):
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             status = response.status
-            if status != 200:
+            if catalog and status != 200:
                 raise RuntimeError(f"gateway returned HTTP {status}")
+    except urllib.error.HTTPError as error:
+        status = error.code
+        if catalog:
+            rec.rec("gateway-preflight", success=False, status=status, error=type(error).__name__, catalog=catalog)
+            raise RuntimeError("private Codex gateway route is unavailable; refusing a batch") from error
     except (OSError, RuntimeError) as error:
         status = getattr(error, "code", status)
-        rec.rec("gateway-preflight", success=False, status=status, error=type(error).__name__)
+        rec.rec("gateway-preflight", success=False, status=status, error=type(error).__name__, catalog=catalog)
         raise RuntimeError("private Codex gateway route is unavailable; refusing a batch") from error
-    rec.rec("gateway-preflight", success=True, status=status)
+    rec.rec("gateway-preflight", success=True, status=status, catalog=catalog)
 
 
 def codex_sandbox_preflight(user, rec):
@@ -466,7 +475,10 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
     return state
 
 
-def warm(names, rounds, rec):
+def warm(names, rounds, rec, concurrency=None):
+    if concurrency is not None and (concurrency < 1 or concurrency > len(names)):
+        raise ValueError("warm concurrency must be between 1 and the agent count")
+    width = concurrency or len(names)
     for k in range(rounds):
         t0 = time.time()
         missing = names
@@ -477,10 +489,12 @@ def warm(names, rounds, rec):
             # Keep retry identity inside the alphanumeric agent component so
             # native transcript parsing recognizes the whole unique marker.
             marker = lambda n: f"WARM-{n}{'r' + str(attempt) if attempt else ''}-{k}"
-            state = prompt_all(missing, marker, lambda n: (
-                f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
-                f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
-                if REAL_MODEL else f"Please do step {marker(n)} now"), 300)
+            state = {}
+            for start in range(0, len(missing), width):
+                state.update(prompt_all(missing[start:start + width], marker, lambda n: (
+                    f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
+                    f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
+                    if REAL_MODEL else f"Please do step {marker(n)} now"), 300))
             missing = [n for n, s in state.items() if s["tDone"] is None]
             if not missing:
                 break
@@ -821,7 +835,7 @@ def run(a):
     global REAL_MODEL, GATEWAY_CHECK
     REAL_MODEL = a.cli == "codex"
     rec = Recorder(a.out)
-    GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec)) if REAL_MODEL else None
+    GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec, catalog=False)) if REAL_MODEL else None
     arms = [parse_arm(s) for s in a.arm]
     stub_log = os.path.join(a.out, "stub.jsonl")
     warm_files = sorted(glob.glob("/usr/lib/python3*/*.py"), key=os.path.getsize, reverse=True)[:16]
@@ -832,15 +846,16 @@ def run(a):
     try:
         time.sleep(1)
         swap_off()
-        rec.rec("run-start", agents=a.agents, warm=a.warm, single=a.single, arms=arms, idleSec=IDLE_SEC,
+        rec.rec("run-start", agents=a.agents, warm=a.warm, warmConcurrency=a.warm_concurrency or a.agents,
+                single=a.single, arms=arms, idleSec=IDLE_SEC,
                 kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
                 effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
         stop_agents()
         if REAL_MODEL:
-            GATEWAY_CHECK()
+            gateway_preflight(a.gateway_url, a.owner, rec)
             codex_sandbox_preflight(a.user, rec)
         names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner)
-        warm(names, a.warm, rec)
+        warm(names, a.warm, rec, a.warm_concurrency)
         for arm in arms:
             run_arm(arm, names, a.single, a.ram_gb, rec, stub_log)
         rec.rec("run-end")
@@ -859,6 +874,7 @@ def main(argv=None):
     r.add_argument("--out", required=True)
     r.add_argument("--agents", type=int, default=24)
     r.add_argument("--warm", type=int, default=8)
+    r.add_argument("--warm-concurrency", type=int, help="limit warm-up requests; wake storm still uses all agents")
     r.add_argument("--single", type=int, default=8)
     r.add_argument("--ram-gb", type=int, default=16)
     r.add_argument("--user", default="agent")
@@ -879,6 +895,8 @@ def main(argv=None):
     q.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "run":
+        if a.warm_concurrency is not None and not 1 <= a.warm_concurrency <= a.agents:
+            ap.error("--warm-concurrency must be between 1 and --agents")
         if a.single >= a.agents:
             ap.error("--single must leave agents for the storm")
         for s in a.arm:

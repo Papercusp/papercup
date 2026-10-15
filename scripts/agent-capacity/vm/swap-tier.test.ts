@@ -27,7 +27,7 @@ function py(module: string, expr: string, input: unknown): any {
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
 describe('real Luna load and swap tuning', () => {
-  it.each([200, 429])('checks the authenticated Codex route before accepting HTTP %s', (status) => {
+  it.each([[200, true], [429, true], [503, false]])('checks HTTP %s with catalog=%s', (status, catalog) => {
     const code = [
       'import importlib.util, json, threading, types',
       'from http.server import BaseHTTPRequestHandler, HTTPServer',
@@ -41,7 +41,7 @@ describe('real Luna load and swap tuning', () => {
       `  self.send_response(${status}); self.end_headers(); self.wfile.write(b"{}")`,
       'server=HTTPServer(("127.0.0.1",0),Handler)',
       'thread=threading.Thread(target=server.serve_forever,daemon=True); thread.start()',
-      'try: m.gateway_preflight(f"http://127.0.0.1:{server.server_port}/v1","benchmark-owner",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
+      `try: m.gateway_preflight(f"http://127.0.0.1:{server.server_port}/v1","benchmark-owner",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})),catalog=${catalog ? 'True' : 'False'})`,
       'except RuntimeError as e: error=str(e)',
       'finally: server.shutdown(); server.server_close(); thread.join()',
       'print(json.dumps({"headers":headers,"rows":rows,"error":error}))',
@@ -50,11 +50,12 @@ describe('real Luna load and swap tuning', () => {
     expect(result.status, result.stderr).toBe(0);
     const receipt = JSON.parse(result.stdout);
     expect(receipt.headers).toMatchObject({
-      path: '/v1/models', originator: 'codex_cli_rs',
+      path: catalog ? '/v1/models' : '/healthz', originator: 'codex_cli_rs',
       'x-papercusp-owner': 'benchmark-owner', authorization: 'Bearer papercusp-gateway',
     });
-    expect(receipt.rows).toEqual([expect.objectContaining({ kind: 'gateway-preflight', status, success: status === 200 })]);
-    expect(receipt.error === null).toBe(status === 200);
+    const success = !catalog || status === 200;
+    expect(receipt.rows).toEqual([expect.objectContaining({ kind: 'gateway-preflight', status, success })]);
+    expect(receipt.error === null).toBe(success);
   });
 
   it('refuses another prompt batch after a previously healthy tunnel disappears', () => {
@@ -74,7 +75,7 @@ describe('real Luna load and swap tuning', () => {
     const receipt = JSON.parse(result.stdout);
     expect(receipt.error).toContain('refusing a batch');
     expect(receipt.typed).toEqual([]);
-    expect(receipt.rows).toEqual([{ kind: 'gateway-preflight', success: false, status: null, error: 'URLError' }]);
+    expect(receipt.rows).toEqual([{ kind: 'gateway-preflight', success: false, status: null, error: 'URLError', catalog: true }]);
   });
 
   it('keeps each native runtime in its measured scope without requiring a daemon socket', () => {
@@ -209,6 +210,25 @@ describe('real Luna load and swap tuning', () => {
     const exhausted = spawnSync('python3', ['-c', code.replace('len(calls)==1 and n=="a2"', 'True')], { encoding: 'utf8' });
     expect(exhausted.status).not.toBe(0);
     expect(exhausted.stderr).toContain('warm round 0 never finished');
+  });
+
+  it('bounds warm-up concurrency while verifying every session in each round', () => {
+    const code = [
+      'import importlib.util, types, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'calls=[]; records=[]',
+      'def prompt(names, marker, *args, **kw):',
+      ' calls.append(list(names)); return {n:{"tDone":1} for n in names}',
+      'm.prompt_all=prompt; m.agent_stats=lambda n: {}',
+      'm.warm(["a1","a2","a3","a4","a5"],2,types.SimpleNamespace(rec=lambda kind, **kw:records.append({"kind":kind, **kw})),2)',
+      'print(json.dumps({"calls":calls,"rounds":[r["agents"] for r in records if r["kind"]=="warm-round"]}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.calls).toEqual([['a1', 'a2'], ['a3', 'a4'], ['a5'], ['a1', 'a2'], ['a3', 'a4'], ['a5']]);
+    expect(receipt.rounds).toEqual([5, 5]);
   });
 
   it('provisions the documented distro sandbox without disabling global user-namespace restrictions', () => {
