@@ -1322,6 +1322,10 @@ export async function prepareDirectOperationCompletion(
   const output = exactJsonValue(outputPayload, 'output');
   const valid = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
   if (!valid.ok) throw new Error(`blueprint operation output is invalid: ${valid.errors.join('; ')}`);
+  if (operation.policy.supportCase) {
+    const { validateSupportOperationResult } = await import('./support-workflow-case');
+    await validateSupportOperationResult(sql, workspaceId, operation, pin, output);
+  }
   if (operation.policy.model) {
     const modelFailure = await verifyDirectOperationModel(
       sql, workspaceId, item.id, pin as Record<string, unknown>, operation.policy.model,
@@ -1419,6 +1423,16 @@ async function readValidatedCanonicalOperation(
   }
   const validation = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
   if (!validation.ok) return invalid(`canonical target output is invalid: ${validation.errors.join('; ')}`);
+  if (operation.policy.supportCase) {
+    if (handle.target.kind !== 'work-item' || !items[0]) return invalid('support result has no accepted case');
+    const { pin } = await readAcceptedBlueprintDirectWorkItem(sql, handle.workspaceId, items[0]);
+    const { validateSupportOperationResult } = await import('./support-workflow-case');
+    try { await validateSupportOperationResult(sql, handle.workspaceId, operation, pin, output); }
+    catch (error) {
+      if (error instanceof BlueprintOperationRefusal) return invalid(error.message);
+      throw error;
+    }
+  }
   let acceptanceEvidenceRef: string | undefined;
   if (operation.acceptance.rubric) {
     let subjectRef: string;

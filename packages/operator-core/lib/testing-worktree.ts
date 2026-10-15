@@ -13,6 +13,7 @@ import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import {
   exemptProbeSubject,
   isMutationProbeRun,
+  resolveProbeSubjectExemption,
   resolveProbeSubjectExemptionSync,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import { findVerifierSourceRoot, readVerifierSourceReceiptSync } from './verifier-source';
@@ -133,19 +134,27 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
 
 /** Native async producers can await the shared sidecar Git runner rather than
  * block their host on the synchronous reporter's two-second deadline. Keep
- * unknown reads fail-closed and bracket status to detect source movement.
- * The lazy import keeps synchronous reporter imports small.
+ * unknown reads fail-closed, preserve mutation-probe root/exemption behavior,
+ * and bracket status to detect source movement. The lazy import keeps
+ * synchronous reporter imports small.
  */
 export async function captureWorktreeSnapshotAsync(root: string): Promise<WorktreeGitSnapshot> {
-  const { runGit } = await import('./harness/docs/git-runner');
+  const origin = process.env.PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT?.trim();
+  const snapshotRoot = isMutationProbeRun() && origin && isAbsolute(origin) ? origin : root;
   try {
-    const head = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], root);
-    const status = await runGit(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], root);
-    const after = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], root);
+    const { runGit } = await import('./harness/docs/git-runner');
+    const head = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], snapshotRoot);
+    const status = await runGit(['--no-optional-locks', 'status', '--porcelain', '--untracked-files=all'], snapshotRoot);
+    const after = await runGit(['--no-optional-locks', 'rev-parse', 'HEAD'], snapshotRoot);
+    let porcelain = status.code === 0 ? status.stdout.trim() : null;
+    if (porcelain && isMutationProbeRun()) {
+      const exemption = await resolveProbeSubjectExemption(snapshotRoot);
+      if (exemption) porcelain = exemptProbeSubject(porcelain, exemption);
+    }
     return {
       commit: head.code === 0 && after.code === 0 && head.stdout.trim() === after.stdout.trim()
         ? head.stdout.trim() || null : null,
-      porcelain: status.code === 0 ? status.stdout.trim() : null,
+      porcelain,
     };
   } catch {
     return { commit: null, porcelain: null };

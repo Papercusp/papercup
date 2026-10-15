@@ -3,17 +3,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { verifierSourceFiles, type VerifierSourceReceipt } from './verifier-source';
-import { captureTestSourceSnapshot, computeWorktreeDirty, resolveReporterSourceRoot } from './testing-worktree';
+import { captureTestSourceSnapshot, captureWorktreeSnapshotAsync, computeWorktreeDirty, resolveReporterSourceRoot } from './testing-worktree';
 
 const gitProbe = vi.hoisted(() => vi.fn(() => { throw new Error('Git probe must not run for an archive'); }));
+const asyncGit = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', async importOriginal => ({
   ...await importOriginal<typeof import('node:child_process')>(), execFileSync: gitProbe,
 }));
+vi.mock('./harness/docs/git-runner', () => ({ runGit: asyncGit }));
 
 const roots: string[] = [];
 afterEach(() => {
   vi.unstubAllEnvs();
   gitProbe.mockClear();
+  asyncGit.mockReset();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -75,6 +78,32 @@ describe('receipt-backed test source snapshots', () => {
     vi.stubEnv('VERIFY_TAURI_SOURCE_RECEIPT', internal);
     expect(captureTestSourceSnapshot(root)).toMatchObject({ commit: null, porcelain: null,
       provenanceError: expect.stringContaining('must be outside the archive') });
+    expect(gitProbe).not.toHaveBeenCalled();
+  });
+});
+
+describe('async worktree snapshots', () => {
+  it('uses async Git reads, honors mutation-probe origin roots, and stays responsive while they settle', async () => {
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE', '1');
+    vi.stubEnv('PAPERCUSP_MUTATION_PROBE_ORIGIN_ROOT', '/probe-origin');
+    asyncGit.mockImplementation(async (args: string[], cwd: string) => {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      return args.includes('status')
+        ? { code: 0, stdout: '', stderr: '' }
+        : { code: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
+    });
+
+    let timerFired = false;
+    setTimeout(() => { timerFired = true; }, 0);
+    const pending = captureWorktreeSnapshotAsync('/requested-root');
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+    await expect(pending).resolves.toEqual({ commit: 'a'.repeat(40), porcelain: '' });
+    expect(timerFired).toBe(true);
+    expect(asyncGit).toHaveBeenCalledTimes(3);
+    expect(asyncGit.mock.calls.map(([, cwd]) => cwd)).toEqual([
+      '/probe-origin', '/probe-origin', '/probe-origin',
+    ]);
     expect(gitProbe).not.toHaveBeenCalled();
   });
 });

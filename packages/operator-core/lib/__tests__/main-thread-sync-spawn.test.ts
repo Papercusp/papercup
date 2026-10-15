@@ -72,6 +72,8 @@ export const SCAN_FILES = [
   // This system action runs on the operator host; its Git log must stay off the event loop.
   'lib/harness/routines/frozen-candidate-drift-sweep-action.ts',
   'lib/fleet/spawner-sidecar-spawn.ts',
+  // Sync snapshots remain for child reporters; Hono test-run paths must use the async counterpart.
+  'lib/testing-worktree.ts',
 ] as const;
 
 const SYNC_SPAWN_NAMES: ReadonlySet<string> = new Set(['execFileSync', 'spawnSync', 'execSync']);
@@ -240,7 +242,60 @@ const BASELINE: ReadonlyMap<string, number> = new Map<string, number>([
   // checkpoint probe; main-thread callers reach it only through runCheckpointProbe's record/replay,
   // pinned by checkpoint-probe-off-loop.test.ts. The green-checkpoint unit still uses it directly.
   ['lib/release-checkpoint-launch.ts', 1],
+  // Synchronous snapshot retained for spawned test reporters; host consumers are guarded below.
+  ['lib/testing-worktree.ts', 1],
 ]);
+
+function directCallCount(source: string, name: string, fileName = 'scan.ts'): number {
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKindFor(fileName));
+  let count = 0;
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name) count++;
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return count;
+}
+
+function callsLegacyTestingRunStart(source: string, fileName: string): boolean {
+  const sf = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, scriptKindFor(fileName));
+  const importedNames = new Set<string>();
+  const namespaceNames = new Set<string>();
+  const collectBindings = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const modulePath = node.moduleSpecifier.text.replace(/\.[cm]?[jt]sx?$/, '');
+      if (!modulePath.endsWith('/testing-run-store')) return;
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ts.isNamedImports(bindings)) {
+        for (const specifier of bindings.elements) {
+          if ((specifier.propertyName?.text ?? specifier.name.text) === 'startRun') importedNames.add(specifier.name.text);
+        }
+      } else if (bindings && ts.isNamespaceImport(bindings)) {
+        namespaceNames.add(bindings.name.text);
+      }
+    }
+    ts.forEachChild(node, collectBindings);
+  };
+  collectBindings(sf);
+
+  let found = false;
+  const findCalls = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression) && importedNames.has(node.expression.text)) found = true;
+      if (
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'startRun' &&
+        ts.isIdentifier(node.expression.expression) &&
+        namespaceNames.has(node.expression.expression.text)
+      ) {
+        found = true;
+      }
+    }
+    ts.forEachChild(node, findCalls);
+  };
+  findCalls(sf);
+  return found;
+}
 
 describe('operator main thread — synchronous child-process calls (WI-10005242 ratchet)', () => {
   it('CALIBRATION: counts calls, alias calls and seam values; ignores async and type-only uses', () => {
@@ -263,6 +318,21 @@ describe('operator main thread — synchronous child-process calls (WI-10005242 
     expect(countSyncSpawnReferences(`interface Deps { execFileSync: typeof execFileSync }`)).toBe(0);
     expect(countSyncSpawnReferences(`const deps = { execFileSync: fakeExec };`)).toBe(0);
     expect(countSyncSpawnReferences(`export { execFileSync } from 'node:child_process';`)).toBe(0);
+  });
+
+  it('recognizes direct and aliased calls to the legacy testing-run start export', () => {
+    expect(callsLegacyTestingRunStart(
+      "import { startRun } from '../../../testing-run-store'; startRun({});",
+      'lib/endpoint-route/routes/example.ts',
+    )).toBe(true);
+    expect(callsLegacyTestingRunStart(
+      "import { startRun as startLegacy } from '../../../testing-run-store'; startLegacy({});",
+      'lib/endpoint-route/routes/example.ts',
+    )).toBe(true);
+    expect(callsLegacyTestingRunStart(
+      "import { startRunAsync } from '../../../testing-run-store'; startRunAsync({});",
+      'lib/endpoint-route/routes/example.ts',
+    )).toBe(false);
   });
 
   it('counts CODE only: a quoted or commented mention is not a reference', () => {
@@ -319,6 +389,28 @@ describe('operator main thread — synchronous child-process calls (WI-10005242 
     const file = 'lib/fleet/spawner-sidecar-spawn.ts';
     expect(SCAN_FILES).toContain(file);
     expect(countSyncSpawnReferences(readFileSync(path.join(WORKSPACE_ROOT, file), 'utf8'), file)).toBe(0);
+  });
+
+  it('Hono test-run entrypoints use async worktree snapshots', () => {
+    const consumers = [
+      { file: 'lib/agent-tools/testing/run.ts', sync: 'captureWorktreeSnapshot', async: 'captureWorktreeSnapshotAsync', expectedAsyncCalls: 2 },
+      { file: 'lib/endpoint-route/routes/harness/testing.ts', sync: 'startRun', async: 'startRunAsync', expectedAsyncCalls: 1 },
+      { file: 'lib/endpoint-route/routes/admin/testing-run.ts', sync: 'startRun', async: 'startRunAsync', expectedAsyncCalls: 1 },
+    ];
+    for (const consumer of consumers) {
+      const source = readFileSync(path.join(WORKSPACE_ROOT, consumer.file), 'utf8');
+      expect(directCallCount(source, consumer.sync, consumer.file), consumer.file).toBe(0);
+      expect(directCallCount(source, consumer.async, consumer.file), consumer.file).toBe(consumer.expectedAsyncCalls);
+    }
+
+    const routeRoot = path.join(WORKSPACE_ROOT, 'lib/endpoint-route/routes');
+    const routeFiles = readdirSync(routeRoot, { recursive: true, withFileTypes: true })
+      .filter(entry => entry.isFile())
+      .map(entry => path.relative(WORKSPACE_ROOT, path.join(entry.parentPath, entry.name)).split(path.sep).join('/'))
+      .filter(file => !isOutOfScope(file));
+    const syncStartRunConsumers = routeFiles.filter(file =>
+      callsLegacyTestingRunStart(readFileSync(path.join(WORKSPACE_ROOT, file), 'utf8'), file));
+    expect(syncStartRunConsumers).toEqual([]);
   });
 
   it('no file gains a synchronous child-process reference on the main thread', () => {
