@@ -2,12 +2,16 @@ import type { Sql } from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectBlueprintToPg } from '../../../packages/operator-core/lib/blueprint/project-to-pg';
 import { supportToEngineeringOperation } from '../../../packages/operator-core/lib/blueprint/support-workflow-operation';
 import { currentBenchOpenAiInputContract } from '../../../packages/operator-core/lib/external-bench/current-su';
 import { defineHostedAllocation } from '../../../packages/operator-core/lib/auth/hosted/billing/allocation-store';
 import { createPersonalGrant } from '../../../packages/operator-core/lib/personal-vault/store';
 import { getIdentitySource } from '../../../packages/operator-core/lib/agent-identities/source';
+import { getOrgPg } from '@papercusp/db-org';
+import { mutateHarnessRegistry } from '../../../packages/operator-core/lib/harness-registry';
+import { isCodingAgentRole } from '../../../packages/operator-core/lib/personal-vault/coding-roles';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers,
   upsertOrganizationDocuments, upsertPermissionList } from '../../../packages/operator-core/lib/data-sources/documents-corpus';
 
@@ -27,6 +31,12 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
   if (!database || (!/^org_[a-f0-9]{12}$/.test(database.name)
     && !/\/verify-tauri-headless\.[^/]+\/isolated-pgdata(?:\/|$)/.test(database.directory)))
     throw new Error('Support native fixture requires the maintained isolated PostgreSQL database');
+  // The canonical registry writer resolves its pool in-process. Prove that it
+  // uses the same private database before it can mutate any registry or users.
+  const [registryDatabase] = await getOrgPg().sql<{ name: string; directory: string }[]>`
+    SELECT current_database() AS name, current_setting('data_directory') AS directory`;
+  if (registryDatabase?.name !== database.name || registryDatabase?.directory !== database.directory)
+    throw new Error('Support native fixture registry must use the same isolated PostgreSQL database');
 
   // Admission alone accepts a syntactically valid identity pin. The actual
   // worker bootstrap also resolves its source, so pin the maintained identity
@@ -43,7 +53,13 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
   const nonce = randomUUID().replaceAll('-', '').slice(0, 12);
   const harnessSlug = input.harnessSlug ?? `support-native-${nonce}`;
   if (!/^[a-z0-9][a-z0-9-]{1,79}$/.test(harnessSlug)) throw new Error('Invalid fixture harness slug');
-  const role = 'support-worker';
+  // Organization corpus access deliberately excludes coding roles, including
+  // worker. Reuse the existing non-coding operator role; the accepted identity
+  // still determines this operation's domain and grants.
+  const role = 'operator';
+  const projectDir = fileURLToPath(new URL('../../../', import.meta.url));
+  if (isCodingAgentRole(role)) throw new Error('Support native fixture requires a non-coding corpus role');
+  assembleRolePrompt({ slug: harnessSlug, role, projectDir, mode: 'chat' });
   const operationId = 'support-to-engineering';
   const supportCaseId = `case-cobalt-${nonce}`;
   const documentTitle = `Cobalt support ${nonce}`;
@@ -53,7 +69,7 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
   const funding = { organization: { controlWorkspaceId: workspaceId, organizationId: `synthetic-support-org-${nonce}` },
     allocationId: `synthetic-support-project-${nonce}`, month: new Date().toISOString().slice(0, 7) };
 
-  return sql.begin(async tx => {
+  const fixture = await sql.begin(async tx => {
     const client = tx as unknown as Sql;
     const actors = {} as Record<'employee' | 'reviewer' | 'admin', { id: string; username: string; password: string }>;
     for (const actor of ['employee', 'reviewer', 'admin'] as const) {
@@ -73,7 +89,7 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
     for (const actor of ['employee', 'reviewer'] as const) {
       // The operation worker and the existing GUI tool caller are independent
       // grant principals. The source ACL still restricts both to these users.
-      for (const principalId of [role, 'operator']) await createPersonalGrant(client, { workspaceId,
+      for (const principalId of new Set([role, 'operator'])) await createPersonalGrant(client, { workspaceId,
         userId: actors[actor].id, principalType: 'agent-role', principalId,
         scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: actors.admin.id });
       await mapProviderIdentity(client, workspaceId, { ...identities[actor], userId: actors[actor].id,
@@ -121,6 +137,12 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
       input: { supportCaseId, approvedRevision: specification.specificationRevision,
         documentIds: [document.id], query, requestedAction: 'prepare-handoff' } };
   });
+  // Projection supplies operation admission; worker bootstrap separately needs
+  // a registry checkout and an existing role prompt. Use the maintained operator
+  // role and this exact source root (the native rig supplies its frozen copy).
+  await mutateHarnessRegistry(reg => ({ ...reg, projects: [...reg.projects,
+    { slug: harnessSlug, path: projectDir }] }), workspaceId);
+  return fixture;
 }
 
 export type SupportWorkflowNativeFixture = Awaited<ReturnType<typeof seedSupportWorkflowNativeFixture>>;
