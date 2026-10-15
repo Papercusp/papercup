@@ -1,5 +1,6 @@
 /** Current-build local usage and disclosure acceptance in the maintained native rig. */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,10 +22,22 @@ describe.skipIf(!isolated)('Cloud monitoring in the isolated native desktop', ()
     process.env.VERIFY_TAURI_AGENT_TOOLS_BIN!, [...args, '--pid', String(profile.tauriPID)],
     { env: nativeEnv, timeout: 60_000, maxBuffer: 2 * 1024 * 1024 },
   )).stdout;
-  const poll = async (expression: string, selector: string) => execute(
-    process.env.VERIFY_TAURI_POLL!, ['--require', selector, '--eval', expression],
-    { env: { ...nativeEnv, VERIFY_TAURI_DOM_TIMEOUT: '60' }, timeout: 90_000 },
-  );
+  const poll = async (expression: string, selector: string) => {
+    try {
+      return await execute(process.env.VERIFY_TAURI_POLL!,
+        ['--require', selector, '--eval', expression],
+        { env: { ...nativeEnv, VERIFY_TAURI_DOM_TIMEOUT: '60' }, timeout: 90_000 });
+    } catch (error) {
+      // Retain the actual page on failure; a timeout alone cannot distinguish a
+      // missing static artifact, a client route, and an incompletely loaded page.
+      const page = await native('eval', `JSON.stringify({ url: location.href,
+        readyState: document.readyState, title: document.title,
+        body: document.body?.textContent?.slice(0, 16000) })`)
+        .catch(cause => String(cause));
+      console.error('CLOUD_MONITORING_NATIVE_FAILED_PAGE ' + page);
+      throw error;
+    }
+  };
 
   beforeAll(async () => {
     expect(sourceRoot).toBeTruthy();
@@ -92,7 +105,17 @@ describe.skipIf(!isolated)('Cloud monitoring in the isolated native desktop', ()
     // AST-derived guard separately enforces equality with the production schema.
     const disclosedEvents = [...new Set(markdown.match(/cloud_[a-z_]+/g) ?? [])];
     expect(disclosedEvents.length).toBeGreaterThan(0);
-    await native('navigate', '/internal/docs/posthog', '--json');
+    const readerUrl = new URL('/internal/docs/posthog', process.env.VERIFY_TAURI_DEV_URL).href;
+    const response = await fetch(readerUrl, { signal: AbortSignal.timeout(10_000) });
+    expect(response.status, 'The isolated host must serve the built disclosure before native navigation').toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/html');
+    const html = await response.text();
+    for (const event of disclosedEvents) expect(html).toContain(event);
+    console.info('CLOUD_MONITORING_NATIVE_DOCS_HTTP ' + JSON.stringify({ url: response.url,
+      sha256: createHash('sha256').update(html).digest('hex'), events: disclosedEvents }));
+    // Relative navigate uses pushState, which cannot load this server-rendered
+    // Starlight page. An absolute target performs the real document navigation.
+    await native('navigate', readerUrl, '--json');
     await poll(`document.body.textContent.includes('PostHog') &&
       ${JSON.stringify(disclosedEvents)}.every(event => document.body.textContent.includes(event))`, 'body');
     const body = JSON.parse(await native('eval', 'JSON.stringify(document.body.textContent)')) as string;
