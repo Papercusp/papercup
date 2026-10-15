@@ -75,7 +75,7 @@ import { ensureToolPathEnv } from "@papercusp/operator-core/lib/tool-path";
 import { isBundledEntry, isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveBindHost } from "@papercusp/operator-core/lib/resolve-bind-host";
 import { assertRemoteAuthReady } from "@papercusp/operator-core/lib/remote-auth-policy";
-import { runShutdownWithDeadline } from "../lib/shutdown-deadline";
+import { runShutdownWithDeadline } from "../lib/shutdown-deadline.mts";
 import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
 import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
 import { pidAlive, startParentDeathWatch, startSidecarParentDeathWatch } from "@papercusp/operator-core/lib/process-supervision/parent-death-watch";
@@ -1595,7 +1595,7 @@ async function main(): Promise<void> {
     // stalled await, which also restores crash-recovery (exit → launchd
     // respawn → fresh boot brings PG back up). The orchestration is extracted
     // into runShutdownWithDeadline so the HANG path has a unit recurrence guard
-    // (shutdown-deadline.test.ts) — see shutdown-deadline.ts.
+    // (shutdown-deadline.test.ts) — see shutdown-deadline.mts.
     runShutdownWithDeadline({
       deadlineMs: 4000,
       onForceExit: () =>
