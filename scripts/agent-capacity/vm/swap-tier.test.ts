@@ -27,6 +27,17 @@ function py(module: string, expr: string, input: unknown): any {
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
 describe('real Luna load and swap tuning', () => {
+  it('bounds the native launch throttle and rejects unsafe values', () => {
+    expect(py(DRIVER, 'm.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":"1.25"})', null)).toBe(1.25);
+    expect(py(DRIVER, 'm.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":"0"})', null)).toBe(0);
+    for (const value of ['-1', '31', 'not-a-number']) {
+      const code = `import importlib.util; s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)}); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.launch_delay_seconds({"SWAPTIER_LAUNCH_DELAY_SEC":${JSON.stringify(value)}})`;
+      const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('SWAPTIER_LAUNCH_DELAY_SEC');
+    }
+  });
+
   it('records a dead terminal exit status and output before failing startup', () => {
     const code = [
       'import importlib.util, types, json',

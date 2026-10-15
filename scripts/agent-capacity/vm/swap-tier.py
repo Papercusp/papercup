@@ -48,6 +48,17 @@ IDLE_SEC = int(os.environ.get("SWAPTIER_IDLE_SEC", "60"))
 REAL_MODEL = False
 CODEX_SESSIONS = {}
 WAKE_TIMEOUT = float(os.environ.get("SWAPTIER_WAKE_TIMEOUT", "300"))
+
+
+def launch_delay_seconds(env=None):
+    """Pause between native terminal launches so a large batch does not stampede the gateway."""
+    value = float((env or os.environ).get("SWAPTIER_LAUNCH_DELAY_SEC", "0.15"))
+    if not (0 <= value <= 30):
+        raise ValueError("SWAPTIER_LAUNCH_DELAY_SEC must be between 0 and 30 seconds")
+    return value
+
+
+LAUNCH_DELAY_SEC = launch_delay_seconds()
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -295,7 +306,7 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
         # this, a launch crash becomes an empty pane followed by a three-minute wait.
         sh(TMUX + ["new-session", "-d", "-s", name, "-x", "160", "-y", "50", "-c", work, cmd,
                    ";", "set-window-option", "-t", name, "remain-on-exit", "on"])
-        time.sleep(0.15)
+        time.sleep(LAUNCH_DELAY_SEC)
     deadline, pending = time.time() + 180, set(names)
     while pending and time.time() < deadline:
         for name in list(pending):
