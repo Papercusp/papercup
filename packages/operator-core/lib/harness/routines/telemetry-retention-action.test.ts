@@ -97,34 +97,34 @@ const ctx = (triggerConfig: Record<string, unknown>) => ({
 });
 
 describe('resolveTargets', () => {
-  it('defaults to route-invocations@7d + tool-invocations@14d + harness-run-output@14d + agent-activity@7d', () => {
+  it('defaults to the durable-headroom horizons for local telemetry', () => {
     expect(resolveTargets({})).toEqual([...DEFAULT_RETENTION_TARGETS]);
     expect(resolveTargets({ targets: [] })).toEqual([...DEFAULT_RETENTION_TARGETS]);
   });
 
-  // EI-7491: harness_run_output was a fully-registered prunable storage category
+  // P-010/R-8: harness_run_output is a fully-registered prunable storage category
   // (packages/operator-core/lib/storage/categories.ts) that was never added to
   // DEFAULT_RETENTION_TARGETS, so the janitor never pruned it and it grew
   // unbounded (1.5GB/6,726 rows, oldest 56d, ~334 rows/day). Assert it's wired in
   // with the exact category id string categories.ts registers ('harness-run-output')
   // — a typo here silently no-ops (resolveTargets/pruneStorageCategory filter to
   // known categories).
-  it('includes harness-run-output@14d in the default targets (EI-7491)', () => {
+  it('includes harness-run-output@30d in the default targets (P-010)', () => {
     expect(DEFAULT_RETENTION_TARGETS).toContainEqual({
       category: 'harness-run-output',
-      retention_days: 14,
+      retention_days: 30,
     });
   });
 
-  // EI-7499: agent_activity was the LAST unpruned local-diagnostic table in its
+  // P-010/R-8: agent_activity is a local-diagnostic table with a durable horizon,
   // class (270MB, ~48K rows/day, unbounded) — a fully-registered storage
   // category (categories.ts id 'agent-activity') never wired into this default
   // target list. 7d matches its longest real reader lookback (fleet-ekg's
   // readSessionEvents, embedDays default 3d).
-  it('includes agent-activity@7d in the default targets (EI-7499)', () => {
+  it('includes agent-activity@30d in the default targets (P-010)', () => {
     expect(DEFAULT_RETENTION_TARGETS).toContainEqual({
       category: 'agent-activity',
-      retention_days: 7,
+      retention_days: 30,
     });
   });
 
@@ -317,25 +317,25 @@ describe('system:telemetry-retention action', () => {
     });
     expect(pruneMock).toHaveBeenNthCalledWith(1, {
       categoryId: 'route-invocations',
-      olderThanDays: 7,
+      olderThanDays: 30,
       dryRun: false,
       workspaceId: 'ws-1',
     });
     expect(pruneMock).toHaveBeenNthCalledWith(2, {
       categoryId: 'tool-invocations',
-      olderThanDays: 14,
+      olderThanDays: 30,
       dryRun: false,
       workspaceId: 'ws-1',
     });
     expect(pruneMock).toHaveBeenNthCalledWith(3, {
       categoryId: 'harness-run-output',
-      olderThanDays: 14,
+      olderThanDays: 30,
       dryRun: false,
       workspaceId: 'ws-1',
     });
     expect(pruneMock).toHaveBeenNthCalledWith(4, {
       categoryId: 'agent-activity',
-      olderThanDays: 7,
+      olderThanDays: 30,
       dryRun: false,
       workspaceId: 'ws-1',
     });

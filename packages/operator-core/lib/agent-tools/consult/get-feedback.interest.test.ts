@@ -154,6 +154,28 @@ describe('consult:get_feedback requester interest handle (P-024)', () => {
     expect(out).not.toHaveProperty('interest_watch');
   });
 
+  it('retains an explicit rubric-vetting model in the durable request and routing continuation', async () => {
+    const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' };
+    const args = (tool as any).args.parse({ question: 'Vet the current acceptance rubric',
+      policy: 'rubric-vetting', reviewerModel });
+    h.getFeedbackCore.mockResolvedValue(routed('proceed'));
+    await call('proceed', args);
+    expect(h.acceptFeedbackRequestCore).toHaveBeenCalledWith(
+      expect.objectContaining({ policy: 'rubric-vetting', reviewerModel }), expect.anything(),
+    );
+    await vi.waitFor(() => expect(h.getFeedbackCore).toHaveBeenCalledWith(
+      expect.objectContaining({ policy: 'rubric-vetting', reviewerModel }), expect.anything(),
+    ));
+  });
+
+  it('refuses reviewer model steering outside rubric vetting before creating or dispatching a consult', async () => {
+    const out = await call('hard-blocked', { reviewerModel: { agent: 'codex', model: 'sol' } });
+    expect(out).toMatchObject({ error: 'reviewer_model_requires_rubric_vetting' });
+    expect(h.acceptFeedbackRequestCore).not.toHaveBeenCalled();
+    expect(h.continueFeedbackRequestCore).not.toHaveBeenCalled();
+    expect(h.reconcileInterestEventAwaits).not.toHaveBeenCalled();
+  });
+
   it('keeps dispatch enabled by default but honors an explicit allow_dispatch opt-out', async () => {
     h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: { reach?: unknown }) => {
       expect(deps.reach).toEqual(expect.any(Function));

@@ -69,6 +69,7 @@ import type { OpenWriterScan } from './native-bg-task-ledger';
 import { parseScratchReference, writeScratchReference } from './scratch-reference';
 import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from './result-door';
 import { scratchRootForWorkspace } from './scratch-uri';
+import { createRetentionPin } from './storage/retention-pins';
 import { spawn } from 'node:child_process';
 
 // Tests run against a sandbox scratch root so they don't touch the
@@ -78,6 +79,7 @@ import { spawn } from 'node:child_process';
 let prevScratchRoot: string | undefined;
 let prevFsMutexLockDir: string | undefined;
 let prevDisableFsMutex: string | undefined;
+let prevRetentionRoot: string | undefined;
 let sandbox: string;
 
 beforeEach(() => {
@@ -85,6 +87,8 @@ beforeEach(() => {
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
   prevFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   prevDisableFsMutex = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  prevRetentionRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+  process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = join(sandbox, 'retention-leases');
   delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, '.papercusp', 'scratch');
   process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(sandbox, 'fs-mutex-locks');
@@ -100,6 +104,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = prevFsMutexLockDir;
   if (prevDisableFsMutex === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   else process.env.PAPERCUSP_DISABLE_FS_MUTEX = prevDisableFsMutex;
+  if (prevRetentionRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+  else process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = prevRetentionRoot;
   rmSync(sandbox, { recursive: true, force: true });
 });
 
@@ -196,6 +202,75 @@ function startScratchChild(script: string, env: Record<string, string>) {
 
 /** A complete /proc scan that saw no holder anywhere. */
 const noHolders = async (): Promise<OpenWriterScan> => ({ byPath: new Map(), complete: true });
+
+describe('scratch retention pins', () => {
+  function pin(path: string, expiresAt = new Date(Date.now() + 3600_000).toISOString()) {
+    return createRetentionPin({ path, owner: 'reviewer', reason: 'retain evidence', expiresAt });
+  }
+
+  it('keeps a run containing a pinned file while deleting an expired sibling, including previews', async () => {
+    const kept = makeRunDir('ws-pin', 'tool', UUID(1), 32, RETENTION_MS + 1000);
+    const removed = makeRunDir('ws-pin', 'tool', UUID(2), 32, RETENTION_MS + 1000);
+    pin(join(kept, 'data.bin'));
+    const preview = await runScratchGc({ workspaceRegistry: ['ws-pin'], dryRun: true });
+    expect(preview.retentionEvictions).toBe(1);
+    expect(existsSync(removed)).toBe(true);
+    const actual = await runScratchGc({ workspaceRegistry: ['ws-pin'] });
+    expect(actual.retentionEvictions).toBe(1);
+    expect(existsSync(kept)).toBe(true);
+    expect(existsSync(removed)).toBe(false);
+  });
+
+  it('allows retention again after the pin expires', async () => {
+    const run = makeRunDir('ws-pin', 'tool', UUID(1), 32, RETENTION_MS + 1000);
+    createRetentionPin({ path: run, owner: 'reviewer', reason: 'expired review',
+      expiresAt: new Date(Date.now() - 1000).toISOString() }, { nowMs: Date.now() - 2000 });
+    await runScratchGc({ workspaceRegistry: ['ws-pin'] });
+    expect(existsSync(run)).toBe(false);
+  });
+
+  it('keeps a dead workspace containing a pinned descendant', async () => {
+    const run = makeRunDir('ws-dead-pin', 'tool', UUID(1), 32);
+    pin(join(run, 'data.bin'));
+    ageTree(scratchRootForWorkspace('ws-dead-pin'), DEAD_WORKSPACE_QUIET_MS + 60_000);
+    const summary = await runScratchGc({ workspaceRegistry: [], scanOpenPaths: noHolders });
+    expect(summary.deadWorkspaces).toBe(0);
+    expect(summary.deadWorkspacesDeferred).toContainEqual({ workspaceId: 'ws-dead-pin', reason: 'retention-pin' });
+    expect(existsSync(run)).toBe(true);
+  });
+
+  it('quota eviction skips the pinned oldest run and reclaims an unpinned run', async () => {
+    const kept = makeSparseRun('ws-pin', UUID(1), WORKSPACE_QUOTA_BYTES, 2000);
+    const removed = makeSparseRun('ws-pin', UUID(2), 1024, 1000);
+    pin(kept);
+    const summary = await runScratchGc({ workspaceRegistry: ['ws-pin'] });
+    expect(summary.quotaEvictions).toBe(1);
+    expect(existsSync(kept)).toBe(true);
+    expect(existsSync(removed)).toBe(false);
+  });
+
+  it('fails closed before deleting when pin metadata is corrupt', async () => {
+    const run = makeRunDir('ws-pin', 'tool', UUID(1), 32, RETENTION_MS + 1000);
+    mkdirSync(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT!, { recursive: true });
+    writeFileSync(join(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT!, 'lease-agent-pin-corrupt.tsv'), 'broken');
+    await expect(runScratchGc({ workspaceRegistry: ['ws-pin'] })).rejects.toThrow('retention pins unreadable');
+    expect(existsSync(run)).toBe(true);
+  });
+
+  it('reads pin state after acquiring the same mutex as pin creation', async () => {
+    const run = makeRunDir('ws-pin', 'tool', UUID(1), 32, RETENTION_MS + 1000);
+    vi.mocked(statAsync).mockClear();
+    let sweep: ReturnType<typeof runScratchGc> | undefined;
+    await withFsMutex('papercusp-disk-retention', async () => {
+      sweep = runScratchGc({ workspaceRegistry: ['ws-pin'] });
+      // Candidate sizing has begun while the pin writer owns the retention mutex.
+      await vi.waitFor(() => expect(vi.mocked(statAsync).mock.calls.some(([p]) => String(p) === run)).toBe(true));
+      pin(run);
+    });
+    expect((await sweep!).retentionEvictions).toBe(0);
+    expect(existsSync(run)).toBe(true);
+  });
+});
 
 describe('runScratchGc — retention', () => {
   it('keeps fresh run-dirs', async () => {

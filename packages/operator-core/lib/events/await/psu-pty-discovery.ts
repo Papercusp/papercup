@@ -1797,23 +1797,59 @@ export async function shutdownViaPty(
     if (!hostSupports(host, 'shutdown-identity')) return 'no-cap';
     if (host.startedAt !== opts.expectedHost.startedAt || host.advSessionId !== opts.expectedHost.advSessionId) return 'refused-stale-host';
   }
-  const res = await injectIntoHostWithConfirmation(host.sock, {
-    mode: 'shutdown',
-    data: String(opts.reason ?? '').slice(0, 500),
-    force: opts.force === true,
-    ownerId,
-    ...(opts.expectedHost ? { expectedStartedAt: opts.expectedHost.startedAt } : {}),
-  });
-  if (res.ok) return 'sent';
-  const reason = String(res.reason ?? '');
-  if (reason.startsWith('shutdown-refused:')) {
-    const which = reason.slice('shutdown-refused:'.length);
-    if (which === 'not-agent-launched') return 'refused-not-agent-launched';
-    if (which === 'human-attended') return 'refused-human-attended';
-    if (which === 'agent-busy') return 'refused-agent-busy';
-    if (which === 'stale-host') return 'refused-stale-host';
+  const sendShutdown = (target: PsuPtyHost, expectedStartedAt?: number) =>
+    injectIntoHostWithConfirmation(target.sock, {
+      mode: 'shutdown',
+      data: String(opts.reason ?? '').slice(0, 500),
+      force: opts.force === true,
+      ownerId,
+      ...(expectedStartedAt !== undefined ? { expectedStartedAt } : {}),
+    });
+  const classifyResult = (result: InjectHostResult): BoundShutdownViaPtyResult | null => {
+    if (result.ok) return 'sent';
+    const reason = String(result.reason ?? '');
+    if (reason.startsWith('shutdown-refused:')) {
+      const which = reason.slice('shutdown-refused:'.length);
+      if (which === 'not-agent-launched') return 'refused-not-agent-launched';
+      if (which === 'human-attended') return 'refused-human-attended';
+      if (which === 'agent-busy') return 'refused-agent-busy';
+      if (which === 'stale-host') return 'refused-stale-host';
+      // Any host verdict is terminal, even when this caller does not recognize it.
+      return 'send-failed';
+    }
+    // An ACK (including an unrecognized negative verdict) is authoritative. Retry
+    // only when the transport itself failed before a host could give its verdict.
+    return result.confirmation === 'error' || result.confirmation === 'timeout'
+      ? null
+      : 'send-failed';
+  };
+
+  const firstResult = await sendShutdown(host, opts.expectedHost?.startedAt);
+  const firstOutcome = classifyResult(firstResult);
+  if (firstOutcome) return firstOutcome;
+
+  // A transport miss may race a live host rebinding its socket. Re-discover once,
+  // but never carry this shutdown over to a replacement session under the same key.
+  const retryHost = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
+  if (!retryHost || !hostSupports(retryHost, 'shutdown')) return 'send-failed';
+  if (retryHost.startedAt !== host.startedAt || retryHost.advSessionId !== host.advSessionId) {
+    return opts.expectedHost ? 'refused-stale-host' : 'send-failed';
   }
-  return 'send-failed';
+  if (opts.expectedHost) {
+    if (!hostSupports(retryHost, 'shutdown-identity')) return 'no-cap';
+    if (
+      retryHost.startedAt !== opts.expectedHost.startedAt ||
+      retryHost.advSessionId !== opts.expectedHost.advSessionId
+    ) return 'refused-stale-host';
+  }
+
+  // When the host supports the identity fence, make it validate the incarnation
+  // again after discovery; otherwise the retry remains client-bound to the same
+  // startedAt/advSessionId pair checked above.
+  const retryExpectedStartedAt = opts.expectedHost?.startedAt ??
+    (hostSupports(retryHost, 'shutdown-identity') ? host.startedAt : undefined);
+  const retryResult = await sendShutdown(retryHost, retryExpectedStartedAt);
+  return classifyResult(retryResult) ?? 'send-failed';
 }
 
 export async function mcpReconnectViaPty(

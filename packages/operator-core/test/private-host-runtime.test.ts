@@ -72,7 +72,22 @@ it('prepares every roster API bundle before the private execute phase', () => {
           let preparationCalls = 0;
           const inspectPreparation = (child: ts.Node) => {
             if (ts.isCallExpression(child) && ts.isIdentifier(child.expression)
-              && child.expression.text === 'preparePrivateOperatorApiBundle') preparationCalls++;
+              && child.expression.text === 'preparePrivateOperatorApiBundle') {
+              preparationCalls++;
+              expect(ts.isAwaitExpression(child.parent), `${context} must await progress-aware preparation`).toBe(true);
+              const policy = child.arguments[2];
+              const builder = policy && ts.isObjectLiteralExpression(policy)
+                ? policy.properties.find((property): property is ts.PropertyAssignment =>
+                  ts.isPropertyAssignment(property) && property.name.getText(source) === 'builder')?.initializer : undefined;
+              expect(builder && ts.isObjectLiteralExpression(builder), `${context} needs a bounded progress policy`).toBe(true);
+              if (builder && ts.isObjectLiteralExpression(builder)) {
+                const values = Object.fromEntries(builder.properties.flatMap(property =>
+                  ts.isPropertyAssignment(property) && ts.isNumericLiteral(property.initializer)
+                    ? [[property.name.getText(source), Number(property.initializer.text)]] : []));
+                expect(values.timeoutMs, `${context} must retain the existing stall checkpoint`).toBe(240_000);
+                expect(values.maxMs, `${context} must retain the existing absolute ceiling`).toBe(420_000);
+              }
+            }
             ts.forEachChild(child, inspectPreparation);
           };
           if (properties.prepare) inspectPreparation(properties.prepare);

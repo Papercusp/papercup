@@ -256,31 +256,42 @@ export async function prepareFixtureWorkspaceSwitch() {
 }
 
 export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800,
-  interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0'), workspaceSwitch = false) {
+  interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0'), workspaceSwitch = false,
+  deviceExpiry = false) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
   assert(interruptionSeconds === 0 || (Number.isInteger(interruptionSeconds) && interruptionSeconds >= 30 &&
     interruptionSeconds <= 120), 'Offline fixture interval must be 30 to 120 seconds');
   assert(!workspaceSwitch || interruptionSeconds === 0, 'Workspace-switch and outage acceptance require separate fixtures');
+  assert(!deviceExpiry || (!workspaceSwitch && interruptionSeconds === 0),
+    'Device expiry requires a separate fixture');
   const evidence = resolve(evidencePath);
   assert(isAbsolute(evidencePath) && relative(ROOT, evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
-  const login = parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
-  assert(login, 'A maintained Cloudflare login certificate is required');
-  const api = cloudflareApi({ apiToken: login.apiToken });
-  const zone = await api.getZone(login.zoneId);
-  assert.equal(zone.account?.id, login.accountId, 'Certificate zone/account mismatch');
-  await verifyFixtureZone(zone); // Fail closed before creating external resources.
+  // Device expiry uses the existing private desktop controls only. It creates
+  // no tunnel, DNS record or public route and needs no provider credential.
+  const login = deviceExpiry ? undefined : parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
+  assert(deviceExpiry || login, 'A maintained Cloudflare login certificate is required');
+  const api = login ? cloudflareApi({ apiToken: login.apiToken }) : undefined;
+  const zone = api && login ? await api.getZone(login.zoneId) : undefined;
+  if (zone && login) {
+    assert.equal(zone.account?.id, login.accountId, 'Certificate zone/account mismatch');
+    await verifyFixtureZone(zone); // Fail closed before creating external resources.
+  }
   const runId = randomUUID();
   const tunnelName = 'native-iphone-fixture-' + runId;
-  const hostname = 'native-iphone-' + runId + '.' + zone.name;
-  assert.equal((await api.listDnsRecords(zone.id, hostname)).length, 0, 'Fixture hostname already exists');
-  assert.equal((await api.listTunnelsByName(login.accountId, tunnelName)).length, 0, 'Fixture tunnel already exists');
+  const hostname = zone ? 'native-iphone-' + runId + '.' + zone.name : '127.0.0.1';
+  if (api && zone && login) {
+    assert.equal((await api.listDnsRecords(zone.id, hostname)).length, 0, 'Fixture hostname already exists');
+    assert.equal((await api.listTunnelsByName(login.accountId, tunnelName)).length, 0, 'Fixture tunnel already exists');
+  }
   mkdirSync(evidence, { mode: 0o700 }); // Refuse an existing attempt; retain earlier evidence.
   const receipt: Record<string, unknown> = { schemaVersion: 1, runId, ...identity, hostname,
-    publicBase: 'https://' + hostname, controlPid: process.pid, home: process.env.HOME,
+    publicBase: deviceExpiry ? identity.base : 'https://' + hostname, loopbackOnly: deviceExpiry,
+    controlPid: process.pid, home: process.env.HOME,
     sourceSha256: createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'),
     startedAt: new Date().toISOString(), ready: false, cleanupVerified: false,
-    scope: 'Disposable public HTTPS fixture; no native UI, cloud relay or release acceptance claimed' };
+    scope: deviceExpiry ? 'Disposable loopback device-expiry fixture; no public resources or release acceptance' :
+      'Disposable public HTTPS fixture; no native UI, cloud relay or release acceptance claimed' };
   const save = () => writeFileSync(resolve(evidence, 'runtime.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
   let host: ChildProcess | undefined, connector: ChildProcess | undefined;
   let removal: (RemovalTarget & { tunnelName: string }) | undefined;
@@ -288,9 +299,9 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   const stop = () => { stopped = true; };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
   const logs: number[] = [];
-  const start = (command: string, args: string[], env: NodeJS.ProcessEnv, logName: string) => {
+  const start = (command: string, args: string[], env: NodeJS.ProcessEnv, logName: string, ipc = false) => {
     const fd = openSync(resolve(evidence, logName), 'wx', 0o600); logs.push(fd);
-    const child = spawn(command, args, { cwd: ROOT, env, stdio: ['ignore', fd, fd] });
+    const child = spawn(command, args, { cwd: ROOT, env, stdio: ipc ? ['ignore', fd, fd, 'ipc'] : ['ignore', fd, fd] });
     child.on('error', error => { receipt.processError = error.message; stopped = true; });
     return child;
   };
@@ -304,7 +315,9 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       MOBILE_DESKTOP_PUBLIC_URL: String(receipt.publicBase), MOBILE_DESKTOP_HOST: hostname,
     };
     const startHost = (log: string) => start(process.execPath,
-      ['--import', 'tsx', resolve(ROOT, 'apps/operator/bin/hono-host.ts')], hostEnv, log);
+      ['--import', 'tsx', ...(deviceExpiry ? ['--import', resolve(ROOT,
+        'packages/operator-core/lib/native-device-fixture-clock.ts')] : []),
+      resolve(ROOT, 'apps/operator/bin/hono-host.ts')], hostEnv, log, deviceExpiry);
     host = startHost('host.log');
     receipt.hostPid = host.pid;
     await waitForFixtureHost(host, resolve(evidence, 'host.log'), async () => {
@@ -318,6 +331,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         receipt.localBoundary = await verifyProtectedIngress('http://127.0.0.1:' + identity.ingressPort);
     }, { timeoutMs: 180_000, pollMs: 500, stopped: () => stopped,
       record: diagnostic => { receipt.localReadiness = diagnostic; save(); } });
+    if (api && login && zone) {
     // Track creation immediately, including a later config/DNS/token failure.
     const trackedApi: CloudflareApi = { ...api, createTunnel: async (accountId, name) => {
       const tunnel = await api.createTunnel(accountId, name);
@@ -345,6 +359,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         if (Date.now() >= publicReadyBy) throw error;
         await delay(1000);
       }
+    }
     }
     const minted = await fetch(identity.base + '/api/device/desktop/mint-pair-token', {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -379,9 +394,28 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       publicBase: receipt.publicBase, workspaceId: identity.workspaceId }));
     const until = Date.now() + seconds * 1000;
     let interruptionDone = false;
+    let deviceExpiryDone = false;
     while (!stopped && Date.now() < until && !existsSync(resolve(evidence, 'stop'))) {
-      assert(host.exitCode === null && connector.exitCode === null && host.signalCode === null && connector.signalCode === null,
+      assert(host.exitCode === null && host.signalCode === null &&
+        (!connector || (connector.exitCode === null && connector.signalCode === null)),
         'Owned fixture process exited');
+      if (deviceExpiry && !deviceExpiryDone) {
+        const { listDevices } = await import('./device-store');
+        const devices = await listDevices(identity.workspaceId);
+        assert(devices.length <= 1, 'Device expiry requires one initially paired phone');
+        if (devices.length === 1 && devices[0]!.last_seen) {
+          // Preserve a visible authorized positive control before the genuine JWT refusal.
+          await delay(15_000);
+          const { advanceFixtureDeviceClock } = await import('./native-device-fixture-clock');
+          const offsetMs = await advanceFixtureDeviceClock(host);
+          const after = await listDevices(identity.workspaceId);
+          assert(after.length === 1 && after[0]!.device_id === devices[0]!.device_id &&
+            after[0]!.revoked_at === null, 'Expiry must preserve the unrevoked device row');
+          receipt.deviceExpiry = { offsetMs, advancedAt: new Date().toISOString(),
+            heartbeatBeforeAdvance: true, originalDevicePreserved: true, signingIdentityPreserved: true };
+          deviceExpiryDone = true; save();
+        }
+      }
       if (interruptionSeconds && !interruptionDone) {
         const { listDevices } = await import('./device-store');
         const devices = await listDevices(identity.workspaceId);
@@ -423,7 +457,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
     receipt.processCleanupVerified = (!host || !host.pid || host.exitCode !== null || host.signalCode !== null) &&
       (!connector || !connector.pid || connector.exitCode !== null || connector.signalCode !== null);
     try {
-      if (removal) await cleanupFixtureTunnel(api, removal);
+      if (removal) { assert(api); await cleanupFixtureTunnel(api, removal); }
       receipt.cloudCleanupVerified = true;
     } catch (error) { receipt.cleanupError = error instanceof Error ? error.message : String(error); process.exitCode = 1; }
     for (const name of ['pair-payload.json', 'expired-pair-payload.json']) {
@@ -439,9 +473,10 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
 
 if (isCliEntry(import.meta.url)) {
   const [evidence, cert, lifetime, offlineSeconds, journey] = process.argv.slice(2);
-  assert(journey === undefined || journey === 'workspace-switch', 'Unknown native fixture journey');
+  assert(journey === undefined || ['workspace-switch', 'device-expiry'].includes(journey), 'Unknown native fixture journey');
   runNativeDeviceFixture(evidence ?? '', cert ?? '', lifetime ? Number(lifetime) : 1800,
-    offlineSeconds === undefined ? undefined : Number(offlineSeconds), journey === 'workspace-switch').catch(error => {
+    offlineSeconds === undefined ? undefined : Number(offlineSeconds), journey === 'workspace-switch',
+    journey === 'device-expiry').catch(error => {
     console.error('NATIVE_HTTPS_FIXTURE_PREFLIGHT_FAILED=' + error.message); process.exitCode = 1;
   });
 }

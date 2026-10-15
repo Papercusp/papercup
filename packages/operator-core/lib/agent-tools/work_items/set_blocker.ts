@@ -428,7 +428,7 @@ export default defineTool({
     // tools:find instead of baked into every system prompt (the WI-9334 pattern).
     returns:
       'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), ownerAsk (the real coord:ask-owner conversation and choice list opened for a credential/device/service action), and lifecycle. Clearing the LAST blocker returns a feature blocked→todo, or drops the issue-family claim hold. Internal work-item dependencies are not represented here — those stay in work_items:link{rel:\'blocks\'} and plan blocked-by. Omitted legacy rows infer live-dependency; new human rows require a closed-list capability.',
-    when: "Use only when a named external condition or human capability actually stops work. Credential/device/service blockers open coord:ask-owner. Product-decision may park with defaultIfUnanswered + decideBy; owner-authority topics still need the owner. Use a stable ref and name nextVerb when known.",
+    when: "Use only when a named external condition or human capability actually stops work. Credential/device/service blockers open coord:ask-owner. kind:'product-decision' may park with defaultIfUnanswered + decideBy; owner-authority topics still need the owner. Use a stable ref and name nextVerb when known.",
     notWhen:
       "Use work_items:link {rel:'blocks'} when another work-item must finish first. A vague concern is not a blocker. Do not pause ordinary non-final work for main/:3070/green-checkpoint; staging/current-build is the acceptance plane.",
     chaining:

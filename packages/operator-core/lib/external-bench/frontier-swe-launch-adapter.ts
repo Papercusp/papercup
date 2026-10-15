@@ -225,7 +225,10 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
             return runSession(sessionInput, grant);
           } });
         const last = result.sessions.at(-1);
-        return { ...result.usage, submission: result.submission,
+        // Zero treatment spend opens no session. The unchanged task container
+        // still supplies the same submission marker as every executed session.
+        return { ...result.usage, submission: result.sessions.length ? result.submission :
+          { containerId: input.handle.containerId, instanceId: input.task.instanceId },
           status: result.stop === 'error' ? 'error' : 'completed', error: result.error,
           capped: result.stop !== 'matched-cost', traceRef: last?.traceRef, executionPath: 'stock-native-reference',
           armMeta: { ...last?.armMeta, repeatedSession: { ...repeated, stop: result.stop,

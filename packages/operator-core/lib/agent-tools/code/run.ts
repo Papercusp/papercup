@@ -282,6 +282,7 @@ export default defineTool({
       .optional()
       .describe(
         'Plain JavaScript body only (TypeScript annotations such as `: any` are not supported). Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+          'There is no tools.invoke shortcut in this sandbox; dynamic dispatch is tools.tools.invoke({ name, args }), or use tools.ns.verb(args) directly. ' +
           'The recursive execution doors `tools.code.run` and `tools.orchestrate.run` are deliberately excluded from this facade; keep the sequence in this outer script. ' +
           'On script timeout, `timeoutSettledReadRecovery.calls` returns settled read-only child results, capped at 24 KiB/20 calls; ' +
           'check `omittedReadCount`, and never assume a slow Promise.all sibling returned to the script. Write results are never included in timeout recovery. ' +

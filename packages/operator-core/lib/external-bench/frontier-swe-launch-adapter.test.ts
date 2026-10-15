@@ -84,6 +84,26 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
     return { ...f, ids };
   }
 
+  it('retains the task container submission at zero matched spend without opening a native session', async () => {
+    const f = repeatedFixture(); f.assignment.repeatedSession = { treatmentCostUsd: 0, maxSessions: 4 };
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      const result = await adapter.runAgent(f.input);
+      expect(result).toMatchObject({
+        submission: { containerId: f.input.handle.containerId, instanceId: f.input.task.instanceId },
+        status: 'completed', costUsd: 0, modelCalls: 0, tokensIn: 0, tokensOut: 0,
+        capped: false, armMeta: { repeatedSession: { stop: 'matched-cost', sessions: [] } },
+      });
+      expect(f.assignment.readRequestCensus).toHaveBeenCalledOnce();
+      expect(f.assignment.issueSessionBudget).not.toHaveBeenCalled();
+      expect(f.ports.createDriver).not.toHaveBeenCalled();
+      expect(f.spinRunAndCost).not.toHaveBeenCalled();
+      expect(f.assignment.stop).toHaveBeenCalledOnce();
+      expect(f.assignment.checkout.cleanup).toHaveBeenCalledOnce();
+      expect(f.unbind).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); }
+  });
+
   it('keeps one gateway/workspace across fresh native sessions and charges only new source/request deltas', async () => {
     const f = repeatedFixture(), adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
     try {

@@ -737,7 +737,7 @@ async function fleetLogsGcTick(): Promise<void> {
       const liveRenderPaths = new Set(
         listLiveSessionRenders('/proc', Number.MAX_SAFE_INTEGER).map((r) => r.promptFile),
       );
-      const renders = runLaunchContextGc({ liveRenderPaths });
+      const renders = await runLaunchContextGc({ liveRenderPaths });
       console.log(
         renders.refused
           ? `[launch-context-gc] refused (${renders.refused}) — nothing removed`

@@ -1,3 +1,4 @@
+import { retentionPinProtectsPath } from '../../../../scripts/lib/retention-pins.mjs';
 /**
  * Written retention policy for disk consumers on `/`, `/mnt/data` and `/mnt/backup`
  * (plan disk-headroom-standing-reclaim-2026-10-12, P-003 / R-2; `/mnt/backup`
@@ -694,12 +695,7 @@ interface CompiledRoot {
 export interface RetentionPinProtection { paths: readonly string[]; expiresAt: string }
 
 /** Protect a pin's descendants and the containing entry, without sibling-prefix matches. */
-export function retentionPinProtectsPath(path: string, pins: readonly RetentionPinProtection[], nowMs = Date.now()): boolean {
-  const candidate = normalize(path);
-  const contains = (outer: string, inner: string) => outer === '/' || outer === inner || inner.startsWith(outer + '/');
-  return pins.some((pin) => Date.parse(pin.expiresAt) > nowMs && pin.paths.some((p) =>
-    contains(normalize(p), candidate) || contains(candidate, normalize(p))));
-}
+export { retentionPinProtectsPath };
 
 export interface CompiledPolicy {
   classes: ReadonlyMap<string, RetentionClass>;

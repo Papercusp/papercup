@@ -3,6 +3,9 @@
  * runner. Keep reviewer-only facts out of employee input and worker context.
  */
 import type { SupportCaseInput } from '../support-workflow-contract';
+import { supportTrialBodyHash, type SupportTrialArtifact, type SupportTrialAuthority,
+  type SupportTrialInput, type SupportTrialObservation, type SupportTrialRegistration } from '../support-workflow-trial';
+import type { BlueprintOperationHandle } from '../operation-service';
 
 type Scenario = readonly [area: string, title: string, trigger: string, observation: string, expected: string];
 
@@ -70,4 +73,53 @@ export function supportWorkflowTrialCases(approvedRevision: string) {
       reviewerOnlyOracle: { trigger, observation, expected, suggestedRole: `${area}-engineer` },
     };
   });
+}
+
+/** Detector controls only. These fabricated immutable artifacts MUST NOT be
+ * reported as a preregistered operational trial or customer evidence. */
+export function supportWorkflowTrialEvidenceFixture(options: {
+  workspace?: string; harness?: string; workflowRevision?: string; operationId?: string;
+  submitter?: string; reviewer?: string; supportCaseId?: string; documentIds?: string[]; now?: number;
+} = {}) {
+  const now = options.now ?? Date.parse('2026-10-15T12:00:00Z');
+  const iso = (offset: number) => new Date(now + offset).toISOString();
+  const artifacts = new Map<string, SupportTrialArtifact>();
+  const authority: SupportTrialAuthority = { workspace: options.workspace ?? 'trial-fixture', harness: options.harness ?? 'trial',
+    subject: 'P-023@fixture', planRevision: 'fixture-plan@1', candidateSha256: 'a'.repeat(64),
+    workflowRevision: options.workflowRevision ?? 'b'.repeat(64), approvers: ['fixture-approver'], now,
+    resolve: async ref => artifacts.get(ref) };
+  const put = (ref: string, body: unknown, approved = false, offset = -120_000) => {
+    const record = { ref, hash: supportTrialBodyHash(body), workspace: authority.workspace, subject: authority.subject,
+      profile: 'assumed-internal', owner: 'fixture-approver', observedAt: iso(offset), expiresAt: iso(3_600_000) };
+    artifacts.set(ref, { record: structuredClone(record), body: structuredClone(body),
+      ...(approved ? { approval: { principal: 'fixture-approver', at: iso(-90_000) } } : {}) });
+    return record;
+  };
+  const source = put('fixture:cohort-source', { supportCaseId: options.supportCaseId ?? 'fixture-case', provenance: 'synthetic',
+    documentIds: options.documentIds ?? ['fixture-document'] });
+  const registration: SupportTrialRegistration = { trialId: 'fixture-trial', planRevision: authority.planRevision,
+    candidateSha256: authority.candidateSha256, workflowRevision: authority.workflowRevision,
+    operationId: options.operationId ?? 'fixture-operation', startsAt: iso(-60_000), endsAt: iso(-1),
+    reviewer: options.reviewer ?? 'fixture-reviewer', implementers: ['fixture-implementer'], resultLabel: 'internal-simulation',
+    cohort: [{ id: 'cohort-1', supportCaseId: options.supportCaseId ?? 'fixture-case', submitter: options.submitter ?? 'fixture-employee',
+      provenance: 'synthetic', source: source.ref, sourceSha256: source.hash }],
+    thresholds: { acceptedRate: { pass: 1, stop: 0.5 }, repeatUses: { pass: 2, stop: 1 },
+      costMicros: { pass: 30_000, stop: 50_000 }, reviewSeconds: { pass: 60, stop: 120 },
+      reworkCount: { pass: 1, stop: 2 }, supportSeconds: { pass: 60, stop: 120 }, recoverySeconds: { pass: 60, stop: 120 } } };
+  const input: SupportTrialInput = { registration: put('fixture:registration', registration, true),
+    prerequisites: [...Array.from({ length: 10 }, (_, i) => `A-${i + 1}`), 'P-002', 'P-003', 'R-8'].map(id => ({ id,
+      record: put(`fixture:${id}`, { prerequisite: id, state: 'satisfied', planRevision: authority.planRevision,
+        candidateSha256: authority.candidateSha256 }, true) })), observations: [] };
+  const observe = (handle: BlueprintOperationHandle, fingerprint: string, overrides: Partial<SupportTrialObservation> = {}) => {
+    const values = { costMicros: { value: 23_000 }, reviewSeconds: { value: 10 }, reworkCount: { value: 0 },
+      supportSeconds: { value: 10 }, recoverySeconds: { value: 10 } };
+    const body: SupportTrialObservation = { trialId: registration.trialId, cohortId: 'cohort-1', receiptId: handle.receiptId,
+      candidateSha256: authority.candidateSha256, resultLabel: 'internal-simulation', resultFingerprint: fingerprint,
+      observedAt: iso(-2), baseline: structuredClone(values), measured: structuredClone(values),
+      administration: true, policyUnderstood: true, recovered: true, ...overrides };
+    const record = put(`fixture:observation:${handle.receiptId}`, body, false, -1);
+    input.observations.push({ record, handle, callerId: registration.cohort[0]!.submitter });
+    return body;
+  };
+  return { authority, input, registration, artifacts, put, observe };
 }

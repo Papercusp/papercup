@@ -800,6 +800,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');
   const { readRetentionLeases, isLeaseLive, defaultRetentionDir } = await import('../release-cut-reclaim');
+  let isPinnedPath: (path: string) => boolean = () => { throw new Error('retention protection has not been read'); };
   const readProtection = async () => {
     const dir = defaultRetentionDir();
     const leaseRead = readRetentionLeases(dir);
@@ -808,15 +809,18 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     const errors = [...leaseRead.errors, ...pinRead.errors];
     // Unknown/malformed leases are a hard refusal, rather than disappearing from protection.
     if (errors.length) throw new Error(`retention leases unreadable: ${errors.join('; ')}`);
+    const { pinProtection } = await import('../../../../scripts/lib/retention-pins.mjs');
+    isPinnedPath = pinProtection(pinRead.pins);
     return { paths: leaseRead.leases.filter((lease) => isLeaseLive(lease, Date.now())).flatMap((lease) => lease.paths), pins: pinRead.pins };
   };
   const require = createRequire(import.meta.url);
   const delegates: ReclaimDelegate[] = [
     { classId: 'sidecar-failed-stages', run: async (dryRun) => {
       const owner = require(join(repoRoot, 'papercusp-desktop/bin/lib/sidecar-stage-state.js')) as {
-        pruneFailedStages: (options: { all: boolean; dryRun: boolean }) => { errors: unknown[] };
+        pruneFailedStagesWithProtection: (options: { all: boolean; dryRun: boolean }, env: NodeJS.ProcessEnv,
+          isPinned: (path: string) => boolean) => { errors: unknown[] };
       };
-      const detail = owner.pruneFailedStages({ all: true, dryRun });
+      const detail = owner.pruneFailedStagesWithProtection({ all: true, dryRun }, process.env, isPinnedPath);
       return { ok: detail.errors.length === 0, detail };
     } },
     { classId: 'cargo-target-slots', run: (dryRun) => nativeRetentionCommand(repoRoot, '/bin/bash', [

@@ -21,7 +21,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 import type { NativeConsultBoundary } from './native-consult';
 import {
   analyzeClaudeResumeTranscriptFile,
@@ -1686,6 +1687,44 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
     expect(result.dispatch).toMatchObject({ agent: 'codex', model: 'sol:xhigh' });
     expect(calls.spawn).toHaveLength(1);
     expect(calls.spawn[0]!.envelope.greetingCmd).toContain('sol');
+  });
+
+  it.each([RUBRIC_VETTING_POLICY, ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY])(
+    'loads the persisted %s reviewer choice on a later dispatch without substituting the default rank', async (policy) => {
+      const db = await import('@papercusp/db-org');
+      const sql = vi.fn(async () => [{ policy,
+        reviewer_model: { agent: 'codex', model: 'sol', effort: 'xhigh' }, native_consult: null }]);
+      const spy = vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql } as never);
+      try {
+        const { deps, calls } = makeFakes({ readReviewerModel: undefined });
+        const result = await makeConsultReachDispatcher(CTX, deps)({
+          responder: 'su-expert', conversationId: 'conv-saved-review', summary: 'review', body: 'next reviewer',
+          evidence: OPTS.evidence,
+        });
+        expect(sql).toHaveBeenCalled();
+        expect(result.dispatch).toMatchObject({ agent: 'codex', model: 'sol:xhigh', dispatched: true });
+        expect(calls.spawn).toHaveLength(1);
+        expect(calls.spawn[0]!.envelope.greetingCmd).toContain('--account=auto');
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it('rejects a saved reviewer model on an unrelated policy before launching', async () => {
+    const db = await import('@papercusp/db-org');
+    const spy = vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: vi.fn(async () => [{
+      policy: 'ordinary-consult', reviewer_model: { agent: 'codex', model: 'sol' }, native_consult: null,
+    }]) } as never);
+    try {
+      const { deps, calls } = makeFakes({ readReviewerModel: undefined });
+      await expect(makeConsultReachDispatcher(CTX, deps)({
+        responder: 'su-expert', conversationId: 'conv-invalid-policy', summary: 'review', body: 'next reviewer',
+      })).rejects.toThrow('outside an authorized review policy');
+      expect(calls.spawn).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('refuses a reviewer model removed from the allowlist without launching a substitute', async () => {

@@ -144,13 +144,19 @@ describe('test-files router', () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
+    const stages: string[] = [];
+    const preflight = vi.fn(async () => { stages.push('pg-preflight'); });
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
-      const frozen = vi.fn(async options => { receiptDir = join(options.receiptPath, '..'); return 7; });
+      const frozen = vi.fn(async options => {
+        stages.push('source-freeze'); receiptDir = join(options.receiptPath, '..'); return 7;
+      });
       expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
+        preflightPrivateIntegrationPgImpl: preflight,
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       })).toBe(7);
+      expect(stages).toEqual(['pg-preflight', 'source-freeze']);
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
@@ -160,6 +166,29 @@ describe('test-files router', () => {
     } finally {
       if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unavailable private-proof PG before source copying or any test child', async () => {
+    const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const oldOptions = process.env.NODE_OPTIONS;
+    const frozen = vi.fn(), list = vi.fn(), run = vi.fn();
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      const preflight = vi.fn(async () => { throw new Error('TEST SUBSTRATE STORAGE LOW: private PG required'); });
+      expect(await main([resolve(REPO_ROOT, file)], {
+        preflightPrivateIntegrationPgImpl: preflight,
+        runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+      })).toBe(2);
+      expect(preflight).toHaveBeenCalledOnce();
+      expect(frozen).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('TEST SUBSTRATE STORAGE LOW'));
+    } finally {
+      if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      warning.mockRestore();
     }
   });
   it('keeps guarded config imports native for both collection and execution', () => {
@@ -1659,7 +1688,10 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     const child = Object.assign(new EventEmitter(), {
       pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
     });
-    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus' };
+    const env = {
+      DBUS_SESSION_BUS_ADDRESS: 'unix:path=/reachable/bus',
+      PAPERCUSP_TEST_SECRET: 'scope-diagnostic-must-not-leak',
+    };
     const spawnImpl = vi.fn(() => child);
     const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
       env, systemdRunPath: '/usr/bin/systemd-run', setsidPath: '/usr/bin/setsid',

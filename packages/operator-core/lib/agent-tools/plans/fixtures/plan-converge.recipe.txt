@@ -64,7 +64,8 @@ const reviewedItemIds = auditItems.filter(item => ["implemented", "not-code"].in
   .map(item => item.itemId);
 const certification = reviewedItemIds.length > 0
   ? await tools.plans.certifySpecClauses({ harness, slug: planSlug, classRef,
-    planItemIds: reviewedItemIds, includeDraft: true, dryRun })
+    planItemIds: reviewedItemIds, includeDraft: true, dryRun,
+    acknowledgeExisting: inputs.acknowledgeExisting === true })
   : { ok: true, skipped: "no-reviewed-implementation" };
 if (certification.ok !== true || (certification.counts && certification.counts.refused > 0)) {
   return fit({ ok: false, phase: "certify",

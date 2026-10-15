@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { CompletionRecordSchema } from '../coord-lifecycle/records';
 import { evaluateConformanceClosure, type ConformanceClosureDeps, type RequirementClosureDeclaration } from './closure-guard';
@@ -37,6 +38,18 @@ function world(verdict: ConformanceCheckVerdict | null = 'pass', alarms: OpenDri
   return { deps, run };
 }
 describe('spec-discharging closure (R-16/R-18/R-19)', () => {
+  it.each(['plan.md', 'report.md'])('lets the shipped bug-triage %s close only with executable passing proof', async (file) => {
+    const content = readFileSync(new URL(`../../../../libs/papercusp/plugins/bug-triage/${file}`, import.meta.url), 'utf8');
+    const passing = world('pass');
+    expect(await passing.run({ discharges: ['R-1'] }, content)).toBeNull();
+    expect(passing.deps.readDoneWhenVerdict).toHaveBeenCalledWith(expect.objectContaining({
+      barKey: 'R-1', doneWhen: 'executable',
+    }));
+    for (const verdict of [null, 'fail', 'error'] as const) {
+      expect(await world(verdict).run({ discharges: ['R-1'] }, content))
+        .toMatchObject({ code: 'conformance_done_when_not_passing', requirements: ['R-1'] });
+    }
+  });
   it('requires a mapped requirement declaration before check reads', async () => {
     const w = world();
     expect(await w.run({})).toMatchObject({ code: 'conformance_requirements_missing', requirements: ['R-1'] });

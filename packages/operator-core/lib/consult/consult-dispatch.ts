@@ -71,7 +71,7 @@ import {
   type ExpertModelAllowlistDeps,
 } from './expert-model-allowlist';
 import type { ConsultReviewerModel } from './get-feedback-core';
-import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY, RUBRIC_VETTING_POLICY } from './selection-policies';
 import { captureNativeConsultBoundary, nativePlanClaimRequirementMismatch, nativeConsultConstraintsSchema, type NativeConsultConstraints, type NativeConsultSourceObservation } from './native-consult';
 
 /** How long the dispatcher waits for the answering session's pty host to
@@ -2171,8 +2171,8 @@ async function readPersistedDispatchChoice(workspaceId: string, conversationId: 
   `;
   const nativeConsult = row?.native_consult == null ? null : nativeConsultConstraintsSchema.parse(row.native_consult);
   if (row?.reviewer_model == null) return { reviewerModel: null, nativeConsult };
-  if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY) {
-    throw new Error('reviewer model exists outside its acceptance amendment policy');
+  if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY && row.policy !== RUBRIC_VETTING_POLICY) {
+    throw new Error('reviewer model exists outside an authorized review policy');
   }
   const raw = typeof row.reviewer_model === 'string' ? JSON.parse(row.reviewer_model) as unknown : row.reviewer_model;
   if (!raw || typeof raw !== 'object') throw new Error('invalid persisted reviewer model');

@@ -77,7 +77,9 @@ async function resolveTimelineOwner(
       ok: false,
       error: 'owner_not_found',
       owner,
-      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+      message:
+        `Owner '${owner}' does not resolve to a current live ownerId; short handles resolve only against the current roster. ` +
+        'Pass the full ownerId for historical or ended sessions, or check coord:presence.',
     };
   }
 
@@ -114,7 +116,9 @@ async function resolveTimelineOwner(
       ok: false,
       error: 'owner_not_found',
       owner,
-      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+      message:
+        `Owner '${owner}' does not resolve to a current live ownerId; short handles resolve only against the current roster. ` +
+        'Pass the full ownerId for historical or ended sessions, or check coord:presence.',
     };
   }
   return { ok: true, ownerId: strict.resolved[0]! };
@@ -637,13 +641,14 @@ export default defineTool({
     owner: z
       .string({
         error:
-          "owner is required — sessions:timeline reads ONE agent's timeline; pass 'self' for yourself, " +
-          'or an ownerId / short handle. A `cursor` does NOT carry it: the cursor is a position only, ' +
+          "owner is required — sessions:timeline reads ONE agent's timeline; pass 'self', a full ownerId, " +
+          'or a short handle that uniquely matches a current live owner. Use a full ownerId for historical or ended sessions. ' +
+          'A `cursor` does NOT carry it: the cursor is a position only, ' +
           'so a continuation must re-send the SAME owner and filters alongside it.',
       })
       .min(1)
       .max(120)
-      .describe("Agent ownerId, short handle, or 'self'."),
+      .describe("Agent ownerId, a short handle that uniquely matches a current live owner, or 'self'. Use the full ownerId for historical or ended sessions."),
     since: z.string().max(40).optional().describe('ISO lower bound (default: 24h ago).'),
     until: z.string().max(40).optional().describe('ISO upper bound (default: now).'),
     limit: z

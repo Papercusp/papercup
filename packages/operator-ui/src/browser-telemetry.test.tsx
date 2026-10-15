@@ -5,9 +5,46 @@ import { OperatorWorkspaceLocationProvider } from './seam';
 import { captureBrowserTelemetry, CloudMonitoringPreferences, PostHogProvider } from './browser-telemetry';
 import { DEFAULT_CLOUD_TELEMETRY_CONSENT } from '@papercusp/operator-core/lib/telemetry-kinds';
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+const sdkFixture = vi.hoisted(() => ({
+  client: { init: vi.fn(), capture: vi.fn(), identify: vi.fn() },
+  state: {
+    client: null as typeof import('posthog-js').default | null,
+    initializing: null as Promise<typeof import('posthog-js').default> | null,
+  },
+}));
+vi.mock('posthog-js', () => ({ default: sdkFixture.client }));
+vi.mock('@papercusp/module-singleton', async importOriginal => {
+  const original = await importOriginal<typeof import('@papercusp/module-singleton')>();
+  return { ...original, pinModuleState: <T,>(key: string, initialize: () => T): T =>
+    key === '@papercusp/operator-ui.browser-telemetry' ? sdkFixture.state as T : original.pinModuleState(key, initialize) };
+});
+
+afterEach(() => {
+  cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks();
+  sdkFixture.state.client = null; sdkFixture.state.initializing = null;
+});
 
 describe('browser telemetry host consent boundary', () => {
+  it('keeps the hosted browser SDK absent and disables automatic capture and session replay for consented local events', async () => {
+    const consentFetch = vi.fn(async (_url: RequestInfo | URL, _options?: RequestInit) => new Response(JSON.stringify({
+      enabled: true, host: 'https://analytics.example.test', project_key: 'test-project', distinct_id: 'opaque-person',
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', consentFetch);
+    await captureBrowserTelemetry('cloud_portal_session', { action: 'returned' }, 'cloud');
+    expect(sdkFixture.client.init).not.toHaveBeenCalled();
+    expect(sdkFixture.client.capture).not.toHaveBeenCalled();
+    expect(consentFetch).toHaveBeenCalledTimes(1);
+    expect(consentFetch.mock.calls[0][0]).toBe('/api/hosted/browser/monitoring/event');
+
+    await captureBrowserTelemetry('tutorial.event', { action: 'start' });
+    expect(sdkFixture.client.init).toHaveBeenCalledTimes(1);
+    expect(sdkFixture.client.init).toHaveBeenCalledWith('test-project', expect.objectContaining({
+      api_host: 'https://analytics.example.test', person_profiles: 'identified_only',
+      capture_pageview: false, capture_pageleave: false, autocapture: false, disable_session_recording: true,
+    }));
+    expect(sdkFixture.client.capture).toHaveBeenCalledWith('tutorial.event', { action: 'start' });
+  });
+
   it('observes a hosted return without a desktop consent probe or vendor SDK', async () => {
     const consentFetch = vi.fn(async () => new Response('{}', { status: 202 }));
     vi.stubGlobal('fetch', consentFetch);

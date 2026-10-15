@@ -3158,6 +3158,15 @@ export function privateIntegrationVerifierInputs(root, files, env = process.env,
     'packages/operator-core/test/private-http-workspace-preflight.ts'])].sort() : null;
 }
 
+/** Check the same PG route the private proof's parent observer will use before
+ * copying its immutable source/dependencies. The maintained PG wrapper can pin
+ * PAPERCUSP_TEST_PG_ADMIN_URL; otherwise getTestPg enforces shared storage admission. */
+export async function preflightPrivateIntegrationPg() {
+  await loadGovernedExecutionModule();
+  const { getTestPg } = await import('../libs/test-config/src/pg-container.ts');
+  await getTestPg();
+}
+
 export async function main(
   argv = process.argv.slice(2),
   {
@@ -3171,6 +3180,7 @@ export async function main(
     runCapturedTestProcessImpl = runCapturedTestProcess,
     runVitestListImpl = runVitestList,
     restrictedHoldPreflightImpl = runRestrictedHoldPreflight,
+    preflightPrivateIntegrationPgImpl = preflightPrivateIntegrationPg,
     runPrivateVerifierImpl = async options => (await import('./source-preview.mjs')).runVerifierCommand(options),
   } = {},
 ) {
@@ -3313,6 +3323,7 @@ export async function main(
     try {
       const inputs = privateIntegrationVerifierInputs(repoRoot, testFiles);
       if (inputs) {
+        await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();
         if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))

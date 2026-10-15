@@ -3,9 +3,11 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
+import { advanceFixtureDeviceClock, DEVICE_EXPIRY_OFFSET_MS } from './native-device-fixture-clock';
 
 const privateEnv = {
   PAPERCUSP_WORKSPACE_ID: 'test-runtime-native-123', PAPERCUSP_POT_HOME_SLUG: 'test-runtime-native-123',
@@ -18,6 +20,49 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('expires an actually signed device JWT only in the owned child and accepts a newly signed token', async () => {
+    const parentBefore = Date.now();
+    const root = fileURLToPath(new URL('../../../', import.meta.url));
+    const child = spawn(process.execPath, ['--import', 'tsx', '--import',
+      join(root, 'packages/operator-core/lib/native-device-fixture-clock.ts'),
+      '--input-type=module', '-e', `
+        import { signDeviceToken, verifyDeviceToken } from './packages/operator-core/lib/device-jwt.ts';
+        const claims = {sub:'owned-phone',workspace_id:process.env.PAPERCUSP_WORKSPACE_ID,device_kind:'mobile'};
+        const token = signDeviceToken(claims);
+        process.send({type:'before', valid:!!verifyDeviceToken(token)});
+        process.on('message', m => {
+          if(m.type !== 'native-fixture-expire-device') return;
+          const fresh = signDeviceToken(claims);
+          process.send({type:'after',oldValid:!!verifyDeviceToken(token),freshValid:!!verifyDeviceToken(fresh)});
+        });
+      `], { cwd: root, env: { ...process.env, ...privateEnv, MOBILE_JWT_SECRET: 'fixture-only-stable-secret' },
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    let childFailure = '';
+    child.stderr!.on('data', chunk => { childFailure += String(chunk); });
+    const message = (type: string) => new Promise<any>((done, reject) => {
+      const cleanup = () => { clearTimeout(timer); child.off('message', receive); child.off('exit', exited); };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('Missing child proof: ' + type)); }, 10000);
+      const exited = () => { cleanup(); reject(new Error('Fixture child exited: ' + childFailure)); };
+      const receive = (m: any) => { if (m.type === type) { cleanup(); done(m); } };
+      child.on('message', receive);
+      child.once('exit', exited);
+      child.once('error', reject);
+    });
+    try {
+      expect(await message('before')).toEqual({ type: 'before', valid: true });
+      await expect(advanceFixtureDeviceClock(child, { ...privateEnv, PAPERCUSP_WORKSPACE_ID: 'production' }))
+        .rejects.toThrow('Disposable workspace required');
+      const after = message('after');
+      expect(await advanceFixtureDeviceClock(child, privateEnv)).toBe(DEVICE_EXPIRY_OFFSET_MS);
+      expect(await after).toEqual({ type: 'after', oldValid: false, freshValid: true });
+      expect(Date.now() - parentBefore).toBeLessThan(60_000);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise<void>(done => child.once('exit', () => done()));
+        child.kill('SIGKILL'); await exited;
+      }
+    }
+  });
   it('adds distinct workspace choices without accepting an existing multi-workspace or foreign registry', () => {
     const id = privateEnv.PAPERCUSP_WORKSPACE_ID;
     const original = { current: id, workspaces: [{ id, name: 'Private', createdAt: 1 }] };

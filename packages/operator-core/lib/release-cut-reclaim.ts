@@ -46,11 +46,14 @@ import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { mapWithConcurrency } from './gym/concurrency';
+import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag,
+  type RetentionLease } from '../../../scripts/lib/retention-pins.mjs';
+export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag };
+export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
-export const RETENTION_SCHEMA = 'papercusp-release-retention/v1';
 export const RECLAIM_DELETER = 'release:cut-reclaim';
 export const DEFAULT_MIN_IDLE_HOURS = 24;
 const GIT_TIMEOUT_MS = 120_000;
@@ -98,47 +101,6 @@ export function parseWorktreePorcelain(stdout: string): ReclaimWorktree[] {
   return out;
 }
 
-export interface RetentionLease {
-  file: string;
-  tag: string;
-  version: string | null;
-  expiresNs: bigint;
-  paths: string[];
-}
-
-export type LeaseParse = { ok: true; lease: RetentionLease } | { ok: false; file: string; reason: string };
-
-/** Mirrors release_artifacts_retention_lease_read_paths: any unknown line, a bad expiry,
- *  a wrong schema or an empty tag is MALFORMED — and a malformed lease fails closed. */
-export function parseRetentionLease(file: string, text: string): LeaseParse {
-  let schema = '';
-  let tag = '';
-  let expires: bigint | null = null;
-  const paths: string[] = [];
-  for (const line of text.split('\n')) {
-    if (line === '') continue;
-    const eq = line.indexOf('=');
-    const key = eq > 0 ? line.slice(0, eq) : '';
-    const value = eq > 0 ? line.slice(eq + 1) : '';
-    if (key === 'schema') schema = value;
-    else if (key === 'tag') tag = value;
-    else if (key === 'created_ns') continue;
-    else if (key === 'expires_ns') {
-      if (!/^\d+$/.test(value)) return { ok: false, file, reason: 'invalid expires_ns' };
-      expires = BigInt(value);
-    } else if (key === 'path') paths.push(value);
-    else return { ok: false, file, reason: `unexpected line '${line.slice(0, 40)}'` };
-  }
-  if (schema !== RETENTION_SCHEMA) return { ok: false, file, reason: `schema '${schema}'` };
-  if (!tag) return { ok: false, file, reason: 'missing tag' };
-  if (expires === null) return { ok: false, file, reason: 'missing expires_ns' };
-  return { ok: true, lease: { file, tag, version: versionFromTag(tag), expiresNs: expires, paths } };
-}
-
-export function isLeaseLive(lease: RetentionLease, nowMs: number): boolean {
-  return lease.expiresNs === 0n || lease.expiresNs > BigInt(Math.floor(nowMs)) * 1_000_000n;
-}
-
 /** expires_ns=0 is what every lease gets while PAPERCUSP_RELEASE_RETENTION_TTL_SEC is unset, so
  *  "never expires" would pin every cut ever made. Reclaim honours such a lease only for the latest
  *  published release or a NEWER (in-flight / unreleased) cut; an older one is ignored. Unknowable
@@ -149,11 +111,6 @@ export function neverExpiringLeaseHonored(lease: RetentionLease, published: Rele
   if (!published || !lease.version) return true;
   const cmp = compareVersions(lease.version, published.version);
   return cmp === null || cmp >= 0;
-}
-
-/** desktop-v0.0.25-alpha → 0.0.25 */
-export function versionFromTag(tag: string): string | null {
-  return /^desktop-v(\d+\.\d+\.\d+)(?:-|$)/.exec(tag)?.[1] ?? null;
 }
 
 /** Numeric x.y.z compare; a non-numeric version compares as null (callers fail closed). */
@@ -636,29 +593,6 @@ export function contiguousChunks<T>(items: readonly T[], parts: number): T[][] {
 
 const errText = (e: unknown) => (e instanceof Error ? e.message.split('\n')[0] ?? e.message : String(e)).slice(0, 160);
 
-export function readRetentionLeases(dir: string): { leases: RetentionLease[]; errors: string[] } {
-  const leases: RetentionLease[] = [];
-  const errors: string[] = [];
-  let names: string[] = [];
-  try {
-    names = fs.readdirSync(dir).filter((n) => /^lease-.*\.tsv$/.test(n));
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') errors.push(`${dir}:${errText(e)}`);
-    return { leases, errors };
-  }
-  for (const name of names) {
-    const file = path.join(dir, name);
-    try {
-      const parsed = parseRetentionLease(file, fs.readFileSync(file, 'utf8'));
-      if (parsed.ok) leases.push(parsed.lease);
-      else errors.push(`${name}:${parsed.reason}`);
-    } catch (e) {
-      errors.push(`${name}:${errText(e)}`);
-    }
-  }
-  return { leases, errors };
-}
-
 function realpathOrNull(p: string): string | null {
   try {
     return fs.realpathSync(p);
@@ -997,10 +931,6 @@ async function measureReclaimPhaseAsync<T>(
     });
     throw error;
   }
-}
-
-export function defaultRetentionDir(): string {
-  return process.env.PAPERCUSP_RELEASE_RETENTION_ROOT || path.join(os.homedir(), '.papercusp', 'release-retention');
 }
 
 /** Two-phase: every cheap protection first, then the git-heavy authored-work read only

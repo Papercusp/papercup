@@ -203,6 +203,17 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
         status: 'dispatch_unavailable',
         message: 'The catalog exposed papercusp:list_workspaces, but the normalized functions.exec method mcp__papercusp_su__papercusp_list_workspaces was undefined and raised a TypeError before dispatch. The capability remains reachable through the documented ptool CLI fallback.',
       },
+      {
+        toolName: 'locks:acquire',
+        errorCode: 'unknown_tool_wrapper',
+        status: 'client',
+        message: 'Normalized direct wrapper mcp__papercusp_su__locks_acquire was not callable; tools:find returned locks:acquire schema, so switched to ptool CLI fallback. Reproduced: true. Direct evidence kind: valid-input-reproduction. Direct evidence expected: callable locks:acquire wrapper or equivalent lock acquisition. Direct evidence actual: TypeError: tools.mcp__papercusp_su__locks_acquire is not a function',
+        directEvidence: {
+          kind: 'valid-input-reproduction',
+          expected: 'callable locks:acquire wrapper or equivalent lock acquisition',
+          actual: 'TypeError: tools.mcp__papercusp_su__locks_acquire is not a function',
+        },
+      },
     ];
 
     for (const report of reports) {

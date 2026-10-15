@@ -491,6 +491,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'the client called an unseeded deferred wrapper before tools:find discovery; no MCP request reached the server (EI-25486226169848485)',
   },
   {
+    n: 1, errorCode: 'unknown_tool_wrapper', status: 'client',
+    message: 'Normalized direct wrapper mcp__papercusp_su__locks_acquire was not callable; tools:find returned locks:acquire schema, so switched to ptool CLI fallback. Reproduced: true. Direct evidence kind: valid-input-reproduction. Direct evidence expected: callable locks:acquire wrapper or equivalent lock acquisition. Direct evidence actual: TypeError: tools.mcp__papercusp_su__locks_acquire is not a function',
+    expectedClass: 'caller',
+    note: 'the deferred Codex wrapper was absent before MCP dispatch; unknown_tool_wrapper is a client-surface condition and must remain non-claimable (EI-25980326230643570)',
+  },
+  {
     n: 1, errorCode: 'compile_error', status: 'compile_error',
     message: 'compile_error: Invalid regular expression flags while compiling the submitted code:run script',
     expectedClass: 'caller',

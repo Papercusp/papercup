@@ -188,6 +188,26 @@ describe('R-5/R-19 — device boundaries', () => {
     expect(projectDeviceTimelineEntry({ kind: 'text', text: 'answer', toolInput: 'raw-args', toolId: 'raw-id' })).toEqual({ kind: 'text', text: 'answer' });
   });
 
+  it('redacts a planted credential on an older cursor page while preserving safe text', async () => {
+    const secret = 'sk-proj-' + 'c7'.repeat(18);
+    const rows = history(4);
+    rows[0]!.text = `api_key=${secret} cursor-page-safe-text`;
+
+    const newest = await page('?limit=2');
+    expect(newest.status).toBe(200);
+    expect(newest.body.entries.map((row: { text: string }) => row.text)).toEqual(['turn 2', 'turn 3']);
+    expect(newest.body.cursor).toEqual(expect.any(String));
+
+    const older = await page(`?limit=2&cursor=${encodeURIComponent(newest.body.cursor)}`);
+    expect(older.status).toBe(200);
+    expect(older.body.entries).toHaveLength(2);
+    expect(older.body.entries[0].text).toContain('[redacted]');
+    expect(older.body.entries[0].text).toContain('cursor-page-safe-text');
+    expect(older.body.entries[1].text).toBe('turn 1');
+    expect(JSON.stringify(older.body)).not.toContain(secret);
+    expect(older.body.cursor).toBeNull();
+  });
+
   it('refuses a leaked foreign-workspace owner before reading history', async () => {
     fixture.roster = { active: [entry({ workspaceId: 'foreign' })], starting: [], pending: [], ended: [] };
     expect((await page()).status).toBe(404);

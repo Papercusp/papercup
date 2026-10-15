@@ -19,8 +19,8 @@
  *
  * Config (routine `trigger_config`, all optional):
  *   - `targets` — `Array<{ category: string; retention_days: number }>`; default
- *     `route-invocations`@7d + `tool-invocations`@14d + `harness-run-output`@14d
- *     + `agent-activity`@7d + `memory-recall-query-text`@3d.
+ *     the canonical P-010 table-retention policy (30d local telemetry,
+ *     3d agent-authored recall query text).
  *   - `dry_run` — plan + log but delete nothing (preview a first run).
  *   - `package_cache_enabled` — set `false` to disable npm/bun/pnpm cache
  *     retention (enabled by default).

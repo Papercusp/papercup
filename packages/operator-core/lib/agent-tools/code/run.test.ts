@@ -178,6 +178,16 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('a single held claim can remain implicit');
   });
 
+  it('distinguishes code:run dynamic dispatch from the outer tools.invoke wrapper', () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
+    expect(scriptDescription).toContain('There is no tools.invoke shortcut in this sandbox');
+    expect(scriptDescription).toContain('dynamic dispatch is tools.tools.invoke({ name, args })');
+    expect(scriptDescription).toContain('or use tools.ns.verb(args) directly');
+  });
+
   it('documents JavaScript escaping for shell backslash-zero commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
