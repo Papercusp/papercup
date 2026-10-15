@@ -14146,7 +14146,7 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
   it("is ON by default — without PAPERCUSP_PARTIAL_GREEN_GATE set, a red tip still salvages the green prefix", async () => {
     delete process.env.PAPERCUSP_PARTIAL_GREEN_GATE; // no arming needed (default-on, 2026-07-01)
     const { c3, c2, c4 } = await chain();
-    const { deps } = partialDeps({
+    const { deps, executions } = partialDeps({
       candidateFailingTests: ["@ws/failing"],
       affected: {
         [c2]: ["@ws/other"],
@@ -14162,6 +14162,8 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       reason: "advanced-prefix",
       advancedTo: c3,
     });
+    expect(executions).toHaveLength(2);
+    expect(executions[1]).toMatchObject({ candidate: c3, headAtStart: c3 });
   });
 
   it("opt-out: PAPERCUSP_PARTIAL_GREEN_GATE=0 holds a red candidate exactly as before (strict tip-only gating)", async () => {

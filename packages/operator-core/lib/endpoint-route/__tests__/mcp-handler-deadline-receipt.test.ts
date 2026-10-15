@@ -652,6 +652,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         );
         await waitForSignal(entry, `${phase} entry`);
+        const barrierObservedAtMs = Date.now();
         // The real dispatcher already ran the fast handler exactly once. The
         // controlled barrier is later, so a deadline cannot imply handler failure.
         expect(h.progressCalls).toBe(1);
@@ -668,6 +669,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           event.traceId === traceId && event.stage === 'inner_dispatch_settled',
         )).toBe(false);
 
+        const barrierHeldMs = Date.now() - barrierObservedAtMs;
         release();
         await vi.waitFor(() => {
           const settled = traceEvents(info.mock.calls).find((event) =>
@@ -677,7 +679,9 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
           const timings = settled?.phaseTimingsMs as { resultDoor?: number; postDispatchToSettlement?: number };
           expect(timings.resultDoor).toEqual(expect.any(Number));
           expect(timings.postDispatchToSettlement).toBeGreaterThanOrEqual(timings.resultDoor!);
-          if (phase === 'result-door') expect(timings.resultDoor).toBeGreaterThanOrEqual(TEST_DEADLINE_MS);
+          // The phase starts after the request's deadline clock. Compare its
+          // duration with the interval we actually held this phase's barrier.
+          if (phase === 'result-door') expect(timings.resultDoor).toBeGreaterThanOrEqual(barrierHeldMs);
           expect(h.resultDoorRequestTraceIds).toContain(traceId);
         });
         expect(h.progressCalls).toBe(1);
