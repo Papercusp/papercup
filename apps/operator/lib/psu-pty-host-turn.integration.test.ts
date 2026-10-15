@@ -1591,6 +1591,61 @@ it('leaves a later Codex model menu to the agent after a turn was submitted', as
   }
 }, 10_000);
 
+it('records a sanitized Codex provider and endpoint after a successful PTY spawn', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codex-route-spawn-receipt-'));
+  const codexHome = join(root, 'codex');
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, 'config.toml'), [
+    'model_provider = "papercusp-codex-gateway"',
+    '',
+    '[model_providers.papercusp-codex-gateway]',
+    'wire_api = "responses"',
+    'base_url = "https://user:receipt-secret@codex.example/v1?token=receipt-secret#fragment"',
+  ].join('\n'));
+  const ownerId = uniqueOwner('SPAWN-ROUTE-RECEIPT');
+  const eventPath = eventLogPathForOwner(ownerId);
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('READY\\n');",
+      "process.stdin.on('data',data=>{if(data.includes('\\u0004'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),10000);',
+    ].join('')],
+    cwd: root,
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId,
+      PAPERCUSP_AGENT: 'codex',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto',
+      CODEX_HOME: codexHome,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+    }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: () => {},
+  });
+  try {
+    expect(await waitForOutput(captured, 'READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    const events = readFileSync(eventPath, 'utf8').trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const receipt = events.find((event) => event.kind === 'pty-spawned');
+    expect(receipt).toMatchObject({
+      kind: 'pty-spawned',
+      agent: 'codex',
+      routeMode: 'auto',
+      provider: 'papercusp-codex-gateway',
+      endpoint: 'https://codex.example/v1',
+    });
+    expect(JSON.stringify(receipt)).not.toContain('receipt-secret');
+  } finally {
+    await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
 it('records initial submit plus each resubmit as attempts on a verified turn', async () => {
   const ownerId = uniqueOwner('TURN-ATTEMPTS');
   const sock = socketPathFor(ownerId);
