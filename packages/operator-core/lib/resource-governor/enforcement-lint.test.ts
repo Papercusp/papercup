@@ -337,7 +337,8 @@ describe('resource governor enforcement lint', () => {
     for (const unsafe of [
       source.replace("timeout: 5000, maxBuffer: 100_000", "timeout: undefined, maxBuffer: 100_000"),
       source.replace('attempts = 31, isStopped', 'attempts = Infinity, isStopped'),
-      source.replace('if (isStopped()) return;', 'if (false) return;'),
+      source.replace('  for (let attempt = 0; ; attempt++) {\n    if (isStopped()) return;',
+        '  for (let attempt = 0; ; attempt++) {'),
       source.replace('secrets: [databasePassword], isStopped: () => stopped', 'secrets: [], isStopped: () => stopped'),
       source.replace('for (let attempt = 0; ; attempt++)', 'for (let attempt = 0; attempt < attempts; attempt++)'),
       source.replace('stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;', 'stalledAttempts += 1;'),
