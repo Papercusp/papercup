@@ -4680,6 +4680,40 @@ describe('rerunRecipe is submittable to its own evaluator', () => {
 
 describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a machine PASS)', () => {
   it.each([
+    'Lifecycle on real PG: links a fix only when its content is in the tested PR diff, one provider comment across retries, done transition and sync-back.',
+    'The admission path admits a bug only when its reproduction test fails on the current build.',
+    'The gate merges only if the tested commit has green checks.',
+  ])('does not confuse a production safety condition with limited proof: %s', observations => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })], classRef: 'plan-class-feature-ship' });
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it.each([
+    'Links a fix only when it is in the tested PR diff, but only unit coverage is provided.',
+    'The admission path admits only if the reproduction test fails. The failure path is not covered.',
+    'The test only covers the happy path when the tested commit has green checks.',
+    'The failure path is tested only when the provider is healthy.',
+  ])('preserves real coverage limits beside conditional safety claims: %s', observations => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })], classRef: 'plan-class-feature-ship' });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(result.wouldBlock).toContain('disclosed-gap');
+  });
+
+  it('never exempts a conditional phrase in an explicit disclosedGap field', () => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [evidence({ details: { ...base.details,
+        disclosedGap: 'Links only when the tested diff contains the fix.' } })],
+      classRef: 'plan-class-feature-ship' });
+    expect(result.ratings['disclosed-gap'].rating).toBe('fail');
+  });
+
+  it.each([
     'Removing the ledger-only re-aim coverage disclosure fails the named R8 rendering case while all R7 calibration cases pass.',
     'The mutation changes a read-only coverage query and the guard catches the changed result.',
     'The path persists an append-only coverage record; the mutation guard rejects a dropped field.',
