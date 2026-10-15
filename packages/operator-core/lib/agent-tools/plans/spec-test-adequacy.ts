@@ -1423,8 +1423,12 @@ function hasUnmatchedPassingCaseDeclaration(row: SpecEvidenceForAdequacy): boole
 
 type MeasuredExecutionVerdict = 'pass' | 'fail' | 'unknown';
 
-/** A descriptor-bearing catch must be calibrated by this invocation's measured pass. */
-function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
+/**
+ * A descriptor-bearing catch must be calibrated by this invocation's measured pass.
+ * Exported for mechanical test adequacy (agent-paperwork-and-restart-tax-reduction-2026-10-15
+ * P-003), which must accept exactly the mutants this evaluator accepts as causally linked.
+ */
+export function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
   const provenance = row.testRunProvenance;
   const mutation = provenance?.mutation;
   const baseline = provenance?.mutationBaseline;
