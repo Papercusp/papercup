@@ -679,6 +679,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'A read of the tunnel config plus ~36 unauthenticated GETs against the public hosted origin; a finding throws into the routine’s own last_error — no spawn/dispatch/wake',
   },
+  'system:hosted-billing-reconcile': {
+    spend: 'none',
+    why: 'Bounded authenticated Stripe reads, transactional billing cursor/fact repairs and existing alarm-attention receipts; no model dispatch or agent turn',
+  },
   'system:readiness-drift-monitor': {
     spend: 'none',
     why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',
