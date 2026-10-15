@@ -1,11 +1,13 @@
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { ownerPidFromSocketPath } from './spawner-socket-path';
+import { flushFallbackObservations, observeFallback } from '../degradation/fallback-observations';
 
 /** How often to ask whether the host this sidecar serves is still alive. */
 export const ORPHAN_CHECK_INTERVAL_MS = 30_000;
 
 export interface SpawnerSidecarOrphanWatchdogDeps {
   isPidAlive?: (pid: number) => boolean;
+  flushObservations?: () => Promise<unknown>;
   schedule?: (
     name: string,
     intervalMs: number,
@@ -48,7 +50,19 @@ export function armSpawnerSidecarOrphanWatchdog(
     'spawner-sidecar-orphan-watchdog',
     ORPHAN_CHECK_INTERVAL_MS,
     () => {
-      if (isPidAlive(ownerPid)) return;
+      let alive: boolean;
+      try {
+        alive = isPidAlive(ownerPid);
+      } catch (error) {
+        observeFallback('spawner-sidecar-orphan-watchdog', {
+          eligible: 1, applied: 0, reason: 'liveness-read-failed', scope: 'owner',
+        });
+        throw error;
+      }
+      observeFallback('spawner-sidecar-orphan-watchdog', {
+        eligible: 1, applied: alive ? 1 : 0, reason: alive ? 'healthy' : 'owner-gone', scope: 'owner',
+      });
+      if (alive) return;
       logger.warn(
         '[spawner-sidecar] owner pid ' +
           ownerPid +
@@ -56,7 +70,11 @@ export function armSpawnerSidecarOrphanWatchdog(
           socketPath +
           ' again; exiting rather than leaking',
       );
-      shutdown('owner-gone');
+      // The sidecar's drain ends with process.exit(), which bypasses beforeExit.
+      // Persist the heal sample before asking it to terminate; a failed write
+      // must still allow the orphan to shut down.
+      return (deps.flushObservations ?? flushFallbackObservations)()
+        .finally(() => shutdown('owner-gone'));
     },
     { category: 'watchdog', classification: 'must-sample' },
   );
