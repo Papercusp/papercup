@@ -245,6 +245,8 @@ export function validateDockerExecTarget(target: DockerExecTarget): void {
 export interface RenderWrapperOptions {
   /** docker CLI the wrapper execs. Default 'docker' (resolved on the wrapper's PATH). */
   dockerBin?: string;
+  /** Selected host daemon, kept outside the task environment. Materialization snapshots DOCKER_HOST by default. */
+  dockerHost?: string;
   /** Interpreter for the wrapper's shebang. Default: this process's node when its path has no whitespace. */
   nodeBin?: string;
   forwardEnvPatterns?: readonly string[];
@@ -261,6 +263,7 @@ export function renderDockerExecWrapper(target: DockerExecTarget, opts: RenderWr
   validateDockerExecTarget(target);
   const cfg = {
     dockerBin: opts.dockerBin ?? 'docker',
+    dockerArgs: opts.dockerHost ? ['--host', opts.dockerHost] : [],
     containerId: target.containerId,
     workdir: target.workdir,
     binPath: target.binPath,
@@ -395,7 +398,7 @@ function bridgeHooks(b, sessionEnv) {
 }
 // Fail closed (D-032): if the shim cannot reach the bridge from inside the container, no hook would run.
 function pingBridge(b, s) {
-  const r = spawnSync(cfg.dockerBin, ['exec', cfg.containerId, b.shimPath, b.url, s.name, s.token, 'ping'],
+  const r = spawnSync(cfg.dockerBin, [...cfg.dockerArgs, 'exec', cfg.containerId, b.shimPath, b.url, s.name, s.token, 'ping'],
     { stdio: ['ignore', 'ignore', 'pipe'], encoding: 'utf8', timeout: b.pingTimeoutMs });
   if (r.error) refuse('cannot ping the hook bridge: ' + r.error.message);
   if (r.status !== 0) {
@@ -437,7 +440,7 @@ const never = cfg.never.map((s) => new RegExp(s));
 const names = Object.keys(process.env)
   .filter((k) => forward.some((r) => r.test(k)) && !never.some((r) => r.test(k)))
   .sort();
-const argv = ['exec', '-i'];
+const argv = [...cfg.dockerArgs, 'exec', '-i'];
 if (process.stdin.isTTY && process.stdout.isTTY) argv.push('-t');
 argv.push('-w', cfg.workdir);
 for (const n of names) argv.push('-e', n);
@@ -474,7 +477,10 @@ export function materializeDockerExecWrapper(
 ): { dir: string; wrapperPath: string; nativeBoundary: NativeContainerExecBinding } {
   const agent = opts.agent ?? 'codex';
   if (!/^[a-z][a-z0-9-]*$/.test(agent)) throw new Error(`container exec target: invalid agent name ${JSON.stringify(agent)}`);
-  const source = renderDockerExecWrapper(target, opts);
+  // Native launchers deliberately scrub the inherited host environment. Keep
+  // the daemon that allocated this container in the immutable wrapper, so both
+  // hook pings and agent execs still reach it after that scrub.
+  const source = renderDockerExecWrapper(target, { ...opts, dockerHost: opts.dockerHost ?? process.env.DOCKER_HOST });
   // The metered native launcher replaces /dev before applying its executable
   // read grants. A valid host file under /dev/shm is therefore absent there.
   // Resolve aliases too, and keep the existing short /tmp native-root policy.
