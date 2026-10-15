@@ -4016,7 +4016,7 @@ export function registerMcpHost(server: McpServer): void {
             Math.round(performance.now() - activePreDispatchPhaseStartedAt),
           );
         }
-        const measuredMs = Object.values(phases).reduce((sum, elapsedMs) => sum + (elapsedMs ?? 0), 0);
+        const measuredMs = Object.values(phases).reduce<number>((sum, elapsedMs) => sum + (elapsedMs ?? 0), 0);
         const elapsedMs = Math.max(0, performance.now() - requestStartedAtMonotonic);
         return {
           ...phases,

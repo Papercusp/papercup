@@ -29,7 +29,7 @@ export async function readWakeDelta(input: {
     const baseline = await sql<Array<{ last_turn_at: Date | string | null; held: string | null }>>`
       SELECT (SELECT max(ts) FROM (
                 SELECT ts FROM harness_shared.session_turns
-                 WHERE workspace_id = ${workspaceId} AND owner = ${input.ownerId} AND speaker = 'assistant'
+                 WHERE workspace_id IN ('default', ${workspaceId}) AND owner = ${input.ownerId} AND speaker = 'assistant'
                 UNION ALL
                 SELECT created_at AS ts FROM harness_shared.session_turn_journal
                  WHERE workspace_id = ${workspaceId} AND owner_id = ${input.ownerId}

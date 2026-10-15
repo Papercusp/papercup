@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { addAbortSignal, Readable } from 'node:stream';
 import { setImmediate as yieldToLoop } from 'node:timers/promises';
 import { chain } from 'stream-chain';
+import fun from 'stream-chain/fun.js';
 import { parser } from 'stream-json';
 import { pick } from 'stream-json/filters/pick.js';
 import { streamValues } from 'stream-json/streamers/stream-values.js';
@@ -116,6 +117,9 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
   }
   const pipeline = chain([
     Readable.from(chunks()),
+    // Fuse synchronous token stages per bounded chunk. The default chain/gen
+    // composition awaits each token; fun avoids millions of microtask hops.
+    fun(
     parser({ streamValues: false }),
     pick({ filter: (path, token) => {
       const key = path.join('.');
@@ -130,6 +134,7 @@ export async function parsePushSnapshotStream(input: AsyncIterable<string>, now 
     streamValues(),
     // Keep tagging synchronous with pick; async iteration may buffer multiple rows.
     (item: { value: unknown }) => ({ key: selected, value: item.value }),
+    ),
   ]);
   if (signal) addAbortSignal(signal, pipeline);
   try {

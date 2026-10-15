@@ -33,6 +33,15 @@ describe('predecessor tool preload (R-12)', () => {
     expect(sql).toHaveBeenCalledTimes(2);
   });
 
+  it('loads tools called after the first listing when the successor reuses the same operator and owner', async () => {
+    sql.mockResolvedValueOnce([{ tool_name: 'plans:get' }])
+      .mockResolvedValueOnce([{ tool_name: 'plans:get' }, { tool_name: 'work_items:checkpoint' }]);
+    await restoreSessionTools(input);
+    await restoreSessionTools(input);
+    expect(getSessionSurface(input.sessionKey, seed)?.has('work_items:checkpoint')).toBe(true);
+    expect(sql).toHaveBeenCalledTimes(2);
+  });
+
   it('coalesces concurrent lists and keeps another owner isolated', async () => {
     const readUsedTools = vi.fn(async (owner: string) => [owner === 'su-lineage' ? 'plans:get' : 'facts:list']);
     await Promise.all([restoreSessionTools({ ...input, readUsedTools }), restoreSessionTools({ ...input, readUsedTools })]);

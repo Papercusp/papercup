@@ -188,7 +188,7 @@ interface SessionSurface {
   tools: Set<string>;
   /** Last touch (ms) — recency for the TTL sweep. */
   touched: number;
-  /** Shared across concurrent initial lists; failed reads remain retryable. */
+  /** Coalesce concurrent lists; each later list refreshes newly used tools. */
   restored?: Promise<void>;
 }
 
@@ -355,6 +355,9 @@ export async function restoreSessionTools(input: {
     });
     entry.restored = read(input.ownerId, input.workspaceId).then((names) => {
       for (const name of names) if (name) entry.tools.add(name);
+      // A successor may reuse this operator and stable session key after its
+      // predecessor used more nested tools. Never cache a settled ledger read.
+      entry.restored = undefined;
     }).catch((error) => {
       entry.restored = undefined;
       throw error;

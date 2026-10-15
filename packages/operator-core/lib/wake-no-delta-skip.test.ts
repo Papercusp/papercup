@@ -61,6 +61,9 @@ describe('wake evidence reader', () => {
     expect(await readWakeDelta({ ...f, ownerId: base.targetOwnerId, workspaceId: base.workspaceId })).toEqual(quiet);
     expect(f.readAgenda).toHaveBeenCalledWith({ workspaceId: base.workspaceId, ownerId: base.targetOwnerId });
     const sql = f.sql as ReturnType<typeof vi.fn>;
+    // session-ingest.ts writes CLI transcripts into the corpus partition,
+    // independently of the operational workspace used by all the other reads.
+    expect(sql.mock.calls[0]![0].join(' ')).toContain("workspace_id IN ('default',");
     expect(sql.mock.calls[1]![0].join(' ')).toContain('feature_id = ANY(');
     expect(sql.mock.calls[1]).toContainEqual(['WI-1']);
   });
