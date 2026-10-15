@@ -124,6 +124,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       const text = strings.join('?');
       statements.push({ text, values });
       if (text.includes('FROM harness_shared.consult_state')) return [];
+      if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
@@ -182,6 +183,7 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       const text = strings.join('?');
       statements.push({ text, values });
       if (text.includes('FROM harness_shared.consult_state')) return [];
+      if (text.includes('FROM harness_shared.task_ledger')) return [{ coord_owner_id: 'su-auditor' }];
       return [{ feature_id: 'EI-TARGET' }];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
@@ -202,7 +204,11 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       markGradingAuditAwaitingReemit(
         'EI-TARGET',
         expected,
-        { reason: 'evaluator revision 2 changed falsifiability from pass to unknown', at: '2026-09-20T04:03:00.000Z' },
+        {
+          reason: 'evaluator revision 2 changed falsifiability from pass to unknown',
+          at: '2026-09-20T04:03:00.000Z',
+          responderOwnerId: 'su-auditor',
+        },
         { resolveWorkspace: async () => 'ws-test', transact, notifySyncInvalidate },
       ),
     ).resolves.toBe(true);
@@ -228,6 +234,17 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       },
     });
     expect(JSON.parse(stamp!)).not.toHaveProperty('dispatchReservation');
+
+    const updateCount = statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items')).length;
+    await expect(
+      settlePendingGradingAuditAtomically(
+        'EI-TARGET',
+        expected,
+        { ...expected, state: 'awaiting-reemit' },
+        { resolveWorkspace: async () => 'ws-test', transact },
+      ),
+    ).resolves.toBe(false);
+    expect(statements.filter((statement) => statement.text.includes('UPDATE harness_shared.work_items'))).toHaveLength(updateCount);
   });
 
   it('refuses atomic settlement when the consult cascade has moved to another answerer', async () => {
@@ -271,11 +288,15 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
     let activeRows: Array<{ answering_owner_id: string | null }> = [
       { answering_owner_id: 'su-current-answerer' },
     ];
+    let taskRows: Array<{ coord_owner_id: string | null }> = [
+      { coord_owner_id: 'su-fallback-auditor' },
+    ];
     const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       statements.push({ text, values });
-      if (!text.includes('FROM harness_shared.consult_state')) return [];
-      return activeRows;
+      if (text.includes('FROM harness_shared.consult_state')) return activeRows;
+      if (text.includes('FROM harness_shared.task_ledger')) return taskRows;
+      return [];
     }) as never;
     const transact = (async (fn: (client: never) => Promise<unknown>) => fn(tx)) as never;
     const deps = { resolveWorkspace: async () => 'ws-test', transact };
@@ -291,10 +312,14 @@ describe('recordGradingAudit settled-stamp corrections (EI-22592430715863943)', 
       '2026-09-20T04:02:01.600Z',
     ]);
 
-    // A direct launch fallback has no active consult cursor, so it remains on
-    // the dispatcher's existing single-task idempotency path.
+    // A direct launch fallback has no active consult cursor. Its live task row,
+    // rather than the shared lease string alone, identifies the authorized owner.
     activeRows = [];
     await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-fallback-auditor', deps)).resolves.toBe(true);
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-unrelated-session', deps)).resolves.toBe(false);
+    expect(statements.some((statement) => statement.text.includes('FROM harness_shared.task_ledger'))).toBe(true);
+    taskRows = [];
+    await expect(isCurrentSourceAuditResponder('EI-TARGET', reservation, 'su-fallback-auditor', deps)).resolves.toBe(false);
   });
 
   it('refuses to settle after the dispatch reservation epoch changes', async () => {

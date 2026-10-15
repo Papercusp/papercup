@@ -3,7 +3,8 @@
  * task container. Grading remains owned by the FrontierSWE seam, never this adapter.
  */
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import { createCurrentSuBenchHarness, CURRENT_STOCK_CODEX_BLUEPRINT, type CurrentSuBenchObservations, type CurrentSuBenchOptions } from './current-su';
+import { createCurrentSuBenchHarness, CURRENT_STOCK_CODEX_BLUEPRINT, requireCurrentBenchNativeRunCost, type CurrentSuBenchObservations,
+  type CurrentSuBenchOptions, type CurrentBenchNativeRunCost, type CurrentBenchSessionBudget } from './current-su';
 import { createCurrentStockBenchHarness } from './native-harness-runner';
 import { startBenchEgress, sweepBenchEgress, type BenchEgress, type BenchEgressConfig } from './bench-egress';
 import { startCodexHookBridge, type CodexHookBridge } from './codex-hook-bridge';
@@ -12,7 +13,8 @@ import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle, type Frontier
 import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { generationStatusForStopReason, type GenerationBudget, type TaskCheckout } from './types';
 import type { AgentRunOutput, RunAgentInput } from './run-topology';
-import type { CurrentBenchTaskRequestCensus } from './run-launcher';
+import { currentBenchSessionUsageDelta, type CurrentBenchTaskRequestCensus } from './run-launcher';
+import { runRepeatedSessions } from './repeated-session';
 import { assertBenchWorkspace } from './bench-workspace';
 
 export interface FrontierSweNativeAssignment {
@@ -22,6 +24,9 @@ export interface FrontierSweNativeAssignment {
   checkout: TaskCheckout;
   /** Exact pre-registered caps. Remaining wall headroom uses options.driveTimeoutMs. */
   generationBudget?: GenerationBudget;
+  /** Host-read actual paired treatment spend, never a candidate-supplied cap. */
+  repeatedSession?: Readonly<{ treatmentCostUsd: number; maxSessions: number }>;
+  issueSessionBudget?(budget: GenerationBudget, beforeCost?: CurrentBenchNativeRunCost | null): CurrentBenchSessionBudget;
   /** Complete controller-issued reservation/capture population. Repeated
    * sessions consume deltas from this value; they never re-sum a cumulative
    * request count or widen the frozen assignment budget. */
@@ -144,20 +149,56 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
         unbind = egress.bindTaskEndpoint(input.handle.taskNetwork, 'gw', gateway.port);
         const stockNative = options.armId === 'baseline';
         const target = frontierSweDockerTarget(input.handle, bridge, egress, gateway.origin, mcp.origin, stockNative);
-        const driver = ports.createDriver(options, config.context, { ...observations, containerExec: target });
-        const result = await driver.spinRunAndCost({ blueprintId: stockNative ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT, task: input.task,
-          checkout: assignment.checkout, budget: assignment.generationBudget ?? {
+        let before: CurrentBenchTaskRequestCensus | undefined, beforeCost: CurrentBenchNativeRunCost | null = null;
+        const repeated = assignment.repeatedSession;
+        if (repeated) {
+          if (!stockNative || !assignment.issueSessionBudget || !assignment.readRequestCensus)
+            throw new Error('Repeated sessions require a stock assignment with host allowances and complete request accounting.');
+          before = await assignment.readRequestCensus();
+          if (before.requests.length) throw new Error('Repeated-session assignment already contains native requests.');
+        }
+        const runSession = async (sessionInput: RunAgentInput<FrontierSweEnvHandle>, grant?: CurrentBenchSessionBudget): Promise<AgentRunOutput> => {
+        const sessionOptions = grant ? { ...options, driveTimeoutMs: Math.min(options.driveTimeoutMs ?? Infinity,
+          grant.budget.maxWallClockMs ?? Infinity) } : options;
+        const driver = ports.createDriver(sessionOptions, config.context, { ...observations, containerExec: target,
+          ...(grant ? { sessionBudget: grant } : {}) });
+        const result = await driver.spinRunAndCost({ blueprintId: stockNative ? CURRENT_STOCK_CODEX_BLUEPRINT : FULL_SPINE_BLUEPRINT,
+          task: repeated ? { ...input.task, problemStatement: `${input.task.problemStatement}\n\n${sessionInput.directive}` } : input.task,
+          checkout: assignment!.checkout, budget: grant?.budget ?? assignment!.generationBudget ?? {
             ...(input.attemptBudget.maxCostUsd !== undefined ? { maxUsd: input.attemptBudget.maxCostUsd } : {}),
             ...(input.attemptBudget.maxTokens !== undefined ? { maxTokens: input.attemptBudget.maxTokens } : {}),
             ...(input.attemptBudget.maxWallMs !== undefined ? { maxWallClockMs: input.attemptBudget.maxWallMs } : {}),
           } });
         const usage = result.telemetry;
+        // Preserve the known new subtotal even when complete accounting fails.
+        // A later cumulative receipt must never charge earlier sessions twice.
+        let measured = repeated ? { tokensIn: Math.max(0, usage.tokensIn - (beforeCost?.tokensIn ?? 0)),
+          tokensOut: Math.max(0, usage.tokensOut - (beforeCost?.tokensOut ?? 0)),
+          costUsd: Math.max(0, usage.costUsd - (beforeCost?.costUsd ?? 0)),
+          tokensCacheRead: Math.max(0, (usage.tokensCacheRead ?? 0) - (beforeCost?.tokensCacheRead ?? 0)),
+          tokensCacheWrite: Math.max(0, (usage.tokensCacheWrite ?? 0) - (beforeCost?.tokensCacheWrite ?? 0)),
+          turns: Math.max(0, usage.turns - (beforeCost?.turns ?? 0)) } :
+          { tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, costUsd: usage.costUsd,
+            tokensCacheRead: usage.tokensCacheRead, tokensCacheWrite: usage.tokensCacheWrite, turns: usage.turns };
         let modelCalls = 0, measurementError: string | undefined;
         try {
-          if (assignment.readRequestCensus) {
-            const census = await assignment.readRequestCensus();
-            modelCalls = census.requests.length;
-          } else modelCalls = await assignment.readModelCalls();
+          if (assignment!.readRequestCensus) {
+            const census = await assignment!.readRequestCensus();
+            if (repeated) {
+              const afterCost = requireCurrentBenchNativeRunCost({ ...usage,
+                costUsdMeasurementMissing: usage.armMeta?.costUsdMeasurementMissing === true });
+              const sources = afterCost.armMeta?.nativeCostAccounting?.sources;
+              const previous = new Set(beforeCost?.armMeta.nativeCostAccounting.sources.map(source => source.nativeSessionId) ?? []);
+              const added = sources?.filter(source => !previous.has(source.nativeSessionId));
+              if (!added || added.length !== 1) throw new Error('Fresh native session requires exactly one new source receipt.');
+              const delta = currentBenchSessionUsageDelta({ before: before!, after: census,
+                beforeCost, afterCost, nativeSessionId: added[0].nativeSessionId });
+              modelCalls = delta.modelCalls;
+              measured = { tokensIn: delta.tokensIn, tokensOut: delta.tokensOut, costUsd: delta.normalizedCostUsd,
+                tokensCacheRead: delta.tokensCacheRead, tokensCacheWrite: delta.tokensCacheWrite, turns: delta.turns };
+              before = census; beforeCost = structuredClone(afterCost);
+            } else modelCalls = census.requests.length;
+          } else modelCalls = await assignment!.readModelCalls();
           if (!Number.isSafeInteger(modelCalls) || modelCalls < 0) throw new Error('FrontierSWE native model-call count is unmeasured.');
         } catch (error) {
           modelCalls = 0; measurementError = error instanceof Error ? error.message : String(error);
@@ -165,15 +206,33 @@ export async function startFrontierSweLaunchAdapter(config: FrontierSweLaunchAda
         return {
           submission: { containerId: input.handle.containerId, instanceId: input.task.instanceId },
           status: usage.armMeta?.costUsdMeasurementMissing || measurementError ? 'error' : generationStatusForStopReason(usage.stopReason),
-          modelCalls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, costUsd: usage.costUsd,
-          ...(usage.tokensCacheRead !== undefined ? { tokensCacheRead: usage.tokensCacheRead } : {}),
-          ...(usage.tokensCacheWrite !== undefined ? { tokensCacheWrite: usage.tokensCacheWrite } : {}),
-          turns: usage.turns, capped: usage.stopReason === 'budget-exhausted', error: measurementError ?? usage.generationError,
+          modelCalls, ...measured, capped: usage.stopReason === 'budget-exhausted', error: measurementError ?? usage.generationError,
           armMeta: { ...usage.armMeta, nativeUsage: { stopReason: usage.stopReason,
             tokensCacheRead: usage.tokensCacheRead ?? 0, tokensCacheWrite: usage.tokensCacheWrite ?? 0 },
             ...(measurementError ? { modelCallsMeasurementMissing: true } : {}) },
           traceRef: usage.trajectoryRef, executionPath: stockNative ? 'stock-native-reference' : 'modernization-launch-adapter',
         };
+        };
+        if (!repeated) return await runSession(input);
+        const result = await runRepeatedSessions(input, { ...repeated,
+          openFreshSession: async sessionInput => {
+            const left = sessionInput.attemptBudget;
+            const grant = assignment!.issueSessionBudget!({
+              ...(left.maxCostUsd !== undefined ? { maxUsd: left.maxCostUsd } : {}),
+              ...(left.maxTokens !== undefined ? { maxTokens: left.maxTokens } : {}),
+              ...(left.maxWallMs !== undefined ? { maxWallClockMs: left.maxWallMs } : {}),
+            }, beforeCost);
+            return runSession(sessionInput, grant);
+          } });
+        const last = result.sessions.at(-1);
+        return { ...result.usage, submission: result.submission,
+          status: result.stop === 'error' ? 'error' : 'completed', error: result.error,
+          capped: result.stop !== 'matched-cost', traceRef: last?.traceRef, executionPath: 'stock-native-reference',
+          armMeta: { ...last?.armMeta, repeatedSession: { ...repeated, stop: result.stop,
+            sessions: result.sessions.map(session => ({ traceRef: session.traceRef, status: session.status,
+              modelCalls: session.modelCalls, costUsd: session.costUsd, armMeta: session.armMeta })) },
+            nativeUsage: { stopReason: result.stop === 'error' ? 'error' : result.stop === 'matched-cost' ? 'done' : 'budget-exhausted',
+              tokensCacheRead: result.usage.tokensCacheRead ?? 0, tokensCacheWrite: result.usage.tokensCacheWrite ?? 0 } } };
       } finally {
         unbind?.();
         if (assignment) {

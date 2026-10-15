@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
+import type { CurrentBenchTaskRequestCensus } from './run-launcher';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
 import type { BenchEgress } from './bench-egress';
@@ -60,6 +62,79 @@ function fixture() {
 }
 
 describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
+  function repeatedFixture() {
+    const f = fixture(); f.options.armId = 'baseline'; f.input.arm = 'baseline';
+    f.assignment.repeatedSession = { treatmentCostUsd: 0.4, maxSessions: 4 };
+    const ids = ['11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'];
+    const binding = { workspaceId: 'benchmarks', runId: f.options.runId, preregHash: 'a'.repeat(64),
+      assignmentId: 'paired-assignment', loopId: 'paired-loop' };
+    let completed = 0;
+    const census = (): CurrentBenchTaskRequestCensus => ({ binding, populationSha256: 'f'.repeat(64),
+      requests: ids.slice(0, completed).map(id => ({ reservationId: `reservation:${id}`, nativeSessionId: id,
+        nativeTurnId: `${id}:turn`, bodySha256: 'b'.repeat(64) })) });
+    f.assignment.readRequestCensus = vi.fn(async () => census());
+    f.assignment.issueSessionBudget = vi.fn((budget, beforeCost) => Object.freeze({ index: completed, binding, budget,
+      ...(beforeCost ? { priorUsage: beforeCost } : {}) }));
+    f.spinRunAndCost.mockImplementation(async () => {
+      completed++;
+      return { ...f.output, telemetry: { ...f.output.telemetry, ...currentNativeCostFixture(ids.slice(0, completed)),
+        trajectoryRef: `native:${ids[completed - 1]}` } };
+    });
+    return { ...f, ids };
+  }
+
+  it('keeps one gateway/workspace across fresh native sessions and charges only new source/request deltas', async () => {
+    const f = repeatedFixture(), adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      const result = await adapter.runAgent(f.input);
+      expect(f.config.startAssignment).toHaveBeenCalledOnce(); expect(f.egress.bindTaskEndpoint).toHaveBeenCalledOnce();
+      expect(f.ports.createDriver).toHaveBeenCalledTimes(2);
+      const grants = vi.mocked(f.assignment.issueSessionBudget!).mock.calls;
+      expect(grants.map(([budget]) => budget.maxUsd)).toEqual([0.4, 0.2]);
+      expect(grants.map(([budget]) => budget.maxTokens)).toEqual([1000, 984]);
+      expect(grants[0][1]).toBeNull(); expect(grants[1][1]).toMatchObject({ costUsd: 0.2 });
+      const spins = f.spinRunAndCost.mock.calls.map(([request]) => request);
+      expect(spins.every(request => request.checkout === f.assignment.checkout && request.task.problemStatement.includes('What is not done yet?'))).toBe(true);
+      expect(vi.mocked(f.ports.createDriver).mock.calls.map(([, , observations]) => observations.sessionBudget?.index)).toEqual([0, 1]);
+      expect(result).toMatchObject({ status: 'completed', modelCalls: 2, costUsd: 0.4,
+        tokensIn: 16, tokensOut: 4, tokensCacheRead: 10, tokensCacheWrite: 2,
+        armMeta: { repeatedSession: { stop: 'matched-cost', sessions: [{ costUsd: 0.2 }, { costUsd: 0.2 }] } } });
+      expect(f.assignment.stop).toHaveBeenCalledOnce(); expect(f.assignment.checkout.cleanup).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); }
+  });
+
+  it.each(['source', 'request'] as const)('stops fresh launches when cumulative %s accounting changes', async kind => {
+    const f = repeatedFixture();
+    const drive = f.spinRunAndCost.getMockImplementation()!;
+    f.spinRunAndCost.mockImplementation(async request => {
+      const result = await drive(request);
+      if (f.spinRunAndCost.mock.calls.length === 2) {
+        if (kind === 'source') result.telemetry.armMeta!.nativeCostAccounting.sources[0].sourceSha256 = '0'.repeat(64);
+        else vi.mocked(f.assignment.readRequestCensus!).mockImplementation(async () => ({
+          binding: { workspaceId: 'other' } as CurrentBenchTaskRequestCensus['binding'], populationSha256: 'f'.repeat(64), requests: [] }));
+      }
+      return result;
+    });
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      const result = await adapter.runAgent(f.input);
+      expect(result.status).toBe('error'); expect(f.spinRunAndCost).toHaveBeenCalledTimes(2);
+      expect(result.costUsd).toBe(0.4);
+      expect(result.error).toMatch(/non-monotone|request census/);
+      expect(f.assignment.stop).toHaveBeenCalledOnce(); expect(f.assignment.checkout.cleanup).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); }
+  });
+
+  it('stops once after a session overshoots the actual treatment spend', async () => {
+    const f = repeatedFixture(); f.assignment.repeatedSession = { treatmentCostUsd: 0.1, maxSessions: 4 };
+    const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
+    try {
+      const result = await adapter.runAgent(f.input);
+      expect(result.costUsd).toBe(0.2); expect(result.armMeta?.repeatedSession.stop).toBe('matched-cost');
+      expect(f.spinRunAndCost).toHaveBeenCalledOnce();
+    } finally { await adapter.stop(); }
+  });
+
   it('drives the stock native reference without persona, MCP rewrite or host hooks in its target', async () => {
     const f = fixture(); f.options.armId = 'baseline'; f.input.arm = 'baseline';
     const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);

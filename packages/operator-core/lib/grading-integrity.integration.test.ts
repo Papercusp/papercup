@@ -23,12 +23,16 @@ import {
   releasePendingGradingAudit,
   reservePendingGradingAudit,
 } from './grading-integrity';
-import { _closeGradingAuditSubjectMutexForTests } from './scorecards';
+import { _closeGradingAuditSubjectMutexForTests, isCurrentSourceAuditResponder } from './scorecards';
 import { closeTask, getTask, listTasks, registerTask } from './task-manager/store';
 
 const workspaceId = 'default';
 const taskLedgerMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/696-task-ledger.sql', import.meta.url));
 if (!existsSync(taskLedgerMigration)) throw new Error(`grading audit fixture migration missing: ${taskLedgerMigration}`);
+const consultThreadsMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/834-consult-threads.sql', import.meta.url));
+if (!existsSync(consultThreadsMigration)) throw new Error(`consult threads fixture migration missing: ${consultThreadsMigration}`);
+const consultCascadeCursorMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url));
+if (!existsSync(consultCascadeCursorMigration)) throw new Error(`consult cascade fixture migration missing: ${consultCascadeCursorMigration}`);
 const issueId = 'EI-25100000000000005';
 const replacementId = 'EI-25100000000000006';
 const now = new Date('2026-10-06T08:00:00.000Z');
@@ -62,6 +66,8 @@ beforeAll(async () => {
   prepared = postgres(db.url, { max: 2, onnotice: () => {} });
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL).simple();
   await applyMigrationForTest(db.sql, taskLedgerMigration);
+  await applyMigrationForTest(db.sql, consultThreadsMigration);
+  await applyMigrationForTest(db.sql, consultCascadeCursorMigration);
 });
 
 beforeEach(async () => {
@@ -117,6 +123,26 @@ describe.each([false, true])('grading audit JSON writes with prepare=%s', (prepa
       stampedAt: now.toISOString(), dispatchReservation: reservation, lastDispatchReservation: reservation,
     });
   });
+});
+
+it('binds a no-consult direct fallback lease to the live grading task owner', async () => {
+  await seed(issueId, { state: 'pending', dispatchReservation: reservation });
+  const task = await registerTask({
+    class: 'agent-session', title: 'direct fallback grading auditor', argv: [],
+    launchedBy: GRADING_AUDIT_DISPATCH_ACTOR, harnessSlug: 'papercusp',
+    detail: { label: reservation.key, coordOwnerId: 'su-dispatched-auditor' },
+  }, { workspaceId }, db.sql);
+
+  expect(await isCurrentSourceAuditResponder(issueId, reservation, 'su-dispatched-auditor'))
+    .toBe(true);
+  expect(await isCurrentSourceAuditResponder(issueId, reservation, 'su-unrelated-session'))
+    .toBe(false);
+
+  await closeTask(task.taskId, { state: 'killed', exitReason: 'fixture complete' }, db.sql, {
+    emitTerminal: async () => {},
+  });
+  expect(await isCurrentSourceAuditResponder(issueId, reservation, 'su-dispatched-auditor'))
+    .toBe(false);
 });
 
 it('retires cancelled missions from real private ledgers and preserves a pending replacement', async () => {

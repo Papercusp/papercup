@@ -3017,6 +3017,9 @@ export async function emitScorecard(
         ) {
           await markGradingAuditAwaitingReemit(args.subject.ref, gradedObservation.gradingAudit, {
             reason: replayConsistencyError.error,
+            // Pending stamps intentionally have no auditor yet; bind this
+            // compare-and-set to the trusted owner from the handler identity.
+            responderOwnerId: input.createdBy,
           });
         }
         return { ok: false as const, ...replayConsistencyError };

@@ -53,7 +53,7 @@ import { defaultBenchResultsDir } from './preserved-runs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import { currentBenchmarkProtocolSchema, type CurrentBenchmarkProtocol } from './reproducibility/schema';
 import { canonicalJson } from './reproducibility/canonical-json';
-import { getPrereg } from './reproducibility/store';
+import { getPrereg, listRunResults } from './reproducibility/store';
 import { requireCommittedPreregistration } from './reproducibility/prereg';
 import { resolveBenchWorkspace } from './bench-workspace';
 import { runArmGeneration } from './arm-generation';
@@ -62,7 +62,7 @@ import { FULL_SPINE_BLUEPRINT, type BenchHarnessDriver } from './run-loop';
 import { createCurrentSuBenchHarness, currentBenchAssignmentId, currentBenchGatewayController,
   currentBenchProviderAuthenticator, currentBenchObservationReader, recoverCurrentBenchRun,
   currentBenchWorkloadProviderInputCapture, currentBenchWorkloadProviderInputReader, currentBenchWorkloadLockStateReader,
-  currentBenchCodexRoute, requireCurrentBenchHostBinding, currentBenchNativeSessionCostDelta,
+  currentBenchCodexRoute, requireCurrentBenchHostBinding, currentBenchNativeSessionCostDelta, requireCurrentBenchNativeRunCost,
   currentBenchWorkloadToolResultReader, currentBenchWorkloadLockGrantReader,
   type CurrentBenchLockStateAllocation, type CurrentBenchNativeRunCost,
   type CurrentSuBenchOptions, type CurrentBenchObservationReaderOptions, type CurrentBenchAccountingBinding } from './current-su';
@@ -664,7 +664,7 @@ function currentBenchResources(protocol: CurrentBenchmarkProtocol): LearningRese
 
 /** The shared production assignment authority used by host and in-container native runs. */
 export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): Promise<
-  Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls' | 'readRequestCensus'>> {
+  Pick<FrontierSweNativeAssignment, 'options' | 'observations' | 'stop' | 'readModelCalls' | 'readRequestCensus' | 'issueSessionBudget'>> {
   const { options, protocol, task, context, scope, resources, loopId } = input;
   const capture = await currentBenchTaskProviderCapture(input);
   const currentArm = protocol.arms.find(arm => arm.id === options.armId)!;
@@ -696,7 +696,7 @@ export async function startCurrentBenchTaskAssignment(input: CurrentTaskInput): 
       requireCurrentBenchHostBinding(observations, options);
       return census;
     };
-    return { options, observations, stop, readRequestCensus,
+    return { options, observations, stop, readRequestCensus, issueSessionBudget: host.issueSessionBudget,
       readModelCalls: async () => (await readRequestCensus()).requests.length };
   } catch (error) { await stop(); throw error; }
 }
@@ -809,6 +809,35 @@ async function liveCurrentTask(input: CurrentTaskInput) {
   } catch (error) { await assignment.stop(); throw error; }
 }
 
+/** Read the paired task's actual, completely accounted native spend from the
+ * existing result ledger. Equal frozen ceilings alone cannot establish a match. */
+export async function readCurrentBenchRepeatedSessionControl(
+  input: Pick<CurrentTaskInput, 'options' | 'protocol' | 'task' | 'scope'>,
+  read = listRunResults,
+): Promise<NonNullable<FrontierSweNativeAssignment['repeatedSession']> | undefined> {
+  const { options, protocol, task, scope } = input;
+  const arm = protocol.arms.find(arm => arm.id === options.armId);
+  const repeated = arm?.control?.repeatedSession;
+  if (arm?.control?.topology !== 'repeated-session') return undefined;
+  if (options.armId !== 'baseline' || !repeated) throw new Error('Repeated sessions require the frozen stock baseline.');
+  const treatment = protocol.arms.find(arm => arm.id === repeated.matchedCostOf);
+  const rows = (await read({ ...scope, runId: protocol.runId, suite: task.benchmark })).filter(row =>
+    row.taskId === task.instanceId && row.arm === repeated.matchedCostOf && row.seed === options.seed);
+  const row = rows[0];
+  if (!treatment || rows.length !== 1 || row.runId !== protocol.runId || row.suite !== task.benchmark ||
+      row.preregHash !== options.preregistration.preregHash || row.modelId !== treatment.model ||
+      row.priceTableVersion !== protocol.priceSchedule.version || row.harnessVersion !== treatment.runtime.sourceRevision ||
+      row.graderFamily !== protocol.grader.family || row.graderVersion !== protocol.grader.version ||
+      row.generationStatus === 'error' || row.armMeta?.costUsdMeasurementMissing === true)
+    throw new Error('Repeated sessions require one completed paired treatment with matching frozen provenance.');
+  const accounting = requireCurrentBenchNativeRunCost({ ...row,
+    tokensCacheRead: row.tokensCacheRead ?? 0, tokensCacheWrite: row.tokensCacheWrite ?? 0,
+    costUsdMeasurementMissing: false, armMeta: row.armMeta }).armMeta.nativeCostAccounting;
+  if (accounting.preregHash !== options.preregistration.preregHash || accounting.priceTableVersion !== protocol.priceSchedule.version)
+    throw new Error('Paired treatment native source accounting differs from its frozen protocol.');
+  return Object.freeze({ treatmentCostUsd: accounting.normalizedCostUsd, maxSessions: repeated.maxSessions });
+}
+
 /** Observer metadata lives on the host; the solver's repository remains only in /app. */
 export async function startFrontierSweCurrentAssignment(
   input: RunAgentInput<FrontierSweEnvHandle>,
@@ -816,6 +845,7 @@ export async function startFrontierSweCurrentAssignment(
   ports: {
     start?: typeof startCurrentBenchTaskAssignment;
     observer?: (task: BenchTask) => Promise<TaskCheckout>;
+    readResults?: typeof listRunResults;
   } = {},
 ): Promise<FrontierSweNativeAssignment> {
   const { task, handle, attemptBudget } = input;
@@ -844,6 +874,7 @@ export async function startFrontierSweCurrentAssignment(
   }
   options.driveTimeoutMs = Math.min(options.driveTimeoutMs ?? Infinity,
     remaining.maxWallClockMs ?? arm.generationBudget.maxWallClockMs);
+  const repeatedSession = await readCurrentBenchRepeatedSessionControl({ options, protocol, task, scope: host.scope }, ports.readResults);
   const checkout = await (ports.observer ?? (async (task: BenchTask) => {
     const parent = defaultBenchResultsDir();
     mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -853,7 +884,8 @@ export async function startFrontierSweCurrentAssignment(
   }))(task);
   try {
     const assignment = await (ports.start ?? startCurrentBenchTaskAssignment)({ ...host, options, protocol, task, checkout });
-    return { ...assignment, checkout, generationBudget: { ...arm.generationBudget } };
+    return { ...assignment, checkout, generationBudget: { ...arm.generationBudget },
+      ...(repeatedSession ? { repeatedSession } : {}) };
   } catch (error) { await checkout.cleanup(); throw error; }
 }
 

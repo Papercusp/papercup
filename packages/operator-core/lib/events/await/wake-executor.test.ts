@@ -1198,10 +1198,18 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
     const sock = '/tmp/stale-claimable.sock';
     const pendingHostWrites = new Map<string, string>();
     let itemState = 'open';
+    let cancellationAttempts = 0;
     const injectPsuHostWithConfirmation = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(
       async (_sock, message) => {
         const deliveryId = String(message.deliveryId ?? '');
         if (message.mode === 'delivery-cancel') {
+          cancellationAttempts += 1;
+          if (cancellationAttempts === 1) {
+            return { ok: true, confirmation: 'acked' as const, reason: 'cancel-requested' };
+          }
+          if (cancellationAttempts === 2) {
+            return { ok: false, confirmation: 'acked' as const, reason: 'delivery-already-writing' };
+          }
           const cancelled = pendingHostWrites.delete(deliveryId);
           return {
             ok: true,
@@ -1244,11 +1252,39 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
       attempts: 2,
       lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
     };
-    await expect(executeWake(staleRetry, d)).resolves.toEqual({ kind: 'delivered', channel: 'inbox' });
+    const requestOnly = await executeWake(staleRetry, d);
+    expect(requestOnly).toMatchObject({
+      kind: 'park', hostCommitPending: true, reason: expect.stringContaining('cancel-requested'),
+    });
+    expect(pendingHostWrites.has('782698')).toBe(true);
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+
+    const writingRetry = {
+      ...staleRetry,
+      lastError: requestOnly.kind === 'park' ? requestOnly.reason : staleRetry.lastError,
+    };
+    const writing = await executeWake(writingRetry, d);
+    expect(writing).toMatchObject({
+      kind: 'park', hostCommitPending: true, reason: expect.stringContaining('delivery-already-writing'),
+    });
+    expect(pendingHostWrites.has('782698')).toBe(true);
+    expect(sendCoordMessage).not.toHaveBeenCalled();
+
+    const receiptRetry = {
+      ...writingRetry,
+      lastError: writing.kind === 'park' ? writing.reason : writingRetry.lastError,
+    };
+    await expect(executeWake(receiptRetry, d)).resolves.toEqual({ kind: 'delivered', channel: 'inbox' });
 
     expect(injectPsuHostWithConfirmation.mock.calls.map((call) => call[1].mode)).toEqual([
-      'turn', 'delivery-cancel',
+      'turn', 'delivery-cancel', 'delivery-cancel', 'delivery-cancel',
     ]);
+    expect(injectPsuHostWithConfirmation.mock.calls[1]?.[1]).toMatchObject({
+      mode: 'delivery-cancel', ownerId, deliveryId: '782698',
+    });
+    expect(injectPsuHostWithConfirmation.mock.calls[2]?.[1]).toMatchObject({
+      mode: 'delivery-cancel', ownerId, deliveryId: '782698',
+    });
     expect(pendingHostWrites.has('782698')).toBe(false);
     expect(sendCoordMessage).toHaveBeenCalledTimes(1);
   });

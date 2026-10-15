@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import { currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { currentProtocolFixture, controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import { requireCurrentBenchmarkAssignment } from './reproducibility/schema';
-import { startFrontierSweCurrentAssignment, type CurrentTaskInput } from './run-launcher';
+import { startFrontierSweCurrentAssignment, readCurrentBenchRepeatedSessionControl, type CurrentTaskInput } from './run-launcher';
 import type { RunAgentInput } from './run-topology';
 import type { FrontierSweEnvHandle } from './frontier-swe-seam';
 import type { TaskCheckout } from './types';
@@ -37,6 +37,42 @@ function fixture() {
 }
 
 describe('FrontierSWE production assignment binding', () => {
+  function pairedFixture() {
+    const f = fixture(), protocol = controlledProtocolFixture();
+    protocol.arms.find(arm => arm.id === 'repeated-session')!.id = 'baseline';
+    f.host.protocol = protocol; f.host.options.armId = 'baseline'; f.host.options.runId = protocol.runId;
+    f.host.options.preregistration.config = protocol;
+    const treatment = protocol.arms.find(arm => arm.id === 'coordinated')!;
+    const cost = currentNativeCostFixture(['11111111-1111-4111-8111-111111111111']);
+    const row = { ...cost, runId: protocol.runId, taskId: 't1', arm: treatment.id, seed: 1,
+      suite: 'frontier-swe', preregHash: f.host.options.preregistration.preregHash, modelId: treatment.model,
+      harnessVersion: treatment.runtime.sourceRevision, priceTableVersion: protocol.priceSchedule.version,
+      graderFamily: protocol.grader.family, graderVersion: protocol.grader.version, generationStatus: 'completed' };
+    const read = vi.fn(async () => [row] as unknown as Awaited<ReturnType<typeof import('./reproducibility/store').listRunResults>>);
+    return { ...f, row, read, input: { ...f.host, task: f.input.task } };
+  }
+
+  it('reads the exact paired treatment actual spend, including every source, rather than its frozen cap', async () => {
+    const f = pairedFixture();
+    const result = await readCurrentBenchRepeatedSessionControl(f.input, f.read);
+    expect(result).toEqual({ treatmentCostUsd: 0.2, maxSessions: 4 });
+    expect(f.read).toHaveBeenCalledWith({ workspaceId: 'benchmarks', runId: f.host.protocol.runId, suite: 'frontier-swe' });
+  });
+
+  it.each(['missing', 'duplicate', 'foreign-protocol', 'unmeasured', 'incomplete-source', 'incomplete-requests', 'wrong-price'] as const)
+    ('refuses %s paired spend before opening another native assignment', async kind => {
+      const f = pairedFixture();
+      if (kind === 'missing') f.read.mockResolvedValue([]);
+      if (kind === 'duplicate') f.read.mockResolvedValue([f.row, f.row] as never);
+      if (kind === 'foreign-protocol') f.row.preregHash = 'b'.repeat(64);
+      if (kind === 'unmeasured') Object.assign(f.row.armMeta, { costUsdMeasurementMissing: true });
+      if (kind === 'incomplete-source') f.row.armMeta.nativeCostAccounting.sourceCensusComplete = false;
+      if (kind === 'incomplete-requests') f.row.armMeta.nativeCostAccounting.attemptAccountingComplete = false;
+      if (kind === 'wrong-price') f.row.priceTableVersion = 'other-prices';
+      await expect(readCurrentBenchRepeatedSessionControl(f.input, f.read)).rejects.toThrow();
+      expect(f.start).not.toHaveBeenCalled();
+    });
+
   it('binds the frozen stock reference through the same task, caps and accounting authority', async () => {
     const f = fixture(); const arm = f.protocol.arms[1];
     f.host.options = { ...f.host.options, armId: arm.id, model: arm.model, effort: arm.effort as 'high', account: arm.account };

@@ -2568,7 +2568,7 @@ describe('writeCodexLockHooks — launch-prose edit-time signal', () => {
     const config = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
     const entries = config.hooks.PostToolUse.filter((entry: any) => entry.hooks.some((h: any) => h.command.includes('posttooluse-launch-prose-budget-nudge.mjs')));
     expect(entries).toHaveLength(1);
-    for (const tool of ['apply_patch', 'Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file', 'Bash']) {
+    for (const tool of ['apply_patch', 'Edit', 'Write', 'MultiEdit', 'write_file', 'edit_file', 'Bash', 'exec_command', 'shell_command', 'capability:edit', 'capability:patch', 'capability:bash', 'tools:invoke', 'mcp__papercusp_su__capability_bash', 'mcp__papercusp_su__capability_patch', 'mcp__papercusp_su__tools_invoke']) {
       expect(new RegExp(entries[0].matcher).test(tool), tool).toBe(true);
     }
     expect(new RegExp(entries[0].matcher).test('Read')).toBe(false);

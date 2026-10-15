@@ -1,4 +1,21 @@
 import { BENCHMARK_CAPABILITIES, type ArmControl, type CurrentBenchmarkProtocol } from './schema';
+import type { CurrentBenchNativeRunCost } from '../current-su';
+
+/** Closed native receipts, with separate uncached/cache tokens and billed dollars. */
+export function currentNativeCostFixture(sessionIds: string[], preregHash = 'a'.repeat(64)): CurrentBenchNativeRunCost {
+  const sources = sessionIds.map((nativeSessionId, index) => ({ nativeSessionId,
+    sourceSha256: String(index + 1).padStart(64, '0'), sourceComplete: true,
+    usageEventKeys: [`${nativeSessionId}:usage`], nativeTurnIds: [`${nativeSessionId}:turn`],
+    tokensIn: 8, tokensOut: 2, tokensCacheRead: 5, tokensCacheWrite: 1, turns: 1,
+    normalizedCostUsd: 0.2, billedKnownSubtotalUsd: 0.4, billedCostUsd: 0.4 }));
+  const n = sources.length;
+  return { tokensIn: n * 8, tokensOut: n * 2, tokensCacheRead: n * 5, tokensCacheWrite: n,
+    costUsd: n * 0.2, turns: n, costUsdMeasurementMissing: false,
+    armMeta: { nativeCostAccounting: { basis: 'frozen-normalized-native-source', priceTableVersion: 'frozen-prices-v1', preregHash,
+      normalizedCostUsd: n * 0.2, billedKnownSubtotalUsd: n * 0.4, billedCostUsd: n * 0.4,
+      sourceCensusComplete: true, attemptAccountingComplete: true, missingSources: 0, missingBills: 0,
+      participantTaskIds: sessionIds.map(id => `task:${id}`), sources } } };
+}
 
 /** Every capability set to one toggle. */
 export function allCapabilities(toggle: 'on' | 'off'): ArmControl['capabilities'] {

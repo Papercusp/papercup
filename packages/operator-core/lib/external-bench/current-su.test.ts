@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
   currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
-  liveCurrentSuBenchPorts, recoverCurrentBenchRun,
+  liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchProviderAuthenticator,
@@ -366,7 +366,7 @@ describe('source-bound current benchmark cost', () => {
   });
 });
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
-import { allCapabilities, currentProtocolFixture } from './reproducibility/_protocol-test-fixture';
+import { allCapabilities, currentProtocolFixture, controlledProtocolFixture, currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import { GatewayRequestTelemetry } from '../inference-gateway/request-stage-telemetry';
 import type { RuntimeVintageRow } from '../runtime-vintage';
 import { processMonotonicClock } from '../process-monotonic-clock';
@@ -2044,5 +2044,176 @@ describe('current benchmark restart and live binding', () => {
     expect(observeIdentity).toHaveBeenCalledWith(task);
     observation.worker.workspaceId = 'other';
     expect(await ports.readIdentity(task)).toBeNull();
+  });
+});
+
+describe('P-019 host-issued fresh native session allowances', () => {
+  async function sessionFixture() {
+    const protocol = controlledProtocolFixture();
+    protocol.arms.find(arm => arm.id === 'repeated-session')!.id = 'baseline';
+    for (const arm of protocol.arms) arm.generationBudget.maxTokens = 100;
+    const opts = { ...options, armId: 'baseline', preregistration: { preregHash: 'a'.repeat(64), config: protocol } };
+    const controller = currentBenchGatewayController({ workspaceId: opts.workspaceId, loopId: 'session-budget-loop',
+      token: 'b'.repeat(64), preregHash: opts.preregistration.preregHash, protocol, armId: opts.armId, taskId: 't1', seed: 1,
+      resources: { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50, usdPerArm: 3, maxOpenUsd: 3,
+        totalTokensPerArm: 100, wallClockMs: 1000, wallClockMsPerArm: 100,
+        armIds: protocol.arms.map(arm => currentBenchAssignmentId(protocol.runId, arm.id, 't1', 1)) },
+      authenticateProvider: async () => null });
+    const stop = vi.fn(async () => {});
+    const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32109, stop } as never));
+    const admit = vi.fn(async () => ({ admitted: true, receiptRef: 'host-admission' }));
+    const observation = (sessionBudget?: ReturnType<typeof hosted.issueSessionBudget>) =>
+      ({ ...hosted, sessionBudget, admit, observeIdentity: async () => null });
+    const ports = (sessionBudget?: ReturnType<typeof hosted.issueSessionBudget>) =>
+      liveCurrentSuBenchPorts({ workspaceId: opts.workspaceId } as PapercuspUnifiedToolContext, observation(sessionBudget), opts);
+    const budget = { maxUsd: 2, maxTokens: 80, maxWallClockMs: 75 };
+    return { protocol, opts, hosted, admit, ports, observation, budget, stop };
+  }
+
+  it('pins tightened execution caps separately from the frozen protocol and consumes one native start', async () => {
+    const f = await sessionFixture();
+    try {
+      const receipt = f.hosted.issueSessionBudget(f.budget), ports = f.ports(receipt);
+      f.budget.maxUsd = 1; // Caller mutation cannot change the issued allowance.
+      expect(Object.isFrozen(receipt)).toBe(true); expect(Object.isFrozen(receipt.budget)).toBe(true);
+      expect(ports.verifyGenerationBudget!(receipt.budget, 't1')).toMatchObject({
+        frozenBudget: { maxUsd: 3, maxTokens: 100, maxWallClockMs: 100 }, topology: 'repeated-session', sessionBudget: receipt });
+      expect(() => ports.verifyGenerationBudget!({ ...receipt.budget, maxUsd: 3 }, 't1')).toThrow(/allowance/);
+      expect(() => beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle)).toThrow(/not admitted/);
+      await ports.admit(handle, receipt.budget, 't1');
+      await expect(ports.admit(handle, receipt.budget, 't1')).rejects.toThrow(/already admitted/);
+      expect(() => beginCurrentBenchNativeSession(f.observation(receipt), f.opts, { ...handle, slug: 'other' })).toThrow(/not admitted/);
+      const spawn = beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle);
+      expect(() => beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle)).toThrow(/already used/);
+      spawn(); expect(() => spawn()).toThrow(/already spawned/);
+      await ports.releaseGateway!(); expect(f.stop).not.toHaveBeenCalled();
+      expect(() => ports.verifyGenerationBudget!(receipt.budget, 't1')).toThrow(/active host-issued/);
+      const next = f.hosted.issueSessionBudget({ ...f.budget, maxUsd: 0.5 });
+      expect(next.index).toBe(1); expect(next.binding).toEqual(receipt.binding);
+      expect(() => beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle)).toThrow(/active host-issued/);
+    } finally { await f.hosted.stop(); }
+    expect(f.stop).toHaveBeenCalledOnce();
+  });
+
+  it.each(['missing', 'copied', 'foreign'] as const)('refuses a %s allowance before admission', async mode => {
+    const f = await sessionFixture(), peer = await sessionFixture();
+    try {
+      const receipt = f.hosted.issueSessionBudget(f.budget);
+      const invalid = mode === 'missing' ? undefined : mode === 'copied' ? { ...receipt } : peer.hosted.issueSessionBudget(peer.budget);
+      await expect(f.ports(invalid).admit(handle, f.budget, 't1')).rejects.toThrow(/active host-issued/);
+      expect(f.admit).not.toHaveBeenCalled();
+    } finally { await f.hosted.stop(); await peer.hosted.stop(); }
+  });
+
+  it.each([
+    { maxUsd: 4, maxTokens: 80, maxWallClockMs: 75 },
+    { maxUsd: 2, maxTokens: 101, maxWallClockMs: 75 },
+    { maxUsd: 2, maxTokens: 80, maxWallClockMs: 101 },
+    { maxUsd: 2, maxTokens: 80 },
+    { maxUsd: 0, maxTokens: 80, maxWallClockMs: 75 },
+    { maxUsd: NaN, maxTokens: 80, maxWallClockMs: 75 },
+    { maxUsd: 2, maxTokens: 1.5, maxWallClockMs: 75 },
+    { maxUsd: 2, maxTokens: 80, maxWallClockMs: 75, unrelated: 1 },
+  ])('refuses invalid or widened remaining caps %j without consuming a slot', async budget => {
+    const f = await sessionFixture();
+    try {
+      expect(() => f.hosted.issueSessionBudget(budget)).toThrow(/missing, invalid or wider/);
+      expect(f.hosted.issueSessionBudget(f.budget).index).toBe(0);
+    } finally { await f.hosted.stop(); }
+  });
+
+  it('refuses overlap, honors the preregistered session limit and revokes on host shutdown', async () => {
+    const f = await sessionFixture();
+    try {
+      for (let i = 0; i < 4; i++) {
+        const receipt = f.hosted.issueSessionBudget(f.budget);
+        expect(receipt.index).toBe(i);
+        expect(() => f.hosted.issueSessionBudget(f.budget)).toThrow(/overlapping or exhausted/);
+        await f.ports(receipt).releaseGateway!();
+      }
+      expect(() => f.hosted.issueSessionBudget(f.budget)).toThrow(/exhausted/);
+    } finally { await f.hosted.stop(); }
+    expect(() => f.hosted.issueSessionBudget(f.budget)).toThrow(/unavailable/);
+  });
+
+  it('rejects retirement during asynchronous admission and before native process creation', async () => {
+    const f = await sessionFixture();
+    try {
+      const receipt = f.hosted.issueSessionBudget(f.budget), ports = f.ports(receipt);
+      let finish!: () => void;
+      f.admit.mockImplementation(async () => { await new Promise<void>(resolve => { finish = resolve; });
+        return { admitted: true, receiptRef: 'late-admission' }; });
+      const pending = ports.admit(handle, receipt.budget, 't1');
+      expect(() => beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle)).toThrow(/not admitted/);
+      await ports.releaseGateway!(); finish();
+      await expect(pending).rejects.toThrow(/active host-issued/);
+      const next = f.hosted.issueSessionBudget(f.budget), nextPorts = f.ports(next);
+      f.admit.mockResolvedValue({ admitted: true, receiptRef: 'next-admission' });
+      await nextPorts.admit(handle, next.budget, 't1');
+      const spawn = beginCurrentBenchNativeSession(f.observation(next), f.opts, handle);
+      await nextPorts.releaseGateway!();
+      expect(() => spawn()).toThrow(/active host-issued/);
+    } finally { await f.hosted.stop(); }
+  });
+
+  it('subtracts already charged usage for live caps while retaining cumulative final accounting', async () => {
+    const f = await sessionFixture();
+    try {
+      const before = currentNativeCostFixture(['11111111-1111-4111-8111-111111111111']);
+      const receipt = f.hosted.issueSessionBudget({ maxUsd: 0.15, maxTokens: 20, maxWallClockMs: 75 }, before);
+      expect(Object.isFrozen(receipt.priorUsage)).toBe(true);
+      before.costUsd = 2;
+      expect(receipt.priorUsage?.costUsd).toBe(0.2);
+      const live = f.ports(receipt), driver = fixture(f.opts);
+      const { launch, ...common } = driver.ports;
+      common.verifyGenerationBudget = live.verifyGenerationBudget;
+      common.admit = live.admit; common.releaseGateway = live.releaseGateway;
+      common.verifyPreregistration = async () => ({ preregHash: f.opts.preregistration.preregHash,
+        gitCommitSha: 'a'.repeat(40), receiptRef: 'prereg:committed' });
+      common.getTask = vi.fn().mockResolvedValueOnce({ ...driver.row, state: 'running', exitCode: null }).mockResolvedValue(driver.row);
+      common.sleep = vi.fn(async () => {});
+      const launchNative = vi.fn(async () => {
+        beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle)();
+        return { agentStarted: true, tasks: [{ taskId: driver.row.taskId }] };
+      });
+      const result = await currentStockBenchHarnessDriver(driver.lifecycle, { ...common, launchNative }, f.opts)
+        .spinRunAndCost({ ...request, blueprintId: 'native-codex', budget: receipt.budget });
+      expect(common.sleep).toHaveBeenCalledOnce(); expect(result.telemetry.stopReason).toBe('done');
+      expect(result.telemetry.costUsd).toBe(0.25); expect(launch).not.toHaveBeenCalled();
+    } finally { await f.hosted.stop(); }
+  });
+
+  it('refuses a foreign or incomplete prior usage receipt before issuing an allowance', async () => {
+    const f = await sessionFixture();
+    try {
+      const before = currentNativeCostFixture(['11111111-1111-4111-8111-111111111111']);
+      before.armMeta.nativeCostAccounting.attemptAccountingComplete = false;
+      expect(() => f.hosted.issueSessionBudget(f.budget, before)).toThrow(/incomplete/);
+      before.armMeta.nativeCostAccounting.attemptAccountingComplete = true;
+      before.armMeta.nativeCostAccounting.preregHash = 'b'.repeat(64);
+      expect(() => f.hosted.issueSessionBudget(f.budget, before)).toThrow(/frozen protocol/);
+      expect(f.hosted.issueSessionBudget(f.budget).index).toBe(0);
+    } finally { await f.hosted.stop(); }
+  });
+
+  it('uses the stock driver with the original protocol pins and a separately admitted reduced budget', async () => {
+    const f = await sessionFixture();
+    try {
+      const receipt = f.hosted.issueSessionBudget(f.budget), live = f.ports(receipt), driver = fixture(f.opts);
+      const { launch, ...common } = driver.ports;
+      common.verifyGenerationBudget = live.verifyGenerationBudget;
+      common.admit = live.admit; common.releaseGateway = live.releaseGateway;
+      common.verifyPreregistration = async () => ({ preregHash: f.opts.preregistration.preregHash,
+        gitCommitSha: 'a'.repeat(40), receiptRef: 'prereg:committed' });
+      const launchNative = vi.fn(async () => {
+        beginCurrentBenchNativeSession(f.observation(receipt), f.opts, handle)();
+        return { agentStarted: true, tasks: [{ taskId: driver.row.taskId }] };
+      });
+      const result = await currentStockBenchHarnessDriver(driver.lifecycle, { ...common, launchNative }, f.opts)
+        .spinRunAndCost({ ...request, blueprintId: 'native-codex', budget: receipt.budget });
+      expect(result.telemetry.stopReason).toBe('done'); expect(launchNative).toHaveBeenCalledOnce();
+      expect(launch).not.toHaveBeenCalled(); expect(f.stop).not.toHaveBeenCalled();
+      expect(result.telemetry.armMeta?.currentExecution).toMatchObject({ sessionBudget: receipt });
+    } finally { await f.hosted.stop(); }
   });
 });
