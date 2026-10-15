@@ -10,7 +10,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 const SCRIPT = process.env.PROBE_SCRIPT
   ? resolve(process.env.PROBE_SCRIPT)
   : join(dirname(fileURLToPath(import.meta.url)), 'measure-tool-output.mjs');
-const { capFor, contentBytes, measure, compareMeasurementWindows, renderMeasurementComparison, verifyMeasurementReportReadback } = await import(pathToFileURL(SCRIPT).href);
+// A runtime-path import is untyped (`any`); the swapped probe script must honour the same surface as
+// the canonical module, so type it as that module rather than losing every downstream type.
+type MeasureToolOutputModule = typeof import('./measure-tool-output.mjs');
+const { capFor, contentBytes, measure, compareMeasurementWindows, renderMeasurementComparison, verifyMeasurementReportReadback } =
+  await import(pathToFileURL(SCRIPT).href) as MeasureToolOutputModule;
 const NOW = Date.parse('2026-10-15T09:00:00Z');
 const START = NOW - 24 * 3600_000;
 const base = NOW - 600_000;
@@ -31,7 +35,7 @@ function fixture(claude: unknown[] = [], codex: unknown[] = []) {
   return { home, roots, claudeFile, codexFile };
 }
 const assistant = (id: string, seconds: number, blocks: unknown[] = []) => ({ timestamp: time(seconds), type: 'assistant', message: { id, content: blocks } });
-const use = (id: string, name = 'Bash', input = { command: 'cat file' }) => ({ type: 'tool_use', id, name, input });
+const use = (id: string, name = 'Bash', input: Record<string, unknown> = { command: 'cat file' }) => ({ type: 'tool_use', id, name, input });
 const result = (id: string, content: unknown, seconds: number) => ({
   timestamp: time(seconds), type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] },
 });
@@ -294,7 +298,7 @@ describe('measure-tool-output raw transcript instrument', () => {
     const boundary = result('a', 'in', 0); boundary.timestamp = new Date(START).toISOString();
     const old = result('b', 'old', 0); old.timestamp = new Date(START - 1).toISOString();
     const future = result('c', 'future', 0); future.timestamp = new Date(NOW + 1).toISOString();
-    const unknown = result('d', 'unknown', 0); delete unknown.timestamp;
+    const { timestamp: _withoutTimestamp, ...unknown } = result('d', 'unknown', 0);
     const f = fixture([oldCall, boundary, boundary, old, future, unknown, '{bad json']);
     const r = await measure([...f.roots, f.roots[0]], 24, { now: NOW });
     expect(r.measuredAt).toBe(new Date(NOW).toISOString());

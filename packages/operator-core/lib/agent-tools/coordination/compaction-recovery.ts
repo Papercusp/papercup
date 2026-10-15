@@ -320,7 +320,7 @@ export async function buildCompactionRecovery(
       const { getFleetHeadcountTarget } = await import('../../agent-fleets-store');
       const profile = await getFleetHeadcountTarget(workspaceId, control.state.route.fleet);
       const profilePlan = profile?.config.plan?.trim();
-      if (profilePlan) {
+      if (profile && profilePlan) {
         scopedPlan = profilePlan;
         scopedHarness = scopedHarness ?? profile.config.harness ?? null;
       }
