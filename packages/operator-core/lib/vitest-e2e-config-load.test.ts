@@ -13,6 +13,7 @@ describe('operator e2e config loading', () => {
     try {
       const loaded = await loadConfigFromFile(
         { command: 'serve', mode: 'test' }, resolve(import.meta.dirname, `../vitest.${layer}.config.ts`),
+        undefined, undefined, undefined, 'native',
       );
       expect(loaded!.config.test!.provide!.papercuspTestLayer).toBe(layer);
       expect(loaded!.config.test!.reporters).toEqual(expect.arrayContaining([

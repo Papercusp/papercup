@@ -23,6 +23,7 @@ import {
   ACTIVE_TOOL_CALL_WINDOW_MS,
   deriveClaimHealth,
   deriveActivity,
+  isBroadClaimableParkMaskingStalledClaim,
   downgradeEndedHolders,
   groupByAgent,
   HOUSEKEEPING_TOOL_NAMES,
@@ -423,6 +424,19 @@ describe('summarizeOrphan — WI-5975', () => {
     expect(health.evidence).not.toContainEqual(
       expect.objectContaining({ writer: 'events_await', signal: 'exact_dependency_waits' }),
     );
+  });
+
+  it('the handler suppression guard only matches a stalled claim with a broad parked watch', () => {
+    expect(
+      isBroadClaimableParkMaskingStalledClaim('parked-awaiting-capability', ['work-item:claimable'], true),
+    ).toBe(true);
+    expect(
+      isBroadClaimableParkMaskingStalledClaim('parked-awaiting-capability', ['work-item:claimable'], false),
+    ).toBe(false);
+    expect(
+      isBroadClaimableParkMaskingStalledClaim('parked-awaiting-capability', ['fleet:bar:gate'], true),
+    ).toBe(false);
+    expect(isBroadClaimableParkMaskingStalledClaim('waiting', ['work-item:claimable'], true)).toBe(false);
   });
 
   it('the oracle OUTRANKS the row heartbeat in both directions', () => {

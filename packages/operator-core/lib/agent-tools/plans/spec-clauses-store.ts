@@ -345,6 +345,7 @@ export function differsOnlyInAcceptanceProvenance(
 interface IdentityRow {
   source_val_id: string | null;
   current_revision: number;
+  plan_item_id?: string | null;
   // Carried from the CURRENT revision so an omitted `sourceBar` can ride its
   // lineage forward instead of writing NULL. Optional because the post-insert
   // race re-read selects only the identity columns.
@@ -455,7 +456,7 @@ export async function setSpecClause(
     }
 
     const identities = await tx<IdentityRow[]>`
-      SELECT c.source_val_id, c.current_revision,
+      SELECT c.source_val_id, c.current_revision, r.plan_item_id,
              r.source_bar_key, r.source_bar_hash, r.source_bar_set_hash,
              r.source_rubric_slug, r.source_rubric_revision, r.evidence_plane,
              r.acceptance_ref
@@ -700,6 +701,16 @@ export async function setSpecClause(
     // P-003 (verification-system-improvements-2026-10-10): the VAL-* assertion store is
     // retired. A clause keeps its source_val_id lineage on plan_spec_clauses; it is no
     // longer mirrored into the retired store.
+
+    if (actualRevision > 0) {
+      const { propagateClauseAmendment } = await import('./clause-amendment-propagation');
+      await propagateClauseAmendment(tx, {
+        workspaceId: scope.workspaceId, harnessSlug: scope.harnessSlug, planSlug,
+        specId: input.specId, planItemId: normalized.planItemId,
+        priorPlanItemId: identity?.plan_item_id ?? undefined,
+        oldRevision: actualRevision, newRevision: revision, actorId: input.actorId,
+      });
+    }
 
     return {
       status: actualRevision === 0 ? 'created' : 'revised',

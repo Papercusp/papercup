@@ -8268,7 +8268,8 @@
         "doc-steward",
         "release-fixer",
         "merge-resolver",
-        "content-fixer"
+        "content-fixer",
+        "judge"
       ],
       "guidance": {
         "when": "Debugging identity — \"what ownerId am I?\" before relying on lock or message behaviour.",

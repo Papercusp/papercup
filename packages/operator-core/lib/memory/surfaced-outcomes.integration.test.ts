@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { stampSurfaced, _resetSessionEpochLedgerForTests } from './session-epoch-ledger';
 import { loadOutcomeCounts, recordSurfacedOutcome } from './surfaced-outcomes';
@@ -9,10 +8,6 @@ describe('surfaced outcomes on PostgreSQL', () => {
   let db: OrgTestDb;
   beforeAll(async () => {
     db = await createOrgTestDb();
-    // Until the whole feature is ready to arm, exercise its draft migration in
-    // this isolated database, never the shared runtime schema.
-    const migration = readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/1514-governed-memory-anchors-and-outcomes.sql.DRAFT', import.meta.url), 'utf8');
-    await db.adminSql.unsafe(migration.replace(/^\\set.*$/gm, '').replace(/^(BEGIN|COMMIT);$/gm, ''));
     _resetSessionEpochLedgerForTests();
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });

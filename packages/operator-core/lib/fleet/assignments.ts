@@ -1050,6 +1050,24 @@ export interface HolderActivity {
 }
 
 /**
+ * A standing `work-item:claimable` watch is a broad queue wake, not a
+ * dependency of a claim the holder already owns. Keep that watch from making
+ * a stalled held claim look covered by a healthy loop monitor.
+ */
+export function isBroadClaimableParkMaskingStalledClaim(
+  monitorState: HolderActivity['monitorState'] | null | undefined,
+  parkedOn: readonly string[] | null | undefined,
+  hasStalledClaim: boolean,
+): boolean {
+  return (
+    hasStalledClaim &&
+    monitorState === 'parked-awaiting-capability' &&
+    (parkedOn?.length ?? 0) > 0 &&
+    parkedOn?.every((key) => key === 'work-item:claimable') === true
+  );
+}
+
+/**
  * EI-18716042694888410: how recent a tool invocation must be for its holder to
  * count as WORKING regardless of `sessionState`.
  *

@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
 import * as recorder from '../degradation/fallback-observations';
-import { inventoryTree, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
+import { acceptanceProblems, inventoryTree, migrationCoverageProblems } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { listDegradationMechanisms } from '../system-health/degradation-watchdog';
 import { RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS } from '../degradation/rail-migration-cases';
 import { original, execute } from '../degradation/host-startup-migration-cases';
@@ -44,6 +44,67 @@ describe('condition-rail per-row executable coverage (P-017)', () => {
   it('has a matching executable case for every row in every completed migration', () => {
     expect(migrationCoverageProblems(manifest, RAIL_MIGRATION_CASES, RAIL_MIGRATION_COMPLETE_ITEMS,
       listDegradationMechanisms().map((mechanism) => mechanism.mechanism))).toEqual([]);
+  });
+
+  describe('strict acceptance controls on the actual immutable seed and current tree', () => {
+    const conditionId = 'bespoke-watchdog|packages/operator-core/lib/system-health/goal-liveness-watchdog.ts|<module>|1';
+    const observationId = 'log-only-fallback|packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts|maybeForceRespawn|1';
+    let live: ReturnType<typeof inventoryTree>;
+    let mechanisms: string[];
+    let baselineProblems: string[];
+    beforeAll(() => {
+      live = inventoryTree(fileURLToPath(new URL('../../../../', import.meta.url)));
+      mechanisms = listDegradationMechanisms().map((entry) => entry.mechanism);
+      baselineProblems = acceptanceProblems(manifest, live, RAIL_MIGRATION_CASES, mechanisms);
+      expect(live.unreadable).toBe(0);
+      for (const id of [conditionId, observationId]) {
+        expect(manifest.rows.find((row: { id: string }) => row.id === id), id)
+          .toMatchObject({ disposition: 'migrate', item: 'P-014' });
+        expect(live.sites.find((site: { id: string }) => site.id === id), id)
+          .toMatchObject({ onRail: true });
+        expect(baselineProblems.filter((problem) => problem.startsWith(id + ':')), id).toEqual([]);
+      }
+    }, 120_000);
+
+    function expectExactDelta(problems: string[], expected: string): void {
+      expect(problems.filter((problem) => !baselineProblems.includes(problem))).toEqual([expected]);
+      expect(baselineProblems.filter((problem) => !problems.includes(problem))).toEqual([]);
+    }
+
+    it('names the exact original runtime row when only that live site moves off the rail', () => {
+      const site = live.sites.find((entry: { id: string }) => entry.id === conditionId)!;
+      const changed = {
+        ...live,
+        sites: live.sites.map((entry: { id: string }) => entry.id === conditionId ? { ...entry, onRail: false } : entry),
+        rows: [...live.rows, { ...site, onRail: false, disposition: { disposition: 'migrate', item: 'P-014' }, problem: null }],
+      };
+      expectExactDelta(acceptanceProblems(manifest, changed, RAIL_MIGRATION_CASES, mechanisms),
+        conditionId + ': completed migration still bypasses rail');
+    });
+
+    it('names a missing original-row case even when the incremental completion list is empty', () => {
+      const cases = RAIL_MIGRATION_CASES.map((entry) => ({
+        ...entry, rowIds: entry.rowIds.filter((id) => id !== conditionId),
+      }));
+      const expected = conditionId + ': completed migration has no case';
+      expect(migrationCoverageProblems(manifest, cases, [], mechanisms)).not.toContain(expected);
+      expectExactDelta(acceptanceProblems(manifest, live, cases, mechanisms), expected);
+    });
+
+    it('names only the original observation row whose mechanism is no longer registered', () => {
+      const testCase = RAIL_MIGRATION_CASES.find((entry) => entry.rowIds.includes(observationId))!;
+      expect(testCase).toMatchObject({ item: 'P-014', route: 'observation' });
+      expect(mechanisms).toContain(testCase.mechanism);
+      const unregistered = '__condition_rail_unregistered_control__';
+      expect(mechanisms).not.toContain(unregistered);
+      // Split this row out so any siblings keep their real case and mechanism.
+      const cases = [
+        ...RAIL_MIGRATION_CASES.map((entry) => ({ ...entry, rowIds: entry.rowIds.filter((id) => id !== observationId) })),
+        { ...testCase, id: testCase.id + '-unregistered-control', rowIds: [observationId], mechanism: unregistered },
+      ];
+      expectExactDelta(acceptanceProblems(manifest, live, cases, mechanisms),
+        observationId + ': unregistered observation mechanism');
+    });
   });
 
   it('keeps the reviewed P-013 histogram and unit-tier refusal outside runtime degradation', async () => {

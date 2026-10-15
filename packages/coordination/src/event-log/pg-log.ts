@@ -625,6 +625,8 @@ export class PgCoordLog implements CoordEventLog {
     writerKey: string,
     line: CoordEnvelope,
     hooks?: {
+      /** Join a producer's existing transaction so its state and notification commit together. */
+      transactionSql?: import('postgres').TransactionSql;
       /** Producers validating several sources can require one coherent snapshot. */
       transactionOptions?: 'isolation level repeatable read';
       /** Prepare a fresh line on the SAME transaction as its append. Replays skip preparation. */
@@ -633,7 +635,7 @@ export class PgCoordLog implements CoordEventLog {
       afterAppend?: (tx: import('postgres').Sql | import('postgres').TransactionSql) => Promise<void>;
     },
   ): Promise<AppendLineIfAbsentResult> {
-    return withPgContentionRetry(async () => {
+    const perform = async () => {
       await this.opts.ensureSchema();
       const sql = this.opts.getSql();
       const workspaceId = this.resolveWs();
@@ -682,6 +684,7 @@ export class PgCoordLog implements CoordEventLog {
           envelope: prepared,
         };
       };
+      if (hooks?.transactionSql) return append(hooks.transactionSql);
       if (!hooks?.transactionOptions) return sql.begin(append);
       // Repeatable-read snapshots must begin AFTER replay serialization. An
       // advisory lock taken inside that transaction would freeze a waiter's
@@ -708,7 +711,9 @@ export class PgCoordLog implements CoordEventLog {
           reserved.release();
         }
       }
-    }, this.opts.contentionRetry);
+    };
+    // A surrounding producer owns retry/rollback; an aborted SQL transaction cannot be retried in place.
+    return hooks?.transactionSql ? perform() : withPgContentionRetry(perform, this.opts.contentionRetry);
   }
 
   async readLines(surface: LineSurface, _opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {

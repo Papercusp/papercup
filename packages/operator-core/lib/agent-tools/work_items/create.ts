@@ -418,6 +418,9 @@ export default defineTool({
           Object.prototype.hasOwnProperty.call(item.payload, 'externalRuntimeProducer'))) {
         ctx.addIssue({ code: 'custom', message: 'externalRuntimeProducer is host-authored; use phone_producer admission' });
       }
+      if ([args, ...(args.items ?? [])].some(item => item.payload && Object.prototype.hasOwnProperty.call(item.payload, '_frozenTests'))) {
+        ctx.addIssue({ code: 'custom', message: '_frozenTests is server-authored; register independent evidence with work_items:update frozenTests' });
+      }
     })
     .superRefine(rejectMissingScheduleCadence),
   async handler(args, ctx) {

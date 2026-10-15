@@ -30,6 +30,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { askReporterQuestion } from '../../harness/improvements/reporter-status';
+import { frozenTestsRegistrationSchema, registerFrozenTests } from './frozen-tests-gate';
 
 /**
  * EI-18707466248332421: the family-AGNOSTIC subset of this tool's fields — the ones that are
@@ -203,6 +204,7 @@ function hasColumnEdit(it: {
 }
 
 const FIELDS = {
+  frozenTests: frozenTestsRegistrationSchema.optional().describe('Opted-in frozenTests: pilot only. Register an independently authored manual test-only evidence binding plus red calibration; use alone. Re-freeze requires a named Decision and expectedRevision.'),
   title: hardText(LIMITS.SHORT_TITLE).optional(),
   body: hardText(8000).optional(),
   // WI-4492: `summary` is an ACCEPTED ALIAS for `body` — the SAME column. work_items:get
@@ -399,6 +401,7 @@ export default defineTool({
           // ok:true. Wire it exactly like the sibling needsTwoMachineRig flag.
           needsHuman: it.needsHuman !== undefined ? it.needsHuman : args.needsHuman,
           payload: it.payload ?? args.payload,
+          frozenTests: it.frozenTests ?? args.frozenTests,
           reporterQuestion: it.reporterQuestion ?? args.reporterQuestion,
           harness: it.harness ?? args.harness,
         }))
@@ -418,6 +421,7 @@ export default defineTool({
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
             payload: args.payload, // WI-41509
+            frozenTests: args.frozenTests,
             reporterQuestion: args.reporterQuestion,
             harness: args.harness,
           },
@@ -447,6 +451,17 @@ export default defineTool({
           const otherEdits = Object.entries(it).some(([key, value]) => !['id', 'harness', 'reporterQuestion'].includes(key) && value !== undefined);
           if (otherEdits) return { ok: false as const, id: it.id, error: 'reporterQuestion-must-be-used-without-other-edits' };
           return askReporterQuestion({ id: it.id, harness: it.harness, actor: ident.ownerId, text: it.reporterQuestion });
+        }
+        if (it.frozenTests !== undefined) {
+          if (Object.entries(it).some(([key, value]) => !['id','harness','frozenTests'].includes(key) && value !== undefined)) {
+            return { ok: false as const, id: it.id, error: 'frozenTests-must-be-used-without-other-edits' };
+          }
+          const item = await getWorkItem(it.id, it.harness);
+          const stamp = (item?.payload as { plan_item?: { plan_slug?: string } } | null)?.plan_item;
+          const planSlug = item?.sourcePlanSlug ?? stamp?.plan_slug;
+          if (!item || !planSlug || !item.harness) return { ok: false as const, id: it.id, error: 'frozen_tests_linked_item_required' };
+          return registerFrozenTests({ item, actorId: ident.ownerId, registration: it.frozenTests,
+            scope: { workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(), harnessSlug: item.harness, planSlug } });
         }
         // A compatibility flag is not its own owner-action evidence. Check the
         // current typed condition before ANY field edit, including mixed/bulk

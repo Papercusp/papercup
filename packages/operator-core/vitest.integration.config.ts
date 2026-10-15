@@ -2,7 +2,7 @@ import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercus
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tsImport } from 'tsx/esm/api';
-import { prepareRuntimeReader } from './vitest.e2e.config';
+import { prepareRuntimeReader } from './vitest.e2e.config.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Reuse the live profile's selected runtime for integration evidence as well.

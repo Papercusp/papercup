@@ -47,6 +47,18 @@ import {
 import type { GoalReadiness } from '@papercusp/agent-mcp/goal-deps';
 import { GoalHolderLaunchPolicyRefusedError } from '../harness/routines/goal-holder-launch-action';
 
+// This suite exercises the existing liveness/readiness/respawn behavior with
+// every delivery dependency isolated. The canonical condition-rail producer
+// case separately verifies the real keyed open and measured-recovery lifecycle.
+vi.mock('../severe-event-broadcast', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../severe-event-broadcast')>()),
+  broadcastSevereEvent: vi.fn(async () => undefined),
+}));
+vi.mock('../alarm-attention', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../alarm-attention')>()),
+  resolveAlarm: vi.fn(async () => undefined),
+}));
+
 const NOW = Date.parse('2026-08-16T04:00:00Z');
 const LONG_AGO = NOW - 5 * 24 * 60 * 60_000; // 5 days — the measured sidestage case
 const JUST_NOW = NOW - 60_000;

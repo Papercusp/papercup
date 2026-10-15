@@ -6,6 +6,7 @@ import { evaluateRequirementEnforcement, type RequirementEnforcement } from './c
 import { conformanceLedgerRef, doneWhenCheckId, type ConformanceCheckVerdict, type OpenDriftAlarm } from './conformance-run';
 import { judgeTestsFromLedger, productionConformanceDeps } from './conformance-run-deps';
 import { approvedDeviations } from './deviation';
+import type { WorkItem } from '../work-items';
 
 export interface RequirementClosureDeclaration {
   discharges?: readonly string[];
@@ -14,7 +15,7 @@ export interface RequirementClosureDeclaration {
 export interface ConformanceClosureRefusal {
   code: 'conformance_contract_invalid' | 'conformance_mapping_unavailable' |
     'conformance_requirements_missing' | 'conformance_requirement_unmapped' |
-    'conformance_drift_alarm_open' | 'conformance_done_when_not_passing';
+    'conformance_drift_alarm_open' | 'conformance_done_when_not_passing' | 'frozen_tests_completion_refused';
   error: string;
   requirements?: string[];
   alarmIds?: string[];
@@ -73,9 +74,17 @@ export async function evaluateConformanceClosure(
 export async function conformanceClosureRefusal(input: {
   workspaceId: string; harnessSlug: string; planSlug: string; planItemIds: readonly string[];
   completion: RequirementClosureDeclaration;
+  item?: WorkItem;
+  skipConformance?: boolean;
 }): Promise<ConformanceClosureRefusal | null> {
   const plan = await readPlanBySlug(input.planSlug, { workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
   if (!plan) return { code: 'conformance_mapping_unavailable', error: `Cannot read linked plan ${input.planSlug}.` };
+  if (input.item && plan.parsed.frontmatter.frozenTests === 'pilot') {
+    const { frozenTestsClosureRefusal } = await import('../agent-tools/work_items/frozen-tests-gate');
+    const refusal = await frozenTestsClosureRefusal({ item: input.item, scope: input, plan });
+    if (refusal) return { code: 'frozen_tests_completion_refused', error: refusal.error };
+  }
+  if (input.skipConformance) return null;
   const runtime = productionConformanceDeps(input);
   let verdicts: Awaited<ReturnType<typeof readLatestRubricCheckResults>> | undefined;
   return evaluateConformanceClosure({ planContent: plan.row.content, planItemIds: input.planItemIds, completion: input.completion }, {
