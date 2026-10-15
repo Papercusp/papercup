@@ -2,6 +2,8 @@
 import { z } from 'zod';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -834,6 +836,95 @@ async function attestationAdvisorySafely(
   }
 }
 
+/**
+ * A late return from this writer may already have committed several evidence rows
+ * (or retracted rows) before dispatch notices its deadline. Identify those durable
+ * row IDs so the caller can reconcile the completed batch instead of retrying it
+ * blindly. Missing IDs fail closed because a bulk failure can occur after an
+ * earlier row in the same handler has committed.
+ */
+function bindSpecEvidenceAbortCompletionReceipt(
+  args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'plans:bind-spec-evidence' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'plans:bind-spec-evidence receipt did not receive the dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+  const payload = completedResultPayload(result);
+  const rows = Array.isArray(payload?.results) ? payload.results : null;
+  if (!payload || !rows) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'plans:bind-spec-evidence result did not contain a parseable bulk completion payload',
+      failures: ['missing-bulk-result'],
+    };
+  }
+
+  const requested = asRecord(args);
+  const retractionRequested = Array.isArray(requested?.retract);
+  const retractedIds = retractionRequested
+    ? rows.flatMap((value) => {
+        const row = asRecord(value);
+        const id = row?.bindingId;
+        return row?.ok === true &&
+          (row.status === 'retracted' || row.status === 'already_retracted') &&
+          typeof id === 'number' &&
+          Number.isSafeInteger(id) &&
+          id > 0
+          ? [id]
+          : [];
+      })
+    : Array.isArray(payload.supersession)
+      ? payload.supersession.flatMap((value) => {
+          const outcome = asRecord(value);
+          if (outcome?.status !== 'superseded' || !Array.isArray(outcome.retracted)) return [];
+          return outcome.retracted.flatMap((entry) => {
+            const row = asRecord(entry);
+            const id = row?.bindingId;
+            return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? [id] : [];
+          });
+        })
+      : [];
+  const bindingIds = retractionRequested
+    ? []
+    : rows.flatMap((value) => {
+        const row = asRecord(value);
+        const id = row?.id;
+        return row?.ok === true &&
+          typeof id === 'number' &&
+          Number.isSafeInteger(id) &&
+          id > 0
+          ? [id]
+          : [];
+      });
+  const uniqueBindingIds = [...new Set(bindingIds)].sort((a, b) => a - b);
+  const uniqueRetractedIds = [...new Set(retractedIds)].sort((a, b) => a - b);
+  if (uniqueBindingIds.length === 0 && uniqueRetractedIds.length === 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'plans:bind-spec-evidence result did not prove a durable binding or retraction ID',
+      failures: ['missing-landed-evidence-id'],
+    };
+  }
+
+  return {
+    status: 'recorded',
+    effectRef:
+      'plans-spec-evidence:' + context.callId +
+      (uniqueBindingIds.length > 0 ? ':bindings:' + uniqueBindingIds.join(',') : '') +
+      (uniqueRetractedIds.length > 0 ? ':retracted:' + uniqueRetractedIds.join(',') : ''),
+    diagnostics: {
+      bindingIds: uniqueBindingIds,
+      retractedIds: uniqueRetractedIds,
+    },
+  };
+}
+
 export default defineTool({
   name: 'plans:bind-spec-evidence',
   description:
@@ -848,6 +939,7 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
+  abortCompletionReceipt: bindSpecEvidenceAbortCompletionReceipt,
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {

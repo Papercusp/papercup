@@ -43,6 +43,7 @@ const {
 const { createIssue } = await import('../../issues-engineer');
 const { closeTask, registerTask } = await import('../../task-manager/store');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
+const { flushFallbackObservations } = await import('../../degradation/fallback-observations');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
 const { _resetHarnessAdminUrlCacheForTests } = await import('../../embedded-pg-discovery');
@@ -123,6 +124,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await _closeScorecardEmitMutexForTests();
   await _closeGradingAuditSubjectMutexForTests();
+  if (db) {
+    const fallbackFlush = await flushFallbackObservations({ sql: db.adminSql });
+    expect(fallbackFlush.failed).toBe(0, 'fallback observations must flush before their private PG pool closes');
+  }
   await db?.cleanup();
   _resetHarnessAdminUrlCacheForTests();
   if (SAVED_ADMIN_URL === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;

@@ -85,6 +85,19 @@
     "AWS32gp3boot": 2.56,
     "AWSm7i2xlarge": 294.336,
     "AWStrialTestedDataDiskPerformance": 1140.896,
-    "GCP256extraRAMComponent": 735.93344
+    "GCP256extraRAMComponent": 735.93344,
+    "GCP64x4GiBHyperdiskCapacity": 20.48,
+    "AWSgp3256x1GiBCapacity": 20.48,
+    "AWSio2_64x4GiB_100IopsEach": 448.0,
+    "AWSio2_1x256GiB_100Iops": 38.5
+  },
+  "distributedVolumeNotes": {
+    "GCPHyperdiskBalancedMinimumGiB": 4,
+    "AWSio2MinimumGiB": 4,
+    "AWSgp3MinimumGiB": 1,
+    "GCP64x4NominalIops": 128000,
+    "AWSgp3_256x1NominalIops": 768000,
+    "hostLimitsMatter": true,
+    "priceExcludes": ["VM", "volume attachment limits", "snapshots", "data transfer"]
   }
 }

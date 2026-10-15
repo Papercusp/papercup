@@ -18,6 +18,7 @@ import coordSend from './coordination/tools/send';
 import coordDispatch from './coordination/tools/dispatch';
 import agentReview from './improvements/agent-review';
 import storagePrune from './storage/prune';
+import bindSpecEvidence from './plans/bind-spec-evidence';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -63,6 +64,8 @@ const LATE_RETURN_MUTATORS = {
   'improvements:agent-review': agentReview,
   // EI-25430676827648397: prune can commit deletes before its slow maintenance tail returns.
   'storage:prune': storagePrune,
+  // EI-25965568135498194: bind can return after dispatch aborts with durable evidence rows.
+  'plans:bind-spec-evidence': bindSpecEvidence,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */
@@ -164,5 +167,49 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     expect(
       receipt!({ category: 'substrate-outbox' }, result({ ok: false, categoryId: 'substrate-outbox', dryRun: false, removed: 0 }), context),
     ).toMatchObject({ status: 'recovery-incomplete' });
+  });
+
+  it('plans:bind-spec-evidence reports committed binding and retraction IDs after a late return', () => {
+    const attempt = { callId: 'bind-call-1', toolName: 'plans:bind-spec-evidence' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+    const receipt = bindSpecEvidence.abortCompletionReceipt;
+    expect(receipt).toBeTypeOf('function');
+
+    expect(receipt!({}, result({
+      ok: false,
+      results: [
+        { ok: true, id: 44621, status: 'created', slug: 'adhoc-work-item-specs' },
+        { ok: false, error: 'instrument_provenance_invalid' },
+      ],
+      counts: { ok: 1, failed: 1 },
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'plans-spec-evidence:bind-call-1:bindings:44621',
+      diagnostics: { bindingIds: [44621], retractedIds: [] },
+    });
+
+    expect(receipt!({ retract: [{ bindingId: 44621, reason: 'replace stale proof' }] }, result({
+      ok: true,
+      results: [
+        { ok: true, status: 'retracted', bindingId: 44621 },
+        { ok: true, status: 'already_retracted', bindingId: 44622 },
+      ],
+      counts: { ok: 2, failed: 0 },
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'plans-spec-evidence:bind-call-1:retracted:44621,44622',
+      diagnostics: { bindingIds: [], retractedIds: [44621, 44622] },
+    });
+
+    expect(receipt!({}, result({
+      ok: false,
+      results: [{ ok: true, status: 'created' }],
+      counts: { ok: 1, failed: 0 },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-landed-evidence-id'],
+    });
   });
 });
