@@ -3737,6 +3737,47 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const injectPsuHost = deps.injectPsuHost ?? injectIntoHost;
   const fireHiveWake = deps.fireHiveWake ?? defaultFireHiveWake;
   const sendCoordMessage = deps.sendCoordMessage ?? sendMessage;
+  const cancelAcceptedHostDelivery = async (
+    delivery: DeliveryWork,
+  ): Promise<'not-needed' | 'cancelled' | 'committed' | { pending: string }> => {
+    const acceptedRetry =
+      delivery.lastError?.startsWith('psu-host accepted:') ||
+      delivery.lastError?.startsWith('psu-host pending-delivery-id:');
+    if (!acceptedRetry) return 'not-needed';
+
+    const confirming =
+      deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    if (!confirming) return { pending: 'confirmation transport is unavailable' };
+
+    try {
+      const host = await findPsuHost(delivery.subscriberId);
+      // If the accepting host has exited, its in-memory pending write is gone.
+      if (!host) return 'not-needed';
+      if (host.ownerId != null && host.ownerId !== delivery.subscriberId) {
+        return { pending: 'discovered host owner does not match the delivery subscriber' };
+      }
+      if (!hostSupports(host as PsuPtyHost, 'delivery-cancel')) {
+        return { pending: 'live host does not advertise delivery-cancel' };
+      }
+
+      const cancellation = await confirming(host.sock, {
+        mode: 'delivery-cancel',
+        data: '',
+        ownerId: delivery.subscriberId,
+        deliveryId: String(delivery.id),
+      });
+      if (cancellation.confirmation !== 'acked') {
+        return { pending: 'host did not acknowledge the cancellation request' };
+      }
+      if (cancellation.ok && cancellation.reason === 'cancelled-before-write') return 'cancelled';
+      if (cancellation.reason === 'delivery-already-committed') return 'committed';
+      // `cancel-requested` is only a request; the host must cross its atomic
+      // pre-write barrier and return `cancelled-before-write` before inbox fallback.
+      return { pending: `host cancellation receipt is ${cancellation.reason ?? 'unconfirmed'}` };
+    } catch {
+      return { pending: 'host discovery or cancellation failed before a receipt' };
+    }
+  };
   const tagTurn = deps.tagTurn ?? tagTurnForInjection;
   // EI-20460364238376772: the delivery-time carry-note read is the authority for
   // this whole wake. Rehydration runs immediately before psu-host injection, but
@@ -4101,6 +4142,20 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const claimableFreshness = await revalidateClaimableDelivery(d, getCurrentWorkItem, claimableLookupTimeoutMs);
     d = claimableFreshness.delivery;
     if (claimableFreshness.staleOnly) {
+      // An accepted native retry may still be queued behind the host's gates.
+      // Cancel that exact pending write before degrading the stale claimable
+      // wake, otherwise the inbox fallback leaves a duplicate host turn queued.
+      const cancellation = await cancelAcceptedHostDelivery(d);
+      if (cancellation === 'committed') {
+        return { kind: 'delivered', channel: 'psu-socket-inject' };
+      }
+      if (typeof cancellation === 'object') {
+        return {
+          kind: 'park',
+          reason: `psu-host accepted: stale claimable delivery ${d.id} remains host-owned; ${cancellation.pending}`,
+          hostCommitPending: true,
+        };
+      }
       return degradeToInboxOrDrop(
         d,
         `work-item:claimable delivery revalidated stale item(s): ${claimableFreshness.staleIds.join(', ')}`,
