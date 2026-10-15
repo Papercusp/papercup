@@ -14,7 +14,7 @@ const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000);
 
 it('launches autonomous current-su through the native container adapter without provider forwarding', async context => {
-  let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
+  let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/external-bench/current-su-native.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
@@ -29,11 +29,16 @@ it('launches autonomous current-su through the native container adapter without 
       'packages/operator-core/lib/agent-tools/capability/launch-agent.ts',
       'packages/operator-core/lib/console-spawn.ts', 'apps/operator/scripts/psu-launcher.mjs',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
-    retainedArtifacts: ['phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl'],
-    prepare: evidenceDir => {
+    retainedArtifacts: ['phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+      'phases/prepare/hono-host.mjs.build-steps.jsonl'],
+    prepare: async evidenceDir => {
       // Compilation and every guard must finish before the disposable native
       // runtime/database exists. The worker consumes only these pinned bytes.
-      prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+      // Completed build steps may renew the stall checkpoint up to the shared
+      // absolute ceiling. A stalled build still fails before runtime allocation.
+      prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
+        builder: { timeoutMs: 240_000, maxMs: 420_000 },
+      });
     },
     execute: async (observe, evidenceDir) => {
       expect(prepared, 'Private API preparation must precede runtime allocation').toBeDefined();

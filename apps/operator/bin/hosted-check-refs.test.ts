@@ -15,6 +15,30 @@ function rendered(rows: readonly Awaited<ReturnType<typeof checkReferences>>[num
 }
 
 describe('hosted-check-refs', () => {
+  it('production refuses local and unpinned references even when a resolver would return a value', async () => {
+    const read: string[] = [];
+    const rows = await checkReferences({
+      required: ['STRIPE_REF', 'WORKOS_REF', 'COOKIE_REF'],
+      env: { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production', STRIPE_REF: 'file:/dev-box/stripe',
+        WORKOS_REF: 'integration:WORKOS_API_KEY',
+        COOKIE_REF: 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-cookie/versions/latest' },
+      resolve: async ref => { read.push(ref); return RESOLVED_VALUE; },
+    });
+    expect(rows.map(row => row.status)).toEqual(['UNRESOLVED', 'UNRESOLVED', 'UNRESOLVED']);
+    expect(read).toEqual([]);
+    expect(rowsAreComplete(rows)).toBe(false);
+    expect(rendered(rows)).not.toContain(RESOLVED_VALUE);
+  });
+
+  it('production preflight resolves pinned managed versions and reports presence only', async () => {
+    const rows = await checkReferences({ required: ['STRIPE_REF'],
+      env: { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production',
+        STRIPE_REF: 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-stripe/versions/1' },
+      resolve: async () => RESOLVED_VALUE,
+    });
+    expect(rows).toEqual([{ name: 'STRIPE_REF', status: 'resolved' }]);
+    expect(rendered(rows)).not.toContain(RESOLVED_VALUE);
+  });
   it('resolves a present reference and reports presence only — never the value', async () => {
     const rows = await checkReferences({
       required: ['WORKOS_API_KEY_REF'],

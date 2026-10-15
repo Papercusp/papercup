@@ -78,7 +78,7 @@
   },
   "sourceChecks": {
     "apps/tui/scripts/package-release.sh": "c0f56232f3dbaf4ff36c834c3cedbd2c8811e1534116900b9a82f55bd5606f4d",
-    "apps/tui/scripts/publish-release.sh": "235b631de3e69cd9c8979800fb69b0563fc904537bfc40adbe9b9390ff80c291",
+    "apps/tui/scripts/publish-release.sh": "a7b7a06be60c1df116cb8804330a0bf4b31f8589b2b5fc85a8bd84625d70cd4c",
     "apps/tui/scripts/release-acceptance.sh": "b4362cc84cbf1bf82ea49ff4a428b4a9a6a5e1d49fdb3406f70b38dee11cd413",
     "packages/operator-core/lib/pui-e2e/public-package.integration.test.ts": "11364a9828fbbba4f128326e2bdb0837595a47af9e37e772d346da8d18376a78"
   },
@@ -112,11 +112,78 @@
     "rootCause": "The existing 0.1.0 r14 object and the accepted 0.1.0 r15 candidate had one immutable URL but different bytes.",
     "fix": "Versioned archive, acceptance and checksum paths include the archive SHA-256 generation. Retained platform entries accept exact legacy or matching-generation layouts.",
     "negativeControl": {
-      "taskId": "0mv9ud9z21l7xr6lq6e",
-      "status": "refused-before-tests",
-      "exitCode": 2,
-      "reason": "The maintained mutation runner requires destructive-call isolation for the publisher's cleanup rm call. The refusal verified source integrity; it is not a caught mutant.",
-      "next": "Repeat the same existing copy-out mutation with the runner's documented --fake-destructive isolation. No native acceptance rerun."
+      "status": "caught",
+      "exitCode": 0,
+      "baselineTestRunId": 21259656,
+      "relocatedBaselineTestRunId": 21259667,
+      "mutantTestRunId": 21259670,
+      "relocation": "overlay",
+      "destructiveIsolation": "--fake-destructive",
+      "mutation": "Remove the archive digest segment from VERSION_BASE and VERSION_PREFIX.",
+      "assertionEvidence": "test-file-assertion-failure",
+      "sharedSourceIntegrity": "verified-byte-identical",
+      "logPath": "/tmp/p032-publisher-mutation-9086d-20261015.log",
+      "logSha256": "82510e32e6ed1542509b59cc8a59b44aebc5eb16c2426e53b5b305b8e75f4eca",
+      "descriptorLinkage": "unverified-legacy: auto reader check used the deployed r14 reader, which predates mutation descriptors",
+      "priorRefusal": {
+        "taskId": "0mv9ud9z21l7xr6lq6e",
+        "exitCode": 2,
+        "reason": "Cleanup rm isolation was required; no assertions ran in that attempt."
+      }
+    }
+  },
+  "packageLifecycle": {
+    "status": "failed-stale-version-oracle",
+    "testRunId": 21259724,
+    "exitCode": 1,
+    "passed": 7,
+    "failed": 1,
+    "skipped": 0,
+    "sourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+    "dependencyGeneration": "v1-e86026a5472fdd602acfa0c712a36c5d3655488d8a4aa0fa0959a7e50dd2637b",
+    "dependencyMode": "independent-copy",
+    "preflight": "esbuild, vitest and @lydell/node-pty are physical, match the committed lock and resolve inside their locked package",
+    "setupLogPath": "/tmp/p032-package-setup-9086d-20261015.log",
+    "testLogPath": "/tmp/p032-package-lifecycle-9086d-20261015.log",
+    "failure": "The clean-HOME version assertion expected pui 0.1.0 while the exact ce62 installed binary correctly reports pui 0.1.0 (ce62d173d1).",
+    "fix": "The canonical test now checks the semantic version and the first ten characters of B.sourceSha, matching main.rs cli_version_line.",
+    "fixWorkItem": "EI-26071220229890191",
+    "focusedRegression": {
+      "testRunId": 21259741,
+      "status": "pass",
+      "passed": 1,
+      "skipped": 7,
+      "worktreeDirty": true,
+      "logPath": "/tmp/p032-package-version-guard-9086d-20261015.log",
+      "scope": "The repaired clean-HOME case ran against current working source. This is local regression proof; it does not replace exact ce62 installed-candidate acceptance or a clean BAR receipt."
+    }
+  },
+  "barAdequacyPreparation": {
+    "status": "not-ready",
+    "bindingIds": { "first": 47058, "last": 47104 },
+    "evaluatorResult": { "pass": 0, "fail": 3, "unknown": 44 },
+    "blockingDimensions": ["falsifiability", "plan-class-risk-floor", "correct-layer"],
+    "evidencePath": "/tmp/p032-adequacy-full-9086d-20261015.json",
+    "scope": "These are proof-adequacy verdicts for the selected bindings, not new installed-product failures.",
+    "chatFirstApproval": "pui-chat-first-ux-2026-09-28#D-037 records Avi's R-05 approval on build 33287a0d19; P-006 still requires proof and independent grading. Exact final-candidate publication approval remains separate.",
+    "r03HelperProof": {
+      "parityTestRunId": 21259714,
+      "parityPassed": 16,
+      "boundedApprovalTestRunId": 21259720,
+      "boundedApprovalPassed": 6,
+      "liveAttachedCaseSkipped": 1,
+      "bindingIds": [47208, 47209, 47210, 47211, 47212, 47213],
+      "result": "All three R-03 clauses now pass correct-layer; falsifiability and risk-floor remain unknown."
+    },
+    "r14CapabilityControl": {
+      "status": "caught-but-not-current",
+      "baselineTestRunId": 21259712,
+      "relocatedBaselineTestRunId": 21259721,
+      "mutantTestRunId": 21259723,
+      "bindingIds": [47214, 47215],
+      "probeInvocationId": "460b0657-beaa-4e3c-b1a0-1ff63492fb7a",
+      "logPath": "/tmp/p032-capability-gate-mutation-9086d-20261015.log",
+      "reason": "The shared-origin test runs are marked worktreeDirty, so official freshness remains unknown despite a caught assertion. A clean-origin control is being prepared separately."
     }
   }
 }

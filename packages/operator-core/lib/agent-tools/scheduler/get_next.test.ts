@@ -59,7 +59,9 @@ const loadHarnessRegistryM = vi.hoisted(() => vi.fn(async () => ({ projects: reg
 // `work-item:claimable` await(s) — mock the store call so these unit tests never
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by ownerId).
 const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
-const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
+type LiveLockPhaseEventForTest = { phase: string; state: 'start' | 'end'; durationMs?: number };
+type LiveLockPathsOptionsForTest = { onPhase?: (event: LiveLockPhaseEventForTest) => void };
+const liveLockedPathsM = vi.hoisted(() => vi.fn(async (_options?: LiveLockPathsOptionsForTest) => [] as string[]));
 const getFlagM = vi.hoisted(() => vi.fn(async () => true));
 // Keep the timeout tests focused on the scheduler claim watchdog. These preflight reads were
 // added after the original regression and otherwise fall through to the live org pool, where a
@@ -1408,7 +1410,7 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     vi.useRealTimers();
   });
 
-  async function expectPreflightTimeout(lastPreflightStep: string) {
+  async function expectPreflightTimeout(lastPreflightStep: string, expectedLiveLockPhase?: string) {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const metadata = vi.fn();
     const p = getNextTool.handler({ harness: 'papercusp' } as never, { metadata } as never) as Promise<{
@@ -1445,6 +1447,14 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
     expect(body.preflightTiming.completedSteps.every((step: { elapsedMs: unknown }) =>
       typeof step.elapsedMs === 'number' && Number.isFinite(step.elapsedMs) && step.elapsedMs >= 0,
     )).toBe(true);
+    if (expectedLiveLockPhase) {
+      expect(body.preflightTiming.liveLockRead).toMatchObject({
+        activeStep: {
+          phase: expectedLiveLockPhase,
+          elapsedMs: expect.any(Number),
+        },
+      });
+    }
     expect(body.message).toContain('No claim was attempted');
     expect(getNextM).not.toHaveBeenCalled();
     expect(metadata).toHaveBeenLastCalledWith({
@@ -1492,8 +1502,11 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
   it('bounds the live lock-plane snapshot before any claim attempt', async () => {
     reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
     getFlagM.mockResolvedValue(true);
-    liveLockedPathsM.mockImplementation(() => new Promise(() => {}));
-    await expectPreflightTimeout('live-lock-paths');
+    liveLockedPathsM.mockImplementation((options) => {
+      options?.onPhase?.({ phase: 'pool-acquire-and-begin', state: 'start' });
+      return new Promise(() => {});
+    });
+    await expectPreflightTimeout('live-lock-paths', 'pool-acquire-and-begin');
   });
 
   it('bounds the first-use work-scope policy gate before any claim attempt', async () => {

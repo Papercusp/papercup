@@ -58,7 +58,11 @@ import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
 import { OrgTxnTimeoutError, type CandidateWaitSnapshot } from '../../pg-bounded-txn';
-import { liveLockedPaths } from '../locks/live-lock-paths';
+import {
+  liveLockedPaths,
+  type LiveLockPathPhase,
+  type LiveLockPathPhaseEvent,
+} from '../locks/live-lock-paths';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('open' | 'failing')[] | undefined;
@@ -215,6 +219,16 @@ export interface ClaimTimeoutReconciliation {
   heldIds: string[];
 }
 
+type PreflightTimingSnapshot = {
+  totalElapsedMs: number;
+  completedSteps: Array<{ step: string; elapsedMs: number }>;
+  activeStep: { step: string; elapsedMs: number };
+  liveLockRead?: {
+    completedSteps: Array<{ phase: LiveLockPathPhase; elapsedMs: number }>;
+    activeStep: { phase: LiveLockPathPhase; elapsedMs: number } | null;
+  };
+};
+
 /**
  * EI-21863190622583520: the budget for the OPTIONAL per-floor miss breakdown — applied to the
  * caller (`withBoundedTimeout`) and to PostgreSQL (`statement_timeout`) from this single
@@ -333,11 +347,7 @@ export function getNextPreflightTimeoutResult(
   reason: 'timeout' | 'aborted' | 'error' = 'timeout',
   errorMessage?: string,
   lastPreflightStep?: string,
-  preflightTiming?: {
-    totalElapsedMs: number;
-    completedSteps: Array<{ step: string; elapsedMs: number }>;
-    activeStep: { step: string; elapsedMs: number };
-  },
+  preflightTiming?: PreflightTimingSnapshot,
 ): {
   ok: false;
   error: 'timeout';
@@ -345,11 +355,7 @@ export function getNextPreflightTimeoutResult(
   phase: 'preflight';
   budgetMs: number;
   lastPreflightStep?: string;
-  preflightTiming?: {
-    totalElapsedMs: number;
-    completedSteps: Array<{ step: string; elapsedMs: number }>;
-    activeStep: { step: string; elapsedMs: number };
-  };
+  preflightTiming?: PreflightTimingSnapshot;
   message: string;
 } {
   const detail =
@@ -1468,6 +1474,32 @@ export default defineTool({
     let currentPreflightStep = 'work-scope-policy';
     let currentPreflightStepStartedAtMs = preflightStartedAtMs;
     const completedPreflightSteps: Array<{ step: string; elapsedMs: number }> = [];
+    const liveLockReadState: {
+      started: boolean;
+      completedSteps: Array<{ phase: LiveLockPathPhase; elapsedMs: number }>;
+      activeStep: { phase: LiveLockPathPhase; startedAtMs: number } | null;
+    } = {
+      started: false,
+      completedSteps: [],
+      activeStep: null,
+    };
+    const observeLiveLockPathPhase = (event: LiveLockPathPhaseEvent): void => {
+      const nowMs = Date.now();
+      if (event.state === 'start') {
+        liveLockReadState.started = true;
+        liveLockReadState.activeStep = { phase: event.phase, startedAtMs: nowMs };
+        return;
+      }
+      const active = liveLockReadState.activeStep;
+      const elapsedMs = event.durationMs ?? (
+        active?.phase === event.phase ? nowMs - active.startedAtMs : 0
+      );
+      liveLockReadState.completedSteps.push({
+        phase: event.phase,
+        elapsedMs: Math.max(0, elapsedMs),
+      });
+      if (active?.phase === event.phase) liveLockReadState.activeStep = null;
+    };
     const beginPreflightStep = (step: string): void => {
       const nowMs = Date.now();
       completedPreflightSteps.push({
@@ -1477,8 +1509,19 @@ export default defineTool({
       currentPreflightStep = step;
       currentPreflightStepStartedAtMs = nowMs;
     };
-    const preflightTimingSnapshot = () => {
+    const preflightTimingSnapshot = (): PreflightTimingSnapshot => {
       const nowMs = Date.now();
+      const liveLockRead = liveLockReadState.started
+        ? {
+            completedSteps: [...liveLockReadState.completedSteps],
+            activeStep: liveLockReadState.activeStep
+              ? {
+                  phase: liveLockReadState.activeStep.phase,
+                  elapsedMs: Math.max(0, nowMs - liveLockReadState.activeStep.startedAtMs),
+                }
+              : null,
+          }
+        : undefined;
       return {
         totalElapsedMs: Math.max(0, nowMs - preflightStartedAtMs),
         completedSteps: [...completedPreflightSteps],
@@ -1486,6 +1529,7 @@ export default defineTool({
           step: currentPreflightStep,
           elapsedMs: Math.max(0, nowMs - currentPreflightStepStartedAtMs),
         },
+        ...(liveLockRead ? { liveLockRead } : {}),
       };
     };
     const preflightBudgetMs = remainingBudgetMs();
@@ -1676,7 +1720,10 @@ export default defineTool({
         // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
         // a pathological lock storm cannot inflate a claim request without bound.
         beginPreflightStep('live-lock-paths');
-        const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
+        const contendedPaths = (await liveLockedPaths({
+          excludeOwner: ident.ownerId,
+          onPhase: observeLiveLockPathPhase,
+        })).slice(0, 500);
         return { kind: 'ready', reconciliation, specOn, contendedPaths };
       },
       { fallback: null, timeoutMs: preflightBudgetMs, label: 'scheduler:get_next:preflight' },

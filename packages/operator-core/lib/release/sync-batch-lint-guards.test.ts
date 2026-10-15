@@ -87,6 +87,31 @@ describe('parseGuardOffenders', () => {
     ]);
   });
 
+  it('uses identity-lint diagnostic headers, not paths inside matched source excerpts', () => {
+    const out = [
+      '  docs/evidence/green-main-materialized-dependencies-preparation-20261014.json:57  [build-user-name]',
+      '      { "scope": "scripts/source-preview.d.mts only; .mjs is outside scripts compiler program", "exitCode": 0 }',
+      '  docs/evidence/green-main-ordered-chain-preparation-20261014.json:28  [build-user-name]',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT, 'lint:no-identity-literals')).toEqual([
+      'docs/evidence/green-main-materialized-dependencies-preparation-20261014.json',
+      'docs/evidence/green-main-ordered-chain-preparation-20261014.json',
+    ]);
+  });
+
+  it('uses box-identity diagnostic headers, not paths inside matched source excerpts', () => {
+    const out = [
+      '✗ 1 hardcoded home path(s) in tracked source.',
+      '  docs/evidence/green-main-materialized-dependencies-preparation-20261014.json:57  (user "build-user-name")',
+      '      { "scope": "scripts/source-preview.d.mts only; .mjs is outside scripts compiler program", "exitCode": 0, "log": "~/.papercusp/scratch/check.log" }',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT, 'lint:no-box-identity')).toEqual([
+      'docs/evidence/green-main-materialized-dependencies-preparation-20261014.json',
+    ]);
+  });
+
   it('uses structured assertion paths instead of committed-source instrumentation paths', () => {
     const failedFile = `${ROOT}/apps/operator/app/settings/storage/page.tsx`;
     const out = [

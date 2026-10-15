@@ -364,7 +364,8 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(readlinkSync(launcher)).toBe(path.join(home, '.local', 'share', 'pui', 'current', 'bin', 'pui'));
     const version = run(launcher, ['--version'], env, home);
     expect(version.status, output(version)).toBe(0);
-    expect(version.stdout.trim()).toBe(`pui ${B.version}`);
+    // The packaged CLI identifies its committed source as well as its version.
+    expect(version.stdout.trim()).toBe(`pui ${B.version} (${B.sourceSha.slice(0, 10)})`);
     expect(stamp(launcher, env, home).sourceSha).toBe(HEAD);
     expect(statusJson(launcher, env, home).current).toMatchObject({ id: releaseId(B), problem: null });
   });

@@ -57,4 +57,19 @@ describe('hosted secret references', () => {
     await expect(resolveHostedSecretRef('env:PAPERCUSP_TEST_HOSTED_SECRET_REF')).resolves.toBe('from-env');
     expect(HOSTED_INTEGRATION_SECRET_REF_PREFIX).toBe('integration:');
   });
+
+  it('production rejects local/integration/latest references before reading either store', async () => {
+    const readIntegrationKey = vi.fn(async () => 'must-not-read');
+    const resolveOther = vi.fn(async () => 'must-not-read');
+    const resolve = createHostedSecretRefResolver({ env: { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production' }, readIntegrationKey, resolveOther });
+    for (const reference of ['env:WORKOS_API_KEY', 'file:/run/secret', 'integration:WORKOS_API_KEY',
+      'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-workos/versions/latest']) {
+      await expect(resolve(reference)).rejects.toThrow('requires_pinned_secret_manager');
+    }
+    expect(readIntegrationKey).not.toHaveBeenCalled();
+    expect(resolveOther).not.toHaveBeenCalled();
+    const ref = 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-workos/versions/2';
+    await expect(resolve(ref)).resolves.toBe('must-not-read');
+    expect(resolveOther).toHaveBeenCalledWith(ref);
+  });
 });

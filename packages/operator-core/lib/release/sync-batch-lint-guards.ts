@@ -150,6 +150,10 @@ export function classifyGuardRun(run: GuardRun, script?: SyncLintGuardScript): G
 
 /** A repo-relative file path token: at least one directory and an extension. */
 const PATH_TOKEN_RE = /(?:^|[\s'"`(,=])((?:\/[^\s'"`()]+?)|(?:[A-Za-z0-9_@.+\-[\]]+(?:\/[A-Za-z0-9_@.+\-[\]]+)+))\.([A-Za-z0-9]{1,8})(?=$|[\s'"`):,;])/gm;
+/** `check-no-identity-literals` prints one machine-readable-ish file header per hit. */
+const IDENTITY_LITERAL_DIAGNOSTIC_RE = /^\s{2}(.+?\.[A-Za-z0-9]{1,8}):\d+\s+\[[^\]]+\]\s*$/;
+/** `check-no-box-identity` prints `path:line (user "…")` before the matched source line. */
+const BOX_IDENTITY_DIAGNOSTIC_RE = /^  (.+):\d+  \(user "[^"]+"\)\s*$/;
 
 /** Structured paths emitted by scripts/test-files.mjs for measured assertion failures. */
 const TEST_FILE_ASSERTION_FAILURE_FILE_RE = /^TEST_FILE_ASSERTION_FAILURE file=("(?:\\.|[^"\\])*")(?:\s|$)/;
@@ -206,7 +210,22 @@ export function parseGuardOffenders(output: string, repoRoot: string, script?: S
     .split(/\r?\n/)
     .filter((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='));
   const candidates: string[] = [];
-  if (assertionFailureLines.length > 0) {
+  if (script === 'lint:no-identity-literals') {
+    // The finding's source excerpt can itself contain paths (for example a JSON `scope`
+    // field naming a declaration file). Only the checker’s `path:line [key]` header
+    // identifies the file that actually matched the build-box identity.
+    for (const line of output.split(/\r?\n/)) {
+      const match = IDENTITY_LITERAL_DIAGNOSTIC_RE.exec(line);
+      if (match) candidates.push(match[1]!);
+    }
+  } else if (script === 'lint:no-box-identity') {
+    // The following source excerpt can contain paths unrelated to the finding (for example
+    // a JSON field naming a declaration file). Only the checker's diagnostic header counts.
+    for (const line of output.split(/\r?\n/)) {
+      const match = BOX_IDENTITY_DIAGNOSTIC_RE.exec(line);
+      if (match) candidates.push(match[1]!);
+    }
+  } else if (assertionFailureLines.length > 0) {
     for (const line of assertionFailureLines) {
       if (script === 'lint:design-primitives') {
         candidates.push(...designLintMessageOffenders(line));

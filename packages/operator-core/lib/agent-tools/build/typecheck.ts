@@ -63,6 +63,7 @@ import type { Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { createTextCollector } from '../../child-output';
 import {
   errorsOnly,
   filterToDirs,
@@ -279,6 +280,10 @@ function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
 export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutcome> {
   return new Promise((resolvePromise) => {
     let output = '';
+    const outputCollector = createTextCollector(undefined, {
+      retainText: false,
+      onDecodedText: (decoded) => { output = (output + decoded).slice(-8 * 1024 * 1024); },
+    });
     let settled = false;
     // EI-18793290418757939: the old version gated promise resolution on the
     // child's OWN 'close' event even after the timeout fired — it only killed
@@ -329,11 +334,13 @@ export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<
     // output is only an error-path fallback), so the buffer is generous: a
     // full-repo check can emit thousands of lines and truncating the HEAD would
     // silently drop errors rather than merely losing context.
-    const append = (b: Buffer) => { output = (output + b.toString('utf8')).slice(-8 * 1024 * 1024); };
-    child.stdout?.on('data', append);
-    child.stderr?.on('data', append);
+    outputCollector.attach(child.stdout);
+    outputCollector.attach(child.stderr);
     child.on('error', (e) => { settle({ code: null, timedOut: false, output: `${output}\n[spawn-error] ${e.message}` }); });
-    child.on('close', (code) => { settle({ code, timedOut: false, output }); });
+    child.on('close', (code) => {
+      outputCollector.text();
+      settle({ code, timedOut: false, output });
+    });
   });
 }
 
