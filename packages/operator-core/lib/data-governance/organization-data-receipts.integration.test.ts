@@ -97,6 +97,19 @@ async function aliceSearch(): Promise<string[]> {
   return out.results.map((r) => r.title);
 }
 
+async function measureTeardownPhase<T>(phase: string, work: () => Promise<T>): Promise<T> {
+  const startedAt = Date.now();
+  console.info(`[org-data-receipts teardown] ${phase}: start`);
+  try {
+    const result = await work();
+    console.info(`[org-data-receipts teardown] ${phase}: complete in ${Date.now() - startedAt}ms`);
+    return result;
+  } catch (error) {
+    console.info(`[org-data-receipts teardown] ${phase}: failed after ${Date.now() - startedAt}ms`);
+    throw error;
+  }
+}
+
 /**
  * A Slack source with a credential reference, two channels (one held), a permission list, one document,
  * and one row in each data-source dependent that has required columns (trigger binding and delivery
@@ -165,8 +178,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  if (alice) await org.adminSql`DELETE FROM harness_shared.users WHERE id = ${alice}`.catch(() => {});
-  await org?.cleanup();
+  if (alice && org) {
+    await measureTeardownPhase('delete-seeded-user', () =>
+      org.adminSql`DELETE FROM harness_shared.users WHERE id = ${alice}`.catch(() => {}));
+  }
+  if (org) await measureTeardownPhase('org.cleanup', () => org.cleanup());
 });
 
 beforeEach(async () => {
