@@ -104,7 +104,11 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
     mocks.set.mockRejectedValueOnce(new Error('persistence unavailable'));
     const out = await runFlushGate({ ...input, boundary: 'compaction', mode: 'host-snapshot', brief: null });
     expect(out.verdict).toBe('refuse');
-    expect(out.refusalText).toContain('host could not finish');
+    expect(out.snapshotFailure).toEqual({
+      phase: 'checkpoint-write', code: 'checkpoint-write-failed', elapsedMs: expect.any(Number),
+    });
+    expect(out.refusalText).toContain('checkpoint-write-failed');
+    expect(out.refusalText).toContain('session remains intact');
     expect(out.refusalText).not.toContain('work_items:checkpoint');
   });
 

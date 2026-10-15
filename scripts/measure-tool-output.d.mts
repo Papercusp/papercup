@@ -79,13 +79,17 @@ export function scan(file: any, client: any, { start, end, rerunSeconds, snapsho
         callsWithoutTimestamp: number;
     };
 }>;
-export function measure(roots?: {
-    client: string;
-    path: string;
-}[], hours?: number, { now, rerunSeconds, snapshot, sessionMetadata }?: {
-    now?: number | undefined;
-    rerunSeconds?: number | undefined;
-    sessionMetadata?: never[] | undefined;
+/**
+ * @param {any} [roots]
+ * @param {number} [hours]
+ * @param {{ now?: number, rerunSeconds?: number, snapshot?: any, sessionMetadata?: any[] }} [options]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped `snapshot`.
+ */
+export function measure(roots?: any, hours?: number, { now, rerunSeconds, snapshot, sessionMetadata }?: {
+    now?: number;
+    rerunSeconds?: number;
+    snapshot?: any;
+    sessionMetadata?: any[];
 }): Promise<{
     clients: {
         [k: string]: {
@@ -179,7 +183,7 @@ export function measure(roots?: {
     sourceCoverage: {
         changedDuringRead: number;
         roots: {
-            client: string;
+            client: any;
             path: string;
             status: string;
             files: number;
@@ -296,14 +300,26 @@ export function measure(roots?: {
  * R5/R7 acceptance uses the SAME raw measurement schema, never a code-change proxy.
  * The manifest cites the two immutable artifacts and actual regression receipts.
  * A report can disclose noncomparability; a reduction claim cannot use that escape.
+ * @param {any} before
+ * @param {any} after
+ * @param {{ beforeRef?: string, afterRef?: string, disclosure?: string,
+ *   patternFixes?: Array<{ workItem?: string, regressionReceipt?: string, status?: string }> }} [manifest]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped the refs and
+ *   typed `patternFixes` as `never[]`, so every manifest a caller built was refused.
  */
 export function compareMeasurementWindows(before: any, after: any, { beforeRef, afterRef, patternFixes, disclosure }?: {
-    patternFixes?: never[] | undefined;
-    disclosure?: string | undefined;
+    beforeRef?: string;
+    afterRef?: string;
+    disclosure?: string;
+    patternFixes?: Array<{
+        workItem?: string;
+        regressionReceipt?: string;
+        status?: string;
+    }>;
 }): {
     schemaVersion: string;
-    beforeRef: any;
-    afterRef: any;
+    beforeRef: string | undefined;
+    afterRef: string | undefined;
     windows: {
         before: any;
         after: any;
@@ -358,7 +374,11 @@ export function compareMeasurementWindows(before: any, after: any, { beforeRef, 
     errors: string[];
     mismatches: string[];
     disclosure: string;
-    patternFixes: any[];
+    patternFixes: {
+        workItem?: string;
+        regressionReceipt?: string;
+        status?: string;
+    }[];
     comparable: boolean;
     reductionSatisfied: boolean;
     reportReady: boolean;

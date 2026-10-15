@@ -2342,7 +2342,10 @@ export function carryTurnProofRequiresNativeId(agent) {
  * deadlock: catalog discovery can complete while the host waits forever for an
  * id that only the kickoff can mint. Fresh Codex still gets the stronger native
  * transcript proof after submission; resumed/carry threads retain the binding
- * gate because they already have an authoritative native identity. */
+ * gate because they already have an authoritative native identity.
+ * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean }} [options]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped `agent`, so every
+ *   caller passing it was a TS2353. */
 export function launchKickoffRequiresPreSubmissionNativeBinding({
   agent, isResume = false, hasResolver = false,
 } = {}) {
@@ -12387,11 +12390,12 @@ export function hostThroughPty(o) {
         maxRetries: codexLaunchStartingRetryMax(env.PAPERCUSP_PSU_PTY_CODEX_LAUNCH_STARTING_RETRIES),
       };
       let freshChildRetries = 0;
+      let kickoffChild = child;
       const injectLaunchKickoff = () => {
         // Keep proof and preparation tied to the child that this kickoff
         // submitted to. A same-host respawn can replace the mutable `child`
         // binding while the native proof is still settling.
-        const kickoffChild = child;
+        kickoffChild = child;
         launchKickoffAttemptStartedAtMs = Date.now();
         launchKickoffAttemptBudgetMs = kickoffBudgetMs;
         // WI-10007230: owner input can cancel carry before its prewrite hook.

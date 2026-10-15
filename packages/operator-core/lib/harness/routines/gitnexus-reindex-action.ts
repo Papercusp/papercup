@@ -3030,8 +3030,10 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
         WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
       [ctx.installSlug],
     )) as Array<{ ds: Partial<DependencySnapshotHealth> | null }>;
-    const currentIndexCommit = pickIndexFreshness(readRegistryEntry(registryPath(), repoName), readIndexMetaFreshness(root)).lastCommit ?? null;
     const backend = dependencySnapshotBackend(ctx.triggerConfig?.snapshot_backend);
+    // Source snapshots pin the checkout. They need no optional graph registry/index read.
+    const currentIndexCommit = backend === 'first-party-imports' ? null
+      : pickIndexFreshness(readRegistryEntry(registryPath(), repoName), readIndexMetaFreshness(root)).lastCommit ?? null;
     const update = await refreshDependencySnapshot({ root, repoName, currentIndexCommit, prev: rows[0]?.ds ?? null, backend });
     const s = update.next;
     logDependencySnapshotCheck(update);
@@ -3102,14 +3104,24 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const root = integrationRoot();
   const repoName = typeof cfg.repo_name === 'string' ? cfg.repo_name : GITNEXUS_REPO_NAME;
-  const dbAlertRatio = num(cfg, 'db_alert_ratio', GITNEXUS_LBUG_DB_ALERT_RATIO);
-
   // Source-only refresh must also run while the optional graph analyzer is busy or skipped.
   const snapshotBackend = dependencySnapshotBackend(cfg.snapshot_backend);
   if (snapshotBackend === 'first-party-imports') await trackDependencySnapshot(ctx, root, repoName);
 
+  // Native plan D-018/P-042: the maintained first-party snapshot is the default job.
+  // Legacy internal index maintenance is explicit opt-in on this SAME routine;
+  // missing, false, or non-boolean settings must not inspect/repair the old index.
+  if (cfg.analyze_enabled !== true) {
+    if (snapshotBackend !== 'first-party-imports') {
+      throw new Error('snapshot_backend=gitnexus requires analyze_enabled:true; use first-party-imports for source-only maintenance.');
+    }
+    console.log('[gitnexus-reindex] source-only maintenance; optional GitNexus analyzer disabled (analyze_enabled is not true)');
+    return { diagnostics: { maintenanceMode: 'first-party-snapshot', snapshotBackend, analyzeEnabled: false } };
+  }
+
   // Capacity telemetry is cheap and independent of whether this tick elects to run
   // the expensive analyzer, so record it before the cadence gates (including skips).
+  const dbAlertRatio = num(cfg, 'db_alert_ratio', GITNEXUS_LBUG_DB_ALERT_RATIO);
   await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
 
   const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);

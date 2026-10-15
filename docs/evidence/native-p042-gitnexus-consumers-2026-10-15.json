@@ -1,0 +1,330 @@
+{
+  "schemaVersion": 1,
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-042",
+  "workItem": "WI-6554700010015356",
+  "status": "in-progress",
+  "decision": "D-018",
+  "scope": {
+    "completeInventory": false,
+    "description": "Recovered consumer families and the first implemented disposition; not final P042 acceptance.",
+    "excludedClaims": [
+      "No complete benefit/outcome census",
+      "No current global latency claim",
+      "No shipped runtime or 48h freshness proof",
+      "No commercial licence clearance",
+      "No index deletion or running-server shutdown"
+    ]
+  },
+  "licence": {
+    "retainedInternalAuthority": "gitnexus-deterministic-integration-2026-10-05#D-005",
+    "distributionConstraint": "gitnexus-deterministic-integration-2026-10-05#D-004",
+    "incumbent": "GitNexus 1.6.9 / PolyForm-Noncommercial-1.0.0",
+    "qualification": "Existing explicit internal route only. Open-sourcing Papercusp is not commercial-use clearance. First-party routes do not execute or distribute GitNexus."
+  },
+  "measurements": {
+    "invocationLedger": {
+      "window": "48 hours ending at the query execution on 2026-10-15; tenant papercusp-workspace",
+      "semantics": "Invocation rows and dispatch status measure use; they do not measure answer quality, consumer benefit, true catches, or behaviour changes. Source: native-adoption.ts NATIVE_ADOPTION_CANNOT_OBSERVE.",
+      "result": {
+        "mode": "query",
+        "rowCount": 14,
+        "truncated": false,
+        "fields": [
+          "tool_name",
+          "op",
+          "role",
+          "status",
+          "invocation_rows",
+          "first_at",
+          "last_at",
+          "duration_p50_ms"
+        ],
+        "elapsedMs": 4659,
+        "rows": [
+          {
+            "tool_name": "gitnexus.context",
+            "op": null,
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "6",
+            "first_at": "2026-10-14 05:46:42.178+00",
+            "last_at": "2026-10-15 22:29:20.838+00",
+            "duration_p50_ms": 6746.5
+          },
+          {
+            "tool_name": "graph:query",
+            "op": "callers",
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "5",
+            "first_at": "2026-10-15 14:37:22.966+00",
+            "last_at": "2026-10-15 22:29:20.841+00",
+            "duration_p50_ms": 7466
+          },
+          {
+            "tool_name": "gitnexus.list_repos",
+            "op": null,
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "5",
+            "first_at": "2026-10-14 05:46:07.579+00",
+            "last_at": "2026-10-15 22:29:12.667+00",
+            "duration_p50_ms": 3010
+          },
+          {
+            "tool_name": "graph:query",
+            "op": "symbol",
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "4",
+            "first_at": "2026-10-14 05:46:42.18+00",
+            "last_at": "2026-10-14 14:52:00.406+00",
+            "duration_p50_ms": 5829
+          },
+          {
+            "tool_name": "graph:query",
+            "op": null,
+            "role": "operator",
+            "status": "error",
+            "invocation_rows": "2",
+            "first_at": "2026-10-15 14:37:12.121+00",
+            "last_at": "2026-10-15 14:37:44.034+00",
+            "duration_p50_ms": 0.5
+          },
+          {
+            "tool_name": "gitnexus.context",
+            "op": null,
+            "role": "operator",
+            "status": "error",
+            "invocation_rows": "1",
+            "first_at": "2026-10-15 14:36:33.162+00",
+            "last_at": "2026-10-15 14:36:33.162+00",
+            "duration_p50_ms": 1
+          },
+          {
+            "tool_name": "graph:query",
+            "op": "callers",
+            "role": "judge",
+            "status": "role-not-allowed",
+            "invocation_rows": "1",
+            "first_at": "2026-10-14 18:52:27.122+00",
+            "last_at": "2026-10-14 18:52:27.122+00",
+            "duration_p50_ms": 5
+          },
+          {
+            "tool_name": "graph:query",
+            "op": "health",
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "1",
+            "first_at": "2026-10-14 05:46:07.583+00",
+            "last_at": "2026-10-14 05:46:07.583+00",
+            "duration_p50_ms": 4121
+          },
+          {
+            "tool_name": "graph:query",
+            "op": "impact",
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "1",
+            "first_at": "2026-10-14 05:46:42.702+00",
+            "last_at": "2026-10-14 05:46:42.702+00",
+            "duration_p50_ms": 10513
+          },
+          {
+            "tool_name": "graph:query",
+            "op": "callees",
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "1",
+            "first_at": "2026-10-14 05:46:42.912+00",
+            "last_at": "2026-10-14 05:46:42.912+00",
+            "duration_p50_ms": 10730
+          },
+          {
+            "tool_name": "gitnexus.impact",
+            "op": null,
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "1",
+            "first_at": "2026-10-14 05:46:42.699+00",
+            "last_at": "2026-10-14 05:46:42.699+00",
+            "duration_p50_ms": 7219
+          },
+          {
+            "tool_name": "gitnexus.query",
+            "op": null,
+            "role": "operator",
+            "status": "error",
+            "invocation_rows": "1",
+            "first_at": "2026-10-15 15:59:57.422+00",
+            "last_at": "2026-10-15 15:59:57.422+00",
+            "duration_p50_ms": 17
+          },
+          {
+            "tool_name": "gitnexus.tool_map",
+            "op": null,
+            "role": "operator",
+            "status": "error",
+            "invocation_rows": "1",
+            "first_at": "2026-10-15 18:27:09.437+00",
+            "last_at": "2026-10-15 18:27:09.437+00",
+            "duration_p50_ms": 5
+          },
+          {
+            "tool_name": "gitnexus.tool_map",
+            "op": null,
+            "role": "operator",
+            "status": "ok",
+            "invocation_rows": "1",
+            "first_at": "2026-10-15 18:28:05.538+00",
+            "last_at": "2026-10-15 18:28:05.538+00",
+            "duration_p50_ms": 7761
+          }
+        ]
+      }
+    },
+    "priorOutcomeEvidence": [
+      "docs/evidence/gitnexus-p017-backend-bakeoff-2026-10-06.md",
+      "docs/evidence/gitnexus-p017-backend-bakeoff-2026-10-06.json",
+      "docs/evidence/gitnexus-first-party-snapshot-2026-10-06.json"
+    ],
+    "limitations": "Prior bakeoff and snapshot comparison are dated frozen-corpus evidence. They do not replace the original P012 live-outcome measures."
+  },
+  "consumers": [
+    {
+      "id": "hourly-maintenance",
+      "paths": [
+        "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+        "packages/operator-core/lib/harness/routines/seed-gitnexus-reindex-routine.ts"
+      ],
+      "disposition": "narrow",
+      "authority": "D-018",
+      "behavior": "Default active routine refreshes first-party snapshot; literal analyze_enabled:true admits legacy index maintenance. First-party refresh does not read graph registry/index metadata.",
+      "verified": "28 local cases across the existing snapshot suite and registered-handler regression, with matching Vite pre-transform source hashes.",
+      "runtime": "not verified"
+    },
+    {
+      "id": "test-selection",
+      "paths": [
+        "scripts/affected-tests.mjs",
+        "scripts/lib/graph-dependency-suggestions.mjs",
+        "scripts/gen-graph-dependency-snapshot.mjs"
+      ],
+      "disposition": "keep first-party route",
+      "behavior": "Selector reads the maintained hash-corroborated snapshot, adds workspaces monotonically and emits graph suggestion/path evidence. The producer retains an explicit optional GitNexus backend.",
+      "remaining": "Original P012 true-catch/outcome census and P018 deployed 48h proof."
+    },
+    {
+      "id": "curated-native-tools",
+      "paths": [
+        "packages/operator-core/lib/agent-tools/gitnexus/query.ts",
+        "packages/operator-core/lib/code-intelligence/first-party-callers-offthread.ts",
+        "packages/operator-core/lib/code-intelligence/push-snapshot.ts",
+        "packages/operator-core/lib/agent-tools/lsp/query.ts"
+      ],
+      "disposition": "keep first-party route; narrow optional health route",
+      "behavior": "Native symbol/context/callers/callees/impact/trace/communities/flows/concept-search route to snapshot/compiler producers; health still uses the optional GitNexus facade. LSP handles compiler operations and snapshot positive definitions.",
+      "remaining": "P040 deployed judge-role access and latency acceptance."
+    },
+    {
+      "id": "raw-plugin",
+      "paths": [
+        "libs/papercusp/plugins/gitnexus-bridge",
+        "scripts/gen-gitnexus-bridge-runtime.mjs",
+        "scripts/vendor-gitnexus-patch.mjs"
+      ],
+      "disposition": "retain existing internal route pending final outcome ruling",
+      "behavior": "Recent ledger rows demonstrate active direct context use. Existing D005 authority persists; D004 forbids product/installer dependencies.",
+      "remaining": "Complete benefit and raw plugin operation inventory; do not infer permission or usefulness from dispatch ok."
+    },
+    {
+      "id": "dream-neighbors",
+      "paths": [
+        "packages/operator-core/lib/dream/capability-packets.ts",
+        "packages/operator-core/lib/dream/capability-contracts.ts"
+      ],
+      "disposition": "pending exact dependency verification",
+      "behavior": "Default graph packet uses first-party queryCapabilityGraph; legacy neighbors port still calls gitnexusFacade for callers/callees.",
+      "remaining": "Trace active capability packet consumers and preserve the frozen Dream trials; do not label the whole packet first-party without checking this path."
+    },
+    {
+      "id": "selective-assist-and-bench",
+      "paths": [
+        "packages/operator-core/lib/code-intelligence/selective-assist.ts",
+        "packages/operator-core/lib/code-intelligence/consumer-evidence.ts",
+        "packages/operator-core/lib/code-intelligence/engine-comparison-cli.ts",
+        "packages/operator-core/lib/code-intelligence/fair-comparison-arms.ts"
+      ],
+      "disposition": "retain historical and controlled comparison evidence; production disposition pending",
+      "behavior": "Facade calls remain in optional assist and comparison surfaces. Literal current-source search found no additional production runSelectiveAssist caller; dynamic use is unknown.",
+      "remaining": "Complete script/scenario dispatch audit; licence and offline admission remain required for any new incumbent run."
+    },
+    {
+      "id": "docs-and-routing",
+      "paths": [
+        "packages/operator-core/lib/doc-claims/code-intel-routing-authority.ts",
+        "packages/operator-core/lib/bash-substitution/pairs/code-search.ts",
+        "packages/operator-core/lib/desktop-install/papercusp-files.ts"
+      ],
+      "disposition": "pending source-aligned documentation census",
+      "behavior": "Definition advisory already routes to lsp:query, while historical graph references and current topology claims remain. Installer fallback text still mentions gitnexus.context.",
+      "remaining": "Distinguish historical evidence from current instructions and correct current instructions through canonical authoring surfaces."
+    }
+  ],
+  "verification": {
+    "existingSuite": {
+      "log": "/tmp/native-p042-source-only-tests-20261015.log",
+      "testsPassed": 23,
+      "scope": "Only existing dependency-snapshot suite passed in that mixed run; new suite failed import then and was fixed separately.",
+      "sourceMap": "/tmp/native-p042-source-map-20261015.json"
+    },
+    "newHandlerSuite": {
+      "log": "/tmp/native-p042-source-only-tests-v3-20261015.log",
+      "testsPassed": 5,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "sourceMap": "/tmp/native-p042-source-map-v3-20261015.json"
+    },
+    "sourceHashes": {
+      "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts": "9b4ab97abc44c63984c25d6c172367d4eacb7e04c353ecdf09db5022e1d3fac4",
+      "packages/operator-core/lib/harness/routines/gitnexus-snapshot-only.test.ts": "1279c9f4174ddcc467ddf39e30885f47ffcbe6ec59064f57b3e86d61bf871161",
+      "packages/operator-core/lib/harness/routines/gitnexus-dependency-snapshot.test.ts": "d3841c319c4750a13aced5b0d423c06cfa7611875fdabdd512e237652f8d37de"
+    },
+    "typecheck": {
+      "log": "/tmp/native-p042-source-only-types-20261015.log",
+      "scope": "Three named routine, seed and regression-test files",
+      "result": "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean",
+      "execDrained": true
+    }
+  },
+  "schemaReconciliation": {
+    "decision": "D-019",
+    "correction": "The carried unapplied-1519 premise was stale. No backup or migration retry is needed for schema readiness.",
+    "endpoint": "native localhost:5432/papercusp, read-only raw SQL",
+    "migration": "1519-code-intel-pushes.sql",
+    "appliedAt": "2026-10-15T21:10:09.09061Z",
+    "canonicalAndLedgerSha256": "667ab11c6fb436d0f354e4b82decc61ddfd5aed6edfdd641050aa5bc21eb0343",
+    "table": "harness_shared.code_intel_pushes",
+    "schemaWitness": "14 columns and 4 indexes verified",
+    "actualPreApplyBackup": {
+      "id": 78851,
+      "status": "ok",
+      "dbDumpOk": true,
+      "kopiaSnapshotId": "k52d1e33228be7dc96d387e1227f32c8a",
+      "finishedAt": "2026-10-15T21:05:56.364027Z",
+      "contextWorkItem": "WI-6554700010015275"
+    },
+    "exact78850": "Still failed, db_dump_ok=false, no Kopia receipt; its separate failure event remains truthful.",
+    "readinessEvent": "harness:papercusp:native-code-intel-migration-1519-applied",
+    "readinessGeneration": 3,
+    "readback": "fired"
+  },
+  "next": [
+    "Re-audit D018/D019 against original source mappings with exact persisted plan class.",
+    "Complete P042 consumer/outcome inventory and final decisions.",
+    "Verify loaded background runtime before routine acceptance; original P018 deployed freshness evidence remains open.",
+    "Continue P034-P036 push/runtime witnesses and P037-P039/P041 source implementation. D019 clears the obsolete schema prerequisite; preserve the host backup owner's lane."
+  ]
+}

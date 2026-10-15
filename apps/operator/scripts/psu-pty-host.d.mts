@@ -922,10 +922,14 @@ export function carryTurnProofRequiresNativeId(agent: any): boolean;
  * deadlock: catalog discovery can complete while the host waits forever for an
  * id that only the kickoff can mint. Fresh Codex still gets the stronger native
  * transcript proof after submission; resumed/carry threads retain the binding
- * gate because they already have an authoritative native identity. */
+ * gate because they already have an authoritative native identity.
+ * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean }} [options]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped `agent`, so every
+ *   caller passing it was a TS2353. */
 export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, }?: {
-    isResume?: boolean | undefined;
-    hasResolver?: boolean | undefined;
+    agent?: string | null;
+    isResume?: boolean;
+    hasResolver?: boolean;
 }): boolean;
 /** WI-6554700010009740: does the native turn-start proof, not the generic
  * submit verifier, own this carry's delivery verdict? Since c727419b0a the

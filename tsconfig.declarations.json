@@ -363,6 +363,15 @@
     // Imported by stop-owner-directive-check.test.ts for `evaluateStop`
     // (owner-directive-delivery-redesign-2026-09-22 P-007).
     "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+    // WI-6554700010015321 — imported directly by
+    // pretooluse-unreserved-migration-db-target.test.ts for `reservationDatabaseRoot`.
+    // Unregistered it was a fresh TS7016 on the apps/operator gate leg.
+    "apps/operator/scripts/hooks/cc/pretooluse-unreserved-migration-guard.mjs",
+    // WI-6554700010015321 — measure-tool-output.test.ts loads this module through a
+    // runtime path (so mutation probes can swap it) and types the result as
+    // `typeof import('./measure-tool-output.mjs')`. Without a declaration that type
+    // is `any` (TS7016) and every downstream callback param became an implicit any.
+    "scripts/measure-tool-output.mjs",
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
     // it because the module is a shared exit-safety helper with full JSDoc, so the
     // emit is genuinely typed rather than a suppression.

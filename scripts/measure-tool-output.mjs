@@ -368,6 +368,12 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
     observedSeconds: firstRecordAt == null ? null : (lastRecordAt - firstRecordAt) / 1000 } };
 }
 
+/**
+ * @param {any} [roots]
+ * @param {number} [hours]
+ * @param {{ now?: number, rerunSeconds?: number, snapshot?: any, sessionMetadata?: any[] }} [options]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped `snapshot`.
+ */
 export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.now(), rerunSeconds = 120, snapshot, sessionMetadata = [] } = {}) {
   if (!Array.isArray(sessionMetadata)) throw new Error('sessionMetadata must be an array');
   if (snapshot) {
@@ -448,6 +454,12 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
  * R5/R7 acceptance uses the SAME raw measurement schema, never a code-change proxy.
  * The manifest cites the two immutable artifacts and actual regression receipts.
  * A report can disclose noncomparability; a reduction claim cannot use that escape.
+ * @param {any} before
+ * @param {any} after
+ * @param {{ beforeRef?: string, afterRef?: string, disclosure?: string,
+ *   patternFixes?: Array<{ workItem?: string, regressionReceipt?: string, status?: string }> }} [manifest]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped the refs and
+ *   typed `patternFixes` as `never[]`, so every manifest a caller built was refused.
  */
 export function compareMeasurementWindows(before, after, { beforeRef, afterRef, patternFixes = [], disclosure = '' } = {}) {
   const errors = [], mismatches = [];
