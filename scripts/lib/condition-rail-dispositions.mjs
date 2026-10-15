@@ -198,12 +198,10 @@ export const DISPOSITIONS = Object.freeze({
   'bespoke-watchdog|packages/operator-core/lib/agent-tools/improvements/set-watchdog-tunables.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/agent-tools/improvements/watchdog-status.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/dbos/dbos-hang-watchdog.ts': migrate('P-015'),
-  'bespoke-watchdog|packages/operator-core/lib/fleet/spawner-sidecar-orphan-watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-key-migration.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/harness/improvements/watchdog-tunables.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/harness/routines/seed-bulk-run-watchdog-routine.ts': NA_WATCHDOG_TOOLING,
   'bespoke-watchdog|packages/operator-core/lib/inference-gateway/watchdog.mjs': migrate('P-015'),
-  'bespoke-watchdog|packages/operator-core/lib/memory-watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/overwatch/watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/pot/watchdog.ts': migrate('P-015'),
   'bespoke-watchdog|packages/operator-core/lib/scout/watchdog-health-lane.ts': na(
