@@ -431,6 +431,67 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     expect(scratchUsageBytes(workspaceId)).toBe(7);
   });
 
+  it('keeps the scratch quota mutex available while a stale usage refresh scans the tree', async () => {
+    const workspaceId = 'ws-refresh-outside-lock';
+    const runDir = makeRunDir(workspaceId, 'quota', UUID(6), 8);
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const mutexName = `papercusp-scratch-quota-${mutexDigest}`;
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    const wsRoot = scratchRootForWorkspace(workspaceId);
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === wsRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const filePath = join(runDir, 'new.bin');
+    let write: Promise<void> | undefined;
+    let probe: Promise<void> | undefined;
+    try {
+      write = writeWithScratchQuota({ workspaceId, filePath, bytes: 16 }, async () => {
+        await writeFile(filePath, Buffer.alloc(16));
+      });
+      await atRoot;
+
+      let probeEntered = false;
+      probe = withFsMutex(mutexName, async () => { probeEntered = true; }, {
+        timeoutMs: 500,
+        retryMs: 5,
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const enteredDuringScan = await Promise.race([
+        probe.then(() => true, () => false),
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), 1_000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      expect(enteredDuringScan).toBe(true);
+      expect(probeEntered).toBe(true);
+
+      releaseScan();
+      await write;
+      await probe;
+      expect(rootReads).toBe(1);
+      expect(scratchUsageBytes(workspaceId)).toBe(24 + markerBytes(workspaceId));
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      await Promise.allSettled([...(write ? [write] : []), ...(probe ? [probe] : [])]);
+    }
+  });
+
   it('keeps each workspace walk sequential and caps filesystem work across concurrent workspaces', async () => {
     for (let i = 0; i < 6; i++) {
       makeRunDir('ws-Q', `tool-${i}`, UUID(10 + i), 128);
@@ -1748,9 +1809,10 @@ describe('deferred scratch quota recovery', () => {
       await Promise.all(waiters);
       for (const timings of timingsByWriter) {
         expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs).toMatchObject({
-          'fs-mutex-admission.root-mkdir': expect.any(Number),
           'fs-mutex-admission.reader-drain': expect.any(Number),
         });
+        expect(timings.find((row) => !row.progress)?.awaitSubphaseTimingsMs)
+          .not.toHaveProperty('fs-mutex-admission.root-mkdir');
       }
     } finally {
       for (const timeout of timeouts) clearTimeout(timeout);
