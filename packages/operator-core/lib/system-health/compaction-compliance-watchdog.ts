@@ -30,6 +30,7 @@ import {
   resolveSessionRefReconciled,
 } from '../compaction-usage';
 import { clearContextEstimate, setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
+import { bootBudgetLimit } from '../boot-budget';
 import {
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
   COMPACTION_OVERSHOOT_FACTOR,
@@ -400,6 +401,12 @@ const carryRespawnStreak = new Map<
 >();
 /** One loop-detected escalation per owner per process; un-deduped on failure. */
 const carryRespawnLoopEscalated = new Set<string>();
+/** P-009 (R-9): the limit the boot budget last raised each owner to. Holds the raise
+ * while the gateway's boot floor is stale (it expires after 6 min of silence), so a
+ * quiet sweep cannot lower it back to the role default; a fresh floor that no longer
+ * needs the raise clears it. Same owner across a carry-respawn, so a successor boots
+ * with its predecessor's room before its own first request is observed. */
+const bootBudgetHeld = new Map<string, number>();
 /** WI-10006236: one owner-facing escalation per owner per process when a session whose
  * model family Papercusp serves at 1M by default is MEASURED at the 200k window. */
 const default1mServedSmallEscalated = new Set<string>();
@@ -2857,7 +2864,15 @@ export async function checkCompactionCompliance(
         }
         if (liveWindow != null) {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
-          const safeLimit = defaultCompactionLimitForWindow(liveWindow, { fleetMember });
+          // P-009 (R-9): guaranteed working room. Raise the derived default so the
+          // measured boot — the gateway's provider-exact first-request floor for this
+          // native session, never the bytes/4 gauge — stays below 60% of the limit.
+          const bootFloor = observedPromptFloorForOwner(r.owner_id);
+          const budget = bootBudgetLimit({ bootTokens: bootFloor?.tokens ?? null, windowTokens: liveWindow, fleetMember });
+          if (budget.raised) bootBudgetHeld.set(r.owner_id, budget.limit);
+          else if (bootFloor != null) bootBudgetHeld.delete(r.owner_id);
+          const held = bootBudgetHeld.get(r.owner_id);
+          const safeLimit = Math.max(budget.limit, held != null && held <= budget.ceiling ? held : 0);
           const selfSetCeiling = selfSetCeilingForWindow(liveWindow, { fleetMember });
           let apply: number | null = null;
           if (r.compaction_limit_explicit) {
