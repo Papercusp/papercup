@@ -11,6 +11,7 @@ import {
   parseArgoTunnelCert,
   parseLoginUrl,
   publicMcpUrl,
+  retargetCloudflaredIngress,
   tunnelNameFor,
   zoneCandidates,
 } from './config';
@@ -21,6 +22,75 @@ import { provisionCloudflareTunnel, removeCloudflareTunnel } from './provision';
 // R-21 is "127.0.0.1:<ingress port>", written out here, not computed by the code under test.
 const INGRESS_PORT = 38111;
 const OPERATOR_PORT = 3070;
+
+describe('existing public device route correction preparation', () => {
+  const input = { hostname: 'phone.example.com', path: '^/api/device',
+    expectedService: 'http://localhost:3070', ingressPort: INGRESS_PORT, operatorPorts: [3070, 3170] };
+  const existing = () => ({
+    originRequest: { connectTimeout: 15 },
+    warpRouting: { enabled: false },
+    ingress: [
+      { hostname: 'other.example.com', service: 'http://localhost:3300', originRequest: { httpHostHeader: 'other.internal' } },
+      { hostname: 'phone.example.com', path: '^/api/device', service: 'http://localhost:3070', originRequest: { noTLSVerify: false } },
+      { hostname: 'phone.example.com', service: 'http://localhost:3057' },
+      { service: 'http_status:404' },
+    ],
+  });
+
+  it('changes only the exact route service and preserves ordering, fallbacks and unknown options', () => {
+    const config = existing();
+    const before = structuredClone(config);
+    const prepared = retargetCloudflaredIngress(config, input);
+    const expected = structuredClone(before);
+    expected.ingress[1]!.service = 'http://127.0.0.1:38111';
+    expect(prepared).toEqual(expected);
+    expect(config).toEqual(before);
+    expect(prepared.ingress).not.toBe(config.ingress);
+    expect(prepared.ingress[1]).not.toBe(config.ingress[1]);
+  });
+
+  it('refuses missing and duplicate hostname/path matches instead of appending or choosing one', () => {
+    expect(() => retargetCloudflaredIngress(existing(), { ...input, path: '^/api/different' }))
+      .toThrow('exactly one existing');
+    const config = existing();
+    config.ingress.push({ ...config.ingress[1]! });
+    expect(() => retargetCloudflaredIngress(config, input)).toThrow('exactly one existing');
+  });
+
+  it('refuses changed service snapshots', () => {
+    const config = existing();
+    config.ingress[1]!.service = 'http://localhost:9999';
+    expect(() => retargetCloudflaredIngress(config, input)).toThrow('expected current service');
+  });
+
+  it('requires a path restriction and an explicit expected service', () => {
+    for (const change of [{ path: '' }, { path: ' ' }, { expectedService: '' }]) {
+      expect(() => retargetCloudflaredIngress(existing(), { ...input, ...change }))
+        .toThrow('exact path and expected current service');
+    }
+  });
+
+  it('refuses every declared ordinary listener and missing or invalid operator ports', () => {
+    for (const port of [3070, 3170]) {
+      expect(() => retargetCloudflaredIngress(existing(), { ...input, ingressPort: port }))
+        .toThrow('separate from every ordinary operator');
+    }
+    expect(() => retargetCloudflaredIngress(existing(), { ...input, operatorPorts: [] }))
+      .toThrow('separate from every ordinary operator');
+    expect(() => retargetCloudflaredIngress(existing(), { ...input, operatorPorts: [0] })).toThrow('operator port');
+    expect(() => retargetCloudflaredIngress(existing(), { ...input, ingressPort: 70000 })).toThrow('ingress port');
+  });
+
+  it('refuses global or selected-route Host rewriting while preserving unrelated overrides', () => {
+    const config = existing();
+    expect(() => retargetCloudflaredIngress({ ...config, originRequest: { httpHostHeader: 'localhost' } }, input))
+      .toThrow('public Host unchanged');
+    const rewritten = { ...config, ingress: config.ingress.map((rule, index) => index === 1
+      ? { ...rule, originRequest: { httpHostHeader: 'localhost' } } : rule) };
+    expect(() => retargetCloudflaredIngress(rewritten, input)).toThrow('public Host unchanged');
+    expect(retargetCloudflaredIngress(config, input).ingress[0]).toEqual(config.ingress[0]);
+  });
+});
 
 describe('remote tunnel configuration inspection', () => {
   it('reads the applied multi-host configuration without rewriting any rules', async () => {
