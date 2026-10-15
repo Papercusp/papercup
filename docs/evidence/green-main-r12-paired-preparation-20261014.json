@@ -2563,8 +2563,115 @@
       "previousLog": "~/.papercusp/scratch/c0523-evaluator-inputs-tests-v1.log"
     },
     "typecheck": { "command": "npm run typecheck --workspace libs/test-config", "nativeExitCode": 0, "scope": "owning test-config workspace", "log": "~/.papercusp/scratch/c0523-vm-evaluator-inputs-tsc-v2.log", "logSha256": "e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94" },
+    "nativeProcessStepPreparation": {
+      "status": "historical-pre-writable-source-guard-pass-superseded-by-pending-stream-preparation",
+      "reused": ["vitest-startup-trace preload", "PC_EXECUTED_SOURCE_MAP_OUT diagnostics", "existing affected native receipt/journal"],
+      "behavior": "Capture actual Node entries/exits and exported child_process.spawn calls, preserving npm lifecycle metadata and compound-script Node invocations. Bind immutable process-event sidecars to the actual affected child PID and time interval, exclude unrelated roots, and leave inaccessible shell steps, streams and runtime inputs explicit. Original npm/shell commands, stdio and return/error behavior are delegated unchanged.",
+      "sourceAtRead": "497e7b9dede067f9c10b8bd9d87024cdd6244047",
+      "sourcePins": [
+        {"path":"scripts/lib/vitest-startup-trace.mjs","sha256":"6802ed2c105affa8ae2d2602618e956af6a8def16d64d34094d094940d0a4777","committedMatch":true},
+        {"path":"scripts/lib/budgeted-task-scheduler.mjs","sha256":"22743c032c1e5540666525b30d2f985af040720b7a2ffbf4de78ec290fd3292f","committedMatch":true},
+        {"path":"scripts/lib/budgeted-task-scheduler.d.mts","sha256":"b19f23bb3185a7ff1e0872d2cbecadab8d14795773d19ef17439a2e93c658d1b","committedMatch":true},
+        {"path":"scripts/affected-tests.mjs","sha256":"02033e887adec031c2fcee413c57fff042ac5518364b2fe836c04d323cb4b794","committedMatch":true},
+        {"path":"packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts","sha256":"78d635161f2670a9ef69166065790f28d559663d1374501327f56232826ddbaf","committedMatch":true},
+        {"path":"packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts","sha256":"df8c51115a1968bf3b0996bb2eb9917e19cb8330e80709ebbef69a8686d9fc29","committedMatch":true}
+      ],
+      "firstMaintainedRun": {
+        "command":"PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "log":"~/.papercusp/scratch/c0523-native-process-steps-tests-v1.log",
+        "logSha256":"3a952df87f70653777eb17af127a32bd96785ba17fbd243f20ecfb2b34d61520",
+        "nativeExitCode":1,"failedTests":7,"childSubstituted":70,"skippedTests":0,
+        "qualification":"Failed. Child preloads substituted old committed observer bytes. Two additional original collector-population assertions failed and were independently diagnosed; no current native process guard pass is claimed."
+      },
+      "typecheck": {"nativeExitCode":0,"scope":"three named scripts/operator-core files",
+        "log":"~/.papercusp/scratch/c0523-native-process-steps-tsc-v1.log",
+        "logSha256":"902516086bbb8f3643b253a5cb9ab115a88261235536ffee2f1fb0cddbff3e3d"},
+      "collectorBlocker": {
+        "workItem":"WI-6554700010013510","assignee":"su-c05233eb-d1be-4e44-b16e-51d9d3532894",
+        "rootCause":"The existing collector keyed every file-bearing event before filtering event type; one native file appeared under absolute and relative paths. Its line1,column1 filename-shaped empty-file wrapper also falsely counted as a passed assertion when only a file-less global summary followed.",
+        "fix":"Canonicalize admitted event paths against one captured cwd and admit only ledger-bearing events. Keep ambiguous wrapper passes pending until file-scoped assertion evidence qualifies them. Preserve unrelated same-basename files, actual file-named assertions, failures and zero-case populations.",
+        "sourcePins":[
+          {"path":"libs/test-config/src/node-test-ledger-collector.ts","sha256":"509aa0983f7d07a68e15a217b8a70d1f5348e6a55bfc5136fecbbd97be7a6633","committedMatch":true},
+          {"path":"libs/test-config/src/node-test-ledger.test.ts","sha256":"fb493022a5d35129d00fd0f0d778b2ad01217f3d44bd4dac859d7fb6476678f0","committedMatch":true}
+        ],
+        "tests":{"command":"PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- libs/test-config/src/node-test-ledger.test.ts",
+          "log":"~/.papercusp/scratch/c0523-node-collector-alias-tests-v3.log",
+          "logSha256":"3b2ce2b4a7da925d90c309d0eb1d46bd50c9122bc2e9b62df3ea500fed2c70cc",
+          "nativeExitCode":0,"passedTests":33,"requested":1,"executed":1,"matched":1,"skippedTests":0,"childSubstituted":0,
+          "provenance":"Stamped LOCAL test-config test path at parent497e7b9ded; imported-source radius not measured. Native reporter fixtures reuse the existing isolated child helper; this does not qualify original operational chains."},
+        "typecheck":{"nativeExitCode":0,"scope":"owning test-config workspace",
+          "log":"~/.papercusp/scratch/c0523-node-collector-alias-tsc-v3.log",
+          "logSha256":"e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94"},
+        "nativeEventDiagnosticLog":"~/.papercusp/scratch/c0523-node-collector-native-order-v2.log",
+        "nativeEventDiagnosticLogSha256":"e2a4cfd396898549c45c94c7415a7ac03daec43c3019af28a54287ebe922a34c"
+      },
+      "committedSettlement": {
+        "parentHead": "384986738a92369328064f5eb0dc9c4a3de08c40",
+        "testConfigHeadAndParentGitlink": "511827f48eb345f6dd0afdaf7d79e29539e23256",
+        "verification": "All six parent and both collector SHA256 pins match saved, local, current HEAD and parent-pinned submodule bytes after the native guard. No manual git operations."
+      },
+      "currentMaintainedRun": {
+        "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts",
+        "log": "~/.papercusp/scratch/c0523-native-process-steps-tests-v2.log",
+        "logSha256": "9d86e89d975aa10b25dda46118cdc12b5e46aa6e3f7bcb3763196c9af2141687",
+        "nativeExitCode": 0,
+        "passedTests": 281,
+        "requested": 2,
+        "executed": 2,
+        "matched": 2,
+        "skippedTests": 0,
+        "childSubstituted": 0,
+        "routerProcessSubstitutions": ["packages/operator-core/lib/agent-tools/db-diagnostic-correlation-wiring.ts", "packages/operator-core/lib/recipe-authority-derive.ts"],
+        "startHead": "95271b92fbfdd1f310d91eb641c3b810b8ff82a4",
+        "postHead": "384986738a92369328064f5eb0dc9c4a3de08c40",
+        "provenance": "Router result remains unknown because HEAD moved. Both named test paths were clean before/after. The eight recorded producer/test pins matched committed source before and after; the imported-source radius was not measured. This is a maintained preparation guard pass, not full committed-runtime or operational acceptance."
+      },
+      "sourceReadyEvent":{"key":"harness:papercusp:native-process-step-preparation-20261014-ready","generation":1,"fired":true,"emitReceipt":{"ok":true,"woken":1,"waiters":1,"pickupConfirmed":false},
+        "peerRequest":"coord-send-7445ff44720f88e35a216813230cdfbb62bf72ed026f3f7caae345064b3cb669",
+        "reply":"coord-send-fdeb2ce758b24a7fe0b79bc7921cae2b65c85a7aa302f6c87ffdeabe23751487"},
+      "next":"Existing generation1 source-ready event fired with one waiter woken; pickup is not independently confirmed. Continue actual original per-step and runtime closure. Do not rerun unchanged original commands or infer original ordered chains from these fixture guards.",
+      "orderedChainQualified":false,"runtimeClosure":"unmeasured","operationalAcceptance":false,"fullPlan":"unshipped"
+    },
+    "nativeWritableStreamPreparation": {
+      "workItem": "WI-6554700010013569",
+      "status": "producer-pins-committed-native-boundary-guard-failed-comparator-fix-pending-verification",
+      "reused": ["existing OUT-gated vitest-startup-trace preload", "existing immutable native process events", "existing affected native execution receipt transport"],
+      "behavior": "Retain bounded binary inputs accepted by each observed process stdout/stderr Writable API, with immutable SHA256 sidecars and process identity. Delegate original write receiver, arguments, callbacks, return and thrown error unchanged; retain synchronous exit-listener writes after the original exit emission. Parent verifies stream pins, bounds and hashes and retains explicit unavailable, truncated or missing-terminal gaps.",
+      "sourcePinsAtPreparation": [
+        {"path":"scripts/lib/vitest-startup-trace.mjs","sha256":"80296366deb568397fb7c17880fcbecfd7f91c602941cb84710070f4e267878c","committedMatch":false},
+        {"path":"scripts/lib/budgeted-task-scheduler.mjs","sha256":"bc9fda2685fd00a02363145c1fbdbbc219ccf84bee8fd019d2f9c19ebe25e5c5","committedMatch":false},
+        {"path":"scripts/lib/budgeted-task-scheduler.d.mts","sha256":"bcc0df4dc6d0dd080b2be6971d6c1bfbb0b86b2aa71d8a4488b1b9b63e31ca8e","committedMatch":false},
+        {"path":"packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts","sha256":"d9d97d203dcd3ba2f5a1f81664f250e9d5e541534717ea573c30b3d2f5d44729","committedMatch":false},
+        {"path":"packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts","sha256":"1b248d15c82cd4a839332985e88c2832e399ba203bca0c5d01698435e371d3b2","committedMatch":false}
+      ],
+      "firstNativeRun": {"log":"~/.papercusp/scratch/c0523-native-streams-tests-v1.log","nativeExitCode":1,"failedTests":6,"childSubstituted":71,"skippedTests":0,"qualification":"Failed before source settlement: committed child preload bytes did not contain the local stream observer. No current stream guard pass is claimed."},
+      "nativeControlsPrepared": ["binary and hex-encoded strings", "late synchronous exit-listener writes", "original receiver/callback/return/throw delegation", "16 MiB stream bound and explicit truncation", "immutable parent stream retention and tamper refusal"],
+      "typecheck": {
+        "command":"node scripts/lint-tsc.mjs --files=packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts,packages/operator-core/lib/__tests__/affected-tests-budgeted-scheduler.test.ts,scripts/lib/budgeted-task-scheduler.d.mts",
+        "log":"~/.papercusp/scratch/c0523-native-streams-tsc-v2.log",
+        "logFormat":"Recovered terminal output with original run stamp and terminal exit, not a rerun or reconstructed pass.",
+        "nativeExitCode":0,"scope":"two named operator-core test files and owning scripts declaration; imported source radius not measured",
+        "previousRun":"v1 ended exit1 with TS2339 in the test environment object. Explicit Record<string,string> typing fixed that named error before this successful recheck."
+      },
+      "settlement": "The five original preparation pins matched committed HEAD 2bc6dd0ef4f871182cf35bc35f8c0fc878089a59 before the current native run. One later maintained-test assertion correction is local: vitest-startup-trace.test.ts SHA256 ba526bee62b5e4373cd5595f1de2955b49339f066af9f3692980ca1d5195db45. Native source readiness remains unfired until this corrected pin settles and the guard passes. No manual git, loader bypass or restart was attempted.",
+      "currentNativeGuard": {
+        "originRunId":"b3f738fa-24aa-4a3a-8b45-fe3711e9c373","detachedRunId":"3c327599-62ce-44a9-beef-8e46c9528d27",
+        "foreground":"Requested timeoutMs180000 was clamped to45000; the tool started its own durable detached recovery. No duplicate manual native run was started.",
+        "nativeExitCode":1,"headBeforeAndAfter":"2bc6dd0ef4f871182cf35bc35f8c0fc878089a59","requested":2,"executed":2,"matched":2,"childSubstituted":0,"skippedTests":"unknown",
+        "testRows":[{"id":21247571,"file":"affected-tests-budgeted-scheduler.test.ts","status":"pass"},{"id":21247573,"file":"vitest-startup-trace.test.ts","status":"fail","error":"marks the stream bound explicitly while leaving the full native write intact: Test timed out in 60000ms"}],
+        "retainedResult":"/tmp/c0523-native-streams-tests-v2-status-full.json","retainedLedger":"/tmp/c0523-stream-recovery-ledger.json",
+        "blocker":"EI-26000329655691502",
+        "rootCauseEvidence":"The exact execFile piped child completed1167ms, full stdout16777217/retained16777216; Buffer.equals returnedtrue in1ms. The installed Vitest equals(a,b,[iterableEquality]) comparator on equal16MiBBuffers did not finish within a bounded20s probe (killed23652ms). Its toEqual source delegates to that comparator. Generic Buffer deep equality made the guard's assertion consume its own deadline; no resource-contention cause is asserted.",
+        "correction":"Use Buffer.equals(...).toBe(true) for the full retained payload; preserve the 16MiB bound, full-output assertion, truncation assertion and existing child/test timeouts. Local correction is not yet a verified guard pass.",
+        "harnessAudit":"Initial pre-settlement failure required exact committed-pin preflight (now enforced). Foreground timeout required consuming automatic detached recovery, not retrying foreground. Before any next native attempt require the corrected test pin committed; use a retained native/detached route with useful failure output."
+      },
+      "sourceReadyEvent":{"key":"harness:papercusp:native-writable-stream-preparation-20261014-ready","generation":1,"fired":false,"peerRequest":"coord-send-9248ec3010c8388abe71e500c59c96314d8ae4464ac733ff5eb12c231ed5aadf","reply":"coord-send-65044c363bc16dbb2458f377dc4d107504779029a83249bec52426e6587e3c25"},
+      "next":"After all five pins match committed source, run the registered two-file native guard and verify before/after pins and actual child substitutions. Emit the existing readiness generation only on a reviewed current pass. Do not repeat original operational chains.",
+      "limits":["Writable call inputs only; direct fd/native and inherited child writes unobserved", "missing preloads or terminal observations remain gaps", "16 MiB per stream and 64 MiB retained parent population bound", "original test reports, installed dependencies, final transforms, pre-setup, external and nonmodule runtime closure unverified"],
+      "orderedChainQualified":false,"runtimeClosure":"unmeasured","operationalAcceptance":false,"fullPlan":"unshipped"
+    },
     "nativeParentExecutionReceiptPreparation": {
-      "status": "maintained-writer-and-journal-integration-pass-preparation-only",
+      "status": "historical-maintained-writer-pass-superseded-by-current-process-observation-preparation",
       "behavior": "Existing affected-tests child settlement now writes a content-addressed parent receipt before its finished pulse when OUT diagnostics are armed. The receipt retains actual command/cwd/timing/status, binary stdout/stderr, before/after wrapper-input hashes, and explicit gaps for original per-step boundaries, executable resolution, installed dependency/runtime closure and operational acceptance.",
       "sourcePins": [
         { "path": "scripts/lib/budgeted-task-scheduler.mjs", "sha256": "d3162e282fb26c950cd898ae12ffa8470b028685f78e49c96086ea8be01d9ed5" },
