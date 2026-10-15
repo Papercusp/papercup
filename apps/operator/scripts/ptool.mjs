@@ -1434,6 +1434,21 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
   };
 }
 
+/** Require a catalog generation before dispatching a call through ptool. */
+export function requireServingGeneration(tool) {
+  const servingGeneration = tool?._meta?.['papercusp/servingGeneration'];
+  if (typeof servingGeneration === 'string' && servingGeneration.trim()) {
+    return servingGeneration.trim();
+  }
+
+  const toolName = typeof tool?.name === 'string' && tool.name.trim() ? tool.name.trim() : 'the requested tool';
+  throw new Error(
+    `serving_generation_missing: ${toolName} was not dispatched because tools/list did not advertise a Papercusp ` +
+      'serving generation. The connected operator may be an incompatible legacy release; reconnect to a current ' +
+      'operator and re-read tools/list.',
+  );
+}
+
 // `tools/list` is a recovery prerequisite for every named ptool call, but it
 // is still a remote MCP request and can stall while the operator is under
 // pressure. Do not inherit the SDK's 60s default: a CLI that produces no
@@ -4315,6 +4330,16 @@ async function main() {
       console.error(`ptool: no tool named "${toolName}". Try \`ptool --list ${serviceOf(toolName)}\`.`);
       process.exit(1);
     }
+    try {
+      // The old release handler cannot enforce a generation it does not know
+      // about. Refuse before dispatch when the selected listing lacks the
+      // marker, even if the old handler would otherwise accept the arguments.
+      requireServingGeneration(tool);
+    } catch (error) {
+      console.error(`ptool: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
     if (!canDispatchOnFallbackOperator(tool, operatorFallbackUsed)) {
       console.error(
         `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
@@ -4375,7 +4400,7 @@ async function main() {
     };
     const currentCallParams = () => buildCallToolParams(toolName, callArgs, {
       outputSchema: currentTool.outputSchema,
-      servingGeneration: currentTool._meta?.['papercusp/servingGeneration'],
+      servingGeneration: requireServingGeneration(currentTool),
       idempotencyKey,
     });
     try {

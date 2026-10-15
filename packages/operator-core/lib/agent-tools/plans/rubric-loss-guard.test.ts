@@ -413,6 +413,51 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     expect(result.data.barContract).toMatchObject({ subjectPlanRevision: 8, seededBy: 'seed-author' });
   });
 
+  it('stamps a newly added BAR at amendment time and attributes it to the authenticated amender', () => {
+    const now = '2026-10-15T09:20:00.000Z';
+    const stored = started();
+    const added = criterion({
+      key: 'r-2',
+      title: 'Second outcome',
+      model: 'The second outcome holds.',
+      barKey: 'R-2',
+      barHash: 'c'.repeat(64),
+      barProvenance: {
+        lifecycle: 'pre-implementation',
+        declaredAt: '2030-01-01T00:00:00.000Z',
+        declaredBy: 'spoofed-caller',
+      },
+    });
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: stored,
+      nextTemplateData: { ...stored, criteria: [...stored.criteria, added] },
+      subjectPlan: {
+        status: 'active',
+        revision: 8,
+        adoptionEpoch: 1,
+        cohort: 'legacy-backfilled',
+        seededAt: contract.seededAt,
+        seededBy: 'seed-author',
+      },
+      actorId: 'authenticated-amendment-author',
+      amendment: {
+        actorId: 'authenticated-amendment-author',
+        reason: 'Add the newly discovered outcome.',
+      },
+      now,
+    });
+
+    expect(result.changes).toContainEqual({ barKey: 'R-2', kind: 'added', fields: ['bar'] });
+    const newCriterion = (result.data.criteria as Array<Record<string, unknown>>)
+      .find((candidate) => candidate.barKey === 'R-2');
+    expect(newCriterion?.barProvenance).toEqual({
+      lifecycle: 'legacy-backfilled',
+      declaredAt: now,
+      declaredBy: 'authenticated-amendment-author',
+    });
+  });
+
   it('accepts a meaning change only with the canonical amendment capability', () => {
     const result = guardAcceptanceBarTemplateDataWrite({
       slug: 'acceptance-subject-plan',

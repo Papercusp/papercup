@@ -387,12 +387,16 @@ function deriveProvenance(
   actorId: string | null | undefined,
   amendment: AcceptanceBarAmendmentAuthorization | undefined,
   now: string,
+  newlyAddedByAmendment: boolean,
 ): AcceptanceBarProvenance {
   if (stored) return stored;
   const legacy = subject?.cohort === 'legacy-backfilled' || subject?.status === 'ready' || subject?.status === 'active';
   return {
     lifecycle: legacy ? 'legacy-backfilled' : 'pre-implementation',
-    declaredAt: contract.seededAt || now,
+    // A missing provenance on an existing bar can be backfilled from the
+    // server-owned seed pin. A newly amended bar enters the contract only when
+    // this amendment is applied, so its declaration time is the amendment time.
+    declaredAt: newlyAddedByAmendment ? now : contract.seededAt || now,
     // For a newly amended bar, the authenticated amendment actor is the only
     // honest author.  Seed/backfill rows derive this from the server seed pin.
     declaredBy: amendment?.actorId || actorId || contract.seededBy,
@@ -524,6 +528,7 @@ export function guardAcceptanceBarTemplateDataWrite(
       args.actorId,
       args.amendment,
       now,
+      Boolean(args.amendment && !prior),
     );
     return { ...criterion, barProvenance: provenance };
   });

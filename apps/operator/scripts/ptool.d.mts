@@ -393,6 +393,8 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
         'papercusp/servingGeneration'?: string;
     };
 };
+/** Require a catalog generation before dispatching a call through ptool. */
+export function requireServingGeneration(tool: any): string;
 /**
  * Per-attempt handshake budget for one local MCP origin. Pure and exported so
  * the direct-vs-proxy distinction cannot silently collapse back to one number.

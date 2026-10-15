@@ -76,6 +76,56 @@ beforeEach(() => {
 });
 
 describe('work_items:set_blocker', () => {
+  it.each(['defaultIfUnanswered', 'decideBy'] as const)(
+    'R-3 refuses a product-decision park missing %s before opening or persisting anything',
+    async (missingField) => {
+      getWorkItem.mockResolvedValue({ id: 'WI-1', family: 'issue', state: 'open', payload: {} });
+      const request = {
+        id: 'WI-1', kind: 'human', capability: 'product-decision', ref: 'decision:layout',
+        summary: 'Ship the compact layout as the default?', nextVerb: 'consult:reply',
+        defaultIfUnanswered: 'ship compact as default',
+        decideBy: new Date(Date.now() + 60 * 60_000).toISOString(),
+      };
+
+      const out = await one({ ...request, [missingField]: undefined });
+
+      expect(out.ok).toBe(false);
+      if (missingField === 'decideBy') expect(out.code).toBe('park_deadline_required');
+      else expect(out.error).toMatch(/defaultIfUnanswered/);
+      expect(parkConsult).not.toHaveBeenCalled();
+      expect(parkWake).not.toHaveBeenCalled();
+      expect(parkNotify).not.toHaveBeenCalled();
+      expect(ownerAskRun).not.toHaveBeenCalled();
+      expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['spend', 'destructive', 'publish', 'security'] as const)(
+    'R-14 preserves the %s owner-authority topic at the set_blocker consult boundary',
+    async (ownerAuthorityTopic) => {
+      const item = { id: 'WI-1', family: 'issue', state: 'open', payload: {} };
+      getWorkItem.mockResolvedValue(item);
+      mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({ ...item, payload: patch }));
+
+      const out = await one({
+        id: item.id, kind: 'human', capability: 'product-decision', ref: 'decision:layout',
+        summary: 'Ship the compact layout as the default?', nextVerb: 'consult:reply',
+        defaultIfUnanswered: 'ship compact as default',
+        decideBy: new Date(Date.now() + 60 * 60_000).toISOString(),
+        ownerAuthorityTopic,
+      });
+
+      expect(out).toMatchObject({ ok: true, changed: true });
+      expect(parkConsult).toHaveBeenCalledOnce();
+      expect(parkConsult).toHaveBeenCalledWith(expect.objectContaining({
+        cascade: expect.objectContaining({ ownerAuthorityTopic }),
+      }));
+      expect(out.activeBlockers).toEqual([expect.objectContaining({ ref: 'consult:conv-r13' })]);
+      expect(ownerAskRun).not.toHaveBeenCalled();
+    },
+  );
+
   it('R-13 opens the decision-review consult and persists its ref before the set_blocker call returns', async () => {
     const item = { id: 'WI-1', family: 'issue', state: 'open', payload: {} };
     getWorkItem.mockResolvedValue(item);
