@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { waitForPrivateHealthSnapshot } from '../../../test/portal-roster-browser-fixture';
+import { reloadPrivateHealthSnapshot, waitForPrivateHealthSnapshot } from '../../../test/portal-roster-browser-fixture';
 
 function clock() {
   let time = 0;
@@ -30,4 +30,40 @@ it.each(['byoc-a', 'byoc-b'])('fails at the deadline when %s never supplies the 
 it('propagates query failures instead of disguising them as stale generations', async () => {
   await expect(waitForPrivateHealthSnapshot(async () => { throw new Error('private query denied'); },
     'byoc-a', () => true, clock())).rejects.toThrow('private query denied');
+});
+
+it('captures the Health response body before reload releases its network resource', async () => {
+  const body = { rows: [{ workspaceId: 'byoc-a', generation: 2 }] };
+  let released = false;
+  let read = false;
+  const response = { json: async () => {
+    if (released) throw new Error('No resource with given identifier found');
+    read = true;
+    return body;
+  } };
+  let receive!: (value: typeof response) => void;
+  let finishReload!: () => void;
+  const page = {
+    waitForResponse: () => new Promise<typeof response>(resolve => { receive = resolve; }),
+    reload: async () => {
+      receive(response);
+      await new Promise<void>(resolve => { finishReload = resolve; });
+      released = true;
+    },
+  } as unknown as Parameters<typeof reloadPrivateHealthSnapshot>[0];
+  const pending = reloadPrivateHealthSnapshot(page);
+  await Promise.resolve();
+  const readBeforeReload = read;
+  finishReload();
+  expect(await pending).toEqual(body);
+  expect(readBeforeReload).toBe(true);
+});
+
+it('preserves response body errors while reload is still pending', async () => {
+  const failure = new Error('original response read failure');
+  const page = {
+    waitForResponse: async () => ({ json: async () => { throw failure; } }),
+    reload: () => new Promise(() => {}),
+  } as unknown as Parameters<typeof reloadPrivateHealthSnapshot>[0];
+  await expect(reloadPrivateHealthSnapshot(page)).rejects.toBe(failure);
 });

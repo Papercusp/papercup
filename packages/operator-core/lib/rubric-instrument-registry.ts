@@ -38,6 +38,7 @@ import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
 } from './code-intelligence/native-adoption';
+import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -670,6 +671,7 @@ export function platformComputedInstrumentKeys(): string[] {
     ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
     // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-033 (R-30/R-31).
     ...Object.values(NATIVE_ADOPTION_INSTRUMENT_KEYS),
+    ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
   ];
 }
 

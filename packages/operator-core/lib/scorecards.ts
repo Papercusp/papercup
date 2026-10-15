@@ -44,6 +44,10 @@ import {
   type NativeAdoptionMetrics,
 } from './code-intelligence/native-adoption';
 import {
+  measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
+  WORK_OVERHEAD_VERSION, type WorkOverheadMetrics, type WorkOverheadWindow,
+} from './agent-work-overhead-metrics';
+import {
   collectGoalHolderBehaviorMetrics,
   holderBehaviorCriterionForInstrument,
   rateGoalHolderBehavior,
@@ -416,6 +420,7 @@ export async function resolveScorecardInstrumentSnapshots(
     pgTableGrowth?: (input: Parameters<typeof measurePgTableGrowthWindow>[1]) => ReturnType<typeof measurePgTableGrowthWindow>;
     /** Native code-intelligence adoption for one workspace window (P-033). */
     nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
+    workOverhead?: (window: WorkOverheadWindow) => Promise<WorkOverheadMetrics>;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
     holderMetrics?: (input: {
       holderOwnerId: string;
@@ -500,6 +505,7 @@ export async function resolveScorecardInstrumentSnapshots(
   const keys = new Set(input.rubric.criteria.map((criterion) =>
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
   ));
+  let workOverheadMeasured: Promise<WorkOverheadMetrics> | null = null;
   for (const key of keys) {
     if (key === BM25_LATENCY_INSTRUMENT_KEY) {
       const base = { measuredAt: BM25_LATENCY_ARTIFACT_IDENTITY.generatedAt,
@@ -546,6 +552,30 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    const overheadCriterion = workOverheadCriterionForInstrument(key);
+    if (overheadCriterion) {
+      const evidenceRef = 'harness_shared.session_turn_parts+adv_sessions:agent-work-overhead';
+      const workspaceId = input.rubric.workspaceId;
+      const harnessSlug = input.rubric.subjectHarnessSlug;
+      if (subject.kind !== 'plan' || input.rubric.subjectPlan !== subject.ref || !workspaceId ||
+          !harnessSlug || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('A concrete workspace/harness and a completed subject-plan window are required.'), evidenceRef };
+        continue;
+      }
+      try {
+        workOverheadMeasured ??= (deps.workOverhead ?? measureWorkOverheadWindow)({
+          workspaceId, harnessSlug, windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+        });
+        const metrics = await workOverheadMeasured;
+        const rating = rateWorkOverhead(metrics)[overheadCriterion];
+        snapshots[key] = { verdict: rating.verdict, measuredAt, provenance: 'platform-computed',
+          evidenceRef, window: { ...window, workspaceId, harnessSlug },
+          value: { resolver: key, resolverVersion: WORK_OVERHEAD_VERSION, reason: rating.reason, metrics } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Work-overhead measurement unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
       continue;
     }
     if (key === PG_TABLE_GROWTH_INSTRUMENT_KEY) {

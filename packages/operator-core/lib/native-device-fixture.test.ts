@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
+import { createTextCollector } from './child-output';
 import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, saveFixtureReceipt, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 import { advanceFixtureDeviceClock, DEVICE_EXPIRY_OFFSET_MS } from './native-device-fixture-clock';
@@ -105,12 +106,11 @@ describe('disposable native HTTPS fixture admission', () => {
         });
       `], { cwd: root, env: { ...process.env, ...privateEnv, MOBILE_JWT_SECRET: 'fixture-only-stable-secret' },
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
-    let childFailure = '';
-    child.stderr!.on('data', chunk => { childFailure += String(chunk); });
+    const childFailure = createTextCollector(child.stderr);
     const message = (type: string) => new Promise<any>((done, reject) => {
       const cleanup = () => { clearTimeout(timer); child.off('message', receive); child.off('exit', exited); };
       const timer = setTimeout(() => { cleanup(); reject(new Error('Missing child proof: ' + type)); }, 10000);
-      const exited = () => { cleanup(); reject(new Error('Fixture child exited: ' + childFailure)); };
+      const exited = () => { cleanup(); reject(new Error('Fixture child exited: ' + childFailure.text())); };
       const receive = (m: any) => { if (m.type === type) { cleanup(); done(m); } };
       child.on('message', receive);
       child.once('exit', exited);

@@ -11,6 +11,8 @@ import * as nativeAdoption from './code-intelligence/native-adoption';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
+import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
   GATE_SENTINEL_HEALTH_COMMAND,
@@ -188,6 +190,8 @@ describe('the registry seed set', () => {
       'woe.goal-mode-base-scorecard',
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
       'storage:disk-headroom-post-shipment-72h',
+      PG_TABLE_GROWTH_INSTRUMENT_KEY,
+      ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
       ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),

@@ -102,7 +102,7 @@ describe('current-build execution route contract', () => {
 
   it.each([
     ['pool', false], ['pool', true], ['launch', false], ['launch', true],
-    ['spawn', false], ['spawn', true],
+    ['spawn', false], ['spawn', true], ['hub', false], ['hub', true],
   ] as const)('retires private native %s pools after the fixture (failure=%s)', (kind, failure) => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-pool-cleanup-'));
     try {
@@ -126,6 +126,9 @@ describe('current-build execution route contract', () => {
       expect(progress.at(-1)).toMatchObject({ exitCode: failure ? 1 : 0 });
       expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
         expect.objectContaining({ application_name: expect.any(String), client_port: expect.any(Number) }),
+      ]));
+      if (kind === 'hub') expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
+        expect.objectContaining({ application_name: expect.stringMatching(/^pcusp:listen-hub:/) }),
       ]));
       // A disconnected TCP handle can retain its local endpoint for one more
       // close callback even though this child already exited normally. The

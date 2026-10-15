@@ -72,7 +72,9 @@ export async function verifyPrivateHudReadPolicy() {
   const { requireLoopbackOr403 } = await import('../lib/endpoint-route/loopback-guard');
   const app = new Hono();
   let handlerReads = 0;
-  app.use('/api/*', hostRebindingGuard);
+  // This preflight models the private desktop host, independently of the
+  // launching operator's intentional remote-admin/distribution exemptions.
+  app.use('/api/*', (c, next) => hostRebindingGuard(c, next, {}));
   app.get('/api/zero-harness/rest-query', c => {
     const refused = requireLoopbackOr403(c.req.raw);
     if (refused) return refused;

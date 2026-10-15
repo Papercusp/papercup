@@ -118,6 +118,8 @@ export interface SnapshotReceiptReconciliation {
   bytesAdded: number | null;
   bytesTotal: number | null;
   durationMs: number | null;
+  /** Positive Kopia absence proof; unknown or a receipt race must never re-drive capture. */
+  artifactAbsent?: boolean;
   note?: string;
 }
 
@@ -332,14 +334,23 @@ export class WorkspaceBackup {
     context?: Record<string, unknown>,
     opts?: {
       onStarted?: (snapshotId: number) => void;
+      /** Re-drive this exact receipt after producer loss; never INSERT a sibling. */
+      resumeSnapshotId?: number;
       /** Report a blocking migration-rendezvous wait while a deploy remains healthy. */
       onMigrationLockWaiting?: BackupMigrationLockWaitReporter;
       /** A scheduler-admitted lock already held on a dedicated session. */
       migrationLock?: BackupMigrationLock;
     },
   ): Promise<SnapshotResult> {
+    if (opts?.resumeSnapshotId !== undefined && (!Number.isSafeInteger(opts.resumeSnapshotId) || opts.resumeSnapshotId <= 0)) {
+      throw new Error('resumeSnapshotId must be a positive safe integer');
+    }
     const current = SNAPSHOT_IN_FLIGHT.get(this.workspaceId);
     if (current) {
+      if (opts?.resumeSnapshotId !== undefined && current.startedId !== opts.resumeSnapshotId) {
+        await opts.migrationLock?.release();
+        throw new Error(`another snapshot is already running for ${this.workspaceId}; refusing to substitute its receipt`);
+      }
       // The scheduler acquires the cross-process rendezvous before it marks
       // its interval attempt in-flight. If this process already has a direct
       // snapshot running, join it — but release the probe lock because the
@@ -367,6 +378,7 @@ export class WorkspaceBackup {
 
     const entry: SnapshotInFlight = {
       promise: undefined as unknown as Promise<SnapshotResult>,
+      startedId: opts?.resumeSnapshotId,
       pendingStartedCallbacks: opts?.onStarted ? [opts.onStarted] : [],
     };
 
@@ -378,6 +390,7 @@ export class WorkspaceBackup {
       },
       onMigrationLockWaiting: opts?.onMigrationLockWaiting,
       migrationLock: opts?.migrationLock,
+      resumeSnapshotId: opts?.resumeSnapshotId,
     });
     entry.promise = run.then(
       (result) => {
@@ -412,6 +425,7 @@ export class WorkspaceBackup {
        * status instead of the tool call itself blocking on it.
        */
       onStarted?: (snapshotId: number) => void;
+      resumeSnapshotId?: number;
       /** Report a blocking migration-rendezvous wait while a deploy remains healthy. */
       onMigrationLockWaiting?: BackupMigrationLockWaitReporter;
       /** A scheduler-admitted lock to hold through the complete snapshot. */
@@ -419,6 +433,7 @@ export class WorkspaceBackup {
     },
   ): Promise<SnapshotResult> {
     const sql = backupHost().getSql();
+    const resumeSnapshotId = opts?.resumeSnapshotId;
     // Durability seam (D-010 / P-011). Pass-through unless a host injects a
     // runner, so this is behaviorally identical to the un-stepped flow when no
     // DBOS host is wired — and gains crash-resume when invoked inside the
@@ -475,7 +490,27 @@ export class WorkspaceBackup {
         // Preserve the package's existing best-effort schema-bootstrap
         // behavior; the INSERT below remains the durable authority.
       }
-      const inserted = await steps.runStep('backup-insert-row', async () => {
+      // The existing migration rendezvous is the cross-process producer fence.
+      // Re-read the receipt/artifact after acquiring it: another producer may
+      // finish while this explicit resume waits for the lock.
+      if (resumeSnapshotId !== undefined && !migrationLock && !backupHost().acquireMigrationLock) {
+        throw new Error('snapshot producer resume requires the cross-process migration lock');
+      }
+      const inserted = resumeSnapshotId !== undefined ? await (async () => {
+        const rows = await sql<{ id: number; trigger_reason: string; sources_json: unknown; started_at: string }[]>`
+          SELECT id, trigger_reason, sources_json, started_at
+          FROM harness_shared.backup_snapshots
+          WHERE workspace_id = ${this.workspaceId} AND id = ${resumeSnapshotId}
+          LIMIT 1
+        `;
+        const row = rows[0];
+        const startedAtMs = row ? Date.parse(row.started_at) : NaN;
+        if (!row || row.trigger_reason !== reason || !Array.isArray(row.sources_json)
+          || row.sources_json.length !== 1 || row.sources_json[0] !== this.workspaceRoot || !Number.isFinite(startedAtMs)) {
+          throw new Error(`snapshot ${resumeSnapshotId} does not match this workspace, source root and trigger`);
+        }
+        return { id: resumeSnapshotId, startedAtMs };
+      })() : await steps.runStep('backup-insert-row', async () => {
         const insertRows = await sql<{ id: number }[]>`
           INSERT INTO harness_shared.backup_snapshots
             (workspace_id, trigger_reason, trigger_context, sources_json)
@@ -491,6 +526,9 @@ export class WorkspaceBackup {
       });
       snapshotRowId = inserted.id;
       startedAtMs = inserted.startedAtMs;
+      // A resume does not own the original receipt's verdict until the lock
+      // and artifact check prove that capture really needs to be re-driven.
+      receiptFinalized = opts?.resumeSnapshotId !== undefined;
       opts?.onStarted?.(snapshotRowId);
 
       // The durable row intentionally exists before pg_dump + kopia, which can
@@ -520,6 +558,23 @@ export class WorkspaceBackup {
             ? { onWaiting: opts.onMigrationLockWaiting }
             : undefined,
         );
+      }
+      if (opts?.resumeSnapshotId !== undefined) {
+        const receipt = await this.reconcileSnapshotReceipt(snapshotRowId!);
+        if (!receipt.stillRunning) {
+          receiptFinalized = true;
+          if (!receipt.kopiaSnapshotId || !['ok', 'degraded'].includes(receipt.status)
+            || (reason === 'pre_destructive' && receipt.dbDumpOk !== true)) {
+            throw new Error(`snapshot ${snapshotRowId} is terminal without a usable backup; refusing to overwrite it`);
+          }
+          return { snapshotId: receipt.snapshotId, kopiaSnapshotId: receipt.kopiaSnapshotId,
+            bytesAdded: receipt.bytesAdded ?? 0, durationMs: receipt.durationMs ?? 0, dbDumpOk: receipt.dbDumpOk };
+        }
+        if (receipt.artifactAbsent !== true) {
+          throw new Error(`snapshot ${snapshotRowId} has no positive artifact-absence proof; re-read its receipt before resuming`);
+        }
+        receiptFinalized = false;
+        await this.event(snapshotRowId!, 'progress', { phase: 'producer_resumed' });
       }
       await this.ensureRepo();
       const password = await deriveRepoPassword(this.workspaceId);
@@ -930,7 +985,8 @@ export class WorkspaceBackup {
       '--json',
     ], { env });
     const manifests = JSON.parse(raw) as KopiaSnapshotManifest[];
-    if (!Array.isArray(manifests) || manifests.length === 0) {
+    if (!Array.isArray(manifests)) throw new Error('Kopia snapshot list returned a malformed manifest list');
+    if (manifests.length === 0) {
       return {
         snapshotId,
         reconciled: false,
@@ -941,6 +997,7 @@ export class WorkspaceBackup {
         bytesAdded: null,
         bytesTotal: null,
         durationMs: null,
+        artifactAbsent: row.kopia_snapshot_id === null,
         note: 'No completed Kopia artifact carries this row id yet; keep polling the receipt.',
       };
     }

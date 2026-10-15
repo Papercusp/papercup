@@ -61,11 +61,12 @@ export interface CodexContextSnapshot {
   modelContextWindow: number | null;
 }
 
-/** One bounded tail read is enough: Codex writes a token_count event after each
- * model response, so the newest valid event is the authoritative current gauge.
+/** The fast path reads one bounded tail. If a large tool result displaced the
+ * latest token_count beyond it, extend the read backward in bounded chunks.
  * A native compaction/reset is reflected by the next event's lower
  * last_token_usage; cumulative total_token_usage is deliberately ignored. */
 const CODEX_TOKEN_TAIL_BYTES = 1024 * 1024;
+const CODEX_TOKEN_SCAN_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * WI-10005305: the compaction-compliance sweep asks for the same rollout twice
@@ -111,25 +112,44 @@ export async function codexContextSnapshotFromRollout(
       rememberCodexSnapshot(pathStr, memo);
       return memo.snapshot;
     }
-    const start = Math.max(0, st.size - CODEX_TOKEN_TAIL_BYTES);
+    let readStart = Math.max(0, st.size - CODEX_TOKEN_TAIL_BYTES);
     const fh = await fileOps.open(pathStr, 'r');
     let text: string;
     let complete: boolean;
     try {
-      const buf = Buffer.alloc(st.size - start);
-      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
-      complete = bytesRead === buf.length;
-      text = buf.toString('utf8', 0, bytesRead);
+      const initial = Buffer.alloc(st.size - readStart);
+      const { bytesRead: initialBytesRead } = await fh.read(initial, 0, initial.length, readStart);
+      complete = initialBytesRead === initial.length;
+      const chunks = [initial.subarray(0, initialBytesRead)];
+      let scannedBytes = initialBytesRead;
+      text = Buffer.concat(chunks).toString('utf8');
+      let snapshot = codexContextSnapshotFromText(text);
+      while (complete && snapshot === null && readStart > 0 && scannedBytes < CODEX_TOKEN_SCAN_MAX_BYTES) {
+        const chunkStart = Math.max(0, readStart - Math.min(
+          CODEX_TOKEN_TAIL_BYTES,
+          CODEX_TOKEN_SCAN_MAX_BYTES - scannedBytes,
+        ));
+        const older = Buffer.alloc(readStart - chunkStart);
+        const { bytesRead } = await fh.read(older, 0, older.length, chunkStart);
+        if (bytesRead !== older.length) {
+          complete = false;
+          break;
+        }
+        chunks.unshift(older);
+        scannedBytes += bytesRead;
+        readStart = chunkStart;
+        text = Buffer.concat(chunks).toString('utf8');
+        snapshot = codexContextSnapshotFromText(text);
+      }
+      // Keep the complete stat'ed tail, including a no-sample result, so an
+      // unchanged rollout does not repeat the bounded fallback scan each sweep.
+      if (complete) {
+        rememberCodexSnapshot(pathStr, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, snapshot });
+      }
+      return snapshot;
     } finally {
       await fh.close();
     }
-    const snapshot = codexContextSnapshotFromText(text);
-    // A short read means the file shrank after the stat; the result does not
-    // describe the stat'ed contents, so it is returned but not remembered.
-    if (complete) {
-      rememberCodexSnapshot(pathStr, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, snapshot });
-    }
-    return snapshot;
   } catch {
     return null;
   }

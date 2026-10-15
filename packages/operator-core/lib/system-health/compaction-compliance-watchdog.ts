@@ -63,6 +63,11 @@ import type {
   CompactionForceSuccessorInput,
   CompactionForceSuccessorResult,
 } from './compaction-force-successor';
+import {
+  TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS,
+  TURN_EVIDENCE_HOOK_ACTIVITY_PHASES,
+  TURN_EVIDENCE_HOOK_TOOLS,
+} from '../events/await/turn-proof';
 
 type CompactionConditionKind = 'context-death' | 'tool-reference-death' | 'compaction-stranding' |
   'dark-presence' | 'dark-telemetry' | 'implausible-reading' | 'frozen-codex-reading' |
@@ -599,8 +604,8 @@ const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
 
 /**
  * WI-2140608 — a null sweep advances the dark-telemetry streak ONLY when the session was
- * ACTIVE inside this window (its `last_active_at`, which the 60s keepalive beat never bumps —
- * see CODEX_FROZEN_READING_MAX_LAG_MS). The P-018 hazard is a session CONSUMING context while
+ * ACTIVE inside this window (the latest eligible turn call, not `coord_presence.last_active_at`,
+ * which hook-origin dispatches also refresh). The P-018 hazard is a session CONSUMING context while
  * blind; a blind session that takes no turns cannot overflow anything. Measured 2026-09-01
  * (292 open dark-telemetry rows = ~146 distinct owners/day, 70% codex, one row per owner —
  * the PG dedup was never the problem): the flag fired a median 2–3h after the owner's first
@@ -608,20 +613,20 @@ const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
  * again — the null was a transient idle stretch (a carry-respawn successor parked until its
  * wake, a codex rollout stalled at a walled account before its first token_count) that the
  * old "3 consecutive null sweeps" rule read as blindness. 5min = 2.5 sweeps: an idle session
- * falls out of the window inside one sweep; a session mid-turn (every tool dispatch bumps
- * last_active_at) never does.
+ * falls out of the window inside one sweep; a session making eligible tool calls stays active,
+ * while hook-only dispatches do not count.
  */
 const DARK_TELEMETRY_ACTIVE_WINDOW_MS = 5 * 60_000;
 
-function activeWithin(lastActiveAt: string | null | undefined, windowMs: number, nowMs = Date.now()): boolean {
-  if (!lastActiveAt) return false;
-  const t = Date.parse(lastActiveAt);
+function activeWithin(lastTurnAt: string | Date | null | undefined, windowMs: number, nowMs = Date.now()): boolean {
+  if (!lastTurnAt) return false;
+  const t = new Date(lastTurnAt).getTime();
   return Number.isFinite(t) && nowMs - t <= windowMs;
 }
 
 /**
  * EI-21595542328480968 — how far a codex rollout's mtime may lag the session's OWN
- * `last_active_at` before the reading taken from it is treated as FROZEN (belonging
+ * latest eligible turn call before the reading taken from it is treated as FROZEN (belonging
  * to a dead predecessor) rather than as this session's usage.
  *
  * The defect: codex homes are keyed by the adv_sessions ROW id, so an owner holding
@@ -631,18 +636,14 @@ function activeWithin(lastActiveAt: string | null | undefined, windowMs: number,
  * recovery, and eventually SELF-SUPPRESSES, leaving a live over-limit session with
  * its backstop disarmed. That end state was observed on a real session.
  *
- * The margin is drawn from the measured population, not from the handful of sessions
- * that led to the defect (133 live codex sessions, 2026-08-27): the lag is NEGATIVE
- * for healthy sessions — the rollout is written at least as recently as the last tool
- * dispatch — with p50 −0.2min, p95 ≈ 0, and only 3 of 133 above +5min. 15min sits ~5×
- * above the largest healthy positive lag and ~6× below the 90.7min pathology, and is
- * comfortably wider than any single long turn (which can bump `last_active_at`
- * repeatedly before codex writes its next token_count event).
+ * The 15min threshold was calibrated against 133 live codex sessions on 2026-08-27 using
+ * last_active_at. Hook-origin activity also refreshes that proxy, so those historical lag
+ * percentiles do not calibrate the turn timestamp used here. Keep the threshold as a
+ * guardrail pending a fresh cohort; evaluation now requires a recent eligible turn.
  *
- * ⚠ `last_active_at` is load-bearing and only works because the 60s keepalive beat
- * does NOT touch it (presence.ts D-003: `touchHeartbeat` bumps heartbeat_at ONLY).
- * An idle session therefore has an OLD last_active_at and so a small lag — which is
- * exactly the class that sank the first attempt at this fix.
+ * Presence activity is not turn evidence: hook-origin dispatches can refresh
+ * last_active_at without consuming context. This check receives the latest eligible turn
+ * timestamp from a bounded tool_invocations probe; idle sessions have no recent timestamp.
  */
 const CODEX_FROZEN_READING_MAX_LAG_MS = 15 * 60_000;
 
@@ -687,16 +688,16 @@ export function resetCompactionStrandingForTests(): void {
  */
 export async function frozenCodexReading(
   ownerId: string,
-  lastActiveAt: string | Date | null,
+  lastTurnAt: string | Date | null,
 ): Promise<{ lagMs: number; rolloutPath: string } | null> {
-  if (lastActiveAt == null) return null;
-  const lastActiveMs = new Date(lastActiveAt).getTime();
-  if (!Number.isFinite(lastActiveMs)) return null;
+  if (lastTurnAt == null) return null;
+  const lastTurnMs = new Date(lastTurnAt).getTime();
+  if (!Number.isFinite(lastTurnMs)) return null;
   const prov = await codexReadingProvenanceForOwner(ownerId).catch(() => null);
   if (!prov || prov.rolloutMtimeMs == null) return null;
   if (prov.rolloutSessionId == null || prov.refSessionId == null) return null;
   if (prov.rolloutSessionId === prov.refSessionId) return null;
-  const lagMs = lastActiveMs - prov.rolloutMtimeMs;
+  const lagMs = lastTurnMs - prov.rolloutMtimeMs;
   if (lagMs <= CODEX_FROZEN_READING_MAX_LAG_MS) return null;
   return { lagMs, rolloutPath: prov.rolloutPath };
 }
@@ -2597,6 +2598,9 @@ export async function checkCompactionCompliance(
     );
   }
   try {
+    const excludedAgentTools = [...TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS];
+    const hookTools = [...TURN_EVIDENCE_HOOK_TOOLS];
+    const hookPhases = [...TURN_EVIDENCE_HOOK_ACTIVITY_PHASES];
     const rows = await sql<
       {
         owner_id: string;
@@ -2606,14 +2610,30 @@ export async function checkCompactionCompliance(
         workspace_id: string;
         fleet_slug: string | null;
         fleet_role: string | null;
-        last_active_at: string | null;
+        last_turn_at: string | Date | null;
       }[]
     >`
-      SELECT owner_id, owner_label, workspace_id, compaction_limit, compaction_limit_explicit, fleet_slug, fleet_role,
-             last_active_at
-        FROM harness_shared.coord_presence
-       WHERE compaction_limit IS NOT NULL
-         AND heartbeat_at > now() - interval '10 minutes'
+      SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.compaction_limit, cp.compaction_limit_explicit,
+             cp.fleet_slug, cp.fleet_role, turn_evidence.last_turn_at
+        FROM harness_shared.coord_presence cp
+        LEFT JOIN LATERAL (
+          -- Top-one probe rides tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC).
+          SELECT ti.invoked_at AS last_turn_at
+            FROM harness_shared.tool_invocations ti
+           WHERE ti.coord_owner_id = cp.owner_id
+             AND ti.workspace_id = cp.workspace_id
+             AND ti.invoked_at > now() - interval '15 minutes'
+             AND (
+               (ti.call_origin = 'agent' AND NOT (ti.tool_name = ANY(${excludedAgentTools})))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = ANY(${hookTools}))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
+                   AND ti.args_json->>'phase' = ANY(${hookPhases}))
+             )
+           ORDER BY ti.invoked_at DESC
+           LIMIT 1
+        ) turn_evidence ON TRUE
+       WHERE cp.compaction_limit IS NOT NULL
+         AND cp.heartbeat_at > now() - interval '10 minutes'
     `;
     for (const r of rows) {
       // A duplicate candidate is ambiguous; neither copy may recover an episode.
@@ -2777,7 +2797,7 @@ export async function checkCompactionCompliance(
         // stalled before its first token_count) is not consuming context and cannot overflow.
         // Idle sweeps neither advance nor reset the streak: the hazard is turns-while-blind,
         // and three of those over ANY span is the signal, however much idle time sits between.
-        if (!activeWithin(r.last_active_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
+        if (!activeWithin(r.last_turn_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
         const sessionId = estimateRef?.sessionId ?? null;
         const previous = nullEstimateStreak.get(r.owner_id);
         const streak = previous?.sessionId === sessionId ? previous.count + 1 : 1;
@@ -2967,7 +2987,7 @@ export async function checkCompactionCompliance(
       // session — not the thresholds inside it. See frozenCodexReading's header.
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
         carryRespawnHealthySampleAt.delete(r.owner_id);
-        const frozen = await frozenCodexReading(r.owner_id, r.last_active_at).catch(() => null);
+        const frozen = await frozenCodexReading(r.owner_id, r.last_turn_at).catch(() => null);
         if (frozen) {
           await raiseCompactionCondition(r.workspace_id, r.owner_id, 'frozen-codex-reading', `Estimate came from mismatched frozen rollout ${frozen.rolloutPath}.`, deps);
           out.frozenCodexReadings.push({ owner: r.owner_id, est, lagMs: frozen.lagMs });

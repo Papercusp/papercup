@@ -66,6 +66,7 @@ it('retains exact original private worker browser and selected persistence recei
     ['phases/prepare/source.json', '{"source":"original"}\n'],
     ['phases/prepare/operator-api-preflight.json', '{"api":"original input"}\n'],
     ['phases/execute/lifecycle.json', '{"ended":true}\n'],
+    ['phases/execute/worker.log', 'worker output before timeout\n'],
     ['phases/execute/worker-result.json', '{"code":0,"output":"original worker"}\n'],
     ['phases/execute/portal-browser-source.json', '{"bundle":"original browser"}\n'],
     ['phases/execute/portal-browser-receipt.json', '{"keyboardSave":true}\n'],
@@ -333,7 +334,11 @@ it('delivers the intended denial Host on the wire before trusting a private brow
 });
 
 it('preflights native HUD read policy and the exact host denial before private PG', async () => {
-  expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });
+  vi.stubEnv('PAPERCUSP_ALLOW_REMOTE_ADMIN', '1');
+  vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'hosted-control-plane');
+  try {
+    expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });
+  } finally { vi.unstubAllEnvs(); }
   expect(() => verifyPrivateHudHostDenial(200, JSON.stringify({ rows: [] }))).toThrow();
   expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: 'loopback_only' }))).toThrow();
   expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: { code: 'unrelated_denial' } }))).toThrow();

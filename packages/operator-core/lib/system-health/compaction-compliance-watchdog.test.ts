@@ -232,6 +232,8 @@ import { defaultCompactionLimitForWindow, MODEL_WINDOW_1M, MODEL_WINDOW_DEFAULT 
 /** Fake postgres tag: routes on the query text — the seed query selects
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
  *  `spawned_agents` keyed by the interpolated ownerId (first tag value). */
+const observedSqlQueries: Array<{ query: string; values: unknown[] }> = [];
+
 function fakeSql(opts: {
   unseeded?: Array<{ owner_id: string; fleet_slug?: string | null; fleet_role?: string | null }>;
   seeded?: Array<{
@@ -242,8 +244,9 @@ function fakeSql(opts: {
     compaction_limit_explicit?: boolean | null;
     fleet_slug?: string | null;
     fleet_role?: string | null;
-    /** EI-21595542328480968: the session's own last ACTIVITY (never bumped by the
-     *  keepalive beat), against which a codex rollout's mtime is judged. */
+    /** Latest eligible turn call returned by the bounded tool_invocations probe. */
+    last_turn_at?: string | Date | null;
+    /** Fresh hook-only presence activity used to guard against false turn evidence. */
     last_active_at?: string | null;
   }>;
   /** Active adv-session owners used by ended-session signal recovery. */
@@ -277,6 +280,7 @@ function fakeSql(opts: {
 }) {
   return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
+    observedSqlQueries.push({ query: q, values });
     if (q.includes('harness_shared.routines') && q.includes('target_owner_id')) {
       return Promise.resolve(opts.presenceGaps ?? []);
     }
@@ -316,6 +320,7 @@ function fakeSql(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  observedSqlQueries.length = 0;
   estimateMock.mockResolvedValue(null);
   observedPromptFloorMock.mockReturnValue(null);
   contextWindowMock.mockResolvedValue(null);
@@ -405,7 +410,7 @@ describe('original compaction durable episodes', () => {
     const openedKeys: string[] = [], resolvedKeys: string[] = [];
     const open = new Map<string, number>();
     const row = { owner_id: 'su-episode', owner_label: 'episode', workspace_id: 'workspace',
-      compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
+      compaction_limit: 100_000, compaction_limit_explicit: true, last_turn_at: new Date().toISOString() };
     const resolveForceSuccessorTarget = vi.fn(async (_ownerId: string): Promise<ResolveResumeResult> => ({
       ok: false as const, error: 'not_found' as const, detail: 'no fixture source',
     }));
@@ -1065,6 +1070,7 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
       advSessionId: 41,
     });
     expect(out.estimated).toEqual([]);
+    expect(out.bootConfigAlerts).toEqual([]); // the measured estimate was non-null; only its guarded cache write was rejected
     expect(out.overLimit).toEqual([]);
     expect(out.forceCompacted).toEqual([]);
     expect(injectMock).not.toHaveBeenCalled();
@@ -2192,18 +2198,18 @@ describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', ()
 });
 
 describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', () => {
-  // WI-2140608: the streak only advances on ACTIVE null sweeps (last_active_at inside
+  // WI-2140608: the streak only advances on ACTIVE null sweeps (last eligible turn inside
   // DARK_TELEMETRY_ACTIVE_WINDOW_MS), so the blind session under test is one that keeps
   // taking turns. `idle()` is the parked / provider-stalled shape the old rule misread.
   const active = () => [
-    { owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_active_at: new Date().toISOString() },
+    { owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_turn_at: new Date().toISOString() },
   ];
   const idle = () => [
     {
       owner_id: 'blind',
       owner_label: 'su · blind',
       compaction_limit: 300_000,
-      last_active_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+      last_turn_at: new Date(Date.now() - 20 * 60_000).toISOString(),
     },
   ];
   let seeded: ReturnType<typeof active> = [];
@@ -2251,6 +2257,35 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     const p4 = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(p4.bootConfigAlerts).toEqual([{ owner: 'blind', kind: 'dark-telemetry', detail: '4 null sweeps' }]);
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a fresh hook-only presence dispatch as an active turn', async () => {
+    estimateMock.mockResolvedValue(null);
+    const hookOnly = [{
+      owner_id: 'blind',
+      owner_label: 'su · blind',
+      compaction_limit: 300_000,
+      last_active_at: new Date().toISOString(),
+      last_turn_at: null,
+    }];
+
+    for (let sweep = 0; sweep < 4; sweep++) {
+      const out = await checkCompactionCompliance(fakeSql({ seeded: hookOnly }));
+      expect(out.bootConfigAlerts).toEqual([]);
+    }
+    expect(openEscalationMock).not.toHaveBeenCalled();
+
+    const query = observedSqlQueries.find(({ query }) =>
+      query.includes('FROM harness_shared.coord_presence cp') && query.includes('harness_shared.tool_invocations'));
+    expect(query).toBeDefined();
+    expect(query!.query).toContain("ti.invoked_at > now() - interval '15 minutes'");
+    expect(query!.query).toContain('ti.coord_owner_id = cp.owner_id');
+    expect(query!.query).toContain("ti.call_origin = 'agent'");
+    expect(query!.query).toContain("ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'");
+    expect(query!.query).toContain("ti.args_json->>'phase' = ANY(");
+    expect(query!.values).toContainEqual(['session:request-compaction']);
+    expect(query!.values).toContainEqual(['journal:record-turn', 'locks:acquire', 'locks:check_command', 'locks:release']);
+    expect(query!.values).toContainEqual(['pre', 'post']);
   });
 
   it('a resolved estimate clears the streak — a brief null run never reaches the escalation threshold', async () => {
@@ -2301,7 +2336,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     }
     expect(openEscalationMock).not.toHaveBeenCalled();
     // A row with NO recorded activity (never took a turn since presence started) is idle too.
-    const never = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_active_at: null }];
+    const never = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_turn_at: null }];
     for (let i = 0; i < 5; i++) await checkCompactionCompliance(fakeSql({ seeded: never }));
     expect(openEscalationMock).not.toHaveBeenCalled();
   });
@@ -2389,7 +2424,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     await checkCompactionCompliance(fakeSql({
       activeSessionOwners: ['active-dark'],
       seeded: [{ owner_id: 'active-dark', owner_label: 'su · active-dark', compaction_limit: 300_000,
-        last_active_at: new Date().toISOString() }],
+        last_turn_at: new Date().toISOString() }],
     }), activeDeps);
     expect(activeResolved).toEqual([]);
 
@@ -2449,7 +2484,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     estimateMock.mockResolvedValue(null);
     resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 's-codex', sessionKey: 42 });
     const codexSeeded = [
-      { owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000, last_active_at: new Date().toISOString() },
+      { owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000, last_turn_at: new Date().toISOString() },
     ];
     openEscalationMock.mockClear();
     let last;
@@ -2462,7 +2497,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
 
   it('does NOT exempt a raw NULL adv_sessions owner when reconciliation recovers a real Claude session', async () => {
     const recovered = [
-      { owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000, last_active_at: new Date().toISOString() },
+      { owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000, last_turn_at: new Date().toISOString() },
     ];
     estimateMock.mockResolvedValue(null);
     // The incident shape: the primary DB row is absent, but the owner-scoped
@@ -3105,7 +3140,7 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
     owner_id: 'cx',
     owner_label: 'su · cx',
     compaction_limit: limit,
-    last_active_at: new Date(NOW).toISOString(),
+    last_turn_at: new Date(NOW).toISOString(),
   });
 
   it("IGNORES an over-limit reading proven to come from another session's frozen rollout", async () => {
@@ -3122,6 +3157,22 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
     expect(setEstimateMock).not.toHaveBeenCalled();
     // A frozen cached number is worse than none — it pins a live gauge over-limit.
     expect(clearEstimateMock).toHaveBeenCalledWith('cx');
+  });
+
+  it('does not mark an idle session frozen from hook-only presence activity', async () => {
+    estimateMock.mockResolvedValue(227_005);
+    codexProvenanceMock.mockResolvedValue(provenance(90.7));
+    const hookOnly = {
+      ...sweepRow(),
+      last_active_at: new Date(NOW).toISOString(),
+      last_turn_at: null,
+    };
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [hookOnly] }));
+
+    expect(out.frozenCodexReadings).toEqual([]);
+    expect(out.overLimit).toEqual(['cx']);
+    expect(clearEstimateMock).not.toHaveBeenCalled();
+    expect(codexProvenanceMock).not.toHaveBeenCalled();
   });
 
   it('leaves an UNDER-LIMIT session alone even when it satisfies both conjuncts', async () => {
@@ -3146,7 +3197,7 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
 
   it('TRUSTS an idle session whose rollout is merely old (the liveness conjunct)', async () => {
     // An IDLE session legitimately shows an identity mismatch: nobody has written its
-    // rollout, while its ref's native id churned past it. Its last_active_at is old
+    // rollout, while its ref's native id churned past it. Its last eligible turn is old
     // too, so the lag stays small — which is the only thing separating it from the
     // pathology. This is the class (15 of 16) the reverted gate wrongly nulled.
     estimateMock.mockResolvedValue(219_915);
