@@ -35,7 +35,6 @@ import {
   closeSync,
   chmodSync,
   existsSync,
-  mkdtempSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -46,11 +45,11 @@ import {
   writeFileSync,
 } from 'node:fs';
 import * as fsp from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
 import { prepareKickoffEnvironment } from './agent-kickoff/prompt-transport.mjs';
+import { controlPlaneTempRoot, createControlPlaneTempFile } from './control-plane-temp.mjs';
 import type { ColorScheme } from './console-color-schemes';
 // WI-37920 / P-001: plain-ESM shared module — psu-launcher.mjs (bare `node`,
 // cannot import TypeScript) imports the SAME definitions, so detection and
@@ -1465,24 +1464,7 @@ function createKickoffProofRequest(): KickoffProofRequest {
   // existing private per-user runtime mount so a full scratch volume cannot
   // prevent the parent and child from establishing kickoff proof (WI-10007856).
   // Hosts without such a directory retain their ordinary OS temp route.
-  const uid = process.getuid?.();
-  const runtime = [process.env.XDG_RUNTIME_DIR, uid === undefined ? undefined : `/run/user/${uid}`]
-    .find((candidate) => {
-      if (!candidate || !isAbsolute(candidate)) return false;
-      try {
-        const info = statSync(candidate);
-        return info.isDirectory() && info.uid === uid && (info.mode & 0o077) === 0;
-      } catch { return false; }
-    });
-  const path = join(
-    runtime ?? tmpdir(),
-    `papercup-kickoff-proof-${process.pid}-${Date.now()}-${randomBytes(12).toString('hex')}.json`,
-  );
-  const fd = openSync(path, 'wx', 0o600);
-  closeSync(fd);
-  // `wx` applies the mode at creation; chmod makes the invariant explicit even
-  // when a host has an unusual umask or an intercepted fs implementation.
-  chmodSync(path, 0o600);
+  const path = createControlPlaneTempFile('papercup-kickoff-proof-', '.json', 'payload');
   return { path, token };
 }
 
@@ -1699,13 +1681,10 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
   //      null (the default) flows straight through buildConsoleOneliner to an
   //      unmodified banner, so an opted-out caller sees zero behavior change.
   const receiptPath = opts.verifyBootReceipt
-    ? join(mkdtempSync(join(tmpdir(), 'papercup-console-receipt-')), 'boot.log')
+    ? createControlPlaneTempFile('papercup-console-receipt-', '.log', 'payload')
     : null;
   const terminalPidReceiptPath = opts.captureTerminalPid
-    ? join(
-        tmpdir(),
-        `papercup-console-terminal-pid-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`,
-      )
+    ? createControlPlaneTempFile('papercup-console-terminal-pid-', '.txt', 'payload')
     : null;
 
   // 2. Build the one-liner once (appearance/OSC colors + cd + env + sentinel +
@@ -1919,7 +1898,7 @@ async function spawnConsolePrepared(opts: SpawnConsoleOpts): Promise<SpawnConsol
     return { status: 'error', code: 500, error: `Could not prepare GNOME terminal settings: ${error instanceof Error ? error.message : String(error)}` };
   }
   const childArgs = [...term.args, 'bash', '-lc', oneliner];
-  const stderrPath = join(tmpdir(), `papercup-console-stderr-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+  const stderrPath = createControlPlaneTempFile('papercup-console-stderr-', '.log', 'payload');
   let stderrFd: number | null = null;
   try {
     stderrFd = openSync(stderrPath, 'w');
@@ -2150,7 +2129,7 @@ async function spawnMacConsole(
   let stderrPath: string | null = null;
   try {
     const inv = macConsoleInvocation(oneliner, {
-      tmpDir: process.env.TMPDIR || '/tmp',
+      tmpDir: controlPlaneTempRoot('payload'),
       nowMs: Date.now(),
       pid: process.pid,
       hasITerm: existsSync('/Applications/iTerm.app'),
@@ -2158,7 +2137,7 @@ async function spawnMacConsole(
     writeFileSync(inv.file, inv.content, { mode: 0o755 });
     // Capture `open`'s stderr so the operator error carries LaunchServices' own
     // words (e.g. "-10810") rather than a bare exit code.
-    stderrPath = join(tmpdir(), `papercup-console-stderr-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`);
+    stderrPath = createControlPlaneTempFile('papercup-console-stderr-', '.log', 'payload');
     let stderrFd: number | null = null;
     try {
       stderrFd = openSync(stderrPath, 'w');
@@ -2320,7 +2299,7 @@ export function macConsoleInvocation(
 export function headlessLogPath(
   opts: { logDir?: string | null; label: string; nowMs?: number; pid?: number },
 ): string {
-  const dir = opts.logDir?.trim() || tmpdir();
+  const dir = opts.logDir?.trim() || controlPlaneTempRoot('log');
   const safe = opts.label.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'headless';
   const stamp = `${opts.pid ?? process.pid}-${opts.nowMs ?? Date.now()}`;
   return join(dir, `${safe}-${stamp}.log`);

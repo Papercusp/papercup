@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { controlPlaneTempCandidates } from '../control-plane-temp.mjs';
 import { consumeKickoffPromptFile, INLINE_KICKOFF_MAX_BYTES, KICKOFF_PROMPT_FILE_ENV, prepareKickoffEnvironment } from './prompt-transport.mjs';
 
 const large = "Review every outcome verbatim: '$(`never execute`) — ☎\n".repeat(6000);
@@ -30,6 +31,8 @@ describe('free-form kickoff file transport', () => {
     expect(readFileSync(path, 'utf8')).toBe(large);
     expect(statSync(path).mode & 0o077).toBe(0);
     expect(statSync(dirname(path)).mode & 0o077).toBe(0);
+    expect(controlPlaneTempCandidates('payload').map((root) => realpathSync(root)))
+      .toContain(realpathSync(dirname(dirname(path))));
     expect(consumeKickoffPromptFile(path)).toBe(large);
     expect(existsSync(path)).toBe(false);
     expect(() => consumeKickoffPromptFile(path)).toThrow();

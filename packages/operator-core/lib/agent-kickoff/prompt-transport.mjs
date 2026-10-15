@@ -1,6 +1,6 @@
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, lstatSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import { createControlPlaneTempDirWithFile } from '../control-plane-temp.mjs';
 
 // Free-form first-turn transport only; managed session-port files keep their
 // separate authority/hash protocol. Share this plain ESM seam with the Node PSU.
@@ -14,13 +14,10 @@ const CLEANUP_MS = 10 * 60 * 1000;
 export function prepareKickoffEnvironment(env) {
   const text = env?.PAPERCUSP_KICKOFF_PROMPT;
   if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') <= INLINE_KICKOFF_MAX_BYTES) return env;
-  const root = tmpdir();
-  mkdirSync(root, { recursive: true });
-  const directory = realpathSync(mkdtempSync(join(root, PREFIX)));
+  const directory = realpathSync(createControlPlaneTempDirWithFile(PREFIX, FILENAME, text, 'payload'));
   const path = join(directory, FILENAME);
   try {
     chmodSync(directory, 0o700);
-    writeFileSync(path, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
     throw error;

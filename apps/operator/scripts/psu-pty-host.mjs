@@ -48,6 +48,7 @@ import { spawn } from 'node:child_process';
 // the same dependency-free signature as the governed turn taxonomy.
 import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
+import { controlPlaneTempCandidates } from '../../../packages/operator-core/lib/control-plane-temp.mjs';
 import {
   AGENT_IDENTITY_SPEC_ENV,
   stageAgentIdentityTty,
@@ -3507,11 +3508,16 @@ export function socketPathFor(ownerId, dir = PSU_PTY_DIR) {
   const original = join(dir, `${key}.sock`);
   if (Buffer.byteLength(original) <= 100) return original;
   const namespace = createHash('sha256').update(resolve(dir)).digest('hex').slice(0, 16);
-  const root = `/tmp/pc-pty-${process.getuid?.() ?? 'user'}`;
-  const shortDir = join(root, namespace);
-  const named = join(shortDir, `${key}.sock`);
-  return Buffer.byteLength(named) <= 100 ? named :
-    join(shortDir, `${createHash('sha256').update(key).digest('hex').slice(0, 48)}.sock`);
+  const userNamespace = 'pc-' + (process.getuid?.() ?? 'user');
+  const hashedKey = createHash('sha256').update(key).digest('hex').slice(0, 48) + '.sock';
+  for (const root of controlPlaneTempCandidates('socket')) {
+    const shortDir = join(root, userNamespace, namespace);
+    const named = join(shortDir, key + '.sock');
+    if (Buffer.byteLength(named) <= 100) return named;
+    const hashed = join(shortDir, hashedKey);
+    if (Buffer.byteLength(hashed) <= 100) return hashed;
+  }
+  throw new Error('psu-pty-host: no writable temp root fits a private Unix socket path');
 }
 
 function ensureControlSocketDir(sock) {

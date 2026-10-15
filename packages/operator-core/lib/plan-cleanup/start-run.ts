@@ -12,6 +12,8 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { join } from 'node:path';
+import { papercuspPathForWorkspace } from '../papercusp-root';
 import {
   BulkRunAlreadyActiveError,
   createRun,
@@ -223,6 +225,7 @@ export async function launchCleanupResolver(
         },
       },
       label: `plan-cleanup-${runId.slice(0, 12)}`,
+      logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
       coordOwnerId: resolverOwner,
       launchedBy: 'plan-cleanup',
     });

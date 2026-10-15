@@ -12,9 +12,10 @@ import { EventEmitter } from 'node:events';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, sep } from 'node:path';
 import * as nodePty from '@lydell/node-pty';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { controlPlaneTempRoot } from './control-plane-temp.mjs';
 import {
   buildConsoleOneliner,
   keepWindowOpenOnFailure,
@@ -596,8 +597,9 @@ describe('headlessLogPath — per-session log filename (headless-fleet-launch P-
     expect(base).not.toMatch(/[\s·()]/);
     expect(base).toBe('my-fleet-member-1-3-plan-42-1000.log');
   });
-  it('falls back to tmpdir when no dir given, and never yields an empty base name', () => {
+  it('uses the control-plane runtime root when no log directory is given', () => {
     const p = headlessLogPath({ logDir: null, label: '···', pid: 1, nowMs: 2 });
+    expect(p.startsWith(controlPlaneTempRoot('log') + sep)).toBe(true);
     expect(p).toMatch(/headless-1-2\.log$/);
   });
 });

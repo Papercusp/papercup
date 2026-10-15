@@ -67,7 +67,29 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+const runStartedAt = () => new Date().toISOString();
+
+function withDefaultRunStart(details: unknown): unknown {
+  if (typeof details === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(details);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        && !Object.prototype.hasOwnProperty.call(parsed, 'runStartedAt')) {
+        return JSON.stringify({ ...parsed, runStartedAt: runStartedAt() });
+      }
+    } catch { /* keep malformed fixture text unchanged */ }
+    return details;
+  }
+  if (details && typeof details === 'object' && !Array.isArray(details)
+    && !Object.prototype.hasOwnProperty.call(details, 'runStartedAt')) {
+    return { ...details, runStartedAt: runStartedAt() };
+  }
+  return details;
+}
+
 function run(over: Partial<TestRunEvidenceRow> = {}): TestRunEvidenceRow {
+  const hasExecutionDetails = Object.prototype.hasOwnProperty.call(over, 'execution_details');
+  const { execution_details, ...rest } = over;
   return {
     id: 42,
     file_path: TEST,
@@ -77,9 +99,11 @@ function run(over: Partial<TestRunEvidenceRow> = {}): TestRunEvidenceRow {
     workspace_id: 'ws-1',
     commit_sha: 'abcdef0123456789',
     worktree_dirty: false,
-    execution_details: { collectionFailed: false },
     finished_at: '2026-09-23T15:00:00Z',
-    ...over,
+    ...rest,
+    execution_details: hasExecutionDetails
+      ? withDefaultRunStart(execution_details)
+      : { collectionFailed: false, runStartedAt: runStartedAt() },
   };
 }
 
@@ -776,9 +800,18 @@ describe('expandTestRunBinding: harness attribution', () => {
         }
       });
 
-      it('still passes on a legacy row without the run-wide start (the known blind spot, pinned)', async () => {
+      it.each([true, null])('refuses a dirty or unknown legacy row without a run-wide start (%s)', async worktreeDirty => {
         await stamp(duringCollection);
-        expect(await expandTestRunBinding(input(), SCOPE, deps(dirtyMutant()).d)).toMatchObject({ ok: true });
+        const legacy = run({
+          file_path: GUARD_TEST,
+          source: 'mutation-probe',
+          worktree_dirty: worktreeDirty,
+          started_at: STARTED,
+          execution_details: { mutationPhase: 'mutant', runStartedAt: undefined },
+        });
+        expect(await expandTestRunBinding(input(), SCOPE, deps(legacy).d)).toMatchObject({
+          ok: false, error: 'test_run_measurement_start_missing', testRunId: 42,
+        });
       });
     });
 
