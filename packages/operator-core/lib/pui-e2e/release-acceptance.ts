@@ -75,6 +75,28 @@ export function nativeApprovalTurnSettled(
     && lifecycle.sequence > reply.sequence;
 }
 
+/** After the requested file effect is verified, decline optional native
+ * follow-up work once, without granting another command or wider permission.
+ * A different turn, file, prerequisite, or question is not ours to answer. */
+export function nativeApprovalFollowupDecline(
+  event: SuSessionEvent,
+  input: { turnId: string; afterSequence: number; notePath: string },
+): { question: string; label: string; key: string } | undefined {
+  if (event.type !== 'card' || event.phase !== 'opened'
+    || event.turnId !== input.turnId || event.sequence <= input.afterSequence) return undefined;
+  const card = event.card;
+  if (!card.approval || suToolApproval(card.approval.title)
+    || card.presentation?.kind !== 'radio' || !card.allowDecline) return undefined;
+  const body = `${card.prompt}\n${card.approval.body.join('\n')}`;
+  const pathAt = body.indexOf(input.notePath);
+  if (!input.notePath || pathAt < 0 || /[\w./-]/.test(body[pathAt - 1] ?? '')
+    || /[\w./-]/.test(body[pathAt + input.notePath.length] ?? '')) return undefined;
+  const index = card.presentation.options?.findIndex((option) =>
+    option.id === 'no' && /^No(?:,|$)/.test(option.label)) ?? -1;
+  const option = card.presentation.options?.[index];
+  return option ? { question: card.approval.question, label: option.label, key: String(index + 1) } : undefined;
+}
+
 // Array.prototype.findLast is ES2023 and outside this program's lib, so walk backwards.
 function findLastSessionEvent(
   events: readonly SuSessionEvent[], predicate: (event: SuSessionEvent) => boolean,

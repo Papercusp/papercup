@@ -41,7 +41,7 @@ import os from 'node:os';
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
-import { readOrientationToolSurfaces, type OrientationToolSurface } from '../turn-start-orientation';
+import { agentToolInvocationPredicate } from '../agent-tools/sessions/automatic-tool-names';
 import type { PsuPtyHost } from '../events/await/psu-pty-discovery';
 
 /** Supervisor beat is ~60s; fresh within 3× ⇒ the process is alive. */
@@ -358,8 +358,6 @@ export interface InteractiveDarkSnapshot {
   hostLastActivityMs: number | null;
   /** coord_presence.heartbeat_at — the TOOL-CALL-COUPLED beat (epoch ms). */
   presenceHeartbeatMs: number | null;
-  /** Observed hook/agent activity gap; ambiguous for idle and parked sessions. */
-  toolSurface?: OrientationToolSurface | null;
   /** An ACTIVE loop routine (harness_shared.routines loop-<owner>) + its interval. */
   loopActive: boolean;
   loopIntervalSec: number | null;
@@ -733,16 +731,19 @@ export async function checkInteractiveMcpDark(
     // on an empty-hosts pass, or an escalation raised for a session that has
     // since ENDED entirely is never revisited again (see that comment).
     const owners = hosts.map((h) => h.ownerId);
+    const liveOwnerIds = new Set(owners);
+    const recoveredOwnerIds = new Set<string>();
     const now = Date.now();
 
-    // Only query per-host presence/loop state + run the verdict/heal ladder
+    // Only query per-host presence/loop state + agent-origin invocation evidence
+    // + run the verdict/heal ladder
     // when there IS at least one live host — an empty `owners` array feeding
     // `= ANY(${owners})` is exactly what the original hosts.length===0 guard
     // avoided, and skipping this block leaves darkOwners empty (correct: zero
     // live hosts means zero owners can be dark THIS pass), which the recovery
     // sweep below then treats identically to "all clear".
     if (owners.length > 0) {
-      const [presenceRows, loopRows, toolSurfaceRows] = await Promise.all([
+      const [presenceRows, loopRows, agentInvocationRows] = await Promise.all([
         sql<{ owner_id: string; presence_ms: string | number | null }[]>`
           SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
             FROM harness_shared.coord_presence
@@ -754,7 +755,13 @@ export async function checkInteractiveMcpDark(
              AND reschedule_interval_sec IS NOT NULL
              AND name LIKE 'loop-%'
              AND target_owner_id = ANY(${owners})`,
-        readOrientationToolSurfaces(sql, owners),
+        sql<{ owner_id: string }[]>`
+          SELECT DISTINCT t.coord_owner_id AS owner_id
+            FROM harness_shared.tool_invocations t
+           WHERE t.coord_owner_id = ANY(${owners})
+             AND t.invoked_at >= ${new Date(now - RECOVERED_FRESH_MS)}
+             AND ${agentToolInvocationPredicate(sql, 't')}
+        `,
       ]);
       const presenceBy = new Map(
         presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]),
@@ -765,7 +772,7 @@ export async function checkInteractiveMcpDark(
           r.reschedule_interval_sec != null ? Number(r.reschedule_interval_sec) : null,
         ]),
       );
-      const toolSurfaceBy = new Map(toolSurfaceRows.map((r) => [r.ownerId, r]));
+      const agentInvocationOwners = new Set(agentInvocationRows.map((r) => r.owner_id));
 
       const verdictByOwner = new Map<
         string,
@@ -773,30 +780,25 @@ export async function checkInteractiveMcpDark(
       >();
       for (const h of hosts) {
         const presenceMs = presenceBy.get(h.ownerId) ?? null;
-        const toolSurface = toolSurfaceBy.get(h.ownerId) ?? null;
         const verdict = evaluateInteractiveMcpDark(
           {
             ownerId: h.ownerId,
             hostStartedMs: h.startedAt ?? null,
             hostLastActivityMs: h.lastActivityAt ?? null,
             presenceHeartbeatMs: presenceMs,
-            toolSurface,
             loopActive: loopBy.has(h.ownerId),
             loopIntervalSec: loopBy.get(h.ownerId) ?? null,
           },
           now,
           opts,
         );
-        // POSITIVE-evidence recovery (2026-07-14 false-heal fix): tools are
-        // demonstrably flowing NOW — a fresh tool-call-coupled beat. ¬dark alone
-        // (idle session, reaped/absent presence row) proves nothing.
-        // A hook-origin dispatch can produce that beat without an agent-origin
-        // call. The activity-gap row is used only to avoid treating that beat as
-        // positive recovery evidence; it does not prove the client tool list is
-        // empty or trigger a heal.
-        const recovered = toolSurface === null && presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
+        // Positive recovery is a recent agent-origin invocation, not a fresh
+        // coord_presence beat. Supervisor, hook, and inbox writers can refresh
+        // that shared beat without proving the agent-facing MCP surface works.
+        const recovered = agentInvocationOwners.has(h.ownerId);
+        if (recovered) recoveredOwnerIds.add(h.ownerId);
         verdictByOwner.set(h.ownerId, {
-          dark: verdict.dark,
+          dark: recovered ? false : verdict.dark,
           recovered,
           reason: verdict.reason,
           staleMins: mins(now - (presenceMs ?? h.startedAt ?? now)),
@@ -846,9 +848,10 @@ export async function checkInteractiveMcpDark(
       }
     }
 
-    // ── Recovery sweep (durability follow-up, 2026-07-14): clear ANY standing
-    // mcp-dark-int:% escalation whose owner is NOT in THIS pass's dark set —
-    // mirrors the equivalent bee-variant sweep above (PHASE_PREFIX, ~L274-286).
+    // ── Recovery sweep (durability follow-up, 2026-07-14): clear a standing
+    // mcp-dark-int:% escalation only when its owner is absent from the live-host
+    // inventory (ended) or has a recent agent-origin invocation. A live owner
+    // missing from the dark set is ambiguous and cannot prove MCP recovery.
     // The per-owner heal ladder above only ever visits owners in `hosts`
     // (CURRENTLY live psu-pty sessions), so runInteractiveHealStep's own
     // escalation-clear (on 'announce-healed') can NEVER reach an owner whose
@@ -866,7 +869,14 @@ export async function checkInteractiveMcpDark(
     const darkInteractivePhases = new Set(out.darkOwners.map((o) => INTERACTIVE_PHASE_PREFIX + o));
     const toRecoverInteractive = alertedInteractiveRows
       .map((r) => r.phase)
-      .filter((p) => !darkInteractivePhases.has(p));
+      .filter((phase) => {
+        if (!phase.startsWith(INTERACTIVE_PHASE_PREFIX)) return false;
+        const ownerId = phase.slice(INTERACTIVE_PHASE_PREFIX.length);
+        return (
+          !darkInteractivePhases.has(phase) &&
+          (!liveOwnerIds.has(ownerId) || recoveredOwnerIds.has(ownerId))
+        );
+      });
     if (toRecoverInteractive.length > 0) {
       await sql`
         UPDATE harness_shared.harness_escalations

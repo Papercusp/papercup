@@ -139,7 +139,6 @@ function interactiveDark(over: Partial<InteractiveDarkSnapshot> = {}): Interacti
     hostStartedMs: INOW - 6 * 60 * M,
     hostLastActivityMs: INOW - 1 * M,
     presenceHeartbeatMs: INOW - 45 * M,
-    toolSurface: null,
     loopActive: true,
     loopIntervalSec: 600,
     ...over,
@@ -202,13 +201,12 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     expect(evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW).dark).toBe(false);
   });
 
-  it('a hook/agent activity gap with null presence does not prove a dark transport', () => {
+  it('null presence does not prove a dark transport', () => {
     const v = evaluateInteractiveMcpDark(
       interactiveDark({
         loopActive: false,
         loopIntervalSec: null,
         presenceHeartbeatMs: null,
-        toolSurface: { hookCalls: 20, windowMinutes: 3 },
       }),
       INOW,
     );
@@ -421,12 +419,12 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
   // including, critically, when there are ZERO live hosts at all.
 
   /** Fake postgres tag routing on query text: escalation read/write,
-   *  coord_presence, armed loops, and the shared call-origin tool-surface query.
+   *  coord_presence, armed loops, and recent agent-origin invocations.
    *  `openPhases` seeds the standing (still-open) escalation rows. */
   function fakeSql(opts: {
     openPhases: string[];
     presenceByOwner?: Record<string, number | null>;
-    toolSurfaceByOwner?: Record<string, { hookCalls: number; windowMinutes: number }>;
+    agentInvocationByOwner?: Record<string, boolean>;
   }) {
     const updatedPhases: string[] = [];
     type FakeSqlTag = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>) & {
@@ -444,13 +442,11 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         if (arr) updatedPhases.push(...arr);
         return Promise.resolve([]);
       }
-      if (q.includes('harness_shared.memory_session_epochs')) {
+      if (q.includes('FROM harness_shared.tool_invocations t')) {
         return Promise.resolve(
-          Object.entries(opts.toolSurfaceByOwner ?? {}).map(([owner_id, surface]) => ({
-            owner_id,
-            hook_calls: surface.hookCalls,
-            window_minutes: surface.windowMinutes,
-          })),
+          Object.entries(opts.agentInvocationByOwner ?? {})
+            .filter(([, recent]) => recent)
+            .map(([owner_id]) => ({ owner_id })),
         );
       }
       if (q.includes('coord_presence')) {
@@ -604,14 +600,15 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     vi.useRealTimers();
   });
 
-  it('fresh hook-origin presence is neither a dark verdict nor positive recovery evidence', async () => {
+  it('fresh non-agent presence does not clear a live alert', async () => {
     const owner = 'su-dark-from-birth-hook-beat';
-    const { tag } = fakeSql({
-      openPhases: [],
-      // maybeBeatPresenceOnDispatch runs for hook-origin calls, so presence is
-      // fresh even though no agent-origin MCP call has completed.
+    const phase = 'mcp-dark-int:' + owner;
+    const { tag, updatedPhases } = fakeSql({
+      openPhases: [phase],
+      // A hook, supervisor, or inbox writer may refresh this shared beat without
+      // any recent agent-origin tool invocation.
       presenceByOwner: { [owner]: INOW - 1 * M },
-      toolSurfaceByOwner: { [owner]: { hookCalls: 23, windowMinutes: 4 } },
+      agentInvocationByOwner: { [owner]: false },
     });
     listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -625,6 +622,27 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     expect(out.darkOwners).not.toContain(owner);
     expect(out.healSent).not.toContain(owner);
     expect(out.recovered).not.toContain(owner);
+    expect(updatedPhases).not.toContain(phase);
+    expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('a recent agent-origin invocation clears a live alert even without a presence beat', async () => {
+    const owner = 'su-agent-origin-recovered';
+    const phase = 'mcp-dark-int:' + owner;
+    const { tag, updatedPhases } = fakeSql({
+      openPhases: [phase],
+      agentInvocationByOwner: { [owner]: true },
+    });
+    listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+
+    const out = await checkInteractiveMcpDark(tag, { jitterMaxMs: 0 });
+
+    expect(out.darkOwners).not.toContain(owner);
+    expect(out.recovered).toContain(owner);
+    expect(updatedPhases).toContain(phase);
     expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
