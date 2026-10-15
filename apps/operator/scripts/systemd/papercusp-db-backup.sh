@@ -46,8 +46,8 @@
 #     5 minutes, so the backup looked perfectly healthy at the snapshot layer
 #     while the payload rotted).
 #
-# RESTORE:  psql -f /mnt/data/Backup/db-dumps/pg/globals.sql     (roles first)
-#           pg_restore -d <db> -j4 /mnt/data/Backup/db-dumps/pg/<db>/
+# RESTORE:  psql -f /mnt/cold-a/Backup/db-dumps/pg/globals.sql     (roles first)
+#           pg_restore -d <db> -j4 /mnt/cold-a/Backup/db-dumps/pg/<db>/
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
@@ -67,7 +67,10 @@ set -uo pipefail
 # A default should name the volume that actually has room; the env var stays
 # the override. Pinned to host-dump-coverage.ts by
 # host-dump-coverage-defaults.test.ts — change both or that test goes red.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+# Current default moved to /mnt/cold-a/Backup/db-dumps under WI-6554700010014799:
+# /mnt/backup no longer has enough headroom for the largest tier, its atomic
+# replacement, and the existing 120 GiB free-space floor. The old tree stays intact.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
 BACKUP_SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 # Reuse the installed shared Kopia helper for the hold lease and dump rotation.
 source "$(dirname "$BACKUP_SELF")/kopia-cache-bootstrap.sh"

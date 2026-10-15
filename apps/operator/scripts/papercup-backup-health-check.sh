@@ -54,7 +54,7 @@
 #
 # Usage: papercup-backup-health-check.sh
 # Env:
-#   BACKUP_DUMP_DIR      (default /mnt/backup/db-dumps) — where the dumps land
+#   BACKUP_DUMP_DIR      (default /mnt/cold-a/Backup/db-dumps) — where the dumps land
 #   BACKUP_ARTIFACTS     (default "pg/papercusp-state pg/papercusp-transcript pg/restart") — space-separated dump artifacts
 #                                                              (relative to BACKUP_DUMP_DIR) that
 #                                                              MUST stay fresh. These are the
@@ -145,11 +145,10 @@ fi
 #
 # An explicitly-set BACKUP_DUMP_DIR still wins, which the self-test cases below rely on
 # (they pass BACKUP_DUMP_DIR="$t/dump" to judge a temp tree instead of live state).
-# Fallback moved to the live dump volume 2026-09-05 (WI-2146225) — see the long
-# note in papercusp-db-backup.sh. This script's own header (line ~139) already
-# records what the stale fallback did here: it tailed a db-backup.log frozen on
-# "backup FAILED", so the alarm could never clear and was blind to real failures.
-BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}}"
+# Current fallback moved to the cold-a dump volume under WI-6554700010014799;
+# see the producer's path-contract note. This probe follows the same override
+# and default so it cannot silently inspect the retained legacy tree.
+BACKUP_DUMP_DIR="${BACKUP_DUMP_DIR:-${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}}"
 # WI-2146225 cutover 2026-09-05: papercusp is dumped as a TIER PAIR, and the
 # undifferentiated pg/papercusp dump it used to name here is RETIRED — nothing
 # writes that path any more. Leaving the old default would have produced BOTH

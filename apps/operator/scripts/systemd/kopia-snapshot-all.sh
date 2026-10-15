@@ -254,7 +254,7 @@ trap cleanup_kopia_pid EXIT
   # latency instead of forever. Only paths that exist on disk are added, so a
   # box that does not have one is not spammed with errors for it.
   REQUIRED_SOURCES=(
-    "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+    "${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
   )
   COLD_FILTER="$(printf '%s\n' "${COLD_SOURCES[@]}")"
   mapfile -t DISCOVERED < <(kopia_as_root "$SUDO_BIN" "$KOPIA_BIN" snapshot list --all 2>/dev/null \

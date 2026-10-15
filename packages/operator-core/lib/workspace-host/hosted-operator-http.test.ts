@@ -193,8 +193,22 @@ describe('native Settings route coverage', () => {
     }
     // A failed crawl/parser must not turn coverage into a vacuous green.
     expect(calls).toContainEqual({ file: 'expert-routing/page.tsx', method: 'POST', path: '/api/agent-mcp/consult-expert-routing-set' });
+    // These Settings calls belong to separate route planes, not operator-http:
+    // customer data uses hosted-runtime routes, while device session grants and
+    // server-tool execution are loopback-only. Keep all four outside the relay.
+    const intentionallyNotRelayed = [
+      { file: 'profile/CustomerDataControls.tsx', method: 'POST', path: '/api/hosted/browser/data/example/export' },
+      { file: 'profile/CustomerDataControls.tsx', method: 'POST', path: '/api/hosted/browser/data/example/delete' },
+      { file: 'remote-access/page.tsx', method: 'POST', path: '/api/device/desktop/devices/example/agent-sessions' },
+      { file: 'storage/page.tsx', method: 'POST', path: '/api/agent-mcp/run-tool' },
+    ];
     const refused = calls.filter(({ method, path }) => !decideOperatorHttpRoute(method, path).ok);
-    expect(refused, JSON.stringify(refused)).toEqual([]);
+    const sortCalls = (entries: typeof calls) =>
+      [...entries].sort((a, b) => `${a.file}:${a.method}:${a.path}`.localeCompare(`${b.file}:${b.method}:${b.path}`));
+    expect(sortCalls(refused), JSON.stringify(refused)).toEqual(sortCalls(intentionallyNotRelayed));
+    for (const { method, path } of intentionallyNotRelayed) {
+      expect(decideOperatorHttpRoute(method, path)).toEqual({ ok: false, code: 'route_not_relayed' });
+    }
     // Coverage is for source calls, not an authority to admit arbitrary operations.
     expect(decideOperatorHttpRoute('DELETE', '/api/profile')).toEqual({ ok: false, code: 'route_not_relayed' });
     expect(decideOperatorHttpRoute('POST', '/api/admin/deploy-accounts/arbitrary-operation')).toEqual({ ok: false, code: 'route_not_relayed' });

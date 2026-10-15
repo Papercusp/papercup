@@ -23,7 +23,10 @@ const CONSUMERS = [
   'kopia-healthcheck.sh',
 ];
 const ROOT_KOPIA_CALLERS = [...CONSUMERS, 'kopia-protected-snapshot.sh'];
-const MOUNTED_LOG_SERVICES = ['kopia-home-snapshot.service', 'kopia-healthcheck.service'];
+const MOUNTED_SERVICES: Record<string, string> = {
+  'kopia-home-snapshot.service': '/mnt/backup',
+  'kopia-healthcheck.service': '/mnt/cold-a/Backup/db-dumps',
+};
 
 function runBootstrap(cacheDir: string) {
   return spawnSync(
@@ -196,8 +199,8 @@ describe('shared Kopia cache bootstrap', () => {
       expect(() => execFileSync('bash', ['-n', join(SYSTEMD_DIR, caller)])).not.toThrow();
     }
 
-    for (const service of MOUNTED_LOG_SERVICES) {
-      expect(readFileSync(join(SYSTEMD_DIR, service), 'utf8')).toContain('RequiresMountsFor=/mnt/backup');
+    for (const [service, mount] of Object.entries(MOUNTED_SERVICES)) {
+      expect(readFileSync(join(SYSTEMD_DIR, service), 'utf8')).toContain(`RequiresMountsFor=${mount}`);
     }
   });
 });

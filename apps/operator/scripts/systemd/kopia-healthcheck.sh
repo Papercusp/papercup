@@ -57,11 +57,9 @@ LOG="$LOG_DIR/healthcheck.log"
 # assertion measures the tree the backup actually writes. Hardcoding it here meant
 # a relocated dump left the freshness check pointed at a directory nothing updates.
 # The fallback is unchanged, so a host that never overrides the var is unaffected.
-# Fallback moved to the live dump volume 2026-09-05 (WI-2146225) — see the long
-# note in papercusp-db-backup.sh. A health CHECK defaulting to the abandoned
-# directory is the worst case of the class: it reports confidently about a
-# directory nothing writes, which is how this outage stayed green for 13 hours.
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+# Current fallback follows the cold-a destination in papercusp-db-backup.sh.
+# A health check must read the producer's tree, not the retained legacy copy.
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
 STATUS="$DUMP/STATUS.json"
 SUDO_BIN="${KOPIA_HEALTHCHECK_SUDO:-/usr/bin/sudo}"
 KOPIA_BIN="${KOPIA_HEALTHCHECK_BIN:-/usr/bin/kopia}"
@@ -332,13 +330,13 @@ jdoe@host:/home/jdoe/macos-vm
       END { print (complete ? "complete" : (seen ? "registered-only" : "absent")) }')" = complete ]
   }
   cov_listing="jdoe@host:/mnt/data/Backup
-  2026-09-05 12:00:00 EDT abc123 1 GB drwxr-xr-x files:1 dirs:1 :/mnt/backup/db-dumps
-jdoe@host:/mnt/backup/db-dumps-other"
+  2026-09-05 12:00:00 EDT abc123 1 GB drwxr-xr-x files:1 dirs:1 :/mnt/cold-a/Backup/db-dumps
+jdoe@host:/mnt/cold-a/Backup/db-dumps-other"
   cov_ok=1
   # present-as-parent-only must read as NOT covered
   src_covered "$cov_listing" /mnt/data/Backup/db-dumps && cov_ok=0
   # a path appearing only in an INDENTED detail row must read as NOT covered
-  src_covered "$cov_listing" /mnt/backup/db-dumps && cov_ok=0
+  src_covered "$cov_listing" /mnt/cold-a/Backup/db-dumps && cov_ok=0
   # a longer sibling header must not satisfy the shorter path either
   src_covered "$cov_listing" /mnt/backup/db-dump && cov_ok=0
   # positive control: the parent itself IS a real header and must read as covered
@@ -359,20 +357,20 @@ jdoe@host:/mnt/backup/db-dumps-other"
   # snapshots of 2 KB. This is the case that must never regress.
   inc_ok=1
   # header alone, zero rows — what --all shows for an incomplete-only source
-  src_covered "jdoe@host:/mnt/backup/db-dumps" /mnt/backup/db-dumps && inc_ok=0
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps" /mnt/cold-a/Backup/db-dumps && inc_ok=0
   # an explicitly incomplete row must not count either
-  src_covered "jdoe@host:/mnt/backup/db-dumps
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps
   2026-09-05 13:15:24 EDT kbeef1 incomplete:canceled 2 KB drwxrwxr-x files:3 dirs:4 (incomplete)" \
-    /mnt/backup/db-dumps && inc_ok=0
+    /mnt/cold-a/Backup/db-dumps && inc_ok=0
   # an <ERROR> row is not a snapshot either
-  src_covered "jdoe@host:/mnt/backup/db-dumps
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps
   2026-09-05 13:15:24 EDT <ERROR> error reading directory: entry not found" \
-    /mnt/backup/db-dumps && inc_ok=0
+    /mnt/cold-a/Backup/db-dumps && inc_ok=0
   # positive control: one real completed row IS coverage — without this the three
   # assertions above would all pass against a matcher that never returns true.
-  src_covered "jdoe@host:/mnt/backup/db-dumps
+  src_covered "jdoe@host:/mnt/cold-a/Backup/db-dumps
   2026-09-05 13:15:24 EDT abc123 130 GB drwxrwxr-x files:743 dirs:12 (latest-1)" \
-    /mnt/backup/db-dumps || inc_ok=0
+    /mnt/cold-a/Backup/db-dumps || inc_ok=0
   if [ "$inc_ok" = 1 ]; then
     printf '  ok    %s\n' "coverage requires a COMPLETE snapshot, not just a source header"; pass=$((pass+1))
   else

@@ -33,7 +33,7 @@ set -uo pipefail
 # the variable, so it must be the answer that is right rather than the historical
 # one. papercusp-db-backup-alert.service sets it explicitly (asserted by
 # apps/operator/scripts/__tests__/backup-dump-dir-env-contract.test.ts).
-DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"
+DUMP="${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"
 MARKER="$DUMP/ALERT-BACKUP-FAILING"
 REASON="${1:-papercusp-db-backup.service failed}"
 

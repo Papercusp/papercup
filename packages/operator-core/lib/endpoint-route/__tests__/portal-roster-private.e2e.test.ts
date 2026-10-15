@@ -419,6 +419,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     await verifyPrivateHudReadPolicy();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'health-selected', neighbor: 'health-neighbor', health: true });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -429,7 +430,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/workspace-host/observability-store.ts',
         'packages/operator-core/lib/agent-tools/system-health/unack.ts', 'packages/operator-core/lib/work-items.ts',
         'packages/operator-core/lib/sync-resolver/index.ts', 'apps/operator-vite/src/components/adv/HealthTab.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -441,7 +445,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_PLANS_BROWSER_PROOF', 'ROSTER_DOCS_BROWSER_PROOF', 'ROSTER_HUD_BROWSER_PROOF', 'ROSTER_WORK_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
           process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
-          '--portal-source=' + portalSource],
+          '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -475,6 +480,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await verifyPrivateHarnessesBrowserMount({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
       harnesses: { hive: 'preflight-hive', selected: 'preflight-selected', neighbor: 'preflight-neighbor', foreign: 'preflight-foreign' } });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -483,7 +489,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/harness/projects-lite.ts', 'apps/operator/app/adv/harnesses/HarnessesWorkspace.tsx',
         'apps/operator/app/adv/harnesses/PotWorkspaceCards.tsx', 'apps/operator/app/adv/harnesses/PotMemberRail.tsx',
         'apps/operator/app/adv/harnesses/harness-axis.ts', 'apps/operator/app/adv/harnesses/WorkItemsPanel.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -495,7 +504,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_PLANS_BROWSER_PROOF', 'ROSTER_DOCS_BROWSER_PROOF', 'ROSTER_HUD_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
           process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
-          '--portal-source=' + portalSource],
+          '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -544,6 +554,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource,
       selected: 'preflight-selected', neighbor: 'preflight-neighbor', hud: true });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -551,7 +562,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/adv-roster.ts',
         'packages/operator-core/lib/adv-sessions.ts', 'packages/operator-core/lib/agent-tools/coordination/presence.ts',
         'apps/operator/app/adv/hud/HudView.tsx', 'apps/operator/app/adv/hud/HudBoard.tsx',
-        'apps/operator/app/adv/hud/HudSearchBox.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/app/adv/hud/HudSearchBox.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -563,7 +577,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_PLANS_BROWSER_PROOF', 'ROSTER_DOCS_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
           process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
-          '--portal-source=' + portalSource],
+          '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -723,6 +738,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
       plans: { selectedSlug: 'preflight-selected', neighborSlug: 'preflight-neighbor', selectedTitle: 'preflight-selected',
         neighborTitle: 'preflight-neighbor', harness: 'papercusp' } });
     await verifyPrivateProfileOriginControl();
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -733,7 +749,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/endpoint-route/routes/admin/plans.ts',
         'apps/operator/app/_components/plans/PlansPane.tsx', 'apps/operator/app/_components/plans/plans-pane.css',
         'apps/operator/app/harness/useConfirmDialog.tsx', 'apps/operator/app/admin/plans/plans-api.ts',
-        'packages/operator-ui/src/surfaces/index.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'packages/operator-ui/src/surfaces/index.tsx', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -743,7 +762,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
           'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF', 'ROSTER_INBOX_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -777,6 +797,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
       inbox: { selectedMessageId: 'preflight-selected', neighborMessageId: 'preflight-neighbor',
         selectedTitle: 'preflight-selected', neighborTitle: 'preflight-neighbor' } });
     await verifyPrivateProfileOriginControl();
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -793,7 +814,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/_components/inbox/InboxPane.tsx', 'apps/operator/app/_components/inbox/use-inbox-pending.ts',
         'apps/operator/app/admin/plans/PlanOtherList.tsx', 'apps/operator/app/admin/plans/attention-card.ts',
         'apps/operator/app/admin/plans/plans-api.ts', 'packages/operator-ui/src/surfaces/index.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -803,7 +827,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
           'ROSTER_SETTINGS_BROWSER_PROOF', 'ROSTER_PROMPTS_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -835,6 +860,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', prompts: true });
     await verifyPrivateProfileOriginControl();
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -844,7 +870,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/saved-prompts-materialize.ts', 'packages/operator-core/lib/cross-origin-url.ts',
         'packages/operator-core/lib/endpoint-route/routes/agent-mcp/saved-prompts.ts',
         'apps/operator/app/quick-panel/PromptsTab.tsx', 'apps/operator/app/harness/useDebouncedSave.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -854,7 +883,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF',
           'ROSTER_SETTINGS_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -885,6 +915,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', settings: true });
     await verifyPrivateProfileOriginControl();
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -893,7 +924,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/operator-state-pg.ts', 'packages/operator-core/lib/endpoint-route/routes/misc/profile.ts',
         'apps/operator/app/settings/profile/page.tsx', 'apps/operator/lib/forms/useFormWith.ts',
         'apps/operator/lib/forms/FormField.tsx', 'apps/operator/lib/forms/SubmitButton.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -902,7 +936,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         for (const key of ['PC_HEAVY_PREEMPT_READY_FILE', 'PC_HEAVY_PSI_FINALIZATION_FILE', 'ROSTER_STOP_HTTP_MUTATION',
           'ROSTER_HISTORY_BROWSER_PROOF', 'ROSTER_SHORTCUT_BROWSER_PROOF', 'ROSTER_STOP_BROWSER_PROOF']) delete env[key];
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -931,6 +966,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor', shortcuts: true });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -940,7 +976,10 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/lib/endpoint-route/routes/misc/profile.ts',
         'apps/operator/app/settings/shortcuts/page.tsx', 'apps/operator/app/_components/GlobalShortcutDispatcher.tsx',
         'apps/operator/lib/hotkeys.ts', 'packages/operator-ui/src/shortcuts/index.tsx',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -949,7 +988,8 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
         delete env.ROSTER_STOP_HTTP_MUTATION; delete env.ROSTER_HISTORY_BROWSER_PROOF;
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -978,6 +1018,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     preparePrivateRosterSocketRoot();
     const portalSource = preparePortalBrowserSource(['--portal-source=' + process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT]);
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor' });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -985,14 +1026,18 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/test/portal-roster-browser-fixture.ts', 'packages/operator-core/test/private-http-workspace-preflight.ts',
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/auth.ts',
         'packages/operator-core/lib/endpoint-route/routes/admin/coord.ts',
-        'apps/operator/bin/host-spa.ts', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/host-spa.ts', 'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
           ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1' };
         delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE; delete env.ROSTER_STOP_HTTP_MUTATION;
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
@@ -1023,6 +1068,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     await buildPortalRosterBrowser({ portalSourceRoot: portalSource, selected: 'preflight-selected', neighbor: 'preflight-neighbor',
       history: { selectedSessionId: 1, neighborSessionId: 2, selectedRolloutId: 'preflight-selected-rollout',
         neighborRolloutId: 'preflight-neighbor-rollout', selectedMarker: 'preflight-selected', neighborMarker: 'preflight-neighbor' } });
+    let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
       sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -1031,14 +1077,18 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'apps/operator/app/adv/sessions/SessionHistoryModal.tsx', 'apps/operator/app/_components/chat/use-owner-session-chat.ts',
         'apps/operator/app/harness/AgentInspectorModal.tsx', 'apps/operator/app/harness/AgentThinkingStream.tsx',
         'packages/operator-core/lib/endpoint-route/routes/harness/streams.ts',
-        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+        'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts',
+        'apps/operator/bin/bundle-host-common.sh',
+        'apps/operator/bin/bundle-host.sh'],
+      prepare: evidenceDir => { preparedApi = preparePrivateOperatorApiBundle(root, evidenceDir); },
       execute: async (observe, evidenceDir) => {
         await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
           ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1', ROSTER_COORD_BROWSER_PROOF: '1', ROSTER_HISTORY_BROWSER_PROOF: '1' };
         delete env.PC_HEAVY_PREEMPT_READY_FILE; delete env.PC_HEAVY_PSI_FINALIZATION_FILE; delete env.ROSTER_STOP_HTTP_MUTATION;
         const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource],
+          process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'), '--portal-source=' + portalSource,
+          '--prepared-api-sha=' + preparedApi.sha256],
         { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
         observe(child);
         child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))

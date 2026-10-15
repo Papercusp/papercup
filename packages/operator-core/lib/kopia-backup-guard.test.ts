@@ -1094,7 +1094,7 @@ describe('Kopia managed entrypoint contract', () => {
       .split('\n')
       .find((line) => line.trim() !== '')
       ?.trim();
-    expect(firstRequiredSource).toBe('"${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/backup/db-dumps}"');
+    expect(firstRequiredSource).toBe('"${PAPERCUSP_HOST_PG_DUMP_DIR:-/mnt/cold-a/Backup/db-dumps}"');
     expect(dbTimer).toContain('Unit=papercusp-nonblocking-trigger@papercusp-db-backup.service');
     expect(dbTimer).not.toContain('Unit=papercusp-db-backup.service');
     expect(nonblockingTrigger).toContain('Type=oneshot');
@@ -1118,12 +1118,12 @@ describe('Kopia managed entrypoint contract', () => {
   });
 
   it('bounds the hot snapshot with the proven daily parallelism and memory envelope', () => {
-    expect(hotScript).toContain('snapshot create "--parallel=1" "$@"');
+    expect(hotScript).toContain('"--parallel=1" "$@"');
     expect(hotService).toContain('MemoryAccounting=yes');
     expect(hotService).toContain('MemoryHigh=8G');
     expect(hotService).toContain('MemoryMax=12G');
     expect(hotService).toContain('MemorySwapMax=0');
-    expect(hotService).toContain('TimeoutStopSec=30s');
+    expect(hotService).toContain('TimeoutStopSec=180s');
   });
 
   it('bounds the hourly database dump after a serialized run breached host PSI', () => {

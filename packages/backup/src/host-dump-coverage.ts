@@ -74,12 +74,10 @@ export const HOST_PG_DUMP_IN_PROGRESS_SUFFIX = '.json';
 export const HOST_DUMP_IN_PROGRESS_MAX_AGE_SEC = 6 * 60 * 60;
 export const KOPIA_BACKUP_LOCK_PATH_ENV = 'KOPIA_BACKUP_LOCK_PATH';
 export const DEFAULT_KOPIA_BACKUP_LOCK_PATH = '/run/lock/papercusp/kopia-global.lock';
-// Moved off /mnt/data/Backup/db-dumps on 2026-09-05 (WI-2146225) in lockstep
-// with the shell default — see the note in papercusp-db-backup.sh. The old
-// value pointed at a directory the 2026-09-05 relocation abandoned, so a reader
-// that fell back to it found a STATUS.json frozen at the relocation instant and
-// concluded coverage from a receipt that had stopped being written.
-export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/backup/db-dumps';
+// The current default moved to the cold-a dump volume under WI-6554700010014799
+// in lockstep with the shell producer — see its path-contract note. Keep the
+// legacy /mnt/backup/db-dumps tree protected; readers follow the producer here.
+export const DEFAULT_HOST_PG_DUMP_DIR = '/mnt/cold-a/Backup/db-dumps';
 
 /**
  * How recent the host dump must be for the hook to stand down.
