@@ -272,7 +272,11 @@ describe('reconcileOwnTunnel — who acts', () => {
   });
 
   it('adopts the tunnel when the recorded operator port no longer answers (desktop port hint moved)', async () => {
-    const h = harness({ row: cloudflareRow({ operatorPort: 51000 }), operatorAnswers: false });
+    const h = harness({
+      row: cloudflareRow({ operatorPort: 51000 }),
+      env: { PAPERCUSP_HONO_PORT: String(OP_PORT), PAPERCUSP_DESKTOP: '1' },
+      operatorAnswers: false,
+    });
     const r = await reconcileOwnTunnel(h.deps);
     expect(r.adoptedOperatorPort).toBe(OP_PORT);
     expect(h.adopted).toEqual([OP_PORT]);
@@ -285,6 +289,40 @@ describe('reconcileOwnTunnel — who acts', () => {
     expect(r.adoptedOperatorPort).toBeNull();
     expect(h.adopted).toEqual([]);
     expect(r.listener).toBe('closed');
+  });
+
+  it.each(['manual', 'cloudflare'] as const)('preserves the configured %s listener owner through a server health gap', async (mode) => {
+    const serving = harness({
+      row: cloudflareRow({ mode, operatorPort: 3170 }),
+      env: { PAPERCUSP_HONO_PORT: '3170' },
+      owner: false,
+    });
+    expect((await reconcileOwnTunnel(serving.deps)).listener).toBe('open');
+
+    // Background ownership allows running cloudflared, not taking the serving
+    // operator's listener when /api/health times out during its restart.
+    const background = harness({ env: { PAPERCUSP_HONO_PORT: '3271' }, operatorAnswers: false });
+    background.row = serving.row;
+    const gap = await reconcileOwnTunnel(background.deps);
+    expect(gap.adoptedOperatorPort).toBeNull();
+    expect(background.adopted).toEqual([]);
+    expect(background.listenerCalls).toEqual([null]);
+    expect(serving.row.current?.operatorPort).toBe(3170);
+
+    const recovered = await reconcileOwnTunnel(serving.deps);
+    expect(recovered).toMatchObject({ listener: 'open', error: null });
+    expect(serving.listenerCalls).toEqual([45123, 45123]);
+  });
+
+  it('does not move desktop custody while its previous operator still answers', async () => {
+    const h = harness({
+      row: cloudflareRow({ operatorPort: 51000 }),
+      env: { PAPERCUSP_HONO_PORT: String(OP_PORT), PAPERCUSP_DESKTOP: '1' },
+      operatorAnswers: true,
+    });
+    expect((await reconcileOwnTunnel(h.deps)).adoptedOperatorPort).toBeNull();
+    expect(h.adopted).toEqual([]);
+    expect(h.listenerCalls).toEqual([null]);
   });
 
   it('records a missing cloudflared binary as the row error', async () => {

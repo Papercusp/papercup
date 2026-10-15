@@ -140,7 +140,7 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     const failed = { ...prior, testRunId: 2, status: 'fail' as const, check: { ...prior.check, value: 0 } };
     const { deps, emit } = depsFor([criterion], [prior], [failed]);
     await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'untrusted-fallback', harnessSlug: 'papercusp' }, deps);
-    expect(deps.runInstruments).toHaveBeenCalledWith({ rubricRef: RUBRIC, criteria: [criterion], workspaceId: 'ws-test' });
+    expect(deps.runInstruments).toHaveBeenCalledWith({ rubricRef: RUBRIC, criteria: [criterion], workspaceId: 'ws-test', harnessSlug: 'papercusp' });
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ payload: {
       rubricRef: RUBRIC, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: 2,
     } }));

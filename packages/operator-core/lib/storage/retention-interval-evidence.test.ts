@@ -1,5 +1,66 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+
+describe('durable R-10 exact headroom targets', () => {
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 10) + h * 3_600_000).toISOString();
+  const window = { host: 'fixture-host', windowStart: at(0), windowEnd: at(72), measuredAt: at(73) };
+  const fixture = () => ({
+    censuses: Array.from({ length: 72 }, (_, h) => ['/', '/mnt/data'].map(path => ({
+      id: `${path}-${h}`, host: window.host, path, at: at(h + 0.5), complete: true,
+      availableBytes: path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4,
+    }))).flat(),
+    attempts: Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, startedAt: at(h + 0.2) })),
+    receipts: Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, startedAt: at(h + 0.2),
+      finishedAt: at(h + 0.3), dryRun: false as const, complete: true, policyExhausted: true,
+      errors: [] as string[], entries: [] as Array<{ status: string }>, delegates: [] as Array<{ ok: boolean }> })),
+    dispositions: { supersededPlan: 'disk-headroom-standing-reclaim-2026-10-12', successorPlan: 'disk-durable-headroom-2026-10-15',
+      planTerminal: true, linkedSuccessor: true, siblingId: 'WI-10007751', siblingTerminal: true },
+  });
+  it('accepts the exact decimal-byte floors for every hour and complete native run', () => {
+    expect(assessDurableHeadroomTargets(fixture(), window).verdict).toBe('pass');
+  });
+  it.each(['/', '/mnt/data'])('fails a one-byte middle dip on %s even with healthy endpoints', path => {
+    const input = fixture(); input.censuses.find(r => r.path === path && r.id.endsWith('-30'))!.availableBytes--;
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('fail');
+  });
+  it('requires full hourly coverage, not the weaker native six-hour policy cadence', () => {
+    const input = fixture(); input.censuses = input.censuses.filter(r => r.id !== '/-35');
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('unknown');
+    input.censuses = input.censuses.filter((_, i) => i % 6 === 0);
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('unknown');
+  });
+  it('detects incomplete, errored, failed-delegate and non-exhausted receipts', () => {
+    for (const change of [{ complete: false }, { errors: ['blocked'] }, { delegates: [{ ok: false }] },
+      { entries: [{ status: 'failed' }] }, { policyExhausted: false }]) {
+      const input = fixture(); Object.assign(input.receipts[30]!, change);
+      expect(assessDurableHeadroomTargets(input, window).verdict).toBe('fail');
+    }
+  });
+  it('keeps vanished or silent runs, missing dispositions and hostless/foreign evidence unknown', () => {
+    const missing = fixture(); missing.receipts.splice(30, 1);
+    expect(assessDurableHeadroomTargets(missing, window).verdict).toBe('unknown');
+    const silent = fixture(); silent.attempts.splice(30, 1); silent.receipts.splice(30, 1);
+    expect(assessDurableHeadroomTargets(silent, window).verdict).toBe('unknown');
+    const stale = fixture(); stale.dispositions.linkedSuccessor = false;
+    expect(assessDurableHeadroomTargets(stale, window).verdict).toBe('unknown');
+    for (const host of ['', 'remote']) {
+      const foreign = fixture(); foreign.receipts[0]!.host = host;
+      expect(assessDurableHeadroomTargets(foreign, window).verdict).toBe('unknown');
+    }
+  });
+  it('does not count duplicate/unsorted samples or borrow future evidence for unfinished windows', () => {
+    const duplicate = fixture(); duplicate.censuses.push(duplicate.censuses[0]!);
+    expect(assessDurableHeadroomTargets(duplicate, window).verdict).toBe('fail');
+    expect(assessDurableHeadroomTargets(fixture(), { ...window, measuredAt: at(71) }).verdict).toBe('unknown');
+  });
+  it('reads exact native populations and scopes every shared ledger', async () => {
+    const unsafe = vi.fn().mockResolvedValue([fixture()]);
+    expect((await measureDurableHeadroomTargets({ unsafe } as never, { ...window, workspaceId: 'workspace', harnessSlug: 'harness' })).verdict).toBe('pass');
+    expect(unsafe.mock.calls[0]![0]).toContain("actor='system:disk-retention'");
+    expect(unsafe.mock.calls[0]![0]).toContain("action IN ('disk-retention:started','disk-retention:receipt')");
+    expect(unsafe.mock.calls[0]![1]).toEqual([window.host, at(0), at(72), 'workspace', Date.parse(at(0)), expect.any(Number), 'harness']);
+  });
+});
 
 const GIB = 1024 ** 3;
 describe('disk headroom post-shipment soak assessment', () => {

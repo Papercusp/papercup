@@ -3008,6 +3008,46 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(written).toContain(' — falsifier: the parser rejects checks[0].falsifier as unrecognized');
     });
 
+    it('preserves canonical verified evidence when the ok:true alias is also present through immediate readback (EI-25632229189825943)', async () => {
+      const evidence = 'the focused checkpoint probe passed';
+      // The default store double returns a sentinel, which is enough for the
+      // write-path assertions but cannot model a reader seeing the persisted
+      // note. Return the actual second argument so this regression covers the
+      // write -> read:true round trip as the production store does.
+      setLoopCarryNote.mockImplementationOnce(async (_ref: unknown, note: unknown) => note as string);
+      const b = body(
+        await call({
+          did: 'checkpointed the compatibility row',
+          checks: [{ claim: 'the checkpoint probe is green', recheck: 'run the focused probe', verified: evidence, ok: true }],
+        }),
+      );
+
+      expect(b).toMatchObject({ ok: true, verified: true, checks: 1 });
+      expect(b.repairs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'checks[0].ok',
+            kind: 'renamed',
+            detail: expect.stringContaining('canonical verified value was kept'),
+          }),
+        ]),
+      );
+
+      const [, stored] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      const storedCheck = splitCarryNoteChecks(stored).checks[0];
+      expect(storedCheck).toMatchObject({
+        claim: 'the checkpoint probe is green',
+        recheck: 'run the focused probe',
+        verified: expect.stringContaining(evidence),
+      });
+      expect(storedCheck?.observed).toBeUndefined();
+
+      const read = body(await call({ read: true }));
+      expect(read.checks).toHaveLength(1);
+      expect(read.checks[0]).toMatchObject({ verified: expect.stringContaining(evidence) });
+      expect(read.checks[0]?.observed).toBeUndefined();
+    });
+
     it('maps {status, evidence} to `verified`, PRESERVING the evidence rather than dropping it', () => {
       const out = parse({
         checks: [{ claim: 'gate is green', recheck: 'state:read', status: 'verified', evidence: 'saw 30/30 pass' }],

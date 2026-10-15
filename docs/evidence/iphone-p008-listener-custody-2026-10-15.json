@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-26083644504454454",
+  "parent": "WI-10004735",
+  "publicRouteIssue": "EI-25946131547854574",
+  "plan": "iphone-public-release-2026-08-11#P-008",
+  "result": "source-regression-passed-live-custody-verification-pending",
+  "scope": "Server listener ownership across unsuccessful health probes; desktop port recovery retained.",
+  "rootCause": {
+    "writer": "packages/operator-core/lib/own-tunnel/service.ts reconcileOnce",
+    "mechanism": "A background singleton that serves HTTP could rewrite another server operator's configured port after an unsuccessful health probe. Connector ownership was incorrectly sufficient authority for listener adoption.",
+    "historicalBoundary": "The retained restart observation records operatorPort 3271 and EADDRINUSE on ingress 41179. The exact unsuccessful health response at that earlier adoption was not captured.",
+    "detectorGap": "Prior adoption tests did not distinguish a desktop movable port from a server operator's explicit custody."
+  },
+  "socketObservation": {
+    "background": {
+      "pid": 3868175,
+      "listeningPorts": [3271, 41179],
+      "cwdKind": "canonical-checkout/apps/operator",
+      "backgroundWorkers": "1",
+      "healthSha": "02b32de35a"
+    },
+    "staging": {
+      "pid": 3147568,
+      "listeningPorts": [3170],
+      "cwdKind": "staging-candidate-checkout/apps/operator",
+      "backgroundWorkers": "0",
+      "healthSha": "d5b292ed83"
+    },
+    "method": "Correlate LISTEN socket inodes with process file descriptors; read only allowlisted environment keys, cwd and selected health fields."
+  },
+  "fix": {
+    "reused": "Existing own-tunnel reconciler, persisted operatorPort and PAPERCUSP_DESKTOP installation identity.",
+    "behavior": "Only desktop launches can automatically adopt a moved operator port. Server reconciliations preserve the configured owner through health and restart gaps.",
+    "newDurableSurfaces": []
+  },
+  "sourceAtVerification": [
+    {
+      "path": "packages/operator-core/lib/own-tunnel/service.ts",
+      "sha256": "a2de74b38d2eece4f40d1aa97c702c1de646111c929a20f8b01cb5dbd81cbfdb"
+    },
+    {
+      "path": "packages/operator-core/lib/own-tunnel/service.test.ts",
+      "sha256": "d662a82eeba5972e79d197b4a2cf01810dd27155fc3b27514840bf750a2edefb"
+    }
+  ],
+  "verification": {
+    "beforeFix": {
+      "command": "npm run test:file -- packages/operator-core/lib/own-tunnel/service.test.ts",
+      "exitCode": 1,
+      "passed": 21,
+      "failed": 2,
+      "observedFailure": "Both manual and Cloudflare server-health-gap regressions adopted 3271 instead of preserving 3170."
+    },
+    "afterFix": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/own-tunnel/service.test.ts packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
+      "exitCode": 0,
+      "passed": 49,
+      "failed": 0,
+      "skipped": 0,
+      "serviceTests": 23,
+      "configurationAndProvisioningTests": 26,
+      "finishedAt": "2026-10-15T22:06:06.598Z",
+      "runnerHead": "bb05c47daf",
+      "runnerProvenance": "Working-tree verification; the router reported one dirty named test path. The source hashes above identify the implementation and regression bytes, independently of checkout HEAD.",
+      "unixSession": 74464
+    },
+    "recurrenceGuard": "Registered service.test.ts covers both server tunnel modes during a health gap and verifies original-owner recovery; desktop missing-owner adoption and responsive-owner preservation also pass.",
+    "diffCheck": "git diff --check passed for the two changed source/test paths."
+  },
+  "liveVerification": {
+    "status": "pending",
+    "runtimeRoute": "operator-api currentBuildTestRoute: staging operator on 3170, containing committed source required; the background host also must load the adoption fix.",
+    "blocker": "EI-26084529766837457",
+    "blockerEvidence": "Current host build reports three out-of-scope kickoffChild references in psu-pty-host.mjs; its separate work-item claim is admission-pending. The previous source owner confirmed no active successor repair lane.",
+    "remaining": [
+      "Load verified source into the required serving runtimes.",
+      "Recover explicit listener custody and verify no adoption across a coordinated restart.",
+      "Recheck listener provenance, containment, JWT boundaries and raw provider configuration before any public route correction."
+    ]
+  },
+  "limits": [
+    "These tests exercise the reconciler with injected dependencies; they are not live restart or native simulator acceptance.",
+    "No provider configuration mutation or native job was performed in this continuation.",
+    "The prior route-correction receipt retains the verified v18 rollback. It does not establish that the correction is currently applied.",
+    "Full P-008 acceptance and final shipment remain open."
+  ]
+}

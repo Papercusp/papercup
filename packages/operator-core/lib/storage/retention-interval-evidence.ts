@@ -86,6 +86,109 @@ const soakRequirementsSchema = z.object({
 }).refine((x) => Date.parse(x.startAt) >= Date.parse(x.shippedAt), 'The soak must start after shipment.');
 
 export const DISK_HEADROOM_SOAK_INSTRUMENT_KEY = 'storage:disk-headroom-post-shipment-72h';
+/** The durable-headroom requirement has stronger targets and cadence than the native policy soak. */
+export const DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY = 'storage:durable-headroom-targets-72h';
+
+const targetRecordsSchema = z.object({
+  censuses: soakCensusRows(),
+  attempts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1),
+    startedAt: z.string().datetime({ offset: true }) })).max(20_000),
+  receipts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1), dryRun: z.literal(false),
+    startedAt: z.string().datetime({ offset: true }), finishedAt: z.string().datetime({ offset: true }),
+    complete: z.boolean(), policyExhausted: z.boolean().nullable(), errors: z.array(z.string()),
+    entries: z.array(z.object({ status: z.string() })), delegates: z.array(z.object({ ok: z.boolean() })),
+  })).max(20_000),
+  dispositions: z.object({ supersededPlan: z.string().min(1), successorPlan: z.literal('disk-durable-headroom-2026-10-15'),
+    planTerminal: z.boolean(), linkedSuccessor: z.boolean(), siblingId: z.literal('WI-10007751'), siblingTerminal: z.boolean() }),
+});
+function soakCensusRows() {
+  return z.array(z.object({ id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),
+    at: z.string().datetime({ offset: true }), availableBytes: bytes, complete: z.boolean() })).max(20_000);
+}
+
+/** Exact R-10 assessment: decimal GB/TB, 72 hourly buckets on each device, and
+ * the full native started/finished population. No alarm can excuse a target dip. */
+export function assessDurableHeadroomTargets(input: unknown,
+  window: { host: string; windowStart: string; windowEnd: string; measuredAt: string }) {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
+  const finish = () => ({ verdict: checks.some(c => c.status === 'fail') ? 'fail' as const :
+    checks.some(c => c.status === 'unknown') ? 'unknown' as const : 'pass' as const,
+    detail: JSON.stringify({ checks, scope: 'Hourly native samples only; capacity between samples is unmeasured. GB/TB are decimal bytes.' }), checks });
+  const parsed = targetRecordsSchema.safeParse(input);
+  const start = Date.parse(window.windowStart), end = Date.parse(window.windowEnd), measured = Date.parse(window.measuredAt);
+  const hour = 3_600_000;
+  if (!parsed.success || !window.host.trim() || ![start, end, measured].every(Number.isFinite) || end - start !== 72 * hour || end > measured) {
+    add('evidence-shape', 'unknown', 'Require a completed exact 72h window and complete, host-attributed native census/run/disposition records.');
+    return finish();
+  }
+  const { censuses, attempts, receipts, dispositions } = parsed.data;
+  if ([...censuses, ...attempts, ...receipts].some(r => r.host !== window.host)) {
+    add('host-scope', 'unknown', 'Foreign-host records cannot certify this window.'); return finish();
+  }
+  for (const path of ['/', '/mnt/data'] as const) {
+    const rows = censuses.filter(r => r.path === path && Date.parse(r.at) >= start && Date.parse(r.at) <= end);
+    add(`unique-ordered:${path}`, rows.every((r, i) => i === 0 || Date.parse(r.at) > Date.parse(rows[i - 1]!.at)) &&
+      new Set(rows.map(r => r.id)).size === rows.length ? 'pass' : 'fail', 'Native sample order and identity must be unique.');
+    const missing = Array.from({ length: 72 }, (_, h) => h).filter(h => !rows.some(r =>
+      Date.parse(r.at) >= start + h * hour && Date.parse(r.at) < start + (h + 1) * hour && r.complete));
+    add(`hourly-coverage:${path}`, missing.length ? 'unknown' : 'pass', `Missing/incomplete hourly buckets: ${missing.join(',') || 'none'}.`);
+    const floor = path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4;
+    add(`exact-target:${path}`, rows.some(r => r.availableBytes < floor) ? 'fail' : rows.length ? 'pass' : 'unknown', `Every observed sample must have >=${floor} free bytes.`);
+  }
+  const runs = attempts.filter(r => Date.parse(r.startedAt) >= start && Date.parse(r.startedAt) <= end);
+  const results = receipts.filter(r => Date.parse(r.startedAt) >= start && Date.parse(r.startedAt) <= end);
+  add('run-population', runs.length && new Set(runs.map(r => r.id)).size === runs.length &&
+    new Set(results.map(r => r.id)).size === results.length && results.every(r => runs.some(a => a.id === r.id)) ? 'pass' : 'unknown',
+  'Every real start must have exactly one matching terminal receipt; empty or ambiguous populations cannot pass.');
+  for (const run of runs) {
+    const receipt = results.find(r => r.id === run.id && r.startedAt === run.startedAt);
+    add(`complete-run:${run.id}`, !receipt || Date.parse(receipt.finishedAt) > measured ? 'unknown' :
+      Date.parse(receipt.finishedAt) < Date.parse(run.startedAt) || !receipt.complete || receipt.policyExhausted !== true ||
+      receipt.errors.length || receipt.entries.some(e => e.status === 'failed') || receipt.delegates.some(d => !d.ok) ? 'fail' : 'pass',
+    'The native run must finish, exhaust its policy and have no errors or failed effects/delegates.');
+  }
+  // A silent/dead scheduler cannot pass merely because it emitted one good receipt.
+  const missingRuns = Array.from({ length: 72 }, (_, h) => h).filter(h => !runs.some(r =>
+    Date.parse(r.startedAt) >= start + h * hour && Date.parse(r.startedAt) < start + (h + 1) * hour));
+  add('hourly-reclaim-coverage', missingRuns.length ? 'unknown' : 'pass', `Hours without a real reclaim start: ${missingRuns.join(',') || 'none'}.`);
+  add('superseded-disposition', dispositions.planTerminal && dispositions.linkedSuccessor && dispositions.siblingTerminal ? 'pass' : 'unknown',
+    'The superseded plan must be terminal and linked into this successor; WI-10007751 must be terminal.');
+  return finish();
+}
+
+/** Extend the existing native ledger reader; never use supplied scores, receipt
+ * claims, policy floors, or data from another host as R-10 evidence. */
+export async function measureDurableHeadroomTargets(sql: Pick<import('postgres').Sql, 'unsafe'>,
+  input: { workspaceId: string; harnessSlug: string; host: string; windowStart: string; windowEnd: string }) {
+  const start = Date.parse(input.windowStart), end = Date.parse(input.windowEnd);
+  if (!input.workspaceId.trim() || !input.harnessSlug.trim() || !input.host.trim() || !Number.isFinite(start) || end - start !== 72 * 3_600_000) {
+    return { verdict: 'unknown' as const, detail: 'Canonical workspace/harness/host and exact 72h window required.' };
+  }
+  const rows = await sql.unsafe(`WITH census AS (
+    SELECT run_id::text AS id, host, device AS path, finished_at AS at, avail_bytes AS "availableBytes", complete
+    FROM harness_shared.disk_census_runs WHERE host=$1 AND device IN ('/','/mnt/data')
+      AND finished_at BETWEEN $2::timestamptz AND $3::timestamptz ORDER BY finished_at,device,run_id LIMIT 20001
+  ), activity AS (
+    SELECT action, details FROM harness_shared.audit_log
+    WHERE workspace_id=$4 AND actor='system:disk-retention' AND action IN ('disk-retention:started','disk-retention:receipt')
+      AND (details->>'host'=$1 OR details->>'host' IS NULL) AND details->>'dryRun'='false'
+      AND ts BETWEEN $5 AND $6 ORDER BY ts,id LIMIT 40001
+  ), predecessor AS (
+    SELECT plan_slug, status, superseded_by FROM harness_shared.harness_plans
+    WHERE workspace_id=$4 AND harness_slug=$7 AND plan_slug='disk-headroom-standing-reclaim-2026-10-12'
+  ) SELECT
+    COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.at,c.path,c.id) FROM census c),'[]'::jsonb) AS censuses,
+    COALESCE((SELECT jsonb_agg(details ORDER BY details->>'startedAt') FROM activity WHERE action='disk-retention:started'),'[]'::jsonb) AS attempts,
+    COALESCE((SELECT jsonb_agg(details ORDER BY details->>'startedAt') FROM activity WHERE action='disk-retention:receipt'),'[]'::jsonb) AS receipts,
+    (SELECT jsonb_build_object('supersededPlan',plan_slug,'successorPlan','disk-durable-headroom-2026-10-15',
+      'planTerminal',status IN ('done','dropped','superseded','complete','completed'),
+      'linkedSuccessor',superseded_by='disk-durable-headroom-2026-10-15',
+      'siblingId','WI-10007751','siblingTerminal',COALESCE((SELECT status IN ('done','resolved','dropped','declined')
+        FROM harness_shared.work_items WHERE workspace_id=$4 AND harness_slug=$7 AND feature_id='WI-10007751'),false)) FROM predecessor) AS dispositions`,
+  [input.host, input.windowStart, input.windowEnd, input.workspaceId, start, Date.now(), input.harnessSlug]);
+  return assessDurableHeadroomTargets(rows[0], { ...input, measuredAt: new Date().toISOString() });
+}
 
 /** Resolve shipment identity from the existing deploy ledger, then assess the native records. */
 export async function measureDiskHeadroomSoakWindow(

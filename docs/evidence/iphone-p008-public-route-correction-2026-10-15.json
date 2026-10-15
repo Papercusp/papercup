@@ -342,10 +342,19 @@
   },
   "rollback": {
     "method": "Read current config; restore before.config with maintained cloudflareApi.putTunnelConfig only if current equals prepared.config and no concurrent edits exist; re-read and verify exact config hash.",
-    "preserveOtherRules": true
+    "preserveOtherRules": true,
+    "execution": {
+      "startedAt": "2026-10-15T21:48:43.083Z",
+      "fromVersion": 17,
+      "exactPreparedConfigMatched": true,
+      "finishedAt": "2026-10-15T21:48:44.027Z",
+      "version": 18,
+      "exactBeforeConfigRestored": true,
+      "configSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b"
+    }
   },
   "providerMutation": true,
-  "result": "public-http-device-lifecycle-passed",
+  "result": "rolled-back-listener-custody-defect-open",
   "tests": {
     "command": "npm run test:file -- packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
     "passed": 26,
@@ -355,7 +364,8 @@
   "limits": [
     "Initial Python Cloudflare1010 root cause remains unknown.",
     "No iOS simulator/native acceptance is implied.",
-    "P-008 full acceptance and final production shipment remain open."
+    "P-008 full acceptance and final production shipment remain open.",
+    "Earlier17publicHTTPchecks remain historical passing proof only; the public route correction was rolled back after restart changed listener custody. EI-26083644504454454 owns durable repair."
   ],
   "publicationAttemptedAt": "2026-10-15T21:42:12.666Z",
   "publishedAt": "2026-10-15T21:42:13.228Z",
@@ -535,5 +545,19 @@
     "exactPreparedConfigVerified": true,
     "readAt": "2026-10-15T21:42:54.617Z"
   },
-  "verifiedAt": "2026-10-15T21:42:54.617Z"
+  "verifiedAt": "2026-10-15T21:42:54.617Z",
+  "postRestartObservation": {
+    "at": "2026-10-15T21:48:42.592Z",
+    "healthSha": "d5b292ed83",
+    "operatorPort": 3271,
+    "servedByThisOperator": false,
+    "listening": false,
+    "health": "down",
+    "lastError": "the external-ingress listener could not open on 127.0.0.1:41179: listen EADDRINUSE: address already in use 127.0.0.1:41179",
+    "lastErrorAt": "2026-10-15T21:46:08.069Z",
+    "publicHeartbeatObservedStatus": 401,
+    "scope": "Anonymous public response does not establish actual socket owner or prior runtime provenance.",
+    "followUp": "EI-26083644504454454"
+  },
+  "currentRouteCorrected": false
 }

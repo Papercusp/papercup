@@ -32,13 +32,16 @@ import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
-import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
 } from './code-intelligence/native-adoption';
-import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
+import {
+  WORK_OVERHEAD_INSTRUMENT_KEYS, measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
+} from './agent-work-overhead-metrics';
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
@@ -161,7 +164,8 @@ export interface PlatformInstrument {
   rescore?: {
     windowMs: number;
     unit: InstrumentUnit;
-    resolve(window: { workspaceId: string; windowStart: string; windowEnd: string }): Promise<{
+    scope?: 'workspace' | 'harness';
+    resolve(window: { workspaceId: string; harnessSlug?: string; windowStart: string; windowEnd: string }): Promise<{
       verdict: 'pass' | 'fail' | 'unknown';
       detail: string;
     }>;
@@ -666,6 +670,9 @@ export function platformComputedInstrumentKeys(): string[] {
     'woe.goal-mode-base-scorecard',
     GATE_REUSE_AUDIT_INSTRUMENT_KEY,
     DISK_HEADROOM_SOAK_INSTRUMENT_KEY,
+    DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,
+    COLD_MOUNTS_INSTRUMENT_KEY,
+    COLD_MOVES_INSTRUMENT_KEY,
     PG_TABLE_GROWTH_INSTRUMENT_KEY,
     ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
     ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
@@ -687,12 +694,29 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
   for (const key of platformComputedInstrumentKeys()) {
     if (registry.has(key)) continue;
     const adoptionCriterion = nativeAdoptionCriterionForInstrument(key);
+    const overheadCriterion = workOverheadCriterionForInstrument(key);
+    const coldEvidence = key === COLD_MOUNTS_INSTRUMENT_KEY || key === COLD_MOVES_INSTRUMENT_KEY || key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY;
     registry.set(key, {
       key,
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(adoptionCriterion ? { rescore: {
+      ...(coldEvidence ? { rescore: {
+        windowMs: 72 * 60 * 60_000,
+        unit: 'count' as const,
+        scope: 'harness' as const,
+        resolve: async window => {
+          if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const, detail: 'Canonical harness required.' };
+          const { getOrgPg } = await import('@papercusp/db-org');
+          if (key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY) {
+            const { hostname } = await import('node:os');
+            const { measureDurableHeadroomTargets } = await import('./storage/retention-interval-evidence');
+            return measureDurableHeadroomTargets(getOrgPg().sql, { ...window, harnessSlug: window.harnessSlug, host: hostname() });
+          }
+          const { measureColdMounts, measureColdMoves } = await import('./storage/cold-tier-evidence');
+          return key === COLD_MOUNTS_INSTRUMENT_KEY ? measureColdMounts(getOrgPg().sql, window.workspaceId) : measureColdMoves();
+        },
+      } } : adoptionCriterion ? { rescore: {
         windowMs: 72 * 60 * 60_000,
         unit: 'count' as const,
         resolve: async (window: { workspaceId: string; windowStart: string; windowEnd: string }) => {
@@ -700,6 +724,17 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
           const rating = rateNativeAdoption(metrics)[adoptionCriterion];
           return { verdict: rating.verdict,
             detail: `${window.windowStart}..${window.windowEnd}: ${rating.reason}` };
+        },
+      } } : overheadCriterion ? { rescore: {
+        windowMs: 24 * 60 * 60_000,
+        unit: 'count' as const,
+        scope: 'harness' as const,
+        resolve: async window => {
+          if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const,
+            detail: 'A canonical rubric harness is required for work-overhead measurement.' };
+          const metrics = await measureWorkOverheadWindow({ ...window, harnessSlug: window.harnessSlug });
+          const rating = rateWorkOverhead(metrics)[overheadCriterion];
+          return { verdict: rating.verdict, detail: JSON.stringify({ rating, metrics }) };
         },
       } } : {}),
     });

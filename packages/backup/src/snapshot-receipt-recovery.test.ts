@@ -12,6 +12,9 @@ import type { Sql } from 'postgres';
 import type { BackupMigrationLock } from './config';
 
 vi.mock('./password', () => ({ deriveRepoPassword: async () => 'test-password' }));
+const admission = vi.hoisted(() => ({ active: false }));
+vi.mock('./host-dump-coverage', () => ({ readHostDumpInProgress: async () => admission.active
+  ? { phase: 'guard-queued', pid: 4242 } : null }));
 
 import {
   configureBackup,
@@ -33,6 +36,7 @@ function configureWithSql(sql: Sql, acquireMigrationLock?: () => Promise<BackupM
 
 beforeEach(async () => {
   configureBackupStepRunner(null);
+  admission.active = false;
   root = await mkdtemp(join(tmpdir(), 'backup-receipt-'));
 });
 
@@ -48,9 +52,14 @@ describe('snapshot receipt recovery', () => {
     const row = { id: 78850, trigger_reason: 'pre_destructive', sources_json: [] as string[],
       started_at: new Date().toISOString(), status, finished_at: null as string | null,
       kopia_snapshot_id: null as string | null, bytes_added: '1', bytes_total: '2',
-      db_dump_ok: true as boolean | null, error_text: null as string | null, hook_payload: { ok: true } };
+      db_dump_ok: true as boolean | null, error_text: null as string | null,
+      hook_payload: { ok: true } as Record<string, unknown>, capture_started: false };
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?'); queries.push({ text, values });
+      if (text.includes('SELECT id FROM harness_shared.backup_events')) return Promise.resolve([{ id: '123' }]);
+      if (text.includes('SELECT event.id, event.payload_json')) return Promise.resolve([
+        { id: 123, payload_json: row.hook_payload, capture_started: row.capture_started },
+      ]);
       if (text.includes('SELECT id, trigger_reason') || text.includes('SELECT status, error_text')
         || text.includes('FROM harness_shared.backup_snapshots AS snapshot')) {
         return Promise.resolve([row]);
@@ -75,7 +84,7 @@ describe('snapshot receipt recovery', () => {
     const steps: string[] = [];
     configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
       steps.push(name);
-      return name === 'backup-pre-snapshot-hook' ? { ok: true, error: null } as T : fn();
+      return name.startsWith('backup-pre-snapshot-hook') ? { ok: true, error: null } as T : fn();
     } });
     return { row, sql, queries, backup, kopia, steps };
   }
@@ -175,6 +184,65 @@ describe('snapshot receipt recovery', () => {
     expect(reopen?.text).toContain('AND finished_at =');
     expect(reopen?.text).toContain('AND sources_json =');
     expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('retries only a proven no-work host admission deferral on the same row (typed=%s)', async typed => {
+    const f = producerFixture('failed');
+    const error = 'host backup is in progress (phase guard-queued, pid 4242)';
+    f.row.hook_payload = { ok: false, error, ...(typed ? { deferred: 'host-backup-in-progress' } : {}) };
+    f.row.error_text = `pre-destructive backup requires a successful database dump: ${error}`;
+    f.row.finished_at = new Date().toISOString(); f.row.db_dump_ok = false;
+    const release = vi.fn(async () => {}); configureWithSql(f.sql, async () => ({ release }));
+    expect(await f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+    expect(f.steps).toContain('backup-pre-snapshot-hook:resume:78850:123');
+    expect(f.steps).not.toContain('backup-pre-snapshot-hook');
+    expect(f.queries.some(q => q.text.includes('INSERT INTO harness_shared.backup_snapshots'))).toBe(false);
+    expect(f.queries.some(q => q.values.some(value => typeof value === 'string' && value.includes('admission_deferred_retry')))).toBe(true);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('uses the prior hook event to escape a cached rejection after the recovery CAS and a crash', async () => {
+    const f = producerFixture('running');
+    f.row.hook_payload = { ok: false, error: 'host backup is in progress (phase guard-queued, pid 4242)' };
+    f.row.db_dump_ok = false;
+    configureWithSql(f.sql, async () => ({ release: async () => {} }));
+    configureBackupStepRunner({ runStep: async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
+      f.steps.push(name);
+      if (name === 'backup-pre-snapshot-hook') return { ok: false, error: 'cached admission refusal' } as T;
+      return name.startsWith('backup-pre-snapshot-hook:resume:') ? { ok: true } as T : fn();
+    } });
+    expect(await f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 }))
+      .toMatchObject({ snapshotId: 78850, dbDumpOk: true });
+    expect(f.steps).toContain('backup-pre-snapshot-hook:resume:78850:123');
+    expect(f.steps).not.toContain('backup-pre-snapshot-hook');
+  });
+
+  it.each(['active-host', 'actual-dump-failure', 'missing-hook', 'error-mismatch', 'capture-started', 'artifact', 'bad-finish', 'cas-race'] as const)
+  ('protects a terminal receipt when admission retry is not proven (%s)', async which => {
+    const f = producerFixture('failed');
+    const error = 'host backup is in progress (phase guard-queued, pid 4242)';
+    f.row.hook_payload = { ok: false, error, deferred: 'host-backup-in-progress' };
+    f.row.error_text = `pre-destructive backup requires a successful database dump: ${error}`;
+    f.row.finished_at = new Date().toISOString(); f.row.db_dump_ok = false;
+    admission.active = which === 'active-host';
+    if (which === 'actual-dump-failure') f.row.hook_payload.error = 'pg_dump exited 1';
+    if (which === 'missing-hook') f.row.hook_payload = {};
+    if (which === 'error-mismatch') f.row.error_text = 'some other failure';
+    if (which === 'capture-started') f.row.capture_started = true;
+    if (which === 'artifact') f.kopia.mockResolvedValue('[{"id":"protected-artifact"}]');
+    if (which === 'bad-finish') f.row.finished_at = 'invalid';
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (which === 'cas-race' && strings.join('?').includes("SET status = 'running', finished_at = NULL")) return Promise.resolve([]);
+      return (f.sql as unknown as (s: TemplateStringsArray, ...v: unknown[]) => Promise<unknown[]>)(strings, ...values);
+    }) as unknown as Sql;
+    const release = vi.fn(async () => {}); configureWithSql(sql, async () => ({ release }));
+    await expect(f.backup.snapshot('pre_destructive', undefined, { resumeSnapshotId: 78850 })).rejects.toThrow();
+    expect(f.row.status).toBe('failed');
+    expect(f.steps.some(name => name.startsWith('backup-pre-snapshot-hook'))).toBe(false);
+    expect(f.kopia.mock.calls.some(([args]) => (args as string[]).includes('create'))).toBe(false);
+    expect(f.queries.some(q => q.text.includes('SET finished_at = now()'))).toBe(false);
     expect(release).toHaveBeenCalledOnce();
   });
 

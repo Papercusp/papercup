@@ -26,7 +26,8 @@ import {
   type BackupIntervalHandle,
 } from './config';
 import { deriveRepoPassword } from './password';
-import { runPreSnapshotHook } from './hook';
+import { runPreSnapshotHook, type PreSnapshotHookResult } from './hook';
+import { readHostDumpInProgress } from './host-dump-coverage';
 import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
 import {
   type BackupSettings,
@@ -447,6 +448,7 @@ export class WorkspaceBackup {
     let startedAtMs = Date.now();
     let dbDumpOk: boolean | null = null;
     let receiptFinalized = false;
+    let dumpStepName = 'backup-pre-snapshot-hook';
     let heartbeat: BackupIntervalHandle | undefined;
     // A scheduler-admitted lock is already owned before the durable row is
     // inserted. Keep it in the local lifecycle from the first instruction so
@@ -563,7 +565,10 @@ export class WorkspaceBackup {
         // The orphan sweep can terminalize a lost producer before its explicit
         // recovery reaches this lock. Reopen only that machine-authored verdict,
         // after proving that the same row has no completed artifact.
-        if (await this.reopenOrphanedProducer(snapshotRowId!, reason)) receiptFinalized = false;
+        const recovered = await this.reopenRecoverableProducer(snapshotRowId!, reason);
+        if (recovered !== null) {
+          receiptFinalized = false;
+        }
         const receipt = await this.reconcileSnapshotReceipt(snapshotRowId!);
         if (!receipt.stillRunning) {
           receiptFinalized = true;
@@ -578,6 +583,20 @@ export class WorkspaceBackup {
           throw new Error(`snapshot ${snapshotRowId} has no positive artifact-absence proof; re-read its receipt before resuming`);
         }
         receiptFinalized = false;
+        // This also covers a crash after a recovery CAS but before the next
+        // hook: the row is running again, yet the original step can still hold
+        // a cached admission rejection. The latest durable hook event gives a
+        // stable retry identity without discarding the old result or evidence.
+        const [priorHook] = await sql<{ id: string | number }[]>`
+          SELECT id FROM harness_shared.backup_events
+           WHERE workspace_id = ${this.workspaceId} AND snapshot_id = ${snapshotRowId}
+             AND kind = 'hook_pg_dump' ORDER BY id DESC LIMIT 1
+        `;
+        if (priorHook) {
+          const eventId = Number(priorHook.id);
+          if (!Number.isSafeInteger(eventId) || eventId <= 0) throw new Error('snapshot retry hook event has an invalid identity');
+          dumpStepName += `:resume:${snapshotRowId}:${eventId}`;
+        }
         await this.event(snapshotRowId!, 'progress', { phase: 'producer_resumed' });
       }
       await this.ensureRepo();
@@ -593,8 +612,8 @@ export class WorkspaceBackup {
       // crash-resume replays the degradation instead of silently recovering to a
       // clean 'ok': the cached step result is the only record a resumed workflow
       // sees of what the dump did.
-      const dumpOutcome: { ok: boolean; error: string | null } | undefined = await steps.runStep(
-        'backup-pre-snapshot-hook',
+      const dumpOutcome: Pick<PreSnapshotHookResult, 'ok' | 'error' | 'deferred'> | undefined = await steps.runStep(
+        dumpStepName,
         () =>
           runPreSnapshotHook({
             workspaceId: this.workspaceId,
@@ -602,7 +621,7 @@ export class WorkspaceBackup {
             triggerReason: reason,
           }).then(async (result) => {
             await this.event(snapshotRowId!, 'hook_pg_dump', { ...result });
-            return { ok: result.ok, error: result.error ?? null };
+            return { ok: result.ok, error: result.error, deferred: result.deferred };
           })
             .catch(async (err) => {
               // eslint-disable-next-line no-console
@@ -936,7 +955,7 @@ export class WorkspaceBackup {
   }
 
   /** Called only while snapshotOnce holds the cross-process producer lock. */
-  private async reopenOrphanedProducer(snapshotId: number, reason: SnapshotTriggerReason): Promise<boolean> {
+  private async reopenRecoverableProducer(snapshotId: number, reason: SnapshotTriggerReason): Promise<number | null> {
     const sql = backupHost().getSql();
     const [row] = await sql<{
       status: string; error_text: string | null; finished_at: string | null;
@@ -946,9 +965,37 @@ export class WorkspaceBackup {
         FROM harness_shared.backup_snapshots
        WHERE workspace_id = ${this.workspaceId} AND id = ${snapshotId}
     `;
-    if (!row || row.status !== 'failed'
-      || !/^orphan-sweep: status='running' for >\d+min$/.test(row.error_text ?? '')) return false;
-    if (row.kopia_snapshot_id !== null || row.db_dump_ok === false
+    if (!row || row.status !== 'failed') return null;
+    const orphan = /^orphan-sweep: status='running' for >\d+min$/.test(row.error_text ?? '');
+    let admissionEventId = 0;
+    if (!orphan && reason === 'pre_destructive' && row.db_dump_ok === false) {
+      const [hook] = await sql<{ id: number; payload_json: Record<string, unknown>; capture_started: boolean }[]>`
+        SELECT event.id, event.payload_json,
+               EXISTS (SELECT 1 FROM harness_shared.backup_events AS capture
+                        WHERE capture.workspace_id = event.workspace_id AND capture.snapshot_id = event.snapshot_id
+                          AND capture.kind = 'progress' AND capture.payload_json->>'phase' = 'kopia_snapshot') AS capture_started
+          FROM harness_shared.backup_events AS event
+         WHERE event.workspace_id = ${this.workspaceId} AND event.snapshot_id = ${snapshotId}
+           AND event.kind = 'hook_pg_dump'
+         ORDER BY event.id DESC LIMIT 1
+      `;
+      const payload = hook?.payload_json;
+      // Recognize the exact legacy machine outcome as well as new typed events.
+      // An arbitrary dump failure or a missing/unreadable event remains terminal.
+      const knownDeferral = payload?.ok === false && typeof payload.error === 'string'
+        && /^host backup is in progress \(phase (?:guard-queued|guard-running|host-backup), pid [1-9]\d*\)$/.test(payload.error)
+        && (payload.deferred === undefined || payload.deferred === 'host-backup-in-progress')
+        && row.error_text === `pre-destructive backup requires a successful database dump: ${payload.error}`;
+      const eventId = Number(hook?.id);
+      if (!hook || !knownDeferral || !Number.isSafeInteger(eventId) || eventId <= 0 || hook.capture_started !== false) return null;
+      // Re-check live admission before modifying the failed receipt. The hook
+      // checks again after the CAS, so a new writer racing this read still defers.
+      const active = await readHostDumpInProgress();
+      if (active) throw new Error(`snapshot ${snapshotId} admission remains deferred: host backup is in progress (phase ${active.phase}, pid ${active.pid})`);
+      admissionEventId = eventId;
+    }
+    if (!orphan && !admissionEventId) return null;
+    if (row.kopia_snapshot_id !== null || (orphan && row.db_dump_ok === false)
       || !row.finished_at || !Number.isFinite(Date.parse(row.finished_at))) {
       throw new Error(`snapshot ${snapshotId} has a protected terminal receipt; refusing to overwrite it`);
     }
@@ -957,11 +1004,11 @@ export class WorkspaceBackup {
     }
     const updated = await sql<{ id: number }[]>`
       UPDATE harness_shared.backup_snapshots
-         SET status = 'running', finished_at = NULL, error_text = NULL
+         SET status = 'running', finished_at = NULL, error_text = NULL, db_dump_ok = NULL
        WHERE workspace_id = ${this.workspaceId} AND id = ${snapshotId}
          AND status = 'failed' AND error_text = ${row.error_text}
          AND finished_at = ${row.finished_at}::timestamptz
-         AND kopia_snapshot_id IS NULL AND db_dump_ok IS NOT FALSE
+         AND kopia_snapshot_id IS NULL AND db_dump_ok IS NOT DISTINCT FROM ${row.db_dump_ok}
          AND trigger_reason = ${reason}
          AND sources_json = ${JSON.stringify([this.workspaceRoot])}::jsonb
        RETURNING id
@@ -970,9 +1017,10 @@ export class WorkspaceBackup {
       throw new Error(`snapshot ${snapshotId} changed during orphan recovery; refusing to resume`);
     }
     await this.event(snapshotId, 'progress', {
-      phase: 'orphan_producer_reopened', priorError: row.error_text, priorFinishedAt: row.finished_at,
+      phase: admissionEventId ? 'admission_deferred_retry' : 'orphan_producer_reopened',
+      priorError: row.error_text, priorFinishedAt: row.finished_at, ...(admissionEventId ? { admissionEventId } : {}),
     }).catch(() => {}); // Progress telemetry must not strand the successful CAS.
-    return true;
+    return admissionEventId;
   }
 
   async reconcileSnapshotReceipt(snapshotId: number): Promise<SnapshotReceiptReconciliation> {

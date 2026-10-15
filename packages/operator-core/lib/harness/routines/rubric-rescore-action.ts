@@ -144,7 +144,8 @@ export async function rescoreRubric(
   const before = new Map(executable.map((c) => [c.key, criterionLedgerVerdict(c, latestBefore)] as const));
 
   const results: RubricCheckResult[] = [
-    ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable, workspaceId })),
+    ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable, workspaceId,
+      ...(rubric.subjectHarnessSlug ? { harnessSlug: rubric.subjectHarnessSlug } : {}) })),
   ];
   const probeErrors: string[] = [];
   const probeCriteria = executable.filter((c) => (c.check as { kind?: string } | undefined)?.kind === 'probe');

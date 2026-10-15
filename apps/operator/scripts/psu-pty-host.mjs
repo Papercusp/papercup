@@ -12388,6 +12388,10 @@ export function hostThroughPty(o) {
       };
       let freshChildRetries = 0;
       const injectLaunchKickoff = () => {
+        // Keep proof and preparation tied to the child that this kickoff
+        // submitted to. A same-host respawn can replace the mutable `child`
+        // binding while the native proof is still settling.
+        const kickoffChild = child;
         launchKickoffAttemptStartedAtMs = Date.now();
         launchKickoffAttemptBudgetMs = kickoffBudgetMs;
         // WI-10007230: owner input can cancel carry before its prewrite hook.
@@ -12435,7 +12439,7 @@ export function hostThroughPty(o) {
             try {
               const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
                 serverName: 'papercusp',
-                write: (bytes) => child.write(bytes),
+                write: (bytes) => kickoffChild.write(bytes),
                 readTap: tap.read,
                 resetTap: tap.reset,
                 maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS,
@@ -12589,7 +12593,7 @@ export function hostThroughPty(o) {
             text: launchKickoff,
             sinceMs: nativeCaptureAfterMs,
             timeoutMs: nativePersistenceTimeoutMs,
-            writeCr: () => child.write('\r'),
+            writeCr: () => kickoffChild.write('\r'),
             onRetry: () => {
               appendHostEvent(ownerId, 'launch-kickoff-turn-start-retry', {
                 reason: 'native-turn-marker-timeout',
@@ -12620,7 +12624,7 @@ export function hostThroughPty(o) {
         // before the write is the deadlock guarded by
         // launchKickoffRequiresPreSubmissionNativeBinding().
         if (env.PAPERCUSP_AGENT === 'codex' && proof.persisted) {
-          const proofNativeId = currentNativeSessionId(child.pid, resolveRespawnNativeId) ||
+          const proofNativeId = currentNativeSessionId(kickoffChild.pid, resolveRespawnNativeId) ||
             (/^rollout-.*-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i
               .exec(basename(proof.nativeRef ?? ''))?.[1] ?? null);
           if (proofNativeId) {
@@ -12632,7 +12636,7 @@ export function hostThroughPty(o) {
               report: onRespawn,
               emit: () => {},
               timeoutMs: respawnReportTimeoutMs,
-              isCurrent: () => !recycling && !shuttingDown && !hostCleanedUp,
+              isCurrent: () => child === kickoffChild && !recycling && !shuttingDown && !hostCleanedUp,
             });
             appendHostEvent(ownerId, binding.announced
               ? 'launch-native-binding-confirmed'
