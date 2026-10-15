@@ -91,6 +91,9 @@ export type ColdBootDrillLedgerKind =
   | 'carry-drill-respawn-failed'
   | 'carry-drill-carry-delivered'
   | 'carry-drill-carry-dropped'
+  // Busy-gate measurement rows are non-terminal drill diagnostics, correlated
+  // with the drill ID so the later verifier can inspect the exact defer.
+  | 'busy-gate-expired'
   // EI-12754: NON-terminal marker — a busy-gate-refused carry-respawn drill was
   // re-queued for exactly one deferred retry at the next settled turn. The
   // retry itself ends in a terminal delivered/dropped row; report/verify
@@ -111,6 +114,10 @@ export interface ColdBootDrillLedgerEvent {
   gradedByOwnerId?: string;
   /** Host-mirrored terminal rows (EI-12655): why a carry was dropped / a respawn failed. */
   reason?: string;
+  /** Busy-gate measurement context for a correlated drill defer. */
+  mode?: string;
+  capMs?: number | null;
+  observedMaxQuietMs?: number | null;
   /** Host-mirrored respawn rows (EI-12655): the successor's fresh native session id. */
   nativeId?: string | null;
   /** EI-12754: set on a terminal drop from a bounded re-armed retry. */
@@ -134,6 +141,8 @@ export interface ColdBootDrillHostEvent {
    *  carry-respawn-outcome to decide when a `pending` attempt is past the window
    *  in which it could still fire (see isOrphanedPendingRespawn). */
   capMs?: number | null;
+  /** Longest observed quiet window before the busy gate deferred this event. */
+  observedMaxQuietMs?: number | null;
   /** Effective retry cap, final prompt quiet threshold, and verifier support reason. */
   maxAttempts?: number | null;
   quietMs?: number | null;

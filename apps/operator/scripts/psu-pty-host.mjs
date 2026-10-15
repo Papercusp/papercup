@@ -14329,8 +14329,15 @@ export function hostThroughPty(o) {
             // turn-mode siblings of any spelling, confirming the whole non-respawn
             // half of this gate was invisible. `mode` carries what the old
             // kind-name encoded, so this is one row per defer, never two.
-            appendHostEvent(ownerId, 'busy-gate-expired', {
+            const correlatedDrillId = msg.mode === 'carry-respawn' && typeof msg.drillId === 'string'
+              ? msg.drillId.trim()
+              : '';
+            const drillCorrelation = correlatedDrillId
+              ? { drillId: correlatedDrillId, sessionClass: msg.sessionClass ?? '' }
+              : {};
+            const busyGateEvent = {
               mode: msg.mode,
+              ...drillCorrelation,
               capMs: turnInjectBusyCapMs,
               observedMaxQuietMs: Number.isFinite(atPrompt?.maxQuietForMs) ? atPrompt.maxQuietForMs : null,
               quietMs: Number.isFinite(atPrompt?.quietMs) ? atPrompt.quietMs : null,
@@ -14339,7 +14346,14 @@ export function hostThroughPty(o) {
               // indistinguishable from one on a genuinely busy agent, which is
               // what made the codex-only wiring invisible for so long.
               verifier: verifierSupport.reason ?? 'supported',
-            });
+            };
+            appendHostEvent(ownerId, 'busy-gate-expired', busyGateEvent);
+            // Drill metrics must share the drill ID used by the terminal drop;
+            // otherwise the later verifier cannot join the measurement to its
+            // drill even when the owner event log still retains this row.
+            if (correlatedDrillId) {
+              appendSharedDrillLedgerEvent(ownerId, 'busy-gate-expired', busyGateEvent);
+            }
             // EI-12655 (fix b, leader-concurred rider: "expired must FAIL LOUD")
             // + EI-12754 (the re-arm leg deferred out of that diff) + WI-5368/
             // WI-5530: a carry-respawn refused here previously vanished with ZERO

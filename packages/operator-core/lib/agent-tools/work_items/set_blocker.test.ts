@@ -158,6 +158,11 @@ describe('work_items:set_blocker', () => {
     }), expect.anything());
     expect(out.activeBlockers).toEqual([expect.objectContaining({ ref: 'consult:conv-r13' })]);
     expect(parkNotify).toHaveBeenCalledOnce();
+    expect(parkNotify).toHaveBeenCalledWith(expect.objectContaining({
+      workItemId: item.id,
+      summary: expect.stringContaining('FYI (low importance)'),
+      body: expect.stringContaining('conv-r13'),
+    }));
     expect(ownerAskRun).not.toHaveBeenCalled();
   });
 

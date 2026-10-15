@@ -216,6 +216,12 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       status: 'degraded',
       selectedBindings: 1,
       measuredBindings: 0,
+      bindings: [{
+        bindingId: 91,
+        evidenceKind: 'test',
+        evidenceRef: 'packages/operator-core/lib/reconnect.test.ts#reconnect',
+        status: 'unavailable',
+      }],
       unavailableBindings: [{
         id: 91,
         evidenceKind: 'test',
@@ -1153,22 +1159,51 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       if (entry.rating === 'pass' || entry.rating === 'not-applicable') {
         expect(entry).not.toHaveProperty('evidence');
       } else {
-        expect(full.rows[0].scorecardDraft.ratings[criterion].evidence.startsWith(entry.evidence as string)).toBe(true);
+        const compactEvidence = entry.evidence as string;
+        const fullEvidence = full.rows[0].ratings[criterion].evidence as string;
+        expect(fullEvidence).toEqual(expect.any(String));
+        if (entry.evidenceTruncated === true) {
+          expect(compactEvidence.length).toBeLessThanOrEqual(1200);
+          const bindingMarker = ' Bound evidence: ';
+          const bindingAt = compactEvidence.indexOf(bindingMarker);
+          const statement = bindingAt < 0 ? compactEvidence : compactEvidence.slice(0, bindingAt);
+          const omissionMarker = ' …[middle omitted]… ';
+          const omittedAt = statement.indexOf(omissionMarker);
+          if (omittedAt >= 0) {
+            expect(fullEvidence.startsWith(statement.slice(0, omittedAt))).toBe(true);
+            expect(fullEvidence).toContain(statement.slice(omittedAt + omissionMarker.length));
+          } else {
+            expect(fullEvidence.startsWith(statement)).toBe(true);
+          }
+          if (bindingAt >= 0) {
+            const bindingExcerpt = compactEvidence.slice(bindingAt + bindingMarker.length).replace(/…$/, '');
+            expect(fullEvidence).toContain(bindingMarker + bindingExcerpt);
+          }
+        } else {
+          expect(fullEvidence.startsWith(compactEvidence)).toBe(true);
+        }
       }
     }
 
-    // Full: the drafts and evidence text, and no ref (there is nothing left to fetch).
+    // Full: the draft and any exact evidence pointers; transformed diagnostic text stays inline.
     expect(full).toMatchObject({ ok: true, detail: 'full' });
     expect(full).not.toHaveProperty('fullBody');
     expect(full.rows[0].scorecardDraft).toBeTruthy();
-    // P-006 (WI-6554700010009314): each criterion's evidence is carried ONCE, in the emit-ready
-    // draft; the row rating points at it. Falsifier: a row rating still carries the text, the
-    // pointer is missing, or the draft lost the evidence.
+    // P-006 (WI-6554700010009314): point at the emit-ready draft only when it contains the
+    // exact row text. The draft compacts shared binding descriptions and the replay probe, so
+    // full evaluator evidence stays inline whenever replacing it would lose diagnostic detail.
     for (const [criterion, entry] of Object.entries(full.rows[0].ratings) as Array<[string, Record<string, unknown>]>) {
-      expect(entry).not.toHaveProperty('evidence');
-      expect(entry.evidenceAt).toBe(`scorecardDraft.ratings['${criterion}'].evidence`);
-      expect(full.rows[0].scorecardDraft.ratings[criterion].evidence).toEqual(expect.any(String));
-      expect(full.rows[0].scorecardDraft.ratings[criterion].evidence.length).toBeGreaterThan(0);
+      const draftEvidence = full.rows[0].scorecardDraft.ratings[criterion].evidence as string;
+      expect(draftEvidence).toEqual(expect.any(String));
+      expect(draftEvidence.length).toBeGreaterThan(0);
+      if (typeof entry.evidence === 'string') {
+        expect(entry).not.toHaveProperty('evidenceAt');
+        expect(entry.evidence).toContain('Replay the shared scorecard rerunRecipe');
+        expect(draftEvidence).toContain('Replay result:');
+      } else {
+        expect(entry).not.toHaveProperty('evidence');
+        expect(entry.evidenceAt).toBe(`scorecardDraft.ratings['${criterion}'].evidence`);
+      }
     }
 
     // Same verdicts either way — the summary drops prose, never a rating the replay gates read.
@@ -1220,11 +1255,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     const narrowed = await call(tool.args.parse(summary.nonPassingDetail.args));
     expect(Object.keys(narrowed.rows[0].ratings).sort()).toEqual([...nonPassing].sort());
     for (const criterion of nonPassing) {
-      const { evidenceAt: _pointer, ...fullEntry } = full.rows[0].ratings[criterion];
-      expect(narrowed.rows[0].ratings[criterion]).toEqual({
-        ...fullEntry,
-        evidence: full.rows[0].scorecardDraft.ratings[criterion].evidence,
-      });
+      const fullEntry = full.rows[0].ratings[criterion];
+      expect(fullEntry.evidence).toEqual(expect.any(String));
+      expect(narrowed.rows[0].ratings[criterion]).toEqual(fullEntry);
     }
     expect(narrowed.rows[0]).not.toHaveProperty('scorecardDraft');
     expect(narrowed.rows[0].scorecardDraftOmitted).toEqual(expect.any(String));
