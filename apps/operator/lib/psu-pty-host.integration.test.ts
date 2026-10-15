@@ -4582,6 +4582,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
           PAPERCUSP_ADV_SESSION_ID: '42',
           CODEX_HOME: '/tmp/codex-home-for-handoff',
           PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: '/isolated/explicit-mutex-root',
           TERM: 'xterm-256color',
           // The shim's advertisement. Without it the host must NOT exit — see the
           // control below, which is the safety-critical half of this pair. The
@@ -4648,6 +4649,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
           PAPERCUSP_AGENT: 'codex',
           PAPERCUSP_ADV_SESSION_ID: '42',
           CODEX_HOME: '/tmp/codex-home-for-handoff',
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: '/isolated/explicit-mutex-root',
           DISABLE_AUTO_COMPACT: '1',
           DISABLE_COMPACT: '1',
         },
