@@ -67,7 +67,13 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-const runStartedAt = () => new Date().toISOString();
+// WI-6554700010014813: the NEXT millisecond, not "now". runStartedAt carries millisecond
+// precision while file mtimes carry sub-millisecond fractions, so a stamp taken in the same
+// millisecond as a fixture write reads as BEFORE that write, and the binder correctly refuses
+// it (test_run_source_modified_after_run). Measured: 146 of 500 replays of the nested-workspace
+// case refused on /dev/shm. floor(now) + 1ms is strictly after every write that already returned,
+// because a kernel file timestamp never runs ahead of the realtime clock.
+const runStartedAt = () => new Date(Date.now() + 1).toISOString();
 
 function withDefaultRunStart(details: unknown): unknown {
   if (typeof details === 'string') {
@@ -1450,6 +1456,24 @@ describe('expandTestRunBinding: registered sibling checkout (WI-10006610)', () =
       ok: false,
       error: 'test_run_file_outside_root',
     });
+  });
+});
+
+// WI-6554700010014813: every positive case above writes its files and then takes the default
+// run start. If that start could land in the same millisecond as a write, those cases would
+// fail intermittently (measured 29% on the nested-workspace case). Replay the fixture's own
+// sequence (mkdir, two writes, stamp) enough times that a same-millisecond stamp is caught.
+describe('fixture default run start', () => {
+  it('is strictly after every fixture file written before it', async () => {
+    const base = path.join(root, 'run-start-order');
+    for (let i = 0; i < 200; i += 1) {
+      const dir = path.join(base, String(i));
+      await mkdir(dir, { recursive: true });
+      await writeFile(path.join(dir, 'a.test.ts'), "import './b';\n");
+      await writeFile(path.join(dir, 'b.ts'), 'export const b = 1;\n');
+      const startedAt = runStartedAt();
+      expect(await measuredFileModifiedAfterRun(dir, ['a.test.ts', 'b.ts'], startedAt)).toBeNull();
+    }
   });
 });
 
