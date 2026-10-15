@@ -978,10 +978,17 @@ describe('launchAcceptanceGrader', () => {
       data: { launch: { tasks: [{ taskId: 'pinned-retry', logPath: '/tmp/pinned-retry.log' }] } },
     });
     const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
-    await launchAcceptanceGrader('ship-the-thing', { ...ctx, gradingLaunch: profile } as never, {
+    const discover = vi.fn();
+    const openCascade = vi.fn();
+    const result = await resolveAcceptanceGrader('ship-the-thing', { ...ctx, gradingLaunch: profile } as never, {
       ...deps(launch),
+      discover,
+      openCascade,
       readLogTail: (path) => path.includes('pinned-quota') ? "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model." : '',
     });
+    expect(result).toMatchObject({ state: 'launched', reviewReservation: { id: 'WI-review-target' } });
+    expect(discover).not.toHaveBeenCalled();
+    expect(openCascade).not.toHaveBeenCalled();
     expect(launch).toHaveBeenCalledTimes(2);
     for (const [args] of launch.mock.calls) {
       expect(args).toMatchObject({ ...profile, independent: true, members: [{ role: 'judge', ...profile }] });

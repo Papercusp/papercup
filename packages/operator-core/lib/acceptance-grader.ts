@@ -2928,6 +2928,14 @@ export async function resolveAcceptanceGrader(
       // reference copied into briefs and persisted routing.
       reviewReservation = { conditionKey: reserved.conditionKey, id: reserved.id };
 
+      // Transcript discovery can fork a reviewer with its previous model. An
+      // explicit routine profile must use the pinned launcher after the normal
+      // settlement, held-request and reservation guards have run.
+      if (gradingLaunchProfile(ctx)) {
+        const launched = await launchAcceptanceGrader(planSlug, ctx, { ...deps, reviewReservation });
+        return { ...launched, reviewReservation, ...(settlement ? { settlement } : {}) };
+      }
+
       const selection = await (deps.discover ?? prodDiscoverGrader)(plan, rubric, ctx);
       if (selection.verdict === 'assigned' && selection.graders.length > 0) {
         // Opening the cascade is BEST-EFFORT in exactly the way the single wake
