@@ -69,6 +69,30 @@ describe('validateDockerExecTarget', () => {
 });
 
 describe('materializeDockerExecWrapper', () => {
+  it.each([undefined, 'unix:///run/other-docker.sock'])(
+    'retains the selected daemon when the native child receives DOCKER_HOST=%s', runtimeHost => {
+      const previous = process.env.DOCKER_HOST;
+      const selected = 'unix:///run/docker-bench.sock';
+      let wrapperPath: string;
+      try {
+        process.env.DOCKER_HOST = selected;
+        ({ wrapperPath } = materializeDockerExecWrapper(target,
+          { dir: mkdtempSync(join(root, 'daemon-')), dockerBin: fakeDocker }));
+      } finally {
+        if (previous === undefined) delete process.env.DOCKER_HOST;
+        else process.env.DOCKER_HOST = previous;
+      }
+      const r = spawnSync(wrapperPath, [], {
+        env: { PATH: '/usr/bin:/bin', ...(runtimeHost ? { DOCKER_HOST: runtimeHost } : {}) }, encoding: 'utf8',
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const argv = readFileSync(argvLog, 'utf8').trimEnd().split('\n');
+      expect(argv.slice(0, 3)).toEqual(['--host', selected, 'exec']);
+      expect(argv).not.toContain('DOCKER_HOST');
+      expect(argv).not.toContain(runtimeHost);
+    },
+  );
+
   it.runIf(process.platform === 'linux')('rejects an explicit device-namespace directory and its symlink alias', () => {
     const alias = join(root, 'device-temp');
     symlinkSync('/dev/shm', alias);
