@@ -4276,6 +4276,16 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     })).toBe(true);
   });
 
+  it('pins launch proof and binding receipt to the child that accepted kickoff', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const kickoff = src.indexOf('const injectLaunchKickoff = () => {');
+    const proof = src.indexOf('const proofNativeId = currentNativeSessionId(kickoffChild.pid', kickoff);
+    const binding = src.indexOf('isCurrent: () => child === kickoffChild &&', proof);
+    expect(kickoff).toBeGreaterThan(0);
+    expect(proof).toBeGreaterThan(kickoff);
+    expect(binding).toBeGreaterThan(proof);
+  });
+
   it('retries one raw CR and accepts only the second native proof', async () => {
     const waitForMarker = vi
       .fn()
