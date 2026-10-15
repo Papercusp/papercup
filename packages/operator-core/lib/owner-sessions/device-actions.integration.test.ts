@@ -46,7 +46,7 @@ describe('device action receipts (real PG and RLS)', () => {
   beforeAll(async () => { db = await createOrgTestDb(); h.appSql = db.appSql; }, Number(process.env.VITEST_INTEGRATION_HOOK_TIMEOUT_MS) || 120_000);
   afterAll(async () => { await flushTrafficEvidence(); await db?.cleanup(); });
   beforeEach(() => {
-    vi.stubEnv('MOBILE_JWT_SECRET', 'device-audit-integration-test-secret-only-000000');
+    vi.stubEnv('MOBILE_JWT_SECRET', NEVER_EMIT_MARKER.repeat(3));
     __resetDeviceJwtForTest();
     routes.grant = true; routes.target = true; routes.ended = false; routes.protected = false;
     routes.send.mockReset().mockResolvedValue({ ok: true, delivery: { kind: 'queued' }, response: {} });
