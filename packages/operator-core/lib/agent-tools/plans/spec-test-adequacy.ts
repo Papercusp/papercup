@@ -1133,6 +1133,19 @@ function bindingSummary(rows: SpecEvidenceForAdequacy[]): string {
     : shown;
 }
 
+function fixtureCalibrationBindingSummary(rows: SpecEvidenceForAdequacy[]): string {
+  const ordered = [...rows].sort((a, b) =>
+    `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
+  );
+  const shown = ordered.slice(0, 6).map((row) => {
+    const identity = Number.isSafeInteger(row.id) ? `id=${row.id}` : `${row.evidenceKind}:${row.evidenceRef}`;
+    const fixtureCalibrated = detailsOf(row).fixtureCalibrated;
+    return `${identity} fixtureCalibrated=${fixtureCalibrated ?? 'unattested'}`;
+  }).join('; ');
+  const omitted = Math.max(0, ordered.length - 6);
+  return omitted > 0 ? `${shown}; +${omitted} more binding(s) omitted` : shown;
+}
+
 function bindingNotesSummary(rows: SpecEvidenceForAdequacy[]): string {
   const notes = rows
     .map((row) => {
@@ -2764,6 +2777,16 @@ export function evaluateSpecTestAdequacy(input: {
   const fixtureProofEvidence = evidence.filter(
     (row) => row.evidenceKind === 'fixture' || row.fingerprints.fixtureFingerprint !== null,
   );
+  const fixtureCurrentNotCalibrated = fixtureProofEvidence.filter(
+    (row) => detailsOf(row).fixtureCalibrated !== true,
+  );
+  const fixtureCurrentNotCalibratedSummary = fixtureCalibrationBindingSummary(fixtureCurrentNotCalibrated);
+  const fixtureOutsideCurrentSummary = fixtureCalibrationBindingSummary(fixtureOutsideCurrent);
+  // Keep ratings scoped to the current cohort, but show both non-passing current rows and
+  // exact fixture rows outside it so a pass cannot hide uncalibrated evidence.
+  const fixtureOutsideCurrentNote = fixtureOutsideCurrent.length > 0
+    ? `${fixtureOutsideCurrent.length} exact fixture binding(s) are outside the current grading cohort; this cohort narrowing does not establish spec-scoped fixture absence. Excluded binding calibration: ${fixtureOutsideCurrentSummary}.`
+    : null;
   const fixtureRating: AdequacyRatingEntry = fixtureFreeConflicts.length > 0
     ? {
         rating: 'fail',
@@ -2812,13 +2835,15 @@ export function evaluateSpecTestAdequacy(input: {
             )
           : `No fixture-dependent proof is bound for ${clauseIdentity(clause)}; the exact bindings inspected were ${bindingSummary(exactEvidence)}.`,
       };
-  ratings['fixture-calibration'] =
-    fixtureOutsideCurrent.length > 0
-      ? {
-          ...fixtureRating,
-          evidence: `${fixtureRating.evidence} ${fixtureOutsideCurrent.length} exact fixture binding(s) are outside the current grading cohort; this cohort narrowing does not establish spec-scoped fixture absence.`,
-        }
-      : fixtureRating;
+  const fixtureCurrentNotCalibratedNote = fixtureRating.rating === 'pass' && fixtureCurrentNotCalibrated.length > 0
+    ? `Current fixture bindings not attesting calibration: ${fixtureCurrentNotCalibratedSummary}.`
+    : null;
+  const fixtureEvidenceNotes = [fixtureCurrentNotCalibratedNote, fixtureOutsideCurrentNote]
+    .filter((note): note is string => note !== null)
+    .join(' ');
+  ratings['fixture-calibration'] = fixtureEvidenceNotes
+    ? { ...fixtureRating, evidence: `${fixtureRating.evidence} ${fixtureEvidenceNotes}` }
+    : fixtureRating;
 
   // EI-22128161413448729: a self-attested `adequacy.falsifiable=true` flag is a WEAKER claim
   // than an actually-bound mutation/counterexample row with a killed/survived outcome — the two
