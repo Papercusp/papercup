@@ -39,6 +39,8 @@ let registry: ProviderRegistry;
 let planRun = 100;
 let posts = 0;
 let loseResponse = false;
+/** Asana's external-id lookup lags a create it already accepted: the task exists but GET external: still 404s. */
+let lookupLag = false;
 const remote = new Map<string, { gid: string; project: string; title: string; notes: string }>();
 const json = (status: number, data: unknown, extra: Record<string, unknown> = {}) =>
   ({ status, headers: {}, bodyEncoding: 'utf8' as const, body: JSON.stringify({ data, ...extra }) });
@@ -60,7 +62,7 @@ const hostFetch: HostFetch = async ({ request }) => {
     expect(fence.n).toBeGreaterThan(0);
   }
   if (request.method === 'GET' && path.startsWith('/tasks/external:')) {
-    const task = remote.get(path.slice('/tasks/external:'.length));
+    const task = lookupLag ? undefined : remote.get(path.slice('/tasks/external:'.length));
     return json(task ? 200 : 404, task ? { gid: task.gid, permalink_url: `https://app.asana.com/0/${task.project}/${task.gid}`,
       memberships: [{ project: { gid: task.project } }] } : null);
   }
@@ -152,7 +154,7 @@ beforeAll(async () => {
   await registry.register({ descriptor: await plugin.providerAdapter.describe(), adapter: plugin.providerAdapter, pluginName: 'asana' });
 }, 120_000);
 afterAll(async () => { await org?.cleanup(); });
-beforeEach(() => { posts = 0; remote.clear(); loseResponse = false; });
+beforeEach(() => { posts = 0; remote.clear(); loseResponse = false; lookupLag = false; });
 
 describe('ticket:file files at the destination the installation chose', () => {
   it('creates one ticket in the picked project and quotes the message as untrusted evidence; a replay files nothing', async () => {
@@ -185,6 +187,28 @@ describe('ticket:file files at the destination the installation chose', () => {
     expect(await file(run)).toMatchObject({ created: false, alreadyCreated: true, externalRef: 'task-1' });
     expect(posts).toBe(1);
     expect(await filingOf(run)).toMatchObject({ state: 'created', externalRef: 'task-1' });
+  });
+
+  it('a retry while the lost create is not yet visible to the lookup stays pending and never POSTs again', async () => {
+    const run = await triggerRun(await installPack({ destination: 'project-eng' }));
+    loseResponse = true;
+    expect(await file(run)).toMatchObject({ pendingReconciliation: true, error: 'ticket_create_or_recovery_failed' });
+    expect(posts).toBe(1);
+    loseResponse = false;
+
+    // Asana accepted the create but its external-id lookup has not caught up. A second
+    // POST here would leave two tickets once the first becomes visible.
+    lookupLag = true;
+    const retry = await file(run);
+    expect(retry).toMatchObject({ pendingReconciliation: true });
+    expect(retry).not.toHaveProperty('error');
+    expect(posts).toBe(1);
+    expect(await filingOf(run)).toMatchObject({ state: 'attempted' });
+
+    lookupLag = false;
+    expect(await file(run)).toMatchObject({ created: false, alreadyCreated: true, externalRef: 'task-1' });
+    expect(posts).toBe(1);
+    expect(remote.size).toBe(1);
   });
 });
 
