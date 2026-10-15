@@ -55,6 +55,25 @@ describe('shared adequacy-card binding evidence', () => {
     expect(result.scorecardDraft.rerunRecipe.args.bindingIds).toEqual([101, 102, 103, 104]);
   });
 
+  it('stores shared replay instructions once and keeps a criterion-specific replay result pointer', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence()],
+      classRef: 'plan-class-feature-ship',
+    });
+    const card = result.scorecardDraft;
+    const allEvidence = Object.values(card.ratings).map((rating) => rating.evidence).join('\n');
+
+    expect(card.body.match(/Replay instructions: execute the card-level rerunRecipe/g)).toHaveLength(1);
+    expect(card.body).toContain('It is not a historical as-of replay; grading-integrity audits reconstruct this card');
+    expect(allEvidence).not.toContain('This replay remeasures currentness at replay time');
+    for (const criterion of ADEQUACY_CRITERIA) {
+      expect(card.ratings[criterion].evidence).toContain(
+        `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`,
+      );
+    }
+  });
+
   it('keeps a large multi-binding proof valid for the actual emit schema without losing binding details', () => {
     const rows = Array.from({ length: 5 }, (_, index) => {
       const row = evidence({ id: 201 + index, evidenceRef: `surface:large-binding-${index}` });
@@ -97,6 +116,46 @@ describe('shared adequacy-card binding evidence', () => {
     for (const row of rows) {
       expect(result.scorecardDraft.ratings.traceability.evidence).toContain(`id=${row.id}`);
     }
+  });
+
+  it('renders measurement-pin repository namespaces and child commits for historical reads', () => {
+    const childCommit = 'b'.repeat(40);
+    const row = evidence({
+      id: 38801,
+      evidenceKind: 'test',
+      evidenceRef: 'libs/generic/tooldef/src/tool.test.ts',
+      testRunId: 38801,
+    });
+    row.details.measurementPin = {
+      schemaVersion: 1,
+      repos: [
+        { repo: '.', head: 'a'.repeat(40), gitlink: null },
+        { repo: 'libs/generic/tooldef', head: childCommit, gitlink: childCommit },
+      ],
+      files: [
+        {
+          path: 'libs/generic/tooldef/src/tool.ts',
+          dimension: 'source',
+          sha256: 'c'.repeat(64),
+          gitBlob: 'd'.repeat(40),
+          repo: 'libs/generic/tooldef',
+          headBlob: 'd'.repeat(40),
+          clean: true,
+        },
+      ],
+    };
+
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [row],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.traceability.evidence).toContain('measurementPin=');
+    expect(result.ratings.traceability.evidence).toContain('"repo":"libs/generic/tooldef"');
+    expect(result.ratings.traceability.evidence).toContain(`"head":"${childCommit}"`);
+    expect(result.ratings.traceability.evidence).toContain('"repositoryPath":"libs/generic/tooldef"');
+    expect(result.ratings.traceability.evidence).toContain('"path":"src/tool.ts"');
   });
 
   it('renders one shared-binding entry per immutable binding id when projections differ', () => {
