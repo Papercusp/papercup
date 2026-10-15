@@ -2,13 +2,14 @@
 import { randomUUID } from 'node:crypto';
 import { isAbsolute, relative } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { withWorkspace } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { withBoundedTimeout } from '../bounded-timeout';
 import { loadHarnessRegistry } from '../harness-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
+import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
 
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
@@ -24,7 +25,14 @@ export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
   /** Populated only from the registered harness root, never request cwd. */
   root?: string;
+  firstTouchContext?: FirstTouchContext;
   calls: readonly PushCall[];
+}
+export interface FirstTouchContext {
+  docs: readonly string[] | null;
+  specs: readonly string[] | null;
+  locks: readonly LiveLockHolding[] | null;
+  byPath?: Readonly<Record<string, { docs: readonly string[]; specs: readonly string[] }>>;
 }
 export interface PushFact {
   leg: PushLegId;
@@ -39,25 +47,86 @@ export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly Pus
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
 export function registerCodeIntelPushLeg(id: PushLegId, leg: PushLeg): void { state.legs.set(id, leg); }
 
-/** P-034 delivery witness. Rich symbol/docs/spec evidence is added by P-036. */
+export function firstTouchPaths(input: PushInput): string[] {
+  return [...new Set(input.calls.flatMap(call => {
+    if (!/(?:^|_|:)(?:Read|Edit|read|edit)$/.test(call.tool ?? '')) return [];
+    const args = call.toolInput as { file_path?: unknown; path?: unknown } | null;
+    const raw = args?.file_path ?? args?.path;
+    if (typeof raw !== 'string') return [];
+    const path = isAbsolute(raw) && input.root ? relative(input.root, raw) : raw;
+    return safeSnapshotPath(path) ? [path] : [];
+  }))].slice(0, 4);
+}
+
+/** Existing P-016 anchors and P-015 measurement recipes; these are links, not proof of acceptance. */
+export async function readPushSourceLinks(input: PushInput, paths: string[], sql = getOrgPg().sql): Promise<Pick<FirstTouchContext, 'docs' | 'specs' | 'byPath'>> {
+  if (!input.harness || !paths.length) return { docs: null, specs: null };
+  return sql.begin(async tx => {
+    await tx`SELECT set_config('statement_timeout', '75ms', true)`;
+    const docs = await tx<{ doc_id: string; anchor_paths: string[] }[]>`SELECT doc_id, anchor_paths FROM harness_shared.harness_docs
+      WHERE workspace_id = ${input.workspace} AND harness_slug = ${input.harness}
+        AND anchor_paths && ${paths}::text[] ORDER BY doc_id LIMIT 3`;
+    const specs = await tx<{ path: string; plan_slug: string; spec_id: string; spec_revision: number }[]>`
+      SELECT DISTINCT p.path, plan_slug, spec_id, spec_revision FROM harness_shared.spec_evidence_bindings b
+      CROSS JOIN unnest(${paths}::text[]) p(path)
+      WHERE workspace_id = ${input.workspace} AND harness_slug = ${input.harness}
+        AND b.retracted_at IS NULL
+        AND ((b.details->'currentMeasurement'->>'kind' = 'repo-files'
+          AND COALESCE(b.details->'currentMeasurement'->>'rootHarnessSlug', b.harness_slug) = ${input.harness}
+          AND COALESCE(b.details->'currentMeasurement'->'sourcePaths', '[]'::jsonb) ? p.path)
+          OR EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(b.details->'measurementPin'->'files') = 'array'
+            THEN b.details->'measurementPin'->'files' ELSE '[]'::jsonb END) f
+            WHERE f->>'dimension' = 'source' AND f->>'path' = p.path
+              AND COALESCE(f->>'rootHarnessSlug', b.harness_slug) = ${input.harness}))
+      ORDER BY p.path, plan_slug, spec_id, spec_revision DESC LIMIT 12`;
+    return { docs: null, specs: null, byPath: Object.fromEntries(paths.map(path => [path, {
+      docs: docs.filter(row => row.anchor_paths.includes(path)).map(row => row.doc_id),
+      specs: specs.filter(row => row.path === path).map(row => `${row.plan_slug}#${row.spec_id}@${row.spec_revision}`),
+    }])) };
+  });
+}
+
+/** P-036: reverse static imports are a lower bound; stop instead of running a compiler. */
 export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
   const facts: PushFact[] = [];
-  for (const call of input.calls) {
-    if (!/(?:^|_|:)(?:Read|Edit|read|edit)$/.test(call.tool ?? '')) continue;
-    const args = call.toolInput as { file_path?: unknown; path?: unknown } | null;
-    const rawPath = args?.file_path ?? args?.path;
-    if (typeof rawPath !== 'string') continue;
-    const path = isAbsolute(rawPath) && input.root ? relative(input.root, rawPath) : rawPath;
-    if (!safeSnapshotPath(path)) continue;
-    const consumers = snapshot.importers.get(path);
-    if (!consumers?.length) continue;
-    const cited = consumers.slice(0, 3);
-    const tests = consumers.filter(file => /\.(?:test|spec)\.[^.]+$/.test(file));
-    const suggestedCall = tests.length ? `testing:run ${JSON.stringify({ files: tests.slice(0, 4), harness: input.harness })}` : undefined;
-    facts.push({ leg: 'first-touch', subject: path, citedPaths: [path, ...cited], suggestedCall,
-      text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${cited.join(', ')}. `
-        + `Symbol consumers, current-source corroboration, docs/spec links, locks and runtime execution are unknown.`
-        + (suggestedCall ? `\nTests importing this file: ${suggestedCall}` : '\nReaching tests unknown.') });
+  for (const path of firstTouchPaths(input)) {
+    const consumers = snapshot.importers.get(path) ?? [];
+    const symbols = [...new Map([...(snapshot.symbols?.values() ?? [])].flat().filter(symbol => symbol.path === path)
+      .map(symbol => [symbol.id, symbol])).values()];
+    const seen = new Set([path]);
+    const queue = [path];
+    const tests: string[] = [];
+    while (queue.length && seen.size < 500) {
+      for (const next of snapshot.importers.get(queue.shift()!) ?? []) {
+        if (seen.has(next)) continue;
+        seen.add(next); queue.push(next);
+        if (/\.(?:test|spec)\.[^.]+$/.test(next)) tests.push(next);
+        if (seen.size >= 500) break;
+      }
+    }
+    if (!consumers.length && !symbols.length) continue;
+    const context = input.firstTouchContext;
+    const sourceLinks = context?.byPath?.[path] ?? context;
+    const locks = context?.locks?.filter(lock => lock.owner !== input.owner && lock.coordinationDomain === input.root && seen.has(lock.path));
+    const suggestedCall = tests.length ? `testing:run ${JSON.stringify({ files: tests.slice(0, 2), harness: input.harness })}` : undefined;
+    const sources = new Map(symbols.flatMap(symbol => symbol.sources ?? []).map(source => [source.path, source.sha256]));
+    const fileHash = snapshot.hashes.get(path);
+    if (fileHash) sources.set(path, fileHash);
+    for (const file of seen) {
+      const sha = snapshot.hashes.get(file);
+      if (sha) sources.set(file, sha);
+    }
+    const exports = symbols.slice(0, 3).map(symbol => `${symbol.name}:${symbol.line} >=${symbol.callers.length} static calls`
+      + (symbol.callers.some(site => site.workspace) ? ` [${[...new Set(symbol.callers.map(site => site.workspace ?? 'workspace unknown'))].slice(0, 2).join(', ')}]` : ' [workspace unknown]'));
+    const links = (values: readonly string[] | null | undefined) => values?.length ? values.slice(0, 2).join(', ') : 'unknown';
+    facts.push({ leg: 'first-touch', subject: path, citedPaths: [path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
+      ...(sources.size && symbols.every(symbol => symbol.sources?.length) ? { sourceHashes: [...sources].map(([path, sha256]) => ({ path, sha256 })) } : {}),
+      text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
+        + `\nExports (up to 3): ${exports.join('; ') || 'unknown'}.`
+        + `\nTests with static import reach${queue.length ? ' (bounded search)' : ''}: ${suggestedCall || 'unknown'}.`
+        + `\nAnchored docs: ${links(sourceLinks?.docs)}. Spec evidence links: ${links(sourceLinks?.specs)} (currentness unknown).`
+        + `\nLive consumer locks/claims: ${locks?.length ? locks.slice(0, 2).map(lock => `${lock.path}: ${lock.owner}${lock.goalRef ? ' ' + lock.goalRef : ''}`).join('; ') : 'unknown'}.`
+        + '\nStatic lower bounds only; unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown.' });
   }
   return facts;
 };
@@ -115,6 +184,7 @@ export interface PushChannelDeps {
   snapshot(input: PushInput): Promise<PushSnapshot | null>;
   enabled(flag: FlagKey): Promise<boolean>;
   legs(): ReadonlyMap<PushLegId, PushLeg>;
+  context?(input: PushInput, paths: string[]): Promise<FirstTouchContext>;
   commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal): Promise<string>;
 }
 
@@ -171,6 +241,11 @@ const defaults: PushChannelDeps = {
   },
   enabled: flag => getFlag(flag, 'system'),
   legs: () => state.legs,
+  context: async (input, paths) => {
+    const [links, locks] = await Promise.allSettled([readPushSourceLinks(input, paths), liveLockHoldingsStrict()]);
+    return { ...(links.status === 'fulfilled' ? links.value : { docs: null, specs: null }),
+      locks: locks.status === 'fulfilled' ? locks.value : null };
+  },
   commit: commitPushFacts,
 };
 
@@ -186,6 +261,11 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     for (const [id, leg] of deps.legs()) {
       if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
       try {
+        if (id === 'first-touch' && deps.context && firstTouchPaths(input).length) {
+          const context = await withBoundedTimeout(() => deps.context!(input, firstTouchPaths(input)),
+            { timeoutMs: 100, fallback: undefined, label: 'code-intel-first-touch-context' });
+          input.firstTouchContext = context.value;
+        }
         for (const fact of leg(input, snapshot)) {
           if (fact.leg === id && fact.subject.length <= 1000 && fact.subject.trim() && fact.text.trim()
             && fact.citedPaths.every(safeSnapshotPath)

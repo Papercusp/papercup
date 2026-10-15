@@ -1,6 +1,5 @@
 /** Current independent rubric critique, read from the existing consult/review records. */
 import type { Rubric } from './rubrics';
-import type { ScorecardRow } from './scorecards';
 import { pgTimestampToIsoOrNull } from './pg-timestamp';
 
 export interface AcceptanceRubricCritique {
@@ -70,7 +69,6 @@ async function defaultCandidates(rubric: Rubric): Promise<RubricCritiqueCandidat
 export async function readCurrentAcceptanceRubricCritique(
   rubric: Rubric,
   revision: number | null,
-  _legacyCards: readonly ScorecardRow[] = [],
   deps: Partial<CritiqueDeps> = {},
 ): Promise<AcceptanceRubricCritique | null> {
   const candidates = await (deps.candidates ?? defaultCandidates)(rubric);

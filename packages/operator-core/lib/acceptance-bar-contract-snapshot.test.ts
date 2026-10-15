@@ -40,6 +40,20 @@ import { buildAmendmentReviewBrief } from './consult/acceptance-bar-amendment-re
 
 const iso = '2026-09-04T12:00:00.000Z';
 
+describe('direct rubric critique in the BAR snapshot', () => {
+  it.each([['criteria-hash', 'current'], ['old-hash', 'stale']] as const)(
+    'classifies critique %s against the live identity as %s without a meta-card', (criteriaHash, state) => {
+      const input = fixture();
+      input.vettingScorecards = rows([]);
+      input.vettingCritique = { consultId: 'consult-direct', workItemId: null, rubricRevision: 2,
+        criteriaHash, createdAt: iso, critics: ['independent-reviewer'] };
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.grading.vetting).toMatchObject({ state, scorecardId: null, critique: input.vettingCritique });
+      expect(snapshot.readiness.codes.includes('bar_snapshot_vetting_missing')).toBe(false);
+    },
+  );
+});
+
 function rows<T>(values: T[], limit = Math.max(values.length, 1), truncated = false): BoundedAcceptanceBarRows<T> {
   return { rows: values, limit, truncated };
 }

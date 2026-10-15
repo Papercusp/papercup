@@ -51,6 +51,72 @@ describe('shared snapshot-backed push channel', () => {
     expect(snapshotFirstTouchLeg({ ...input, calls: [{ tool: 'mcp__papercusp_su__capability_read', toolInput: { file_path: 'lib/target.ts' } }] }, snapshot())).toHaveLength(1);
   });
 
+  it('combines aliased export consumers, transitive test reach and scoped links without conflating lock domains', () => {
+    const snap = snapshot();
+    snap.importers = new Map([...snap.importers, ['app/use.ts', ['app/use.test.ts', 'lib/target.ts']]]);
+    const symbol = { id: 'exported', name: 'target', path: 'lib/target.ts', line: 7, column: 1,
+      sha256: 'b'.repeat(64), signature: 'function target()', aliases: ['target', 'alias'],
+      sources: [{ path: 'lib/target.ts', sha256: 'b'.repeat(64) }],
+      callers: [{ path: 'app/use.ts', line: 3, column: 1, sha256: 'c'.repeat(64), spelling: 'alias', workspace: '@other/app (app)' }] };
+    snap.symbols = new Map([['target', [symbol]], ['alias', [symbol]]]);
+    const facts = snapshotFirstTouchLeg({ ...input, root: '/repo', firstTouchContext: {
+      docs: ['guides/api'], specs: ['plan#R-1@2'], locks: [
+        { path: 'app/use.ts', owner: 'peer', intent: 'change API', goalRef: 'WI-1', coordinationDomain: '/repo' },
+        { path: 'app/use.ts', owner: 'foreign', intent: 'another tree', coordinationDomain: '/elsewhere' },
+        { path: 'app/use.ts', owner: input.owner, intent: 'self', coordinationDomain: '/repo' },
+      ],
+    } }, snap);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.text).toContain('target:7 >=1 static calls [@other/app (app)]');
+    expect(facts[0]?.text.match(/target:7/g)).toHaveLength(1);
+    expect(facts[0]?.text).toContain('app/use.test.ts');
+    expect(facts[0]?.text).toContain('guides/api');
+    expect(facts[0]?.text).toContain('plan#R-1@2 (currentness unknown)');
+    expect(facts[0]?.text).toContain('app/use.ts: peer WI-1');
+    expect(facts[0]?.text).not.toContain('foreign');
+    expect(facts[0]?.text).not.toContain('agent-A');
+    expect(facts[0]?.text.length).toBeLessThan(1400);
+  });
+
+  it('bounds cyclic import traversal and names graph blindness instead of inventing exports', () => {
+    const snap = snapshot();
+    snap.importers = new Map(Array.from({ length: 600 }, (_, i) => [i === 0 ? 'lib/target.ts' : `chain${i}.ts`, [`chain${i + 1}.ts`]]));
+    const facts = snapshotFirstTouchLeg(input, snap);
+    expect(facts[0]?.text).toContain('(bounded search)');
+    expect(facts[0]?.text).toContain('Exports (up to 3): unknown');
+    expect(facts[0]?.text).toContain('Anchored docs: unknown');
+    expect(facts[0]?.text).toContain('Live consumer locks/claims: unknown');
+  });
+
+  it('keeps batch source links attached to their own file', () => {
+    const snap = snapshot();
+    snap.importers = new Map([...snap.importers, ['other.ts', ['other.test.ts']]]);
+    const facts = snapshotFirstTouchLeg({ ...input, calls: [...input.calls, { tool: 'Edit', toolInput: { file_path: 'other.ts' } }],
+      firstTouchContext: { docs: null, specs: null, locks: null, byPath: {
+        'lib/target.ts': { docs: ['guides/target.md'], specs: ['target-plan#R-1@1'] },
+        'other.ts': { docs: ['guides/other.md'], specs: [] },
+      } } }, snap);
+    expect(facts[0]?.text).toContain('guides/target.md');
+    expect(facts[0]?.text).not.toContain('guides/other.md');
+    expect(facts[1]?.text).toContain('guides/other.md');
+    expect(facts[1]?.text).not.toContain('target-plan');
+  });
+
+  it('a slow first-touch context read falls back to the snapshot within the shared wall', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const d = deps();
+      d.context = vi.fn(() => new Promise(() => {}));
+      expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
+      expect(d.commit).toHaveBeenCalledOnce();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-first-touch-context exceeded'));
+      vi.mocked(d.enabled).mockResolvedValue(false);
+      vi.mocked(d.context).mockClear();
+      expect(await codeIntelPushText(input, 0, d)).toBe('');
+      expect(d.context).not.toHaveBeenCalled();
+    } finally { warning.mockRestore(); }
+  });
+
   it('delivers immediately from an available snapshot and gives memory its budget first', async () => {
     const d = deps();
     expect(await codeIntelPushText(input, 350, d)).toContain('Static consumer');

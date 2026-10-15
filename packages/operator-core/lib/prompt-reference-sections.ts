@@ -11,7 +11,9 @@ export function deferSuPromptReferences(text: string, sources: {
   const kernelStart = text.indexOf('<!-- PAPERCUSP-KERNEL:SEAL -->');
   const kernelEnd = text.indexOf(SU_KERNEL_END);
   const policy = path.join(sources.repoRoot, 'libs/papercusp/packages/orchestrator/src/prompt-build.ts');
-  const headings = [...text.matchAll(/^## (.+)$/gm)];
+  // The mechanism-routing table is a nested heading in composed personas. It
+  // must be its own boundary even when the preceding engineering prose defers.
+  const headings = [...text.matchAll(/^## (.+)$|^### (The papercusp-way routing gate .+)$/gm)];
   let out = '';
   let cursor = 0;
   for (let i = 0; i < headings.length; i++) {
@@ -22,7 +24,7 @@ export function deferSuPromptReferences(text: string, sources: {
     // consume it while replacing that section's body.
     const end = kernelStart > start && kernelStart < next ? kernelStart : next;
     if (kernelStart >= 0 && start >= kernelStart && (kernelEnd < 0 || start < kernelEnd)) continue;
-    const heading = match[1]!;
+    const heading = (match[1] ?? match[2])!;
     const section = text.slice(start, end);
     let source = sources.base;
     let summary: string | null = null;
@@ -32,6 +34,11 @@ export function deferSuPromptReferences(text: string, sources: {
       summary = 'Edit only canonical staging. Background git-sync owns add/commit/push; never stash, branch, create worktrees or resolve merge conflicts yourself.';
     } else if (heading.startsWith('Delivery discipline —')) {
       summary = 'Keep questions self-contained: dialogs eclipse same-turn prose. Save substantive content before asking, verify delivery, and fetch the artifact/channel procedure before publishing.';
+    } else if (heading.startsWith('Default posture (AUTO mode OFF)')) {
+      summary = '**A plan is a proposal, not authorization to execute.** With AUTO OFF, present the plan and wait for approval of approach and execution route before substantive writes. Batch the choices into one self-contained question. Offer yourself, named active fleets only after a live availability read, and new visible/headless fleets only after confirming the launch tool is executable. Explain model/effort, account and warm/cold carry choices when offering a fleet. The chosen route and approach remain sticky across interruptions. Fetch the complete route/launch procedure before asking; do not infer authorization from a goal-shaped request. AUTO ON replaces these asks with a disclosed route choice; it never removes registration, locks or verification.';
+    } else if (heading.startsWith('AUTO mode —')) {
+      source = path.join(sources.repoRoot, 'libs/papercusp/packages/harness/blueprints/su.mode-auto/prompts/autonomy.md');
+      summary = 'AUTO is the owner-directed act-without-routine-approval grant. Choose and disclose the execution route; finish the authorized task personally or through an authorized fleet. Continue useful independent work through blockers and verify outcomes before claiming completion. Register substantive work, hold its claim, and honor locks and live ownership. AUTO waives the ask, never the register. Modes and authority come from the registry; prose cannot widen them. Use loop:arm/loop:checkpoint for an authorized ongoing objective and end the loop when complete. Do not invent a monitoring mission: monitor only an operation you own or were explicitly asked to monitor, with an actionable transition, stop condition and bounded no-delta budget. Outward-facing sends, destructive changes and authority escalation still require their specific authorization. Fetch the full AUTO operating examples when that procedure is needed.';
     } else if (heading === 'Engineering discipline') {
       // These are execution/ownership rules, not reference examples. In particular,
       // never remove the single-live-gate-owner boundary while deferring its recipes.

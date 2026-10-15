@@ -477,6 +477,30 @@ describe('test execution carries mappings into the real evidence ledger', () => 
 });
 
 describe('native P015 compiler dependency evidence', () => {
+  it('first-touch source links join canonical evidence and docs without leaking another source or tenant', async () => {
+    const { readPushSourceLinks } = await import('../../code-intelligence/push-channel');
+    await applyMigrationForTest(db, migration('172-harness-docs.sql'));
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const args = bindTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan',
+      binding: { workItemId: 'WI-101', specId: 'SPEC-003-01', specRevision: 1,
+        evidenceKind: 'test', evidenceRef: 'test/reconnect.test.ts', testRunId,
+        measurement: { schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'] } } });
+    const bound = await bindTool.handler(args as never, CTX) as { data: { results: Array<{ ok: boolean }> } };
+    expect(bound.data.results[0]?.ok, JSON.stringify(bound.data.results)).toBe(true);
+    await db.sql`INSERT INTO harness_shared.harness_docs (workspace_id,harness_slug,doc_id,source,anchor_paths)
+      VALUES (${WORKSPACE},${HARNESS},'guides/reconnect.md','manual',${['src/reconnect.ts']}::text[]),
+             (${OTHER_WORKSPACE},${HARNESS},'guides/foreign.md','manual',${['src/reconnect.ts']}::text[])`;
+    const input = { workspace: WORKSPACE, harness: HARNESS, owner: 'first-touch-test', calls: [] };
+    const links = await readPushSourceLinks(input, ['src/reconnect.ts', 'src/another.ts'], db.sql);
+    expect(links.byPath?.['src/reconnect.ts']).toEqual({ docs: ['guides/reconnect.md'], specs: ['reconnect-plan#SPEC-003-01@1'] });
+    expect(links.byPath?.['src/another.ts']).toEqual({ docs: [], specs: [] });
+    const other = await readPushSourceLinks({ ...input, workspace: OTHER_WORKSPACE }, ['src/reconnect.ts'], db.sql);
+    expect(other.byPath?.['src/reconnect.ts']).toEqual({ docs: ['guides/foreign.md'], specs: [] });
+    const missingHarness = await readPushSourceLinks({ ...input, harness: 'foreign' }, ['src/reconnect.ts'], db.sql);
+    expect(missingHarness.byPath?.['src/reconnect.ts']).toEqual({ docs: [], specs: [] });
+  });
+
   it('marks persisted proof stale after a dependency changes without revising the requirement or test run', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     await writeFile(path.join(h.repoRoot, 'src/reconnect.ts'),

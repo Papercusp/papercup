@@ -532,6 +532,7 @@ export interface AcceptanceBarContractSnapshot {
     rubricRevision: number | null;
     criteriaHash?: string | null;
     vetting: {
+      critique?: AcceptanceRubricCritique;
       state: 'current' | 'stale' | 'missing' | 'truncated';
       scorecardId: string | null;
       rubricRevision: number | null;
@@ -1563,8 +1564,14 @@ export function projectAcceptanceBarContractSnapshot(
   const anyVetting = input.vettingScorecards.rows
     .filter((card) => completeScorecard(card) && Boolean(card.vetting?.consultId || card.vetting?.workItemId))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-  const vettingState: AcceptanceBarContractSnapshot['grading']['vetting']['state'] = input.vettingCritique
+  const critiqueIsCurrent = input.vettingCritique && classifyRubricEvidenceCurrentness(
+    { revision: input.vettingCritique.rubricRevision, criteriaHash: input.vettingCritique.criteriaHash },
+    { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+  ).state === 'current';
+  const vettingState: AcceptanceBarContractSnapshot['grading']['vetting']['state'] = critiqueIsCurrent
     ? 'current'
+    : input.vettingCritique
+      ? 'stale'
     : input.vettingScorecards.truncated
     ? 'truncated'
     : currentVetting
@@ -1701,6 +1708,7 @@ export function projectAcceptanceBarContractSnapshot(
       criteriaHash: grading.card?.criteriaHash ?? null,
       vetting: {
         state: vettingState,
+        ...(input.vettingCritique ? { critique: input.vettingCritique } : {}),
         scorecardId: currentVetting?.issueId ?? anyVetting?.issueId ?? null,
         rubricRevision: input.vettingCritique?.rubricRevision ?? currentVetting?.vetting?.rubricRevision ?? anyVetting?.vetting?.rubricRevision ?? null,
         criteriaHash: input.vettingCritique?.criteriaHash ?? currentVetting?.vetting?.criteriaHash ?? anyVetting?.vetting?.criteriaHash ?? null,
@@ -2028,6 +2036,9 @@ export async function readAcceptanceBarContractSnapshot(
     rowLimit: ACCEPTANCE_BAR_SNAPSHOT_LINEAGE_ROW_LIMIT,
     truncated: false,
   };
+  const critique = await captured('vetting',
+    () => rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null) : Promise.resolve(null), null);
+  if (critique.failure) failures[critique.failure[0]] = critique.failure[1];
   const [planItems, clauses, workContracts, evidence, lineage, scorecards, vetting] = await Promise.all([
     captured('plan-items', () => (plan ? d.readPlanItems(plan) : Promise.resolve(emptyPlanItems)), emptyPlanItems),
     captured('clauses', () => (plan ? d.readClauses(plan) : Promise.resolve(emptyClauses)), emptyClauses),
@@ -2041,16 +2052,13 @@ export async function readAcceptanceBarContractSnapshot(
     captured('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
     captured(
       'vetting',
-      () => (rubric ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
+      () => (rubric && !critique.value ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
       emptyScorecards,
     ),
   ]);
   for (const result of [planItems, clauses, workContracts, evidence, lineage, scorecards, vetting]) {
     if (result.failure) failures[result.failure[0]] = result.failure[1];
   }
-  const critique = await captured('vetting',
-    () => rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null, vetting.value.rows) : Promise.resolve(null), null);
-  if (critique.failure) failures[critique.failure[0]] = critique.failure[1];
 
   const partyIds = [
     ...(rubric ? [rubric.createdBy, rubric.proposedBy] : []),

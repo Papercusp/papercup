@@ -17,7 +17,9 @@ const add = (map, name, values) => {
 const identifiers = node => ts.isIdentifier(node) ? [node.text] : ts.isObjectBindingPattern(node) || ts.isArrayBindingPattern(node)
   ? node.elements.flatMap(part => ts.isBindingElement(part) ? identifiers(part.name) : []) : [];
 
-/** Inputs are the exact tracked source cohort and resolver already used by dependency edges. */
+/** Inputs are the exact tracked source cohort and resolver already used by dependency edges.
+ * @param {{ files: string[], readSource: (path: string) => string | null, resolveModule: (importer: string, specifier: string) => string | null, workspacePackages?: Array<[string, string[]]> }} input
+ */
 export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [] }) {
   const units = new Map();
   const symbols = new Map();
