@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import {
+const {
   findRepoRoot,
   formatNudge,
   isDocPartWrite,
@@ -13,7 +13,7 @@ import {
   nudgeFor,
   runBudget,
   shouldCheck,
-} from '../posttooluse-launch-prose-budget-nudge.mjs';
+} = await import(process.env.PAPERCUSP_PROSE_BUDGET_SUBJECT || '../posttooluse-launch-prose-budget-nudge.mjs');
 
 describe('posttooluse-launch-prose-budget-nudge', () => {
   it('recognises prompt and projected guide paths, but not ordinary source files', () => {
@@ -46,6 +46,15 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
   it('formats only actual budget failures', () => {
     expect(formatNudge({ failures: [] })).toBe('');
     expect(formatNudge({ failures: [{ surface: 'su-base:power', message: 'over by 4 B' }] })).toContain('over by 4 B');
+  });
+
+  it('delivers breach verdicts for both prompt edits and doc-part writes', () => {
+    for (const [tool, input] of [
+      ['Edit', { file_path: '/repo/apps/operator/prompts/foo.md' }],
+      ['capability:bash', { command: 'node scripts/set-doc-part.ts --write' }],
+    ] as const) {
+      expect(nudgeFor(tool, input, { root: '/repo', run: () => ({ failures: [{ message: 'over by 4 B' }] }) })).toContain('over by 4 B');
+    }
   });
 
   it('fails open when the checker cannot run', () => {
