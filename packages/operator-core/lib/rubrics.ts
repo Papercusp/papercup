@@ -324,8 +324,11 @@ export interface Rubric {
    *  it does not need and block ships it should not — so it stayed unwatched instead, and
    *  a dead health loop became indistinguishable from a healthy one. */
   stalenessWatched?: boolean;
-  /** WHO may grade the plan this rubric governs (generic-acceptance-routing-and-live-plan-
-   *  agent-brief-2026-09-20 D-002 — the rubric is the authority boundary).
+  /** Acceptance-grading authority (generic-acceptance-routing-and-live-plan-agent-brief-
+   *  2026-09-20 D-002): for acceptance-kind plan/goal rubrics, who may file the acceptance grade.
+   *  It does not set standard-kind terminal scorecard authorship; those cards use the separate
+   *  P-013 non-author grading-integrity audit. A standard-kind value may separately inform
+   *  goal-rubric stewardship.
    *
    *  REQUIRED on the record, and resolved EXACTLY ONCE at hydration, deliberately: an
    *  optional field would push a `?? 'independent'` default out to every read site, and a
@@ -2054,8 +2057,11 @@ export interface ProposeRubricInput {
   /** Mark this rubric staleness-watched WITHOUT making it a release gate (P-011) — for an
    *  ongoing HEALTH rubric that must keep being graded but must not block a ship. */
   stalenessWatched?: boolean;
-  /** Who may grade the plan this rubric governs — see Rubric.gradingAuthority (D-002).
-   *  Omitted ⇒ 'independent', the fail-closed default applied at hydration. */
+  /** Acceptance-grading authority (D-002): for acceptance-kind plan/goal rubrics, who may file
+   *  the acceptance grade. It does not set standard-kind terminal scorecard authorship; those
+   *  cards use the separate P-013 non-author grading-integrity audit. A standard-kind value may
+   *  separately inform goal-rubric stewardship. Omitted ⇒ 'independent', the fail-closed default
+   *  applied at hydration. */
   gradingAuthority?: RubricGradingAuthority;
   /** Contract-generation boundary (D-015) — see Rubric.historyResetAt. Normally set via
    *  setRubricHistoryReset() rather than here, because a propose demotes to 'proposed'. */
