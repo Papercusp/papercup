@@ -1775,6 +1775,9 @@ export async function writeShim(
         `case "$psu_reexec_window" in ''|*[!0-9]*) psu_reexec_window=${PSU_REEXEC_WINDOW_SEC} ;; esac\n` +
         'psu_last_reexec_at=$SECONDS\n' +
         'while :; do\n' +
+        // Capability is advertised on every pass; only passes after exit 87
+        // have a predecessor handoff to recover. Overwrite inherited markers.
+        '  export PAPERCUSP_PSU_REEXEC_COUNT="$psu_reexecs"\n' +
         `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
         '  psu_code=$?\n' +
         `  [ "$psu_code" -eq ${runtime.reexecExitCode} ] || exit "$psu_code"\n` +
