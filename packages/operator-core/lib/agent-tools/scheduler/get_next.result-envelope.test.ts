@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   getNextForBee: vi.fn(),
   getClaimTimePremises: vi.fn(),
   getClaimTimePriorAttemptBrief: vi.fn(),
+  getClaimTimePlanDecisions: vi.fn(),
+  renderPlanDecisionsNote: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(),
 }));
@@ -98,8 +100,8 @@ vi.mock('../../work-item-prior-work', () => ({
   priorWorkWarning: vi.fn(() => null),
 }));
 vi.mock('../../plan-decisions-claim-port', () => ({
-  getClaimTimePlanDecisions: vi.fn(async () => null),
-  renderPlanDecisionsNote: vi.fn(() => null),
+  getClaimTimePlanDecisions: mocks.getClaimTimePlanDecisions,
+  renderPlanDecisionsNote: mocks.renderPlanDecisionsNote,
 }));
 vi.mock('../../prior-attempt-context', () => ({
   getClaimTimePriorAttemptBrief: mocks.getClaimTimePriorAttemptBrief,
@@ -144,6 +146,8 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     mocks.getNextForBee.mockReset();
     mocks.getClaimTimePremises.mockReset().mockResolvedValue(null);
     mocks.getClaimTimePriorAttemptBrief.mockReset().mockResolvedValue(null);
+    mocks.getClaimTimePlanDecisions.mockReset().mockResolvedValue(null);
+    mocks.renderPlanDecisionsNote.mockReset().mockReturnValue(null);
   });
 
   it('returns a COMMITTED claim as structured `data`, not as a door-truncatable text block', async () => {
@@ -279,6 +283,48 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
       workItem: expect.objectContaining({ id: 'WI-history' }),
       harness: 'papercusp',
     }));
+  });
+
+  it('delivers governing plan decisions and their warning in the committed claim payload', async () => {
+    const workItem = {
+      id: 'WI-decisions',
+      state: 'open',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } },
+      harness: 'papercusp',
+    };
+    const brief = {
+      planSlug: 'a-plan',
+      decisions: [{ id: 'D-1', title: 'Keep the guard live', ref: 'a-plan#D-1' }],
+      totalDecisions: 1,
+      totalLocalDecisions: 1,
+      totalAffectedDecisions: 0,
+      affectedDecisions: 0,
+      authorityReadFailed: false,
+    };
+    const warning = '⚠ GOVERNING PLAN DECISION: a-plan#D-1';
+    mocks.getNextForBee.mockResolvedValue({
+      workItem,
+      claimedUnder: { specId: 'envelope-spec', revision: 3 },
+      specSource: 'fleet',
+    });
+    mocks.getClaimTimePlanDecisions.mockResolvedValue(brief);
+    mocks.renderPlanDecisionsNote.mockReturnValue(warning);
+
+    const out = await callGetNext();
+
+    expectCommittedClaimEnvelope(out);
+    expect(out.data).toMatchObject({
+      workItem: { id: 'WI-decisions' },
+      planDecisions: brief.decisions,
+      planDecisionsNote: warning,
+    });
+    expect(Object.keys(out.data!).indexOf('planDecisionsNote')).toBeLessThan(Object.keys(out.data!).indexOf('workItem'));
+    expect(mocks.getClaimTimePlanDecisions).toHaveBeenCalledWith({
+      workItem: { payload: workItem.payload },
+      harness: 'papercusp',
+      workspaceId: 'ws-test',
+    });
+    expect(mocks.renderPlanDecisionsNote).toHaveBeenCalledWith(brief);
   });
 
   it('CONTROL: the predicate rejects the LEGACY text envelope this guard exists to catch', () => {

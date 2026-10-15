@@ -745,7 +745,10 @@ export function importPtoolSdkModule(specifier: any): any;
  */
 export function importSdkModuleWithInstallAwareness(specifier: any, { doImport, loadInstallMutex, }?: {
     doImport?: typeof importPtoolSdkModule | undefined;
-    loadInstallMutex?: (() => Promise<[typeof import("../../../scripts/lib/fs-mutex.mjs"), typeof import("../../../scripts/npm-install-safe.mjs")]>) | undefined;
+    loadInstallMutex?: (() => Promise<(typeof import("../../../scripts/lib/fs-mutex.mjs") | {
+        repoLockName: () => string;
+        installMutexIsHeld: typeof import("../../../scripts/lib/install-lock-name.mjs").installMutexIsHeld;
+    })[] | null>) | undefined;
 }): Promise<any>;
 /**
  * Load the transport implementation before starting the network handshake

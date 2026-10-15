@@ -64,6 +64,11 @@ const LEGACY_FIELD_DISPOSITION: Record<string, Record<string, Disposition>> = {
     description: { kind: 'fronted', unifiedPath: 'script.description' },
     dryRun: { kind: 'fronted', unifiedPath: 'dryRun' },
     timeoutSec: { kind: 'fronted', unifiedPath: 'timeoutSec' },
+    kernel: {
+      kind: 'legacy-door-only',
+      why:
+        'Managed JavaScript kernel open/run/status/close operations are not part of the unified orchestration contract; callers use code:run directly for this process-local surface.',
+    },
   },
   'recipes:run': {
     id: { kind: 'fronted', unifiedPath: 'recipe.id' },

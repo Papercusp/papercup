@@ -30,6 +30,27 @@ export function resolveFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     platform?: NodeJS.Platform;
     homeDir?: string;
 }): string;
+/** Inspect legacy leases without creating, removing, or migrating any marker. */
+export function censusLegacyFsMutexRoot(legacyRoot: any, staleMs?: number): Promise<{
+    writer: {
+        active: number;
+        stale: number;
+        unknown: number;
+    };
+    reader: {
+        active: number;
+        stale: number;
+        unknown: number;
+    };
+    queue: {
+        active: number;
+        stale: number;
+        unknown: number;
+    };
+    otherUnknown: number;
+    scanned: number;
+    complete: boolean;
+}>;
 /**
  * Prepare the resolved mutex root and preserve the old lock identity across the
  * migration. A legacy root is moved aside only after a complete read-only

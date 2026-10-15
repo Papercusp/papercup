@@ -53,6 +53,7 @@ import {
   peekFsMutexSync,
   resolveFsMutexLockRoot,
   ensureFsMutexLockRoot,
+  censusLegacyFsMutexRoot,
 } from '../../../../scripts/lib/fs-mutex.mjs';
 
 const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
@@ -119,6 +120,72 @@ describe('resolveFsMutexLockRoot', () => {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
       await rm(temp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('censusLegacyFsMutexRoot read-only inspection', () => {
+  it('classifies live, unknown and stale leases while preserving every marker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-'));
+    const writer = join(root, 'cache.lock');
+    const reader = join(root, 'cache.readers', 'remote.lock');
+    const queued = join(root, 'cache.queue', 'abandoned.ticket');
+    const owner = JSON.stringify({ pid: process.pid, host: hostname() });
+    const remote = JSON.stringify({ pid: process.pid, host: 'unconfirmed-remote.invalid' });
+    await mkdir(writer);
+    await mkdir(reader, { recursive: true });
+    await mkdir(queued, { recursive: true });
+    await writeFile(join(writer, 'owner.json'), owner);
+    await writeFile(join(reader, 'owner.json'), remote);
+    await writeFile(join(root, 'unrecognized'), 'preserve this evidence');
+    const old = new Date(Date.now() - 120_000);
+    await utimes(queued, old, old);
+    const entries = (await readdir(root)).sort();
+    fileWrites.beforeWrite = async () => { throw new Error('census must not write'); };
+    fileWrites.beforeSymlink = async () => { throw new Error('census must not alias'); };
+
+    try {
+      expect(await censusLegacyFsMutexRoot(root, 60_000)).toMatchObject({
+        complete: true,
+        writer: { active: 1, unknown: 0, stale: 0 },
+        reader: { active: 0, unknown: 1, stale: 0 },
+        queue: { active: 0, unknown: 0, stale: 1 },
+        otherUnknown: 1,
+      });
+      expect((await readdir(root)).sort()).toEqual(entries);
+      expect((await lstat(root)).isDirectory()).toBe(true);
+      expect(await readFile(join(writer, 'owner.json'), 'utf8')).toBe(owner);
+      expect(await readFile(join(reader, 'owner.json'), 'utf8')).toBe(remote);
+      expect(await readFile(join(root, 'unrecognized'), 'utf8')).toBe('preserve this evidence');
+      expect((await lstat(queued)).isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns an incomplete census without creating a missing root', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-missing-'));
+    const missing = join(parent, 'missing');
+    try {
+      expect(await censusLegacyFsMutexRoot(missing)).toMatchObject({ complete: false, otherUnknown: 1 });
+      await expect(lstat(missing)).rejects.toHaveProperty('code', 'ENOENT');
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('reports an unreadable root without touching its evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-unreadable-'));
+    await writeFile(join(root, 'evidence'), 'keep');
+    fileWrites.beforeOpendir = path => {
+      if (path === root) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    };
+    try {
+      expect(await censusLegacyFsMutexRoot(root)).toMatchObject({ complete: false, otherUnknown: 1 });
+      expect(await readFile(join(root, 'evidence'), 'utf8')).toBe('keep');
+      expect((await lstat(root)).isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
   });
 });

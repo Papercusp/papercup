@@ -216,7 +216,8 @@ async function censusLegacyContainer(containerPath, type, suffix, census, staleM
   }
 }
 
-async function censusLegacyFsMutexRoot(legacyRoot, staleMs) {
+/** Inspect legacy leases without creating, removing, or migrating any marker. */
+export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromEnv(process.env)) {
   const census = emptyLegacyCensus();
   let directory;
   try {

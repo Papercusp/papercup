@@ -67,7 +67,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile, statfs } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve, sep } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
@@ -3475,11 +3475,21 @@ export async function importSdkModuleWithInstallAwareness(
   specifier,
   {
     doImport = importPtoolSdkModule,
-    loadInstallMutex = () =>
-      Promise.all([
+    loadInstallMutex = async () => {
+      const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+      // Installed bundles have no mutable source dependency tree. Importing the
+      // install CLI also inlines its entrypoint and lazy initialization into
+      // ptool; concurrent SDK imports can then see an uninitialized repo root.
+      if (!existsSync(join(repoRoot, 'scripts/npm-install-safe.mjs'))) return null;
+      const [mutex, names] = await Promise.all([
         import('../../../scripts/lib/fs-mutex.mjs'),
-        import('../../../scripts/npm-install-safe.mjs'),
-      ]),
+        import('../../../scripts/lib/install-lock-name.mjs'),
+      ]);
+      return [mutex, {
+        repoLockName: () => names.installLockNameForRoot(repoRoot),
+        installMutexIsHeld: names.installMutexIsHeld,
+      }];
+    },
   } = {},
 ) {
   let modules;
@@ -3491,6 +3501,7 @@ export async function importSdkModuleWithInstallAwareness(
     return doImport(specifier);
   }
 
+  if (!modules) return doImport(specifier);
   const [{ withFsMutexRead }, { repoLockName, installMutexIsHeld }] = modules;
   const lockName = repoLockName();
   if (installMutexIsHeld?.(lockName, process.env)) {

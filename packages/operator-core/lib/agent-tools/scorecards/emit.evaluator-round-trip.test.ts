@@ -107,6 +107,7 @@ vi.mock('../../build-info', async (importOriginal) => ({
 // ── scorecards:emit persistence seams (same set as emit.replay.test.ts) ─────────────
 const getRubric = vi.fn();
 const getRubricCriteriaHash = vi.fn();
+const getRubricEvidenceIdentity = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
@@ -118,6 +119,10 @@ vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
   getRubric: (...args: unknown[]) => getRubric(...args),
   getRubricWithoutSeeding: (...args: unknown[]) => getRubric(...args),
+  // The real helper calls getRubric through its module-local binding, bypassing the
+  // export mock above and reaching PostgreSQL. This round-trip only needs the fixture's
+  // unversioned identity, so stub the helper at the I/O seam too.
+  getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
   readRubric: async (rubricId: string) => {
     const rubric = await getRubric(rubricId);
     return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
@@ -435,6 +440,11 @@ beforeEach(async () => {
   ]);
   getRetiredAcceptanceRubricsForPlan.mockResolvedValue([]);
   getRubricCriteriaHash.mockResolvedValue(null);
+  getRubricEvidenceIdentity.mockResolvedValue({
+    revision: null,
+    criteriaHash: null,
+    meaningRevision: null,
+  });
   listScorecards.mockResolvedValue([]);
   captureImprovement.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-ROUND-TRIP' } });
 });
@@ -649,7 +659,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
-  it('refuses the same card once the proven source moves because its current test witness no longer qualifies', async () => {
+  it('refuses the same card once the proven source moves because its stored measurement no longer matches replay', async () => {
     await installMeasuredFalsifiabilityProof();
     const live = await runEvaluator({
       harness: 'papercusp',
@@ -660,8 +670,8 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     });
     expect(live.rows[0]!.ratings.freshness.rating, live.rows[0]!.ratings.freshness.evidence).toBe('pass');
 
-    // The code under proof changes after grading and before filing. The replay re-measures;
-    // evaluator revision 5 withdraws falsifiability first because its canonical test witness is stale.
+    // The source changes after grading and before filing. The fresh replay re-measures at its
+    // current commit, so emit must refuse the card when its stored measurement provenance is stale.
     await writeSubject('export const ackedEventsReplayed = true;\n');
     execFileSync('git', ['add', '--all'], { cwd: root, stdio: 'ignore' });
     execFileSync('git', [
@@ -675,7 +685,9 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(result).toMatchObject({
       ok: false,
       code: 'invalid_spec_test_adequacy_binding',
-      error: expect.stringContaining("cannot claim falsifiability='pass'"),
+      error: expect.stringContaining(
+        'recorded server-measured per-binding measurement provenance does not match',
+      ),
     });
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(captureImprovement).not.toHaveBeenCalled();
