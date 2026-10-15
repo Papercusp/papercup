@@ -18,6 +18,26 @@ afterAll(async () => { await fs.rm(ROOT, { recursive: true, force: true }); });
 
 const PACKAGES = ['facebook-pages', 'instagram', 'x'];
 describe('installed social packages use the generic Integrations model', () => {
+  it.each(PACKAGES)('%s fails closed before installation when its daemon declaration is removed', async (id) => {
+    const globalPluginsDir = join(ROOT, `${id}-refused`);
+    let writes = 0;
+    await expect(installPluginFromCupboardCore({ githubUrl: 'https://github.com/papercusp/plugins', listingRef: id }, {
+      cloneRepo: async (_url, dest) => {
+        await fs.cp(join(REPO, 'libs/papercusp/plugins', id), dest, { recursive: true });
+        const file = join(dest, 'papercusp.json');
+        const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+        delete manifest.runtime;
+        await fs.writeFile(file, JSON.stringify(manifest));
+      },
+      globalPluginsDir: () => globalPluginsDir,
+      tmpDir: () => ROOT,
+      grant: async () => { writes++; },
+      invalidateHost: () => { writes++; },
+    })).rejects.toMatchObject({ code: 'provider_runtime_not_sandboxed' });
+    expect(await fs.readdir(globalPluginsDir).catch(() => [])).toEqual([]);
+    expect(writes).toBe(0);
+  });
+
   it.each(PACKAGES)('%s loads from the install path with declared setup and capabilities', async (id) => {
     const providerId = id === 'x' ? 'x-twitter' : id;
     const projectDir = join(ROOT, id);
