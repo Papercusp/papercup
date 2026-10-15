@@ -43,7 +43,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { recordedTestLayer, parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment,
+import { recordedTestLayer, isRecordedInstant, parseTestRunExecutionDetails, stableRecordedRuntimeEnvironment,
   type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { parseMutationDescriptor, type MutationDescriptor } from '@papercusp/test-config/mutation-descriptor';
 import { withWorkspace } from '@papercusp/db-org';
@@ -325,6 +325,7 @@ export type TestRunBindingError =
   | 'mutation_causal_controls_invalid'
   | 'mutation_reaim_unjustified'
   | 'test_run_as_committed_content_mismatch'
+  | 'test_run_measurement_start_missing'
   | 'test_run_source_modified_after_run'
   | 'test_run_cargo_not_a_test'
   | 'test_run_cargo_test_path_required';
@@ -1494,6 +1495,16 @@ export async function expandTestRunBinding(
     if (output) (result.binding.details.testRun as Record<string, unknown>).operationalArtifact = output;
     const guardedTestPaths = output ? testPaths.filter(path => path !== testPath) : testPaths;
     const measured = [...new Set([...guardedTestPaths, ...sourcePaths])].sort();
+    if (measured.length > 0 && !isRecordedInstant(executionDetails(row.execution_details).runStartedAt)) {
+      return {
+        ok: false,
+        error: 'test_run_measurement_start_missing',
+        testRunId,
+        message:
+          `test-run ${testRunId} has no valid execution_details.runStartedAt, so a mutable-checkout binding cannot prove ` +
+          'which source bytes it executed. Re-run the test with a writer that records the run-wide start, or bind an as-committed run.',
+      };
+    }
     const changed = await measuredFileModifiedAfterRun(
       root,
       measured,
