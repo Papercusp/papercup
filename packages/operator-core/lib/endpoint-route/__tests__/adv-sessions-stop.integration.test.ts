@@ -3,7 +3,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../../test/isolated-integration-proof';
-import { preparePrivateRosterSocketRoot } from '../../../test/private-http-workspace-preflight';
+import { preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle } from '../../../test/private-http-workspace-preflight';
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
@@ -14,6 +14,7 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
   // context needed by the canonical runtime-proof reporter. Check it up front.
   expect(context.task.meta).toBeDefined();
   preparePrivateRosterSocketRoot();
+  let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/adv-sessions-stop.integration.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
@@ -24,6 +25,10 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
       'packages/operator-core/lib/events/await/psu-pty-discovery.ts', 'apps/operator/scripts/psu-pty-host.mjs',
       'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
+    // Build before allocating the private runtime so compilation cannot spend
+    // the native journey's independent execute deadline.
+    prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+      { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
     execute: async (observe, evidenceDir) => {
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
@@ -31,7 +36,8 @@ it(`confirmed roster stop through private HTTP and native children: ${phase}`, a
       delete env.PC_HEAVY_PREEMPT_READY_FILE;
       delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
       const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
-        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts')],
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+        '--prepared-api-sha=' + preparedApi.sha256, '--prepared-receipt-sha=' + preparedApi.receiptSha256],
       { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       observe(child);
       child.stdout!.on('data', chunk => { for (const line of String(chunk).split('\n'))
