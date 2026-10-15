@@ -46,13 +46,23 @@ describe('workspace-host provisioning DBOS client', () => {
     const row = { workflowID: request.workflowId, workflowName: HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME,
       workflowClassName: '', queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME, applicationVersion: 'bg-host-v1',
       input: [deletion], status: status ?? 'ENQUEUED', createdAt: 1, priority: 0, applicationID: '' };
-    let exists = status !== null;
-    const getWorkflow = vi.fn(async () => exists ? row : undefined);
+    type Row = typeof row & { forkedFrom?: string };
+    const rows = new Map<string, Row>(status === null ? [] : [[request.workflowId, row]]);
+    const getWorkflow = vi.fn(async (id: string) => rows.get(id));
     const resumeWorkflow = vi.fn(async () => { row.status = 'ENQUEUED'; });
-    const enqueue = vi.fn(async () => { exists = true; return { workflowID: request.workflowId }; });
+    const enqueue = vi.fn(async () => { rows.set(request.workflowId, row); return { workflowID: request.workflowId }; });
+    const listWorkflowSteps = vi.fn<NonNullable<WorkspaceHostProvisioningDbosClient['listWorkflowSteps']>>(async () => [
+      { functionID: 0, name: 'hosted-customer-deletion:authorize', output: {}, error: null, childWorkflowID: null },
+      { functionID: 3, name: 'hosted-customer-deletion:workos', output: null, error: new Error('provider-failed'), childWorkflowID: null },
+    ]);
+    const forkWorkflow = vi.fn<NonNullable<WorkspaceHostProvisioningDbosClient['forkWorkflow']>>(async (id, _step, options) => {
+      const nextId = options!.newWorkflowID!;
+      rows.set(nextId, { ...row, workflowID: nextId, forkedFrom: id, status: 'ENQUEUED' });
+      return nextId;
+    });
     const client = createWorkspaceHostProvisioningClient({ systemDatabaseUrl: 'postgres://fixture/db', appVersion: 'bg-host-v1',
-      createClient: async () => ({ enqueue, getWorkflow, resumeWorkflow }) });
-    return { client, deletion, request, row, getWorkflow, resumeWorkflow, enqueue };
+      createClient: async () => ({ enqueue, getWorkflow, resumeWorkflow, forkWorkflow, listWorkflowSteps }) });
+    return { client, deletion, request, row, rows, getWorkflow, resumeWorkflow, enqueue, forkWorkflow, listWorkflowSteps };
   }
 
   it.each(['CANCELLED', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED'])('resumes the original %s identity and reads back acceptance', async status => {
@@ -78,14 +88,50 @@ describe('workspace-host provisioning DBOS client', () => {
       expect(f.resumeWorkflow).not.toHaveBeenCalled(); expect(f.enqueue).not.toHaveBeenCalled();
     });
 
-  it('refuses replacement input, terminal ERROR, and an unconfirmed SDK resume', async () => {
+  it('refuses replacement input and an unconfirmed SDK resume', async () => {
     const f = recoveryFixture(); f.row.input = [{ ...f.deletion, requestedBy: 'other' }];
     await expect(f.client.recoverCustomerDeletion(f.deletion)).rejects.toThrow('identity_mismatch');
-    const failed = recoveryFixture('ERROR');
-    await expect(failed.client.recoverCustomerDeletion(failed.deletion)).rejects.toThrow('terminal_error');
-    expect(failed.resumeWorkflow).not.toHaveBeenCalled();
     const unchanged = recoveryFixture(); unchanged.resumeWorkflow.mockImplementation(async () => {});
     await expect(unchanged.client.recoverCustomerDeletion(unchanged.deletion)).rejects.toThrow('unconfirmed');
+  });
+
+  it('forks ERROR at the failed checkpoint, preserves the original, and reuses an active recovery', async () => {
+    const f = recoveryFixture('ERROR');
+    const nextId = `${f.request.workflowId}:recovery:1`;
+    const accepted = { operationId: f.deletion.operationId, workflowId: nextId, originalWorkflowId: f.request.workflowId,
+      recoveredFromWorkflowId: f.request.workflowId, outcome: 'restarted' };
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).resolves.toEqual(accepted);
+    expect(f.forkWorkflow).toHaveBeenCalledWith(f.request.workflowId, 3, { newWorkflowID: nextId,
+      applicationVersion: 'bg-host-v1', queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME });
+    expect(f.row.status).toBe('ERROR');
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).resolves.toEqual({ ...accepted, outcome: 'active' });
+    expect(f.forkWorkflow).toHaveBeenCalledTimes(1);
+    expect(f.resumeWorkflow).not.toHaveBeenCalled(); expect(f.enqueue).not.toHaveBeenCalled();
+    f.rows.get(nextId)!.status = 'ERROR';
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).resolves.toMatchObject({ workflowId: `${f.request.workflowId}:recovery:2`,
+      originalWorkflowId: f.request.workflowId, recoveredFromWorkflowId: nextId, outcome: 'restarted' });
+    expect(f.forkWorkflow).toHaveBeenLastCalledWith(nextId, 3, expect.objectContaining({ newWorkflowID: `${f.request.workflowId}:recovery:2` }));
+  });
+
+  it('rejects foreign recovery lineage and unconfirmed forks', async () => {
+    const f = recoveryFixture('ERROR');
+    const nextId = `${f.request.workflowId}:recovery:1`;
+    f.rows.set(nextId, { ...f.row, workflowID: nextId, forkedFrom: 'foreign' });
+    await expect(f.client.recoverCustomerDeletion(f.deletion)).rejects.toThrow('identity_mismatch');
+    expect(f.forkWorkflow).not.toHaveBeenCalled();
+    const missing = recoveryFixture('ERROR');
+    missing.forkWorkflow.mockImplementation(async () => `${missing.request.workflowId}:recovery:1`);
+    await expect(missing.client.recoverCustomerDeletion(missing.deletion)).rejects.toThrow('identity_mismatch');
+  });
+
+  it('rejects foreign or truncated checkpoint journals before forking', async () => {
+    for (const name of ['foreign', 'hosted-customer-deletion:authorize']) {
+      const f = recoveryFixture('ERROR');
+      const step = { functionID: 0, name, output: null, error: null, childWorkflowID: null };
+      f.listWorkflowSteps.mockResolvedValue(name === 'foreign' ? [step] : Array.from({ length: 64 }, () => step));
+      await expect(f.client.recoverCustomerDeletion(f.deletion)).rejects.toThrow('journal_invalid');
+      expect(f.forkWorkflow).not.toHaveBeenCalled();
+    }
   });
 
   it.each(['PENDING', 'ENQUEUED', 'DELAYED', 'SUCCESS'])('does not reset an existing %s workflow', async status => {

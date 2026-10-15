@@ -7,7 +7,7 @@ import type { Principal } from '@papercusp/agent-mcp';
 import type { Sql } from 'postgres';
 import { appendOrganizationAuditEvent } from '../auth/hosted/governance';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
-import type { HostedCustomerDeletionEnqueuer } from '../dbos/workspace-host-provision-client';
+import type { HostedCustomerDeletionEnqueuer, HostedCustomerDeletionRecovery } from '../dbos/workspace-host-provision-client';
 import { resolveApprovedHostedCustomerDeletionPolicy, type HostedCustomerDeletionPolicy } from './hosted-customer-deletion';
 import { readAdmittedHostedCustomerDeletion } from './hosted-customer-deletion-store';
 
@@ -43,10 +43,12 @@ export class PostgresHostedCustomerDataSupport {
       return { purpose: grants[0].purpose, request: await readAdmittedHostedCustomerDeletion(tx,
         pin.organizationId, pin.operationId, policy) };
     };
-    const receipt = (tx: Sql, purpose: string, phase: string) => appendOrganizationAuditEvent({
+    const receipt = (tx: Sql, purpose: string, phase: string, result?: HostedCustomerDeletionRecovery) => appendOrganizationAuditEvent({
       organizationId: pin.organizationId, actorKind: 'staff_admin', actorId: pin.staffId,
       action: `organization.data.deletion.recovery.${phase}`, purpose, targetType: 'deletion_operation', targetId: pin.operationId,
-      metadata: { operationId: pin.operationId, grantId: pin.grantId, attemptId: pin.attemptId },
+      metadata: { operationId: pin.operationId, grantId: pin.grantId, attemptId: pin.attemptId,
+        ...(result ? { workflowId: result.workflowId, originalWorkflowId: result.originalWorkflowId ?? result.workflowId,
+          recoveredFromWorkflowId: result.recoveredFromWorkflowId ?? null } : {}) },
     }, tx);
     // The attempt must be durably auditable BEFORE a separate DBOS write.
     await run(async tx => { const { purpose } = await authorize(tx); await receipt(tx, purpose, 'requested'); });
@@ -54,7 +56,7 @@ export class PostgresHostedCustomerDataSupport {
       await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`hosted-deletion-recovery:${pin.organizationId}:${pin.operationId}`}, 0))`;
       const { purpose, request } = await authorize(tx);
       const result = await this.options.client.recoverCustomerDeletion(request);
-      await receipt(tx, purpose, result.outcome);
+      await receipt(tx, purpose, result.outcome, result);
       return result;
     });
   }

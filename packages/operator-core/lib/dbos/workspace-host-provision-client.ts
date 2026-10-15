@@ -47,6 +47,8 @@ export interface WorkspaceHostProvisioningDbosClient {
   ): Promise<{ workflowID: string }>;
   getWorkflow?: DBOSClient['getWorkflow'];
   resumeWorkflow?: DBOSClient['resumeWorkflow'];
+  forkWorkflow?: DBOSClient['forkWorkflow'];
+  listWorkflowSteps?: DBOSClient['listWorkflowSteps'];
 }
 
 export interface WorkspaceHostProvisioningEnqueuer {
@@ -70,14 +72,17 @@ export interface WorkspaceHostOperationEnqueuer {
 export interface HostedCustomerDeletionEnqueuer {
   enqueueCustomerDeletion(input: HostedCustomerDeletionRequest): Promise<{ workflowId: string; operationId: string }>;
   /** Internal support only; input MUST first be read from the admission ledger
-   * and checked against the current server policy. No replacement workflow. */
+   * and checked against the current server policy. ERROR recovery preserves the
+   * operation and records an explicit, checkpoint-preserving attempt lineage. */
   recoverCustomerDeletion(input: HostedCustomerDeletionRequest): Promise<HostedCustomerDeletionRecovery>;
 }
 
 export interface HostedCustomerDeletionRecovery {
   workflowId: string;
   operationId: string;
-  outcome: 'enqueued' | 'active' | 'completed' | 'resumed';
+  outcome: 'enqueued' | 'active' | 'completed' | 'resumed' | 'restarted';
+  originalWorkflowId?: string;
+  recoveredFromWorkflowId?: string;
 }
 
 export interface WorkspaceHostProvisioningClientOptions {
@@ -130,8 +135,9 @@ export function createWorkspaceHostProvisioningClient(
     return handle.workflowID;
   };
 
-  const verifyWorkflow = (row: Awaited<ReturnType<DBOSClient['getWorkflow']>>, request: ReturnType<typeof hostedCustomerDeletionEnqueueRequest>) => {
-    if (!row || row.workflowID !== request.workflowId || row.workflowName !== HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME
+  const verifyWorkflow = (row: Awaited<ReturnType<DBOSClient['getWorkflow']>>, request: ReturnType<typeof hostedCustomerDeletionEnqueueRequest>,
+    workflowId = request.workflowId, parent?: string) => {
+    if (!row || row.workflowID !== workflowId || row.forkedFrom !== parent || row.workflowName !== HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME
       || row.workflowClassName !== '' || row.queueName !== WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME
       || row.applicationVersion !== appVersion || !isDeepStrictEqual(row.input, [request.workflowInput])) {
       throw new Error('customer_deletion_recovery_identity_mismatch');
@@ -144,7 +150,7 @@ export function createWorkspaceHostProvisioningClient(
       const request = hostedCustomerDeletionEnqueueRequest(input);
       const dbos = await connected();
       if (!dbos.getWorkflow || !dbos.resumeWorkflow) throw new Error('customer_deletion_recovery_unavailable');
-      const row = await dbos.getWorkflow(request.workflowId);
+      let row = await dbos.getWorkflow(request.workflowId);
       const result = { workflowId: request.workflowId, operationId: input.operationId };
       if (!row) {
         if (await enqueueRequest(request, HOSTED_CUSTOMER_DELETION_WORKFLOW_NAME) !== request.workflowId) {
@@ -153,19 +159,49 @@ export function createWorkspaceHostProvisioningClient(
         verifyWorkflow(await dbos.getWorkflow(request.workflowId), request);
         return { ...result, outcome: 'enqueued' };
       }
-      verifyWorkflow(row, request);
-      if (row.status === 'SUCCESS') return { ...result, outcome: 'completed' };
-      if (['ENQUEUED', 'PENDING', 'DELAYED'].includes(row.status)) return { ...result, outcome: 'active' };
-      // SDK 4.27.6 explicitly excludes ERROR from resumeWorkflows. Never claim
-      // recovery, fork the workflow, purge its checkpoints, or rewrite its row.
-      if (row.status === 'ERROR') throw new Error('customer_deletion_recovery_terminal_error');
-      if (!['CANCELLED', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED'].includes(row.status)) {
-        throw new Error('customer_deletion_recovery_status_invalid');
+      let workflowId = request.workflowId;
+      let parent: string | undefined;
+      // D-012: SDK resume excludes ERROR. Preserve the failed row and all
+      // successful checkpoints in a visibly linked attempt of the SAME operation.
+      // The support service holds an operation advisory lock across this call.
+      for (let attempt = 0; attempt <= 20; attempt++) {
+        row = verifyWorkflow(row, request, workflowId, parent);
+        const identity = parent ? { workflowId, operationId: input.operationId,
+          originalWorkflowId: request.workflowId, recoveredFromWorkflowId: parent } : result;
+        if (row.status === 'SUCCESS') return { ...identity, outcome: 'completed' };
+        if (['ENQUEUED', 'PENDING', 'DELAYED'].includes(row.status)) return { ...identity, outcome: 'active' };
+        if (row.status === 'ERROR') {
+          if (attempt === 20) throw new Error('customer_deletion_recovery_attempt_limit');
+          if (!dbos.forkWorkflow || !dbos.listWorkflowSteps) throw new Error('customer_deletion_recovery_unavailable');
+          const nextId = `${request.workflowId}:recovery:${attempt + 1}`;
+          const existing = await dbos.getWorkflow(nextId);
+          if (existing) { parent = workflowId; workflowId = nextId; row = existing; continue; }
+          // The fixed chain has <= 13 steps. Refuse an unexpected journal rather
+          // than infer a restart point from a truncated or foreign population.
+          const steps = await dbos.listWorkflowSteps(workflowId, { limit: 64 });
+          if (!steps || steps.length >= 64 || steps.some(step => !Number.isInteger(step.functionID)
+            || step.functionID < 0 || !step.name.startsWith('hosted-customer-deletion:') || step.childWorkflowID)) {
+            throw new Error('customer_deletion_recovery_journal_invalid');
+          }
+          const failed = steps.filter(step => step.error !== null).map(step => step.functionID);
+          const startStep = failed.length ? Math.min(...failed) : Math.max(-1, ...steps.map(step => step.functionID)) + 1;
+          const forked = await dbos.forkWorkflow(workflowId, startStep, { newWorkflowID: nextId,
+            applicationVersion: appVersion, queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME });
+          if (forked !== nextId) throw new Error('customer_deletion_recovery_identity_mismatch');
+          const accepted = verifyWorkflow(await dbos.getWorkflow(nextId), request, nextId, workflowId);
+          if (!['ENQUEUED', 'PENDING', 'SUCCESS'].includes(accepted.status)) throw new Error('customer_deletion_recovery_unconfirmed');
+          return { workflowId: nextId, operationId: input.operationId, originalWorkflowId: request.workflowId,
+            recoveredFromWorkflowId: workflowId, outcome: accepted.status === 'SUCCESS' ? 'completed' : 'restarted' };
+        }
+        if (!['CANCELLED', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED'].includes(row.status)) {
+          throw new Error('customer_deletion_recovery_status_invalid');
+        }
+        await dbos.resumeWorkflow(workflowId, { queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME });
+        const resumed = verifyWorkflow(await dbos.getWorkflow(workflowId), request, workflowId, parent);
+        if (!['ENQUEUED', 'PENDING', 'SUCCESS'].includes(resumed.status)) throw new Error('customer_deletion_recovery_unconfirmed');
+        return { ...identity, outcome: resumed.status === 'SUCCESS' ? 'completed' : 'resumed' };
       }
-      await dbos.resumeWorkflow(request.workflowId, { queueName: WORKSPACE_HOST_PROVISIONING_WORKFLOW_NAME });
-      const resumed = verifyWorkflow(await dbos.getWorkflow(request.workflowId), request);
-      if (!['ENQUEUED', 'PENDING', 'SUCCESS'].includes(resumed.status)) throw new Error('customer_deletion_recovery_unconfirmed');
-      return { ...result, outcome: resumed.status === 'SUCCESS' ? 'completed' : 'resumed' };
+      throw new Error('customer_deletion_recovery_attempt_limit');
     },
     async enqueueCustomerDeletion(input) {
       const request = hostedCustomerDeletionEnqueueRequest(input);
