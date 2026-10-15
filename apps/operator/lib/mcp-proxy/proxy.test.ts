@@ -2570,6 +2570,38 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("conversations:get retries once after a post-connect reset", async () => {
+    const responseBody = '{"result":{"ok":true,"results":[{"ok":true,"id":"conv-1","conversation":{"id":"conv-1"}}],"counts":{"ok":1,"failed":0}}}';
+    const upstream = resetOnceUpstream(responseBody) as http.Server & {
+      hits: () => number;
+    };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "conversations:get", arguments: { id: "conv-1" } },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe(responseBody);
+    expect(upstream.hits()).toBe(2);
+  });
+
   it(
     "P-005: with keying DISABLED a tools/call does NOT retry post-connect → 502 (write-safety preserved)",
     withKeyedRetry("0", async () => {
@@ -2669,6 +2701,43 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(502);
     expect(r.body).toContain("mcp_proxy_upstream_error");
+    expect(upstream.hits()).toBe(1);
+  });
+
+  it("EI-25977433632794127: tools:invoke-wrapped sessions:read does not replay a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"turns":[]}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "sessions:read", args: { session: "self", tail: 8 } },
+        },
+      }),
+    );
+    expect(r.status).toBe(502);
+    expect(r.body).toContain("mcp_proxy_upstream_error");
+    expect(JSON.parse(r.body)).toMatchObject({
+      forwardingResult: "outcome_unknown",
+      attempts: 1,
+    });
     expect(upstream.hits()).toBe(1);
   });
 
