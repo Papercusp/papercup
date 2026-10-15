@@ -39,6 +39,7 @@ import type { SendOptions } from '../agent-tools/coordination/messages';
 import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
 import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
+import type { CascadeDispatch } from './cascade-core';
 import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 import { runWithWorkspace } from '../workspace-als';
@@ -75,12 +76,7 @@ export type ConsultDispatcherFactory = (ctx: {
   workspaceId: string;
   harnessSlug: string | null;
   launchedBy: string;
-}) => (opts: {
-  responder: string;
-  conversationId: string;
-  summary: string;
-  body: string;
-}) => Promise<{ woke: number; answeringOwnerId: string | null }>;
+}) => CascadeDispatch;
 
 /** Narrow seams for the post-routing silent-responder detector. Keeping these
  * as injected functions makes the adapter executable in unit tests while the
@@ -183,18 +179,13 @@ export function consultExpiryNotifyRequester(
 export function consultExpiryDispatch(
   makeDispatcher: ConsultDispatcherFactory,
 ): NonNullable<ExpirySweepDeps['dispatch']> {
-  return async (opts) =>
-    runWithWorkspace(opts.workspaceId, async () => {
+  return async ({ workspaceId, ...request }) =>
+    runWithWorkspace(workspaceId, async () => {
       const r = await makeDispatcher({
-        workspaceId: opts.workspaceId,
+        workspaceId,
         harnessSlug: null,
         launchedBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
-      })({
-        responder: opts.responder,
-        conversationId: opts.conversationId,
-        summary: opts.summary,
-        body: opts.body,
-      });
+      })(request);
       return { woke: r.woke, answeringOwnerId: r.answeringOwnerId };
     });
 }

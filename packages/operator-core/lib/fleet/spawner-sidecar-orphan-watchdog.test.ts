@@ -7,7 +7,7 @@ import {
 } from './spawner-sidecar-orphan-watchdog';
 
 describe('spawner-sidecar owner-death watchdog (P-005)', () => {
-  it('keeps the server alive for a live owner and shuts it down after owner death', () => {
+  it('keeps the server alive for a live owner and flushes before shutting down after owner death', async () => {
     const callbacks: Array<() => void> = [];
     let ownerAlive = true;
     const schedule = vi.fn(
@@ -19,6 +19,8 @@ describe('spawner-sidecar owner-death watchdog (P-005)', () => {
       ) => callbacks.push(callback),
     );
     const shutdown = vi.fn();
+    let finishFlush!: () => void;
+    const flushObservations = vi.fn(() => new Promise<void>((resolve) => { finishFlush = resolve; }));
     const logger = { log: vi.fn(), warn: vi.fn() };
 
     armSpawnerSidecarOrphanWatchdog(
@@ -28,6 +30,7 @@ describe('spawner-sidecar owner-death watchdog (P-005)', () => {
         isPidAlive: () => ownerAlive,
         schedule,
         logger,
+        flushObservations,
       },
     );
 
@@ -43,7 +46,11 @@ describe('spawner-sidecar owner-death watchdog (P-005)', () => {
     expect(shutdown).not.toHaveBeenCalled();
 
     ownerAlive = false;
-    callbacks[0]!();
+    const closing = callbacks[0]!();
+    expect(flushObservations).toHaveBeenCalledOnce();
+    expect(shutdown).not.toHaveBeenCalled();
+    finishFlush();
+    await closing;
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('owner pid 49217 is gone'));
     expect(shutdown).toHaveBeenCalledOnce();
     expect(shutdown).toHaveBeenCalledWith('owner-gone');

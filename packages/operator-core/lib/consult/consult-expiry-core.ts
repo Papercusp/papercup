@@ -37,7 +37,7 @@
  */
 import type { Sql } from 'postgres';
 import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
-import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeDispatch } from './cascade-core';
 import { appendAnswerFailureRecord, type AnswerFailureReason } from './consult-dispatch';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
 import { RUBRIC_VETTING_POLICY } from './selection-policies';
@@ -182,13 +182,7 @@ export interface ExpirySweepDeps {
    * all, so the workspace rides on each call rather than on the binding's
    * scope). Absent ⇒ the advance still happens (cursor/responder/digest move)
    * but nobody is dispatched — tests only; prod MUST bind it. */
-  dispatch?: (opts: {
-    responder: string;
-    conversationId: string;
-    summary: string;
-    body: string;
-    workspaceId: string;
-  }) => Promise<{ woke: number; answeringOwnerId?: string | null }>;
+  dispatch?: (opts: Parameters<CascadeDispatch>[0] & { workspaceId: string }) => ReturnType<CascadeDispatch>;
   /** Durable requester alert for every stalled/expired lifecycle transition.
    * The caller supplies a deterministic replay key. A rejected alert blocks
    * the lifecycle write so the next sweep retries the same key. */

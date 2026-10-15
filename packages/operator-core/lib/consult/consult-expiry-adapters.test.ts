@@ -200,6 +200,28 @@ describe('consultExpiryDispatch', () => {
     expect(opts.conversationId).toBe('conv-42');
     expect(out).toEqual({ woke: 1, answeringOwnerId: 'su-next-fork' });
   });
+
+  it('preserves cited turns and the pre-launch answering-owner reservation on an expiry cascade', async () => {
+    const evidence = [{ session_id: 'exact-source-session', turn_idx: 8, sim: 0.87 }];
+    const onAnsweringOwner = vi.fn(async (_owner: string) => {});
+    const launch = vi.fn(async (opts) => {
+      // A cross-backend brief needs the exact cited turn before it can launch.
+      if (!opts.evidence?.length) return { woke: 0, answeringOwnerId: null };
+      await opts.onAnsweringOwner('su-expiry-answerer');
+      return { woke: 1, answeringOwnerId: 'su-expiry-answerer' };
+    });
+    const dispatch = consultExpiryDispatch(() => launch);
+    const result = await dispatch({
+      workspaceId: ROW_WS, responder: 'su-source', conversationId: 'conv-expiry-evidence',
+      summary: 'current rubric review', body: 'Read the cited current-subject evidence.',
+      evidence, onAnsweringOwner,
+    });
+
+    expect(result).toEqual({ woke: 1, answeringOwnerId: 'su-expiry-answerer' });
+    expect(launch.mock.calls[0]![0].evidence).toBe(evidence);
+    expect(launch.mock.calls[0]![0].onAnsweringOwner).toBe(onAnsweringOwner);
+    expect(onAnsweringOwner).toHaveBeenCalledExactlyOnceWith('su-expiry-answerer');
+  });
 });
 
 describe('consultExpiryFindSilentResponders', () => {
