@@ -160,6 +160,12 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
     expect(unit).toMatch(/^IOSchedulingPriority=7$/m);
   });
 
+  it('filters tier-2 reads to modes that may be reported and tolerates vanished entries', () => {
+    const script = readFileSync(PROBE, 'utf8');
+
+    expect(script).toContain('find "$root" -ignore_readdir_race "$@" -perm /0077 -print0');
+  });
+
   it('documents reloading and checking the manager after symlinked unit updates', () => {
     const readme = readFileSync(join(SCRIPTS, 'systemd', 'README.md'), 'utf8');
 
@@ -503,6 +509,44 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(readFileSync(counter, 'utf8').length).toBeLessThanOrEqual(2);
     });
 
+    it('does not content-read a file whose mode cannot produce a group/other finding', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const bin = join(fx.root, 'bin');
+      mkdirSync(deep, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+
+      const protectedFile = join(deep, 'protected.conf');
+      writeFileSync(protectedFile, 'private configuration data\n'.repeat(8));
+      chmodSync(protectedFile, 0o000);
+
+      const grepShim = join(bin, 'grep');
+      writeFileSync(
+        grepShim,
+        [
+          '#!/usr/bin/env bash',
+          'for arg in "$@"; do',
+          '  if [ "$arg" = "-laIE" ]; then',
+          '    printf "unexpected content read\\n" >&2',
+          '    exit 2',
+          '  fi',
+          'done',
+          'exec /usr/bin/grep "$@"',
+        ].join('\n'),
+      );
+      chmodSync(grepShim, 0o755);
+
+      const out = runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: deep,
+        PATH: bin + ':' + (process.env.PATH ?? ''),
+      });
+
+      expect(out).toContain('tier2: root result root=' + deep + ' status=0');
+      expect(out).not.toContain('unexpected content read');
+      expect(out).toContain('no exposed private keys found');
+    });
+
     it('does not double-report a .ssh key already reported by tier 1', () => {
       const fx = withControl(fixture());
       placeKey(fx, 'id_ed25519', KEY_BODIES.opensshPlain, 0o664);
@@ -677,9 +721,12 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
 
     it('reports a bounded path-free grep error class and keeps the deep sweep INDETERMINATE', () => {
       const fx = withControl(fixture());
+      const candidate = join(fx.root, 'public-candidate.conf');
       const bin = join(fx.root, 'bin');
       const hiddenPath = '/private/config/credential-name';
       mkdirSync(bin);
+      writeFileSync(candidate, 'ordinary public configuration data\n'.repeat(8));
+      chmodSync(candidate, 0o644);
       const grepShim = join(bin, 'grep');
       writeFileSync(
         grepShim,
@@ -708,6 +755,42 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).not.toContain(hiddenPath);
       expect(out).toContain('INDETERMINATE');
       expect(out).not.toContain('no exposed private keys found');
+    });
+
+    it('keeps non-race find errors INDETERMINATE', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const bin = join(fx.root, 'bin');
+      mkdirSync(deep, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+
+      const findShim = join(bin, 'find');
+      writeFileSync(
+        findShim,
+        [
+          '#!/usr/bin/env bash',
+          'case " $* " in',
+          '  *"$KEYPERM_TEST_DEEP_ROOT"*)',
+          '    printf "find: synthetic: No such file or directory\\n" >&2',
+          '    exit 1',
+          '    ;;',
+          'esac',
+          'exec /usr/bin/find "$@"',
+        ].join('\n'),
+      );
+      chmodSync(findShim, 0o755);
+
+      const out = runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: deep,
+        KEYPERM_TEST_DEEP_ROOT: deep,
+        PATH: bin + ':' + (process.env.PATH ?? ''),
+      });
+
+      expect(out).toContain('tier2: stderr diagnostics root=' + deep + ' source=find');
+      expect(out).toContain('no_such_file=1');
+      expect(out).toContain('tier2: root result root=' + deep + ' status=1');
+      expect(out).toContain('result INDETERMINATE, not clean');
     });
 
     it('retains every failed root in the deep-sweep report', () => {

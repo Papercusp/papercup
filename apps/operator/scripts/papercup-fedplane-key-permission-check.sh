@@ -512,6 +512,7 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
           set -o pipefail
           diagnostic_dir="$1"; shift
           re="$1"; shift
+          root="$1"; shift
           # ulimit -f is in 512-byte blocks: keep each temporary stderr file
           # at or below 32 KiB even if a root produces thousands of errors.
           ulimit -f 64 || exit 125
@@ -519,7 +520,10 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
           # The current workspace population is over 1.1M eligible files. Larger
           # batches cut process startup overhead; four concurrent batches overlap
           # content reads while xargs enforces system argument-size limits.
-          find "$@" -print0 2>"$diagnostic_dir/find.stderr" | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>>\"\$KEYPERM_DIAG_DIR/grep.stderr\"; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
+          # Files with no group/other bits cannot satisfy group_or_other_bits,
+          # so do not open them. Ignore only entries that disappear while find
+          # traverses; other find errors remain fatal below.
+          find "$root" -ignore_readdir_race "$@" -perm /0077 -print0 2>"$diagnostic_dir/find.stderr" | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>>\"\$KEYPERM_DIAG_DIR/grep.stderr\"; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
         ' _ "$scan_diagnostics_dir" "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
       rc=$?
       summarize_scan_stderr "$root" "find" "$find_stderr_file"
