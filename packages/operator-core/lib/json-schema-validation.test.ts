@@ -56,6 +56,19 @@ describe('checkAgainstJsonSchema', () => {
     });
   });
 
+  it.each([
+    ['uuid', '6a263926-e2ee-4267-a1aa-89d1c9ce32ec', 'not-a-uuid'],
+    ['email', 'employee@example.com', 'not-an-email'],
+    ['uri', 'https://example.com/case/1', 'relative path'],
+    ['date-time', '2026-10-15T07:00:00Z', 'yesterday'],
+  ])('enforces declared %s formats', (format, valid, invalid) => {
+    const schema = { type: 'string', format };
+    expect(checkAgainstJsonSchema(schema, valid)).toEqual({ ok: true });
+    expect(checkAgainstJsonSchema(schema, invalid)).toMatchObject({
+      ok: false, code: 'invalid_data', errors: [expect.stringContaining(format)],
+    });
+  });
+
   it('reports a missing required field as invalid_data', () => {
     const r = checkAgainstJsonSchema(AUDIT_SCHEMA, { paths: ['a'] });
     expect(r.ok).toBe(false);

@@ -80,7 +80,9 @@ describe('selected support operation admission', () => {
       documents: [{ id: documentId, source: 'slack', externalId: 'T1:CSUPPORT:123',
         snippet: expect.stringContaining('cobalt roadmap') }] });
     const [item] = await db.adminSql<{ payload: unknown }[]>`SELECT payload FROM harness_shared.work_items
-      WHERE workspace_id = ${workspaceId} AND id = ${handle.target.kind === 'work-item' ? handle.target.id : ''}`;
+      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+      AND feature_id = ${handle.target.kind === 'work-item' ? handle.target.id : ''}`;
+    expect(item).toBeDefined();
     expect(JSON.stringify(item!.payload)).not.toContain('needs a reproducible');
   });
 
