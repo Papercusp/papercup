@@ -427,6 +427,7 @@ const post = defineTool({
     let bootstrapClaimWon = false;
     let bootstrapCompleted = false;
     let incompleteBootstrapSessionId: number | null = null;
+    let supportNative: Awaited<ReturnType<typeof import('../../../blueprint/support-workflow-native-launch').prepareSupportOperationNativeLaunch>> = null;
     if (bootstrapLedgerKey) {
       const claim = await claimAgentLaunch({
         workspaceId: workspace,
@@ -928,6 +929,18 @@ const post = defineTool({
       /* flag miss ⇒ builtin stays stripped (pre-P-021 behaviour stands) */
     }
 
+    // Private native routes also install the maintained SRT boundary in psu.
+    // The support guard resolves this session server-side even if its native
+    // request omits or spoofs the attribution header.
+    try {
+      supportNative = spec.acceptedOperation ? await (await import('../../../blueprint/support-workflow-native-launch'))
+        .prepareSupportOperationNativeLaunch({ workspaceId: workspace, ownerId: sid, sessionId: sessionId!,
+          agent, checkout: spec.cwd, accepted: spec.acceptedOperation }) : null;
+    } catch (error) {
+      await markAdvSessionEnded(sessionId!, null, 'reconciler');
+      return jsonRes({ status: 'error', code: 'support_native_route_denied',
+        error: error instanceof Error ? error.message : String(error) }, 409);
+    }
     const result: BootstrapRoleResult = {
       status: 'ok',
       sessionId,
@@ -982,6 +995,7 @@ const post = defineTool({
         // session's conversation id is known up-front and wake-executor resumes
         // EXACTLY it (never `--continue`'s most-recent-in-cwd peer). P-003 inv d.
         ...(nativeSessionId ? { PAPERCUSP_NATIVE_SESSION_ID: nativeSessionId } : {}),
+        ...(supportNative?.envelopeEnv ?? {}),
       },
     };
     if (bootstrapLedgerKey) {
@@ -995,6 +1009,7 @@ const post = defineTool({
     incompleteBootstrapSessionId = null;
     return jsonRes(result);
     } finally {
+      if (!bootstrapCompleted) await supportNative?.stop();
       // If any later artifact/identity write fails, close the exact row before
       // releasing the claim. A same-key retry must not race a PID-less session.
       if (bootstrapClaimWon && !bootstrapCompleted) {

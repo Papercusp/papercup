@@ -46,6 +46,7 @@ const buildRoleLaunchSpecMock = vi.fn();
 const resolveLaunchIdentityModelDefaultMock = vi.fn();
 const mintRoleLaunchIdentityMock = vi.fn(() => ({ sid: 'role-abc', nativeSessionId: 'nsid-abc' }));
 const resolveAcceptedOperationWorkerBindingMock = vi.fn(async (_input: unknown) => null as unknown);
+const prepareSupportOperationNativeLaunchMock = vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => null);
 const selectAcceptedOperationWorkerModelMock = vi.fn((_binding: unknown, _requested: unknown, _agent: unknown) => null as unknown);
 const resolveProjectDirMock = vi.fn(async (_slug: string, _workspace: string) => LC_DIR);
 const roleConsumesMock = vi.fn();
@@ -130,6 +131,9 @@ vi.mock('../../blueprint/operation-worker-binding', () => ({
   resolveAcceptedOperationWorkerBinding: (input: unknown) => resolveAcceptedOperationWorkerBindingMock(input),
   selectAcceptedOperationWorkerModel: (binding: unknown, requested: unknown, agent: unknown) =>
     selectAcceptedOperationWorkerModelMock(binding, requested, agent),
+}));
+vi.mock('../../blueprint/support-workflow-native-launch', () => ({
+  prepareSupportOperationNativeLaunch: (...args: unknown[]) => prepareSupportOperationNativeLaunchMock(...args),
 }));
 vi.mock('../../spawn-config', async (orig) => ({
   ...(await orig<typeof import('../../spawn-config')>()),
@@ -246,6 +250,7 @@ beforeEach(() => {
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   requestSessionIdentityActivationMock.mockResolvedValue({});
   resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
+  prepareSupportOperationNativeLaunchMock.mockReset().mockResolvedValue(null);
   selectAcceptedOperationWorkerModelMock.mockReset().mockReturnValue(null);
   resolveProjectDirMock.mockResolvedValue(LC_DIR);
   roleConsumesMock.mockReturnValue({ feature: 'required', plan: 'none' });
@@ -470,6 +475,29 @@ describe('bootstrap-role', () => {
     expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
       acceptedOperation: expect.objectContaining({ modelPolicy, modelSelection }),
     }));
+  });
+
+  it('carries the private support route after account routing and refuses a missing boundary', async () => {
+    const accepted = { workItemId: 'F-001', operationId: 'support' };
+    resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(accepted);
+    resolveAccountPinMock.mockResolvedValue({ env: { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' },
+      notice: null, accountId: null, provider: null });
+    const envelopeEnv = { PAPERCUSP_SCOPED_INFERENCE_GATEWAY: JSON.stringify({
+      baseURL: 'http://127.0.0.1:32001', token: 'a'.repeat(64) }), PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' };
+    prepareSupportOperationNativeLaunchMock.mockResolvedValueOnce({ envelopeEnv, stop: vi.fn() });
+    const request = { role: 'worker', agent: 'codex', harness_slug: 'papercup', feature: 'F-001',
+      model: 'gpt-6.1-sol:medium', headless: true };
+    const response = await callPost(request);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ envelopeEnv });
+    expect(prepareSupportOperationNativeLaunchMock).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'default', ownerId: 'role-abc', sessionId: 7, agent: 'codex', checkout: LC_DIR, accepted,
+    }));
+    prepareSupportOperationNativeLaunchMock.mockRejectedValueOnce(new Error('confinement unavailable'));
+    const denied = await callPost(request);
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toMatchObject({ code: 'support_native_route_denied' });
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(7, null, 'reconciler');
   });
 
   it('refuses a model-policy mismatch before routing an account or recording a session', async () => {
