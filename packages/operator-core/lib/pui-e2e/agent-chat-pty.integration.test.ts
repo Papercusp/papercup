@@ -39,7 +39,7 @@ import { describeObserverBlock, pollUntil } from './poll-until';
 import { LatenessMonitor, describeHarnessStall, judgeBudget, type BudgetJudgement, type TimedSample } from './worker-lateness';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin, nativeRpcReceiptSummary } from './native-provider-trace';
-import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
+import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, suToolApproval } from './release-acceptance';
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRefused } from '../su-session-attached-live-rate-limit';
@@ -8160,23 +8160,6 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
             }),
           ]),
         );
-        // The approval clause is the authorized tool effect, not a provider's
-        // optional prose after it. A post-tool provider error settles the host
-        // in `waiting-for-owner` but deliberately does not render `· ready ·`;
-        // wait on the producer-of-record lifecycle before sending the separate
-        // greeting used by the restart/resume clause.
-        await vi.waitFor(() => {
-          expect(first.events.some((event) =>
-            event.type === 'lifecycle' &&
-            event.state === 'waiting-for-owner' &&
-            event.sequence > (approvalEnd?.sequence ?? -1),
-          )).toBe(true);
-        }, { timeout: 120_000, interval: 100 });
-        // The host's lifecycle event can arrive before the PUI applies it.
-        // Sending keys in that gap drops the next owner turn. Observe the
-        // installed composer's input affordance before typing the greeting.
-        await pane.waitForSendReady({ timeoutMs: 120_000 });
-        frames.approved = pane.screen();
         // Retain this completed clause even if the later OS-restart clause
         // fails and afterAll removes the private native home and note.
         console.info('PUI_OPERATOR_NATIVE_APPROVAL_RECEIPT', JSON.stringify({
@@ -8191,6 +8174,47 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
           exactEffectVerified: true,
           effectSha256: createHash('sha256').update(readFileSync(approvalFixturePath)).digest('hex'),
         }));
+        const declinedFollowups = new Set<string>();
+        const settled = await pollUntil(async () => {
+          pane.settleSuToolApproval();
+          const pending = pendingCards();
+          const followup = pending.find((card) => !isSuToolApprovalCard(card));
+          if (followup) {
+            const opened = first.events.find((event) => event.type === 'card' && event.phase === 'opened'
+              && event.card.correlationId === followup.correlationId);
+            const choice = opened && nativeApprovalFollowupDecline(opened, {
+              turnId: approvalCommand.turnId, afterSequence: approvalEnd!.sequence, notePath: approvalFixturePath,
+            });
+            if (!choice || declinedFollowups.has(followup.correlationId) || declinedFollowups.size >= 3) {
+              throw new Error(`Unresolved native follow-up after the verified file effect: ${followup.correlationId}`);
+            }
+            // An optional verification is a separate permission request. Say
+            // No through its own installed card; never grant it or remember Yes.
+            await pane.waitForApprovalQuestion(choice.question, `${choice.key}. ${choice.label}`);
+            const repliesBefore = childCardReplies().length;
+            pane.write(choice.key);
+            await vi.waitFor(() => {
+              expect(childCardReplies()).toHaveLength(repliesBefore + 1);
+              expect(childCardReplies().at(-1)).toMatchObject({ status: 200 });
+              expect(first.events.some((event) => event.type === 'card' && event.phase === 'closed'
+                && event.correlationId === followup.correlationId && event.resolution === 'submitted')).toBe(true);
+            }, { timeout: 15_000, interval: 100 });
+            declinedFollowups.add(followup.correlationId);
+            console.info('PUI_OPERATOR_NATIVE_FOLLOWUP_DECLINED', JSON.stringify({
+              turnId: approvalCommand.turnId, correlationId: followup.correlationId,
+              choice: choice.label, cardReplyStatus: childCardReplies().at(-1)?.status,
+            }));
+            return false;
+          }
+          return nativeApprovalTurnSettled(first.events.slice(approvalEventsBefore), approvalCommand.turnId, pending.length > 0);
+        }, { timeoutMs: 120_000, intervalMs: 100,
+          beforeCheck: () => throwIfProviderRefused(first.events.slice(approvalEventsBefore), 'After native file approval'),
+        });
+        expect(settled.ok, 'the approval turn must settle without an open native card before the next prompt').toBe(true);
+        // The lifecycle event can precede the PUI applying it. Observe the
+        // installed input affordance too, so no greeting keys are dropped.
+        await pane.waitForSendReady({ timeoutMs: 120_000 });
+        frames.approved = pane.screen();
       }
       pane.write(greeting);
       await pane.waitFor(greeting);
