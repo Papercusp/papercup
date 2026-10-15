@@ -4581,6 +4581,14 @@ export function registerMcpHost(server: McpServer): void {
             }
           }
         }
+        const effectiveCallEffect = (() => {
+          try {
+            const dynamicEffect = projected?.effectForCall?.(dispatchArgs);
+            return dynamicEffect === 'read' || dynamicEffect === 'write' ? dynamicEffect : projected?.effect;
+          } catch {
+            return projected?.effect;
+          }
+        })();
         // Durable coordination/replay keys stay scoped to the caller's STABLE identity: uiClientId
         // (the per-session SID for SU/power sessions, where spawnId is per-request) falling back
         // to spawnId (stable for signed orchestrator spawns). Advisory nudge state has a narrower
@@ -4710,12 +4718,7 @@ export function registerMcpHost(server: McpServer): void {
                     (err instanceof Error ? err.message : String(err)),
                 );
               }
-              const storedResult = normalizeStructuredReplayResult(stored as {
-                content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-                isError?: boolean;
-                _meta?: Record<string, unknown>;
-                structuredContent?: unknown;
-              }, requestedStructured);
+              const storedResult = normalizeStructuredReplayResult(stored, requestedStructured);
               // P-006 / D-014: a replay is still model-facing output. Stored
               // outcomes were already per-result-doored before persistence,
               // but this request must consume the CURRENT aggregate cohort or
@@ -4726,6 +4729,7 @@ export function registerMcpHost(server: McpServer): void {
               : await applyResultDoorAsync(storedResult, {
                   toolName,
                   nestedTargetToolName,
+                  effect: effectiveCallEffect,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   requestTraceId: traceId,
                     runId: dispatchSpawnCtx.runId ?? null,
@@ -4971,7 +4975,7 @@ export function registerMcpHost(server: McpServer): void {
                 return result;
               }),
               projectionSpec,
-              { toolName, effect: projected?.effect },
+              { toolName, effect: effectiveCallEffect },
             );
             // P-001 named views: applied AFTER free-form projection (so an
             // explicit `pick` still composes) and BEFORE the door, on the same
@@ -5025,6 +5029,7 @@ export function registerMcpHost(server: McpServer): void {
                 : await applyResultDoorAsync(doorInput, {
                   toolName,
                   nestedTargetToolName,
+                  effect: effectiveCallEffect,
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   requestTraceId: traceId,
                   onScratchWritePending: (timeout) => backfillResultDoorOutputRef({

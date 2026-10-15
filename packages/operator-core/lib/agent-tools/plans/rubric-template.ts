@@ -1009,11 +1009,12 @@ export const rubricTemplateDataSchema = z
       .enum(RUBRIC_GRADING_AUTHORITIES)
       .optional()
       .describe(
-        'who may grade the plan this rubric governs (D-002 — the rubric is the authority boundary). ' +
-          "'independent' (the DEFAULT when absent, and the fail-closed one) = a lineage-independent " +
-          "non-implementer must file the grading; 'owner-authorized' additionally admits an OWNER-filed " +
-          'grading even when the owner sits inside the implementer lineage. It never removes the ' +
-          'independent route — it only widens who else qualifies',
+        'For acceptance-kind plan/goal rubrics, controls who may file the acceptance grade (D-002): ' +
+          "'independent' (the default, fail-closed) requires a lineage-independent non-implementer; " +
+          "'owner-authorized' also permits an owner-filed grade, even when the owner sits inside the " +
+          'implementer lineage. It never removes the independent route. This does not control ' +
+          'standard-kind terminal scorecards, which use the separate P-013 non-author grading-integrity ' +
+          'audit. A standard-kind value may separately inform goal-rubric stewardship.',
       ),
     subjectPlan: z
       .string()

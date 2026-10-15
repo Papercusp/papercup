@@ -1092,6 +1092,13 @@ export async function markAdvSessionEnded(
        RETURNING id
     `;
     if (r.length) {
+      // Only the winning terminal CAS may stop this launch's private native
+      // route. A stale exit rejected for a resumed successor has no effect.
+      try {
+        await (await import('./blueprint/support-workflow-native-launch')).stopSupportOperationNativeLaunch(id);
+      } catch (error) {
+        console.warn(`[adv-sessions] private native route cleanup failed: ${(error as Error)?.message ?? error}`);
+      }
       // EI-21185611167428939: the psu parent can authoritatively observe +
       // record a child exit even when the separate best-effort SessionEnd
       // lifecycle hook never reaches activity:report. Schedule the same lease

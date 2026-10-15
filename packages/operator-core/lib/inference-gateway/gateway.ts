@@ -1239,6 +1239,9 @@ export type GatewayCarryTrialAttemptResult = Readonly<Omit<GatewayCarryTrialAtte
 export interface GatewayCarryTrialBinding {
   readonly manifestSha256: string;
   readonly armId: string;
+  /** Host-owned worker attribution and report scope. A private credential
+   * cannot select another worker through a request header or report query. */
+  readonly ownerId?: string;
   /** Host-frozen ceiling for native clients that omit max_output_tokens.
    * Applied only after this private binding authenticates the caller. */
   readonly outputTokenLimit?: number;
@@ -2422,6 +2425,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }) : null;
   if (carryTrial && (!/^[a-f0-9]{64}$/.test(carryTrial.manifestSha256) ||
     !/^[a-f0-9]{64}$/.test(carryTrial.requestTokenSha256) || !carryTrial.armId.trim() ||
+    carryTrial.ownerId !== undefined && (!carryTrial.ownerId.trim() || carryTrial.ownerId !== carryTrial.ownerId.trim()) ||
     carryTrial.outputTokenLimit !== undefined && (!Number.isSafeInteger(carryTrial.outputTokenLimit) || carryTrial.outputTokenLimit <= 0) ||
     typeof carryTrial.authorizeAttempt !== 'function')) {
     throw new Error('inference-gateway: invalid carry trial binding');
@@ -11014,7 +11018,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // or other admin route is admitted by the private inference credential.
       const reportOwners = req.method === 'GET' && requestPath === '/admin/owner-report'
         ? new URL(url, 'http://127.0.0.1').searchParams.getAll('owner') : [];
-      const ownerReport = reportOwners.length === 1 && reportOwners[0].trim().length > 0;
+      const ownerReport = reportOwners.length === 1 && reportOwners[0].trim().length > 0 &&
+        (carryTrial.ownerId === undefined || reportOwners[0].trim() === carryTrial.ownerId);
       const supported = (openaiAllowed && req.method === 'POST' && requestPath === '/v1/responses') ||
         (openaiAllowed && req.method === 'GET' && requestPath === '/v1/models') ||
         (anthropicAllowed && req.method === 'POST' && requestPath === '/v1/messages') || ownerReport;
@@ -11025,6 +11030,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return;
       }
       carryTrialRequests.add(req);
+      if (carryTrial.ownerId !== undefined) req.headers[OWNER_HEADER] = carryTrial.ownerId;
     }
     if (req.method === 'GET' && requestPath === GATEWAY_FLAG_ATTEST_PATH) {
       const requestUrl = new URL(url, 'http://127.0.0.1');

@@ -146,6 +146,19 @@ describe('runProbeCycle + evaluateProbe', () => {
     expect(steps[2].detail).toContain('inbox query died');
   });
 
+  it('keeps transaction phase diagnostics visible when a lock step throws', async () => {
+    const failure = Object.assign(new Error('workspace transaction failed'), {
+      probeTimingDetail: 'txnPhases=pool-acquire-and-begin=31.2ms, transaction-settlement=2.1ms',
+    });
+    const deps = fakeDeps({ acquire: async () => { throw failure; } });
+    const steps = await runProbeCycle(deps, idA, idB);
+    const acquire = steps.find((step) => step.step === 'lock-acquire');
+    expect(acquire?.ok).toBe(false);
+    expect(acquire?.detail).toBe(
+      'workspace transaction failed; txnPhases=pool-acquire-and-begin=31.2ms, transaction-settlement=2.1ms',
+    );
+  });
+
   it('a failed baseline (DB unreachable) aborts before any coord verb', async () => {
     const deps = fakeDeps({ baseline: async () => Promise.reject(new Error('SELECT 1 timed out')) });
     const steps = await runProbeCycle(deps, idA, idB);

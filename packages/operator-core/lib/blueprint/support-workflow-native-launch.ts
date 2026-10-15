@@ -17,6 +17,13 @@ import type { BlueprintOperationHandle } from './operation-service';
 // A missing exit report therefore cannot retain it indefinitely.
 export const SUPPORT_NATIVE_ROUTE_LEASE_MS = 60 * 60 * 1000;
 
+// Ephemeral listeners belong to the exact tracked launch. The canonical
+// terminal CAS tears them down; expiry remains the lost-exit fallback.
+const runningRoutes = new Map<number, { stop: () => Promise<void> }>();
+export async function stopSupportOperationNativeLaunch(sessionId: number): Promise<void> {
+  await runningRoutes.get(sessionId)?.stop();
+}
+
 export async function prepareSupportOperationNativeLaunch(input: {
   workspaceId: string; ownerId: string; sessionId: number; agent: string;
   checkout: string; accepted: AcceptedOperationWorkerBinding;
@@ -60,7 +67,7 @@ export async function prepareSupportOperationNativeLaunch(input: {
     const token = randomBytes(32).toString('hex');
     let live = true;
     const service = await start({ port: 0, workspace: workspaceId, carryTrial: {
-      manifestSha256: accepted.specificationRevision, armId,
+      manifestSha256: accepted.specificationRevision, armId, ownerId,
       requestTokenSha256: createHash('sha256').update(token).digest('hex'),
       protocols: ['openai-responses'],
       ...(support.native.payer === 'api-key' ? { outputTokenLimit: support.native.outputTokenCeiling } : {}),
@@ -103,11 +110,13 @@ export async function prepareSupportOperationNativeLaunch(input: {
     const stop = () => {
       live = false;
       clearTimeout(expiry);
+      if (runningRoutes.get(sessionId)?.stop === stop) runningRoutes.delete(sessionId);
       return stopping ??= service.stop();
     };
     const expiry = setTimeout(() => { void stop().catch(error => console.warn('[support-native] route cleanup failed', error)); },
       SUPPORT_NATIVE_ROUTE_LEASE_MS);
     expiry.unref();
+    runningRoutes.set(sessionId, { stop });
     return { stop, envelopeEnv: {
       [SCOPED_INFERENCE_GATEWAY_ENV]: JSON.stringify(privateRoute),
       PAPERCUSP_ACCOUNT_ROUTING_MODE: support.native.account === 'auto' || support.native.account === 'default' ? 'auto' : 'pin',

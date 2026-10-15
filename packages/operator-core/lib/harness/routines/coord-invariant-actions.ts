@@ -159,7 +159,10 @@ import {
   tryAcquire,
   tryRelease,
 } from '../../agent-tools/locks/su-lock-store';
-import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
+import {
+  inWorkspaceTxn,
+  type WorkspaceTxnPhaseTiming,
+} from '../../agent-tools/locks/in-workspace-txn';
 import { wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
 import { fetchPresenceFleet } from '../../agent-tools/coordination/presence-fleet';
 import { getFleet } from '../../agent-fleets-store';
@@ -321,6 +324,29 @@ export interface ProbeDeps {
   now?: () => number;
 }
 
+function formatWorkspaceTxnPhaseTimings(
+  timings: readonly WorkspaceTxnPhaseTiming[],
+): string | undefined {
+  if (timings.length === 0) return undefined;
+  const phases = timings
+    .map((timing) => timing.phase + '=' + timing.durationMs.toFixed(1) + 'ms')
+    .join(', ');
+  return 'txnPhases=' + phases;
+}
+
+function attachWorkspaceTxnPhaseTimings(
+  error: unknown,
+  timings: readonly WorkspaceTxnPhaseTiming[],
+): void {
+  const detail = formatWorkspaceTxnPhaseTimings(timings);
+  if (!detail || error === null || typeof error !== 'object') return;
+  try {
+    Object.defineProperty(error, 'probeTimingDetail', { value: detail, configurable: true });
+  } catch {
+    // Preserve the original failure even when its error object cannot be extended.
+  }
+}
+
 export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: AgentIdentity): Promise<ProbeStep[]> {
   const now = deps.now ?? Date.now;
   const steps: ProbeStep[] = [];
@@ -331,11 +357,17 @@ export async function runProbeCycle(deps: ProbeDeps, idA: AgentIdentity, idB: Ag
       steps.push({ step, ok: r.ok, ms: now() - t0, detail: r.detail });
       return r.ok;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const phaseDetail =
+        err !== null && typeof err === 'object' &&
+        typeof (err as { probeTimingDetail?: unknown }).probeTimingDetail === 'string'
+          ? (err as { probeTimingDetail: string }).probeTimingDetail
+          : undefined;
       steps.push({
         step,
         ok: false,
         ms: now() - t0,
-        detail: err instanceof Error ? err.message : String(err),
+        detail: phaseDetail ? message + '; ' + phaseDetail : message,
         contended: isContentionTimeout(err),
       });
       return false;
@@ -457,6 +489,7 @@ function liveProbeDeps(): ProbeDeps {
     acquire: async (owner) => {
       const transactionStartedAt = Date.now();
       let tryAcquireMs = 0;
+      const phaseTimings: WorkspaceTxnPhaseTiming[] = [];
       const r = await inWorkspaceTxn(PROBE_DOMAIN, owner, async (tx) => {
         const operationStartedAt = Date.now();
         try {
@@ -471,14 +504,20 @@ function liveProbeDeps(): ProbeDeps {
         } finally {
           tryAcquireMs = Date.now() - operationStartedAt;
         }
+      }, { onPhase: (timing) => phaseTimings.push(timing) }).catch((err: unknown) => {
+        attachWorkspaceTxnPhaseTimings(err, phaseTimings);
+        throw err;
       });
       const detail = `inWorkspaceTxn=${Date.now() - transactionStartedAt}ms; tryAcquire=${tryAcquireMs}ms`;
-      if (r.ok) return { ok: true, detail };
-      return { ok: false, busyOwner: r.busy[0]?.owner, detail };
+      const phaseDetail = formatWorkspaceTxnPhaseTimings(phaseTimings);
+      const combinedDetail = phaseDetail ? detail + '; ' + phaseDetail : detail;
+      if (r.ok) return { ok: true, detail: combinedDetail };
+      return { ok: false, busyOwner: r.busy[0]?.owner, detail: combinedDetail };
     },
     release: async (owner) => {
       const transactionStartedAt = Date.now();
       let tryReleaseMs = 0;
+      const phaseTimings: WorkspaceTxnPhaseTiming[] = [];
       await inWorkspaceTxn(PROBE_DOMAIN, owner, async (tx) => {
         const operationStartedAt = Date.now();
         try {
@@ -486,8 +525,14 @@ function liveProbeDeps(): ProbeDeps {
         } finally {
           tryReleaseMs = Date.now() - operationStartedAt;
         }
+      }, { onPhase: (timing) => phaseTimings.push(timing) }).catch((err: unknown) => {
+        attachWorkspaceTxnPhaseTimings(err, phaseTimings);
+        throw err;
       });
-      return { detail: `inWorkspaceTxn=${Date.now() - transactionStartedAt}ms; tryRelease=${tryReleaseMs}ms` };
+      const detail =
+        'inWorkspaceTxn=' + (Date.now() - transactionStartedAt) + 'ms; tryRelease=' + tryReleaseMs + 'ms';
+      const phaseDetail = formatWorkspaceTxnPhaseTimings(phaseTimings);
+      return { detail: phaseDetail ? detail + '; ' + phaseDetail : detail };
     },
   };
 }
