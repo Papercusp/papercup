@@ -154,6 +154,7 @@ export default defineTool({
     const workspaceId = conversations.withConversationsIdentityScope(identity, undefined, () =>
       conversations.conversationsScopeWorkspace(),
     );
+    let interestWatch;
     const result = await acceptFeedbackRequestProd({
       workspaceId,
       requesterId: identity.ownerId,
@@ -176,25 +177,20 @@ export default defineTool({
     }, identity, {
       harnessSlug: ctx.harnessSlug !== '*' ? ctx.harnessSlug : null,
       allowDispatch: args.allow_dispatch,
+      onAccepted: async (accepted) => {
+        if (accepted.latency_contract !== 'hard-blocked' || !accepted.park_key) return;
+        try {
+          interestWatch = await reconcileInterestEventAwaits({
+            ownerId: identity.ownerId,
+            eventKeys: [accepted.park_key],
+            boundTo: { kind: 'consult-request', ref: accepted.conversation_id },
+            note: 'hard-blocked consult requester auto-arm for ' + accepted.conversation_id,
+          });
+        } catch {
+          /* consult routing remains authoritative; interest arming is fail-soft */
+        }
+      },
     });
-    let interestWatch;
-    if (
-      'verdict' in result &&
-      result.verdict === 'accepted' &&
-      result.latency_contract === 'hard-blocked' &&
-      result.park_key
-    ) {
-      try {
-        interestWatch = await reconcileInterestEventAwaits({
-          ownerId: identity.ownerId,
-          eventKeys: [result.park_key],
-          boundTo: { kind: 'consult-request', ref: result.conversation_id },
-          note: `hard-blocked consult requester auto-arm for ${result.conversation_id}`,
-        });
-      } catch {
-        /* consult routing remains authoritative; interest arming is fail-soft */
-      }
-    }
 
     return ok({
       ...(result as unknown as Record<string, unknown>),

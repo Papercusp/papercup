@@ -106,10 +106,36 @@ beforeEach(() => {
 });
 
 describe('consult:get_feedback requester interest handle (P-024)', () => {
-  it('arms and returns a cancel handle for a durably accepted hard-blocked park key', async () => {
-    h.getFeedbackCore.mockResolvedValue(routed('hard-blocked'));
-    const out = await call('hard-blocked');
+  it('registers the hard-blocked reply waiter before dispatch and returns its cancel handle', async () => {
+    let releaseArm!: () => void;
+    const armGate = new Promise<void>((resolve) => { releaseArm = resolve; });
+    const order: string[] = [];
+    h.reconcileInterestEventAwaits.mockImplementation(async () => {
+      order.push('arm-start');
+      await armGate;
+      order.push('arm-ready');
+      return handle;
+    });
+    h.getFeedbackCore.mockImplementation(async (_request: unknown, deps: {
+      reach?: (opts: unknown) => Promise<unknown>;
+    }) => {
+      expect(order).toContain('arm-ready');
+      order.push('dispatch-start');
+      await deps.reach?.({});
+      order.push('reply-event-emitted');
+      return routed('hard-blocked');
+    });
+
+    const outPromise = call('hard-blocked');
+    await vi.waitFor(() => expect(h.reconcileInterestEventAwaits).toHaveBeenCalledTimes(1));
+    expect(order).toEqual(['arm-start']);
+    expect(h.getFeedbackCore).not.toHaveBeenCalled();
+    releaseArm();
+
+    const out = await outPromise;
+    await vi.waitFor(() => expect(h.getFeedbackCore).toHaveBeenCalledTimes(1));
     expect(out).toMatchObject({ verdict: 'accepted', state: 'routing', pending: true });
+    expect(order).toEqual(['arm-start', 'arm-ready', 'dispatch-start', 'reply-event-emitted']);
     await vi.waitFor(() => expect(h.interactiveEmbedAcquireBudgetMs).toHaveBeenCalledTimes(1));
     expect(h.buildQueryEmbedderResolved).toHaveBeenCalledWith({ acquireBudgetMs: 4000 });
     expect(h.reconcileInterestEventAwaits).toHaveBeenCalledWith({

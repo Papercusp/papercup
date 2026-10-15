@@ -3,7 +3,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { getBuildInfo } from '../build-info';
 import { recordExpertiseRoutingInvocation } from '../endpoint-route/telemetry';
 import { CONSULT_DEFAULT_POLICY } from './selection-policies';
-import type { GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
+import type { AcceptedFeedbackResult, GetFeedbackDeps, GetFeedbackRequest } from './get-feedback-core';
 
 export interface GetFeedbackProdOptions {
     acceptedRequest?: GetFeedbackDeps['acceptedRequest'];
@@ -21,9 +21,18 @@ export interface GetFeedbackProdOptions {
     allowDispatch?: boolean;
 }
 
+export interface AcceptFeedbackRequestProdOptions extends Pick<GetFeedbackProdOptions, 'harnessSlug' | 'allowDispatch'> {
+    /**
+     * Runs after the request row is durable and before the async continuation
+     * can dispatch a responder. Hard-blocked callers use this to register the
+     * reply waiter before a fast responder can emit it.
+     */
+    onAccepted?: (accepted: AcceptedFeedbackResult) => Promise<void> | void;
+}
+
 export async function acceptFeedbackRequestProd(
   request: GetFeedbackRequest, identity: AgentIdentity,
-  options: Pick<GetFeedbackProdOptions, 'harnessSlug' | 'allowDispatch'> = {},
+    options: AcceptFeedbackRequestProdOptions = {},
 ) {
     const [{ getOrgPg }, { acceptFeedbackRequestCore }, conversations, { publicManualSource }, { expertiseSubject }] = await Promise.all([
       import('@papercusp/db-org'), import('./get-feedback-core'), import('../agent-tools/coordination/conversations'),
@@ -45,9 +54,14 @@ export async function acceptFeedbackRequestProd(
         return { conversation_id: result.conversation.id, thread_id: result.thread_id, delivered: result.delivered };
       },
     });
-    if (!('error' in accepted) && accepted.state === 'routing') {
-      // The durable row, not this promise, owns recovery after process death.
-      void continueFeedbackRequestProd(request.workspaceId, accepted.conversation_id).catch(() => {});
+    if (!('error' in accepted)) {
+      // Registration must finish before the continuation starts: its responder
+      // can post the first reply during dispatch, before this function returns.
+      await options.onAccepted?.(accepted);
+      if (accepted.state === 'routing') {
+        // The durable row, not this promise, owns recovery after process death.
+        void continueFeedbackRequestProd(request.workspaceId, accepted.conversation_id).catch(() => {});
+      }
     }
     return accepted;
 }
