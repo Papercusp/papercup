@@ -11,7 +11,11 @@
     "binarySha256": "3602b3154090498cd1b09647a2fc047b13ae21b408e070ebd7aea6935ae2afb2",
     "target": "linux-x86_64",
     "version": "0.1.0",
-    "advertisedEngines": ["Claude", "Codex", "OMP"],
+    "advertisedEngines": [
+      "Claude",
+      "Codex",
+      "OMP"
+    ],
     "macOSAdvertised": false
   },
   "assertions": [
@@ -58,11 +62,31 @@
     "receiptRef": "docs/evidence/pui-attached-fixture-repair-2026-10-10.json#candidateCe62Acceptance.fullAcceptance.terminal",
     "taskId": "0mv9pt7qbxd4nvpbfp2",
     "terminalAt": "2026-10-15T16:43:34.793Z",
-    "scripted": { "passed": 87, "skipped": 11, "exitCode": 0 },
-    "claude": { "passed": 13, "skipped": 85, "exitCode": 0 },
-    "codex": { "passed": 12, "skipped": 86, "exitCode": 0 },
-    "omp": { "passed": 13, "skipped": 85, "exitCode": 0 },
-    "nativeApprovalEffectAndSameIdentityOSRestart": ["Claude", "Codex", "OMP"],
+    "scripted": {
+      "passed": 87,
+      "skipped": 11,
+      "exitCode": 0
+    },
+    "claude": {
+      "passed": 13,
+      "skipped": 85,
+      "exitCode": 0
+    },
+    "codex": {
+      "passed": 12,
+      "skipped": 86,
+      "exitCode": 0
+    },
+    "omp": {
+      "passed": 13,
+      "skipped": 85,
+      "exitCode": 0
+    },
+    "nativeApprovalEffectAndSameIdentityOSRestart": [
+      "Claude",
+      "Codex",
+      "OMP"
+    ],
     "skipInterpretation": "The scripted leg and separate engine legs select complementary cases; skips are not counted as executed per-engine coverage."
   },
   "reproducibility": {
@@ -154,7 +178,13 @@
     "archiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
     "inputPreflightLogPath": "/tmp/p032-package-reader-input-preflight-9086d-20261015.log",
     "inputPreflightLogSha256": "bedddfa3f0eb109fed86f10e5bb049aba11e1140e01f9c9b0c98f29c547bdab7",
-    "supersededAttempt": { "testRunId": 21259724, "passed": 7, "failed": 1, "logPath": "/tmp/p032-package-lifecycle-9086d-20261015.log", "failure": "The clean-HOME version assertion expected pui 0.1.0 while the exact ce62 installed binary correctly reports pui 0.1.0 (ce62d173d1)." },
+    "supersededAttempt": {
+      "testRunId": 21259724,
+      "passed": 7,
+      "failed": 1,
+      "logPath": "/tmp/p032-package-lifecycle-9086d-20261015.log",
+      "failure": "The clean-HOME version assertion expected pui 0.1.0 while the exact ce62 installed binary correctly reports pui 0.1.0 (ce62d173d1)."
+    },
     "fix": "The canonical test now checks the semantic version and the first ten characters of B.sourceSha, matching main.rs cli_version_line.",
     "fixWorkItem": "EI-26071220229890191",
     "testRepairSha256": "371aec00112bc5ab074947cf5a47711aaf3b8a35cf57cd3e02d0f64fbe7bef0c",
@@ -172,15 +202,64 @@
       "workItem": "EI-26076294683834968",
       "status": "verified-clean-full-proof",
       "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
-      "cleanReaderGuards": { "testRunId": 21262140, "passed": 16, "failed": 0, "skipped": 0, "worktreeDirty": false, "receiptPath": "/tmp/p032-package-reader-clean-guards-receipt-9086d-20261015.json" },
-      "fullCleanProof": { "testRunId": 21262220, "passed": 8, "failed": 0, "skipped": 0, "worktreeDirty": false, "candidateSourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640", "candidateArchiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41", "scope": "Complete package lifecycle on the accepted archive, with predecessor build and independent cold reproducibility control. Native model acceptance was retained and not replayed." },
-      "inputs": ["PUI_PUBLIC_PACKAGE_ARCHIVE", "PUI_PUBLIC_PACKAGE_SOURCE_SHA", "PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256"],
+      "cleanReaderGuards": {
+        "testRunId": 21262140,
+        "passed": 16,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "receiptPath": "/tmp/p032-package-reader-clean-guards-receipt-9086d-20261015.json"
+      },
+      "fullCleanProof": {
+        "testRunId": 21262220,
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "candidateSourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+        "candidateArchiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+        "scope": "Complete package lifecycle on the accepted archive, with predecessor build and independent cold reproducibility control. Native model acceptance was retained and not replayed."
+      },
+      "inputs": [
+        "PUI_PUBLIC_PACKAGE_ARCHIVE",
+        "PUI_PUBLIC_PACKAGE_SOURCE_SHA",
+        "PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256"
+      ],
       "behavior": "Both lifecycle and release-stage tests reuse a checked snapshot of the accepted archive independently of harness HEAD. The lifecycle retains its predecessor and cold rebuild controls. Dependency lock paths and versions are checked before Cargo.",
       "correction": "Earlier carry prose incorrectly said subjectGeneration overlays RELEASE_TOOLING. It only overlays the explicitly supplied mutation file; RELEASE_TOOLING selects complete predecessor generations. The actual defect was HEAD-only candidate selection.",
-      "cleanCandidateGuards": { "testRunId": 21261424, "passed": 12, "failed": 0, "skipped": 0, "worktreeDirty": false, "harnessCommit": "a70168871c9c82624833851440149add71962357" },
-      "expandedLocalGuards": { "passed": 15, "failed": 0, "skipped": 0, "worktreeDirty": true, "logPath": "/tmp/p032-package-preflight-unit-9086d-20261015.log", "logSha256": "6a0e29f38bd701545dd7e3d65271e0a35d3a754fd6c46657d34071d6b49a8cc2" },
-      "scopedTypecheck": { "files": 4, "errors": 0, "exitCode": 0, "logPath": "/tmp/p032-package-harness-types-9086d-20261015.log", "logSha256": "e678259b90164fdb92a6d7e173ea25274805227d59d9072fcde7191d2f03b35f" },
-      "linkedDependencyAttempt": { "testRunId": 21261444, "status": "failed-before-lifecycle-cases", "passed": 0, "failed": 0, "skipped": 8, "worktreeDirty": false, "cause": "lint-as-committed linked dependencies exposed esbuild outside a reachable committed lock path; bundle-psu refused after predecessor compilation", "logPath": "/tmp/p032-package-pinned-clean-9086d-20261015.log" },
+      "cleanCandidateGuards": {
+        "testRunId": 21261424,
+        "passed": 12,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": false,
+        "harnessCommit": "a70168871c9c82624833851440149add71962357"
+      },
+      "expandedLocalGuards": {
+        "passed": 15,
+        "failed": 0,
+        "skipped": 0,
+        "worktreeDirty": true,
+        "logPath": "/tmp/p032-package-preflight-unit-9086d-20261015.log",
+        "logSha256": "6a0e29f38bd701545dd7e3d65271e0a35d3a754fd6c46657d34071d6b49a8cc2"
+      },
+      "scopedTypecheck": {
+        "files": 4,
+        "errors": 0,
+        "exitCode": 0,
+        "logPath": "/tmp/p032-package-harness-types-9086d-20261015.log",
+        "logSha256": "e678259b90164fdb92a6d7e173ea25274805227d59d9072fcde7191d2f03b35f"
+      },
+      "linkedDependencyAttempt": {
+        "testRunId": 21261444,
+        "status": "failed-before-lifecycle-cases",
+        "passed": 0,
+        "failed": 0,
+        "skipped": 8,
+        "worktreeDirty": false,
+        "cause": "lint-as-committed linked dependencies exposed esbuild outside a reachable committed lock path; bundle-psu refused after predecessor compilation",
+        "logPath": "/tmp/p032-package-pinned-clean-9086d-20261015.log"
+      },
       "nextPrerequisite": "Satisfied: committed streaming reader, maintained physical dependency preparation, exact input preflight and full lifecycle PASS. The older preparedPhysicalHarness record below is historical.",
       "preparedPhysicalHarness": {
         "root": "/tmp/pcv/papercusp-lint-as-committed-5985979eed-bMV3yW",
@@ -212,7 +291,11 @@
     "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
     "candidateSourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
     "candidateArchiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
-    "bindingIds": [48125, 48126, 48127],
+    "bindingIds": [
+      48125,
+      48126,
+      48127
+    ],
     "logPath": "/tmp/p032-release-stage-pinned-clean-9086d-20261015.log",
     "logSha256": "c279ea4fe763b0ee457636ec7f65efbde5bc50f45861950fab1378cf23d0ea66",
     "receiptPath": "/tmp/p032-release-stage-pinned-receipt-9086d-20261015.json",
@@ -223,42 +306,239 @@
   },
   "barAdequacyPreparation": {
     "status": "not-ready",
-    "bindingIds": { "first": 47058, "last": 47104 },
-    "initialEvaluatorResult": { "pass": 0, "fail": 3, "unknown": 44 },
-    "blockingDimensions": ["falsifiability", "plan-class-risk-floor", "correct-layer"],
+    "bindingIds": {
+      "first": 47058,
+      "last": 47104
+    },
+    "initialEvaluatorResult": {
+      "pass": 0,
+      "fail": 3,
+      "unknown": 44
+    },
+    "blockingDimensions": [
+      "falsifiability",
+      "plan-class-risk-floor",
+      "correct-layer"
+    ],
     "evidencePath": "/tmp/p032-adequacy-full-9086d-20261015.json",
     "scope": "These are proof-adequacy verdicts for the selected bindings, not new installed-product failures.",
     "chatFirstApproval": "pui-chat-first-ux-2026-09-28#D-037 records Avi's R-05 approval on build 33287a0d19; P-006 still requires proof and independent grading. Exact final-candidate publication approval remains separate.",
     "editorSourceControls": [
-      { "specId": "PUI-EDITOR-HISTORY", "verdict": "pass", "baselineTestRunId": 21261488, "relocatedBaselineTestRunId": 21261490, "mutantTestRunId": 21261493, "bindingIds": [47928, 47929], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-history-clean-control-9086d-20261015.log", "logSha256": "602745fce09de2280bbfcac313ad01823e479c87689b79329343f1fc390eba62" },
-      { "specId": "PUI-EDITOR-UNDO", "verdict": "pass", "baselineTestRunId": 21261498, "relocatedBaselineTestRunId": 21261501, "mutantTestRunId": 21261504, "bindingIds": [47934, 47935], "additionalFixtureBaselineBindingId": 47908, "withdrawnIncompleteFixtureBindingIds": [47896, 47897], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-undo-fixture-control-9086d-20261015.log", "logSha256": "b7e82dbababce0d178e7e47612db34918c3db6b2e7066700d4f4a27a1908309c" },
-      { "specId": "PUI-EDITOR-COPY", "verdict": "pass", "baselineTestRunId": 21262224, "relocatedBaselineTestRunId": 21262227, "mutantTestRunId": 21262232, "bindingIds": [48066, 48067], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/chat_copy.rs", "logPath": "/tmp/p032-editor-copy-clean-control-9086d-20261015.log", "logSha256": "53f234c2c35771d381179bb869cf823b37d9c71a8dbfde3631ce15abe707070d" },
-      { "specId": "PUI-INTERRUPT", "verdict": "pass", "baselineTestRunId": 21262260, "relocatedBaselineTestRunId": 21262262, "mutantTestRunId": 21262265, "bindingIds": [48101, 48102], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-interrupt-clean-control-v2-9086d-20261015.log", "logSha256": "4bc3ffe1e0436e1c21a9d372c52dfddf5c42280eb79d4babcf9fc2cae4cb8f73" },
-      { "specId": "PUI-APPROVAL-ALLOW", "verdict": "pass", "baselineTestRunId": 21262279, "relocatedBaselineTestRunId": 21262283, "mutantTestRunId": 21262285, "bindingIds": [48119, 48120], "additionalR09P010BindingIds": [48123, 48124], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-approval-identity-clean-controls-9086d-20261015.log", "logSha256": "c79c3eafda79a4b43b3d59579f173c6fea9f7a9bd8848df17fa42ed170ad69bd" },
-      { "specId": "PUI-APPROVAL-DENY", "verdict": "pass", "baselineTestRunId": 21262287, "relocatedBaselineTestRunId": 21262289, "mutantTestRunId": 21262291, "bindingIds": [48121, 48122], "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-approval-identity-clean-controls-9086d-20261015.log", "logSha256": "c79c3eafda79a4b43b3d59579f173c6fea9f7a9bd8848df17fa42ed170ad69bd" }
+      {
+        "specId": "PUI-EDITOR-HISTORY",
+        "verdict": "pass",
+        "baselineTestRunId": 21261488,
+        "relocatedBaselineTestRunId": 21261490,
+        "mutantTestRunId": 21261493,
+        "bindingIds": [
+          47928,
+          47929
+        ],
+        "harnessCommit": "a70168871c9c82624833851440149add71962357",
+        "allThreeWorktreesClean": true,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-editor-history-clean-control-9086d-20261015.log",
+        "logSha256": "602745fce09de2280bbfcac313ad01823e479c87689b79329343f1fc390eba62"
+      },
+      {
+        "specId": "PUI-EDITOR-UNDO",
+        "verdict": "pass",
+        "baselineTestRunId": 21261498,
+        "relocatedBaselineTestRunId": 21261501,
+        "mutantTestRunId": 21261504,
+        "bindingIds": [
+          47934,
+          47935
+        ],
+        "additionalFixtureBaselineBindingId": 47908,
+        "withdrawnIncompleteFixtureBindingIds": [
+          47896,
+          47897
+        ],
+        "harnessCommit": "a70168871c9c82624833851440149add71962357",
+        "allThreeWorktreesClean": true,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-editor-undo-fixture-control-9086d-20261015.log",
+        "logSha256": "b7e82dbababce0d178e7e47612db34918c3db6b2e7066700d4f4a27a1908309c"
+      },
+      {
+        "specId": "PUI-EDITOR-COPY",
+        "verdict": "pass",
+        "baselineTestRunId": 21262224,
+        "relocatedBaselineTestRunId": 21262227,
+        "mutantTestRunId": 21262232,
+        "bindingIds": [
+          48066,
+          48067
+        ],
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "fixturePath": "apps/tui/src/chat_copy.rs",
+        "logPath": "/tmp/p032-editor-copy-clean-control-9086d-20261015.log",
+        "logSha256": "53f234c2c35771d381179bb869cf823b37d9c71a8dbfde3631ce15abe707070d"
+      },
+      {
+        "specId": "PUI-INTERRUPT",
+        "verdict": "pass",
+        "baselineTestRunId": 21262260,
+        "relocatedBaselineTestRunId": 21262262,
+        "mutantTestRunId": 21262265,
+        "bindingIds": [
+          48101,
+          48102
+        ],
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-interrupt-clean-control-v2-9086d-20261015.log",
+        "logSha256": "4bc3ffe1e0436e1c21a9d372c52dfddf5c42280eb79d4babcf9fc2cae4cb8f73"
+      },
+      {
+        "specId": "PUI-APPROVAL-ALLOW",
+        "verdict": "pass",
+        "baselineTestRunId": 21262279,
+        "relocatedBaselineTestRunId": 21262283,
+        "mutantTestRunId": 21262285,
+        "bindingIds": [
+          48119,
+          48120
+        ],
+        "additionalR09P010BindingIds": [
+          48123,
+          48124
+        ],
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-approval-identity-clean-controls-9086d-20261015.log",
+        "logSha256": "c79c3eafda79a4b43b3d59579f173c6fea9f7a9bd8848df17fa42ed170ad69bd"
+      },
+      {
+        "specId": "PUI-APPROVAL-DENY",
+        "verdict": "pass",
+        "baselineTestRunId": 21262287,
+        "relocatedBaselineTestRunId": 21262289,
+        "mutantTestRunId": 21262291,
+        "bindingIds": [
+          48121,
+          48122
+        ],
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-approval-identity-clean-controls-9086d-20261015.log",
+        "logSha256": "c79c3eafda79a4b43b3d59579f173c6fea9f7a9bd8848df17fa42ed170ad69bd"
+      }
     ],
     "postQualificationProofCohort": {
       "count": 48,
-      "verdicts": { "pass": 32, "fail": 0, "unknown": 16 },
+      "verdicts": {
+        "pass": 32,
+        "fail": 0,
+        "unknown": 16
+      },
       "scope": "Current work-item proof adequacy; all older cohort records below are historical. Product grade, exact-candidate approval, public install and shipment remain outstanding.",
       "readbackPath": "/tmp/p032-after-qualification-cohort-9086d-20261015.json",
-      "unknownSpecIds": ["AUTO-BAR-R-04-P-008", "AUTO-BAR-R-04-P-010", "AUTO-BAR-R-05-P-007", "AUTO-BAR-R-05-P-016", "AUTO-BAR-R-06-P-009", "AUTO-BAR-R-07-P-002", "AUTO-BAR-R-07-P-008", "AUTO-BAR-R-08-P-010", "AUTO-BAR-R-09-P-011", "P032:current-verdict", "PUI-COMMANDS", "PUI-FILE-CONTEXT", "PUI-QUESTION", "PUI-TOOLS-DIFF", "PUI-TOOL-TURN", "PUI-USAGE"],
-      "releaseQualificationControl": { "baselineTestRunId": 21262313, "relocatedBaselineTestRunId": 21262314, "mutantTestRunId": 21262317, "bindingIds": [48137, 48138, 48139, 48140, 48141, 48142, 48143, 48144], "allThreeWorktreesClean": true, "mutation": "Disable the production-operator requirement so fake-operator evidence qualifies; the advertised-combination fixture test catches it.", "logPath": "/tmp/p032-release-qualification-clean-control-9086d-20261015.log", "logSha256": "b2e9e16948b0492269f5d0b226733d7b13156bd4b38f4b11fa95afce562e781c" },
+      "unknownSpecIds": [
+        "AUTO-BAR-R-04-P-008",
+        "AUTO-BAR-R-04-P-010",
+        "AUTO-BAR-R-05-P-007",
+        "AUTO-BAR-R-05-P-016",
+        "AUTO-BAR-R-06-P-009",
+        "AUTO-BAR-R-07-P-002",
+        "AUTO-BAR-R-07-P-008",
+        "AUTO-BAR-R-08-P-010",
+        "AUTO-BAR-R-09-P-011",
+        "P032:current-verdict",
+        "PUI-COMMANDS",
+        "PUI-FILE-CONTEXT",
+        "PUI-QUESTION",
+        "PUI-TOOLS-DIFF",
+        "PUI-TOOL-TURN",
+        "PUI-USAGE"
+      ],
+      "releaseQualificationControl": {
+        "baselineTestRunId": 21262313,
+        "relocatedBaselineTestRunId": 21262314,
+        "mutantTestRunId": 21262317,
+        "bindingIds": [
+          48137,
+          48138,
+          48139,
+          48140,
+          48141,
+          48142,
+          48143,
+          48144
+        ],
+        "allThreeWorktreesClean": true,
+        "mutation": "Disable the production-operator requirement so fake-operator evidence qualifies; the advertised-combination fixture test catches it.",
+        "logPath": "/tmp/p032-release-qualification-clean-control-9086d-20261015.log",
+        "logSha256": "b2e9e16948b0492269f5d0b226733d7b13156bd4b38f4b11fa95afce562e781c"
+      },
       "remainingCurrentVerdictGap": "P032:current-verdict has only fixture-calibration unknown: older native proof bindings47032/47033/47034 have no measured fixture fingerprint. Supplemental guard fixtures cannot resolve those rows. Preserve native results; inspect their actual fixture provenance before refreshing bindings. Do not rerun native providers or merely assert fixture-free.",
-      "packageSuiteBindingIds": [48070, 48071, 48072, 48073, 48074, 48075]
+      "packageSuiteBindingIds": [
+        48070,
+        48071,
+        48072,
+        48073,
+        48074,
+        48075
+      ]
     },
     "postReaderProofCohort": {
       "count": 48,
-      "verdicts": { "pass": 24, "fail": 0, "unknown": 24 },
+      "verdicts": {
+        "pass": 24,
+        "fail": 0,
+        "unknown": 24
+      },
       "scope": "Current work-item proof adequacy after refreshing the eight stale R14/matrix clauses; this is not the product grade or shipment verdict.",
       "readbackPath": "/tmp/p032-reader-cohort-after-r14-9086d-20261015.json",
-      "freshR14Control": { "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a", "baselineTestRunId": 21262141, "relocatedBaselineTestRunId": 21262143, "mutantTestRunId": 21262145, "probeInvocationId": "5219a199-6a7a-48d7-878e-9f97aec819fa", "bindingIds": [48040, 48041, 48042, 48043, 48044, 48045, 48046, 48047, 48048, 48049, 48050], "allThreeWorktreesClean": true, "logPath": "/tmp/p032-r14-reader-clean-control-9086d-20261015.log", "logSha256": "7221e20c1b20ea24207793ffac7082442d2bb9aaeaa5aae1353d7f806104d148", "receiptCaveat": "Runner ended harness-error after mutant insert acknowledgement timeout. Authoritative ledger reconciliation confirms exact failed mutant21262145 and its failedCaseTitles; case-table rows are absent. Binding uses that durable result without rerunning. Recorder followup remains owned/open as EI-26068565275883888.", "reconciliationPath": "/tmp/p032-r14-reader-reconciled-runs-9086d-20261015.json" }
+      "freshR14Control": {
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "baselineTestRunId": 21262141,
+        "relocatedBaselineTestRunId": 21262143,
+        "mutantTestRunId": 21262145,
+        "probeInvocationId": "5219a199-6a7a-48d7-878e-9f97aec819fa",
+        "bindingIds": [
+          48040,
+          48041,
+          48042,
+          48043,
+          48044,
+          48045,
+          48046,
+          48047,
+          48048,
+          48049,
+          48050
+        ],
+        "allThreeWorktreesClean": true,
+        "logPath": "/tmp/p032-r14-reader-clean-control-9086d-20261015.log",
+        "logSha256": "7221e20c1b20ea24207793ffac7082442d2bb9aaeaa5aae1353d7f806104d148",
+        "receiptCaveat": "Runner ended harness-error after mutant insert acknowledgement timeout. Authoritative ledger reconciliation confirms exact failed mutant21262145 and its failedCaseTitles; case-table rows are absent. Binding uses that durable result without rerunning. Recorder followup remains owned/open as EI-26068565275883888.",
+        "reconciliationPath": "/tmp/p032-r14-reader-reconciled-runs-9086d-20261015.json"
+      }
     },
     "postEditorProofCohort": {
       "count": 48,
-      "verdicts": { "pass": 21, "fail": 8, "unknown": 19 },
+      "verdicts": {
+        "pass": 21,
+        "fail": 8,
+        "unknown": 19
+      },
       "scope": "Current work-item proof adequacy, not a product grade. The earlier postTaskProofCohort is a historical snapshot.",
-      "staleSpecIds": ["AUTO-BAR-R-14-P-001", "AUTO-BAR-R-14-P-002", "AUTO-BAR-R-14-P-012", "PUI-COMMANDS", "PUI-FILE-CONTEXT", "PUI-QUESTION", "PUI-TOOLS-DIFF", "PUI-USAGE"],
+      "staleSpecIds": [
+        "AUTO-BAR-R-14-P-001",
+        "AUTO-BAR-R-14-P-002",
+        "AUTO-BAR-R-14-P-012",
+        "PUI-COMMANDS",
+        "PUI-FILE-CONTEXT",
+        "PUI-QUESTION",
+        "PUI-TOOLS-DIFF",
+        "PUI-USAGE"
+      ],
       "cause": "Server-measured test-file fingerprint mismatch after this session extended release-acceptance.integration.test.ts with a pinned candidate input. These bindings need refreshed committed source/fixture/control receipts; no installed product regression was measured."
     },
     "r03HelperProof": {
@@ -267,7 +547,14 @@
       "boundedApprovalTestRunId": 21259720,
       "boundedApprovalPassed": 6,
       "liveAttachedCaseSkipped": 1,
-      "bindingIds": [47208, 47209, 47210, 47211, 47212, 47213],
+      "bindingIds": [
+        47208,
+        47209,
+        47210,
+        47211,
+        47212,
+        47213
+      ],
       "result": "All three R-03 clauses pass the evaluator after the separate clean-origin controls below."
     },
     "r03CausalControls": {
@@ -275,8 +562,17 @@
       "test": "packages/operator-core/lib/su-session-capability-parity.test.ts",
       "origin": "/tmp/pcv/papercusp-lint-as-committed-ce62d173d1-xWwEFj",
       "sourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
-      "bindingIds": [47331, 47332, 47333],
-      "tools": { "baseline": 21259779, "relocatedBaseline": 21259780, "mutant": 21259781, "result": "caught" },
+      "bindingIds": [
+        47331,
+        47332,
+        47333
+      ],
+      "tools": {
+        "baseline": 21259779,
+        "relocatedBaseline": 21259780,
+        "mutant": 21259781,
+        "result": "caught"
+      },
       "commands": {
         "baseline": 21259785,
         "relocatedBaseline": 21259786,
@@ -297,7 +593,10 @@
     "r01AttachedChatControl": {
       "status": "pass-clean-current-proof",
       "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
-      "candidateSourceEquality": ["apps/tui/src/main.rs", "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"],
+      "candidateSourceEquality": [
+        "apps/tui/src/main.rs",
+        "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"
+      ],
       "baselineTestRunId": 21260544,
       "relocatedBaselineTestRunId": 21260572,
       "mutantTestRunId": 21260599,
@@ -309,11 +608,23 @@
       "destructiveIsolation": "--fake-destructive",
       "privateDatabaseShutdownVerified": true,
       "sourceIntegrity": "verified-byte-identical",
-      "positiveBindingIds": [47675, 47676, 47677],
-      "mutantBindingIds": [47669, 47671, 47673],
+      "positiveBindingIds": [
+        47675,
+        47676,
+        47677
+      ],
+      "mutantBindingIds": [
+        47669,
+        47671,
+        47673
+      ],
       "scope": "Current-build Rust/PTY/production-handler control with the scripted engine peer and PUI_REAL_ENGINE=0. The debug control binary is separate from the accepted ce62/c292 release artifact and its retained native acceptance.",
       "adequacy": {
-        "specIds": ["AUTO-BAR-R-01-P-003", "AUTO-BAR-R-01-P-004", "AUTO-BAR-R-01-P-005"],
+        "specIds": [
+          "AUTO-BAR-R-01-P-003",
+          "AUTO-BAR-R-01-P-004",
+          "AUTO-BAR-R-01-P-005"
+        ],
         "passed": 3,
         "failed": 0,
         "unknown": 0,
@@ -342,9 +653,20 @@
       "destructiveIsolation": "--fake-destructive",
       "privateDatabaseShutdownVerified": true,
       "sourceIntegrity": "verified-byte-identical",
-      "bindingIds": [47615, 47616, 47617, 47618, 47619, 47620],
+      "bindingIds": [
+        47615,
+        47616,
+        47617,
+        47618,
+        47619,
+        47620
+      ],
       "adequacy": {
-        "specIds": ["AUTO-BAR-R-02-P-003", "AUTO-BAR-R-02-P-004", "AUTO-BAR-R-02-P-009"],
+        "specIds": [
+          "AUTO-BAR-R-02-P-003",
+          "AUTO-BAR-R-02-P-004",
+          "AUTO-BAR-R-02-P-009"
+        ],
         "passed": 3,
         "failed": 0,
         "unknown": 0,
@@ -422,7 +744,17 @@
     },
     "taskSourceProof": {
       "testRunId": 21258081,
-      "bindingIds": [47259, 47260, 47261, 47262, 47263, 47264, 47265, 47266, 47269],
+      "bindingIds": [
+        47259,
+        47260,
+        47261,
+        47262,
+        47263,
+        47264,
+        47265,
+        47266,
+        47269
+      ],
       "result": "All nine PUI-TASK clauses pass complete adequacy evaluation. The retained installed owner/agent task journey supplies UI proof; clean targeted canonical-route operation controls supply falsifiability.",
       "domainControls": [
         {
@@ -534,7 +866,10 @@
         "allThreeWorktreesClean": true,
         "mutation": "The add action returns canonical op view instead of append.",
         "assertion": "The existing maps-user-action-add test rejects the wrong canonical operation.",
-        "bindingIds": [47659, 47660],
+        "bindingIds": [
+          47659,
+          47660
+        ],
         "adequacyResult": "PUI-TASK-ADD passes with no wouldBlock reasons; installed operator/PTY journey 21258081 remains the separate UI proof.",
         "readbackPath": "/tmp/p032-task-add-and-layers-adequacy-9086d-20261015.json",
         "logPath": "/tmp/p032-task-add-clean-control-9086d-20261015.log",
@@ -543,8 +878,20 @@
     },
     "supplementaryReleaseMatrixSourceProof": {
       "testRunId": 21260445,
-      "bindingIds": [47661, 47662, 47663, 47664, 47665],
-      "specIds": ["PUI-COMMANDS", "PUI-FILE-CONTEXT", "PUI-QUESTION", "PUI-TOOLS-DIFF", "PUI-USAGE"],
+      "bindingIds": [
+        47661,
+        47662,
+        47663,
+        47664,
+        47665
+      ],
+      "specIds": [
+        "PUI-COMMANDS",
+        "PUI-FILE-CONTEXT",
+        "PUI-QUESTION",
+        "PUI-TOOLS-DIFF",
+        "PUI-USAGE"
+      ],
       "result": "All five clauses now pass correct-layer; falsifiability and risk-floor remain unknown.",
       "scope": "The already-executed R14 fixture case loops through every required release capability and its evidence mapping. It supplies the missing registered release-acceptance suite leg; retained 21258081 supplies the installed PUI interaction proof. The installed-candidate stage was outside this fixture selection.",
       "readbackPath": "/tmp/p032-task-add-and-layers-adequacy-9086d-20261015.json"
@@ -601,10 +948,24 @@
         "testDatabase": "Maintained with-test-pg on a volume admitted by the existing storage policy; canonical reporter sink persisted outside the private database.",
         "privateDatabaseShutdownVerified": true,
         "sourceIntegrity": "verified-byte-identical",
-        "bindingIds": [47497, 47498, 47499, 47500, 47501, 47502],
-        "retiredDirtyBindingIds": [47214, 47215],
+        "bindingIds": [
+          47497,
+          47498,
+          47499,
+          47500,
+          47501,
+          47502
+        ],
+        "retiredDirtyBindingIds": [
+          47214,
+          47215
+        ],
         "adequacy": {
-          "specIds": ["AUTO-BAR-R-14-P-001", "AUTO-BAR-R-14-P-002", "AUTO-BAR-R-14-P-012"],
+          "specIds": [
+            "AUTO-BAR-R-14-P-001",
+            "AUTO-BAR-R-14-P-002",
+            "AUTO-BAR-R-14-P-012"
+          ],
           "passed": 3,
           "failed": 0,
           "unknown": 0,
@@ -631,6 +992,130 @@
         "existingFixRegressionResult": "Two focused admission/denial propagation cases passed; this is local working-source regression evidence.",
         "followup": "EI-26072270863871963"
       }
-    }
+    },
+    "nativeFixtureCalibration": {
+      "status": "pass",
+      "bindingIds": [
+        48204,
+        48205,
+        48206
+      ],
+      "withdrawnIncompleteBindingIds": [
+        47032,
+        47033,
+        47034
+      ],
+      "testRunIds": [
+        21258121,
+        21258131,
+        21258187
+      ],
+      "candidateSource": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+      "candidateArchiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+      "fixtureFingerprint": "sha256-file-set-v1:509278ef16ed18411093c54cf76a00e822ee02c222193c8dc3e79352547a633f",
+      "result": "P032:current-verdict evaluator pass1/fail0/unknown0; source/test fingerprints and run identities unchanged; no native provider replay.",
+      "evidence": [
+        "/tmp/p032-native-fixture-readback.json",
+        "/tmp/p032-native-fixture-adequacy.json",
+        "/tmp/p032-native-fixture-withdraw.json"
+      ]
+    },
+    "targetedControls": [
+      {
+        "specId": "PUI-COMMANDS",
+        "verdict": "pass",
+        "baselineTestRunId": 21263012,
+        "copyBaselineTestRunId": 21263014,
+        "mutantTestRunId": 21263018,
+        "bindingIds": [
+          48297,
+          48323
+        ],
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-commands-clean-control-v2-9086d-20261015.log",
+        "logSha256": "75c3f2c6ecfdac360655f5c4914feeb3abfb72aab11aa54778b3c802dcb08381",
+        "result": "baseline and copy-baseline pass; overlay mutant forcing /expand false fails exact unit assertion; tree integrity verified."
+      },
+      {
+        "specId": "AUTO-BAR-R-04-P-008",
+        "verdict": "pass",
+        "baselineTestRunId": 21264318,
+        "copyBaselineTestRunId": 21264321,
+        "mutantTestRunId": 21264323,
+        "bindingIds": [
+          48353,
+          48354
+        ],
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-r04-control-9086d-20261015.log",
+        "result": "source-lineage mutation caught; baseline and copy-baseline pass, mutant fails exact test, overlay/tree integrity verified."
+      },
+      {
+        "specId": "AUTO-BAR-R-05-P-007",
+        "verdict": "pass",
+        "baselineTestRunId": 21264340,
+        "copyBaselineTestRunId": 21264342,
+        "mutantTestRunId": 21264345,
+        "bindingIds": [
+          48374,
+          48375
+        ],
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-r05-control-v2-9086d-20261015.log",
+        "result": "paste corruption mutation caught; baseline and copy-baseline pass, mutant fails exact composer test, overlay/tree integrity verified."
+      },
+      {
+        "specId": "PUI-FILE-CONTEXT",
+        "verdict": "pass",
+        "baselineTestRunId": 21264402,
+        "copyBaselineTestRunId": 21264404,
+        "mutantTestRunId": 21264406,
+        "bindingIds": [
+          48440,
+          48441
+        ],
+        "fixturePath": "apps/tui/src/file_picker.rs",
+        "logPath": "/tmp/p032-file-context-control-9086d-20261015.log",
+        "result": "cross-project containment mutant caught; baseline/copy-baseline pass, mutant fails refusal assertion, overlay/tree integrity verified."
+      },
+      {
+        "specId": "PUI-TOOLS-DIFF",
+        "verdict": "pass",
+        "baselineTestRunId": 21264410,
+        "copyBaselineTestRunId": 21264412,
+        "mutantTestRunId": 21264415,
+        "bindingIds": [
+          48463,
+          48464
+        ],
+        "fixturePath": "apps/tui/src/change_card.rs",
+        "logPath": "/tmp/p032-tools-diff-control-9086d-20261015.log",
+        "result": "removed-line text mutation caught; baseline/copy-baseline pass, mutant fails exact diff hunk assertion, overlay/tree integrity verified."
+      }
+    ],
+    "currentScopedProofCohort": {
+      "count": 48,
+      "verdicts": {
+        "pass": 38,
+        "fail": 0,
+        "unknown": 10
+      },
+      "scope": "Diagnostic adequacy cohort after P032 calibration, PUI-COMMANDS, R04, R05, PUI-FILE-CONTEXT and PUI-TOOLS-DIFF controls; not the independent product grade."
+    },
+    "openControlGaps": [
+      {
+        "specId": "AUTO-BAR-R-06-P-009",
+        "status": "unknown",
+        "followUp": "EI-26086716576780857",
+        "reason": "Two attempted fail_su_turn mutations survived selected unit case; no falsifiability claim made."
+      },
+      {
+        "specId": "AUTO-BAR-R-08-P-010",
+        "status": "unknown",
+        "followUp": "EI-26086917110362533",
+        "reason": "Selected setup review mutation survived unit case; no falsifiability claim made."
+      }
+    ]
   }
 }
