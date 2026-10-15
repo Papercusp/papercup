@@ -34,12 +34,13 @@ describe('storage:pin', () => {
 
   it('records exact mutation identities while treating lists and absent releases as no effect', () => {
     const receipt = tool.abortCompletionReceipt!;
-    expect(receipt({ op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' }, { data: { ok: true, op: 'pin', pin: { id: 'pin-id' } } }, {} as never))
+    const result = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data) }] });
+    expect(receipt({ op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' }, result({ ok: true, op: 'pin', pin: { id: 'pin-id' } }), {} as never))
       .toEqual({ status: 'recorded', effectRef: 'retention-pin:pin-id:pin' });
-    expect(receipt({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' }, { data: { ok: true, op: 'unpin', id: 'pin-id', removed: true } }, {} as never))
+    expect(receipt({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' }, result({ ok: true, op: 'unpin', id: 'pin-id', removed: true }), {} as never))
       .toEqual({ status: 'recorded', effectRef: 'retention-pin:pin-id:unpin' });
-    expect(receipt({ op: 'list' }, { data: { ok: true, op: 'list' } }, {} as never)).toMatchObject({ status: 'not-recorded' });
-    expect(receipt({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' }, { data: { ok: true, op: 'unpin', removed: false } }, {} as never)).toMatchObject({ status: 'not-recorded' });
-    expect(receipt({ op: 'list' }, { data: { ok: false } }, {} as never)).toMatchObject({ status: 'recovery-incomplete' });
+    expect(receipt({ op: 'list' }, result({ ok: true, op: 'list' }), {} as never)).toMatchObject({ status: 'not-recorded' });
+    expect(receipt({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' }, result({ ok: true, op: 'unpin', removed: false }), {} as never)).toMatchObject({ status: 'not-recorded' });
+    expect(receipt({ op: 'list' }, result({ ok: false }), {} as never)).toMatchObject({ status: 'recovery-incomplete' });
   });
 });
