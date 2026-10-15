@@ -176,10 +176,16 @@ afterEach(() => {
 const opts = { installSlug: 'papercup', workspaceId: 'ws_test' };
 
 describe('blueprint ordered capacity failover (P-004 R-4)', () => {
-  function status(id: string, provider: 'codex' | 'claude', state: 'headroom' | 'wall' | 'unknown') {
+  function status(id: string, provider: 'codex' | 'claude', state: 'headroom' | 'wall' | 'unknown'): import('../deployment/account-pool-store').AccountStatusRow {
     return { id, provider, available: state !== 'wall', usageWalled: state === 'wall',
-      readingStatus: state === 'unknown' ? 'stale' : 'fresh', rate: { pausedUntil: 0 },
-      burn: { disposition: 'none' } } as import('../deployment/account-pool-store').AccountStatusRow;
+      credentialRef: `token:${id}`, boundTo: [], sustainedlyLimited: false,
+      edgeThrottleKnown: false, edgeThrottled: false, edgeThrottleCooledIps: 0,
+      edgeThrottleBare429Streak: 0, liveBuckets: [],
+      readingStatus: state === 'unknown' ? 'stale' : 'fresh',
+      rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 },
+      burn: { disposition: 'no-verdict', burnRatePerHr: null, headroomFraction: null,
+        projectedExhaustionAt: null, exhaustsBeforeReset: false, action: 'none',
+        utilization7d: null, reason: 'fixture' } };
   }
   function configure(backups: import('@papercusp/orchestrator/blueprint').BlueprintLaunchBackup[] = [
     { backend: 'claude-code' as const, model: 'sonnet', effort: 'high' as const },

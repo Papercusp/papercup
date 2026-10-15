@@ -134,6 +134,16 @@ if [ -n "${VERIFY_TAURI_PID:-}" ]; then
     fi
     sleep 0.1
   done
+  # Verify the same generated ownership guard before any assertion command
+  # starts, rather than discovering a provenance/namespace failure in a UI step.
+  if [ -n "${VERIFY_TAURI_LIVENESS_CHECK:-}" ] && ! node --import tsx \
+    "$OPERATOR_SOURCE_ROOT/packages/operator-core/lib/testing-native-runtime.ts" \
+    --check-native-liveness >"$work/native-liveness.log" 2>&1; then
+    cat "$work/native-liveness.log" >&2
+    echo "run-in-isolated-netns: native liveness preparation failed" >&2
+    teardown
+    exit 98
+  fi
 fi
 
 # Runs INSIDE the namespace once the block fd is released. Waits until pasta's interface

@@ -63,7 +63,7 @@ import {
   reconcileComposedRoot,
   reconcileComposedRoots,
 } from './compose-store';
-import { executeWake, degradeToInboxOrDrop, type ExecuteWakeDeps } from './wake-executor';
+import type { ExecuteWakeDeps } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
 import { lastInboxReadAtBatch } from '../../agent-tools/coordination/inbox-read-freshness';
 import { repliedMsgIdsBatch } from '../../agent-tools/coordination/messages';
@@ -1214,6 +1214,8 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         void handleSettledResumeTurnExit(group, d, exit, downstreamOutcomeHandler, context);
       };
 
+      // Read-only event consumers must not initialize agent/account launchers.
+      const { executeWake, degradeToInboxOrDrop } = await import('./wake-executor');
       const outcome = await executeWake(wake, {
         ...deps,
         // Capture every detached resume outcome. Loop wakes keep their

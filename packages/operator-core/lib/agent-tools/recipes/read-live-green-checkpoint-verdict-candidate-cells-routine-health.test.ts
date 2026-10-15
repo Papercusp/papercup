@@ -67,6 +67,24 @@ function run(routineResult: unknown) {
   return { result, misses, readCell, listRoutines };
 }
 
+function runLegacyOptionalFieldProbe() {
+  const misses: string[] = [];
+  const cell = trackMissingReads({
+    ok: true,
+    status: 'unknown',
+    cell: 'gate.greenCheckpoint.candidate',
+    unknown: { code: 'not-measured', detail: 'No candidate has been measured.' },
+  }, 'state.read.candidate', misses);
+  const readCell = vi.fn(async () => cell);
+  const context = vm.createContext({ tools: { state: { read: readCell } } });
+  const legacyScript = `
+    const result = await tools.state.read({ cell: 'gate.greenCheckpoint.candidate' });
+    return { status: result.status, value: result.value, src: result.source && result.source.authoritative };
+  `;
+  const result = vm.runInContext('(async () => {\n' + legacyScript + '\n})()', context) as Promise<unknown>;
+  return { result, misses };
+}
+
 const routine = {
   name: 'green-checkpoint',
   active: true,
@@ -76,6 +94,16 @@ const routine = {
 };
 
 describe('read-live-green-checkpoint-verdict-candidate-cells-routine-health saved recipe', () => {
+  it('identifies unguarded value/source reads on an unknown state:read result', async () => {
+    const probe = runLegacyOptionalFieldProbe();
+    await probe.result;
+
+    expect(probe.misses).toEqual(expect.arrayContaining([
+      'state.read.candidate.value',
+      'state.read.candidate.source',
+    ]));
+  });
+
   it.each([
     ['routines result', { count: 1, routines: [routine] }],
     ['data envelope', { data: { count: 1, routines: [routine] } }],

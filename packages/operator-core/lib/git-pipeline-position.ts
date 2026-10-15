@@ -32,6 +32,8 @@ import * as path from 'node:path';
 import { hostname } from 'node:os';
 import { createHash } from 'node:crypto';
 import { isTurnHoldIntent } from './personal-vault/git-sync-hold';
+import { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
+export { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import {
   gitPipelineSnapshot,
@@ -2014,16 +2016,6 @@ export interface GitSyncLegs {
     /** The worktree head this leg judged on its last tick. */
     sha: string | null;
   } | null;
-}
-
-/**
- * True when this member does not push to origin at all, by design — so an empty
- * `pushedRepos` / a lagging origin is NOT evidence of a fault, and no forced sync
- * can help. `null` (unknown, pre-record rows) is deliberately NOT treated as
- * commit-only: absent evidence must not silently suppress a real push fault.
- */
-export function isCommitOnlyMember(legs: Pick<GitSyncLegs, 'pushMode'>): boolean {
-  return typeof legs.pushMode === 'string' && legs.pushMode.startsWith('commit-only');
 }
 
 /**

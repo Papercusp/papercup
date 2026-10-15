@@ -67,16 +67,20 @@ socket.on('end', () => process.stdout.write(body));
 socket.on('error', error => { console.error(error.message); process.exitCode = 1; });
 `;
 
+function requestNativeRuntimeObserver(socket: string, request: object) {
+  const response = JSON.parse(execFileSync(process.execPath, ['-e', observerClient, socket, JSON.stringify(request)],
+    { encoding: 'utf8', timeout: 7000, maxBuffer: 8192 }));
+  if (response.ok !== true) throw new Error(response.error ?? 'native observer refused identity');
+  return response;
+}
+
 export function prepareNativeRuntimeReader(root: string, commit: string | null): RuntimeReader | undefined {
   if (!process.env.VERIFY_TAURI_PID) return undefined;
   const identity = nativeIdentity(root, commit);
   const socket = process.env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET;
   if (!socket) return prepareLocalNativeRuntimeReader(root, commit);
   const read = (): RecordedRuntimeEnvironment | null => {
-    const response = JSON.parse(execFileSync(process.execPath, ['-e', observerClient, socket, JSON.stringify(identity)],
-      { encoding: 'utf8', timeout: 7000, maxBuffer: 8192 }));
-    if (response.ok !== true) throw new Error(response.error ?? 'native observer refused identity');
-    return response.witness;
+    return requestNativeRuntimeObserver(socket, identity).witness;
   };
   if (!read()) throw new Error('native observer cannot verify the original process');
   return read;
@@ -97,6 +101,21 @@ export function serveNativeRuntimeObserver(socket: string) {
         const requested = JSON.parse(body);
         if (requested.pid !== identity.pid || requested.root !== identity.root || requested.commit !== identity.commit)
           throw new Error('native observer source/process identity mismatch');
+        if (requested.action === 'liveness') {
+          if (!read()) throw new Error('native observer original process is no longer live');
+          const check = process.env.VERIFY_TAURI_LIVENESS_CHECK;
+          if (!check) throw new Error('native observer liveness check is unavailable');
+          const env = { ...process.env };
+          // Execute the original generated guard in this host namespace;
+          // removing the socket prevents recursively calling the observer.
+          delete env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET;
+          execFileSync('bash', [check], { env, encoding: 'utf8', timeout: 5000, maxBuffer: 8192 });
+          const witness = read();
+          if (!witness) throw new Error('native observer process changed during liveness check');
+          connection.end(JSON.stringify({ ok: true, alive: true, witness }));
+          return;
+        }
+        if (requested.action !== undefined) throw new Error('native observer action is unsupported');
         connection.end(JSON.stringify({ ok: true, witness: read() }));
       } catch (error) { connection.end(JSON.stringify({ ok: false, error: String(error) })); }
     });
@@ -106,7 +125,16 @@ export function serveNativeRuntimeObserver(socket: string) {
   return server;
 }
 
-if (isCliEntry(import.meta.url) && process.argv[2] === '--observe-native') {
-  try { serveNativeRuntimeObserver(process.argv[3]!); }
-  catch (error) { console.error(`Native runtime observer preparation failed: ${String(error)}`); process.exitCode = 1; }
+if (isCliEntry(import.meta.url)) {
+  try {
+    if (process.argv[2] === '--observe-native') serveNativeRuntimeObserver(process.argv[3]!);
+    else if (process.argv[2] === '--check-native-liveness') {
+      const socket = process.env.PAPERCUSP_NATIVE_RUNTIME_OBSERVER_SOCKET;
+      if (!socket) throw new Error('native liveness observer is unavailable');
+      const identity = nativeIdentity(process.env.OPERATOR_SOURCE_ROOT!, process.env.VERIFY_TAURI_SOURCE_REF!);
+      const response = requestNativeRuntimeObserver(socket, { ...identity, action: 'liveness' });
+      if (response.alive !== true || !response.witness) throw new Error('native liveness observer did not verify custody');
+      console.log(`verifier bridge alive: pid=${identity.pid} (host provenance verified)`);
+    }
+  } catch (error) { console.error(`Native runtime observer failed: ${String(error)}`); process.exitCode = 1; }
 }
