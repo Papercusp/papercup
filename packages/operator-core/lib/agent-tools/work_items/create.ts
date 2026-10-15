@@ -59,6 +59,8 @@ import { resolveGoalContext } from '../../modes/goal-context';
 import { evaluateStewardHandDispatch } from '../../goals/steward-hand-dispatch';
 import { gateWorkScope } from '../../work-scope-policy';
 import { canonicalizeAssigneeOwnerId } from '../../work-item-holder-identity';
+import { changeKindsArg, changeKindReasonArg, type ChangeKind } from '../../change-kind-catalog';
+import { declareChangeKinds } from '../../work-item-change-kinds';
 import { stampFiledBugReproduction } from '../../attention/bug-reproduction';
 import { defaultReproductionLedgerDeps } from '../../attention/intake-promotion';
 import { CREATE_RECEIPT, toWorkItemReceipt } from './receipt';
@@ -264,6 +266,8 @@ const itemSpec = z.object({
   urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire.'),
   force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity) for this item.'),
   assign_to: z.string().max(120).optional().describe('Atomically CLAIM this item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Overrides assign_all_to_self for this item.'),
+  changeKinds: changeKindsArg().optional(), // change-kind-declared-proof P-001: recorded only when the item is claimed (assign_to)
+  changeKindReason: changeKindReasonArg().optional(),
   // EI-10897: the su persona itself documents `work_items:create { title, assign_to:'self',
   // state:'wip' }` as THE way to open an ad-hoc unit you are starting right now — and the
   // tool rejected `state` as an unrecognized key. A prompt that teaches an arg the tool
@@ -389,6 +393,8 @@ export default defineTool({
       urgent: z.boolean().optional().describe('URGENT enqueue: wake the brain immediately (floor-debounced). Reserve for a production fire, not routine filing.'),
       force: z.boolean().optional().describe('Override the dupe guards (EI-316 mirror, semantic cosine, exact identity).'),
       assign_to: z.string().max(120).optional().describe('Atomically CLAIM the new item for this agent id in the SAME create (B-LOOP-4) — pass a concrete ownerId, or the literal "self" to resolve to the caller. Omit ⇒ unclaimed.'),
+      changeKinds: changeKindsArg().optional(), // change-kind-declared-proof P-001: recorded only when the item is claimed (assign_to)
+      changeKindReason: changeKindReasonArg().optional(),
       state: stateOnCreate.optional(), // EI-10897
       plan_item: z
         .object({ slug: z.string().min(1), item: z.string().min(1) })
@@ -445,12 +451,20 @@ export default defineTool({
       harnessSlug: ctx.harnessSlug,
       projectDir: ctx.projectDir,
     };
+    // change-kind-declared-proof P-001: the declaration rides beside the spec, not inside it —
+    // createOneWorkItem never sees it. Keyed by the spec object, which the loop below mutates
+    // in place (assign_to canonicalization / downgrade), so the lookup sees the FINAL assignee.
+    const declaredKinds = new WeakMap<CreateOneWorkItemArgs, { kinds: ChangeKind[]; reason?: string }>();
+    const withDeclaration = (spec: CreateOneWorkItemArgs, kinds: ChangeKind[] | undefined, reason: string | undefined) => {
+      if (kinds?.length) declaredKinds.set(spec, { kinds, reason });
+      return spec;
+    };
     const list: CreateOneWorkItemArgs[] = args.items?.length
       ? args.items.map((it) => {
           // WI-4492: `body` is an accepted alias for `summary`. Drop the raw `body` key
           // (createOneWorkItem takes `summary`) and resolve the single value from either.
-          const { body: _body, ...rest } = it;
-          return {
+          const { body: _body, changeKinds: itKinds, changeKindReason: itKindReason, ...rest } = it;
+          return withDeclaration({
             ...rest,
             summary: resolveBodyAlias(it),
             harness: it.harness ?? args.harness,
@@ -458,10 +472,10 @@ export default defineTool({
             assign_to: resolveSelfLiteral(it.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(it.plan_item ? { targetPlanItem: { slug: it.plan_item.slug, itemId: it.plan_item.item } } : {}),
             ...(it.links ? { links: it.links } : {}),
-          };
+          }, itKinds, itKindReason);
         })
       : [
-          {
+          withDeclaration({
             kind: args.kind as string,
             title: args.title as string,
             summary: resolveBodyAlias(args), // WI-4492: `body` is an accepted alias for `summary`
@@ -482,7 +496,7 @@ export default defineTool({
             assign_to: resolveSelfLiteral(args.assign_to, ident.ownerId) ?? (args.assign_all_to_self ? ident.ownerId : undefined),
             ...(args.plan_item ? { targetPlanItem: { slug: args.plan_item.slug, itemId: args.plan_item.item } } : {}),
             ...(args.links ? { links: args.links } : {}),
-          },
+          }, args.changeKinds, args.changeKindReason),
         ];
     const drainMode = list.some((spec) => spec.kind === 'bug')
       ? (await getModes(ident.workspaceId ?? ctx.workspaceId ?? 'default', ident.ownerId)).find(
@@ -848,11 +862,34 @@ export default defineTool({
             };
           }
         }
+        // change-kind-declared-proof P-001 (D-001): a create records kinds only for an item it
+        // also claims — an unassigned item has no agent whose work the kinds describe. Read
+        // spec.assign_to HERE, after the canonicalization/downgrades above have settled it.
+        const declared = declaredKinds.get(spec);
+        const changeKindsOut = declared
+          ? {
+              changeKinds: spec.assign_to
+                ? await declareChangeKinds({
+                    workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+                    featureId: res.workItem.id,
+                    kinds: declared.kinds,
+                    step: 'create',
+                    declaredBy: ident.ownerId,
+                    reason: declared.reason ?? null,
+                  })
+                : {
+                    recorded: false as const,
+                    error:
+                      'changeKinds were not recorded: a create records them only when it also claims the item (assign_to). Declare them at work_items:claim.',
+                  },
+            }
+          : {};
         return {
           ok: true as const,
           id: res.workItem.id,
           title: spec.title,
           workItem: ctx.payloadTierOverride === 'full' ? res.workItem : toCreateReceiptWorkItem(res.workItem),
+          ...changeKindsOut,
           ...(warnings.length > 0 ? { warning: warnings.join('\n') } : {}),
           ...residualLinkNudge,
           // EI-20450339646861882: filed, but nothing links it to the plan lane the
