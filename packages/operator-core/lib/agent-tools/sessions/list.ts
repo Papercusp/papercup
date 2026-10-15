@@ -101,11 +101,178 @@ interface OutHistoricalSession {
   effort: string | null;
 }
 
+interface HistoricalCensusOptions {
+  workspaceId: string;
+  since: string;
+  until: string;
+  owner: string | null;
+  sourceKind: string | undefined;
+  cwdContains: string | undefined;
+  limit: number;
+  offset: number;
+  fingerprint: string;
+}
+
 /**
  * Read a bounded historical session census. This is intentionally a separate
  * query path from the indexed transcript list below: a historical census must
  * begin with append-only events, not with a mutable live-session roster.
  */
+async function readHistoricalCensusUnfilteredRows(
+  tx: Sql,
+  options: HistoricalCensusOptions,
+): Promise<HistoricalSessionListRow[]> {
+  const activityScopes = [...new Set([options.workspaceId, '*'])];
+  return tx<HistoricalSessionListRow[]>`
+    WITH raw_events AS (
+      SELECT owner AS owner_id, session_id, source_kind, harness_slug, cwd,
+             ts AS event_at, 'session_turns'::text AS event_source
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
+         AND owner IS NOT NULL AND session_id IS NOT NULL
+         AND ts >= ${options.since}::timestamptz
+         AND ts < ${options.until}::timestamptz
+      UNION ALL
+      SELECT owner AS owner_id, session_id, source_kind, harness_slug, cwd,
+             ingested_at AS event_at, 'session_turns'::text AS event_source
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${options.workspaceId} OR workspace_id = 'default')
+         AND owner IS NOT NULL AND session_id IS NOT NULL AND ts IS NULL
+         AND ingested_at >= ${options.since}::timestamptz
+         AND ingested_at < ${options.until}::timestamptz
+      UNION ALL
+      SELECT owner_id, session_id, agent AS source_kind, harness_slug, cwd,
+             created_at AS event_at, 'agent_activity'::text AS event_source
+        FROM harness_shared.agent_activity
+       WHERE workspace_id = ANY(${activityScopes}::text[])
+         AND owner_id IS NOT NULL
+         AND created_at >= ${options.since}::timestamptz
+         AND created_at < ${options.until}::timestamptz
+      UNION ALL
+      SELECT coord_owner_id AS owner_id, NULL::text AS session_id,
+             NULL::text AS source_kind, harness_slug, NULL::text AS cwd,
+             invoked_at AS event_at, 'tool_invocations'::text AS event_source
+        FROM harness_shared.tool_invocations
+       WHERE workspace_id = ANY(${activityScopes}::text[])
+         AND coord_owner_id IS NOT NULL
+         AND invoked_at >= ${options.since}::timestamptz
+         AND invoked_at < ${options.until}::timestamptz
+    ),
+    raw_event_groups AS MATERIALIZED (
+      SELECT owner_id, session_id, max(source_kind) AS source_kind,
+             min(event_at) AS first_event_at, max(event_at) AS last_event_at,
+             count(*)::int AS event_count,
+             array_agg(DISTINCT event_source ORDER BY event_source) AS event_sources,
+             max(harness_slug) AS harness_slug, max(cwd) AS cwd
+        FROM raw_events
+       GROUP BY owner_id, session_id
+    ),
+    -- Resolve identity before paging; launch_spec is wide display metadata.
+    session_map AS MATERIALIZED (
+      SELECT k.owner_id, k.session_id AS raw_session_id,
+             a.session_id AS adv_session_id
+        FROM raw_event_groups k
+        LEFT JOIN LATERAL (
+          (SELECT session_id
+             FROM harness_shared.adv_sessions
+            WHERE coord_owner_id = k.owner_id
+              AND k.session_id IS NOT NULL AND session_id = k.session_id
+            ORDER BY first_seen_at ASC NULLS LAST, id ASC LIMIT 1)
+          UNION ALL
+          (SELECT session_id
+             FROM harness_shared.adv_sessions
+            WHERE coord_owner_id = k.owner_id AND k.session_id IS NULL
+            ORDER BY first_seen_at ASC NULLS LAST, id ASC LIMIT 1)
+        ) a ON true
+    ),
+    mapped_key_events AS (
+      SELECT k.*, a.adv_session_id
+        FROM raw_event_groups k
+        LEFT JOIN session_map a
+          ON a.owner_id = k.owner_id AND a.raw_session_id = k.session_id
+       WHERE k.session_id IS NOT NULL
+      UNION ALL
+      SELECT k.*, a.adv_session_id
+        FROM raw_event_groups k
+        LEFT JOIN session_map a
+          ON a.owner_id = k.owner_id AND a.raw_session_id IS NULL
+       WHERE k.session_id IS NULL
+    ),
+    event_group_metrics AS (
+      SELECT owner_id AS owner,
+             COALESCE(session_id, adv_session_id) AS session_id,
+             max(source_kind) AS source_kind,
+             min(first_event_at) AS first_event_at,
+             max(last_event_at) AS last_event_at,
+             sum(event_count)::int AS event_count,
+             max(harness_slug) AS harness_slug, max(cwd) AS cwd
+        FROM mapped_key_events
+       GROUP BY owner_id, COALESCE(session_id, adv_session_id)
+    ),
+    event_group_sources AS (
+      SELECT owner_id AS owner,
+             COALESCE(session_id, adv_session_id) AS session_id,
+             array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources
+        FROM mapped_key_events
+        CROSS JOIN LATERAL unnest(event_sources) AS source(event_source)
+       GROUP BY owner_id, COALESCE(session_id, adv_session_id)
+    ),
+    event_groups AS (
+      SELECT metrics.owner, metrics.session_id, metrics.source_kind,
+             metrics.first_event_at, metrics.last_event_at, metrics.event_count,
+             sources.event_sources, metrics.harness_slug, metrics.cwd
+        FROM event_group_metrics metrics
+        JOIN event_group_sources sources
+          ON sources.owner = metrics.owner
+         AND sources.session_id IS NOT DISTINCT FROM metrics.session_id
+    ),
+    paged_event_groups AS MATERIALIZED (
+      SELECT e.*, count(*) OVER ()::int AS total_matching
+        FROM event_groups e
+       WHERE (${options.owner}::text IS NULL OR e.owner = ${options.owner})
+       ORDER BY e.last_event_at DESC NULLS LAST, e.owner, e.session_id NULLS LAST
+       LIMIT ${options.limit + 1}
+      OFFSET ${options.offset}
+    )
+    SELECT COALESCE(a.agent, e.source_kind, 'unknown') AS source_kind,
+           e.session_id, e.owner,
+           to_json(a.first_seen_at) #>> '{}' AS first_seen_at,
+           to_json(e.first_event_at) #>> '{}' AS first_event_at,
+           to_json(e.last_event_at) #>> '{}' AS last_event_at,
+           e.event_count, e.event_sources,
+           COALESCE(a.harness_slug, e.harness_slug) AS harness_slug,
+           COALESCE(a.cwd, e.cwd) AS cwd,
+           m.fleet_slug, m.fleet_role,
+           a.launch_spec->>'model' AS model,
+           a.launch_spec->>'effort' AS effort,
+           e.total_matching
+      FROM paged_event_groups e
+      LEFT JOIN LATERAL (
+        (SELECT agent, first_seen_at, launch_spec,
+                launch_spec->>'harnessSlug' AS harness_slug, cwd
+           FROM harness_shared.adv_sessions
+          WHERE coord_owner_id = e.owner AND e.session_id IS NOT NULL
+            AND session_id = e.session_id
+          ORDER BY first_seen_at ASC NULLS LAST, id ASC LIMIT 1)
+        UNION ALL
+        (SELECT agent, first_seen_at, launch_spec,
+                launch_spec->>'harnessSlug' AS harness_slug, cwd
+           FROM harness_shared.adv_sessions
+          WHERE coord_owner_id = e.owner AND e.session_id IS NULL
+          ORDER BY first_seen_at ASC NULLS LAST, id ASC LIMIT 1)
+      ) a ON true
+      LEFT JOIN LATERAL (
+        SELECT fleet_slug, fleet_role
+          FROM harness_shared.fleet_membership_events
+         WHERE workspace_id = ${options.workspaceId}
+           AND owner_id = e.owner
+           AND at < ${options.until}::timestamptz
+         ORDER BY id DESC LIMIT 1
+      ) m ON true
+     ORDER BY e.last_event_at DESC NULLS LAST, e.owner, e.session_id NULLS LAST
+  `;
+}
+
 async function readHistoricalCensus(
   tx: Sql,
   options: {
@@ -121,7 +288,10 @@ async function readHistoricalCensus(
   },
 ) {
   const activityScopes = [...new Set([options.workspaceId, '*'])];
-  const rows: HistoricalSessionListRow[] = await tx<HistoricalSessionListRow[]>`
+  const rows: HistoricalSessionListRow[] =
+    options.sourceKind === undefined && options.cwdContains === undefined
+      ? await readHistoricalCensusUnfilteredRows(tx, options)
+      : await tx<HistoricalSessionListRow[]>`
     WITH raw_events AS (
       SELECT owner AS owner_id,
              session_id,

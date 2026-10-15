@@ -79,10 +79,32 @@ export const realGitProbe: GitProbe = {
   },
 };
 
+/** Event-loop-safe ref resolution for live operator handlers. */
+export async function revParseAsync(
+  root: string,
+  ref: string,
+  run: (root: string, ref: string) => Promise<unknown> = async (probeRoot, probeRef) => {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', probeRoot, 'rev-parse', '--verify', '--quiet', probeRef],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 },
+    );
+    return stdout;
+  },
+): Promise<string | null> {
+  try {
+    const output = await run(root, ref);
+    const sha = typeof output === 'string' ? output.trim() : '';
+    return /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Event-loop-safe ancestry probe for live operator handlers. Keep the synchronous
- * GitProbe API for worker-thread and CLI callers; request handlers must use this
- * async form so a slow `git merge-base` cannot block every MCP session on the host.
+ * GitProbe API for worker-thread and CLI callers; request handlers must use async
+ * probes so a slow Git child process cannot block every MCP session on the host.
  */
 export async function isAncestorAsync(
   root: string,

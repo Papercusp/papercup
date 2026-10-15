@@ -23,8 +23,8 @@ const deliver = (facts: PushFact[], workspace = input.workspace, budget = CODE_I
 describe('push ledger cross-worker budget, dedupe and workspace isolation', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
-    // Exercise the actual additive migration while it is still a draft, before arming it.
-    const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1519-code-intel-pushes.sql.DRAFT', import.meta.url), 'utf8');
+    // The normal migration runner creates the ledger; re-application must also be safe.
+    const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1519-code-intel-pushes.sql', import.meta.url), 'utf8');
     await db.adminSql.unsafe(sql);
   }, 120_000);
   afterAll(async () => { await db?.cleanup(); });

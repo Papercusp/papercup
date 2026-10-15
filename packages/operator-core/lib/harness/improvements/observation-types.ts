@@ -271,6 +271,8 @@ export interface SpecTestAdequacyBindingMeasurement {
   status: 'measured' | 'unavailable' | 'unmeasured';
   /** Commit whose repository objects were measured; absent for ledger or non-git measurements. */
   measuredAtCommit?: string;
+  /** Digest of server-measured content dimensions, independent of repository HEAD. */
+  measurementFingerprint?: string;
 }
 
 /** Measurement summary returned by the evaluator and pinned in newly minted recipes. */

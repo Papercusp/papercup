@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from 'node:fs';
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { inspectRetentionTrees, measureDocker, resolveCensusSudo, type CensusSpawn } from './disk-consumer-census';
@@ -173,6 +173,44 @@ describe('resolveCensusSudo', () => {
     const probe = vi.fn(async () => true);
     expect(await resolveCensusSudo(probe)).toBeNull();
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(isRoot)('requires privilege on the actual census even when an unrelated sudo preflight fails', async () => {
+    const root = join(dir, 'agent'); await fsp.mkdir(root);
+    await fsp.writeFile(join(root, 'payload'), 'measured');
+    const bin = join(dir, 'sudo');
+    writeFileSync(bin, '#!/bin/sh\n[ "$1" = "-n" ] || exit 9\nshift\n[ "$1" != "true" ] || exit 1\n[ "$1" != "--" ] || shift\nprintf executed > "$0.calls"\nexec "$@"\n');
+    chmodSync(bin, 0o755);
+    process.env.PATH = [dir, '/usr/bin', '/bin'].join(delimiter);
+    expect(await resolveCensusSudo()).toBeNull();
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now() + 60_000,
+      includeRecent: true, requirePrivilege: true, timeoutMs: 5_000 });
+    expect(census.error).toBeUndefined();
+    expect(census.entries).toContainEqual(expect.objectContaining({ path: join(root, 'payload') }));
+    expect(await fsp.readFile(bin + '.calls', 'utf8')).toBe('executed');
+  });
+
+  it.skipIf(isRoot)('preserves actual elevation errors and refuses an unprivileged census', async () => {
+    const root = join(dir, 'agent'); await fsp.mkdir(root);
+    await fsp.writeFile(join(root, 'payload'), 'retain');
+    const bin = join(dir, 'sudo');
+    writeFileSync(bin, '#!/bin/sh\nprintf "fixture privilege denied" >&2\nexit 1\n');
+    chmodSync(bin, 0o755);
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now() + 60_000,
+      includeRecent: true, requirePrivilege: true, timeoutMs: 5_000 });
+    expect(census.error).toContain('fixture privilege denied');
+    expect(census.entries).toEqual([]);
+    expect(census.inspectedNodes).toBe(0);
+  });
+
+  it.skipIf(isRoot)('refuses a required privileged census when sudo is missing', async () => {
+    const root = join(dir, 'agent'); await fsp.mkdir(root);
+    await fsp.writeFile(join(root, 'payload'), 'retain');
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now() + 60_000,
+      includeRecent: true, requirePrivilege: true, timeoutMs: 5_000 });
+    expect(census.error).toContain('sudo executable unavailable');
+    expect(census.entries).toEqual([]);
+    expect(census.inspectedNodes).toBe(0);
   });
 
   it('never elevates a process that is already root', async () => {

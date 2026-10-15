@@ -1,5 +1,6 @@
 /** P-034/D-016: one code-intelligence leg at the existing PostToolBatch sink. */
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { withWorkspace } from '@papercusp/db-org';
 import { FLAGS, type FlagKey } from '@papercusp/flags';
@@ -7,6 +8,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { withBoundedTimeout } from '../bounded-timeout';
 import { loadHarnessRegistry } from '../harness-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import { activeWorkspaceId } from '../workspace-registry';
 import { peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
 
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
@@ -20,6 +22,8 @@ export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
 export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown }
 export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
+  /** Populated only from the registered harness root, never request cwd. */
+  root?: string;
   calls: readonly PushCall[];
 }
 export interface PushFact {
@@ -33,6 +37,77 @@ export interface PushFact {
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
 export function registerCodeIntelPushLeg(id: PushLegId, leg: PushLeg): void { state.legs.set(id, leg); }
+
+/** P-034 delivery witness. Rich symbol/docs/spec evidence is added by P-036. */
+export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
+  const facts: PushFact[] = [];
+  for (const call of input.calls) {
+    if (!/(?:^|_|:)(?:Read|Edit|read|edit)$/.test(call.tool ?? '')) continue;
+    const args = call.toolInput as { file_path?: unknown; path?: unknown } | null;
+    const rawPath = args?.file_path ?? args?.path;
+    if (typeof rawPath !== 'string') continue;
+    const path = isAbsolute(rawPath) && input.root ? relative(input.root, rawPath) : rawPath;
+    if (!safeSnapshotPath(path)) continue;
+    const consumers = snapshot.importers.get(path);
+    if (!consumers?.length) continue;
+    const cited = consumers.slice(0, 3);
+    const tests = consumers.filter(file => /\.(?:test|spec)\.[^.]+$/.test(file));
+    const suggestedCall = tests.length ? `testing:run ${JSON.stringify({ files: tests.slice(0, 4), harness: input.harness })}` : undefined;
+    facts.push({ leg: 'first-touch', subject: path, citedPaths: [path, ...cited], suggestedCall,
+      text: `${path}: ${consumers.length} static file importers in this snapshot; examples: ${cited.join(', ')}. `
+        + `Symbol consumers, current-source corroboration, docs/spec links, locks and runtime execution are unknown.`
+        + (suggestedCall ? `\nTests importing this file: ${suggestedCall}` : '\nReaching tests unknown.') });
+  }
+  return facts;
+};
+registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
+
+/** Only a single literal identifier lookup is resolved; arbitrary regexes remain quiet. */
+export function grepLookupSubject(call: PushCall): string | null {
+  const args = call.toolInput as { command?: unknown; cmd?: unknown; pattern?: unknown } | null;
+  const tool = call.tool ?? '';
+  let pattern: string | null = null;
+  if (/(?:^|_|:)(?:Grep|grep)$/.test(tool) && typeof args?.pattern === 'string') pattern = args.pattern;
+  else {
+    const command = args?.command ?? args?.cmd;
+    if (typeof command !== 'string' || command.length > 4000) return null;
+    const head = command.split(/\n|;|&&|\|/)[0]?.trim() ?? '';
+    if (!/^(?:rg|grep|git\s+grep)\s/.test(head)) return null;
+    const quoted = /(['"])(.*?)\1/.exec(head);
+    pattern = quoted?.[2] ?? head.replace(/^(?:rg|grep|git\s+grep)\s+/, '').split(/\s+/).find(token => !token.startsWith('-')) ?? null;
+  }
+  if (!pattern) return null;
+  const simple = pattern.replace(/\\b/g, '').replace(/\\?\($/, '').replace(/^\^/, '').replace(/\$$/, '').trim();
+  const declaration = /^(?:export\s+)?(?:async\s+)?(?:function|class|interface|type|const|let|enum)\s+([A-Za-z_$][\w$]*)$/.exec(simple);
+  const name = declaration?.[1] ?? simple;
+  return /^[A-Za-z_$][\w$]*$/.test(name) ? name : null;
+}
+
+export const snapshotGrepLeg: PushLeg = (input, snapshot) => {
+  const facts: PushFact[] = [];
+  for (const call of input.calls) {
+    const subject = grepLookupSubject(call);
+    if (!subject) continue;
+    const symbols = snapshot.symbols?.get(subject);
+    if (symbols?.length !== 1) continue; // Ambiguous / unresolved means no push.
+    const symbol = symbols[0]!;
+    const callers = symbol.callers.slice(0, 4);
+    const workspaces = new Map<string, number>();
+    for (const site of symbol.callers) {
+      const workspace = /^(?:apps|packages|libs)\/[^/]+/.exec(site.path)?.[0] ?? '(repository)';
+      workspaces.set(workspace, (workspaces.get(workspace) ?? 0) + 1);
+    }
+    const aliases = [...new Set(symbol.callers.filter(site => site.spelling !== subject).map(site => site.spelling))].slice(0, 4);
+    facts.push({ leg: 'grep', subject, citedPaths: [symbol.path, ...callers.map(site => site.path)],
+      text: `${subject}: definition ${symbol.path}:${symbol.line}. At least ${symbol.callers.length} syntax-bound static calls `
+        + `(${[...workspaces].map(([workspace, count]) => `${workspace}: ${count}`).join('; ') || 'none resolved'}).`
+        + (callers.length ? `\nTop callers: ${callers.map(site => `${site.path}:${site.line}`).join(', ')}.` : '')
+        + (aliases.length ? `\nAliases a literal grep can miss: ${aliases.join(', ')}.` : '')
+        + '\nComments/strings are excluded. Dynamic dispatch, shadowed bindings, other languages, current-source drift and runtime execution remain unknown.' });
+  }
+  return facts;
+};
+registerCodeIntelPushLeg('grep', snapshotGrepLeg);
 
 export interface PushChannelDeps {
   snapshot(input: PushInput): Promise<PushSnapshot | null>;
@@ -85,9 +160,11 @@ const defaults: PushChannelDeps = {
     // Only the registered home repository currently has the maintained producer.
     // Never use the operator's snapshot for a different harness/workspace.
     const home = operatorHomeHarnessSlug();
-    if (input.harness !== home) return null;
+    if (input.workspace !== activeWorkspaceId() || input.harness !== home) return null;
     const registry = await loadHarnessRegistry(input.workspace);
-    if (!registry.projects.some(project => project.slug === home && project.path)) return null;
+    const project = registry.projects.find(project => project.slug === home && project.path);
+    if (!project) return null;
+    input.root = project.path;
     return peekPushSnapshot('papercusp');
   },
   enabled: flag => getFlag(flag, 'system'),

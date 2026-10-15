@@ -201,20 +201,93 @@
       "adequacyResult": "AUTO-BAR-R-03-P-003, AUTO-BAR-R-03-P-006 and AUTO-BAR-R-03-P-008 pass with no wouldBlock reasons.",
       "evaluatorReceipt": "/tmp/p032-r03-tasks-adequacy-final-9086d.json"
     },
+    "r02ReplayControl": {
+      "status": "pass-clean-current-proof",
+      "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
+      "candidateSourceEquality": [
+        "packages/operator-core/lib/su-session-host.ts",
+        "packages/operator-core/lib/su-session-commands.integration.test.ts"
+      ],
+      "comparison": "Both committed blobs are byte-identical at ce62 and the clean c2eb harness commit.",
+      "baselineTestRunId": 21260522,
+      "relocatedBaselineTestRunId": 21260525,
+      "mutantTestRunId": 21260526,
+      "allThreeWorktreesClean": true,
+      "baselineResult": "Each baseline passed the selected durable-acceptance/host-replacement replay case; six unrelated cases were skipped.",
+      "mutantResult": "Removing the reserved.created deduplication branch failed the exact replay.replayed assertion; the expected replay was treated as a new execution.",
+      "probeInvocationId": "aecca57c-4018-474a-9cc1-e5d891198a80",
+      "relocation": "overlay",
+      "destructiveIsolation": "--fake-destructive",
+      "privateDatabaseShutdownVerified": true,
+      "sourceIntegrity": "verified-byte-identical",
+      "bindingIds": [47615, 47616, 47617, 47618, 47619, 47620],
+      "adequacy": {
+        "specIds": ["AUTO-BAR-R-02-P-003", "AUTO-BAR-R-02-P-004", "AUTO-BAR-R-02-P-009"],
+        "passed": 3,
+        "failed": 0,
+        "unknown": 0,
+        "wouldBlock": [],
+        "readbackPath": "/tmp/p032-r02-final-adequacy-9086d-20261015.json"
+      },
+      "logPath": "/tmp/p032-r02-clean-control-9086d-20261015.log",
+      "logSha256": "2e8d2c23b959995172aef3144c64558c8f6ff7b94f5273a40352fcd408f2c19b"
+    },
     "taskSourceProof": {
       "testRunId": 21258081,
       "bindingIds": [47259, 47260, 47261, 47262, 47263, 47264, 47265, 47266, 47269],
       "result": "The nine PUI-TASK clauses pass correct-layer using the retained real operator/PTY owner-and-agent task journey. Falsifiability and risk-floor remain unknown."
     },
     "r14CapabilityControl": {
-      "status": "caught-but-not-current",
+      "status": "pass-clean-current-proof",
       "baselineTestRunId": 21259712,
       "relocatedBaselineTestRunId": 21259721,
       "mutantTestRunId": 21259723,
       "bindingIds": [47214, 47215],
       "probeInvocationId": "460b0657-beaa-4e3c-b1a0-1ff63492fb7a",
       "logPath": "/tmp/p032-capability-gate-mutation-9086d-20261015.log",
-      "reason": "The shared-origin test runs are marked worktreeDirty, so official freshness remains unknown despite a caught assertion.",
+      "reason": "The original shared-origin control is historical. Clean committed replacement proof below passed all three R14 clauses; bindings 47214 and 47215 were retracted after that replacement succeeded.",
+      "currentProof": {
+        "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
+        "harnessRoot": "/tmp/pcv/papercusp-lint-as-committed-c2ebf8b88f-zTn5Oo",
+        "candidateSourceEquality": [
+          "packages/operator-core/lib/pui-e2e/release-acceptance.ts",
+          "packages/operator-core/lib/pui-e2e/release-acceptance.integration.test.ts",
+          "apps/tui/PUBLIC_RELEASE_UX.md",
+          "apps/tui/release/acceptance-matrix.json"
+        ],
+        "comparison": "All four committed blobs are byte-identical at the accepted ce62 candidate and c2eb harness commit.",
+        "admissionRegressionTestRunId": 21260412,
+        "admissionRegressionResult": "Clean committed source: 2 passed, 179 unrelated cases skipped. The real admission marker reaches receipt-consuming children; refused admission starts no child.",
+        "baselineTestRunId": 21260445,
+        "relocatedBaselineTestRunId": 21260446,
+        "mutantTestRunId": 21260447,
+        "allThreeWorktreesClean": true,
+        "baselineResult": "Each baseline passed 2 fixture cases and skipped the 2 installed-product/streaming cases outside the selector.",
+        "mutantResult": "Removing the required-capability evidence filter caused the exact R14 required-evidence refusal assertion to fail: 1 failed, 1 passed, 2 skipped.",
+        "probeInvocationId": "ea605b9a-2f3d-47bf-8561-5ce36f11a774",
+        "relocation": "overlay",
+        "destructiveIsolation": "--fake-destructive",
+        "testDatabase": "Maintained with-test-pg on a volume admitted by the existing storage policy; canonical reporter sink persisted outside the private database.",
+        "privateDatabaseShutdownVerified": true,
+        "sourceIntegrity": "verified-byte-identical",
+        "bindingIds": [47497, 47498, 47499, 47500, 47501, 47502],
+        "retiredDirtyBindingIds": [47214, 47215],
+        "adequacy": {
+          "specIds": ["AUTO-BAR-R-14-P-001", "AUTO-BAR-R-14-P-002", "AUTO-BAR-R-14-P-012"],
+          "passed": 3,
+          "failed": 0,
+          "unknown": 0,
+          "wouldBlock": [],
+          "readbackPath": "/tmp/p032-r14-final-adequacy-9086d-20261015.json"
+        },
+        "logPath": "/tmp/p032-r14-isolated-clean-mutation-9086d-20261015.log",
+        "logSha256": "d742d0eb9f6448c7486b34df9fab4f65ebe045a162a0f72ae84d850626e677ab",
+        "priorStorageRefusal": {
+          "logPath": "/tmp/p032-r14-current-clean-mutation-9086d-20261015.log",
+          "result": "Harness error before baseline collection; no mutant verdict or receipt.",
+          "followup": "EI-26073450705944311"
+        }
+      },
       "cleanOriginAttempt": {
         "status": "harness-error-before-mutant-tests",
         "baselineTestRunId": 21259771,

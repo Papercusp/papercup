@@ -16,10 +16,18 @@ export interface PushSnapshot {
   /** Static file imports, not symbol callers or proof of runtime execution. */
   importers: ReadonlyMap<string, readonly string[]>;
   hashes: ReadonlyMap<string, string>;
+  symbols?: ReadonlyMap<string, readonly SnapshotSymbol[]>;
+}
+
+export interface SnapshotSymbol {
+  id: string; name: string; path: string; line: number; column: number; sha256: string;
+  signature: string; aliases: string[];
+  callers: { path: string; line: number; column: number; sha256: string; spelling: string }[];
 }
 
 export function parsePushSnapshot(text: string, now = Date.now()): PushSnapshot | null {
-  const raw = JSON.parse(text);
+  let raw;
+  try { raw = JSON.parse(text); } catch { return null; }
   if (raw?.schema !== 'graph-dependency-snapshot-v1' || raw.index?.backend !== 'first-party-imports'
     || !/^[a-f0-9]{40,64}$/i.test(raw.index?.lastCommit ?? '') || !Array.isArray(raw.edges)) return null;
   const generatedMs = Date.parse(raw.generatedAt);
@@ -34,8 +42,24 @@ export function parsePushSnapshot(text: string, now = Date.now()): PushSnapshot 
     hashes.set(edge.importer, edge.importerSha256);
   }
   if (!reverse.size) return null;
+  const byName = new Map<string, SnapshotSymbol[]>();
+  const metadata = raw.symbols;
+  const site = (value: any) => safeSnapshotPath(value?.path) && Number.isSafeInteger(value.line) && value.line > 0
+    && Number.isSafeInteger(value.column) && value.column > 0 && /^[a-f0-9]{64}$/i.test(value.sha256 ?? '');
+  if (metadata?.schema === 'code-intel-symbol-snapshot-v1' && metadata.knowledge === 'syntax-bound' && Array.isArray(metadata.symbols)) {
+    for (const row of metadata.symbols) {
+      if (!site(row) || typeof row.id !== 'string' || !/^[A-Za-z_$][\w$]*$/.test(row.name)
+        || typeof row.signature !== 'string' || !Array.isArray(row.aliases) || !Array.isArray(row.callers)) continue;
+      const symbol: SnapshotSymbol = { ...row, signature: row.signature.slice(0, 300),
+        aliases: row.aliases.filter((name: unknown) => typeof name === 'string' && /^[A-Za-z_$][\w$]*$/.test(name)),
+        callers: row.callers.filter((caller: any) => site(caller) && typeof caller.spelling === 'string').slice(0, 500) };
+      for (const name of new Set([symbol.name, ...symbol.aliases])) {
+        const rows = byName.get(name) ?? []; rows.push(symbol); byName.set(name, rows);
+      }
+    }
+  }
   return { commit: raw.index.lastCommit, generatedAt: raw.generatedAt, generatedMs,
-    importers: new Map([...reverse].map(([path, paths]) => [path, [...paths].sort()])), hashes };
+    importers: new Map([...reverse].map(([path, paths]) => [path, [...paths].sort()])), hashes, symbols: byName };
 }
 
 type Entry = { snapshot: PushSnapshot | null; checkedAt: number; loading: Promise<void> | null };

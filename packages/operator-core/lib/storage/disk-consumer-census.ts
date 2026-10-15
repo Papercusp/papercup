@@ -356,6 +356,10 @@ export async function inspectRetentionTrees(root: string, opts: {
   /** Caps need recent trees too. Elevation is explicit and scoped by the caller
    * to a policy-authorized agent root; never silently fall back on denial. */
   includeRecent?: boolean; sudo?: string | null;
+  /** Execute the bounded census through sudo itself. A separate `sudo true`
+   * probe cannot establish whether this operation will succeed, and must not
+   * suppress the real command or discard its error. */
+  requirePrivilege?: boolean;
 }): Promise<RetentionTreeCensus> {
   root = resolve(root);
   const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
@@ -367,7 +371,11 @@ export async function inspectRetentionTrees(root: string, opts: {
   const excluded = (opts.excludedPaths ?? []).map((path) => resolve(path)).filter((path) => path.startsWith(root + '/'));
   const prune = excluded.flatMap((path, index) => [...(index ? ['-o'] : []), '-path', literal(path)]);
   const uid = process.getuid?.();
-  const privileged = Boolean(opts.sudo) || uid === 0;
+  const sudo = opts.sudo ?? (opts.requirePrivilege && uid !== 0 ? await resolveBin('sudo') : null);
+  if (opts.requirePrivilege && !sudo && uid !== 0) {
+    return { ...result, error: 'sudo executable unavailable for required privileged retention census' };
+  }
+  const privileged = Boolean(sudo) || uid === 0;
   const foreignOwner = uid === undefined || privileged ? [] : ['!', '-uid', String(uid)];
   const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%p\\0';
   const recent = opts.includeRecent ? ['-false'] : ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
@@ -376,7 +384,7 @@ export async function inspectRetentionTrees(root: string, opts: {
   const args = [...(opts.paths ?? [root]), '-ignore_readdir_race', '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
     ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
     ')', '-printf', format, '-prune', '-o', '-printf', format];
-  const [command, argv] = censusCommand('find', args, { sudo: opts.sudo ?? null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  const [command, argv] = censusCommand('find', args, { sudo, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
   return new Promise<RetentionTreeCensus>((done) => {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
     let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;

@@ -2427,6 +2427,13 @@ export function encodeControl({ mode, data, ...extra }: {
     mode: any;
     data: any;
 }): string;
+/** Content identity survives a sender accidentally rebuilding the wrong envelope. */
+export function continuationIdentityRefusal(message: any, ownerId: any): {
+    ok: boolean;
+    reason: string;
+    expected: any;
+    got: string;
+} | null;
 /** Parse `{ ownerId }` off a raw envelope object, or `{}` when absent/malformed
  *  (EI-153: the sender's addressed-recipient assertion — see injectIntoHost's
  *  `ownerId` doc in psu-pty-discovery.ts). Absent on any pre-EI-153 sender or a

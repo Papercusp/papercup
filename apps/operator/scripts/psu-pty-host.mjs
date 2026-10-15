@@ -6614,6 +6614,16 @@ export function encodeControl({ mode, data, ...extra }) {
   return JSON.stringify({ v: 1, mode, data, ...extra });
 }
 
+/** Content identity survives a sender accidentally rebuilding the wrong envelope. */
+export function continuationIdentityRefusal(message, ownerId) {
+  if (message.mode !== 'carry-respawn' && message.mode !== 'turn') return null;
+  const text = typeof message.data === 'string' ? message.data : '';
+  const body = text.replace(/^\s*⟦turn-origin:[^\n]*⟧\s*\n/, '').trimStart();
+  const addressed = /^ADDRESSED TO\s+([^\s]+)\s+[—-]/.exec(body)?.[1];
+  if (!addressed || addressed === ownerId) return null;
+  return { ok: false, reason: 'continuation-owner-mismatch', expected: ownerId, got: addressed };
+}
+
 /** Parse `{ fireNumber, routineId }` off a raw envelope object, or `{}` when
  *  either is absent/malformed — the WI-5510 fire-identity fields threaded onto
  *  a loop-wake delivery (turn/reset/recycle/carry-respawn) so the STALE-FIRE
@@ -13844,6 +13854,11 @@ export function hostThroughPty(o) {
         }
         return { ok: false, reason: 'ownerId-mismatch' };
       }
+      const continuationRefusal = continuationIdentityRefusal(msg, ownerId);
+      if (continuationRefusal) {
+        appendHostEvent(ownerId, 'control-payload-rejected', { ...continuationRefusal, mode: msg.mode });
+        return continuationRefusal;
+      }
       // Refuse before coalescing, idle/composer gates or any PTY writes. The
       // socket NACK and durable event distinguish unsupported control from an
       // accepted diagnostic; no capability is advertised by this prerequisite.
@@ -15460,7 +15475,11 @@ export function hostThroughPty(o) {
   }
   if (typeof stdin.resume === 'function') stdin.resume();
   const onStdin = (d) => {
-    const input = d.toString('utf8');
+    // Keep the original bytes through live forwarding and every replay queue.
+    // A UTF-8 code point can span data events; decoding each event would write
+    // replacement characters to the PTY. Classifiers may inspect decoded text,
+    // but their view must never become the bytes sent to the child.
+    const input = d;
     // WI-38156: a bridged terminal answers the TUI's capability queries on the
     // SAME stdin that carries owner keystrokes, so "bytes arrived on stdin" is
     // NOT "a human is here". Classify first — an emulator's own reply must not
@@ -15500,12 +15519,13 @@ export function hostThroughPty(o) {
    *  owns the line). Shared by the live bridge and the parked-input replay. */
   function forwardOwnerInput(input) {
     if (hooksObservationActive) { queuedOwnerInput.push(input); return; }
+    const text = input.toString('utf8');
     if (hooksObservationInputHeld) {
       const pending = hooksObservationRecovery?.takeReady() ?? null;
       if (pending === null) {
         // Explicit owner cleanup stays available; text remains held until a
         // fresh complete composer paint. Machine envelopes cannot use this path.
-        if (hooksObservationRecovery?.canClean() && ['\x1b', '\x15', '\x03'].includes(input)) {
+        if (hooksObservationRecovery?.canClean() && ['\x1b', '\x15', '\x03'].includes(text)) {
           hooksObservationRecovery.reset(); child.write(input); return;
         }
         queuedOwnerInput.push(input);
@@ -15523,10 +15543,10 @@ export function hostThroughPty(o) {
         return;
       }
       ownerComposerGate.observe(input);
-      if (input.includes('\x03') || input === '\x1b') ownerStopRequested = true;
-      else if (input.includes('\r') || input.includes('\n')) ownerStopRequested = false;
+      if (text.includes('\x03') || text === '\x1b') ownerStopRequested = true;
+      else if (text.includes('\r') || text.includes('\n')) ownerStopRequested = false;
     }
-    if (input.includes('\r') || input.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
+    if (text.includes('\r') || text.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {
       quotaBlockDetector.observeInput(input);
       authBlockDetector.observeInput(input);
