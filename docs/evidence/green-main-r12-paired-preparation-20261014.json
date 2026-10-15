@@ -2786,5 +2786,82 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Reporter native case/run outcome preparation passes its maintained 66-test suite and owning-workspace typecheck v2; both exact source/test pins match committed test-config and the parent gitlink. This does not upgrade the dirty-at-run local guard into full committed-runtime proof. Continue actual original per-step receipt production and pre-setup/external-loader/non-module/other-runner closure. Original public-docs, fixture and desktop chains remain missing. Do not repeat unchanged commands or saved guards absent drift. Preserve D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
+  "currentOriginalFixtureParent20261015": {
+    "workItemId": "WI-6554700010010682",
+    "status": "original-parent-exit0-conditional-skips-native-process-scope-partial",
+    "cwd": "apps/slack-asana-bug-drill",
+    "command": ["npm", "run", "test"],
+    "originalScript": "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run",
+    "lifecycle": { "pretest": "node scripts/build.mjs" },
+    "startedAt": "2026-10-15T03:46:35.525993+00:00",
+    "completedAt": "2026-10-15T03:47:35.942770+00:00",
+    "nativeExitCode": 0,
+    "parentWallMs": 60411,
+    "testResult": { "filesPassed": 10, "testsPassed": 37, "testsSkipped": 12, "totalTests": 49 },
+    "skipScope": [
+      "Eleven composition-integrity cases are conditional on root, invariant, chassis and agent-plane manifests being present.",
+      "One boot-e2e attach case is disabled by the original spawn-mode configuration."
+    ],
+    "declaredInputs": {
+      "count": 76,
+      "beforeAfterIdentical": true,
+      "scope": "Recursively tracked fixture files plus named package/lock/collector guards; not a complete imported or runtime population.",
+      "parentHeadAtStart": "9bca4cd79f6fd2f560b7326ba8ff1220dad6cfc9",
+      "parentHeadAtEnd": "8e253b4ec447654cd3f4358714ca32d77495610e",
+      "fixtureHeadAtBothBoundaries": "576a852cc16afd8a5431f8892291e21f927ebefd",
+      "provenance": "Current local execution with unchanged named pins. Parent HEAD moved; no complete committed import/runtime identity is inferred."
+    },
+    "receipt": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1.json",
+      "sha256": "146eebf6181598d9990b22127dd97aa96f35384872c315af4e154c66bc0378a3"
+    },
+    "stdout": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1.log",
+      "sha256": "baf61cc2e5bfe17364370e99b4b35ed2f1d8fa15237ba49929387f8f42fad307"
+    },
+    "stderr": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1.err",
+      "sha256": "1c8e34a068d3960a797726814178116ecd3d2bc951de944cfe5741061e0e6557"
+    },
+    "nativeProcessArchive": {
+      "root": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1-artifacts",
+      "receipt": "d9ab38c82125f6276a20853f183a47ac2781b2db1e9e6355cc7d8605c574a0fa.receipt.json",
+      "sha256": "d9ab38c82125f6276a20853f183a47ac2781b2db1e9e6355cc7d8605c574a0fa",
+      "eventCount": 70,
+      "streamCount": 24,
+      "referencedArtifactPinsChecked": 96,
+      "originalNpmLifecycle": [
+        { "phase": "pretest", "shell": "sh", "argv": ["-c", "node scripts/build.mjs"], "startedAtMs": 1792035996219, "closedAtMs": 1792036042451, "exitCode": 0, "signal": null },
+        { "phase": "test", "shell": "sh", "argv": ["-c", "TEMPLATE_CHECKS_CONFIG=template-checks.json vitest run"], "startedAtMs": 1792036042457, "closedAtMs": 1792036055889, "exitCode": 0, "signal": null }
+      ],
+      "scope": "Observed exported Node spawn/close calls and Node Writable API inputs. Shell builtins, non-Node entries, private/synchronous spawns, direct-fd/native writes and missing terminal events remain gaps."
+    },
+    "sourceProcessPinManifest": {
+      "ref": "~/.papercusp/scratch/c0523-fixture-original-parent-20261015-v1-source-process-pins.json",
+      "sha256": "41ec5e2f11b57d5de0d73de64ef0ba08d4b5165ffea7585b09624c006871189d",
+      "observedReceipts": 27,
+      "sourceStatus": "unknown",
+      "enginePopulationStatus": "unknown"
+    },
+    "dependencyRestoration": {
+      "workItemId": "EI-26015282781821143",
+      "status": "temporary-mitigation-disappearance-cause-unknown",
+      "method": "Maintained npm-install-safe ci --workspaces=false against the exact fixture lock; native exit0 and dependency preflight passed. Manifest and lock unchanged.",
+      "recurrenceGuard": "Existing tests/dependency-preflight.test.ts ran in this original parent: six passed. It refuses missing, ancestor-only or outside-app dependencies."
+    },
+    "limits": [
+      "The original parent was executed once. Two caller capture-preparation failures happened before npm launch and are not test outcomes.",
+      "Twelve skipped cases prevent the maintained ordered test-step reader's zero-skip qualification; no applicability exception is inferred.",
+      "The native process archive records actual npm lifecycle ordering but does not establish every original step/report binding or a complete descendant census.",
+      "This app's original Vitest configuration does not include the executed-source-map reporter/setup, so no per-test evaluator/body source census is inferred from Node process receipts.",
+      "Bootstrap, engine URL association, installed/external/native dependencies, final transforms, loader chain and independent termination/containment agreement remain unmeasured.",
+      "Next emitted module.createRequire parsing warnings while completing the build; their effect is unconfirmed and tracked on owned EI-26015814184804894.",
+      "No same-input comparison, R12 operational acceptance, live gate verdict or shipment follows from this diagnostic run."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Original public-docs parent passed locally after the redundant-provider fix; original fixture parent passed with 37 tests and 12 conditional skips, with partial native npm lifecycle/process receipts. Both still lack full ordered-step qualification and runtime closure; original desktop eight-step parent remains missing. Continue actual per-step/report bindings and pre-setup/external-loader/non-module/other-runner closure using existing collectors. Do not repeat unchanged commands or saved guards absent drift. Preserve D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
 }
