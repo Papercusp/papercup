@@ -408,6 +408,18 @@ export class SnapshotRowFolder {
         ...(op.author_pubkey != null ? { author_pubkey: op.author_pubkey } : {}),
       });
     } else if (op.type === 'del') {
+      // A tombstone still publishes its address. Apply the same seed-only row
+      // omission policy as PUTs and expanded snapshot rows before retaining it.
+      // Its value stays null: a transform cannot turn a delete into content.
+      if (this.transformValue?.(null, {
+        table: op.table,
+        hbKey: op.hbKey,
+        sourceIndex,
+        authorPubkey: op.author_pubkey,
+      }) === DROP_SNAPSHOT_ROW) {
+        this.latest.delete(key);
+        return;
+      }
       // EI-1688: reconstitute the delete as a tombstone (carry the del's ts/hlc),
       // NOT omitted — so the reader's winner-fold knows the key was deleted.
       this.latest.set(key, {

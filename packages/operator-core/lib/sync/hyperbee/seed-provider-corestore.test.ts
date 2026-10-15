@@ -35,7 +35,7 @@ import {
   valueCarriesSeedIdentity,
   type SeedUuidIdempotencyDropPlan,
 } from './seed-provider-corestore';
-import { buildSnapshotChunkOp, DROP_SNAPSHOT_ROW, foldFilteredSnapshotRows, produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
+import { buildSnapshotChunkOp, DROP_SNAPSHOT_ROW, foldFilteredSnapshotRows, produceLogSnapshot, SNAPSHOT_TABLE_TAG, type SnapshotRow } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 const NEVER_EMIT_MARKER = 'never-emit-me';
@@ -1286,6 +1286,44 @@ describe('seed projection — literal matching mirrors the release gate; private
     const value = { body: 'clean' };
     expect(transform(value, ctx('plan-parts', `p1/section:recon-against-${handle}-restart`))).toBe(DROP_SNAPSHOT_ROW);
     expect(stats.droppedIdentityKey).toBe(1);
+  });
+
+  it.each([false, true])('omits identity tombstones from a real seed (prior snapshot: %s)', async (priorSnapshot) => {
+    const source = makeStore(tmpDir('seed-tombstone-source-'));
+    const staging = makeStore(tmpDir('seed-tombstone-staging-'));
+    await source.ready();
+    await staging.ready();
+    const own = await openOwnLog(source);
+    const privateKey = `workspace/host:${handle}/retired`;
+    const table = 'agent-facts-by-key';
+    for (const hbKey of [privateKey, 'public-retired', 'public-live']) {
+      await own.append({ type: 'put', table, hbKey, value: { public: true },
+        ts: 1, schema_version: 1, author_pubkey: '' });
+    }
+    for (const hbKey of [privateKey, 'public-retired']) {
+      await own.append({ type: 'del', table, hbKey, ts: 2, hlc: '2:0:fixture',
+        schema_version: 1, author_pubkey: '' });
+    }
+    if (priorSnapshot) await produceLogSnapshot(own, { now: 10, schemaVersion: 1 });
+    const sourceLength = own.length;
+    const minted = await mintFilteredSeedContentCore({ sourceStore: source,
+      ownerKeyHex: own.keyHex, stagingStore: staging, now: 10,
+      redactValues: [handle], onProjection: () => {} });
+    const replica = staging.get({ key: Buffer.from(minted.keyHex, 'hex'), valueEncoding: 'json' }) as unknown as TestCore;
+    await replica.ready();
+    const rows: SnapshotRow[] = [];
+    for (let i = 0; i < minted.length; i++) {
+      const block = await replica.get(i, { wait: false }) as { value?: { rows?: SnapshotRow[] } };
+      rows.push(...(block.value?.rows ?? []));
+    }
+    expect(rows.map(row => row.hbKey).sort()).toEqual(['public-live', 'public-retired']);
+    expect(rows.find(row => row.hbKey === 'public-retired')).toMatchObject({
+      value: null, deleted: true, ts: 2, hlc: '2:0:fixture',
+    });
+    expect(rows.find(row => row.hbKey === 'public-live')?.value).toEqual({ public: true });
+    expect(JSON.stringify(rows)).not.toContain(handle);
+    expect(own.length).toBe(sourceLength);
+    expect((await own.get(3) as PeerLogOp).hbKey).toBe(privateKey);
   });
 });
 
