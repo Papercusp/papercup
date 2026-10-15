@@ -1,12 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { capFor, contentBytes, measure } from './measure-tool-output.mjs';
-
-const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'measure-tool-output.mjs');
+// The project mutation runner supplies a copy-out subject. Reading it explicitly
+// keeps the tracked checkout clean and makes the same fixtures judge the mutant
+// rather than a sibling import resolving back to the original implementation.
+const SCRIPT = process.env.PROBE_SCRIPT
+  ? resolve(process.env.PROBE_SCRIPT)
+  : join(dirname(fileURLToPath(import.meta.url)), 'measure-tool-output.mjs');
+const { capFor, contentBytes, measure } = await import(pathToFileURL(SCRIPT).href);
 const NOW = Date.parse('2026-10-15T09:00:00Z');
 const START = NOW - 24 * 3600_000;
 const base = NOW - 600_000;
