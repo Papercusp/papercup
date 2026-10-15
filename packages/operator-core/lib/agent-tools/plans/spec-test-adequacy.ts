@@ -743,6 +743,13 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
 const EVIDENCE_SUPERSESSION_SCOPE_PATTERN =
   /\b(?:replace|replaces|replaced|replacing|supersede|supersedes|superseded|superseding|rebind|rebinds|rebound|retract|retracts|retracted|retracting)\b[^.;]{0,120}\b(?:only|just)\b[^.;]{0,100}\b(?:in|within|on|at)\s+(?:the\s+)?same\s+test\s+subject\b/gi;
 
+// "Links only when the tested diff contains the fix" describes a production
+// safety condition, not a restriction on which cases were tested. Remove only
+// the logical qualifier after a behavior verb; other limitations in the same
+// observation and explicit disclosedGap fields still participate normally.
+const BEHAVIOR_GUARD_CONDITION_PATTERN =
+  /(\b(?:links?|admits?|merges?|allows?|permits?|publishes?|dispatch(?:es)?|accepts?|rejects?)\b[^.;]{0,100}\b)only(\s+(?:when|if)\b)/gi;
+
 /** Only observations with explicit coverage-boundary language count as disclosures. */
 function explicitCoverageLimitations(value: unknown): string[] {
   const raw = typeof value === 'string'
@@ -762,7 +769,9 @@ function explicitCoverageLimitations(value: unknown): string[] {
         .map((entry) => entry.trim())
         .filter((entry) => {
           if (entry.length === 0) return false;
-          const coverageProse = entry.replace(EVIDENCE_SUPERSESSION_SCOPE_PATTERN, ' ');
+          const coverageProse = entry
+            .replace(EVIDENCE_SUPERSESSION_SCOPE_PATTERN, ' ')
+            .replace(BEHAVIOR_GUARD_CONDITION_PATTERN, '$1$2');
           return EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(coverageProse));
         }),
     ),
