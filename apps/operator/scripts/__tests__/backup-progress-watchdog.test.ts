@@ -139,6 +139,9 @@ case "$1" in
   growing)
     run_bounded_watched 2 12 "$PROGRESS_PATH" bash -c 'for i in 1 2 3 4 5 6 7 8; do printf x >> "$PROGRESS_PATH"; sleep 0.5; done'
     ;;
+  startup)
+    run_bounded_watched 2 12 "$PROGRESS_PATH" bash -c 'sleep 1; for i in 1 2 3 4; do printf x >> "$PROGRESS_PATH"; sleep 0.25; done'
+    ;;
   stalled)
     : > "$PROGRESS_PATH"
     run_bounded_watched 2 8 "$PROGRESS_PATH" bash -c 'sleep 20'
@@ -171,6 +174,11 @@ esac
       expect(growing.status, growing.stderr).toBe(0);
       expect(readFileSync(progress, 'utf8')).toHaveLength(8);
       expect(readFileSync(sudoLog, 'utf8')).toContain('-n -u postgres du -sb');
+
+      rmSync(progress, { force: true });
+      const startup = run('startup');
+      expect(startup.status, startup.stderr).toBe(0);
+      expect(readFileSync(progress, 'utf8')).toHaveLength(4);
 
       rmSync(progress, { force: true });
       const stalled = run('stalled');

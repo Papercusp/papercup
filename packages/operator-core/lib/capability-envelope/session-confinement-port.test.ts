@@ -11,6 +11,7 @@ import {
   hasSessionConfinementResolver,
   setSessionConfinementResolver,
   sessionAllowsAmbientContext,
+  sessionPromptPolicy,
 } from './session-confinement-port';
 
 const CONFINEMENT = directedImplementerConfinement({
@@ -30,6 +31,30 @@ const PLAIN_CTX = { isSuperuser: false } as unknown as UnifiedToolContext;
 afterEach(() => setSessionConfinementResolver(undefined));
 
 describe('ambient context uses the same authoritative session policy', () => {
+  it('derives workflow ownership from the immutable exact-item ceiling without caller options', async () => {
+    const confinement = { denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: true as const,
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+      imposedBy: 'host', reason: 'frozen assignment' };
+    const resolver = vi.fn(() => confinement);
+    setSessionConfinementResolver(resolver);
+    const input = { ownerId: 'su-private', workspaceId: 'private' };
+    expect(await sessionPromptPolicy(input)).toEqual({ ambientContextAllowed: false, workItemWorkflow: 'host-managed' });
+    expect(resolver).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ uiClientId: input.ownerId, workspaceId: input.workspaceId }));
+    for (const tool of ['work_items:get', 'work_items:checkpoint', 'work_items:complete', 'plans:get']) {
+      setSessionConfinementResolver(() => ({ ...confinement, denyOutside: [...confinement.denyOutside, tool] }));
+      expect((await sessionPromptPolicy(input)).workItemWorkflow).toBe('agent-managed');
+    }
+    setSessionConfinementResolver(() => ({ ...confinement, denyWorkItemsOutside: undefined }));
+    expect((await sessionPromptPolicy(input)).workItemWorkflow).toBe('agent-managed');
+    setSessionConfinementResolver(() => ({ ...confinement, denyWorkItemsOutside: { ...confinement.denyWorkItemsOutside, harness: '../escape' } }));
+    await expect(sessionPromptPolicy(input)).rejects.toThrow(/workflow/);
+  });
+  it('refuses bound prompt policy when authority is unreadable, while unbound launches retain normal guidance', async () => {
+    expect(await sessionPromptPolicy({ workspaceId: 'private' })).toEqual({ ambientContextAllowed: true, workItemWorkflow: 'agent-managed' });
+    await expect(sessionPromptPolicy({ ownerId: 'su-private', workspaceId: 'private' })).rejects.toThrow(/policy/);
+    setSessionConfinementResolver(() => { throw new Error('unreadable'); });
+    await expect(sessionPromptPolicy({ ownerId: 'su-private', workspaceId: 'private' })).rejects.toThrow(/unreadable/);
+  });
   it('uses caller arguments only as the target, with the scope resolved from host state', async () => {
     setSessionConfinementResolver(() => ({ denyTools: [], denyOutside: ['work_items:get'],
       denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' }, imposedBy: 'host', reason: 'assignment' }));

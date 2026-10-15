@@ -3132,6 +3132,15 @@ export async function resolveDirectTrackedResumeSession(
       `/api/adv/sessions/resumable?agentId=${encodeURIComponent(wanted)}`,
     );
     const exact = result?.exact;
+    // Older operators predate the `exact` response marker but still return the
+    // resumable rows. Accept a row only when its globally-unique coord owner is
+    // an exact match; this preserves the identity guard while allowing a newer
+    // launcher to resume through a lagging :3070 build.
+    if (!("exact" in (result ?? {}))) {
+      return (result?.sessions ?? [])
+        .filter((session) => session?.coordOwnerId === wanted && session?.agent)
+        .sort((a, b) => Number(b.id) - Number(a.id))[0] ?? null;
+    }
     if (exact?.requestedAgentId !== wanted) return null;
     return (result.sessions ?? []).find((session) =>
       Number(session.id) === exact.id && session.coordOwnerId === exact.ownerId,
@@ -17633,7 +17642,12 @@ async function main() {
     return;
   }
   const hostReexecExitCode = reexecExitCodeFrom(process.env);
-  const isHostAdoptionReexec = hostReexecExitCode != null;
+  // The shim advertises re-exec SUPPORT even on the initial invocation. Its
+  // per-pass marker distinguishes that ordinary launch from a successor, so
+  // startup need not scan the PTY directory for a nonexistent handoff. Missing
+  // markers retain legacy-shim recovery until those installed shims refresh.
+  const isHostAdoptionReexec = hostReexecExitCode != null &&
+    process.env.PAPERCUSP_PSU_REEXEC_COUNT !== "0";
   const adoptionOwnerId = process.env.PAPERCUSP_SID || null;
   // D-002 rule 4: a psu the workspace host started for a customer runs as the service user, so
   // it admits only the host's allowlist, checked again here in case a host let a flag through.
@@ -17740,6 +17754,7 @@ async function main() {
   const adoptionEventOwnerId = adoptionOwnerId || args.ownerId || null;
   const hostHandoff = startupStep("host-handoff-lookup", () => isHostAdoptionReexec
     ? readHostHandoffForParentPid(process.ppid, {
+        ownerId: adoptionEventOwnerId,
         onReject: (rejection) => {
           const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
           if (!rejectedOwnerId) return;

@@ -33,7 +33,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
-import { evaluateSessionConfinement, type SessionToolConfinement } from './session-confinement';
+import { evaluateSessionConfinement, validWorkItemBoundary, type SessionToolConfinement } from './session-confinement';
 
 /**
  * Resolves the confinement declared for the calling session, or null/undefined if the
@@ -80,15 +80,31 @@ export function hasSessionConfinementResolver(): boolean {
 export async function sessionAllowsAmbientContext(input: {
   ownerId?: string | null; workspaceId: string;
 }): Promise<boolean> {
-  if (!input.ownerId) return true;
+  try { return (await sessionPromptPolicy(input)).ambientContextAllowed; }
+  catch { return false; }
+}
+
+/** One authoritative read for prompt composition. A frozen exact-item ceiling
+ * without any ledger/plan verb delegates those mechanics to its existing host.
+ * This derives from the immutable policy; there is no caller-controlled flag.
+ * Unreadable bound policy refuses a launch instead of rendering unknown workflow. */
+export async function sessionPromptPolicy(input: {
+  ownerId?: string | null; workspaceId: string;
+}): Promise<{ ambientContextAllowed: boolean; workItemWorkflow: 'agent-managed' | 'host-managed' }> {
+  const ordinary = { ambientContextAllowed: true, workItemWorkflow: 'agent-managed' as const };
+  if (!input.ownerId) return ordinary;
   const resolver = state.resolver;
-  if (!resolver) return false;
-  try {
-    await state.ensureReady?.();
-    const confinement = await resolver({ uiClientId: input.ownerId,
-      workspaceId: input.workspaceId, isSuperuser: true } as UnifiedToolContext);
-    return confinement?.denyAmbientContext === undefined;
-  } catch { return false; }
+  if (!resolver) throw new Error('Session prompt policy is unavailable.');
+  await state.ensureReady?.();
+  const confinement = await resolver({ uiClientId: input.ownerId,
+    workspaceId: input.workspaceId, isSuperuser: true } as UnifiedToolContext);
+  if (!confinement) return ordinary;
+  if (confinement.denyWorkItemsOutside !== undefined && !validWorkItemBoundary(confinement.denyWorkItemsOutside))
+    throw new Error('Session prompt workflow assignment boundary is invalid.');
+  const hostManaged = confinement.denyAmbientContext === true && confinement.denyWorkItemsOutside !== undefined &&
+    confinement.denyOutside !== undefined && !confinement.denyOutside.some(name => /^(?:work_items|plans):/.test(name));
+  return { ambientContextAllowed: confinement.denyAmbientContext === undefined,
+    workItemWorkflow: hostManaged ? 'host-managed' : 'agent-managed' };
 }
 
 /**

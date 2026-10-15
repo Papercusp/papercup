@@ -1357,13 +1357,14 @@ export function writeHostHandoff(ownerId: any, record: any): string | null;
  * accept). A rejected record is still consumed: leaving it behind means the next
  * launch re-litigates the same stale orders.
  * @param {string} ownerId
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null, expectedParentPid?: number | null}} [opts]
  */
 export function readHostHandoff(ownerId: string, opts?: {
     maxAgeMs?: number;
     now?: () => number;
     isAlive?: (pid: number) => boolean;
     onReject?: ((rejection: Record<string, unknown>) => void) | null;
+    expectedParentPid?: number | null;
 }): any;
 /**
  * Read the single handoff written by this launcher's parent shim. A host
@@ -1376,9 +1377,10 @@ export function readHostHandoff(ownerId: string, opts?: {
  * Refuse an ambiguous parent match: selecting the newest file would recreate
  * the same cross-session identity split this handoff path is meant to prevent.
  * @param {number} parentPid
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
+ * @param {{ownerId?: string | null, maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
  */
 export function readHostHandoffForParentPid(parentPid: number, opts?: {
+    ownerId?: string | null;
     maxAgeMs?: number;
     now?: () => number;
     isAlive?: (pid: number) => boolean;

@@ -17,6 +17,7 @@ import { resolveScoutConfig } from '../../scout/config.ts';
 import { getPilotCapabilityManifest } from '../../dream/capability-catalog.ts';
 import { buildCapabilityPacket } from '../../dream/capability-packets.ts';
 import { buildCapabilitySamplingSnapshot } from '../../dream/capability-sampler.ts';
+import { serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 import { STUDY_BLOCKS, validateStudyBlocks, readStudyTotals, requireStudyRoom } from './accounting.mts';
 import { createBlenderAdmission } from './blender-guard.mts';
 import { enableStudyMaster, restoreStudyControls, studyRestorationPorts } from './controls.mts';
@@ -34,9 +35,9 @@ const ownerId = process.env.PAPERCUSP_SID;
 if (!ownerId) throw new Error('Study cleanup requires the attributed PAPERCUSP_SID');
 const restoration = studyRestorationPorts(sql, workspaceId, 'papercusp', ownerId);
 const log = async (entry: unknown) => {
-  const line = JSON.stringify({ at: new Date().toISOString(), entry });
-  await appendFile(resolve(here, 'cycle-events.jsonl'), line + '\n');
-  console.log(line);
+  const line = serializeIdentitySafeJson({ at: new Date().toISOString(), entry }, undefined, { compact: true });
+  await appendFile(resolve(here, 'cycle-events.jsonl'), line);
+  console.log(line.slice(0, -1));
 };
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 

@@ -331,7 +331,7 @@ log "headroom ok: ${PC_FREE_GB} GiB free (floor ${PC_BACKUP_MIN_FREE_GB} GiB)"
 run_bounded_watched() {
   local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
   local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed
-  local last_bytes=0 last_progress_epoch=0 current_bytes=0
+  local last_bytes=0 last_progress_epoch=0 current_bytes=0 progress_path_seen=0
   start_epoch=$(date +%s)
   last_progress_epoch="$start_epoch"
   "$@" &
@@ -351,18 +351,27 @@ run_bounded_watched() {
 
       now_epoch=$(date +%s)
       elapsed=$(( now_epoch - start_epoch ))
-      measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)
-      measurement_rc=$?
-      current_bytes=${measurement_output%%$'\t'*}
-      if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
-        measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
-        measurement_detail=${measurement_detail:0:240}
-        log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc output=${measurement_detail:-<empty>}); terminating bounded producer"
-        kill -TERM "$dump_pid" 2>/dev/null
-        sleep "$KILL_GRACE_SEC"
-        kill -KILL "$dump_pid" 2>/dev/null
-        reap_own_stragglers
-        return 0
+      # A -Fd producer may not have created its output directory by the first
+      # watch sample. Treat that startup interval as zero bytes while the free
+      # space floor and elapsed watchdog remain active. Once observed, a missing
+      # or unreadable path is still an immediate measurement failure.
+      if [ ! -e "$progress_path" ] && [ "$progress_path_seen" -eq 0 ]; then
+        current_bytes=0
+      else
+        progress_path_seen=1
+        measurement_output=$(sudo -n -u postgres du -sb "$progress_path" 2>&1)
+        measurement_rc=$?
+        current_bytes=${measurement_output%%$'\t'*}
+        if [ "$measurement_rc" -ne 0 ] || ! [[ "$current_bytes" =~ ^[0-9]+$ ]]; then
+          measurement_detail=$(printf '%s' "$measurement_output" | tr '\r\n' ' ')
+          measurement_detail=${measurement_detail:0:240}
+          log "ABORTING DUMP: unable to measure archive progress at $progress_path as postgres (du_status=$measurement_rc output=${measurement_detail:-<empty>}); terminating bounded producer"
+          kill -TERM "$dump_pid" 2>/dev/null
+          sleep "$KILL_GRACE_SEC"
+          kill -KILL "$dump_pid" 2>/dev/null
+          reap_own_stragglers
+          return 0
+        fi
       fi
       if [ "$current_bytes" -gt "$last_bytes" ]; then
         last_bytes="$current_bytes"

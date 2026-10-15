@@ -34,7 +34,7 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function candidate(target = 'linux-x86_64') {
+function candidate(target = 'linux-x86_64', sourceSha = 'a'.repeat(40)) {
   const platform = target === 'macos-aarch64' ? 'macOS arm64'
     : target === 'macos-x86_64' ? 'macOS x86_64' : 'Linux x86_64';
   const root = mkdtempSync(join(tmpdir(), 'pui-publish-test-'));
@@ -42,7 +42,6 @@ function candidate(target = 'linux-x86_64') {
   const unitName = `pui-0.1.0-${target}`;
   const unit = join(root, unitName);
   mkdirSync(unit);
-  const sourceSha = 'a'.repeat(40);
   writeFileSync(join(unit, 'PROVENANCE.json'), JSON.stringify({
     schemaVersion: 1,
     name: 'pui',
@@ -96,6 +95,7 @@ function publication(files: ReturnType<typeof candidate>, options: {
   headFailure?: boolean;
   corruptPublicArchive?: boolean;
   existingArchive?: 'identical-without-metadata' | 'different';
+  legacyArchive?: ReturnType<typeof candidate>;
   previousManifest?: unknown;
   previousReadFailure?: boolean;
 } = {}) {
@@ -103,10 +103,13 @@ function publication(files: ReturnType<typeof candidate>, options: {
   mkdirSync(bin);
   const state = join(files.root, 'objects.json');
   const events = join(files.root, 'events.jsonl');
-  const archiveKey = 'unguessable-prefix/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz';
+  const archiveKey = `unguessable-prefix/pui/0.1.0/${files.digest}/pui-0.1.0-linux-x86_64.tar.gz`;
+  const legacyArchiveKey = 'unguessable-prefix/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz';
   writeFileSync(state, JSON.stringify({ ...(options.existingArchive ? {
     [archiveKey]: { body: (options.existingArchive === 'different'
       ? Buffer.from('previous release') : readFileSync(files.archive)).toString('base64') },
+  } : {}), ...(options.legacyArchive ? {
+    [legacyArchiveKey]: { body: readFileSync(options.legacyArchive.archive).toString('base64') },
   } : {}), ...(options.previousManifest ? {
     'unguessable-prefix/pui/latest.json': { body: Buffer.from(JSON.stringify(options.previousManifest)).toString('base64') },
   } : {}) }));
@@ -171,7 +174,8 @@ if (path.basename(process.argv[1]) === 'curl') {
       MOCK_PREVIOUS_FAILURE: options.previousReadFailure ? '1' : '0',
       MOCK_CORRUPT: options.corruptPublicArchive ? '1' : '0' }),
   });
-  return { result, portalEnv, work, archiveKey,
+  return { result, portalEnv, work, archiveKey, legacyArchiveKey,
+    objects: JSON.parse(readFileSync(state, 'utf8')) as Record<string, { body: string; sha?: string }>,
     events: readFileSync(events, 'utf8').trim().split('\n').filter(Boolean)
       .map((line) => JSON.parse(line) as { op: string; key: string }) };
 }
@@ -190,7 +194,7 @@ describe('PUI public release publisher', () => {
       sourceSha: 'a'.repeat(40),
       archiveSha256: files.digest,
     });
-    expect(latest.archiveUrl).toBe('https://pub.example.test/unguessable-prefix/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz');
+    expect(latest.archiveUrl).toBe(`https://pub.example.test/unguessable-prefix/pui/0.1.0/${files.digest}/pui-0.1.0-linux-x86_64.tar.gz`);
     const page = readFileSync(join(work, 'index.html'), 'utf8');
     expect(page).toContain(latest.archiveUrl);
     expect(page).toContain(`${files.digest}</code>`);
@@ -226,16 +230,57 @@ describe('PUI public release publisher', () => {
     expect(latest.sumsUrl).not.toBe(previous.sumsUrl);
   });
 
+  it('publishes a new generation at the same version without replacing the legacy archive', () => {
+    const old = candidate('linux-x86_64', 'b'.repeat(40));
+    const preview = run(old);
+    expect(preview.result.status, preview.result.stderr).toBe(0);
+    const previous = JSON.parse(readFileSync(join(preview.work, 'latest.json'), 'utf8'));
+    // The already-published r14 layout had no generation segment.
+    for (const key of ['archiveUrl', 'acceptanceUrl', 'sumsUrl']) {
+      previous[key] = previous[key].replace(`/${old.digest}/`, '/');
+    }
+    delete previous.artifacts;
+    const files = candidate();
+    expect(files.digest).not.toBe(old.digest);
+    const published = publication(files, { legacyArchive: old, previousManifest: previous });
+    expect(published.result.status, published.result.stderr).toBe(0);
+    const latest = JSON.parse(readFileSync(join(published.work, 'latest.json'), 'utf8'));
+    expect(latest.version).toBe(previous.version);
+    expect(latest.archiveUrl).not.toBe(previous.archiveUrl);
+    expect(latest.archiveUrl).toContain(`/0.1.0/${files.digest}/`);
+    expect(published.objects[published.legacyArchiveKey].body).toBe(readFileSync(old.archive).toString('base64'));
+    expect(published.objects[published.archiveKey].body).toBe(readFileSync(files.archive).toString('base64'));
+    expect(published.events).toContainEqual({ op: 'public-get', key: published.archiveKey });
+    expect(published.events.some(({ op, key }) => op === 'put' && key === published.legacyArchiveKey)).toBe(false);
+  });
+
   it('migrates a legacy single-target manifest without losing its download', () => {
     const linux = run(candidate());
     const previous = JSON.parse(readFileSync(join(linux.work, 'latest.json'), 'utf8'));
     delete previous.artifacts;
+    for (const key of ['archiveUrl', 'acceptanceUrl', 'sumsUrl']) {
+      previous[key] = previous[key].replace(`/${previous.archiveSha256}/`, '/');
+    }
     previous.sumsUrl = 'https://pub.example.test/unguessable-prefix/pui/0.1.0/SHA256SUMS';
     const mac = run(candidate('macos-x86_64'), previous);
     expect(mac.result.status, mac.result.stderr).toBe(0);
     const latest = JSON.parse(readFileSync(join(mac.work, 'latest.json'), 'utf8'));
     expect(latest.artifacts['linux-x86_64']).toEqual(previous);
     expect(latest.artifacts['macos-x86_64'].sumsUrl).toContain('macos-x86_64.tar.gz.sha256');
+  });
+
+  it('refuses a retained generation URL whose directory names another archive digest', () => {
+    const prior = run(candidate('macos-aarch64'));
+    const previous = JSON.parse(readFileSync(join(prior.work, 'latest.json'), 'utf8'));
+    delete previous.artifacts;
+    for (const key of ['archiveUrl', 'acceptanceUrl', 'sumsUrl']) {
+      previous[key] = previous[key].replace(`/${previous.archiveSha256}/`, `/${'f'.repeat(64)}/`);
+    }
+    const published = publication(candidate(), { previousManifest: previous });
+    expect(published.result.status).not.toBe(0);
+    expect(published.result.stderr).toContain('previous platform release URL does not match');
+    expect(published.events.some(({ op }) => op === 'put')).toBe(false);
+    expect(existsSync(published.portalEnv)).toBe(false);
   });
 
   it('refuses to erase platform entries when the prior manifest cannot be read', () => {

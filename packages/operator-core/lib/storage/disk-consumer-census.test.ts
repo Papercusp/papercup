@@ -22,6 +22,27 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
+  it('measures recent foreign-owned bytes under explicit sudo and retains special trees', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-full-'));
+    const info = await fsp.lstat(root);
+    const spawn = ((command: string, args: string[]) => {
+      expect(command).toBe('/usr/bin/sudo'); expect(args.slice(0, 2)).toEqual(['-n', '--']);
+      expect(args).not.toContain('-uid'); expect(args).not.toContain('-newermt');
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      queueMicrotask(() => {
+        const row = (type: string, name: string, blocks: string) => [type, String(info.dev), '1', '2000000000.0', '2000000000.0', blocks, '99999', join(root, name), ''].join('\0');
+        child.stdout.write(row('f', 'recent', '4') + row('d', 'special', '1') + row('p', 'special/fifo', '0'));
+        child.emit('close', 0);
+      });
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const result = await inspectRetentionTrees(root, { retainAfterMs: 1, includeRecent: true, sudo: '/usr/bin/sudo', spawn });
+      expect(result.error).toBeUndefined();
+      expect(result.entries).toEqual([expect.objectContaining({ path: join(root, 'recent'), bytes: 2048 })]);
+      expect(result.retained).toEqual([expect.objectContaining({ reason: 'special filesystem entry', entry: expect.objectContaining({ bytes: 512 }) })]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it.each([
     ['1792019778.0253824420', 1792019778025.3823],
     ['1792019778.0263825090', 1792019778026.3826],

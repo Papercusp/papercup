@@ -64,6 +64,7 @@ import {
   resolveExpertModelAllowlist,
   type AllowedExpertModel,
 } from './expert-model-allowlist';
+import { mockOrgPgSql } from '../testing/mock-org-pg';
 
 const CTX: ConsultDispatchContext = {
   workspaceId: 'ws-dispatch',
@@ -1694,7 +1695,8 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
       const db = await import('@papercusp/db-org');
       const sql = vi.fn(async () => [{ policy,
         reviewer_model: { agent: 'codex', model: 'sol', effort: 'xhigh' }, native_consult: null }]);
-      const spy = vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql } as never);
+      const spy = vi.spyOn(db, 'getOrgPg');
+      mockOrgPgSql(spy, sql);
       try {
         const { deps, calls } = makeFakes({ readReviewerModel: undefined });
         const result = await makeConsultReachDispatcher(CTX, deps)({
@@ -1713,9 +1715,10 @@ describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meanin
 
   it('rejects a saved reviewer model on an unrelated policy before launching', async () => {
     const db = await import('@papercusp/db-org');
-    const spy = vi.spyOn(db, 'getOrgPg').mockReturnValue({ sql: vi.fn(async () => [{
+    const spy = vi.spyOn(db, 'getOrgPg');
+    mockOrgPgSql(spy, vi.fn(async () => [{
       policy: 'ordinary-consult', reviewer_model: { agent: 'codex', model: 'sol' }, native_consult: null,
-    }]) } as never);
+    }]));
     try {
       const { deps, calls } = makeFakes({ readReviewerModel: undefined });
       await expect(makeConsultReachDispatcher(CTX, deps)({

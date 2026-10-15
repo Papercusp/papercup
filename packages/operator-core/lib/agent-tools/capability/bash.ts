@@ -492,7 +492,8 @@ export default defineTool({
           `Explicit run_in_background calls default to ${DEFAULT_BACKGROUND_TIMEOUT_MS}. Maximum ${MAX_BACKGROUND_TIMEOUT_MS}. ` +
           `The whole confined task subtree IS terminated only at this execution deadline ` +
           `(systemd RuntimeMaxSec plus the local SIGTERM/SIGKILL path), ` +
-          `so raise this for a job that legitimately runs longer. The deadline is FIXED AT LAUNCH and cannot be extended ` +
+          `so budget it for all command wall-clock work, including sleeps, SSH/remote round-trips, retries, and other waits; ` +
+          `raise it when that planned work can run longer. The deadline is FIXED AT LAUNCH and cannot be extended ` +
           `on a running task (systemd 255 refuses a runtime RuntimeMaxSec change): size it for retries, or chain longer work as separate tasks. ` +
           `Deliberately daemonized descendants remain tracked ` +
           `inside the same task and share its deadline; use a dedicated service launcher for a different lifetime. ` +

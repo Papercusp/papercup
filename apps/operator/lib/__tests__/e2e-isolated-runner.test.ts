@@ -199,6 +199,31 @@ function run(
 }
 
 describe('run-operator-e2e-isolated.sh', () => {
+  it.each(['retain', 'plan'])('stops before the native rig when harness %s fails', stage => {
+    const f = fixture(0);
+    const rigStarted = join(f.dir, 'rig-started');
+    // Exercise the real shell contract without taking the shared retention mutex
+    // or booting a desktop. Both failures must stop the runner at initialization.
+    writeFileSync(f.harnessTsx, [
+      '#!/usr/bin/env bash',
+      `if [ "$2" = "${stage}" ]; then echo "fixture ${stage} failed" >&2; exit 57; fi`,
+      'exit 0',
+    ].join('\n'));
+    writeFileSync(f.rig, [
+      '#!/usr/bin/env bash',
+      `printf started > '${rigStarted}'`,
+      'exit 23',
+    ].join('\n'));
+
+    const result = run(f, [], { VH_FAIL_OPEN: '0' });
+    expect(result.errorCode, result.out).toBeNull();
+    expect(result.status, result.out).toBe(2);
+    expect(result.out).toContain(`fixture ${stage} failed`);
+    expect(result.out).not.toContain('OPERATOR_E2E_ISOLATED');
+    expect(existsSync(rigStarted), result.out).toBe(false);
+    expect(result.recorded).toBeNull();
+  });
+
   it('retains the outer timeout diagnostic when harness startup stalls', () => {
     const f = fixture(0);
     writeFileSync(f.harnessTsx, '#!/usr/bin/env bash\nexec sleep 1\n');

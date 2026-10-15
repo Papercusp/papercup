@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -66,12 +66,22 @@ describe('psu --terminal-check offline CLI', () => {
 // WI-6554700010008755: exercise the actual Local-to-first-menu wiring, rather
 // than only the timing helpers. This checks the detector, not the reported stall.
 describe('plain Local startup trace', () => {
-  it.skipIf(process.platform === 'win32')('records the first menu without needing the operator or starting an agent', async () => {
+  it.skipIf(process.platform === 'win32')('skips handoff discovery on a managed first launch and records the first menu', async () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-local-startup-'));
     try {
+      const ptyDir = join(home, '.papercusp', 'psu-pty');
+      mkdirSync(ptyDir, { recursive: true });
+      // Reading this handoff blocks until another process writes it. An
+      // accidental full-directory scan therefore cannot reach the first menu.
+      execFileSync('mkfifo', [join(ptyDir, 'scan-guard.handoff.json')]);
       const result = await new Promise<{ output: string; exitCode: number }>((resolve, reject) => {
         const child = pty.spawn(process.execPath, ['--import', tsxLoader, launcher], {
-          cwd: home, env: { ...env, HOME: home }, cols: 120, rows: 30,
+          cwd: home, env: {
+            ...env, HOME: home,
+            PAPERCUSP_PSU_REEXEC: '87',
+            PAPERCUSP_PSU_REEXEC_PPID: String(process.pid),
+            PAPERCUSP_PSU_REEXEC_COUNT: '0',
+          }, cols: 120, rows: 30,
         });
         let output = '';
         let selectedLocal = false;
@@ -86,7 +96,7 @@ describe('plain Local startup trace', () => {
           return `${stripVTControlCharacters(output)}\nStartup records:\n${trace || '(none)'}`;
         };
         const timer = setTimeout(() => {
-          child.kill();
+          child.kill('SIGKILL');
           reject(new Error(`Local startup did not complete first-menu observation: ${diagnostics()}`));
         }, 8000);
         child.onData((data) => {

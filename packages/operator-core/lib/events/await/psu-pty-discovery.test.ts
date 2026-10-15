@@ -1063,8 +1063,10 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
       ['shutdown-refused:agent-busy', 'refused-agent-busy'],
       ['shutdown-refused:stale-host', 'refused-stale-host'],
     ] as const) {
+      recv.length = 0;
       ack = { v: 1, ok: false, reason: hostReason };
       expect(await shutdownViaPty(ownerId, { verifyIdentity: () => true })).toBe(expected);
+      expect(recv).toHaveLength(1); // an acknowledged refusal is never retried
     }
 
     // An ok:false the caller does not recognise stays a plain send-failure rather
@@ -1087,6 +1089,122 @@ describe('shutdownViaPty (WI-6638 — ask a finished agent session to close its 
     expect(recv).toEqual([]);
     expect(await shutdownViaPty(ownerId, { expectedHost: { startedAt: 1, advSessionId: '7' }, verifyIdentity: () => true })).toBe('sent');
     expect(JSON.parse(recv.at(-1)!)).toMatchObject({ mode: 'shutdown', expectedStartedAt: 1, ownerId });
+  });
+
+  it('re-discovers and retries a transport miss only while the same host incarnation remains live', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-shutdown-rebound-${process.pid}-${Math.floor(performance.now())}`;
+    const key = sanitizeKey(ownerId);
+    const staleSock = join(PSU_PTY_DIR, `${key}.sock`);
+    const reboundSock = join(PSU_PTY_DIR, `${key}-rebound.sock`);
+    const meta = join(PSU_PTY_DIR, `${key}.json`);
+    const received: Record<string, unknown>[] = [];
+    let resolveInitialVerification!: () => void;
+    const initialVerification = new Promise<void>((resolve) => { resolveInitialVerification = resolve; });
+    let verificationCalls = 0;
+    const verifyIdentity = async () => {
+      verificationCalls += 1;
+      if (verificationCalls === 1) resolveInitialVerification();
+      return true;
+    };
+    const writeMeta = (sock: string, startedAt: number, advSessionId: string) => writeFileSync(
+      meta,
+      JSON.stringify({
+        ownerId,
+        advSessionId,
+        pid: process.pid,
+        ptyPid: process.pid,
+        sock,
+        command: 'claude-su',
+        startedAt,
+        caps: ['shutdown', 'shutdown-identity'],
+      }),
+    );
+
+    // The first discovery sees a present but unbound socket path. The host then
+    // rebinds to another path without changing its launch incarnation.
+    writeFileSync(staleSock, '');
+    writeMeta(staleSock, 1, '7');
+    const server = net.createServer((conn) => {
+      const chunks: Buffer[] = [];
+      conn.on('data', (d) => chunks.push(d));
+      conn.on('end', () => {
+        received.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        conn.end(`${JSON.stringify({ v: 1, ok: true, reason: 'shutdown-accepted' })}\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(reboundSock, resolve));
+    cleanups.push(() => {
+      server.close();
+      for (const path of [staleSock, reboundSock, meta]) if (existsSync(path)) unlinkSync(path);
+    });
+
+    const pending = shutdownViaPty(ownerId, {
+      expectedHost: { startedAt: 1, advSessionId: '7' },
+      verifyIdentity,
+    });
+    await initialVerification; // guarantees the first call captured the stale record
+    writeMeta(reboundSock, 1, '7');
+
+    expect(await pending).toBe('sent');
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      mode: 'shutdown',
+      ownerId,
+      expectedStartedAt: 1,
+    });
+  });
+
+  it('does not carry a missed shutdown onto a replacement host incarnation', async () => {
+    mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
+    const ownerId = `su-shutdown-replaced-${process.pid}-${Math.floor(performance.now())}`;
+    const key = sanitizeKey(ownerId);
+    const staleSock = join(PSU_PTY_DIR, `${key}.sock`);
+    const replacementSock = join(PSU_PTY_DIR, `${key}-replacement.sock`);
+    const meta = join(PSU_PTY_DIR, `${key}.json`);
+    const received: string[] = [];
+    let resolveInitialVerification!: () => void;
+    const initialVerification = new Promise<void>((resolve) => { resolveInitialVerification = resolve; });
+    let verificationCalls = 0;
+    const verifyIdentity = async () => {
+      verificationCalls += 1;
+      if (verificationCalls === 1) resolveInitialVerification();
+      return true;
+    };
+    const writeMeta = (sock: string, startedAt: number, advSessionId: string) => writeFileSync(
+      meta,
+      JSON.stringify({
+        ownerId,
+        advSessionId,
+        pid: process.pid,
+        ptyPid: process.pid,
+        sock,
+        command: 'claude-su',
+        startedAt,
+        caps: ['shutdown', 'shutdown-identity'],
+      }),
+    );
+
+    writeFileSync(staleSock, '');
+    writeMeta(staleSock, 1, '7');
+    const server = net.createServer((conn) => {
+      conn.on('data', (d) => received.push(d.toString('utf8')));
+    });
+    await new Promise<void>((resolve) => server.listen(replacementSock, resolve));
+    cleanups.push(() => {
+      server.close();
+      for (const path of [staleSock, replacementSock, meta]) if (existsSync(path)) unlinkSync(path);
+    });
+
+    const pending = shutdownViaPty(ownerId, {
+      expectedHost: { startedAt: 1, advSessionId: '7' },
+      verifyIdentity,
+    });
+    await initialVerification;
+    writeMeta(replacementSock, 2, '8');
+
+    expect(await pending).toBe('refused-stale-host');
+    expect(received).toEqual([]);
   });
 });
 

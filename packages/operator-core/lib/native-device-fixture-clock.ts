@@ -24,7 +24,7 @@ export function installFixtureClock() {
 
 export async function advanceFixtureDeviceClock(child: ChildProcess, env = process.env) {
   fixtureIdentity(env);
-  assert(child.send && child.connected && child.exitCode === null && child.signalCode === null,
+  assert(typeof child.send === 'function' && child.connected && child.exitCode === null && child.signalCode === null,
     'Expiry requires the owned live IPC operator');
   return new Promise<number>((done, reject) => {
     const finish = (error?: Error) => {

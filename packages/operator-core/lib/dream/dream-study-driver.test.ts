@@ -1,8 +1,10 @@
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import { enableStudyMaster, prepareStudyRoutine, requireStudyMasterPreflight, restoreStudyControls, studyRestorationPorts, type RestorationPorts } from './study/controls.mts';
 import type { RoutineSnap } from '../agent-tools/routines/routine-snapshot';
+import { serializeIdentitySafeJson } from '../../../../scripts/lib/identity-leak-patterns.mjs';
 
 vi.mock('../gateway-control/control-harness', async () => {
   const core = await import('@papercusp/control-mutation');
@@ -206,5 +208,30 @@ describe('D017 prepare-before-write routine setup', () => {
     current.payloadTemplate = { mode: 'manual', pilot: { pin: 'peer' } };
     await expect(routine.restore()).rejects.toThrow('refusing to overwrite');
     expect(current.payloadTemplate).toEqual({ mode: 'manual', pilot: { pin: 'peer' } });
+  });
+});
+
+describe('D017 study JSONL identity-safe event logging', () => {
+  it('redacts home identity while emitting one compact object per line', () => {
+    const path = ['', 'home', 'study-runner', '.papercusp', 'scratch', 'result.json'].join('/');
+    const event = { at: '2026-10-15T00:00:00.000Z', entry: { tool: 'gateway:owner_report', result: { file_path: path } } };
+    const line = serializeIdentitySafeJson(event, [], { compact: true });
+
+    expect(line.trimEnd().split('\n')).toHaveLength(1);
+    expect(JSON.parse(line)).toEqual({ ...event, entry: { ...event.entry,
+      result: { file_path: '/home/builduser/.papercusp/scratch/result.json' } } });
+  });
+
+  it.each(['run-blender.mts', 'run-one-cycle.mts'])('routes %s through the shared identity-safe serializer', writer => {
+    const source = readFileSync(new URL(`./study/${writer}`, import.meta.url), 'utf8');
+    const start = source.indexOf('const log = async (entry: unknown) => {');
+    const end = source.indexOf('\n};', start);
+    const logSource = source.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(logSource).toContain('serializeIdentitySafeJson');
+    expect(logSource).toContain('compact: true');
+    expect(logSource).not.toContain('JSON.stringify');
   });
 });

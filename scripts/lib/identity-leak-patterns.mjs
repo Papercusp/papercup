@@ -798,15 +798,16 @@ export function redactIdentityLeaks(text, entries) {
  * object stay intact. Reject identity-bearing keys instead of changing its schema.
  * @param {unknown} value JSON-compatible diagnostic report
  * @param {[string,string][]} [entries] synthetic identity literals for tests
- * @returns {string} indented JSON with a final newline
+ * @param {{compact?: boolean}} [options] set `compact` for JSON Lines records
+ * @returns {string} redacted JSON with a final newline
  */
-export function serializeIdentitySafeJson(value, entries) {
+export function serializeIdentitySafeJson(value, entries, options = {}) {
   const json = JSON.stringify(value, (key, field) => {
     if (redactIdentityLeaks(key, entries) !== key) {
       throw new Error('Diagnostic JSON key contains a machine identity');
     }
     return typeof field === 'string' ? redactIdentityLeaks(field, entries) : field;
-  }, 2);
+  }, options.compact ? undefined : 2);
   if (json === undefined) throw new Error('Diagnostic report must be JSON-compatible');
   return json + '\n';
 }

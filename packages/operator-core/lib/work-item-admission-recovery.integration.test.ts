@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createHmac } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
-  AdmissionRecoveryRefused, requestAdmissionRecovery, runAdmissionRecoveries,
+  AdmissionRecoveryRefused, observeAdmissionRecoveryPickup, requestAdmissionRecovery, runAdmissionRecoveries,
   type AdmissionRecoveryDeps,
 } from './work-item-admission-recovery';
 
@@ -19,7 +19,7 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.work_items (
       workspace_id text, harness_slug text, feature_id text, status text DEFAULT 'open',
       origin text DEFAULT 'local', taken_by text, admission text DEFAULT 'pending', payload jsonb,
-      author_pubkey text,
+      author_pubkey text, last_progress_at timestamptz,
       PRIMARY KEY(workspace_id, harness_slug, feature_id)
     );
     CREATE TABLE harness_shared.routines (
@@ -467,5 +467,108 @@ describe('original-item durable admission recovery', () => {
     await runAdmissionRecoveries(scope, resumed, db.sql);
     expect(resumed.screen).not.toHaveBeenCalled();
     expect((await current()).payload._admissionRecovery.state).toBe('delivered');
+  });
+
+  it('confirms pickup only after the target records progress later than delivery', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const delivered = (await current()).payload._admissionRecovery;
+    expect(delivered).toMatchObject({ state: 'delivered', stage: 'await-pickup', pickupConfirmed: false });
+    expect(delivered.deliveredAt).toBeTypeOf('string');
+
+    const progressAt = new Date(Date.parse(delivered.deliveredAt) + 1);
+    await db.sql`UPDATE harness_shared.work_items SET last_progress_at = ${progressAt.toISOString()}::timestamptz
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+        AND feature_id = ${scope.workItemId}`;
+    await runAdmissionRecoveries(scope, d, db.sql);
+
+    const observed = (await current()).payload._admissionRecovery;
+    expect(observed).toMatchObject({
+      requestId: first.request.requestId,
+      state: 'delivered', stage: 'picked-up', pickupConfirmed: false,
+      pickupObservation: {
+        requestId: first.request.requestId,
+        workItemId: scope.workItemId,
+        target: input.target,
+        deliveredAt: delivered.deliveredAt,
+        verdict: 'confirmed',
+        activityAt: progressAt.toISOString(),
+        source: 'last-progress-at',
+      },
+    });
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps pickup unconfirmed when the target progress predates delivery', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    const d = deps();
+    await runAdmissionRecoveries(scope, d, db.sql);
+    const delivered = (await current()).payload._admissionRecovery;
+    const progressAt = new Date(Date.parse(delivered.deliveredAt) - 1);
+    await db.sql`UPDATE harness_shared.work_items SET last_progress_at = ${progressAt.toISOString()}::timestamptz
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+        AND feature_id = ${scope.workItemId}`;
+
+    await runAdmissionRecoveries(scope, d, db.sql);
+
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      requestId: first.request.requestId,
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+      pickupObservation: {
+        verdict: 'not-yet', activityAt: progressAt.toISOString(), source: 'last-progress-at',
+        reason: expect.stringContaining('predates recovery delivery'),
+      },
+    });
+    expect(d.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses pickup observations for a different request or target before reading activity', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    const readActivity = vi.fn(async () => ({ assignee: input.target, lastProgressAt: new Date() }));
+
+    await expect(observeAdmissionRecoveryPickup({
+      ...scope, requestId: '00000000-0000-4000-8000-000000000000', target: input.target,
+    }, { readActivity }, db.sql)).rejects.toThrow('does not match the saved recovery request and target');
+    await expect(observeAdmissionRecoveryPickup({
+      ...scope, requestId: first.request.requestId, target: 'different-target',
+    }, { readActivity }, db.sql)).rejects.toThrow('does not match the saved recovery request and target');
+    expect(readActivity).not.toHaveBeenCalled();
+  });
+
+  it('records an unreadable activity read as a failed measurement, not a negative pickup', async () => {
+    await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    const readPickupActivity = vi.fn(async () => { throw new Error('activity store unavailable'); });
+
+    await runAdmissionRecoveries(scope, deps({ readPickupActivity }), db.sql);
+
+    expect(readPickupActivity).toHaveBeenCalledTimes(1);
+    expect((await current()).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+      pickupObservation: {
+        verdict: 'unreadable', activityAt: null,
+        reason: expect.stringContaining('measurement failed'),
+      },
+    });
+  });
+
+  it('keeps a duplicate not-yet receipt idempotent without changing its observation time', async () => {
+    const first = await requestAdmissionRecovery(input, { authorize }, db.sql);
+    await runAdmissionRecoveries(scope, deps(), db.sql);
+    const delivered = (await current()).payload._admissionRecovery;
+    const nowMs = Date.parse(delivered.deliveredAt) + 1_000;
+    const args = { ...scope, requestId: first.request.requestId, target: input.target };
+
+    const original = await observeAdmissionRecoveryPickup(args, { }, db.sql);
+    const afterOriginal = (await current()).payload._admissionRecovery;
+    const duplicate = await observeAdmissionRecoveryPickup({ ...args, nowMs: nowMs + 1_000 }, {}, db.sql);
+    const afterDuplicate = (await current()).payload._admissionRecovery;
+
+    expect(original).toMatchObject({ verdict: 'not-yet', requestId: first.request.requestId });
+    expect(duplicate).toEqual(original);
+    expect(afterDuplicate.pickupObservation).toEqual(afterOriginal.pickupObservation);
+    expect(afterDuplicate.updatedAt).toBe(afterOriginal.updatedAt);
   });
 });

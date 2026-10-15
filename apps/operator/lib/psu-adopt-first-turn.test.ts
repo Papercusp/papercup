@@ -85,6 +85,7 @@ describe("EI-23076695727837648: an adopting carry-respawn hands its first turn t
     // WI-6554700010008431: a refused handoff is consumed; the read must name why,
     // keyed by the handoff's own owner so a shim with no PAPERCUSP_SID still logs.
     const readStage = launcherSrc.slice(readAt, eventAt);
+    expect(readStage).toMatch(/ownerId: adoptionEventOwnerId/);
     expect(readStage).toMatch(/onReject:/);
     expect(readStage).toMatch(/"host-code-adoption-handoff-rejected"/);
     expect(readStage).toMatch(/rejection\?\.ownerId \|\| adoptionEventOwnerId/);

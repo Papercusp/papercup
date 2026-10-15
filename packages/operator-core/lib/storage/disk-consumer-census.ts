@@ -326,7 +326,7 @@ const defaultCensusSpawn: CensusSpawn = (cmd, args) => spawn(cmd, args, { stdio:
 
 export interface RetentionTreeCensus {
   entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number }>;
-  retained: Array<{ path: string; reason: string }>;
+  retained: Array<{ path: string; reason: string; entry?: RetentionTreeCensus['entries'][number] }>;
   inspectedNodes: number;
   retainedRecentTrees: number;
   error?: string;
@@ -353,6 +353,9 @@ function findTimestampMs(value: string): number | undefined {
  */
 export async function inspectRetentionTrees(root: string, opts: {
   retainAfterMs: number; excludedPaths?: readonly string[]; paths?: readonly string[]; timeoutMs?: number; progressTimeoutMs?: number; spawn?: CensusSpawn;
+  /** Caps need recent trees too. Elevation is explicit and scoped by the caller
+   * to a policy-authorized agent root; never silently fall back on denial. */
+  includeRecent?: boolean; sudo?: string | null;
 }): Promise<RetentionTreeCensus> {
   root = resolve(root);
   const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
@@ -364,15 +367,16 @@ export async function inspectRetentionTrees(root: string, opts: {
   const excluded = (opts.excludedPaths ?? []).map((path) => resolve(path)).filter((path) => path.startsWith(root + '/'));
   const prune = excluded.flatMap((path, index) => [...(index ? ['-o'] : []), '-path', literal(path)]);
   const uid = process.getuid?.();
-  const foreignOwner = uid === undefined ? [] : ['!', '-uid', String(uid)];
+  const privileged = Boolean(opts.sudo) || uid === 0;
+  const foreignOwner = uid === undefined || privileged ? [] : ['!', '-uid', String(uid)];
   const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%p\\0';
-  const recent = ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
+  const recent = opts.includeRecent ? ['-false'] : ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
   // A concurrent unlink after find read the containing directory is an absent
   // candidate, not unknown eligibility. GNU find still fails on other IO errors.
   const args = [...(opts.paths ?? [root]), '-ignore_readdir_race', '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
     ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
     ')', '-printf', format, '-prune', '-o', '-printf', format];
-  const [command, argv] = censusCommand('find', args, { ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  const [command, argv] = censusCommand('find', args, { sudo: opts.sudo ?? null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
   return new Promise<RetentionTreeCensus>((done) => {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
     let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
@@ -405,15 +409,15 @@ export async function inspectRetentionTrees(root: string, opts: {
       else if (type === 'l') group.reason = 'symlink boundary';
       else if (type !== 'f' && type !== 'd') group.reason = 'special filesystem entry';
       else if (Number(dev) !== rootStat.dev) group.reason = 'filesystem boundary';
-      else if (uid !== undefined && Number(owner) !== uid) group.reason = 'foreign ownership boundary';
-      else if (newest >= opts.retainAfterMs && !group.reason) group.reason = 'recent write';
+      else if (!privileged && uid !== undefined && Number(owner) !== uid) group.reason = 'foreign ownership boundary';
+      else if (!opts.includeRecent && newest >= opts.retainAfterMs && !group.reason) group.reason = 'recent write';
     };
     const finish = (error?: string) => {
       if (settled) return;
       settled = true; clearTimeout(timer);
       for (const { entry, reason } of groups.values()) {
         if (reason === 'recent write') result.retainedRecentTrees++;
-        else if (reason) result.retained.push({ path: entry.path, reason });
+        else if (reason) result.retained.push({ path: entry.path, reason, ...(opts.includeRecent ? { entry } : {}) });
         else result.entries.push(entry);
       }
       if (error) { result.error = error; result.entries = []; }

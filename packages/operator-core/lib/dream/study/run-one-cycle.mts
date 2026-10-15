@@ -22,6 +22,7 @@ import { dreamCapabilityRun } from '../../dream/dream-run-provenance.ts';
 import { captureStudyTiming } from './timing.mts';
 import { enableStudyMaster, prepareStudyRoutine, requireStudyMasterPreflight, restoreStudyControls, studyRestorationPorts, studyRoutinePorts } from './controls.mts';
 import { moduleRepoRoot } from '../../module-repo-root.ts';
+import { serializeIdentitySafeJson } from '../../../../../scripts/lib/identity-leak-patterns.mjs';
 
 // This standalone driver does not inherit the operator service's environment.
 // A fresh in-process model can miss the review deadline after generation is paid.
@@ -50,9 +51,9 @@ if (treatment !== undefined && treatment !== 'graph' && treatment !== 'control')
 const arm = (process.argv.find(arg => ['uniform-pair', 'structured-pair', 'structured-triple'].includes(arg)) ??
   (graphComparison ? 'structured-pair' : 'uniform-pair')) as 'uniform-pair' | 'structured-pair' | 'structured-triple';
 const log = async (entry: unknown) => {
-  const line = JSON.stringify({ at: new Date().toISOString(), entry });
-  await appendFile(resolve(here, 'cycle-events.jsonl'), line + '\n');
-  console.log(line);
+  const line = serializeIdentitySafeJson({ at: new Date().toISOString(), entry }, undefined, { compact: true });
+  await appendFile(resolve(here, 'cycle-events.jsonl'), line);
+  console.log(line.slice(0, -1));
 };
 const verifyPacket = studyPacketVerifier({ verify: verifyCapabilityPacket, graph: queryCapabilityGraph,
   // Preserve the verifier's private-pack root, byte budget, fatal UTF-8 and

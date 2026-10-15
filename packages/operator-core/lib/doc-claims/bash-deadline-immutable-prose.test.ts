@@ -38,6 +38,9 @@ function judgeDeadlineProse(text: string | null): { ok: boolean; problem?: strin
   if (text === null) return { ok: false, problem: 'timeout .describe() not found — anchor renamed?' };
   if (!/FIXED AT LAUNCH/.test(text)) return { ok: false, problem: 'does not say the deadline is fixed at launch' };
   if (!/cannot be extended/i.test(text)) return { ok: false, problem: 'does not say a running task cannot be extended' };
+  if (!/all command wall-clock work, including sleeps, SSH\/remote round-trips, retries, and other waits/i.test(text)) {
+    return { ok: false, problem: 'does not say the execution deadline covers all command waits and remote work' };
+  }
   if (!/separate tasks/i.test(text)) return { ok: false, problem: 'gives no alternative (chain as separate tasks)' };
   return { ok: true };
 }
@@ -51,7 +54,8 @@ const FIXTURE = [
   '    timeout: z',
   '      .number()',
   '      .describe(',
-  '        `Wall-clock timeout. The deadline is FIXED AT LAUNCH and cannot be extended ` +',
+  '        `Wall-clock timeout. Budget it for all command wall-clock work, including sleeps, SSH/remote round-trips, retries, and other waits. ` +',
+  '        `The deadline is FIXED AT LAUNCH and cannot be extended ` +',
   '          `on a running task: chain longer work as separate tasks.`,',
   '      ),',
   '    yield_after_ms: z',
@@ -66,6 +70,14 @@ describe('capability:bash deadline-immutability doc claim (EI-24671762379791202)
 
     it('fails when the immutability sentence is dropped', () => {
       const v = judgeDeadlineProse(timeoutDescribeText(FIXTURE.replace('FIXED AT LAUNCH and cannot be extended', 'tunable')));
+      expect(v.ok).toBe(false);
+    });
+
+    it('fails when the full command-budget guidance is dropped', () => {
+      const v = judgeDeadlineProse(timeoutDescribeText(FIXTURE.replace(
+        'Budget it for all command wall-clock work, including sleeps, SSH/remote round-trips, retries, and other waits. ',
+        '',
+      )));
       expect(v.ok).toBe(false);
     });
 

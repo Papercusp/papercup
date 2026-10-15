@@ -174,7 +174,10 @@ NODE
 KEY_PREFIX="$(printf '%s' "$BASE" | sed -E 's#^https?://[^/]+/?##; s#/$##')"
 [[ -n "$KEY_PREFIX" ]] || die "release host must include its permanent path prefix"
 PUI_BASE="$BASE/pui"
-VERSION_BASE="$PUI_BASE/$VERSION"
+# A committed package generation can retain its semantic version. Bind its
+# immutable objects to the accepted archive bytes as well, so moving latest
+# never requires replacing an earlier generation at the same version.
+VERSION_BASE="$PUI_BASE/$VERSION/$DIGEST"
 
 if [[ "${DRY_RUN:-0}" != "1" ]]; then
   [[ -z "$PREVIOUS" ]] || die "--previous is only for offline DRY_RUN previews"
@@ -219,10 +222,12 @@ if (process.env.PUI_PREVIOUS) {
       || !/^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$/.test(release.version)
       || !/^[a-f0-9]{40}$/.test(release.sourceSha ?? '')
       || !/^[a-f0-9]{64}$/.test(release.archiveSha256 ?? '')) throw new Error('invalid previous platform release');
-    const base = `${process.env.PUI_BASE}/${release.version}/`;
+    const versionBase = `${process.env.PUI_BASE}/${release.version}/`;
+    const bases = [versionBase, `${versionBase}${release.archiveSha256}/`];
     const name = `pui-${release.version}-${target}.tar.gz`;
-    if (release.archiveUrl !== `${base}${name}` || release.acceptanceUrl !== `${base}${name}.acceptance.json`
-      || ![`${base}SHA256SUMS`, `${base}${name}.sha256`].includes(release.sumsUrl)) {
+    if (!bases.some((base) => release.archiveUrl === `${base}${name}`
+      && release.acceptanceUrl === `${base}${name}.acceptance.json`
+      && [`${base}SHA256SUMS`, `${base}${name}.sha256`].includes(release.sumsUrl))) {
       throw new Error('previous platform release URL does not match this release host');
     }
   }
@@ -310,7 +315,7 @@ upload_versioned() {
     --cache-control 'public, max-age=31536000, immutable' --metadata "sha256=$sha"
 }
 
-VERSION_PREFIX="$KEY_PREFIX/pui/$VERSION"
+VERSION_PREFIX="$KEY_PREFIX/pui/$VERSION/$DIGEST"
 preflight_versioned "$ARCHIVE" "$VERSION_PREFIX/$NAME"
 preflight_versioned "$ACCEPTANCE" "$VERSION_PREFIX/$(basename "$ACCEPTANCE")"
 preflight_versioned "$SUMS" "$VERSION_PREFIX/$SUMS_NAME"

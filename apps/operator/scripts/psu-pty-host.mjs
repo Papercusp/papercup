@@ -3679,7 +3679,7 @@ export function writeHostHandoff(ownerId, record) {
 function readHostHandoffFile(
   p,
   expectedOwnerId,
-  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive, onReject = null } = {},
+  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive, onReject = null, expectedParentPid = null } = {},
 ) {
   // WI-6554700010008431: every refusal below CONSUMES the orders, so a refusal
   // that says nothing turns a carry-respawn into a bare cold boot with no trace
@@ -3725,6 +3725,9 @@ function readHostHandoffFile(
   if (expectedOwnerId && rec.ownerId && rec.ownerId !== expectedOwnerId) {
     return reject('owner-mismatch', { ...base, expectedOwnerId });
   }
+  if (expectedParentPid != null && rec.parentPid !== expectedParentPid) {
+    return reject('parent-mismatch', { ...base, expectedParentPid, actualParentPid: rec.parentPid ?? null });
+  }
   // A LIVE writer means we are not its successor — that host is running and owns
   // the session, and acting on its argv would put a second child behind a live
   // discovery key. No self-exemption: a process is never its own successor, so
@@ -3752,7 +3755,7 @@ function readHostHandoffFile(
  * accept). A rejected record is still consumed: leaving it behind means the next
  * launch re-litigates the same stale orders.
  * @param {string} ownerId
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null, expectedParentPid?: number | null}} [opts]
  */
 export function readHostHandoff(ownerId, opts = {}) {
   return readHostHandoffFile(handoffPathFor(ownerId), ownerId, opts);
@@ -3769,10 +3772,21 @@ export function readHostHandoff(ownerId, opts = {}) {
  * Refuse an ambiguous parent match: selecting the newest file would recreate
  * the same cross-session identity split this handoff path is meant to prevent.
  * @param {number} parentPid
- * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
+ * @param {{ownerId?: string | null, maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean, onReject?: ((rejection: Record<string, unknown>) => void) | null}} [opts]
  */
 export function readHostHandoffForParentPid(parentPid, opts = {}) {
   if (!Number.isInteger(parentPid) || parentPid <= 0) return null;
+  // Host adoption carries PAPERCUSP_SID, so the handoff has a deterministic
+  // owner-keyed path. Read that one file directly instead of scanning every
+  // socket, event log, and discovery record in ~/.papercusp/psu-pty. The
+  // parent-PID check remains mandatory and consumes mismatched orders.
+  const ownerId = typeof opts.ownerId === 'string' ? opts.ownerId.trim() : '';
+  if (ownerId) {
+    return readHostHandoffFile(handoffPathFor(ownerId), ownerId, {
+      ...opts,
+      expectedParentPid: parentPid,
+    });
+  }
   let names;
   try {
     names = readdirSync(PSU_PTY_DIR);
