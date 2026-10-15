@@ -34,6 +34,8 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { registerPluginProviders, type ProviderRegistrationFailure } from '../../plugin-host-runtime';
 import { createProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../../integrations/provider-registry';
 import { ingestExternalTriggerEvent, type IngestExternalTriggerInput } from '../../external-triggers/ingestion';
+import { upsertOwnedExternalTriggerSource } from '../../external-triggers/source-store';
+import { fileTicketFromPlanRun } from '../../capability-verbs/ticket';
 import { VAULT_DATATYPES } from '../../personal-vault/live-sink';
 import { DATATYPE_FOR_APP } from '../../app-data-producer/app-rows';
 import { dataSourceRecordId } from '../../data-sources/datatype-destination-sink';
@@ -315,7 +317,8 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
   if (method === 'POST' && path === '/tasks') {
     const { data } = body as { data: Schemas['TaskRequestBase'] & { projects: string[] } };
     expect(data.projects).toEqual([ENG.gid]);
-    expect(data.external?.gid).toMatch(/^papercusp-slack-[a-f0-9]{64}$/);
+    // ticket:file's correlation id, sha256(workspace:trigger run) (capability-verbs/ticket.ts).
+    expect(data.external?.gid).toMatch(/^papercusp-ticket-[a-f0-9]{64}$/);
     const t = task({ gid: `t-slack-${++asana.createdTasks}`, name: data.name, notes: data.notes,
       created_at: '2026-10-02T09:01:00.000Z', modified_at: '2026-10-02T09:01:00.000Z',
       created_by: PAPERCUSP, memberships: [{ project: ENG, section: sec(ENG.gid, 'To do') }] });
@@ -328,6 +331,14 @@ const recordedHostFetch: HostFetch = async ({ request }) => {
       throw new Error('lost successful task response');
     }
     return json(201, { data: t } satisfies Schemas['GetTaskOk']);
+  }
+  // ticket.containers { purpose: 'create' } (ticket:file's destination check): workspaces, then projects.
+  if (op === 'GET /workspaces') {
+    return json(200, { data: [{ gid: SOURCE_CONFIG.workspaceGid, resource_type: 'workspace', name: 'Acme' }], next_page: null });
+  }
+  if (op === 'GET /projects') {
+    expect(query.workspace).toBe(SOURCE_CONFIG.workspaceGid);
+    return json(200, { data: Object.values(PROJECTS), next_page: null });
   }
   if (method === 'GET' && path === '/events') return events(query);
   if (method === 'GET' && (m = /^\/projects\/([^/]+)\/tasks$/.exec(path))) return crawl(m[1]!, query.offset);
@@ -953,10 +964,103 @@ describe('admission presets turn matching Asana tasks into work (P-006, R-6)', (
     expect(await admissionDeliveries()).toEqual(editedDeliveries);
   });
 
-  // Chat-originated filing (one ticket at the installation's destination,
+  // Chat-originated filing by itself (destination choice, negative verdicts,
   // lost-response recovery, replays file nothing) is the bug-triage pack's
   // ticket:file path, covered in capability-verbs/ticket.integration.test.ts
-  // (cupboard-distributable-integrations-2026-10-10#D-019).
+  // (cupboard-distributable-integrations-2026-10-10#D-019). The test below is
+  // the cross-stage join (slack-asana-reproduced-bug-fix-pr-workflow-2026-10-08#P-005):
+  // the task ticket:file creates from a Slack message comes back through this
+  // source's sync and enters work exactly like a task a person created in
+  // Asana, through the same rule, once.
+  it('admits a Slack-filed ticket and a manually created one through one rule, each exactly once, across a lost create response and replays', async () => {
+    const sourceId = await createSource();
+    expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'backfill', rejected: 0 });
+    const { rule, backfill } = await setAdmissionRuleAndBackfill({
+      workspaceId: WS, dataSourceId: sourceId, title: 'New Engineering bug reports',
+      match: { provider: { eq: 'asana' }, projects: { contains: 'Engineering' }, state: { eq: 'open' },
+        createdAt: { after: '2026-10-02T09:00:00.000Z' } },
+      harness: HARNESS, workKind: 'bug', createdBy: 'asana-echo-test',
+    }, { sql });
+    expect(backfill).toMatchObject({ admitted: 0, refused: [] });
+
+    // The chat side: a Slack source, a bug-triage installation whose destination is
+    // Engineering, and the succeeded trigger run that launched plan run `run` for one message.
+    const chat = await upsertOwnedExternalTriggerSource(sql, { workspaceId: WS, kind: 'slack', ownerUserId: alice,
+      credentialRef: 'slack:declared', status: 'connected', config: {} });
+    const planSlug = `bug-triage-echo-${Date.now()}`;
+    const run = 910_001;
+    const manifest = {
+      name: 'bug-triage', version: '0.1.0',
+      triggerPack: { inputs: { type: 'object', properties: {
+        destination: { type: 'string', 'x-options': { capability: 'ticket.containers', args: { purpose: 'create' } } },
+      } } },
+    };
+    let bindingId: string | null = null;
+    let installationId: string | null = null;
+    try {
+      await sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+        VALUES (${WS}, ${HARNESS}, ${planSlug}) ON CONFLICT DO NOTHING`;
+      const [installation] = await sql<Array<{ id: string }>>`INSERT INTO harness_shared.trigger_pack_installations
+        (workspace_id, harness_slug, plugin_name, plugin_version, inputs, manifest, status)
+        VALUES (${WS}, ${HARNESS}, ${planSlug}, '0.1.0', ${JSON.stringify({ destination: ENG.gid })}::text::jsonb,
+          ${JSON.stringify(manifest)}::text::jsonb, 'configured') RETURNING id::text`;
+      installationId = installation!.id;
+      const [binding] = await sql<Array<{ id: string }>>`INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern, armed, pack_installation_id)
+        VALUES (${WS}, ${chat.id}::uuid, ${HARNESS}, ${planSlug}, 'ext:slack:message', TRUE, ${installationId}::uuid)
+        RETURNING id::text`;
+      bindingId = binding!.id;
+      const message = { id: 'C1:17770000.1', channelId: 'C1', threadId: '17770000.1', sender: 'U1',
+        text: 'Exporting a report crashes the app every time.' };
+      await sql`INSERT INTO harness_shared.trigger_runs
+        (workspace_id, binding_id, dedupe_key, status, args, plan_run_ref, completed_at)
+        VALUES (${WS}, ${bindingId}::uuid, ${'echo-' + planSlug}, 'succeeded',
+          ${JSON.stringify({ trigger: { key: 'chat-message.message', payload: message } })}::text::jsonb, ${String(run)}, now())`;
+      const fileDeps = { registry, hostFetchFor: () => recordedHostFetch, options: { hostFetchFor: () => recordedHostFetch } };
+      const fileFromChat = () => fileTicketFromPlanRun(sql, { workspaceId: WS, planRunId: run,
+        title: 'Report export crashes', observed: 'Exporting a report crashes the app.', expected: 'The export completes.' }, fileDeps);
+      const creates = () => asana.calls.filter((c) => c.op === 'POST /tasks').length;
+
+      // The create lands in Asana but its response is lost: pending, then recovered without a second POST.
+      asana.loseCreateResponse = true;
+      expect(await fileFromChat()).toMatchObject({ pendingReconciliation: true });
+      expect(await fileFromChat()).toMatchObject({ alreadyCreated: true, externalRef: 't-slack-1', sourceId });
+      expect(creates()).toBe(1);
+
+      // A person files the second ticket straight in Asana.
+      const manual = task({ gid: 't-manual-new', name: 'Exported invoice drops the last line item',
+        notes: 'Create an invoice with two items, export PDF: the second item is absent. Both items must appear.',
+        created_at: '2026-10-02T09:02:00.000Z', modified_at: '2026-10-02T09:02:00.000Z', created_by: BOB,
+        memberships: [{ project: ENG, section: sec(ENG.gid, 'To do') }] });
+      asana.tasks.push(manual); asana.stories.set(manual.gid!, []); taskChanged(manual, 'added');
+
+      await due(sourceId);
+      expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', mode: 'incremental', rejected: 0 });
+      const byRecord = (rows: Admitted[]) => [...rows].sort((a, b) => a.record.localeCompare(b.record));
+      const expected = byRecord(['t-slack-1', manual.gid!].map((gid) => ({ record: recordOf(sourceId, gid), via: 'rule',
+        rule_id: rule.id, kind: 'bug', agent_work: true, about: 1 })));
+      expect(byRecord(await admitted(sourceId))).toEqual(expected);
+      expect((await tickets(sourceId)).find((r) => r.payload.externalId === 't-slack-1')?.payload)
+        .toMatchObject({ provider: 'asana', title: 'Report export crashes' });
+
+      // Replaying the filing and syncing again neither files nor admits a second time.
+      expect(await fileFromChat()).toMatchObject({ alreadyCreated: true, externalRef: 't-slack-1' });
+      await due(sourceId);
+      expect(await syncOne(sourceId)).toMatchObject({ outcome: 'synced', rejected: 0 });
+      expect(creates()).toBe(1);
+      expect(byRecord(await admitted(sourceId))).toEqual(expected);
+    } finally {
+      if (bindingId) {
+        await sql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS} AND binding_id = ${bindingId}::uuid`;
+        await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS} AND id = ${bindingId}::uuid`;
+      }
+      if (installationId) {
+        await sql`DELETE FROM harness_shared.trigger_pack_installations WHERE workspace_id = ${WS} AND id = ${installationId}::uuid`;
+      }
+      await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${chat.id}::uuid`;
+      await sql`DELETE FROM harness_shared.harness_plans WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${planSlug}`;
+    }
+  });
 });
 
 describe('the host writes back to Asana by capability (D-008)', () => {
