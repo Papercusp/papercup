@@ -1193,6 +1193,66 @@ describe('executeWake — delivery-time canonical claimable freshness (EI-215842
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('cancels an accepted native delivery before downgrading its now-stale claimable retry', async () => {
+    const ownerId = 'su-stale-claimable';
+    const sock = '/tmp/stale-claimable.sock';
+    const pendingHostWrites = new Map<string, string>();
+    let itemState = 'open';
+    const injectPsuHostWithConfirmation = vi.fn<NonNullable<ExecuteWakeDeps['injectPsuHostWithConfirmation']>>(
+      async (_sock, message) => {
+        const deliveryId = String(message.deliveryId ?? '');
+        if (message.mode === 'delivery-cancel') {
+          const cancelled = pendingHostWrites.delete(deliveryId);
+          return {
+            ok: true,
+            confirmation: 'acked' as const,
+            reason: cancelled ? 'cancelled-before-write' : 'delivery-unknown',
+          };
+        }
+        if (message.mode === 'turn') {
+          if (!pendingHostWrites.has(deliveryId)) pendingHostWrites.set(deliveryId, message.data);
+          return {
+            ok: true,
+            confirmation: 'acked' as const,
+            reason: pendingHostWrites.size === 1 ? 'accepted' : 'pending-delivery-id',
+          };
+        }
+        return { ok: false, confirmation: 'acked' as const, reason: 'unexpected-mode' };
+      },
+    );
+    const getCurrentWorkItem = vi.fn(async () => ({
+      id: 'WI-42419', state: itemState, assignee: null, payload: null,
+    })) as never;
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const delivery = claimableWork({ id: 782698, subscriberId: ownerId, wakeHandle: null });
+    const d = deps({
+      findPsuHost: vi.fn(() => ({ sock, ownerId, caps: ['delivery-cancel'] })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
+      getCurrentWorkItem,
+      sendCoordMessage: sendCoordMessage as never,
+    });
+
+    await expect(executeWake(delivery, d)).resolves.toMatchObject({
+      kind: 'park', hostCommitPending: true, reason: expect.stringContaining('accepted'),
+    });
+    expect(pendingHostWrites.has('782698')).toBe(true);
+
+    itemState = 'done';
+    const staleRetry = {
+      ...delivery,
+      attempts: 2,
+      lastError: 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+    };
+    await expect(executeWake(staleRetry, d)).resolves.toEqual({ kind: 'delivered', channel: 'inbox' });
+
+    expect(injectPsuHostWithConfirmation.mock.calls.map((call) => call[1].mode)).toEqual([
+      'turn', 'delivery-cancel',
+    ]);
+    expect(pendingHostWrites.has('782698')).toBe(false);
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a current unclaimed claimable item on the normal wake ladder', async () => {
     const findPty = vi.fn(() => ({ id: 'pty-current' }));
     const write = vi.fn(() => true);

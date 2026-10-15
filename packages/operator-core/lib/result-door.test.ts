@@ -3529,6 +3529,43 @@ describe('applyResultDoor', () => {
       expect(envelope.incomplete.note).not.toContain('wider per-field limit');
     });
 
+    it.each([
+      ['direct capability:read', 'capability:read', undefined],
+      ['nested capability:read', 'tools:invoke', 'capability:read'],
+    ] as const)('%s does not recursively wrap markers stored in a scratch reference', (_shape, toolName, nestedTargetToolName) => {
+      const result: DoorableResult = {
+        content: [{
+          type: 'text',
+          text: '/tmp/result-door-1.md (1 lines)\n     1\t{"outputTailTruncated":true,"textTruncated":true}',
+        }],
+        _meta: { capabilityRead: { source: 'scratch-reference' } },
+      };
+
+      expect(applyResultDoor(result, {
+        toolName,
+        ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      })).toBe(result);
+    });
+
+    it('still reports a transport projection on a scratch-reference read', () => {
+      const result = {
+        content: [{ type: 'text' as const, text: 'visible bytes from a scratch reference' }],
+        _meta: {
+          capabilityRead: { source: 'scratch-reference' },
+          payloadProjection,
+        },
+      };
+      const doored = applyResultDoor(result, { toolName: 'capability:read', workspaceId: 'ws-1', runId: RUN_ID });
+      const envelope = JSON.parse((doored.content[0] as { text: string }).text);
+
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+    });
+
     it('does not treat an escaped partial-marker example inside a JSON string as a real marker', () => {
       const result = {
         content: [{ type: 'text' as const, text: JSON.stringify({ note: 'Example syntax: "_partial": true' }) }],

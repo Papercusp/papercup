@@ -33,6 +33,7 @@ import {
   parseBm25LatencyArtifact, platformComputedInstrumentKeys,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
+import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
 import {
   NATIVE_ADOPTION_VERSION,
   measureNativeAdoptionWindow,
@@ -409,6 +410,7 @@ export async function resolveScorecardInstrumentSnapshots(
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
+    diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
     /** Native code-intelligence adoption for one workspace window (P-033). */
     nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
@@ -541,6 +543,32 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    if (key === DISK_HEADROOM_SOAK_INSTRUMENT_KEY) {
+      const evidenceRef = 'harness_shared.pipeline_events+disk_census_runs+attention_notifications:disk-headroom-soak';
+      // The caller selects a native receipt, never its artifact SHA, shipment clock, cadence or verdict.
+      const request = input.supplied?.[key]?.window;
+      const host = request?.host, deploymentId = request?.deploymentId;
+      const workspaceId = input.rubric.workspaceId, installSlug = input.rubric.subjectHarnessSlug;
+      const scopedWindow = { ...window, workspaceId, installSlug, host, deploymentId };
+      if (subject.kind !== 'plan' || input.rubric.subjectPlan !== subject.ref || !workspaceId || !installSlug ||
+          typeof host !== 'string' || typeof deploymentId !== 'string' ||
+          end - start !== 72 * 3_600_000 || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('Require the exact completed 72-hour plan window, canonical workspace/install, and deploymentId/host selection.'),
+          evidenceRef, window: scopedWindow };
+        continue;
+      }
+      try {
+        const measure = deps.diskHeadroomSoak ?? ((request) => measureDiskHeadroomSoakWindow(getOrgPg().sql, request));
+        const measurement = await measure({ workspaceId, installSlug, host, deploymentId,
+          windowStart: subject.windowStart, windowEnd: subject.windowEnd, measuredAt });
+        snapshots[key] = { verdict: measurement.verdict, measuredAt, provenance: 'platform-computed',
+          evidenceRef, window: scopedWindow, value: { resolver: key, resolverVersion: 1, ...measurement } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Soak ledger unavailable: ${error instanceof Error ? error.message : String(error)}`),
+          evidenceRef, window: scopedWindow };
+      }
       continue;
     }
     if (key === GATE_REUSE_AUDIT_INSTRUMENT_KEY) {

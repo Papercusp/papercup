@@ -187,6 +187,7 @@ describe('the registry seed set', () => {
     const expected = [
       'woe.goal-mode-base-scorecard',
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
+      'storage:disk-headroom-post-shipment-72h',
       ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),

@@ -2803,6 +2803,19 @@ function isScratchReferenceBytePageResult(
   }
 }
 
+function isScratchReferenceReadResult(
+  result: DoorableResult,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): boolean {
+  const targetToolName = opts.toolName === 'tools:invoke'
+    ? opts.nestedTargetToolName
+    : opts.toolName;
+  const capabilityReadMeta = (
+    result._meta as { capabilityRead?: { source?: unknown } } | undefined
+  )?.capabilityRead;
+  return targetToolName === 'capability:read' && capabilityReadMeta?.source === 'scratch-reference';
+}
+
 /**
  * Apply both model-facing output rails: the existing per-result door and, when
  * the transport supplied a cohort, one aggregate budget across the fan-out.
@@ -2878,6 +2891,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // per-result door by capability:read; ordinary reads still consume the
     // aggregate fan-out budget.
     const recoveryBytePage = isScratchReferenceBytePageResult(result, opts);
+    const scratchReferenceRead = isScratchReferenceReadResult(result, opts);
     const aggregate = opts.aggregateScope && !recoveryBytePage
       ? reserveAggregateBytes(
           opts.aggregateScope,
@@ -2964,7 +2978,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         opts.nestedTargetToolName,
       );
       if (!upstreamProjection?.truncated &&
-        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable)) return result;
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) return result;
       return spillResultAsReferenceEnvelope({
         result,
         opts,

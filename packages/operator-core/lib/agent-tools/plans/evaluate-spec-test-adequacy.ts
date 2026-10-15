@@ -527,12 +527,32 @@ export async function replaySpecTestAdequacyForHistoricalAudit(input: {
     recordedEvaluatorBuild && evaluatorBuildDiff(recordedEvaluatorBuild, liveEvaluatorBuild)
       ? { recorded: recordedEvaluatorBuild, live: liveEvaluatorBuild }
       : undefined;
+  const criteriaFilter = args.criteria ? new Set<string>(args.criteria) : null;
+  const pickCriteria = <Value>(entries: Record<string, Value>): Record<string, Value> =>
+    criteriaFilter
+      ? Object.fromEntries(Object.entries(entries).filter(([criterion]) => criteriaFilter.has(criterion)))
+      : entries;
+  const projected = {
+    ...evaluated,
+    ratings: pickCriteria(evaluated.ratings) as typeof evaluated.ratings,
+    draggingBindingIds: pickCriteria(evaluated.draggingBindingIds) as typeof evaluated.draggingBindingIds,
+    measurementEvidence: summarizeMeasurementEvidence(evidence),
+  };
+  const replayRow = isFullDetail(args.detail)
+    ? (() => {
+        const { scorecardDraft: _omittedDraft, ...row } = projected;
+        return {
+          ...row,
+          scorecardDraftOmitted: 'criteria filter: a partial draft cannot be emitted; omit criteria for it',
+        };
+      })()
+    : summaryRow(projected);
 
   return {
     ok: true,
     evaluatorBuild: liveEvaluatorBuild,
     ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
-    rows: [summaryRow({ ...evaluated, measurementEvidence: summarizeMeasurementEvidence(evidence) })],
+    rows: [replayRow],
     count: 1,
     historicalAuditOnly: {
       provenance: 'historical-audit-only',
@@ -601,7 +621,7 @@ export function certifyPassingRef(
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs; bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Check ok and rows.length before indexing.',
+    'Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs and must contain exact persisted evidence_ref values returned by plans:get-spec-evidence; underlying test-run table IDs (for example, test_runs:<id>) are not necessarily binding refs. For a test-run-based cohort, use workItemIds + specIds or read the bound evidence refs first. bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Historical scorecardId detail:"full" requires exactly one criteria value so the response can include that criterion’s exact evidence without returning the full evidence matrix. Check ok and rows.length before indexing.',
   guidance: {
     returns:
       'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full", where each criterion text sits once, in the draft (rows[].ratings[c].evidenceAt points there). To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
@@ -642,6 +662,17 @@ export default defineTool({
     .passthrough(),
   async handler(args, ctx) {
     if (args.scorecardId !== undefined) {
+      if (isFullDetail(args.detail) && args.criteria?.length !== 1) {
+        return {
+          data: {
+            ok: false,
+            error: 'historical_detail_requires_single_criterion',
+            count: 0,
+            scorecardId: args.scorecardId,
+            remedy: 'Pass detail:"full" with exactly one criteria value to retrieve that criterion’s exact historical evidence.',
+          },
+        };
+      }
       const workspaceId = typeof ctx.workspaceId === 'string' ? ctx.workspaceId.trim() : '';
       if (!workspaceId) {
         return {
@@ -761,6 +792,8 @@ export default defineTool({
       const evidenceRefs = [...new Set(recipe.selection.evidence.map(({ evidenceRef }) => evidenceRef))].sort();
       const replayArgs = {
         ...parsedRecipeArgs.data,
+        detail: args.detail,
+        criteria: args.criteria,
         harness: replayHarness,
         specIds: parsedRecipeArgs.data.specIds ?? [recipe.selection.specId],
         evidenceRefs: parsedRecipeArgs.data.evidenceRefs ?? evidenceRefs,
@@ -947,7 +980,7 @@ export default defineTool({
             args.bindingIds !== undefined
               ? 'No current evidence binding matches the selected bindingIds. The row may be absent, retracted, or outside the pinned clause; inspect the target history before changing the selector.'
               : args.evidenceRefs !== undefined
-                ? 'No current evidence binding matches the selected workItemIds/evidenceRefs. The binding may be absent, retracted, or superseded, or the selectors may not identify a bound proof. Check the target evidence history before changing them; pass specIds without a binding selector to evaluate intended uncovered clauses.'
+                ? 'No current evidence binding matches the selected workItemIds/evidenceRefs. evidenceRefs must exactly match persisted evidence_ref values returned by plans:get-spec-evidence; test-run table IDs such as test_runs:<id> are not necessarily binding refs. The binding may be absent, retracted, or superseded, or the selectors may not identify a bound proof. Check the target evidence history before changing them; for a test-run-based cohort use workItemIds + specIds, or pass specIds without a binding selector to evaluate intended uncovered clauses.'
                 : 'No current evidence edge exists for the selected work item(s). The work item may lack a binding, or its proof may have been retracted or superseded. Check the target history; pass specIds to evaluate intended uncovered clauses.'
           ) + (args.planItemIds !== undefined
             ? ' A binding may exist only outside the selected planItemIds; inspect its clause mapping and the intersection of selectors. Nothing was graded.'

@@ -208,6 +208,29 @@ function scratchLineWindowExceedsDoor(text: string): boolean {
   return Buffer.byteLength(text, 'utf8') > budgetBytes - DOOR_MARGIN_CHARS;
 }
 
+/** A scratch-reference read returns stored tool output verbatim. Markers such
+ * as `textTruncated` inside that stored payload describe its original producer,
+ * not a truncation performed by this read; the result door uses this metadata
+ * to avoid wrapping the same disclosure in another recursively unreadable
+ * reference envelope. */
+function markScratchReferenceRead<T>(result: T, reference?: ScratchReferenceManifest): T {
+  if (!reference || result === null || typeof result !== 'object') return result;
+  const row = result as Record<string, unknown>;
+  const metadata = row._meta !== null && typeof row._meta === 'object' && !Array.isArray(row._meta)
+    ? row._meta as Record<string, unknown>
+    : {};
+  const capabilityReadMetadata = metadata.capabilityRead !== null && typeof metadata.capabilityRead === 'object' && !Array.isArray(metadata.capabilityRead)
+    ? metadata.capabilityRead as Record<string, unknown>
+    : {};
+  return {
+    ...row,
+    _meta: {
+      ...metadata,
+      capabilityRead: { ...capabilityReadMetadata, source: 'scratch-reference' },
+    },
+  } as T;
+}
+
 const readPathArgs = {
   file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
   uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
@@ -910,10 +933,10 @@ export default defineTool({
       const footer = r.nextOffset === null
         ? ''
         : `\n… more: capability:read { ${cursorKey}, view_lines: { offset: ${r.nextOffset}, limit: ${v.view_lines.limit ?? VIEW_DEFAULT_LIMIT} } }`;
-      return { content: [{ type: 'text' as const, text:
+      return markScratchReferenceRead({ content: [{ type: 'text' as const, text:
         `${cursorPath} — searched ${r.view} view, lines ${r.startLine}–${r.endLine} of ${r.totalLines}` +
         `${r.clippedLines > 0 ? ` (${r.clippedLines} long line(s) clipped)` : ''}\n${r.lines.join('\n')}${footer}`,
-      }] };
+      }] }, reference);
     }
 
     if (typeof args.query === 'string') {
@@ -929,7 +952,7 @@ export default defineTool({
         bodyOffset: reference?.bodyOffsetInPayload,
       });
       const cursorPath = args.uri ?? args.file_path ?? abs;
-      return { content: [{ type: 'text' as const, text: JSON.stringify({
+      return markScratchReferenceRead({ content: [{ type: 'text' as const, text: JSON.stringify({
         ok: true,
         file_path: abs,
         query: q.query,
@@ -946,7 +969,7 @@ export default defineTool({
         note: result.matchCount === 0
           ? `No line in the searched ${result.view} view (${result.coverage.searchedLines} lines from line ${result.coverage.fromLine}, ${result.coverage.payloadBytes} bytes) contains every term. That is a complete negative for THIS retained body${result.coverage.upstreamPartialMarkers > 0 ? `, but the body itself carries ${result.coverage.upstreamPartialMarkers} upstream truncation marker(s) — the original tool output was partial` : ''}.`
           : undefined,
-      }) }] };
+      }) }] }, reference);
     }
 
     if (args.evidence_class) {
@@ -1018,9 +1041,9 @@ export default defineTool({
       } else {
         return err('evidence_not_selectable', 'scratch reference payload has no MCP content array or declared JSON body.');
       }
-      return { content: [{ type: 'text' as const, text: JSON.stringify({
+      return markScratchReferenceRead({ content: [{ type: 'text' as const, text: JSON.stringify({
         ok: true, file_path: abs, reference, evidence_class: args.evidence_class, evidence,
-      }) }] };
+      }) }] }, reference);
     }
 
     if (args.content_indexes) {
@@ -1044,7 +1067,7 @@ export default defineTool({
       if (invalid.length > 0) {
         return err('content_index_out_of_range', `content index(es) ${invalid.join(', ')} exceed ${content.length - 1}.`);
       }
-      return {
+      return markScratchReferenceRead({
         content: [{ type: 'text' as const, text: JSON.stringify({
           ok: true,
           file_path: abs,
@@ -1054,7 +1077,7 @@ export default defineTool({
           content: unique.map((index) => content[index]),
           ...(row.isError !== undefined ? { isError: row.isError } : {}),
         }) }],
-      };
+      }, reference);
     }
 
     if (byteMode) {
@@ -1067,13 +1090,13 @@ export default defineTool({
       if (args.raw) {
         return err('mixed_window_modes', 'raw text windows cannot be combined with byte_offset/byte_limit; byte windows already return exact bytes.');
       }
-      return renderByteWindow(
+      return markScratchReferenceRead(await renderByteWindow(
         abs,
         args as ByteReadArgs,
         bytes.length,
         (offset, limit) => bytes.subarray(offset, Math.min(bytes.length, offset + limit)),
         reference,
-      );
+      ), reference);
     }
 
     const sourceText = bytes.toString('utf8');
@@ -1107,7 +1130,7 @@ export default defineTool({
         has_more: end < allLines.length,
       };
       if (slice.length === 0) {
-        return {
+        return markScratchReferenceRead({
           content: [{ type: 'text' as const, text: '' }],
           // EI-22044192752243601: ordinary/raw text reads return a plain string
           // `text` body, not JSON — unwrapToolResult's JSON.parse throws on it and
@@ -1125,7 +1148,7 @@ export default defineTool({
           ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
             ? { structuredContent: { ok: true, file_path: abs, body: '', ...rawWindow } }
             : {}),
-        };
+        }, reference);
       }
 
       // Reconstruct the exact source span rather than joining a normalized
@@ -1144,7 +1167,7 @@ export default defineTool({
           'This scratch-reference line window is too large for one result. Use a smaller offset/limit/tail window, or byte_offset+byte_limit when a single line is too large.',
         );
       }
-      return {
+      return markScratchReferenceRead({
         content: [{
           type: 'text' as const,
           text: rawBody,
@@ -1153,7 +1176,7 @@ export default defineTool({
         ...(ctx.codeMode || (ctx.transport === 'mcp' && ctx.requestedStructured)
           ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
           : {}),
-      };
+      }, reference);
     }
 
     const numbered = slice
@@ -1177,7 +1200,7 @@ export default defineTool({
       );
     }
 
-    return {
+    return markScratchReferenceRead({
       content: [{ type: 'text' as const, text: displayText }],
       // EI-22044192752243601: same silent-primitive-fallback bug as the raw branch
       // above — the ordinary cat -n view is human/model-readable text, not JSON, so
@@ -1199,7 +1222,7 @@ export default defineTool({
             },
           }
         : {}),
-    };
+    }, reference);
   },
 });
 

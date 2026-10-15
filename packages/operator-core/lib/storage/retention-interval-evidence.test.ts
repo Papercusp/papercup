@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assessDiskHeadroomSoak, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+import { assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
 
 const GIB = 1024 ** 3;
 describe('disk headroom post-shipment soak assessment', () => {
@@ -72,6 +72,59 @@ describe('disk headroom post-shipment soak assessment', () => {
     expect((await readDiskHeadroomSoakEvidence({ unsafe } as unknown as Pick<import('postgres').Sql, 'unsafe'>, 'fixture-workspace', requirements)).assessment.soakStatus).toBe('unknown');
   });
 });
+describe('native shipment provenance for the disk soak instrument', () => {
+  const at = (hours: number) => new Date(Date.parse('2026-10-10T00:00:00Z') + hours * 3_600_000).toISOString();
+  const request = { workspaceId: 'workspace', installSlug: 'install', host: 'fixture-host', deploymentId: '42',
+    windowStart: at(1), windowEnd: at(73), measuredAt: at(74) };
+  const shipment = { id: '42', host: 'fixture-host:3070#123', artifactRef: 'a'.repeat(40), shippedAt: at(0) };
+  const records = () => ({ censuses: Array.from({ length: 73 }, (_, h) => ['/', '/mnt/data'].map(path => ({
+    id: `${path}-${h}`, host: 'fixture-host', path, at: at(h + 1), availableBytes: 101 * GIB, complete: true,
+  }))).flat(), alarms: [] });
+  const database = (deployment: unknown = shipment, samples = records()) => {
+    const unsafe = vi.fn().mockResolvedValueOnce(deployment ? [deployment] : []).mockResolvedValueOnce([samples]);
+    return { unsafe, sql: { unsafe } as unknown as Pick<import('postgres').Sql, 'unsafe'> };
+  };
+
+  it('derives the artifact, shipment time and cadence from native provenance, then measures both devices', async () => {
+    const { sql, unsafe } = database();
+    const result = await measureDiskHeadroomSoakWindow(sql, request);
+    expect(result).toMatchObject({ verdict: 'pass', shipment, requirements: {
+      artifactRef: shipment.artifactRef, shippedAt: shipment.shippedAt,
+      maxSampleGapMs: 7 * 3_600_000, maxAlarmGapMs: 6 * 3_600_000,
+    } });
+    expect(unsafe.mock.calls[0]![0]).toContain("kind = 'deploy' AND status = 'ok'");
+    expect(unsafe.mock.calls[0]![0]).toContain('workspace_id = $2 AND install_slug = $3');
+    expect(unsafe.mock.calls[0]![1]).toEqual(['42', 'workspace', 'install']);
+    expect(unsafe.mock.calls[1]![1]).toEqual(['fixture-host', at(0), at(74), 'workspace', at(1), at(73)]);
+  });
+
+  it.each([null, { ...shipment, artifactRef: 'a'.repeat(12) }, { ...shipment, id: '43' },
+    { ...shipment, host: 'another-host:3070#123' }, { ...shipment, shippedAt: at(2) }])(
+    'keeps missing, legacy, mismatched or pre-shipment evidence unknown', async (badShipment) => {
+      const { sql, unsafe } = database(badShipment);
+      expect((await measureDiskHeadroomSoakWindow(sql, request)).verdict).toBe('unknown');
+      expect(unsafe).toHaveBeenCalledTimes(1);
+    });
+
+  it.each([{ windowEnd: at(72) }, { measuredAt: at(72) }, { deploymentId: '42 OR 1=1' }, { host: '' }])(
+    'does not query a shortened, unfinished or malformed request', async (change) => {
+      const { sql, unsafe } = database();
+      expect((await measureDiskHeadroomSoakWindow(sql, { ...request, ...change })).verdict).toBe('unknown');
+      expect(unsafe).not.toHaveBeenCalled();
+    });
+
+  it('propagates an unalarmed native middle dip, rather than passing healthy boundaries', async () => {
+    const samples = records(); samples.censuses[50]!.availableBytes = 99 * GIB;
+    const { sql } = database(shipment, samples);
+    expect((await measureDiskHeadroomSoakWindow(sql, request)).verdict).toBe('fail');
+  });
+
+  it('does not certify an incomplete ledger read', async () => {
+    const { sql } = database(shipment, { censuses: [], alarms: [] });
+    expect((await measureDiskHeadroomSoakWindow(sql, request)).verdict).toBe('unknown');
+  });
+});
+
 const generationId = 'v1-' + 'a'.repeat(64);
 function fixture() {
   const snapshot = (path: string, dev: number) => ({ path, dev, totalBytes: 500 * GIB, availableBytes: 50 * GIB, reservedBytes: 12 * GIB });

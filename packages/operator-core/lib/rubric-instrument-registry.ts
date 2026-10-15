@@ -32,6 +32,7 @@ import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
@@ -662,6 +663,7 @@ export function platformComputedInstrumentKeys(): string[] {
   return [
     'woe.goal-mode-base-scorecard',
     GATE_REUSE_AUDIT_INSTRUMENT_KEY,
+    DISK_HEADROOM_SOAK_INSTRUMENT_KEY,
     ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
     ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
     // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-033 (R-30/R-31).

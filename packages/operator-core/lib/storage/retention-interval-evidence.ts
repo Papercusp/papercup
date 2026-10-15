@@ -84,6 +84,51 @@ const soakRequirementsSchema = z.object({
   measuredAt: z.string().datetime({ offset: true }),
   maxSampleGapMs: bytes.positive(), maxAlarmGapMs: bytes.positive().max(6 * 3_600_000),
 }).refine((x) => Date.parse(x.startAt) >= Date.parse(x.shippedAt), 'The soak must start after shipment.');
+
+export const DISK_HEADROOM_SOAK_INSTRUMENT_KEY = 'storage:disk-headroom-post-shipment-72h';
+
+/** Resolve shipment identity from the existing deploy ledger, then assess the native records. */
+export async function measureDiskHeadroomSoakWindow(
+  sql: Pick<import('postgres').Sql, 'unsafe'>,
+  input: {
+    workspaceId: string; installSlug: string; host: string; deploymentId: string;
+    windowStart: string; windowEnd: string; measuredAt: string;
+  },
+) {
+  const request = z.object({
+    workspaceId: z.string().min(1), installSlug: z.string().min(1), host: z.string().min(1).max(253),
+    deploymentId: z.string().regex(/^[1-9][0-9]*$/),
+    windowStart: z.string().datetime({ offset: true }), windowEnd: z.string().datetime({ offset: true }),
+    measuredAt: z.string().datetime({ offset: true }),
+  }).safeParse(input);
+  if (!request.success || Date.parse(input.windowEnd) - Date.parse(input.windowStart) !== 72 * 3_600_000 ||
+      Date.parse(input.windowEnd) > Date.parse(input.measuredAt)) {
+    return { verdict: 'unknown' as const, reason: 'Require a complete, exact 72-hour plan window and a scoped deployment id/host.' };
+  }
+  const rows = await sql.unsafe(`
+    SELECT id::text AS id, detail->>'host' AS host, detail->>'fullTargetSha' AS "artifactRef",
+           to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "shippedAt"
+      FROM harness_shared.pipeline_events
+     WHERE id = $1::bigint AND workspace_id = $2 AND install_slug = $3
+       AND kind = 'deploy' AND status = 'ok'`,
+  [input.deploymentId, input.workspaceId, input.installSlug]);
+  const shipment = z.object({
+    id: z.literal(input.deploymentId), host: z.string(), artifactRef: z.string().regex(/^[a-f0-9]{40}$/),
+    shippedAt: z.string().datetime({ offset: true }),
+  }).safeParse(rows[0]);
+  if (!shipment.success || !shipment.data.host.startsWith(`${input.host}:`) ||
+      Date.parse(shipment.data.shippedAt) > Date.parse(input.windowStart)) {
+    return { verdict: 'unknown' as const, reason: 'No successful post-health deploy receipt with this host and full artifact SHA precedes the window.' };
+  }
+  const evidence = await readDiskHeadroomSoakEvidence(sql, input.workspaceId, {
+    host: input.host, artifactRef: shipment.data.artifactRef, shippedAt: shipment.data.shippedAt,
+    startAt: input.windowStart, measuredAt: input.measuredAt,
+    // Census runs every six hours; allow one hour for completion jitter. Alarm escalation has a six-hour cooldown.
+    maxSampleGapMs: 7 * 3_600_000, maxAlarmGapMs: 6 * 3_600_000,
+  });
+  return { verdict: evidence.assessment.soakStatus, reason: evidence.assessment.scope,
+    shipment: shipment.data, requirements: evidence.requirements, assessment: evidence.assessment };
+}
 const soakRecordsSchema = z.object({
   censuses: z.array(z.object({
     id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),

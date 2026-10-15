@@ -701,6 +701,28 @@ describe('capability:read', () => {
     expect(parse(unsigned).reason).toBe('forbidden_reference');
   });
 
+  it('marks a scratch-reference read whose stored payload may contain producer truncation markers', async () => {
+    const f = join(DIR, 'partial-result-door-reference.spill');
+    writeScratchReference({
+      filePath: f,
+      payload: '# result-door spill\n{"outputTailTruncated":true,"textTruncated":true}\n',
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/markdown',
+    });
+
+    const result = (await readTool.handler!({ file_path: f, offset: 1, limit: 4 }, {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+    } as never)) as {
+      content: Array<{ text: string }>;
+      _meta?: { capabilityRead?: { source?: string } };
+    };
+
+    expect(result.content[0].text).toContain('"outputTailTruncated":true');
+    expect(result._meta).toMatchObject({ capabilityRead: { source: 'scratch-reference' } });
+  });
+
   it('resolves one typed evidence class from a shared result-door reference', async () => {
     const f = join(DIR, 'evidence-reference.json');
     writeScratchReference({

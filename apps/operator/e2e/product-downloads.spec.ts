@@ -1,10 +1,17 @@
 import { test, expect, type BrowserContext } from './_egress';
 import type { HydratedRelease } from '../lib/release/release-history-page';
-import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { tsImport } from 'tsx/esm/api';
 
-test.use({ channel: 'chrome' });
 const origin = 'https://downloads.papercusp.test';
+// The renderer is served entirely by `serve` below, rather than the operator
+// configured by the default browser profile. Declare the route-fulfilled origin
+// explicitly: the egress destination check also applies to documentOrigin.
+// The public demo video is expected page traffic (release-video.ts); serve
+// aborts it before any egress.
+test.use({ channel: 'chrome', baseURL: origin,
+  egressAllowedOrigins: [origin, 'https://clips.papercusp.com'] });
 const sha = 'a'.repeat(64);
 const products = [
   { product: 'server' as const, platform: 'linux-x86_64', name: 'server.deb' },
@@ -19,16 +26,19 @@ const release: HydratedRelease = {
     artifacts: products.map(a => ({ ...a, url: `release/${a.name}`, size: 1000, sha256: sha })) },
   items: [], plans: [], internalCount: 0,
 };
-// The app's renderer is CommonJS TS, while this Playwright worker is ESM.
-// Use the existing TSX entry loader to generate the exact producer's bytes;
-// changing the production module format just for this fixture would hide drift.
+// Load the actual CommonJS TS renderer inside the ESM worker using the same
+// in-process bridge as public-manual-product.spec.ts. Runner-owned setup avoids
+// a module-load subprocess with a separate timeout before any test can start.
 const root = resolve(import.meta.dirname, '../../..');
-const html = execFileSync(resolve(root, 'node_modules/.bin/tsx'), ['-e', `
-  const { renderIndexHtml } = require(${JSON.stringify(resolve(root, 'apps/operator/lib/release/release-history-page.ts'))});
-  const release = ${JSON.stringify(release)};
-  release.row.cutAt = new Date(release.row.cutAt);
-  process.stdout.write(renderIndexHtml([release], { generatedAt: new Date('2026-10-12T00:00:00Z'), analytics: null, redact: [] }));
-`], { cwd: root, encoding: 'utf8', timeout: 20_000 });
+let html: string;
+test.beforeAll(async () => {
+  const imported = await tsImport(pathToFileURL(resolve(root,
+    'apps/operator/lib/release/release-history-page.ts')).href, import.meta.url);
+  const { renderIndexHtml } = { ...imported.default, ...imported };
+  html = renderIndexHtml([release], {
+    generatedAt: new Date('2026-10-12T00:00:00Z'), analytics: null, redact: [],
+  });
+});
 
 async function serve(context: BrowserContext, malicious = false, mac = false) {
   await context.route('**/*', async route => {
@@ -104,16 +114,16 @@ test('an unexpected PUI archive origin retains the ordinary download link', asyn
   await expect(page.locator('a[href="https://other.test/wrong.tar.gz"]')).toHaveCount(0);
 });
 
-test('native product tabs and published links work without JavaScript', async ({ browser }) => {
-  const context = await browser.newContext({ javaScriptEnabled: false });
-  try {
+test.describe('without JavaScript', () => {
+  // Keep this case in the context watched by the shared egress audit.
+  test.use({ javaScriptEnabled: false });
+  test('native product tabs and published links work without JavaScript', async ({ context, page }) => {
     await serve(context);
-    const page = await context.newPage();
     await page.goto(`${origin}/index.html`);
     await page.locator('label[for="choose-server"]').click();
     await expect(page.locator('#download-server')).toBeVisible();
     await expect(page.getByRole('link', { name: 'server.deb', exact: true }).first()).toBeVisible();
     await page.locator('label[for="choose-psu"]').click();
     await expect(page.getByRole('link', { name: 'Download PSU bundled with PUI' })).toBeVisible();
-  } finally { await context.close(); }
+  });
 });
