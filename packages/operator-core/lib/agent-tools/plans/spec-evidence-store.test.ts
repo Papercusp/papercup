@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   planScopeOptions: [] as Array<{ harnessSlug?: string; workspaceId?: string }>,
   measurementRoot: '',
   fixtureMeasurementRoot: '',
+  caseRows: null as Array<Record<string, unknown>> | null,
 }));
 
 vi.mock('../../acceptance-author-identity', () => ({
@@ -30,6 +31,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       const tx = ((strings: TemplateStringsArray | string[], ...values: unknown[]) => {
         const sql = Array.from(strings).join(' ');
         h.queries.push({ sql, values });
+        if (sql.includes('to_regclass')) return Promise.resolve([{ present: h.caseRows !== null }]);
+        if (sql.includes('FROM harness_shared.test_case_runs')) return Promise.resolve(h.caseRows ?? []);
         return Promise.resolve(sql.includes('provisional') ? h.scorecardRows : h.rows);
       }) as unknown;
       return fn(tx);
@@ -159,6 +162,7 @@ describe('completed isolated runtime certification', () => {
   afterAll(async () => { await rm(root, { recursive: true, force: true });
     await rm(artifacts, { recursive: true, force: true }); });
   afterEach(async () => {
+    h.caseRows = null;
     h.measurementRoot = measurementRoot; vi.unstubAllEnvs(); resetRuntimeVintageStore();
     await rm(join(artifacts, 'operator-driver'), { recursive: true, force: true });
     await Promise.all(['verify-tauri-headless', 'native-journey', 'isolated-integration'].map(harness =>
@@ -196,7 +200,7 @@ describe('completed isolated runtime certification', () => {
     await save();
     const witness = { schemaVersion: 1, units: recipe.runtimeUnits, fingerprint: 'a'.repeat(64), observedAt: at(11) };
     const execution = { schemaVersion: 1, root, filePath: recipe.testPaths[0], runGroupId: 'native-run',
-      workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null, testLayer: 'e2e',
+      workspaceId: 'workspace-test', harnessSlug: 'papercusp', testNamePattern: null as string | null, testLayer: 'e2e',
       passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
       commitSha: commit, worktreeDirty: false, runtimeEnvironmentBefore: witness,
       runtimeEnvironmentAfter: { ...witness, observedAt: at(40) } };
@@ -264,6 +268,27 @@ describe('completed isolated runtime certification', () => {
     await setupIsolated();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it.each(['filtered', 'missing-pattern', 'invalid-pattern', 'selected-skip', 'missing-ledger', 'missing-case', 'failed-case'])(
+    'certifies only ledger-proven excluded cases: %s', async condition => {
+      const state = await setupIsolated();
+      state.execution.skipped = 1;
+      state.execution.testNamePattern = 'selected alarm';
+      const cases = [
+        { case_key: 'suite > selected alarm', occurrence: 0, status: 'pass', duration_ms: 1,
+          file_path: state.execution.filePath },
+        { case_key: 'suite > unrelated alarm', occurrence: 0, status: 'skip', duration_ms: 0,
+          file_path: state.execution.filePath },
+      ];
+      h.caseRows = cases;
+      if (condition === 'missing-pattern') state.execution.testNamePattern = null;
+      if (condition === 'invalid-pattern') state.execution.testNamePattern = '[';
+      if (condition === 'selected-skip') cases[1].case_key = 'suite > selected alarm also';
+      if (condition === 'missing-ledger') h.caseRows = null;
+      if (condition === 'missing-case') cases.pop();
+      if (condition === 'failed-case') cases[0].status = 'fail';
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(condition === 'filtered' ? 'current' : 'unknown');
+    });
   it.each(['local', 'mutation-probe', 'ci', 'admin-ui'])('preserves guarded adoption of a NULL-harness lifetime only for an adoptable %s ledger row', async sourceKind => {
     const state = await setupIsolated();
     state.execution.harnessSlug = null as any;
