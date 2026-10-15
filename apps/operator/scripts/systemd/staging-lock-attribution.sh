@@ -163,15 +163,14 @@ staging_lock_api_pre() {
   wait_start="$(staging_lock_now_ms)"
   PAPERCUSP_STAGING_LOCK_PATH="$lock_path"
   export PAPERCUSP_STAGING_LOCK_PATH
+  staging_lock_log "event=start surface=start-pre attempt_id=$attempt_id state=wait_start lock_path=$lock_path lock_mode=shared wait_start_ms=$wait_start readiness_policy=Type-notify"
   # Custom bundle arguments still use the locked builder; the proof below is
   # specifically for the unit's default entry and output paths.
   if [[ $# == 0 ]] && staging_lock_reuse_complete_generation "$bundle"; then
     unit_fields="$(staging_lock_unit_fields papercup-staging-api.service)"
-    staging_lock_log "event=end surface=start-pre attempt_id=$attempt_id state=complete lock_scope=immutable_generation wait_start_ms=$wait_start wait_elapsed_ms=$(staging_lock_elapsed_ms "$wait_start" "$(staging_lock_now_ms)") acquisition_outcome=not_required bundle_outcome=proof_reused readiness_phase=before-execstart $unit_fields"
+    staging_lock_log "event=end surface=start-pre attempt_id=$attempt_id state=complete lock_path=$lock_path lock_mode=shared lock_scope=immutable_generation wait_start_ms=$wait_start wait_elapsed_ms=$(staging_lock_elapsed_ms "$wait_start" "$(staging_lock_now_ms)") acquisition_outcome=not_required bundle_outcome=proof_reused readiness_phase=before-execstart $unit_fields"
     return 0
   fi
-  staging_lock_log "event=start surface=start-pre attempt_id=$attempt_id state=wait_start lock_path=$lock_path lock_mode=shared wait_start_ms=$wait_start readiness_policy=Type-notify"
-
   (
     local sample=0 stop=0 sample_ms elapsed holder
     trap 'stop=1' USR1

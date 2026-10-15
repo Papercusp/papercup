@@ -42,6 +42,16 @@ function shell(command: string, env: NodeJS.ProcessEnv = {}) {
   });
 }
 
+function records(output: string): Record<string, string>[] {
+  const prefix = "[staging-lock-attribution] ";
+  return output.split("\n").filter((line) => line.startsWith(prefix)).map((line) =>
+    Object.fromEntries(line.slice(prefix.length).split(" ").map((field) => {
+      const separator = field.indexOf("=");
+      return [field.slice(0, separator), field.slice(separator + 1)];
+    })),
+  );
+}
+
 function lockTarget(lockPath: string): string {
   const stat = spawnSync("stat", ["-Lc", "%d:%i", lockPath], {
     encoding: "utf8",
@@ -186,7 +196,7 @@ describe("staging lock attribution", () => {
       expect(existsSync(ready)).toBe(true);
       const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", lock, fixture.bundle], {
         cwd: fixture.operator,
-        env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1" },
+        env: { ...process.env, PATH: fixture.binDir + ":" + process.env.PATH, PAPERCUSP_BUNDLE_REUSE_FRESH: "1", INVOCATION_ID: "reuse-attempt-42" },
         encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
       });
       expect(result.status).toBe(0);
@@ -197,6 +207,21 @@ describe("staging lock attribution", () => {
         "--manifest", join(fixture.operator, "dist-host/.bundle-fresh.json"),
       ]);
       expect(result.stderr).toContain("lock_scope=immutable_generation");
+      expect(records(result.stderr)).toEqual([
+        expect.objectContaining({
+          event: "start", surface: "start-pre", attempt_id: "reuse-attempt-42",
+          lock_path: lock, lock_mode: "shared", state: "wait_start",
+          wait_start_ms: expect.stringMatching(/^\d+$/),
+        }),
+        expect.objectContaining({
+          event: "end", surface: "start-pre", attempt_id: "reuse-attempt-42",
+          lock_path: lock, lock_mode: "shared", state: "complete",
+          acquisition_outcome: "not_required", bundle_outcome: "proof_reused",
+          wait_elapsed_ms: expect.stringMatching(/^\d+$/),
+          api_active_state: "activating", api_sub_state: "start-pre",
+          api_readiness: "not_ready_or_unknown",
+        }),
+      ]);
       // A physical lock probe distinguishes reuse from merely waiting for the
       // candidate to finish; this is not a wall-clock performance assertion.
       expect(spawnSync("/usr/bin/flock", ["-n", lock, "true"]).status).toBe(1);
@@ -270,13 +295,17 @@ describe("staging lock attribution", () => {
     }
   });
 
-  it("reports an explicit unknown holder when no exact kernel record is available", () => {
+  it.each(["no match", "missing proc file", "empty proc file", "dead holder", "waiter only"])(
+    "reports an explicit unknown holder for %s", (reason) => {
     const dir = makeTempDir("staging-lock-unknown-");
     try {
       const lock = join(dir, "sync.lock");
       const procLocks = join(dir, "proc-locks");
       writeFileSync(lock, "");
-      writeFileSync(procLocks, "1: FLOCK ADVISORY WRITE 1234 00:00:999 0 EOF\n");
+      if (reason === "no match") writeFileSync(procLocks, "1: FLOCK ADVISORY WRITE 1234 00:00:999 0 EOF\n");
+      if (reason === "empty proc file") writeFileSync(procLocks, "");
+      if (reason === "dead holder") writeFileSync(procLocks, "1: FLOCK ADVISORY WRITE 0 " + lockTarget(lock) + " 0 EOF\n");
+      if (reason === "waiter only") writeFileSync(procLocks, "1: -> FLOCK ADVISORY WRITE " + process.pid + " " + lockTarget(lock) + " 0 EOF\n");
 
       const result = shell(
         'source "$HELPER"; staging_lock_holder_fields "$LOCK" exclusive "$PROC_LOCKS"',
@@ -285,6 +314,63 @@ describe("staging lock attribution", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toBe("holder_pid=unknown holder_comm=unknown");
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records the staging-sync skip and exact holder under temporary-lock contention", async () => {
+    const dir = makeTempDir("staging-sync-contention-");
+    let holder: ReturnType<typeof spawn> | undefined;
+    let holderExit: Promise<void> | undefined;
+    try {
+      const lock = join(dir, "sync.lock");
+      const ready = join(dir, "holder-ready");
+      const binDir = join(dir, "bin");
+      mkdirSync(binDir);
+      mockSystemctl(binDir, "");
+      holder = spawn("/usr/bin/flock", ["--exclusive", "--no-fork", lock,
+        "/usr/bin/bash", "-c", 'touch "$1"; exec /usr/bin/sleep 90', "holder", ready], { stdio: "ignore" });
+      holderExit = new Promise((done) => holder?.once("exit", () => done()));
+      for (let i = 0; i < 300 && !existsSync(ready); i += 1) {
+        await new Promise((done) => setTimeout(done, 10));
+      }
+      expect(existsSync(ready)).toBe(true);
+
+      // Execute the production admission block, stopping before any checkout,
+      // build, or restart work. Only its hard-coded lock path is substituted.
+      const sync = readFileSync(SYNC, "utf8");
+      const start = sync.indexOf('STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"');
+      const end = sync.indexOf('[ -d "$INTEGRATION_ROOT/.git" ]', start);
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      const admission = sync.slice(start, end).replace(
+        'STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"', 'STAGING_SYNC_LOCK_PATH="$TEST_LOCK"',
+      );
+      const result = shell('source "$HELPER"\nlog() { printf "%s\\n" "$*"; }\n' + admission + '\nprintf sync-proceeded', {
+        HELPER, TEST_LOCK: lock, PATH: binDir + ":" + process.env.PATH,
+        INVOCATION_ID: "sync-attempt-42",
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain("skipping this tick");
+      expect(result.stdout).not.toContain("sync-proceeded");
+      const entries = records(result.stderr);
+      expect(entries).toEqual([
+        expect.objectContaining({ event: "start", surface: "staging-sync", state: "wait_start" }),
+        expect.objectContaining({
+          event: "end", surface: "staging-sync", state: "complete",
+          acquisition_outcome: "not_acquired", holder_pid: String(holder.pid),
+          holder_comm: expect.stringMatching(/^(sleep|flock)$/),
+          wait_elapsed_ms: expect.stringMatching(/^\d+$/),
+        }),
+      ]);
+      for (const entry of entries) expect(entry).toMatchObject({
+        attempt_id: "sync-attempt-42", lock_path: lock, lock_mode: "exclusive",
+        wait_start_ms: expect.stringMatching(/^\d+$/),
+      });
+      expect(spawnSync("/usr/bin/flock", ["-n", lock, "true"]).status).toBe(1);
+    } finally {
+      if (holder && holder.exitCode === null) holder.kill("SIGTERM");
+      await holderExit;
       rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -364,6 +450,36 @@ describe("staging lock attribution", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.each(["bundle failure", "lock failure"])(
+    "preserves %s while unavailable diagnostics stay explicit", (reason) => {
+      const dir = makeTempDir("staging-lock-unavailable-");
+      try {
+        const binDir = join(dir, "bin");
+        const bundle = join(dir, "fixture-bundle.sh");
+        const lock = reason === "lock failure" ? join(dir, "missing/sync.lock") : join(dir, "sync.lock");
+        mkdirSync(binDir);
+        writeFileSync(bundle, "#!/usr/bin/env bash\nexit 17\n", { mode: 0o700 });
+        for (const command of ["systemctl", "date"]) {
+          writeFileSync(join(binDir, command), "#!/usr/bin/env bash\nexit 1\n", { mode: 0o700 });
+        }
+        const result = spawnSync("/usr/bin/bash", [HELPER, "api-pre", lock, bundle], {
+          env: { ...process.env, PATH: binDir + ":" + process.env.PATH, INVOCATION_ID: "" },
+          encoding: "utf8", timeout: SPAWN_TIMEOUT_MS,
+        });
+        expect(result.status).toBe(reason === "bundle failure" ? 17 : 66);
+        const entries = records(result.stderr);
+        expect(entries[0]).toMatchObject({ event: "start", attempt_id: "unavailable", wait_start_ms: "unknown" });
+        expect(entries.at(-1)).toMatchObject({
+          event: "end", attempt_id: "unavailable", lock_path: lock, lock_mode: "shared",
+          acquisition_outcome: reason === "bundle failure" ? "acquired" : "not_acquired",
+          wait_elapsed_ms: "unknown", api_active_state: "unknown", api_sub_state: "unknown",
+          api_main_pid: "unknown", api_type: "unknown", api_result: "unknown", api_readiness: "unknown",
+          ...(reason === "bundle failure" ? { bundle_exit_status: "17", bundle_outcome: "bundle_failed" } : { command_exit_status: "66" }),
+        });
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    },
+  );
 
   it("records ready state from ExecStartPost after Type=notify", () => {
     const dir = makeTempDir("staging-lock-ready-");
