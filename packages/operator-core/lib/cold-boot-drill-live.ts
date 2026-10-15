@@ -113,8 +113,12 @@ export interface ColdBootDrillLedgerEvent {
   reason?: string;
   /** Host-mirrored respawn rows (EI-12655): the successor's fresh native session id. */
   nativeId?: string | null;
-  /** EI-12754: set on a terminal drop that came from the one-shot re-armed retry. */
+  /** EI-12754: set on a terminal drop from a bounded re-armed retry. */
   rearmed?: boolean;
+  /** Effective retry cap, final prompt quiet threshold, and verifier support reason. */
+  maxAttempts?: number | null;
+  quietMs?: number | null;
+  verifier?: string | null;
 }
 
 export interface ColdBootDrillHostEvent {
@@ -130,6 +134,10 @@ export interface ColdBootDrillHostEvent {
    *  carry-respawn-outcome to decide when a `pending` attempt is past the window
    *  in which it could still fire (see isOrphanedPendingRespawn). */
   capMs?: number | null;
+  /** Effective retry cap, final prompt quiet threshold, and verifier support reason. */
+  maxAttempts?: number | null;
+  quietMs?: number | null;
+  verifier?: string | null;
   /** Set by the host on a terminal row that came from a re-armed (re-polled) attempt,
    *  e.g. `respawn-carry-dropped {reason:'superseded', rearmed:true}`. Not read by the
    *  outcome derivation; declared so fixtures copied from a real log type-check. */

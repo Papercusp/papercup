@@ -5101,6 +5101,9 @@ export function makeCarryRearmController({
           sessionClass: msg?.sessionClass ?? '',
           reason,
           rearmed: true,
+          maxAttempts: maxDrillAttempts,
+          quietMs: null,
+          verifier: 'not-observed',
         }
       : {
           mode,
@@ -5221,10 +5224,16 @@ export function makeCarryRearmController({
       const droppedKind = isDrill
         ? 'carry-drill-carry-dropped'
         : mode === 'carry-respawn' ? 'respawn-carry-dropped' : 'wake-rearm-dropped';
+      const maxAttempts = isDrill ? maxDrillAttempts : maxProductionAttempts;
+      let finalPromptQuietMs = null;
+      let verifierReason = 'not-observed';
+      const dropDiagnostics = () => isDrill
+        ? { maxAttempts, quietMs: finalPromptQuietMs, verifier: verifierReason }
+        : {};
       // Drill rows carry drillId + sessionClass (P-020 correlation); a production
       // row is keyed by `mode` instead — never a fabricated/empty drillId.
       const extra = isDrill
-        ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs }
+        ? { drillId, sessionClass: msg.sessionClass ?? '', reason: 'busy-gate-expired', capMs, maxAttempts }
         : {
           mode,
           reason: 'busy-gate-expired',
@@ -5259,7 +5268,6 @@ export function makeCarryRearmController({
         // may spend longer than the historical 30-minute stale/attempt budget
         // in one continuously-rendering turn; dropping the carry then strands
         // the session at its context ceiling. Drills remain bounded experiments.
-        const maxAttempts = isDrill ? maxDrillAttempts : maxProductionAttempts;
         // EI-19480099650947832: carried onto every terminal row so a drop says
         // WHY it could never fire — see waitAtPrompt's maxQuietForMs comment.
         let observedMaxQuietMs = 0;
@@ -5268,7 +5276,7 @@ export function makeCarryRearmController({
         const dropSuperseded = (candidate) => {
           if (!isSuperseded(candidate)) return false;
           emitEvent(droppedKind, {
-            ...extra, rearmed: true, reason: 'superseded',
+            ...extra, ...dropDiagnostics(), rearmed: true, reason: 'superseded',
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
           settle(key, { delivered: false, reason: 'superseded' });
@@ -5325,6 +5333,10 @@ export function makeCarryRearmController({
               if (!wakeModePauseReason) {
                 atPrompt = await waitAtPrompt(capMs, current);
                 if (disposed) return;
+                if (Number.isFinite(atPrompt?.quietMs)) finalPromptQuietMs = atPrompt.quietMs;
+                if (typeof atPrompt?.verifier === 'string' && atPrompt.verifier) {
+                  verifierReason = atPrompt.verifier;
+                }
                 if (dropSuperseded(latest.get(key) ?? current)) return;
                 // The owner may have started composing during the prompt wait.
                 if (hasPendingOwnerInput()) {
@@ -5360,6 +5372,7 @@ export function makeCarryRearmController({
                 if (isDrill && isStale(deliver)) {
                   emitEvent(droppedKind, {
                     ...extra,
+                    ...dropDiagnostics(),
                     rearmed: true,
                     reason: 'carry-stale',
                     observedMaxQuietMs,
@@ -5447,6 +5460,7 @@ export function makeCarryRearmController({
             if (isDrill && isStale(latest.get(key) ?? current)) {
               emitEvent(droppedKind, {
                 ...extra,
+                ...dropDiagnostics(),
                 rearmed: true,
                 reason: 'carry-stale',
                 observedMaxQuietMs,
@@ -5459,13 +5473,14 @@ export function makeCarryRearmController({
           // A drill exhausted its bounded retry budget, or production exhausted
           // the optional anti-spin cap without ever idling — terminal, loud.
           emitEvent(droppedKind, {
-            ...extra, rearmed: true, reason: deferReason,
+            ...extra, ...dropDiagnostics(), rearmed: true, reason: deferReason,
             observedMaxQuietMs, attempts: attemptsMade, ...terminalIds(),
           });
           settle(key, { delivered: false, reason: deferReason });
         } catch (error) {
           emitEvent(droppedKind, {
             ...extra,
+            ...dropDiagnostics(),
             rearmed: true,
             reason: 'rearm-error',
             detail: String(error?.message ?? error).slice(0, 200),
@@ -13074,7 +13089,11 @@ export function hostThroughPty(o) {
     waitIdle: bridgeTty ? () => idleGate.waitIdle() : null,
     hasPendingOwnerInput: () => ownerComposerGate.hasPending(),
     waitForOwnerInputClear: bridgeTty ? () => ownerComposerGate.waitClear() : null,
-    waitAtPrompt: (cap, msg) => agentBusyGate.waitAtPrompt(cap, verifiedBoundaryFor(msg).boundary),
+    waitAtPrompt: async (cap, msg) => {
+      const { boundary, support } = verifiedBoundaryFor(msg);
+      const result = await agentBusyGate.waitAtPrompt(cap, boundary);
+      return { ...result, verifier: support.reason ?? 'supported' };
+    },
     recycle: (data, opts) => recycleChild(data, opts),
     // P-005 / D-004: dispatch a re-armed delivery by mode. Only the modes with
     // a verified single-call delivery primitive are registered; anything else
