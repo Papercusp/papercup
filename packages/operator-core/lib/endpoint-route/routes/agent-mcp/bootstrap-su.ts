@@ -388,7 +388,10 @@ export async function resolveAccountPin(
       // Marker parity with the raw-node launcher. The default route is not the
       // absence of routing state: it actively forces Claude back to the machine's
       // system `/login`, regardless of ambient env inherited from a prior session.
-      env: agent === 'claude' ? { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' } : {},
+      // Codex also needs the marker so the PTY host can restore this route on carry.
+      env: agent === 'claude' || agent === 'codex'
+        ? { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }
+        : {},
       notice: raw ? 'using the default system account (inference gateway skipped).' : null,
       accountId: null,
       provider: null,
@@ -481,11 +484,10 @@ export async function resolveAccountPin(
         // config.toml, not env — the writer call sites translate `gatewayAuto` into
         // codexGatewayAuto, and the SHARED builder (@papercusp/orchestrator/codex-gateway-config)
         // renders the provider block WITHOUT the x-papercusp-account header; the gateway then
-        // auto-selects (bearer pool first, codex-CLI account fallback). The old fail() here
-        // rested on a premise the gateway has since outgrown ("needs a specific account") —
-        // an unpinned codex request is served, it is not an error.
+        // auto-selects (bearer pool first, codex-CLI account fallback). The route marker
+        // below lets the PTY host reapply that config after a carry or recycle.
         return {
-          env: {},
+          env: { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' },
           notice: 'routing through the inference gateway (auto — it selects an available codex account).',
           accountId: null,
           provider: expected,
@@ -586,7 +588,10 @@ export async function resolveAccountPin(
       };
     }
     return {
-      env: { PAPERCUSP_ACCOUNT_ID: id },
+      env: {
+        PAPERCUSP_ACCOUNT_ID: id,
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin',
+      },
       notice:
         `pinned to Codex account ${id} (routed through the inference gateway).`,
       accountId: id,
