@@ -82,7 +82,7 @@ import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-d
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import {
   boundTestRunPayload,
-  captureWorktreeSnapshot,
+  captureWorktreeSnapshotAsync,
   computeWorktreeDirty,
   distillVitestRun,
   mergeDistilledRuns,
@@ -3258,6 +3258,7 @@ export async function runTestFilesCore(opts: {
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
   phaseTimings?: TestingRunPhaseTimings;
 }, deps: { runRouterFn?: typeof runRouter } = {}): Promise<TestFilesCoreResult> {
+  const runStartedAt = new Date().toISOString();
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
   // normalizeTestFilePaths; selecting from that result lets the router switch to
@@ -3395,7 +3396,7 @@ export async function runTestFilesCore(opts: {
   }
   const ingestLedgerInProcess =
     Boolean(opts.workspaceId && opts.harnessSlug) && shouldIngestVitestLedgerInProcess(root);
-  const ledgerWorktreeBefore = ingestLedgerInProcess ? captureWorktreeSnapshot(root) : null;
+  const ledgerWorktreeBefore = ingestLedgerInProcess ? await captureWorktreeSnapshotAsync(root) : null;
 
   // EI-21051590601555185: this tool runs inside the long-lived operator process, so it does not
   // pass through scripts/test-files.mjs before creating its private report directory. Apply the
@@ -3751,7 +3752,7 @@ export async function runTestFilesCore(opts: {
     // only when no child reporter exists so a managed checkout cannot double-
     // record the same run group.
     if (ingestLedgerInProcess && ledgerWorktreeBefore && opts.workspaceId && opts.harnessSlug) {
-      const ledgerWorktreeAfter = captureWorktreeSnapshot(root);
+      const ledgerWorktreeAfter = await captureWorktreeSnapshotAsync(root);
       const rows = reportTexts.flatMap((text) => parseVitestJsonForHarnessRows(text, root));
       await persistHarnessTestRuns({
         harnessSlug: opts.harnessSlug,
@@ -3759,6 +3760,7 @@ export async function runTestFilesCore(opts: {
         rows,
         runGroupId: runId,
         source: 'local',
+        runStartedAt,
         commit: ledgerWorktreeAfter.commit,
         worktreeDirty: computeWorktreeDirty(ledgerWorktreeBefore, ledgerWorktreeAfter),
         root,
