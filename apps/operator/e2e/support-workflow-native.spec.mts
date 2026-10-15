@@ -126,6 +126,8 @@ test.describe('P-012 current-build native acceptance', () => {
     const click = async (text: string) => measure(`(() => { const b=Array.from(document.querySelectorAll(${JSON.stringify(`${adminPanel} button`)})).find(b=>b.textContent===${JSON.stringify(text)}); if (!b || b.disabled) throw new Error('Unavailable admin control'); b.click(); return true; })()`);
     const refresh = async () => { await click('Refresh administration'); await check(`document.querySelector(${panel})?.getAttribute('aria-busy')==='false'`); };
     try {
+      expect(process.env.VERIFY_TAURI_SOURCE_RECEIPT, 'Admin acceptance requires the exact frozen source receipt').toBeTruthy();
+      await retain(info, 'p012-native-admin-source', JSON.parse(await readFile(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8')));
       await navigate();
       await login('employee');
       const handle = await submitNativeSupport(selection);
@@ -169,9 +171,6 @@ test.describe('P-012 current-build native acceptance', () => {
       await click('Revoke employee source access');
       await check(`document.querySelector(${panel})?.textContent.includes('revoke request saved') && document.querySelector(${panel})?.getAttribute('aria-busy')==='false'`);
       const history = await measure(`document.querySelector(${panel}).innerText`);
-      await retain(info, 'p012-native-admin-history', { status: 'PASS', history, handle,
-        approvedRevision: selection.approvedRevision, candidateRevision: selection.candidateRevision,
-        boundary: 'Administrative controls only; no worker completion, distinct business acceptance or shipment claim' });
       await native('navigate', selectedUrl + '&wfAdmin=true', '--json');
       await check(`!!document.querySelector(${panel})`);
       await refresh();
@@ -184,7 +183,10 @@ test.describe('P-012 current-build native acceptance', () => {
       await measure(`(() => { const s=document.querySelector(${JSON.stringify(form)}); const input=Array.from(s.querySelectorAll('label')).find(l=>l.textContent.includes('Find case evidence'))?.querySelector('input'); input.id='p012-revoked-query'; return true; })()`);
       await native('type', '#p012-revoked-query', selection.query, '--json');
       await measure(`(() => { Array.from(document.querySelectorAll(${JSON.stringify(`${form} button`)})).find(b=>b.textContent==='Search allowed sources').click(); return true; })()`);
-      await check(`!!document.querySelector(${JSON.stringify(form)})?.querySelector('[role=alert]')`);
+      await check(`(() => { const s=document.querySelector(${JSON.stringify(form)}); return s?.getAttribute('aria-busy')==='false' && !!s.querySelector('[role=alert]')?.textContent.includes('Support sources are unavailable or access was refused') && !s.querySelector('[role=checkbox]'); })()`);
+      await retain(info, 'p012-native-admin-history', { status: 'PASS', history, handle,
+        approvedRevision: selection.approvedRevision, candidateRevision: selection.candidateRevision,
+        boundary: 'Administrative controls only; no worker completion, distinct business acceptance or shipment claim' });
     } finally {
       await retain(info, 'p012-native-admin-dom', await measure('({url:location.href,text:document.body.innerText.slice(0,18000)})'));
     }
