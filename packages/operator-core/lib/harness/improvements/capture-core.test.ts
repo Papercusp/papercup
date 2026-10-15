@@ -281,6 +281,50 @@ describe('captureImprovement — initialState seam (observation-lane-scorecard-c
 });
 
 describe('captureImprovement — retries transient atomic-write contention (EI-21869609589204831)', () => {
+  it('retries a pre-execution postgres-js CONNECT_TIMEOUT at the atomic create boundary', async () => {
+    const d = deps();
+    const connectTimeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
+      code: 'CONNECT_TIMEOUT',
+    });
+    let attempts = 0;
+    d.createIssue = async (input) => {
+      attempts += 1;
+      if (attempts === 1) throw connectTimeout;
+      return existing({ id: 'EI-connect-recovered', title: input.title, kind: 'change', state: 'done' });
+    };
+
+    const result = await captureImprovement({
+      title: 'capture after a PostgreSQL connection timeout',
+      kind: 'change',
+      lane: 'observation',
+      initialState: 'done',
+    }, d);
+
+    expect(result).toMatchObject({ ok: true, created: true, issue: { id: 'EI-connect-recovered' } });
+    expect(attempts).toBe(2);
+  });
+
+  it('does not retry an ambiguous post-connect connection loss at the create boundary', async () => {
+    const d = deps();
+    const connectionClosed = Object.assign(new Error('write CONNECTION_CLOSED localhost:5432'), {
+      code: 'CONNECTION_CLOSED',
+    });
+    let attempts = 0;
+    d.createIssue = async () => {
+      attempts += 1;
+      throw connectionClosed;
+    };
+
+    await expect(captureImprovement({
+      title: 'do not replay a possibly applied write',
+      kind: 'change',
+      lane: 'observation',
+      initialState: 'done',
+    }, d)).rejects.toBe(connectionClosed);
+
+    expect(attempts).toBe(1);
+  });
+
   it('retries a 55P03 create timeout and preserves the capture when the next attempt succeeds', async () => {
     const d = deps();
     let attempts = 0;

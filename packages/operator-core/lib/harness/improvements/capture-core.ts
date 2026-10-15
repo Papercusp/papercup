@@ -44,7 +44,8 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
-import { acquireWithContentionRetry } from '../../agent-tools/locks/contention-retry';
+import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
+import { isRetriablePgConnectError } from '../../pg-transient-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
 import type { AdmissionBypassReason } from '../../work-items-admission';
 import { FLAGS } from '@papercusp/flags';
@@ -169,11 +170,11 @@ export { DUP_THRESHOLD };
 export const CAPTURE_LEXICAL_SEARCH_BUDGET_MS = 1_500;
 
 /**
- * A capture's final INSERT is an atomic bounded transaction. A transient PG
- * contention timeout aborts that transaction before commit, so retrying the
- * complete create is safe and prevents the failure-reporting path from losing
- * the finding it is trying to record. Keep this to one retry: the caller still
- * receives the typed timeout envelope when contention is sustained.
+ * A capture's final INSERT is an atomic bounded transaction. Retrying a PG
+ * contention error is safe because the transaction aborts before commit;
+ * postgres-js CONNECT_TIMEOUT is safe because it fires while acquiring a
+ * connection, before the transaction callback or its queries run. Keep the
+ * shared budget to one retry so sustained failures still reach the caller.
  */
 export const CAPTURE_CONTENTION_BACKOFFS_MS = [500] as const;
 
@@ -3844,6 +3845,7 @@ export async function captureImprovement(
           return deps.createIssue(createInput);
         }, {
           backoffsMs: CAPTURE_CONTENTION_BACKOFFS_MS,
+          isRetryable: (error) => isWorkspaceContended(error) || isRetriablePgConnectError(error),
         }),
     );
   } catch (error) {
