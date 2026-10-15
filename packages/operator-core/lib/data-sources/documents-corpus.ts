@@ -359,6 +359,10 @@ export async function searchOrganizationDocuments(
     agentOwnerId: string | null;
     query: string;
     sources?: string[];
+    /** Narrow an employee's selection to these canonical cases. IDs never
+     * replace the live grant, provider ACL or disclosure checks below.
+     * An explicit empty selection returns no documents. */
+    documentIds?: readonly string[];
     limit?: number;
     snippetChars?: number;
   },
@@ -372,6 +376,13 @@ export async function searchOrganizationDocuments(
   const snippetChars = Math.max(80, Math.min(1200, params.snippetChars ?? 600));
   const sources = [...new Set((params.sources ?? []).map(normalizePersonalSource))];
   const sourceFilter = sources.length ? sql`AND d.source = ANY(${sources})` : sql``;
+  if (params.documentIds !== undefined && (!Array.isArray(params.documentIds) || params.documentIds.length > 50 ||
+      params.documentIds.some((id) => typeof id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)))) {
+    throw new Error('organization document selection must contain at most 50 canonical UUIDs');
+  }
+  const documentFilter = params.documentIds === undefined ? sql``
+    : sql`AND d.id = ANY(${[...new Set(params.documentIds)]}::uuid[])`;
   const sealing = await contentSealing(sql, params.workspaceId);
   const { leg, tsRank } = await documentsLexicalLeg(sql, params.query);
   const rows = await sql<Array<{
@@ -387,6 +398,7 @@ export async function searchOrganizationDocuments(
        AND d.scope = 'organization' AND d.user_id IS NULL
        AND ${leg.match}
        ${sourceFilter}
+       ${documentFilter}
        AND EXISTS (
          SELECT 1
            FROM harness_shared.document_permission_members m
@@ -427,6 +439,7 @@ export async function searchOrganizationDocuments(
            AND d.scope = 'organization' AND d.user_id IS NULL
            AND d.sealed_content IS NOT NULL AND d.blind_terms && ${tokens}::text[]
            ${sources.length ? sql`AND d.source = ANY(${sources})` : sql``}
+           ${documentFilter}
            AND EXISTS (
              SELECT 1
                FROM harness_shared.document_permission_members m
