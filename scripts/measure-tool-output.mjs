@@ -4,7 +4,7 @@
  * Counts UTF-8 content bytes, not tokens or billed usage. See report.method.
  */
 import { createHash } from 'node:crypto';
-import { stat, realpath, writeFile } from 'node:fs/promises';
+import { stat, realpath, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,7 +21,7 @@ const USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_
 const DELIVERY_KEYS = new Set(['max_output_tokens', 'yield_time_ms', 'timeout_ms', 'timeout']);
 
 function parseArgs(argv) {
-  const options = { hours: 24, rerunSeconds: 120, roots: [], out: null };
+  const options = { hours: 24, rerunSeconds: 120, roots: [], out: null, snapshot: null, metadata: null };
   const take = (i) => {
     if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(argv[i] + ' requires a value');
     return argv[i + 1];
@@ -35,6 +35,8 @@ function parseArgs(argv) {
       options.hours = Number(m[1]) * (m[2] === 'd' ? 24 : 1);
     } else if (a === '--rerun-seconds') options.rerunSeconds = Number(value);
     else if (a === '--out') options.out = value;
+    else if (a === '--snapshot') options.snapshot = value;
+    else if (a === '--metadata') options.metadata = value;
     else if (a === '--claude-root' || a === '--codex-root' || a === '--root') {
       options.roots.push({ client: a === '--root' ? 'auto' : a === '--claude-root' ? 'claude' : 'codex', path: resolve(value) });
     } else throw new Error('unknown option ' + a);
@@ -154,10 +156,74 @@ function summary(rows) {
       bytesAfterTruncation: rows.reduce((n, x) => n + x.rerunBytes, 0) } };
 }
 
+// Only recorded top-level invocations are classified. JS inside exec is opaque;
+// command strings are not guessed to be reads, and arguments are never executed.
+function callKind(tool) {
+  if (/^(?:wait|write_stdin|wait_agent)$/.test(tool)) return 'wait';
+  if (/^(?:Read|read_file|view_image)$/.test(tool) || /(?:__|:)capability(?:_|:)read$/.test(tool)) return 'read';
+  return 'other';
+}
+function durationBand(seconds) {
+  return seconds == null ? 'unknown' : seconds < 300 ? '<5m' : seconds < 1800 ? '5-30m' : seconds < 7200 ? '30-120m' : '>=2h';
+}
+function roleFor(nativeSessionId, metadata) {
+  const matches = metadata.filter((r) => r.nativeSessionId === nativeSessionId);
+  const roles = [...new Set(matches.map((r) => r.role).filter(Boolean))].sort();
+  const owners = [...new Set(matches.map((r) => r.ownerId).filter(Boolean))].sort();
+  const ambiguous = roles.length > 1 || owners.length > 1;
+  return { role: ambiguous ? 'ambiguous' : roles[0] || 'unknown',
+    status: ambiguous ? 'ambiguous' : roles.length ? 'matched' : 'unknown',
+    owners, sources: [...new Set(matches.map((r) => r.source).filter(Boolean))].sort() };
+}
+
+/** Reconciles disjoint native-session cohorts without treating files as actors. */
+export function driverCohorts(files) {
+  const active = files.filter((f) => f.modelCalls > 0);
+  const groups = new Map();
+  for (const f of active) {
+    const key = JSON.stringify([f.client, f.nativeSessionId || f.path]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(f);
+  }
+  // Copied/forked files with the same native identity cannot be safely summed.
+  const duplicates = [...groups.values()].filter((g) => g.length > 1);
+  const sessions = [...groups.values()].filter((g) => g.length === 1).map(([f]) => ({
+    path: f.path, client: f.client, nativeSessionId: f.nativeSessionId, role: f.identity.role,
+    identityStatus: f.identity.status, durationBand: durationBand(f.drivers.observedSeconds),
+    ...f.drivers, modelCalls: f.modelCalls,
+    wakeSource: Object.keys(f.drivers.callsByOrigin).length === 1
+      ? Object.keys(f.drivers.callsByOrigin)[0] : 'mixed',
+  }));
+  const by = (field) => {
+    const rows = new Map();
+    for (const s of sessions) {
+      const key = JSON.stringify([s.client, s[field]]);
+      if (!rows.has(key)) rows.set(key, { client: s.client, cohort: s[field], sessions: 0, modelCalls: 0,
+        waits: 0, repeatedReads: 0, calls: [] });
+      const row = rows.get(key);
+      row.sessions += 1; row.modelCalls += s.modelCalls; row.waits += s.waitCalls;
+      row.repeatedReads += s.repeatedReadCalls; row.calls.push(s.modelCalls);
+    }
+    return [...rows.values()].map(({ calls, ...r }) => ({ ...r, callsPerSession: r.modelCalls / r.sessions,
+      requestDistribution: distribution(calls) })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  };
+  return { sessions, byRole: by('role'), byWakeSource: by('wakeSource'), byDuration: by('durationBand'),
+    coverage: { activeFiles: active.length, includedSessions: sessions.length,
+      duplicateNativeFiles: duplicates.map((g) => ({ client: g[0].client, nativeSessionId: g[0].nativeSessionId,
+        files: g.map((f) => f.path), excludedModelCalls: g.reduce((n, f) => n + f.modelCalls, 0) })),
+      unknownIdentitySessions: sessions.filter((s) => s.identityStatus === 'unknown').length,
+      ambiguousIdentitySessions: sessions.filter((s) => s.identityStatus === 'ambiguous').length } };
+}
+
 /** One finite file snapshot, with request/result identities local to that native session. */
 export async function scan(file, client, { start, end, rerunSeconds = 120, snapshotBytes } = {}) {
   const calls = new Map(), seenResults = new Set(), seenRequests = new Set(), recentTruncated = new Map();
   const rows = [], segments = [0];
+  const driver = { toolCalls: 0, waitCalls: 0, readCalls: 0, repeatedReadCalls: 0, opaqueExecCalls: 0,
+    callsByOrigin: {}, toolCallsByOrigin: {}, turnsByOrigin: {}, callsByTool: {},
+    callsWithoutTimestamp: 0, firstRecordAt: null, lastRecordAt: null };
+  const seenReads = new Set(), seenTurnNonces = new Set();
+  let origin = 'unmarked';
   const coverage = { parseErrors: 0, resultsWithoutTimestamp: 0, requestsWithoutTimestamp: 0,
     duplicateResults: 0, duplicateRequests: 0, requestsWithoutIdentity: 0, unmatchedResults: 0, nativeCompactions: 0, futureResults: 0, lines: 0 };
   let segment = 0, modelCalls = 0, ordinal = 0, nativeSessionId = null;
@@ -166,11 +232,27 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
     if (!Number.isFinite(ts)) { coverage.requestsWithoutTimestamp += 1; return; }
     if (key && seenRequests.has(key)) { coverage.duplicateRequests += 1; return; }
     if (key) seenRequests.add(key); else coverage.requestsWithoutIdentity += 1;
-    if (inWindow(ts)) { segments[segment] += 1; modelCalls += 1; }
+    if (inWindow(ts)) {
+      segments[segment] += 1; modelCalls += 1;
+      driver.callsByOrigin[origin] = (driver.callsByOrigin[origin] || 0) + 1;
+    }
   };
   const call = (id, name, input, ts) => {
     if (id && calls.has(id)) return;
     const tool = toolName(client, name), sig = signature(tool, input), previous = recentTruncated.get(sig);
+    if (!Number.isFinite(ts)) driver.callsWithoutTimestamp += 1;
+    if (inWindow(ts)) {
+      driver.toolCalls += 1;
+      driver.callsByTool[tool] = (driver.callsByTool[tool] || 0) + 1;
+      driver.toolCallsByOrigin[origin] = (driver.toolCallsByOrigin[origin] || 0) + 1;
+      if (callKind(tool) === 'wait') driver.waitCalls += 1;
+      if (callKind(tool) === 'read') {
+        driver.readCalls += 1;
+        if (seenReads.has(sig)) driver.repeatedReadCalls += 1;
+        seenReads.add(sig);
+      }
+      if (tool === 'code-mode-exec') driver.opaqueExecCalls += 1;
+    }
     const retryOf = previous && Number.isFinite(ts) && ts >= previous.ts && ts - previous.ts <= rerunSeconds * 1000 && inWindow(ts) ? previous : null;
     if (retryOf) { retryOf.reruns += 1; recentTruncated.delete(sig); }
     calls.set(id || '(anonymous-call-' + ordinal + ')', { tool, sig, retryOf });
@@ -202,8 +284,25 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
       if (rec.type === 'session_meta' || rec.type === 'response_item') client = 'codex';
       else if (rec.type === 'user' || rec.type === 'assistant') client = 'claude';
     }
+    if (inWindow(ts)) {
+      driver.firstRecordAt = driver.firstRecordAt == null ? ts : Math.min(driver.firstRecordAt, ts);
+      driver.lastRecordAt = driver.lastRecordAt == null ? ts : Math.max(driver.lastRecordAt, ts);
+    }
+    // Tool-result user rows are not new turns. Codex also emits user_message
+    // events; use response_item only so one prompt is not counted twice.
+    const userContent = client === 'claude' && rec.type === 'user'
+      ? rec.message?.content : client === 'codex' && rec.type === 'response_item'
+        && p?.type === 'message' && p.role === 'user' ? p.content : null;
+    if (userContent != null && !(Array.isArray(userContent) && userContent.some((b) => b?.type === 'tool_result'))) {
+      const match = /^\s*⟦turn-origin:([^\s⟧]+) nonce:([a-zA-Z0-9_-]+)⟧/.exec(contentText(userContent));
+      origin = match?.[1] || 'unmarked';
+      if (!match || !seenTurnNonces.has(match[2])) {
+        if (match) seenTurnNonces.add(match[2]);
+        if (inWindow(ts)) driver.turnsByOrigin[origin] = (driver.turnsByOrigin[origin] || 0) + 1;
+      }
+    }
     if (rec.type === 'compacted' || p?.type === 'context_compacted' || (rec.type === 'system' && rec.subtype === 'compact_boundary')) {
-      coverage.nativeCompactions += 1; segment += 1; segments.push(0); recentTruncated.clear(); continue;
+      coverage.nativeCompactions += 1; segment += 1; segments.push(0); recentTruncated.clear(); seenReads.clear(); continue;
     }
     if (client === 'claude') {
       const m = rec.message;
@@ -232,17 +331,29 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
     }
   }
   for (const row of rows) row.rereadBytes = row.bytes * Math.max(0, segments[row.segment] - row.at);
-  return { client, nativeSessionId, rows, modelCalls, coverage };
+  const { firstRecordAt, lastRecordAt, ...counts } = driver;
+  return { client, nativeSessionId, rows, modelCalls, coverage, drivers: { ...counts,
+    firstRecordAt: firstRecordAt == null ? null : new Date(firstRecordAt).toISOString(),
+    lastRecordAt: lastRecordAt == null ? null : new Date(lastRecordAt).toISOString(),
+    observedSeconds: firstRecordAt == null ? null : (lastRecordAt - firstRecordAt) / 1000 } };
 }
 
-export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.now(), rerunSeconds = 120 } = {}) {
+export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.now(), rerunSeconds = 120, snapshot, sessionMetadata = [] } = {}) {
+  if (snapshot) {
+    now = Date.parse(snapshot.window.end);
+    hours = (now - Date.parse(snapshot.window.start)) / 3600_000;
+    if (!Number.isFinite(now) || !(hours > 0)) throw new Error('invalid snapshot window');
+  }
   const start = now - hours * 3600_000, end = now, rows = { claude: [], codex: [] };
   const modelCalls = { claude: 0, codex: 0 }, seenFiles = new Set(), files = [], rootCoverage = [];
-  const diagnostics = { duplicatePaths: 0, unreadablePaths: 0, unknownClientFiles: 0 };
-  for (const root of roots) {
+  const diagnostics = { duplicatePaths: 0, unreadablePaths: 0, unknownClientFiles: 0, shortenedSnapshots: 0 };
+  const candidates = snapshot ? [{ client: 'snapshot', path: '.', files: snapshot.sourceCoverage.files }] : roots;
+  for (const root of candidates) {
     const entry = { client: root.client, path: resolve(root.path), status: 'read', files: 0, skippedBeforeWindow: 0, errors: 0 };
     rootCoverage.push(entry);
-    for await (const file of walkRawTranscripts(root.path, { onError: () => { entry.errors += 1; entry.status = entry.files ? 'partial' : 'unavailable'; } })) {
+    const discovered = root.files ? root.files.map((f) => f.path) : walkRawTranscripts(root.path, { onError: () => { entry.errors += 1; entry.status = entry.files ? 'partial' : 'unavailable'; } });
+    const frozen = new Map((root.files || []).map((f) => [f.path, f]));
+    for await (const file of discovered) {
       if (root.client === 'codex' && !/^rollout-.*\.jsonl$/.test(file.split('/').at(-1))) continue;
       let before, canonicalPath;
       try { before = await stat(file); canonicalPath = await realpath(file); } catch { diagnostics.unreadablePaths += 1; continue; }
@@ -250,16 +361,20 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
       seenFiles.add(canonicalPath);
       // Same discovery optimization as WI-6882. The actual result boundary is
       // still per record; discovery omissions are exposed, never called empty.
-      if (before.mtimeMs < start) { entry.skippedBeforeWindow += 1; continue; }
+      if (!snapshot && before.mtimeMs < start) { entry.skippedBeforeWindow += 1; continue; }
       try {
-        const scanned = await scan(file, root.client, { start, end, rerunSeconds, snapshotBytes: before.size });
+        const original = frozen.get(file), snapshotBytes = original?.snapshotBytes ?? before.size;
+        if (!Number.isSafeInteger(snapshotBytes) || snapshotBytes < 0) throw new Error('invalid snapshot size');
+        if (before.size < snapshotBytes) { diagnostics.shortenedSnapshots += 1; throw new Error('source shorter than frozen snapshot'); }
+        const scanned = await scan(file, original?.client || root.client, { start, end, rerunSeconds, snapshotBytes });
         entry.files += 1;
         if (!rows[scanned.client]) { diagnostics.unknownClientFiles += 1; continue; }
         rows[scanned.client].push(...scanned.rows); modelCalls[scanned.client] += scanned.modelCalls;
         const after = await stat(file);
         files.push({ path: canonicalPath, client: scanned.client, nativeSessionId: scanned.nativeSessionId,
-          snapshotBytes: before.size, mtime: new Date(before.mtimeMs).toISOString(), changedDuringRead: before.size !== after.size || before.mtimeMs !== after.mtimeMs,
-          results: scanned.rows.length, modelCalls: scanned.modelCalls, coverage: scanned.coverage });
+          snapshotBytes, mtime: new Date(before.mtimeMs).toISOString(), changedDuringRead: before.size !== after.size || before.mtimeMs !== after.mtimeMs,
+          results: scanned.rows.length, modelCalls: scanned.modelCalls, coverage: scanned.coverage,
+          identity: roleFor(scanned.nativeSessionId, sessionMetadata), drivers: scanned.drivers });
       } catch { entry.errors += 1; entry.status = 'partial'; diagnostics.unreadablePaths += 1; }
     }
   }
@@ -280,8 +395,10 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
       truncation: 'Marker-based lower bound; hidden inner markers are unobservable. byCap populations overlap when several caps fire. Projection-success footers do not count.',
       reruns: 'Heuristic: next call with the same tool and canonical arguments within the declared seconds after a marked result. Delivery caps/timeouts are ignored; each repeat attaches to at most one prior result. Does not prove truncation caused the repeat. Bytes are the observed repeat result bytes.',
       coverage: 'Finite initial file-size snapshots; mtime selects candidate files, record timestamps select results/requests. Missing timestamps excluded. Overlapping real paths deduped; distinct copied/forked files are separate transcript observations.',
+      drivers: 'Recorded top-level calls only; exec bodies are opaque. Repeated reads have identical canonical arguments within a native compaction segment and the window; repetition does not prove waste. Model requests are assigned to the preceding user-turn head marker; unmarked is unknown, not owner-typed. Durations are observed record spans within the window, not CPU time or full session lifetime.',
+      cohorts: 'Active native sessions with one source file, grouped separately by client/role, client/wake source and client/duration. Multiple files for one native identity are excluded explicitly. Historical identity-ledger and adv_sessions metadata are supplied as a dated sidecar; conflicting roles/owners are ambiguous, missing matches unknown. Snapshot mode reuses exact candidate files, byte limits and window; unavailable or shortened sources are exposed.',
     },
-    ...summary([...rows.claude, ...rows.codex]), clients,
+    ...summary([...rows.claude, ...rows.codex]), clients, drivers: driverCohorts(files),
     sourceCoverage: { roots: rootCoverage, files, diagnostics, ...coverage,
       changedDuringRead: files.filter((f) => f.changedDuringRead).length },
   };
@@ -289,7 +406,11 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const options = parseArgs(process.argv.slice(2));
-  const report = await measure(options.roots, options.hours, { rerunSeconds: options.rerunSeconds });
+  const snapshot = options.snapshot ? JSON.parse(await readFile(options.snapshot, 'utf8')) : undefined;
+  const metadata = options.metadata ? JSON.parse(await readFile(options.metadata, 'utf8')) : undefined;
+  const report = await measure(options.roots, options.hours, { rerunSeconds: options.rerunSeconds, snapshot,
+    sessionMetadata: metadata?.sessions || [] });
+  if (metadata) report.metadataCoverage = { capturedAt: metadata.capturedAt, source: metadata.source, rows: metadata.sessions?.length || 0 };
   if (options.out) await writeFile(options.out, JSON.stringify(report, null, 2) + '\n');
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
 }
