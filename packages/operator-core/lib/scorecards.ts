@@ -2741,12 +2741,55 @@ async function readActiveSourceAuditConsultResponder(
   return rows[0] ?? null;
 }
 
+interface ActiveGradingAuditTaskOwnerRow {
+  coord_owner_id: string | null;
+}
+
+async function readActiveGradingAuditTaskOwners(
+  tx: OrgSql,
+  workspaceId: string,
+  issueId: string,
+  reservation: { key: string; reservedAt: string },
+): Promise<ActiveGradingAuditTaskOwnerRow[]> {
+  const labelPrefix = `${reservation.key}:`;
+  return tx<ActiveGradingAuditTaskOwnerRow[]>`
+    SELECT NULLIF(BTRIM(detail->>'coordOwnerId'), '') AS coord_owner_id
+      FROM harness_shared.task_ledger
+     WHERE workspace_id = ${workspaceId}
+       AND class = 'agent-session'
+       AND state IN ('pending', 'running')
+       AND (detail->>'label' = ${reservation.key}
+         OR LEFT(detail->>'label', ${labelPrefix.length}) = ${labelPrefix})
+       AND (work_item_id IS NULL OR work_item_id = ${issueId})
+     FOR SHARE`;
+}
+
+async function isCurrentSourceAuditResponderInTransaction(
+  tx: OrgSql,
+  workspaceId: string,
+  issueId: string,
+  reservation: { key: string; reservedAt: string },
+  responderOwnerId: string | null | undefined,
+): Promise<boolean> {
+  if (typeof responderOwnerId !== 'string') return false;
+  const ownerId = responderOwnerId.trim();
+  if (!ownerId) return false;
+  const current = await readActiveSourceAuditConsultResponder(tx, workspaceId, issueId, reservation);
+  if (current) return current.answering_owner_id === ownerId;
+
+  // A direct launch fallback has no consult cursor. Bind its shared lease to
+  // the owner on the live dispatcher task; absence of a consult alone is not
+  // authority for any session that receives the lease string.
+  const taskOwners = await readActiveGradingAuditTaskOwners(tx, workspaceId, issueId, reservation);
+  return taskOwners.length > 0 && taskOwners.every((task) => task.coord_owner_id === ownerId);
+}
+
 /**
  * Every candidate in a grading-audit consult receives the same reservation
  * epoch. Bind a routed emission to the answerer on the current cascade cursor
  * so an earlier fork cannot settle with the next candidate's still-live lease.
- * Direct launch fallbacks have no active consult row and use the launcher's
- * existing single-task idempotency guard.
+ * Direct launch fallbacks have no consult cursor, so bind them to the live
+ * dispatcher task owner instead of treating a missing consult as authority.
  */
 export async function isCurrentSourceAuditResponder(
   issueId: string,
@@ -2756,10 +2799,8 @@ export async function isCurrentSourceAuditResponder(
 ): Promise<boolean> {
   const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
   const transact = deps.transact ?? boundedOrgTxn;
-  return transact(async (tx) => {
-    const current = await readActiveSourceAuditConsultResponder(tx, workspaceId, issueId, reservation);
-    return !current || current.answering_owner_id === auditor;
-  });
+  return transact((tx) =>
+    isCurrentSourceAuditResponderInTransaction(tx, workspaceId, issueId, reservation, auditor));
 }
 
 /** Settle only the exact pending stamp read by the caller, unless retraction has won. */
@@ -2768,19 +2809,20 @@ export async function settlePendingGradingAuditAtomically(
   expected: ScorecardGradingAudit,
   settled: ScorecardGradingAudit,
   deps: ScorecardAtomicWriteDeps = {},
+  responderOwnerId: string | undefined = settled.auditor,
 ): Promise<boolean> {
   const workspaceId = await (deps.resolveWorkspace ?? resolveIssueWorkspace)(issueId);
   const transact = deps.transact ?? boundedOrgTxn;
   const fencingReservation = expected.lastDispatchReservation ?? expected.dispatchReservation;
   const rows = await transact(async (tx: OrgSql) => {
-    if (fencingReservation) {
-      const current = await readActiveSourceAuditConsultResponder(
-        tx,
-        workspaceId,
-        issueId,
-        fencingReservation,
-      );
-      if (current && current.answering_owner_id !== settled.auditor) return [];
+    if (fencingReservation && !(await isCurrentSourceAuditResponderInTransaction(
+      tx,
+      workspaceId,
+      issueId,
+      fencingReservation,
+      responderOwnerId,
+    ))) {
+      return [];
     }
     return tx<{ feature_id: string }[]>`
       UPDATE harness_shared.work_items
@@ -2845,7 +2887,7 @@ export async function settlePendingGradingAuditAtomically(
 export async function markGradingAuditAwaitingReemit(
   issueId: string,
   expected: ScorecardGradingAudit,
-  input: { reason: string; at?: string },
+  input: { reason: string; at?: string; responderOwnerId: string },
   deps: ScorecardAtomicWriteDeps & {
     notifySyncInvalidate?: (key: 'scorecards.list' | 'rubrics.trend') => void;
   } = {},
@@ -2861,7 +2903,13 @@ export async function markGradingAuditAwaitingReemit(
     },
   };
   delete awaitingReemit.dispatchReservation;
-  const updated = await settlePendingGradingAuditAtomically(issueId, expected, awaitingReemit, deps);
+  const updated = await settlePendingGradingAuditAtomically(
+    issueId,
+    expected,
+    awaitingReemit,
+    deps,
+    input.responderOwnerId,
+  );
   if (!updated) return false;
   if (deps.notifySyncInvalidate) {
     deps.notifySyncInvalidate('scorecards.list');
