@@ -1152,7 +1152,7 @@ describe('session:request-compaction ack states a queued intent, not an outcome 
     expect(note).toMatch(/not performed yet/i);
     expect(note).toMatch(/quiet/i); // the precondition the cut waits on
     expect(note).toMatch(/still here/i); // the falsifier the agent can check itself
-    expect(note).toMatch(/flush/i); // do not rely on the cut to preserve state
+    expect(note).toContain('host saved the mechanical checkpoint');
     // The retired wording asserted the outcome outright; if it ever returns, the
     // field being honest would not save the agent from acting on the prose.
     expect(note).not.toContain('it resumes automatically');
