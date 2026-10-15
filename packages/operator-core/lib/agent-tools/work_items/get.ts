@@ -394,7 +394,7 @@ const SOURCE_ROW_ROOTS = new Set([
   'checkpointBody',
   'checkpointAgeMs', 'checkpointUpdatedAtMs', 'checkpointContentHash', 'checkpointSubjectFingerprint', 'checkpointRetractions',
   'checkpointReadFailed', 'checkpointFreshness', 'checkpointStale', 'checkpointBgJobWarning',
-  'priorWork', 'priorWorkWarning', 'completion', 'hasCompletionEvidence', 'completionFreshness',
+  'priorWork', 'priorWorkWarning', 'completion', 'hasCompletionEvidence', 'completionFreshness', 'changeKinds',
   'deploymentPosition', 'citedFacts', 'assumptionFlags', 'planItemBlocked', 'planItemClaimCollision',
   'planItemTextDrift', 'threadWindow', 'threadWindowReadFailed', 'threadLimitClamped',
   'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'mechanics', 'error', 'retryable', 'phase',
@@ -735,6 +735,20 @@ const workItemsGetResultRowSchema = z.object({
     at: z.string(),
     line: z.string(),
   }).passthrough()).optional(),
+  // change-kind-declared-proof-2026-10-15 P-001 (R-1): the agent's declared change kinds —
+  // `current` is the newest declaration (null when none), `history` every declaration oldest
+  // first. `readFailed` marks a failed read so it is never mistaken for "nothing declared".
+  changeKinds: z.object({
+    current: z.array(z.string()).nullable(),
+    history: z.array(z.object({
+      kinds: z.array(z.string()),
+      step: z.string(),
+      declaredBy: z.string(),
+      declaredAt: z.string(),
+      reason: z.string().nullable(),
+    }).passthrough()),
+    readFailed: z.literal(true).optional(),
+  }).passthrough().optional(),
   checkpointAgeMs: z.number().nullable().optional(),
   checkpointUpdatedAtMs: z.number().nullable().optional(),
   checkpointContentHash: z.string().nullable().optional(),
@@ -1855,6 +1869,22 @@ export default defineTool({
           ...brief,
           text: [renderOperationalBrief(brief), ...renderWorkItemFactLines(brief)].join('\n'),
         };
+      }
+    }
+    // change-kind-declared-proof-2026-10-15 P-001 (R-1): read back the declared change kinds
+    // and their history for every available row, in one query.
+    if (!args.checksOnly && !args.checkpointOnly) {
+      const rows = (env.results as Array<Record<string, unknown>>).filter(
+        (r) => r.ok === true && r.availability === 'available' && typeof r.id === 'string',
+      );
+      if (rows.length > 0) {
+        try {
+          const { readChangeKinds } = await import('../../work-item-change-kinds');
+          const views = await readChangeKinds(activeWorkspaceId(), rows.map((r) => r.id as string));
+          for (const r of rows) r.changeKinds = views.get(r.id as string) ?? { current: null, history: [] };
+        } catch {
+          for (const r of rows) r.changeKinds = { current: null, history: [], readFailed: true };
+        }
       }
     }
     return bulkContent({
