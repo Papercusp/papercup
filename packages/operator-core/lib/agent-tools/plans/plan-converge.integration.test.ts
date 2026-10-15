@@ -16,6 +16,8 @@ import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { bindSpecEvidence, measureRepoFilesEvidenceDetailedAtCommit } from './spec-evidence-store';
 import { createOneWorkItem } from '../work_items/_create-core';
 import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { resolveLocalRubric } from '../../cupboard/rubric-store';
+import { provisionPinnedRubric } from '../../rubrics';
 
 // Fix external class/root metadata for the isolated baseline. Clause/evidence
 // reads and all three handlers use their real production SQL and file measurers.
@@ -119,6 +121,13 @@ describe('converge real PostgreSQL composition', () => {
     (await tool.handler(tool.args.parse(args) as never, ctx) as { data: Body }).data;
   beforeAll(async () => {
     fx = await setupPlanPgFixture();
+    // The certifier writes through scorecards:emit, which resolves its own
+    // spec-test-adequacy rubric from the workspace store. Seed the bundled
+    // production rubric into this disposable database so this composition test
+    // exercises that real writer path rather than a missing-rubric refusal.
+    const adequacyRubric = resolveLocalRubric('spec-test-adequacy');
+    expect(adequacyRubric).not.toBeNull();
+    await provisionPinnedRubric(adequacyRubric!, PAPERCUSP_WORKSPACE_ID);
     // Operator-home scope intentionally resolves to PAPERCUSP_WORKSPACE_ID.
     // Seed that same key rather than the generic fixture's default workspace.
     await seedPlan(fx.admin, PAPERCUSP_WORKSPACE_ID, 'papercusp', slug,
