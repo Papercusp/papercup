@@ -401,6 +401,7 @@ const {
   unwrapWholePaste,
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
+  launchKickoffRequiresPreSubmissionNativeBinding,
   carryExhaustionDefersToNativeProof,
   shouldRetryCarryOnFreshEpoch,
   shouldRetryLaunchKickoffOnFreshChild,
@@ -4263,6 +4264,18 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     expect(waitForMarker).toHaveBeenCalledWith(expect.objectContaining({ nativeId: null }));
   });
 
+  it('does not wait for a pre-submission writer lock on a fresh Codex kickoff', () => {
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'codex', isResume: false, hasResolver: true,
+    })).toBe(false);
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'codex', isResume: true, hasResolver: true,
+    })).toBe(true);
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'claude', isResume: false, hasResolver: true,
+    })).toBe(true);
+  });
+
   it('retries one raw CR and accepts only the second native proof', async () => {
     const waitForMarker = vi
       .fn()
@@ -7758,6 +7771,19 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
     expect(shouldAdoptHostCode(base)).toBe(false);
     expect(shouldAdoptHostCode({ ...base, allowInteractive: false })).toBe(false);
     expect(shouldAdoptHostCode({ ...base, allowInteractive: true })).toBe(true);
+  });
+
+  it('keeps adoption in-process while this host owns a pending loop delivery', () => {
+    const pendingTurn = {
+      onReexec: () => {},
+      reexecCode: 87,
+      bridgeTty: false,
+      pendingTurnDelivery: true,
+    };
+    const noPendingTurn = { ...pendingTurn, pendingTurnDelivery: false };
+
+    expect(shouldAdoptHostCode(pendingTurn)).toBe(false);
+    expect(shouldAdoptHostCode(noPendingTurn)).toBe(true);
   });
 
   it('cannot opt INTO adoption without a re-exec loop (the hard-exit configuration)', () => {
