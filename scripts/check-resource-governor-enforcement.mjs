@@ -515,13 +515,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.split("verifyVerifierSourceSync(sourceRoot, receipt").length - 1 === 2 &&
         // Fourth start (WI-6554700010008629): the bounded runtime-vintage witness child.
         source.includes("await import('./packages/operator-core/lib/runtime-vintage.ts');") &&
-        source.includes("cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: { ...process.env,") &&
         source.includes("verifyVerifierSourceSync(sourceRoot, receipt") &&
         source.includes("{ cwd: sourceRoot, stdio: 'inherit',") &&
         // Keep one isolation assert in each native-operation, committed-test, and Reports
         // fixture phase. Dropping any phase's assertion re-flags the source.
-        source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 3 &&
+        source.split("assert.equal(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED, '1'").length - 1 === 2 &&
         source.includes("assert.ok(pid && workspace && process.env.VERIFY_TAURI_POLL") &&
+        source.includes("cwd: sourceRoot, stdio: 'inherit', timeout: 60_000, env: nativeLedgerEnvironment(),") &&
         source.includes("timeout: 60_000") &&
         source.includes("timeout: 90_000") &&
         !/\bdetached\s*:\s*true/.test(code) &&
@@ -671,7 +671,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return [...code.matchAll(/\b(?:spawn|spawnSync|fork|execFile|execFileSync|exec|execSync)\s*\(/g)].length === 1 &&
-        /\breturn execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/.test(code) &&
+        /\breturn execFileSync\(gitExecutable, \['-C', top, \.\.\.args\]/.test(source) &&
         source.includes("const COMMITTED_SOURCE_GIT_ENV = 'PAPERCUSP_COMMITTED_SOURCE_GIT';") &&
         source.includes("if (configured && !isAbsolute(configured))") &&
         source.includes("const resolved = realpathSync(candidate);") &&
@@ -2292,21 +2292,24 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       ].length;
       const hasReadiness = /\bwaitForSandboxPostgres\b/.test(code);
       const readinessPinned = !hasReadiness || (
-        source.split("const diagnosticRun = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 });").length - 1 === 3 &&
-        source.includes("await waitForSandboxPostgres(database, { run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped });") &&
+        [...source.matchAll(/\bdiagnosticRun\s*=\s*args\s*=>\s*spawnSync\('docker', args, \{ encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 \}\)/g)].length === 3 &&
+        source.includes("await runPhase('database-ready', () => waitForSandboxPostgres(database,") &&
+        source.includes("{ run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped }));") &&
         source.includes("attempts = 31, isStopped = () => false") &&
-        source.includes("for (let attempt = 0; attempt < attempts; attempt++)") &&
+        source.includes("for (let attempt = 0; ; attempt++)") &&
         source.includes("if (isStopped()) return;") &&
-        source.includes("if (terminal || attempt === attempts - 1)")
+        source.includes("stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;") &&
+        source.includes("if (terminal || stalledAttempts >= attempts)")
       );
       const shapePinned = source.includes("REAPER_IMAGE")
         ? resourceStartCallCount(source) === 8 && readinessPinned &&
           testcontainersImports === 1 &&
-          source.includes("import { getContainerRuntimeClient } from 'testcontainers';") &&
-          source.includes(`await dockerAllocation(['run', '-d', '--rm', '--pull=${hasReadiness ? 'missing' : 'never'}', '--name', name,`) &&
+          source.includes("import { getContainerRuntimeClient, Wait } from 'testcontainers';") &&
+          source.includes("getClient = getContainerRuntimeClient, allocate = dockerAllocation,") &&
+          source.includes("const containerId = await allocate(['run', '-d', '--rm', '--pull=missing', '--name', name,") &&
           source.includes("'-e', 'RYUK_CONNECTION_TIMEOUT=30s', '-e', 'RYUK_RECONNECTION_TIMEOUT=1s', REAPER_IMAGE]);") &&
           source.includes("socket.write('label=papercusp.test.owner=' + owner + '\\n')") &&
-          source.includes("    reaper.assertConnected();\n    containers.push(name);") &&
+          source.includes("  reaper.assertConnected();\n  containers.push(name);") &&
           source.includes("    reaper.assertConnected();\n    await dockerAllocation(['network', 'create', ") &&
           source.includes("  remove = args => dockerAllocation(args) }) {") &&
           source.includes("try { await remove(['rm', '-f', '-v', name]); }") &&
@@ -2315,7 +2318,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
           (source.includes("try { await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker }); }") ||
             (source.includes("if (containers.length || networkCreated) {") &&
               source.includes("await cleanupSandboxResources({ containers, network, networkCreated, inspect: docker });"))) &&
-          source.includes("    try { await cleanup(); }\n    finally { reaper?.close(); }")
+          source.includes("    try { await runPhase('cleanup', cleanup); }\n    finally { reaper?.close(); }")
         : resourceStartCallCount(source) === 7 &&
           testcontainersImports === 0 &&
           source.includes("    await cleanup();");
@@ -2367,7 +2370,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return source.includes("const exec = promisify(execFile);") &&
-        [...code.matchAll(/\bexec\s*\(/g)].length === 1 &&
+        [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
         source.includes("resolve(ROOT, 'scripts/mcp-call.mjs')") &&
         source.includes("timeout: 35_000, maxBuffer: 1024 * 1024, signal");
     },
@@ -2397,7 +2400,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       return source.includes("const exec = promisify(execFile);") &&
-        [...code.matchAll(/\bexec\s*\(/g)].length === 1 &&
+        [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
         source.includes("timeout: 35_000, maxBuffer: 1024 * 1024") &&
         source.includes("input.ids.length > 10") && source.includes("input.repeats > 10") &&
         source.includes("if (port !== '3170')");
@@ -2475,6 +2478,47 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  [
+    "packages/operator-core/lib/agent-tools/coordination/inbox-visibility.ts::unbounded-resident-queue",
+    {
+      disposition: "semantic",
+      reason:
+        "The pending Map inside relevantSystemNoticeDelivery is a per-call index of digest metadata for the current input rows. The function fills it while filtering, reads it while building returned state, and discards it on return; it neither schedules work nor retains a queue between calls. The source pin keeps this exact Map type, set/get use, return, and sole queue-shaped write.",
+      matchesSource: (source) => {
+        const start = source.indexOf("export function relevantSystemNoticeDelivery<");
+        const end = source.indexOf("\nexport function coalesceRepeatedBroadcasts", start);
+        if (start < 0 || end < 0) return false;
+        const section = source.slice(start, end);
+        const code = stripCommentsAndStrings(section, "inbox-visibility.ts");
+        const writers = [...code.matchAll(RESIDENT_QUEUE)];
+        return section.includes("const pending = new Map<T, { key: string; fingerprint: string }>();") &&
+          section.includes("pending.set(entry, { key, fingerprint });") &&
+          section.includes("const notice = pending.get(entry);") &&
+          section.includes("return { entries: kept, state, suppressed: entries.length - kept.length };") &&
+          writers.length === 1 && writers[0][1] === "pending";
+      },
+    },
+  ],
+  [
+    "packages/operator-core/lib/llm-testing/isolated-hosted-test-user.mts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "P-015 reviewed test-helper disposition: this child isolates the tsx module graph for hosted-test fixtures, not a serving or scheduled runtime. Each child speaks over IPC, serializes requests, and is stopped on fixture close or failure; stop sends SIGTERM, escalates to SIGKILL after one second, and awaits exit. The child adds no detached worker or retained queue beyond the current test fixture.",
+      matchesSource: (source) => {
+        const code = stripCommentsAndStrings(source);
+        return resourceStartCallCount(source) === 1 &&
+          source.includes("const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', worker], {") &&
+          source.includes("stdio: ['ignore', 'ignore', 'ignore', 'ipc'],") &&
+          source.includes("child.kill('SIGTERM');") &&
+          source.includes("const timer = setTimeout(() => child.kill('SIGKILL'), 1_000);") &&
+          source.includes("try { await exited; } finally { clearTimeout(timer); }") &&
+          source.includes("finally { await stop(); }") &&
+          !/\bdetached\s*:\s*true/.test(code) &&
+          !hasCalledResourceStartAlias(code);
+      },
+    },
+  ],
   [
     "packages/operator-core/lib/agent-tools/work_items/semantic-dedup-probe-alarm.ts::unbounded-resident-queue",
     {

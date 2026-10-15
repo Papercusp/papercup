@@ -2885,6 +2885,50 @@ export async function reportActivityResult(event: ToolResultEvent): Promise<Acti
   return result?.hook_bundle ?? null;
 }
 
+/** Reuse the installed Claude/Codex checker; append its result without interrupting OMP. */
+export async function launchProseBudgetForResult(
+  event: ToolResultEvent,
+  run: (call: ToolCallEvent) => Promise<string> = runLaunchProseBudgetHook,
+): Promise<string> {
+  const call = pendingActivityCalls.get(event.toolCallId);
+  if (!call || !nativeEditResultSucceeded(event.content)) return '';
+  return run(call);
+}
+
+export async function runLaunchProseBudgetHook(call: ToolCallEvent): Promise<string> {
+  // The desktop and standalone installers already install cc hooks here. Like the
+  // RTK import below, this must work after coord-hook.ts is copied or bundled.
+  const hook = join(process.env.HOME ?? homedir(), '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
+  const relevantTool = /^(?:edit|write|ast_edit|multi_edit|apply_patch|bash)$/i.test(call.toolName)
+    || /(?:capability[_:-](?:edit|write|multi_?edit|patch|bash)|tools[_:]invoke)$/.test(call.toolName);
+  if (!relevantTool) return '';
+  if (!existsSync(hook)) return '⚠ launch-prose budget NOT checked: the shared PostToolUse hook is not installed.';
+  try {
+    const { shouldCheck } = await import(pathToFileURL(hook).href);
+    if (typeof shouldCheck !== 'function') return '⚠ launch-prose budget NOT checked: the shared PostToolUse hook is outdated.';
+    if (!shouldCheck(call.toolName, call.input)) return '';
+  } catch {
+    return '⚠ launch-prose budget NOT checked: the shared PostToolUse hook could not load.';
+  }
+  return new Promise((done) => {
+    const child = execFile(process.execPath, [hook], {
+      cwd: typeof call.input.cwd === 'string' ? call.input.cwd : process.cwd(),
+      timeout: 25_000, maxBuffer: 256_000,
+    }, (error, stdout) => {
+      if (error) return done('⚠ launch-prose budget NOT checked: the shared PostToolUse hook failed.');
+      if (!stdout.trim()) return done('');
+      try {
+        const result = JSON.parse(stdout);
+        done(typeof result?.hookSpecificOutput?.additionalContext === 'string' ? result.hookSpecificOutput.additionalContext : '');
+      } catch {
+        done('⚠ launch-prose budget NOT checked: the shared PostToolUse hook returned invalid JSON.');
+      }
+    });
+    child.stdin?.end(JSON.stringify({ tool_name: call.toolName, tool_input: call.input,
+      cwd: typeof call.input.cwd === 'string' ? call.input.cwd : process.cwd() }));
+  });
+}
+
 /**
  * Report a session LIFECYCLE transition (kind='lifecycle') into the activity bridge —
  * the OMP counterpart of the Claude/Codex SessionStart/Stop lifecycle hook. Gives the
@@ -5542,6 +5586,10 @@ export default function register(pi: HookApi): void {
     //    to this completed result matches the Claude/Codex passive
     //    `additionalContext` parity this hook targets. Urgent control cues still arrive at the next tool
     //    boundary (one call later) — an acceptable trade vs. a full livelock.
+    // Read staged input before reportActivityResult consumes it. This runs after
+    // the successful edit and before the completed result reaches the model.
+    const budgetNudge = await safe(() => launchProseBudgetForResult(event), '');
+    if (budgetNudge) stashAdvisory('launch-prose-budget', budgetNudge);
     const bundle = await safe(() => reportActivityResult(event), null);
     const { reminder } = await safe(() => consumeActivityHookBundle(bundle, pi, ctx), { reminder: '' });
     // 3. Drain any bash→tool advisory staged by this tool's tool_call (P-017).

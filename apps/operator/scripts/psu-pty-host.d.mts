@@ -550,23 +550,73 @@ export function carryNativeOwnerInputFreshness({ agent, env, transcriptPath, sys
     status: string;
     reason: string;
     snapshotAtMs?: undefined;
+    scan?: undefined;
     latestOwnerInputAtMs?: undefined;
 } | {
     status: string;
     reason: string;
     snapshotAtMs: number;
+    scan: {
+        reason: string;
+        size: number;
+        nextOffset: number;
+        bytesRead: number;
+        requestedBytes: number;
+    } | {
+        reason: string;
+        size?: undefined;
+        nextOffset?: undefined;
+        bytesRead?: undefined;
+        requestedBytes?: undefined;
+    };
+    latestOwnerInputAtMs?: undefined;
+} | {
+    status: string;
+    reason: string;
+    snapshotAtMs: number;
+    scan?: undefined;
     latestOwnerInputAtMs?: undefined;
 } | {
     status: string;
     snapshotAtMs: number;
     reason?: undefined;
+    scan?: undefined;
     latestOwnerInputAtMs?: undefined;
 } | {
     status: string;
     reason: string;
     snapshotAtMs: number;
     latestOwnerInputAtMs: number;
+    scan?: undefined;
 };
+/** Read COMPLETE rows FORWARD from a row boundary of one isolated transcript.
+ * `fromOffset` must be 0 or the end offset of an earlier complete row; the
+ * byte before it is checked to be a newline, so a stale or wrong offset is
+ * refused rather than parsed mid-row. A trailing row still being written is
+ * left out (it is not evidence yet) and `nextOffset` stops before it. Lines
+ * are returned unparsed so a caller can prefilter cheaply. */
+export function readIsolatedNativeTranscriptForward({ agent, env, transcriptPath, home, fromOffset, maxBytes, readSyncFn, onFailure, }: {
+    agent: any;
+    env?: NodeJS.ProcessEnv | undefined;
+    transcriptPath: any;
+    home?: string | undefined;
+    fromOffset?: number | undefined;
+    maxBytes?: number | undefined;
+    readSyncFn?: typeof readSync | undefined;
+    onFailure: any;
+}): {
+    lines: {
+        text: string;
+        startOffset: number;
+        endOffset: number;
+    }[];
+    fileIdentity: string;
+    size: number;
+    nextOffset: number;
+    bytesRead: number;
+    requestedBytes: number;
+    scanFailure: string | null;
+} | null;
 /** Is this native row the kickoff PROMPT itself?
  *
  * WI-10004982: for claude this must be the real `type:'user'` prompt row.
@@ -5782,5 +5832,6 @@ export type McpReconnectMacroBudgets = {
     maxArrows: number;
     closeWaitMs: number;
 };
+import { readSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

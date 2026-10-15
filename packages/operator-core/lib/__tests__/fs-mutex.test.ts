@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ const fileWrites = vi.hoisted(() => ({
   beforeWrite: null as null | ((path: string) => Promise<void>),
   beforeSymlink: null as null | ((path: string) => Promise<void>),
   beforeReadFile: null as null | ((path: string) => void),
+  beforeOpendir: null as null | ((path: string) => void),
 }));
 
 vi.mock('node:os', async importOriginal => {
@@ -28,6 +29,10 @@ vi.mock('node:fs/promises', async importOriginal => {
     readFile: async (...args: Parameters<typeof actual.readFile>) => {
       fileWrites.beforeReadFile?.(String(args[0]));
       return actual.readFile(...args);
+    },
+    opendir: async (...args: Parameters<typeof actual.opendir>) => {
+      fileWrites.beforeOpendir?.(String(args[0]));
+      return actual.opendir(...args);
     },
     symlink: async (...args: Parameters<typeof actual.symlink>) => {
       await fileWrites.beforeSymlink?.(String(args[1]));
@@ -56,6 +61,7 @@ afterEach(async () => {
   fileWrites.beforeWrite = null;
   fileWrites.beforeSymlink = null;
   fileWrites.beforeReadFile = null;
+  fileWrites.beforeOpendir = null;
   osState.userHome = null;
   if (originalDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
@@ -202,6 +208,94 @@ describe('ensureFsMutexLockRoot migration', () => {
         .resolves.toBe(legacyRoot);
       await expect(readdir(legacyRoot)).resolves.toEqual([]);
     } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves legacy markers untouched when the census cannot read the directory', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-unreadable-'));
+    const legacyRoot = join(temp, 'legacy-locks');
+    const homeDir = join(temp, 'home');
+    const marker = join(legacyRoot, 'install.lock', 'owner.json');
+    const bytes = '{"pid":42,"host":"unverified-host"}\n';
+    await mkdir(join(legacyRoot, 'install.lock'), { recursive: true });
+    await writeFile(marker, bytes);
+    fileWrites.beforeOpendir = path => {
+      if (path === legacyRoot) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    };
+    try {
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+        .rejects.toMatchObject({ code: 'ELEGACYFSLOCKBUSY', census: { complete: false } });
+      expect((await lstat(legacyRoot)).isDirectory()).toBe(true);
+      expect(await readFile(marker, 'utf8')).toBe(bytes);
+      await expect(lstat(join(homeDir, '.papercusp', 'fs-mutex-locks')))
+        .rejects.toHaveProperty('code', 'ENOENT');
+    } finally {
+      fileWrites.beforeOpendir = null;
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves stale marker bytes in quarantine and excludes writers across both aliases', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-quiescent-'));
+    const legacyRoot = join(temp, 'legacy-locks');
+    const homeDir = join(temp, 'home');
+    const staleLock = join(legacyRoot, 'install.lock');
+    const bytes = 'stale owner evidence\n';
+    await mkdir(staleLock, { recursive: true });
+    await writeFile(join(staleLock, 'owner.json'), bytes);
+    await utimes(staleLock, new Date(0), new Date(0));
+    let release!: () => void;
+    let acquired!: () => void;
+    const entered = new Promise<void>(resolve => { acquired = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    let first: Promise<unknown> | undefined;
+    try {
+      const root = await ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot });
+      expect(root).toBe(join(homeDir, '.papercusp', 'fs-mutex-locks'));
+      expect(await realpath(legacyRoot)).toBe(await realpath(root));
+      const quarantines = (await readdir(temp)).filter(name => name.startsWith('legacy-locks.legacy-'));
+      expect(quarantines).toHaveLength(1);
+      expect(await readFile(join(temp, quarantines[0], 'install.lock', 'owner.json'), 'utf8')).toBe(bytes);
+
+      process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = legacyRoot;
+      first = withFsMutex('alias-exclusion', async () => { acquired(); await hold; });
+      await entered;
+      process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = root;
+      let secondEntered = false;
+      await expect(withFsMutex('alias-exclusion', async () => { secondEntered = true; }, {
+        timeoutMs: 60, retryMs: 5,
+      })).rejects.toThrow(/waiting for fs-mutex/);
+      expect(secondEntered).toBe(false);
+      release();
+      await first;
+      await expect(withFsMutex('alias-exclusion', async () => 'acquired')).resolves.toBe('acquired');
+    } finally {
+      release();
+      await first;
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
+  it('restores the legacy directory and evidence when alias creation fails', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-alias-failure-'));
+    const legacyRoot = join(temp, 'legacy-locks');
+    const homeDir = join(temp, 'home');
+    const staleLock = join(legacyRoot, 'install.lock');
+    const bytes = 'quarantined owner evidence\n';
+    await mkdir(staleLock, { recursive: true });
+    await writeFile(join(staleLock, 'owner.json'), bytes);
+    await utimes(staleLock, new Date(0), new Date(0));
+    fileWrites.beforeSymlink = async path => {
+      if (path === legacyRoot) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    };
+    try {
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+        .rejects.toHaveProperty('code', 'ELEGACYFSALIASFAILED');
+      expect((await lstat(legacyRoot)).isDirectory()).toBe(true);
+      expect(await readFile(join(staleLock, 'owner.json'), 'utf8')).toBe(bytes);
+    } finally {
+      fileWrites.beforeSymlink = null;
       await rm(temp, { recursive: true, force: true });
     }
   });

@@ -3002,7 +3002,7 @@ export function mergeClaudeHookSettings(
     });
   if (has('posttooluse-launch-prose-budget-nudge.mjs'))
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-launch-prose-budget-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit|apply_patch|Bash|mcp__.*__capability_(edit|write|multi_?edit|patch)|mcp__.*__tools_invoke',
+      matcher: '^(?:Edit|Write|MultiEdit|apply_patch|write_file|edit_file|Bash|exec_command|shell_command|(?:mcp__.*__)?capability[:_-](?:edit|write|multi_?edit|patch|bash)|(?:mcp__.*__)?tools[:_]invoke)$',
       hooks: cmd('posttooluse-launch-prose-budget-nudge.mjs'),
     });
   // merge_no_proc_path_fixture_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'

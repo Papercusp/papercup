@@ -276,6 +276,7 @@ const itemSpec = z.object({
     .describe('Plan item this work-item IMPLEMENTS ({ slug, item:"P-003" }): writes a work→plan_item coverage edge so it rolls up into that item; completing the item can auto-resolve it as residue. A bug merely DISCOVERED while working an item is NOT implementing it — file it unlinked (EI-19460536530145188).'),
   links: z.array(linkSpec).max(20).optional().describe('inline typed links (WI-3956) written from the new item to targets on create — e.g. [{ rel:"investigates", target_id:"EI-9250" }]. Best-effort: a bad target is skipped, never fails the create.'),
   conditionKey: hardText(200).optional().describe('recurring-detector filing identity (WI-39604): an OPEN item already holding this key is refreshed and returned (see conditionUpsert on the result) instead of a sibling being filed — single-host system filers only.'),
+  conditionReplay: z.literal('include-terminal').optional().describe('For immutable revision identities: reuse the original conditionKey filing after closure too, without reopening or rewriting its disposition. Requires conditionKey and a concrete workspace. Omit for recurring alarms.'),
   directiveRef: directiveRefArg,
 })
   // WI-4492: strict — an unknown field name is a LOUD error naming it, never a silent drop

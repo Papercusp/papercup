@@ -204,9 +204,10 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe(MDX_NUDGE_MATCHER);
     const launchProseMatcher = new RegExp(postMatcherOf('posttooluse-launch-prose-budget-nudge.mjs')!);
-    for (const tool of ['Edit', 'Write', 'MultiEdit', 'apply_patch', 'Bash', 'mcp__papercusp_su__tools_invoke']) {
+    for (const tool of ['Edit', 'Write', 'MultiEdit', 'apply_patch', 'Bash', 'exec_command', 'shell_command', 'capability:edit', 'capability:patch', 'capability:bash', 'tools:invoke', 'mcp__papercusp_su__capability_bash', 'mcp__papercusp_su__capability_patch', 'mcp__papercusp_su__tools_invoke']) {
       expect(launchProseMatcher.test(tool), tool).toBe(true);
     }
+    expect(launchProseMatcher.test('Read')).toBe(false);
     const mdxMatcher = new RegExp(MDX_NUDGE_MATCHER);
     expect(mdxMatcher.test('docs:author')).toBe(true);
     expect(mdxMatcher.test('mcp__papercusp-su__docs_author')).toBe(true);

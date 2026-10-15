@@ -780,6 +780,25 @@ describe('consultReplyCore — kind rules + transitions', () => {
 });
 
 describe('consultReplyCore — requester follow-up wake (budget REMOVED, consult-min-max-and-rubric-vetting D-005)', () => {
+  it('wakes the answering fork rather than the transcript expert when their identities differ', async () => {
+    const routing = menuSnapshot([RESPONDER, 'resp-2']);
+    routing.selection.selected[0] = {
+      ...routing.selection.selected[0],
+      answeringOwnerId: 'resp-1-answering-fork',
+    };
+    const id = await seedConsult({ state: 'active', routing });
+    const { deps, reached } = makeDeps();
+
+    const r = await consultReplyCore(
+      { workspaceId: WS, authorId: REQUESTER, conversationId: id, kind: 'question', body: 'follow-up for the fork' },
+      deps,
+    );
+
+    if ('error' in r) throw new Error(r.error);
+    expect(r.wake).toMatchObject({ attempted: true, woke: 1 });
+    expect(reached).toEqual([{ responder: 'resp-1-answering-fork', conversationId: id }]);
+  });
+
   it('wakes the responder and debits the wakes_used stat', async () => {
     const ref = 'WI-V-BUDGET-1';
     const id = await seedConsult({ state: 'active', originTaskRef: ref, wakesUsed: 1 });

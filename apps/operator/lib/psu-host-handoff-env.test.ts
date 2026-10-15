@@ -94,6 +94,23 @@ describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
   });
 });
 
+describe('host-code handoff mutex identity', () => {
+  it('preserves the explicit mutex root through adoption and launcher re-exec', () => {
+    const root = '/shared-control-plane/explicit-mutex-root';
+    const carried = Object.fromEntries(Object.entries({
+      PAPERCUSP_SID: 'su-mutex-handoff',
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: root,
+      UNRELATED_SECRET: 'must-not-cross-the-handoff',
+    }).filter(([key]) => HOST_HANDOFF_ENV_KEYS.includes(key)));
+    const successor: Record<string, string> = {};
+
+    applyHostHandoffEnv(successor, JSON.parse(JSON.stringify(carried)));
+
+    expect(successor.PAPERCUSP_FS_MUTEX_LOCK_DIR).toBe(root);
+    expect(successor.UNRELATED_SECRET).toBeUndefined();
+  });
+});
+
 describe('host-code handoff operator target provenance', () => {
   it.each(['discovery', 'env'])('retains the %s target policy through the handoff allowlist', (source) => {
     const before: Record<string, string> = {};

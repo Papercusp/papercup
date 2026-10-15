@@ -109,6 +109,7 @@ vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
 const {
   upsertConditionWorkItem,
   CONDITION_UPSERT_MARKER,
+  adoptConditionIncumbent,
   reserveAcceptanceReviewTarget,
   settleAcceptanceReviewReservationsForPlan,
 } = await import('./condition-upsert');
@@ -292,6 +293,44 @@ describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
 });
 
 describe('createOneWorkItem { conditionKey } — the WI-39604 tool-path leg', () => {
+  it('reuses a closed immutable revision after its key is released, but separates revisions and workspaces', async () => {
+    const KEY = 'spec-conformance-gap:papercup/plan-a/SPEC-A@3';
+    const args = { kind: 'bug', title: 'SPEC-A revision 3 has no proof', harness: H,
+      severity: 'major' as const, conditionKey: KEY, conditionReplay: 'include-terminal' as const };
+    const first = await createOneWorkItem(args, ctx);
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error('initial filing failed');
+    await setWorkItemState(first.workItem.id, 'dropped', { harness: H, by: 'system:condition-upsert',
+      completionRef: 'This exact revision was reviewed; retain the accountable disposition.' });
+    // Model the normal lifecycle key release explicitly, so history is essential.
+    await db.sql`UPDATE harness_shared.work_items SET condition_key = NULL WHERE feature_id = ${first.workItem.id}`;
+    const second = await createOneWorkItem({ ...args, title: 'replay must not rewrite disposition' }, ctx);
+    expect(second.ok && second.workItem.id).toBe(first.workItem.id);
+    const [stored] = await db.sql`SELECT title, status, terminal_completion_ref FROM harness_shared.work_items WHERE feature_id = ${first.workItem.id}`;
+    expect(stored).toMatchObject({ title: args.title, status: 'dropped', terminal_completion_ref: expect.stringContaining('accountable disposition') });
+    const next = await createOneWorkItem({ ...args, title: 'SPEC-A revision 4', conditionKey: `${KEY.slice(0, -1)}4` }, ctx);
+    expect(next.ok && next.workItem.id).not.toBe(first.workItem.id);
+    expect(await adoptConditionIncumbent(KEY, { title: 'Other workspace revision 3',
+      workspaceId: 'other-converge-ws', includeTerminal: true })).toBeNull();
+    const rows = await db.sql`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${KEY}`;
+    expect(rows).toHaveLength(1);
+  });
+
+  it('serializes concurrent immutable filings into exactly one durable row', async () => {
+    const conditionKey = 'spec-conformance-gap:papercup/plan-race/SPEC-A@1';
+    const outcomes = await Promise.all(Array.from({ length: 4 }, () => createOneWorkItem({
+      kind: 'bug', title: 'Concurrent revision identity', harness: H, severity: 'major',
+      conditionKey, conditionReplay: 'include-terminal',
+    }, ctx)));
+    expect(outcomes.every(outcome => outcome.ok)).toBe(true);
+    const ids = outcomes.map(outcome => outcome.ok ? outcome.workItem.id : null);
+    expect(new Set(ids).size).toBe(1);
+    const rows = await db.sql`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = ${WS} AND payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${conditionKey}`;
+    expect(rows.map(row => row.feature_id)).toEqual([ids[0]]);
+  });
+
   const ctx = { ownerId: 'system:live-federation-gate', workspaceId: WS, harnessSlug: H };
 
   it('re-firing through the TOOL CORE twice yields ONE open item, refreshed to the newest reading (the gate-script contract)', async () => {

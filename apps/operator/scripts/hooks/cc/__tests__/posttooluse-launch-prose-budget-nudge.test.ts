@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   findRepoRoot,
@@ -30,6 +35,11 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
     expect(shouldCheck('Edit', { file_path: 'apps/operator/prompts/foo.md' })).toBe(true);
     expect(shouldCheck('apply_patch', '*** Begin Patch\n*** Update File: apps/operator/prompts/foo.md\n@@\n-a\n+b\n*** End Patch')).toBe(true);
     expect(shouldCheck('mcp__papercusp_su__tools_invoke', { name: 'capability:edit', args: { file_path: 'apps/operator/prompts/foo.md' } })).toBe(true);
+    expect(shouldCheck('tools:invoke', { name: 'capability:patch', args: { edits: [{ file_path: 'apps/operator/prompts/foo.md' }] } })).toBe(true);
+    expect(shouldCheck('capability:patch', { edits: [{ file_path: 'apps/operator/prompts/foo.md' }] })).toBe(true);
+    expect(shouldCheck('edit', { path: 'apps/operator/prompts/foo.md' })).toBe(true);
+    expect(shouldCheck('ast_edit', { path: 'apps/operator/prompts/foo.md' })).toBe(true);
+    expect(shouldCheck('write', { path: 'ordinary.ts' })).toBe(false);
     expect(shouldCheck('Read', { file_path: '/repo/apps/operator/prompts/foo.md' })).toBe(false);
   });
 
@@ -43,6 +53,9 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
       root: '/repo',
       run: () => null,
     })).toContain('NOT checked');
+    expect(nudgeFor('Edit', { file_path: '/repo/apps/operator/prompts/foo.md' }, {
+      root: '/repo', run: () => ({}),
+    })).toContain('NOT checked');
   });
 
   it('retains a failing checker report from exit-1 stdout', () => {
@@ -55,5 +68,36 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
 
   it('finds the repository from a nested hook path', () => {
     expect(findRepoRoot('/repo/apps/operator/prompts/foo.md', (path) => path === '/repo/scripts/check-launch-prose-budget.ts')).toBe('/repo');
+  });
+
+  it.each([
+    { name: 'breach', checker: 'console.log(JSON.stringify({failures:[{message:"overlay over by 4 B"}]})); process.exitCode=1;', expected: 'overlay over by 4 B' },
+    { name: 'success', checker: 'console.log(JSON.stringify({failures:[]}));', expected: null },
+    { name: 'checker error', checker: 'process.exitCode=2;', expected: 'NOT checked' },
+    { name: 'malformed report', checker: 'console.log("{}");', expected: 'NOT checked' },
+  ])('delivers $name through the real PostToolUse subprocess', ({ checker, expected }) => {
+    const root = mkdtempSync(join(tmpdir(), 'launch-prose-hook-'));
+    const repo = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
+    try {
+      mkdirSync(join(root, 'scripts'));
+      writeFileSync(join(root, 'scripts/check-launch-prose-budget.ts'), checker);
+      symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'), 'dir');
+      const installed = join(root, '.papercusp/hooks/cc');
+      mkdirSync(installed, { recursive: true });
+      for (const file of ['posttooluse-launch-prose-budget-nudge.mjs', 'posttooluse-frozen-candidate-edit-nudge.mjs']) {
+        copyFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', file), join(installed, file));
+      }
+      const result = spawnSync(process.execPath, [join(installed, 'posttooluse-launch-prose-budget-nudge.mjs')], {
+        cwd: root,
+        input: JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: 'apps/operator/prompts/example.md' }, cwd: root }),
+        encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      if (expected === null) expect(result.stdout).toBe('');
+      else expect(JSON.parse(result.stdout).hookSpecificOutput).toMatchObject({ hookEventName: 'PostToolUse', additionalContext: expect.stringContaining(expected) });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

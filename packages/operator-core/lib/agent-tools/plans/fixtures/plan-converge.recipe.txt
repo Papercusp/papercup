@@ -1,0 +1,71 @@
+// Reuse the canonical evaluator, code-truth audit and certifier. Run code:run
+// with outer dryRun:false: THIS recipe owns its side-effect-free preview mode.
+const { planSlug, harness, classRef, auditItems } = inputs;
+const dryRun = inputs.dryRun !== false;
+if (!planSlug || !harness || !classRef || !Array.isArray(auditItems) || auditItems.length === 0) {
+  return { ok: false, error: "scope_and_reviewed_auditItems_required" };
+}
+const planItemIds = auditItems.map(item => item.itemId);
+const evaluation = await tools.plans.evaluateSpecTestAdequacy({
+  harness, slug: planSlug, classRef, planItemIds, includeDraft: true, detail: "full",
+});
+if (evaluation.ok !== true || !Array.isArray(evaluation.rows)) {
+  return { ok: false, phase: "evaluate", evaluation };
+}
+const audit = await tools.plans.audit({
+  harness, slug: planSlug, phase: "completion", items: auditItems, dryRun,
+});
+if (audit.ok !== true || audit.partial || (audit.rejectedItemIds || []).length) {
+  return { ok: false, phase: "code-truth", audit };
+}
+const rows = evaluation.rows;
+const proposals = [];
+const certifiable = [];
+for (const row of rows) {
+  if (typeof row.specId !== "string" || !Number.isInteger(row.specRevision) || row.specRevision < 1) {
+    return { ok: false, error: "invalid_clause_identity" };
+  }
+  const reviewed = auditItems.find(item => item.itemId === row.planItemId);
+  const blockers = [...(row.wouldBlock || [])];
+  if (!reviewed || !["implemented", "not-code"].includes(reviewed.verdict)) blockers.push("code-truth");
+  if (row.verdict === "pass" && blockers.length === 0) { certifiable.push(row.specId); continue; }
+  // Missing proof is not evidence of broken behavior. Only a reviewed missing
+  // implementation is critical. "outdated" is a conformance label; work-items
+  // retain their existing critical/major/minor/nit severity vocabulary.
+  const classification = reviewed && reviewed.verdict === "missing" ? "critical"
+    : blockers.length > 0 && blockers.every(value => value === "freshness") ? "outdated"
+    : blockers.length > 0 && blockers.every(value => value === "traceability") ? "minor" : "major";
+  const severity = classification === "outdated" ? "minor" : classification;
+  const conditionKey = `spec-gap:${harness}/${planSlug}/${row.specId}@${row.specRevision}`;
+  if (conditionKey.length > 200) return { ok: false, error: "condition_identity_too_long" };
+  proposals.push({ specId: row.specId, revision: row.specRevision, classification, severity,
+    conditionKey, blockers, planItemId: row.planItemId, verdict: row.verdict });
+}
+// Never certify a clause whose code review is incomplete, even if its tests pass.
+if (rows.length === 0) return { ok: false, error: "selected_clauses_empty" };
+const certification = await tools.plans.certifySpecClauses({ harness, slug: planSlug, classRef,
+  specIds: certifiable.length ? certifiable : rows.map(row => row.specId),
+  includeDraft: true, dryRun: dryRun || certifiable.length === 0 });
+if (certification.ok !== true) return { ok: false, phase: "certify", certification, proposals };
+const identity = dryRun ? null : await tools.coord.whoami({});
+const gapOwner = inputs.gapOwner || (identity && identity.ownerId);
+if (!dryRun && !gapOwner) return { ok: false, error: "gap_owner_required" };
+const gaps = [];
+for (const proposal of proposals) {
+  if (dryRun) { gaps.push({ ...proposal, action: "would-file" }); continue; }
+  const filed = await tools.workItems.create({ kind: "bug", harness, severity: proposal.severity,
+    title: `Spec conformance gap: ${planSlug}/${proposal.specId}@${proposal.revision}`,
+    summary: `${proposal.classification}: adequacy ${proposal.verdict}; blockers: ${proposal.blockers.join(", ")}.`,
+    assign_to: gapOwner, conditionKey: proposal.conditionKey, conditionReplay: "include-terminal",
+    links: [{ rel: "about", target_kind: "plan", target_ref: planSlug, target_harness: harness }],
+    payload: { specConformanceGap: { ...proposal, planSlug, harness, gapOwner } },
+  });
+  const outcome = filed.results && filed.results[0];
+  if (!filed.ok || !outcome || !outcome.ok || !outcome.workItem
+      || !(outcome.workItem.assignee || outcome.workItem.terminalOwner)) {
+    return { ok: false, phase: "file", filed, gaps };
+  }
+  gaps.push({ ...proposal, action: outcome.conditionUpsert ? "reused" : "filed", id: outcome.id || outcome.workItem.id });
+}
+return { ok: true, dryRun, planSlug, evaluated: rows.length, nonPassing: gaps.length,
+  audit, certification, gaps };

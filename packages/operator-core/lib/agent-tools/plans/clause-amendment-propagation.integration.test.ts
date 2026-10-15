@@ -19,9 +19,16 @@ vi.mock('./source', async (original) => ({
 const { setSpecClause } = await import('./spec-clauses-store');
 const { propagateClauseAmendment } = await import('./clause-amendment-propagation');
 let db: FreshPgDb;
+let propagationQuery = '';
+let propagationParameters: unknown[] = [];
 const here = path.dirname(fileURLToPath(import.meta.url));
 beforeAll(async () => {
   db = await createFreshPgDb('clause-amendment'); h.sql = db.sql;
+  h.sql.options.debug = (_connection, query, parameters) => {
+    if (!query.trimStart().startsWith('EXPLAIN') && /SELECT w\.feature_id AS id/i.test(query)) {
+      propagationQuery = query; propagationParameters = parameters;
+    }
+  };
   await h.sql.unsafe(`DO $$ BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='harness_app') THEN CREATE ROLE harness_app; END IF;
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='harness_admin') THEN CREATE ROLE harness_admin; END IF;
@@ -38,7 +45,13 @@ beforeAll(async () => {
   CREATE TABLE harness_shared.coord_presence (workspace_id text,owner_id text,heartbeat_at timestamptz);
   CREATE TABLE harness_shared.coord_event_log (
     id bigserial PRIMARY KEY,workspace_id text,surface text,writer_key text,msg_id text,body jsonb,harness_slug text,ts timestamptz
-  );`);
+  );
+  CREATE UNIQUE INDEX work_items_identity ON harness_shared.work_items (workspace_id,harness_slug,feature_id);
+  CREATE INDEX work_items_source_plan ON harness_shared.work_items (workspace_id,harness_slug,source_plan_slug);
+  CREATE INDEX work_items_payload_plan ON harness_shared.work_items
+    (workspace_id,harness_slug,(payload->'plan_item'->>'plan_slug'),(payload->'plan_item'->>'item_id'));
+  CREATE INDEX work_item_edges_spec ON harness_shared.work_item_spec_revision_edges
+    (workspace_id,harness_slug,plan_slug,spec_id);`);
   for (const name of ['851-first-class-plan-spec-clauses.sql','929-spec-clause-falsifier.sql']) {
     await applyMigrationForTest(h.sql,path.resolve(here,'../../../../../libs/papercusp/libs/db/sql',name));
   }
@@ -98,6 +111,55 @@ describe('clause amendment propagation', () => {
     }
     expect(rows.map((r)=>[r.feature_id,r.revision])).toEqual([['WI-stale','2'],['WI-unheld','2']]);
     expect(await h.sql`SELECT * FROM harness_shared.coord_event_log`).toHaveLength(0);
+  });
+  it('includes payload-only provenance, deduplicates overlapping paths and ignores unrelated wide rows', async () => {
+    await item('WI-payload','payload-holder');
+    await h.sql`UPDATE harness_shared.work_items
+      SET payload = ${JSON.stringify({plan_item:{plan_slug:'plan',item_id:'P-001'}})}::text::jsonb
+      WHERE feature_id='WI-payload'`;
+    await item('WI-overlap','overlap-holder',{linked:true,stamp:true});
+    await h.sql`UPDATE harness_shared.work_items
+      SET payload = ${JSON.stringify({plan_item:{plan_slug:'plan',item_id:'P-001'}})}::text::jsonb
+      WHERE feature_id='WI-overlap'`;
+    await item('WI-other-item',null);
+    await h.sql`UPDATE harness_shared.work_items
+      SET payload = ${JSON.stringify({plan_item:{plan_slug:'plan',item_id:'P-002'}})}::text::jsonb
+      WHERE feature_id='WI-other-item'`;
+    // Real work-item rows contain large unrelated columns. They are not provenance
+    // and must stay outside the candidate predicate's JSON conversion.
+    await h.sql.unsafe('ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS unrelated_body text');
+    await h.sql`INSERT INTO harness_shared.work_items
+      (workspace_id,harness_slug,feature_id,source_plan_slug,source_plan_item_ids,payload,unrelated_body)
+      SELECT ${WS},'h','unrelated-'||i,'other-plan',ARRAY['P-001'],
+        jsonb_build_object('plan_item',jsonb_build_object('plan_slug','other-plan','item_id','P-001')),
+        repeat(md5(i::text),2048)
+      FROM generate_series(1,100) i`;
+    await h.sql.unsafe('ANALYZE harness_shared.work_items; ANALYZE harness_shared.work_item_spec_revision_edges');
+    expect(await setSpecClause(spec(1))).toMatchObject({status:'revised',revision:2});
+    const changed = await h.sql`SELECT feature_id FROM harness_shared.work_items
+      WHERE payload ? '_specAmendments' ORDER BY feature_id`;
+    expect(changed.map((row)=>row.feature_id)).toEqual(['WI-overlap','WI-payload']);
+    const messages = await h.sql`SELECT body FROM harness_shared.coord_event_log`;
+    expect(messages).toHaveLength(2);
+    expect(messages.map((row)=>row.body.to[0]).sort()).toEqual(['overlap-holder','payload-holder']);
+    // Explain the statement actually executed by the writer. With sequential
+    // scans disabled, each provenance path must still have an indexable route;
+    // the former whole-row JSON predicates cannot use the first two indexes.
+    const query = propagationQuery, parameters = propagationParameters;
+    const indexes = await h.sql.begin(async (tx) => {
+      await tx.unsafe('SET LOCAL enable_seqscan = off');
+      const explained = await tx.unsafe('EXPLAIN (FORMAT JSON) '+query, parameters as never);
+      const names: string[] = [];
+      const walk = (node: Record<string, unknown>) => {
+        if (typeof node['Index Name'] === 'string') names.push(node['Index Name']);
+        for (const child of (node.Plans ?? []) as Array<Record<string, unknown>>) walk(child);
+      };
+      walk(explained[0]['QUERY PLAN'][0].Plan);
+      return names;
+    });
+    expect(indexes).toEqual(expect.arrayContaining([
+      'work_items_source_plan','work_items_payload_plan','work_item_edges_spec',
+    ]));
   });
   it('does not duplicate a repeated amendment or replayed delivery', async () => {
     await item('WI-edge','builder',{linked:true}); await setSpecClause(spec(1));

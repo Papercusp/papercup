@@ -1130,11 +1130,16 @@ describe('attention bulk-run store (real PG)', () => {
     });
 
     let auditCount = 0;
+    let canonicalAudit: unknown;
     const action = executeBulkRunAction({
       runId: run.runId,
       itemId: items[0]!.itemId,
       actionId: 'resolve',
       rationale: 'Canonical action completed.',
+      draftAnswer: 'The canonical drafted answer.',
+      confidence: 'high',
+      consulted: true,
+      consultReply: 'The asking agent confirmed this action.',
       resolverOwner,
       workspaceId: ws,
       execute: async () => {
@@ -1152,6 +1157,11 @@ describe('attention bulk-run store (real PG)', () => {
           workspaceId: ws,
           sql: tx,
         });
+        canonicalAudit = await tx`
+          SELECT workspace_id, item_id, action, note, triaged_by, triaged_at
+            FROM harness_shared.attention_triage
+           WHERE workspace_id = ${ws} AND item_id = ${items[0]!.itemId}
+        `;
       },
     });
     await actionStarted;
@@ -1221,6 +1231,10 @@ describe('attention bulk-run store (real PG)', () => {
     );
     const rows = await getRunItems(run.runId, ws);
     expect(rows).toHaveLength(3);
+    // Equality covers the entire receipt, including decision, consultation,
+    // reversal and timestamp metadata that a stale report must never rewrite.
+    expect(reported.preserved).toEqual([acted.item]);
+    expect(rows.find((row) => row.itemId === items[0]!.itemId)).toEqual(acted.item);
     expect(rows.find((row) => row.itemId === items[0]!.itemId)).toMatchObject({
       outcome: 'auto_resolved',
       actionId: 'resolve',
@@ -1242,6 +1256,71 @@ describe('attention bulk-run store (real PG)', () => {
       note: 'Bulk resolve: Canonical action completed.',
       triagedBy: resolverOwner,
     });
+    expect(await db.adminSql`
+      SELECT workspace_id, item_id, action, note, triaged_by, triaged_at
+        FROM harness_shared.attention_triage
+       WHERE workspace_id = ${ws} AND item_id = ${items[0]!.itemId}
+    `).toEqual(canonicalAudit);
+  });
+
+  it('preserves dismissal metadata while classifying a mixed report and deriving every counter', async () => {
+    const ws = `ws-dismissed-stale-report-${Date.now()}`;
+    const items = [...seed('dismissed-stale'), ...seed('mixed-report')];
+    const run = await createRun({ items, workspaceId: ws });
+    await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [{
+        itemId: items[0]!.itemId,
+        outcome: 'recommended',
+        actionId: 'resolve',
+        rationale: 'Original recommendation.',
+        draftAnswer: 'Original drafted answer.',
+        confidence: 'high',
+        consulted: true,
+        consultReply: 'Original consultation reply.',
+      }],
+    });
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'review', workspaceId: ws });
+    const dismissed = await markItemDismissed({
+      runId: run.runId, itemId: items[0]!.itemId, workspaceId: ws,
+      note: 'Owner declined the original recommendation.',
+    });
+    expect(dismissed).toMatchObject({ outcome: 'dismissed', consulted: true });
+    // Exercise the accepting-reports boundary with an already dismissed row.
+    await unsafeSetRunPhaseForFixtures({ runId: run.runId, phase: 'running', workspaceId: ws });
+    const acted = await executeBulkRunAction({
+      runId: run.runId, itemId: items[1]!.itemId, workspaceId: ws,
+      actionId: 'resolve', rationale: 'Canonical sibling action.',
+      execute: async () => ({ resolved: true }), audit: async () => {},
+    });
+    const report = await reportOutcomes({
+      runId: run.runId,
+      workspaceId: ws,
+      outcomes: [
+        { itemId: items[0]!.itemId, outcome: 'failed', error: 'Stale failure must not erase dismissal.' },
+        { itemId: items[1]!.itemId, outcome: 'recommended', actionId: 'retry' },
+        { itemId: items[2]!.itemId, outcome: 'recommended', actionId: 'ack' },
+        { itemId: items[3]!.itemId, outcome: 'skipped', error: 'Not applicable.' },
+        { itemId: items[4]!.itemId, outcome: 'failed', error: 'An ordinary report failure.' },
+        { itemId: 'unknown-item', outcome: 'recommended' },
+      ],
+    });
+    expect(report.updated).toEqual(items.slice(2, 5).map((item) => item.itemId));
+    expect(report.unknown).toEqual(['unknown-item']);
+    expect(report.preserved).toEqual([dismissed, acted.item]);
+    const rows = await getRunItems(run.runId, ws);
+    expect(rows.find((row) => row.itemId === items[0]!.itemId)).toEqual(dismissed);
+    expect(rows.find((row) => row.itemId === items[1]!.itemId)).toEqual(acted.item);
+    const tally = (outcome: string) => rows.filter((row) => row.outcome === outcome).length;
+    expect(report.run).toMatchObject({
+      autoResolved: tally('auto_resolved'),
+      recommended: tally('recommended'),
+      skipped: tally('skipped') + tally('dismissed'),
+      failed: tally('failed'),
+    });
+    expect(report.run).toMatchObject({ autoResolved: 1, recommended: 1, skipped: 2, failed: 1 });
+    expect(rows.find((row) => row.itemId === items[5]!.itemId)?.outcome).toBe('pending');
   });
 
   it('returns a canonical terminal receipt when a late report is refused after Stop', async () => {

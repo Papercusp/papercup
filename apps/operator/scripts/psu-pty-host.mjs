@@ -1434,28 +1434,41 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
  * containment, symlink and regular-file guards. Both native readers below go
  * through this, so neither can accidentally certify another live session.
  * Returns an open fd the caller MUST close, or null. */
-function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath, home = homedir() }) {
-  if (!nativeTurnVerifierSupport(agent, env).supported || !transcriptPath) return null;
+function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath, home = homedir(), onFailure }) {
+  const fail = (reason, evidence = {}) => {
+    onFailure?.({ reason, ...evidence });
+    return null;
+  };
+  const support = nativeTurnVerifierSupport(agent, env);
+  if (!support.supported) return fail(support.reason ?? 'native-verifier-unsupported');
+  if (!transcriptPath) return fail('missing-transcript-path');
   let fd;
   try {
     const rootDir = nativeTranscriptRoot(agent, env, home);
-    if (!rootDir) return null;
-    const root = realpathSync(rootDir);
-    const path = realpathSync(transcriptPath);
+    if (!rootDir) return fail('missing-isolated-root');
+    let root;
+    try { root = realpathSync(rootDir); }
+    catch (error) { return fail('isolated-root-unavailable', { errorCode: error?.code ?? 'filesystem-error' }); }
+    let path;
+    try { path = realpathSync(transcriptPath); }
+    catch (error) { return fail('transcript-unavailable', { errorCode: error?.code ?? 'filesystem-error' }); }
     const rel = relative(root, path);
-    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel) || !path.endsWith('.jsonl')) return null;
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel)) return fail('transcript-outside-isolated-root');
+    if (!path.endsWith('.jsonl')) return fail('transcript-not-jsonl');
+    try { fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
+    catch (error) { return fail('transcript-open-failed', { errorCode: error?.code ?? 'filesystem-error' }); }
     const info = fstatSync(fd);
     if (!info.isFile() || info.size === 0) {
       closeSync(fd);
-      return null;
+      fd = undefined;
+      return fail('transcript-not-regular-or-empty', { fileSize: info.size, regularFile: info.isFile() });
     }
     return { fd, info };
-  } catch {
+  } catch (error) {
     if (fd !== undefined) {
       try { closeSync(fd); } catch { /* already closed */ }
     }
-    return null;
+    return fail('transcript-inspection-failed', { errorCode: error?.code ?? 'filesystem-error' });
   }
 }
 
@@ -1510,9 +1523,31 @@ export function carryNativeOwnerInputFreshness({
   if (!builtAt) return { status: 'not-applicable', reason: 'no-snapshot-clock' };
   const snapshotAtMs = Date.parse(builtAt);
   if (!Number.isFinite(snapshotAtMs)) return { status: 'unverifiable', reason: 'invalid-snapshot-clock' };
-  const scan = readIsolatedNativeTranscriptForward({ agent, env, transcriptPath, home });
+  let scanOpenFailure = null;
+  const scan = readIsolatedNativeTranscriptForward({
+    agent,
+    env,
+    transcriptPath,
+    home,
+    onFailure: (evidence) => { scanOpenFailure = evidence; },
+  });
   // A partial row or scan ceiling is unknown, never proof of no later input.
-  if (!scan || scan.nextOffset !== scan.size) return { status: 'unverifiable', reason: 'native-input-read-incomplete', snapshotAtMs };
+  if (!scan || scan.nextOffset !== scan.size) {
+    return {
+      status: 'unverifiable',
+      reason: 'native-input-read-incomplete',
+      snapshotAtMs,
+      scan: scan
+        ? {
+            reason: scan.scanFailure ?? 'scan-incomplete',
+            size: scan.size,
+            nextOffset: scan.nextOffset,
+            bytesRead: scan.bytesRead,
+            requestedBytes: scan.requestedBytes,
+          }
+        : scanOpenFailure ?? { reason: 'native-transcript-unavailable' },
+    };
+  }
   let latestOwnerInputAtMs = null;
   try {
     for (const { text } of scan.lines) {
@@ -1546,38 +1581,68 @@ export const NATIVE_KICKOFF_SCAN_BYTES = 64 * 1024 * 1024;
  * refused rather than parsed mid-row. A trailing row still being written is
  * left out (it is not evidence yet) and `nextOffset` stops before it. Lines
  * are returned unparsed so a caller can prefilter cheaply. */
-function readIsolatedNativeTranscriptForward({
+export function readIsolatedNativeTranscriptForward({
   agent,
   env = process.env,
   transcriptPath,
   home = homedir(),
   fromOffset = 0,
   maxBytes = NATIVE_KICKOFF_SCAN_BYTES,
+  readSyncFn = readSync,
+  onFailure,
 }) {
-  if (!Number.isSafeInteger(fromOffset) || fromOffset < 0 || !(maxBytes > 0)) return null;
-  const opened = openIsolatedNativeTranscript({ agent, env, transcriptPath, home });
+  const fail = (reason, evidence = {}) => {
+    onFailure?.({ reason, ...evidence });
+    return null;
+  };
+  if (!Number.isSafeInteger(fromOffset) || fromOffset < 0 || !(maxBytes > 0)) return fail('invalid-scan-configuration');
+  const opened = openIsolatedNativeTranscript({ agent, env, transcriptPath, home, onFailure });
   if (!opened) return null;
   const { fd, info } = opened;
   try {
-    if (fromOffset > info.size) return null; // the file shrank under the anchor
+    if (fromOffset > info.size) return fail('transcript-shrank-under-anchor', { fileSize: info.size });
     const lead = fromOffset > 0 ? 1 : 0;
     const start = fromOffset - lead;
     const length = Math.min(info.size - start, maxBytes + lead);
     const bytes = Buffer.alloc(length);
-    const view = bytes.subarray(0, readSync(fd, bytes, 0, length, start));
-    if (lead && view[0] !== 0x0a) return null; // not a row boundary
+    // A synchronous read may legally return fewer bytes than requested. Complete
+    // the fstat-sized snapshot with positioned reads; a shrinking file still
+    // fails closed after the bounded reads stop making progress.
+    let bytesRead = 0;
+    while (bytesRead < length) {
+      const count = readSyncFn(fd, bytes, bytesRead, length - bytesRead, start + bytesRead);
+      if (!Number.isSafeInteger(count) || count <= 0) break;
+      bytesRead += count;
+    }
+    const view = bytes.subarray(0, bytesRead);
+    if (lead && view[0] !== 0x0a) return fail('transcript-anchor-not-row-boundary', { fileSize: info.size });
     const lines = [];
     let cursor = lead;
+    let endedOnNewline = true;
     while (cursor < view.length) {
       const newline = view.indexOf(0x0a, cursor);
-      if (newline < 0) break; // still being written, or past the bound
+      if (newline < 0) {
+        endedOnNewline = false;
+        break; // still being written, or past the bound
+      }
       const text = view.subarray(cursor, newline).toString('utf8');
       if (text.trim()) lines.push({ text, startOffset: start + cursor, endOffset: start + newline + 1 });
       cursor = newline + 1;
     }
-    return { lines, fileIdentity: `${info.dev}:${info.ino}`, size: info.size, nextOffset: start + cursor };
-  } catch {
-    return null;
+    const nextOffset = start + cursor;
+    let scanFailure = null;
+    if (nextOffset !== info.size) {
+      scanFailure = info.size > start + length
+        ? 'scan-limit'
+        : bytesRead < length
+          ? 'short-read'
+          : endedOnNewline
+            ? 'scan-incomplete'
+            : 'unterminated-row';
+    }
+    return { lines, fileIdentity: `${info.dev}:${info.ino}`, size: info.size, nextOffset, bytesRead, requestedBytes: length, scanFailure };
+  } catch (error) {
+    return fail('transcript-read-failed', { errorCode: error?.code ?? 'filesystem-error' });
   } finally {
     closeSync(fd);
   }
@@ -3479,6 +3544,8 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_WORKSPACE',
   'PAPERCUSP_HARNESS_SLUG',
   'PAPERCUSP_PROFILE',
+  // A successor must remain in the predecessor's explicit mutex domain.
+  'PAPERCUSP_FS_MUTEX_LOCK_DIR',
   'PAPERCUSP_FLEET_SLUG',
   'PAPERCUSP_FLEET_ROLE',
   'PAPERCUSP_ACCOUNT_ID',

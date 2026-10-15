@@ -48,6 +48,8 @@ import {
   reportActivityResult,
   reportLifecycle,
   stageActivityReport,
+  launchProseBudgetForResult,
+  runLaunchProseBudgetHook,
   extractPathsFromToolInput,
   formatBusyRefusal,
   formatInboxDelta,
@@ -5105,6 +5107,42 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
       content:
         'ORIGINAL\n\n<system-reminder type="coord">\n[coord+1]\n- peerX ambient broadcast\n</system-reminder>',
     });
+  });
+
+  it('uses the staged edit input for the budget advisory and skips failed edits', async () => {
+    const call = { type: 'tool_call' as const, toolName: 'edit', toolCallId: 'budget-edit', input: { path: 'apps/operator/prompts/example.md' } };
+    stageActivityReport(call);
+    const run = vi.fn(async () => 'overlay over by 4 B');
+    expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: call.toolCallId, content: { ok: false } }, run)).toBe('');
+    expect(run).not.toHaveBeenCalled();
+    expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: call.toolCallId, content: 'Successfully edited' }, run)).toContain('over by 4 B');
+    expect(run).toHaveBeenCalledWith(call);
+    expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: 'not-staged', content: 'ok' }, run)).toBe('');
+  });
+
+  it('delivers shared hook output from the registered OMP result handler', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-budget-hook-'));
+    const hook = join(root, '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
+    const previousHome = process.env.HOME;
+    try {
+      mkdirSync(dirname(hook), { recursive: true });
+      writeFileSync(hook, 'export function shouldCheck(){return true;} if(process.argv[1]?.endsWith("posttooluse-launch-prose-budget-nudge.mjs")){process.stdin.resume(); process.stdin.on("end",()=>console.log(JSON.stringify({hookSpecificOutput:{additionalContext:"budget breach: overlay over by 4 B"}})));}');
+      process.env.HOME = root;
+      const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
+      const sendMessage = vi.fn();
+      const { default: register } = await import('../coord-hook');
+      register({ on: (name: string, handler: (e: unknown, ctx?: unknown) => unknown) => subs.set(name, handler), sendMessage } as never);
+      const call = { type: 'tool_call' as const, toolName: 'edit', toolCallId: 'budget-wire', input: { path: 'apps/operator/prompts/example.md' } };
+      stageActivityReport(call);
+      global.fetch = mockMcp({ ok: true });
+      const result = await subs.get('tool_result')!({ type: 'tool_result', toolCallId: call.toolCallId, content: 'EDIT SUCCEEDED' }, {});
+      expect(result).toEqual({ content: expect.stringContaining('EDIT SUCCEEDED\n\nbudget breach: overlay over by 4 B') });
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(await runLaunchProseBudgetHook({ ...call, toolName: 'read' })).toBe('');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

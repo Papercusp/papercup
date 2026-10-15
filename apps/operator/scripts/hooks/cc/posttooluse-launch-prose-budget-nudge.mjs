@@ -28,7 +28,6 @@ export function isLaunchProsePath(filePath) {
 
 /** A set-doc-part/projector write changes the canonical harness doc-part corpus. */
 export function isDocPartWrite(toolName, toolInput = {}) {
-  const name = String(toolName || '');
   const values = [toolInput.command, toolInput.cmd, toolInput.file_path, toolInput.part_key, toolInput.partKey]
     .filter(Boolean)
     .join(' ');
@@ -38,10 +37,10 @@ export function isDocPartWrite(toolName, toolInput = {}) {
 }
 
 export function shouldCheck(toolName, toolInput = {}) {
-  if (/(?:^|__)tools_invoke$/.test(String(toolName))) {
+  if (/(?:^|__)tools[_:]invoke$/.test(String(toolName))) {
     return shouldCheck(toolInput.name, toolInput.args);
   }
-  const name = String(toolName || '');
+  const name = ({ edit: 'Edit', write: 'Write', multi_edit: 'MultiEdit', ast_edit: 'Edit' })[toolName] || String(toolName || '');
   const editTool = /^(?:Edit|Write|MultiEdit|apply_patch|write_file|edit_file)$/.test(name) || /capability[_:-](?:edit|write|multi_?edit|patch)$/.test(name);
   if (editTool) {
     const paths = editedPathsFrom({ tool_name: name, tool_input: toolInput });
@@ -66,7 +65,7 @@ export function runBudget(root, spawn = execFileSync) {
     const stdout = spawn(process.execPath, ['--import', 'tsx', CHECKER_REL, '--json'], {
       cwd: root,
       encoding: 'utf8',
-      timeout: 45_000,
+      timeout: 20_000,
       maxBuffer: MAX_OUTPUT,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -91,13 +90,16 @@ export function formatNudge(report) {
 }
 
 export function nudgeFor(toolName, toolInput = {}, { root, cwd = process.cwd(), run = runBudget } = {}) {
+  if (/(?:^|__)tools[_:]invoke$/.test(String(toolName))) {
+    return nudgeFor(toolInput.name, toolInput.args, { root, cwd, run });
+  }
   if (!shouldCheck(toolName, toolInput)) return '';
   const paths = editedPathsFrom({ tool_name: toolName, tool_input: toolInput });
   const repo = root || paths.map((path) => findRepoRoot(resolve(cwd, path))).find(Boolean)
     || findRepoRoot(join(cwd, '_launch-prose-hook'));
   if (!repo) return '';
   const report = run(repo);
-  if (!report) return '⚠ launch-prose budget NOT checked: the edit-time checker failed. Run `npm run lint:launch-prose-budget` before relying on this edit.';
+  if (!report || !Array.isArray(report.failures)) return '⚠ launch-prose budget NOT checked: the edit-time checker failed. Run `npm run lint:launch-prose-budget` before relying on this edit.';
   return formatNudge(report);
 }
 

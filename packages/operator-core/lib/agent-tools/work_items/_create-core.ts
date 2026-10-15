@@ -144,6 +144,8 @@ export interface CreateOneWorkItemArgs {
    *  For single-host system filers (gates, routines, seeders) — NOT for producers
    *  whose rows federate in from other machines (see condition-upsert.ts header). */
   conditionKey?: string;
+  /** Reuse the original condition filing even after closure; for immutable revision identities. */
+  conditionReplay?: 'include-terminal';
   /**
    * Owner-directive provenance (directive-visibility-and-ownership-2026-09-22,
    * P-005): `harness_shared.owner_directives.id` this work-item is being created
@@ -652,6 +654,21 @@ export async function createOneWorkItem(
   args: CreateOneWorkItemArgs,
   ctx: CreateOneWorkItemCtx,
 ): Promise<CreateOneWorkItemResult> {
+  if (args.conditionReplay === 'include-terminal') {
+    const workspaceId = args.workspace?.trim() || (ctx.workspaceId !== '*' ? ctx.workspaceId : undefined);
+    const key = args.conditionKey?.trim();
+    if (!key || !workspaceId) return { ok: false, error: 'condition_replay_scope_required',
+      message: 'conditionReplay requires conditionKey and a concrete workspace.' };
+    const { withConditionReplayLock } = await import('../../coord/condition-upsert');
+    return withConditionReplayLock(workspaceId, key, () => createOneWorkItemCore(args, ctx));
+  }
+  return createOneWorkItemCore(args, ctx);
+}
+
+async function createOneWorkItemCore(
+  args: CreateOneWorkItemArgs,
+  ctx: CreateOneWorkItemCtx,
+): Promise<CreateOneWorkItemResult> {
   try {
     if (isDeprecatedWorkItemKind(args.kind)) {
       return {
@@ -693,6 +710,9 @@ export async function createOneWorkItem(
     // screens below have nothing to screen, and a recurring detector's steady-state
     // re-fire stays one indexed read + one refresh write.
     const conditionKey = args.conditionKey?.trim() || undefined;
+    if (args.conditionReplay && (!conditionKey || !workspaceId)) {
+      return { ok: false, error: 'condition_replay_scope_required', message: 'conditionReplay requires conditionKey and a concrete workspace.' };
+    }
     // EI-21827949941920236: an urgent condition-keyed filing is itself the
     // durable detector signal that must reach the queue when the semantic probe
     // is unavailable. The condition upsert still provides deterministic
@@ -703,6 +723,7 @@ export async function createOneWorkItem(
         title: args.title,
         summary: args.summary,
         workspaceId,
+        includeTerminal: args.conditionReplay === 'include-terminal',
       });
       if (incumbent) {
         // The incumbent may live under a normalized (pot-home) harness — retry

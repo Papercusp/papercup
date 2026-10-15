@@ -38,6 +38,7 @@
  * single-host system filers (routines, gates, seeders).
  */
 import { createHash } from 'node:crypto';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { getOrgPg } from '@papercusp/db-org';
 import type { TransactionSql } from 'postgres';
 import { createWorkItem, setWorkItemState, type CreateWorkItemInput } from '../work-items';
@@ -52,6 +53,14 @@ export const CONDITION_UPSERT_ACTOR = 'system:condition-upsert' as const;
 
 /** Payload key stamping occurrence state on the owning row. */
 export const CONDITION_UPSERT_MARKER = '_conditionUpsert';
+
+/** Serialize immutable-identity replays across lookup, mint and lifecycle-key claim.
+ * The work-item writer owns its own transactions. Reuse the single-host filing
+ * mutex without occupying a pool connection while the writer uses that pool. */
+export async function withConditionReplayLock<T>(workspaceId: string, key: string, run: () => Promise<T>): Promise<T> {
+  const identity = createHash('sha256').update(JSON.stringify([workspaceId, key])).digest('hex');
+  return withFsMutex(`condition-replay-${identity}`, run, { timeoutMs: 45_000 });
+}
 
 /**
  * Namespaced identity for one acceptance-grading target.
@@ -315,10 +324,24 @@ async function refreshIncumbent(
  */
 export async function adoptConditionIncumbent(
   conditionKey: string,
-  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'>,
+  input: Pick<CreateWorkItemInput, 'title' | 'summary' | 'workspaceId'> & { includeTerminal?: boolean },
 ): Promise<string | null> {
   const key = conditionKey.trim();
   if (!key) throw new Error('adoptConditionIncumbent: empty conditionKey');
+  // Revision-scoped findings are immutable identities, unlike recurring alarms.
+  // Lifecycle writers clear condition_key on closure; the original filing marker
+  // survives it. Reuse that history without reopening or rewriting a disposition.
+  if (input.includeTerminal) {
+    if (!input.workspaceId) throw new Error('includeTerminal requires a concrete workspaceId');
+    const rows = await getOrgPg().sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items
+       WHERE workspace_id = ${input.workspaceId}
+         AND (condition_key = ${key}
+           OR payload -> ${CONDITION_UPSERT_MARKER}::text ->> 'conditionKey' = ${key})
+         AND status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
+       ORDER BY created_ts, feature_id LIMIT 1`;
+    if (rows[0]) return rows[0].feature_id;
+  }
   // Self-heal a missed key release so a settled row can never wedge the key.
   await releaseStaleConditionKeys(key, input.workspaceId);
   // Adopt-and-refresh the incumbent. Workspace-scoped on purpose — see header.
