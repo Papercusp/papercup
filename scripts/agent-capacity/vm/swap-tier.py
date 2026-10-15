@@ -291,19 +291,33 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner):
         cmd = (f"systemd-run --scope --quiet --unit={SLICE}-{name} --slice={SLICE} -p MemoryAccounting=yes -- "
                f"setpriv --reuid={user} --regid={user} --init-groups -- {env} codex "
                f"--no-alt-screen --sandbox read-only --ask-for-approval never --model {shlex.quote(model)}")
-        sh(TMUX + ["new-session", "-d", "-s", name, "-x", "160", "-y", "50", "-c", work, cmd])
+        # Keep exited terminals until their status/output has been recorded. Without
+        # this, a launch crash becomes an empty pane followed by a three-minute wait.
+        sh(TMUX + ["new-session", "-d", "-s", name, "-x", "160", "-y", "50", "-c", work, cmd,
+                   ";", "set-window-option", "-t", name, "remain-on-exit", "on"])
         time.sleep(0.15)
     deadline, pending = time.time() + 180, set(names)
     while pending and time.time() < deadline:
         for name in list(pending):
+            check_codex_terminal(name, rec)
             text = pane(name)
             if codex_ready(text, model):
                 pending.discard(name)
         time.sleep(0.5)
     if pending:
+        for name in sorted(pending):
+            rec.rec("startup-timeout", agent=name, pane=pane(name))
         raise RuntimeError(f"Codex agents never ready: {sorted(pending)}; first pane: {pane(sorted(pending)[0])}")
     rec.rec("agents-started", agents=len(names), cli="codex", model=model, effort=effort, inference="real")
     return names
+
+
+def check_codex_terminal(name, rec):
+    state = sh(TMUX + ["display-message", "-p", "-t", name, "#{pane_dead} #{pane_dead_status}"], check=False)
+    if state.returncode or state.stdout.split()[:1] == ["1"]:
+        evidence = {"agent": name, "state": state.stdout.strip(), "stderr": state.stderr.strip(), "pane": pane(name)}
+        rec.rec("startup-failed", **evidence)
+        raise RuntimeError(f"Codex terminal exited before readiness: {json.dumps(evidence)}")
 
 
 def start_agents(n, user, rec, cli="claude", model="gpt-6-luna", effort="low", gateway_url=None, owner=None):

@@ -27,6 +27,24 @@ function py(module: string, expr: string, input: unknown): any {
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
 describe('real Luna load and swap tuning', () => {
+  it('records a dead terminal exit status and output before failing startup', () => {
+    const code = [
+      'import importlib.util, types, json',
+      `s = importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm = importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'rows=[]',
+      'm.sh=lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="1 101", stderr="")',
+      'm.pane=lambda n: "native runtime failed to create a worker"',
+      'try: m.check_codex_terminal("a4", types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
+      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.rows).toEqual([{ kind: 'startup-failed', agent: 'a4', state: '1 101', stderr: '', pane: 'native runtime failed to create a worker' }]);
+    expect(receipt.error).toContain('exited before readiness');
+  });
+
   const nativeOutcome = (rows: unknown[]) => py(DRIVER,
     '(lambda s: ([m.codex_record(s, r) for r in inp], s)[1])({"expected_sha256": "abc123"})', rows);
   const turn = (marker: string) => ({ type: 'response_item', payload: { role: 'user', content: [{ type: 'input_text', text: `Dummy task ${marker}` }] } });
