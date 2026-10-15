@@ -5,7 +5,11 @@ import type { BlueprintOperation } from '@papercusp/orchestrator/blueprint';
 import type { ApprovedSupportWorkflow } from './support-workflow-contract';
 import { assertApprovedSupportWorkflow } from './support-workflow-contract';
 
-export function supportWorkflowFromOperation(operation: BlueprintOperation, harnessSlug: string,
+export function supportWorkflowFromOperation(operation: {
+  id: string;
+  policy: { supportCase?: Pick<ApprovedSupportWorkflow, 'allowedSources' | 'allowedActions' | 'maximumCostMicros'> };
+  acceptance: { businessReview?: Pick<ApprovedSupportWorkflow, 'accountableOwner' | 'reviewerPrincipals'> };
+}, harnessSlug: string,
   approvedRevision: string): ApprovedSupportWorkflow | null {
   const policy = operation.policy.supportCase;
   if (!policy) return null;

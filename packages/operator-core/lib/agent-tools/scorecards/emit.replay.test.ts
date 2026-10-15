@@ -12,6 +12,7 @@ import { encode } from '@papercusp/result-encoding';
 import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 
 const getRubric = vi.fn();
+const getRubricCriteriaHash = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
@@ -23,6 +24,11 @@ vi.mock('../../rubrics', async (importOriginal) => {
   return {
     ...actual,
     getRubric: (...args: unknown[]) => getRubric(...args),
+    readRubric: async (rubricId: string) => {
+      const rubric = await getRubric(rubricId);
+      return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+    },
+    getRubricCriteriaHash: (...args: unknown[]) => getRubricCriteriaHash(...args),
     getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
     getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
     readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
@@ -161,6 +167,7 @@ const driftedReplay = {
 beforeEach(() => {
   vi.clearAllMocks();
   getRubric.mockResolvedValue(RUBRIC);
+  getRubricCriteriaHash.mockResolvedValue(null);
   getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: 'criteria-v1', meaningRevision: null });
   getRubricPlanRevision.mockResolvedValue(7);
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
@@ -327,7 +334,7 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     };
     const recipe = {
       ...RERUN_RECIPE,
-      args: { ...RERUN_RECIPE.args, current: forgedCurrent },
+      current: { ...RERUN_RECIPE.current, fingerprints: forgedCurrent },
       measurementEvidence: forgedMeasurementEvidence,
     };
     const dispatchTool = vi.fn().mockResolvedValue({

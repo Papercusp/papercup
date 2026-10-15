@@ -55,7 +55,7 @@ import {
   RESULT_DOOR_MARKER,
   SHARED_BASE_NOTES_MARKER,
 } from './splice-tooling-overlay';
-import { renderResultDoorSection } from '../result-door-prompt';
+import { renderClientResultDoorSection, renderResultDoorSection, type OutputGuidancePolicy } from '../result-door-prompt';
 import { renderModesPolicy } from '../operating-modes-policy';
 import { renderDeployPipelineNote } from '../deploy-pipeline-policy';
 import { renderWaitLoopNote } from '../wait-loop-policy';
@@ -4220,6 +4220,8 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
 export interface RenderSuPlaybookInput {
   /** Which client's tooling overlay to splice in (omp/claude/codex). */
   agent: string;
+  /** Resolved launch restrictions, when the caller already has them. Defaults to the canonical policy. */
+  nativeToolPolicy?: OutputGuidancePolicy;
   /** Base-playbook profile: 'engineer' (default) | 'power'. */
   profile?: string;
   /** Override the operator app root (tests). Defaults to walking up from here. */
@@ -4417,7 +4419,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // from computeTurnDoors (the SAME function applyResultDoor enforces with) so the number the
   // agent is taught cannot drift from the number it is held to. Both tiers get it — a fleet
   // member pays the door exactly like a full session does.
-  const withDoor = spliceGeneratedSection(withAuto, RESULT_DOOR_MARKER, renderResultDoorSection());
+  const withDoor = spliceGeneratedSection(withAuto, RESULT_DOOR_MARKER, renderClientResultDoorSection(input.agent, input.nativeToolPolicy));
   // agent-managed-compaction: the agent self-management compaction protocol (client-neutral).
   const withCompaction = spliceGeneratedSection(
     withDoor,

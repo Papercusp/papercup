@@ -913,6 +913,21 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(omp.text).not.toContain('## CLAUDE tooling');
   });
 
+  it('renders Codex output advice from the launch policy and retires it when exec is denied', async () => {
+    const baseText = `# Output guidance fixture\n${MARKER}\n<!-- PAPERCUSP-SU:RESULT-DOOR -->`;
+    const before = await renderSuPlaybook({ agent: 'codex', operatorAppRoot: tmpAppRoot, baseText });
+    expect(before.text).toContain('Print only the fields you will use');
+    expect(before.text).toContain('// @exec:');
+    expect(before.text).not.toContain('Every tool result is capped at');
+    const after = await renderSuPlaybook({ agent: 'codex', operatorAppRoot: tmpAppRoot, baseText,
+      nativeToolPolicy: { deniedNames: ['functions.exec'] } });
+    expect(after.text).not.toContain('// @exec:');
+    expect(after.text).not.toContain('Codex native tool output');
+    expect(after.text).toContain("Papercusp's per-result door defaults to");
+    const claude = await renderSuPlaybook({ agent: 'claude', operatorAppRoot: tmpAppRoot, baseText });
+    expect(claude.text).not.toContain('// @exec:');
+  });
+
   it('profile selects the base file (power → papercusp-su-power.tools.md)', async () => {
     const power = await renderSuPlaybook({ agent: 'claude', profile: 'power', operatorAppRoot: tmpAppRoot });
     expect(power.text).toContain('# Power base');

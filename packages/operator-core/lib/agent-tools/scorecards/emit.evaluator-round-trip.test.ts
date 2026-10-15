@@ -106,6 +106,7 @@ vi.mock('../../build-info', async (importOriginal) => ({
 
 // ── scorecards:emit persistence seams (same set as emit.replay.test.ts) ─────────────
 const getRubric = vi.fn();
+const getRubricCriteriaHash = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
@@ -117,6 +118,11 @@ vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
   getRubric: (...args: unknown[]) => getRubric(...args),
   getRubricWithoutSeeding: (...args: unknown[]) => getRubric(...args),
+  readRubric: async (rubricId: string) => {
+    const rubric = await getRubric(rubricId);
+    return rubric ? { kind: 'found' as const, rubric } : { kind: 'missing' as const };
+  },
+  getRubricCriteriaHash: (...args: unknown[]) => getRubricCriteriaHash(...args),
   getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
   readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
   getAcceptanceRubricsForPlan: (...args: unknown[]) => getAcceptanceRubricsForPlan(...args),
@@ -428,6 +434,7 @@ beforeEach(async () => {
     { rubricId: 'rubric-fixture', classRef: 'plan-class-feature-ship' },
   ]);
   getRetiredAcceptanceRubricsForPlan.mockResolvedValue([]);
+  getRubricCriteriaHash.mockResolvedValue(null);
   listScorecards.mockResolvedValue([]);
   captureImprovement.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-ROUND-TRIP' } });
 });
@@ -656,6 +663,12 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     // The code under proof changes after grading and before filing. The replay re-measures;
     // evaluator revision 5 withdraws falsifiability first because its canonical test witness is stale.
     await writeSubject('export const ackedEventsReplayed = true;\n');
+    execFileSync('git', ['add', '--all'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', [
+      '-c', 'user.name=Spec Adequacy Test',
+      '-c', 'user.email=spec-adequacy@example.invalid',
+      'commit', '--quiet', '-m', 'move the proven source after grading',
+    ], { cwd: root, stdio: 'ignore' });
 
     const result = await emitDraft(live.rows[0]!.scorecardDraft);
 
