@@ -1,5 +1,6 @@
 /** Canonical operation receipts inside the existing Workflows inspector. */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Checkbox } from '@/app/harness/Checkbox';
 import {
   blueprintOperationHostFromInvoker, createPotAppSeam,
   type BlueprintOperationHandle, type BlueprintOperationReadOptions, type BlueprintOperationResult,
@@ -88,8 +89,8 @@ function OperationReceipt({ identity, seam }: { identity: string; seam: Inspecto
       <h3 className="pc-wf__insp-h">Run result</h3>
       <p>Receipt {handle.receiptId} · Revision <code>{handle.specificationRevision}</code></p>
       <label>
-        <input type="checkbox" checked={reviewAccess} disabled={busy} onChange={(event) => {
-          setResult(null); setNotice(null); setReason(''); setReviewAccess(event.target.checked);
+        <Checkbox checked={reviewAccess} disabled={busy} ariaLabel="Read as an authorized reviewer" onChange={(checked) => {
+          setResult(null); setNotice(null); setReason(''); setReviewAccess(checked);
         }} /> Read as an authorized reviewer
       </label>
       <div className="pc-wf__insp-actions">
