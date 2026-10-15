@@ -3807,10 +3807,20 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
     });
 
-    it('code:run summaryNotice.truncated marks its JSON spill partial and recommends smaller returns', () => {
+    it('code:run summaryNotice.truncated points to the raw summary spill and marks the outer spill partial', () => {
       const text = JSON.stringify({
         summary: 'S'.repeat(3_500),
-        summaryNotice: { truncated: true, originalChars: 9_296, returnedChars: 3_500 },
+        summaryNotice: {
+          truncated: true,
+          originalChars: 9_296,
+          returnedChars: 3_500,
+          rawSummaryCursor: {
+            status: 'available',
+            tool: 'capability:read',
+            args: { uri: 'papercusp://scratch/ws-1/code:run/123e4567-e89b-42d3-a456-426614174000/raw-summary.json', byte_offset: 0, byte_limit: 3072 },
+            bodyOffsetInPayload: 0,
+          },
+        },
         padding: 'P'.repeat(BUDGET_CHARS * 3),
       });
       const input: DoorableResult = { content: [{ type: 'text' as const, text }] };
@@ -3823,10 +3833,16 @@ describe('applyResultDoor', () => {
 
       expect(pointer).toContain('source is already partial');
       expect(pointer).toContain('summaryNotice.truncated');
+      expect(pointer).toContain('summaryNotice.rawSummaryCursor');
+      expect(pointer).toContain('capability:read');
       expect(pointer).toContain('smaller return');
       expect(pointer).toContain('bounded slices');
+      expect(boundedBody(doored).summaryNotice.rawSummaryCursor).toMatchObject({
+        status: 'available',
+        args: { uri: 'papercusp://scratch/ws-1/code:run/123e4567-e89b-42d3-a456-426614174000/raw-summary.json' },
+      });
       expect(spill).toContain('summaryNotice.truncated');
-      expect(spill).toContain('smaller return');
+      expect(spill).toContain('summaryNotice.rawSummaryCursor');
       expect((doored._meta as { resultDoor?: Record<string, unknown> } | undefined)?.resultDoor).toMatchObject({
         innerTruncationMarkers: ['summaryNotice.truncated'],
       });

@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { encode } from '@papercusp/result-encoding';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
+import { parseScratchReference } from '../../scratch-reference';
+import { safeScratchFilesystemPath } from '../../scratch-uri';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
@@ -823,6 +825,67 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
   it('keeps a small summary byte-identical', () => {
     const result = { summary: { markerCount: 1, lines: ['first', 'second'] } };
     expect(shapeCodeRunSummary(result)).toBe(result);
+  });
+
+  it('spills the original summary and returns an owner-scoped recovery cursor when shaping omits data', async () => {
+    const scratchRoot = mkdtempSync(join(tmpdir(), 'code-run-summary-spill-'));
+    const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    try {
+      const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+      if (!tool) throw new Error('code:run not registered');
+      const res = await tool.fn(
+        {
+          script:
+            'return { records: Array.from({ length: 24 }, (_, index) => ({ ' +
+            'id: index, detail: `record-${index}-${"x".repeat(500)}` })) };',
+        },
+        {
+          log: () => {},
+          workspaceId: 'ws-test',
+          harnessSlug: 'alpha',
+          role: 'su',
+          isSuperuser: true,
+          uiClientId: 'su-test',
+        } as never,
+      );
+      const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text) as {
+        summary: { records: unknown[] };
+        summaryNotice: {
+          truncated: true;
+          rawSummaryCursor: {
+            status: string;
+            args?: { uri: string };
+            byteCount?: number;
+            sha256?: string;
+          };
+        };
+      };
+
+      expect(payload.summaryNotice.truncated).toBe(true);
+      expect(payload.summaryNotice.rawSummaryCursor.status).toBe('available');
+      const uri = payload.summaryNotice.rawSummaryCursor.args?.uri;
+      expect(uri).toBeTruthy();
+      const reference = parseScratchReference(readFileSync(safeScratchFilesystemPath(uri!)));
+      expect(reference).not.toBeNull();
+      expect(reference!.manifest).toMatchObject({
+        audience: 'owner',
+        ownerId: 'owner-x',
+        byteCount: payload.summaryNotice.rawSummaryCursor.byteCount,
+        sha256: payload.summaryNotice.rawSummaryCursor.sha256,
+        bodyOffsetInPayload: 0,
+      });
+      expect(JSON.parse(reference!.payload.toString('utf8'))).toEqual({
+        records: Array.from({ length: 24 }, (_, index) => ({
+          id: index,
+          detail: `record-${index}-${'x'.repeat(500)}`,
+        })),
+      });
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousRoot;
+      rmSync(scratchRoot, { recursive: true, force: true });
+    }
   });
 
   it('preserves source array counts in TOON while marking omitted entries (EI-24966800800754357)', () => {
