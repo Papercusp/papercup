@@ -266,10 +266,21 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
       workspaceId: 'ws-test', reservedAt: f.input.reservation.reservedAt, expectedCard: f.input.card, tx: f.db,
     });
     const [query, ...bindings] = f.tx.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(query.join('?').replace(/\s+/g, ' ')).toContain(
+      "UPDATE harness_shared.task_ledger SET detail = COALESCE(detail, '{}'::jsonb) || ?::text::jsonb",
+    );
+    expect(query.join('?')).toContain('RETURNING task_id');
     expect(query.join('?')).toContain("detail->>'coordOwnerId' = ? AND detail->>'label' = ?");
     expect(query.join('?')).toContain("state IN ('pending', 'running')");
-    expect(query.join('?')).toContain('FOR SHARE');
-    expect(bindings).toEqual(['ws-test', 'task-retained', 'su-independent', 'grading-audit:EI-renew:relay-route', 'EI-renew']);
+    expect(query.join('?')).not.toContain('FOR SHARE');
+    expect(bindings).toEqual([
+      JSON.stringify({ gradingAudit: {
+        issueId: 'EI-renew',
+        evidenceFingerprint: 'exact-fingerprint',
+        reservation: f.input.reservation,
+      } }),
+      'ws-test', 'task-retained', 'su-independent', 'grading-audit:EI-renew:relay-route', 'EI-renew',
+    ]);
     expect(f.d.wake).toHaveBeenCalledTimes(1);
     expect(f.stored.size).toBe(1);
   });

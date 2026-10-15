@@ -42,6 +42,12 @@ vi.mock('../../storage/package-cache-retention', () => ({
   runPackageCacheRetention: (...args: unknown[]) => packageCacheRetentionMock(...args),
 }));
 
+const coldMigrationMock = vi.fn(async (_opts?: unknown) => ({ scanned: 0, migrated: 0, failed: 0, errors: [] }));
+vi.mock('../../session-archive', async (original) => ({
+  ...(await original<typeof import('../../session-archive')>()),
+  runScheduledColdArchiveMigration: (...args: [unknown]) => coldMigrationMock(...args),
+}));
+
 const sqlUnsafeMock = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMockFn = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMock = Object.assign(sqlTagMockFn, { unsafe: sqlUnsafeMock }) as unknown as TestSql;
@@ -69,7 +75,6 @@ import {
   DEFAULT_REINDEX_TARGETS,
   shouldRunReindex,
   reindexBloatedIndexes,
-  migrateColdArchives,
   type ReindexTarget,
 } from './telemetry-retention-action';
 import { buildTelemetryRetentionTriggerConfig } from './seed-telemetry-retention-routine';
@@ -296,6 +301,7 @@ describe('system:telemetry-retention action', () => {
     guardResourceMock.mockClear();
     cleanupMock.mockClear();
     packageCacheRetentionMock.mockReset().mockResolvedValue([]);
+    coldMigrationMock.mockReset().mockResolvedValue({ scanned: 0, migrated: 0, failed: 0, errors: [] });
     // The action logs warn() on the invalid/failed-prune branches exercised below;
     // the repo's vitest-fail-on-console treats an un-mocked warn as a failure, so
     // capture it (the real assertions are on pruneMock / non-throwing).
@@ -303,36 +309,6 @@ describe('system:telemetry-retention action', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
-
-  it('runs bounded cold-archive migration through the existing archive store', async () => {
-    const readStamp = vi.fn(async () => null);
-    const store = { readStamp, readFiles: vi.fn() } as never;
-    await expect(migrateColdArchives({
-      candidates: [
-        { source_kind: 'codex', session_id: 'sid-1' },
-        { source_kind: 'codex', session_id: 'sid-2' },
-      ],
-      maxArchives: 1,
-      store,
-    })).resolves.toEqual({ scanned: 1, migrated: 0, failed: 0 });
-    expect(readStamp).toHaveBeenCalledTimes(1);
-  });
-
-  it('fails closed when a store cannot delete its PG rows', async () => {
-    const store = {
-      readStamp: vi.fn(async () => ({
-        workspace_id: 'default', source_kind: 'codex', session_id: 'sid-1',
-        owner: null, harness_slug: null, cwd: null, adv_session_id: null,
-        session_root: '/tmp', file_count: 1, bytes_raw: 1, bytes_stored: 1,
-        manifest: [{ relpath: 'rollout.jsonl', sha256: '0'.repeat(64), bytes_raw: 1 }], archived_by: null,
-      })),
-      readFiles: vi.fn(async () => []),
-    } as never;
-    await expect(migrateColdArchives({
-      candidates: [{ source_kind: 'codex', session_id: 'sid-1' }],
-      store,
-    })).resolves.toEqual({ scanned: 1, migrated: 0, failed: 1 });
-  });
 
   it('prunes each default target with its retention window + workspace', async () => {
     pruneMock.mockResolvedValue(okResult());
@@ -404,6 +380,23 @@ describe('system:telemetry-retention action', () => {
     packageCacheRetentionMock.mockClear();
     await action!(ctx({ package_cache_enabled: false }));
     expect(packageCacheRetentionMock).not.toHaveBeenCalled();
+  });
+
+  it('does not migrate cold archives during dry_run preview', async () => {
+    pruneMock.mockResolvedValue(okResult({ dryRun: true }));
+    const action = getSystemAction('telemetry-retention');
+    await action!(ctx({ dry_run: true }));
+    expect(sqlTagMockFn).not.toHaveBeenCalled();
+    expect(coldMigrationMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing cold mount before selecting or removing any archive payload', async () => {
+    coldMigrationMock.mockRejectedValueOnce(new Error('cold archive volume is not mounted separately from root'));
+    pruneMock.mockResolvedValue(okResult());
+    await getSystemAction('telemetry-retention')!(ctx({}));
+    expect(sqlTagMockFn).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('not mounted separately'));
+    expect(pruneMock).toHaveBeenCalled();
   });
 
   it('contains an unexpected package-cache retention failure', async () => {

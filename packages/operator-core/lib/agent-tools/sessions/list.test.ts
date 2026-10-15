@@ -329,6 +329,68 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).not.toContain('spawn_id');
   });
 
+  it('pages unfiltered rows before wide metadata hydration and preserves filtered query semantics', async () => {
+    const window = {
+      since: '2026-07-13T13:30:00Z',
+      until: '2026-07-13T14:30:00Z',
+    };
+    const row = {
+      source_kind: 'codex',
+      session_id: 'sess-historical',
+      owner: 'su-historical',
+      first_seen_at: '2026-07-01T10:00:00.000Z',
+      first_event_at: '2026-07-13T13:35:00.000Z',
+      last_event_at: '2026-07-13T14:20:00.000Z',
+      event_count: 3,
+      event_sources: ['agent_activity', 'session_turns', 'tool_invocations'],
+      harness_slug: 'papercusp',
+      cwd: '/repo',
+      fleet_slug: 'fleet-a',
+      fleet_role: 'member',
+      model: 'gpt-5.6',
+      effort: 'xhigh',
+      total_matching: 1,
+    };
+    const { parsed: unfiltered, queries: unfilteredQueries } = await run(
+      { mode: 'historical', ...window, limit: 1 },
+      [[row]],
+    );
+    const { parsed: filtered, queries: filteredQueries } = await run(
+      { mode: 'historical', ...window, limit: 1, source_kind: 'codex', cwd_contains: '/repo' },
+      [[row]],
+    );
+    const unfilteredSql = unfilteredQueries[0];
+    const filteredSql = filteredQueries[0];
+    const mapStart = unfilteredSql.indexOf('session_map AS MATERIALIZED');
+    const mapEnd = unfilteredSql.indexOf('mapped_key_events AS', mapStart);
+    const pageStart = unfilteredSql.indexOf('paged_event_groups AS MATERIALIZED');
+    const pageLimit = unfilteredSql.indexOf('LIMIT', pageStart);
+    const finalMetadataSelect = unfilteredSql.indexOf('SELECT COALESCE(a.agent', pageStart);
+    const finalMetadataLookup = unfilteredSql.indexOf('FROM harness_shared.adv_sessions', finalMetadataSelect);
+    const filteredWhere = Math.max(filteredSql.lastIndexOf('e.source_kind ='), filteredSql.lastIndexOf('e.cwd ILIKE'));
+    const filteredOuterOrder = filteredSql.lastIndexOf('ORDER BY e.last_event_at DESC');
+    const filteredOuterLimit = filteredSql.lastIndexOf('LIMIT');
+
+    expect(unfiltered.ok).toBe(true);
+    expect(unfiltered.sessions).toEqual(filtered.sessions);
+    expect(unfiltered.sessions[0]).toMatchObject({ model: 'gpt-5.6', effort: 'xhigh' });
+    expect(mapStart).toBeGreaterThanOrEqual(0);
+    expect(mapEnd).toBeGreaterThan(mapStart);
+    expect(unfilteredSql.slice(mapStart, mapEnd)).not.toContain('launch_spec');
+    expect(unfilteredSql.slice(mapStart, mapEnd)).not.toContain('fleet_membership_events');
+    expect(pageStart).toBeGreaterThan(mapEnd);
+    expect(pageLimit).toBeGreaterThan(pageStart);
+    expect(finalMetadataSelect).toBeGreaterThan(pageLimit);
+    expect(finalMetadataLookup).toBeGreaterThan(finalMetadataSelect);
+    expect(unfilteredSql.indexOf('fleet_membership_events', pageStart)).toBeGreaterThan(pageStart);
+
+    expect(filteredSql).not.toContain('paged_event_groups AS MATERIALIZED');
+    expect(filteredSql).toContain('adv_launch_spec');
+    expect(filteredWhere).toBeGreaterThan(0);
+    expect(filteredWhere).toBeLessThan(filteredOuterOrder);
+    expect(filteredOuterOrder).toBeLessThan(filteredOuterLimit);
+  });
+
   it('aggregates raw event keys before mapping and splits null/non-null session joins', async () => {
     const { queries } = await run(
       {
@@ -372,8 +434,15 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).toContain('sum(event_count)::int AS event_count');
     expect(sql).toContain('array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources');
     expect(sessionLookup).toContain("FROM harness_shared.adv_sessions");
-    expect(sessionLookupSelect).toContain("launch_spec->>'harnessSlug' AS harness_slug");
+    expect(sessionLookupSelect).not.toContain('launch_spec');
     expect(sessionLookupSelect).not.toMatch(/,\s*harness_slug\s*,/);
+    const pageStart = sql.indexOf('paged_event_groups AS MATERIALIZED');
+    const lateMetadataSelect = sql.indexOf('SELECT COALESCE(a.agent', pageStart);
+    const lateMetadataLookup = sql.indexOf('FROM harness_shared.adv_sessions', lateMetadataSelect);
+    expect(pageStart).toBeGreaterThan(sourceRollup);
+    expect(lateMetadataSelect).toBeGreaterThan(pageStart);
+    expect(lateMetadataLookup).toBeGreaterThan(lateMetadataSelect);
+    expect(sql).toContain("launch_spec->>'harnessSlug' AS harness_slug");
   });
 
   it('uses disjoint indexed lookups for known sessions and owner-only events', async () => {

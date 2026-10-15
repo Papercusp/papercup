@@ -7,6 +7,7 @@
  * teaching message), and the independent-grader satisfaction path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+vi.mock('./acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));
 import {
   ACCEPTANCE_VERDICT_REQUIRED_AFTER,
   evaluatePlanAcceptanceGate,
@@ -1348,6 +1349,17 @@ describe('evaluatePlanAcceptanceGate', () => {
         code: 'acceptance_not_recorded',
       });
     });
+  });
+
+  it('teaches verdict-only acceptance of the independent grade', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({ issueId: 'EI-independent', createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+    ]);
+    const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(result).toMatchObject({ satisfied: false, code: 'acceptance_not_recorded' });
+    expect(result.message).toContain("acceptanceOf:'EI-independent'");
+    expect(result.message).not.toContain('ratings:{');
   });
 
   it('a post-grading implementer accept satisfies and a newer reject refuses', async () => {

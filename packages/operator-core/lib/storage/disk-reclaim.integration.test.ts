@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod } from 'nod
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -77,6 +77,25 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  it('reaps an elevated census worker at its native deadline when ordinary-user signalling would fail', async () => {
+    const { root } = await setup(); const pidFile = join(root, 'worker-pid');
+    let signalAttempts = 0;
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), requirePrivilege: true, sudo: '/usr/bin/sudo', timeoutMs: 1000,
+      spawn: (command, args) => {
+        const find = args.indexOf('find'); expect(find).toBeGreaterThan(0);
+        // Exercise the real sudo/timeout process chain with a deterministic
+        // stalled native worker, instead of depending on a slow filesystem.
+        const child = spawn(command, [...args.slice(0, find), '/bin/sh', '-c', 'echo $$ > "$1"; exec /bin/sleep 60', 'retention-stall', pidFile],
+          { stdio: ['ignore', 'pipe', 'pipe'] });
+        child.kill = () => { signalAttempts++; child.emit('error', Object.assign(new Error('kill EPERM'), { code: 'EPERM' })); return false; };
+        return child;
+      } });
+    expect(census.error).toBe('retention native census timed out');
+    expect(census.entries).toEqual([]); expect(signalAttempts).toBe(0);
+    const pid = Number((await readFile(pidFile, 'utf8')).trim()); expect(pid).toBeGreaterThan(1);
+    await expect(stat(`/proc/${pid}`)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('continues past a held oldest entry until actual retained usage meets the cap', async () => {
     const { root, options } = await setup();
     const paths = ['old-held', 'middle', 'new'].map((name) => join(root, name));
@@ -124,7 +143,7 @@ describe('retention on a real fixture tree', () => {
         run(command, args, opts?.stdin); return { ok: true, detail: 'completed' };
       };
       const receipt = await runDiskReclaimOnce({ ...options,
-        inspectTrees: (root, opts) => inspectRetentionTrees(root, { ...opts, sudo: '/usr/bin/sudo' }),
+        inspectTrees: (root, opts) => inspectRetentionTrees(root, { ...opts, requirePrivilege: true }),
         removeEntry: (entry, ms) => removePrivilegedRetentionEntry(entry, ms, execute) });
       expect(receipt.errors).toEqual([]); expect(receipt.complete).toBe(true);
       expect(receipt.entries).toContainEqual(expect.objectContaining({ path, status: 'removed' }));
@@ -465,13 +484,14 @@ describe('retention on a real fixture tree', () => {
   it('finishes an admitted removal then yields the real mutex to a queued writer', async () => {
     const { root, options } = await setup();
     const paths = [join(root, 'old-a'), join(root, 'old-b')];
-    for (const path of paths) await writeFile(path, 'expired');
+    for (const path of paths) await writeFile(path, Buffer.alloc(4096));
+    const policy = options.policy.map((cls) => ({ ...cls, maxBytes: 4096 }));
     let entered!: () => void, finish!: () => void, queued!: () => void;
     const removing = new Promise<void>((resolve) => { entered = resolve; });
     const finishRemoval = new Promise<void>((resolve) => { finish = resolve; });
     const waiting = new Promise<void>((resolve) => { queued = resolve; });
     const delegate = vi.fn(async () => ({ ok: true, detail: 'fixture owner' }));
-    const reclaim = runDiskReclaimOnce({ ...options, delegates: [{ classId: 'fixture-owner', run: delegate }],
+    const reclaim = runDiskReclaimOnce({ ...options, policy, delegates: [{ classId: 'fixture-owner', run: delegate }],
       removeEntry: async (entry) => { entered(); await finishRemoval; await rm(entry.path); } });
     await removing;
     let peerEntered = false;
@@ -487,6 +507,7 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
     expect(receipt.errors).toContain('retention yielded to queued writer');
     expect(receipt.entries.filter((entry) => entry.status === 'removed')).toHaveLength(1);
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 8192, afterBytes: 4096, overByBytes: 0 });
     expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, stopped: true });
     expect(delegate).not.toHaveBeenCalled();
     const resumed = await runDiskReclaimOnce(options);
@@ -675,15 +696,19 @@ describe('retention on a real fixture tree', () => {
       expect(census.retained).toEqual([{ path, reason: 'foreign ownership boundary' }]);
     } finally { uid.mockRestore(); await chmod(path, 0o700); }
   });
-  it.each([undefined, inspectRetentionTrees])('preserves an old live Unix socket when path holder evidence is empty (%s)', async (inspectTrees) => {
-    const { root, options } = await setup(); const path = join(root, 'live.sock');
+  it.each([undefined, inspectRetentionTrees])('preserves old live Unix sockets and FIFOs when path holder evidence is empty (%s)', async (inspectTrees) => {
+    const { root, options } = await setup(); const path = join(root, 'live.sock'); const fifo = join(root, 'live.fifo');
+    execFileSync('mkfifo', [fifo], { timeout: 10_000 });
     const server = createServer();
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(path, resolve); });
     try {
       const receipt = await runDiskReclaimOnce({ ...options, inspectTrees });
       expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
-      expect(receipt.entries).toEqual([expect.objectContaining({ path, status: 'protected', reason: 'special filesystem entry' })]);
+      expect(receipt.entries).toHaveLength(2);
+      expect(receipt.entries).toEqual(expect.arrayContaining([path, fifo].map((entryPath) =>
+        expect.objectContaining({ path: entryPath, status: 'protected', reason: 'special filesystem entry' }))));
       expect((await stat(path)).isSocket()).toBe(true);
+      expect((await stat(fifo)).isFIFO()).toBe(true);
     } finally { await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
   });
   it('never follows a symlink into owner data', async () => {

@@ -1699,6 +1699,29 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       tasks: [{ taskId: 'task777', logPath: '/tmp/papercusp-ws/fleet-logs/judge.log' }],
     });
   });
+
+  it('records an internal grading-audit target on the launched headless task row', async () => {
+    const gradingAudit = {
+      issueId: 'EI-grade-task',
+      evidenceFingerprint: 'evidence-fingerprint-v1',
+      reservation: {
+        key: 'grading-audit:EI-grade-task',
+        reservedAt: '2026-10-15T18:00:00.000Z',
+      },
+    };
+    const internalCtx = {
+      ...ctx,
+      [launchAgentModule.INTERNAL_GRADING_AUDIT_TASK_DETAIL]: gradingAudit,
+    } as never;
+
+    const res = await launchAgent.handler({ brief: 'grade this exact scorecard', headless: true }, internalCtx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({
+      ledgerDetail: { gradingAudit },
+    });
+  });
 });
 
 describe('headless in-place resume verification', () => {

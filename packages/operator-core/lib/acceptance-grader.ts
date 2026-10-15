@@ -31,6 +31,7 @@ import { killTask } from './task-manager/control';
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
 import { getBuildInfo } from './build-info';
+import { buildOrderingItems, openBuildItems } from './agent-tools/plans/acceptance-after-build';
 import { recordExpertiseRoutingInvocation } from './endpoint-route/telemetry';
 import { ACCEPTANCE_GRADING_POLICY } from './consult/selection-policies';
 
@@ -311,6 +312,8 @@ export type AcceptanceGraderLifecycle = {
   label: string;
   launch?: unknown;
   error?: string;
+  /** Recruitment waits for these build lanes before selecting or waking graders. */
+  openBuildItems?: string[];
   /**
    * EI-21923986145923904: passthrough of `capability:launch-agent`'s own
    * three-state fresh-launch verdict (see `FreshLaunchVerdict.agentStarted`) —
@@ -2783,6 +2786,12 @@ export async function resolveAcceptanceGrader(
       ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
     });
+    const openBuild = plan ? openBuildItems(buildOrderingItems(plan)) : [];
+    if (openBuild.length > 0) {
+      return { state: 'failed', idempotencyKey: '', label: '',
+        error: `build_items_open: finish ${openBuild.map(item => item.id).join(', ')} before acceptance grading`,
+        openBuildItems: openBuild.map(item => item.id) };
+    }
     const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug, {
       harnessSlug: plan.row.harnessSlug,
     }) : null;
@@ -3054,6 +3063,12 @@ export async function launchAcceptanceGrader(
     ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
   });
   if (!plan) return { state: 'failed', idempotencyKey: '', label: '', error: `plan '${planSlug}' not found` };
+  const openBuild = openBuildItems(buildOrderingItems(plan));
+  if (openBuild.length > 0) {
+    return { state: 'failed', idempotencyKey: '', label: '',
+      error: `build_items_open: finish ${openBuild.map(item => item.id).join(', ')} before acceptance grading`,
+      openBuildItems: openBuild.map(item => item.id) };
+  }
   const [rubric, audit, workItems] = await Promise.all([
     (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug, { harnessSlug: plan.row.harnessSlug }),
     (deps.getAudit ?? getLatestPlanAudit)(planSlug),

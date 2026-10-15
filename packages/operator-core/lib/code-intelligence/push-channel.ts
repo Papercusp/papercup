@@ -9,7 +9,7 @@ import { withBoundedTimeout } from '../bounded-timeout';
 import { loadHarnessRegistry } from '../harness-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
-import { peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
+import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
 
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
 export const CODE_INTEL_PUSH_WALL_MS = 250;
@@ -33,6 +33,7 @@ export interface PushFact {
   text: string;
   citedPaths: readonly string[];
   suggestedCall?: string;
+  sourceHashes?: readonly { path: string; sha256: string }[];
 }
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
@@ -91,19 +92,20 @@ export const snapshotGrepLeg: PushLeg = (input, snapshot) => {
     const symbols = snapshot.symbols?.get(subject);
     if (symbols?.length !== 1) continue; // Ambiguous / unresolved means no push.
     const symbol = symbols[0]!;
+    if (!symbol.sources?.length) continue; // Older metadata cannot prove forwarding-module freshness.
     const callers = symbol.callers.slice(0, 4);
     const workspaces = new Map<string, number>();
     for (const site of symbol.callers) {
-      const workspace = /^(?:apps|packages|libs)\/[^/]+/.exec(site.path)?.[0] ?? '(repository)';
+      const workspace = typeof site.workspace === 'string' ? site.workspace : '(workspace unknown)';
       workspaces.set(workspace, (workspaces.get(workspace) ?? 0) + 1);
     }
     const aliases = [...new Set(symbol.callers.filter(site => site.spelling !== subject).map(site => site.spelling))].slice(0, 4);
-    facts.push({ leg: 'grep', subject, citedPaths: [symbol.path, ...callers.map(site => site.path)],
+    facts.push({ leg: 'grep', subject, sourceHashes: symbol.sources, citedPaths: [symbol.path, ...callers.map(site => site.path)],
       text: `${subject}: definition ${symbol.path}:${symbol.line}. At least ${symbol.callers.length} syntax-bound static calls `
         + `(${[...workspaces].map(([workspace, count]) => `${workspace}: ${count}`).join('; ') || 'none resolved'}).`
         + (callers.length ? `\nTop callers: ${callers.map(site => `${site.path}:${site.line}`).join(', ')}.` : '')
         + (aliases.length ? `\nAliases a literal grep can miss: ${aliases.join(', ')}.` : '')
-        + '\nComments/strings are excluded. Dynamic dispatch, shadowed bindings, other languages, current-source drift and runtime execution remain unknown.' });
+        + '\nDefinition, forwarding and caller file hashes corroborated. Comments/strings are excluded. Dynamic dispatch, shadowed bindings, other languages, current resolver configuration and runtime execution remain unknown.' });
   }
   return facts;
 };
@@ -187,7 +189,8 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
         for (const fact of leg(input, snapshot)) {
           if (fact.leg === id && fact.subject.length <= 1000 && fact.subject.trim() && fact.text.trim()
             && fact.citedPaths.every(safeSnapshotPath)
-            && formatPushFact(fact, snapshot).length + 2 <= requestBudget) facts.push(fact);
+            && formatPushFact(fact, snapshot).length + 2 <= requestBudget
+            && (!fact.sourceHashes || await corroboratePushSources(input.root, fact.sourceHashes, signal))) facts.push(fact);
           if (facts.length >= 12) break;
         }
       } catch (error) { console.warn(`[code-intel-push] ${id} failed:`, String(error).slice(0, 200)); }

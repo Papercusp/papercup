@@ -971,6 +971,20 @@ function deps(launch: ReturnType<typeof vi.fn>) {
 }
 
 describe('launchAcceptanceGrader', () => {
+  it.each([launchAcceptanceGrader, resolveAcceptanceGrader])('refuses recruitment before reading the rubric or launching while build work is open', async recruit => {
+    const launch = vi.fn();
+    const d = deps(launch);
+    d.readPlan.mockResolvedValue({ row: { items: [
+      { id: 'P-001', text: 'Implement the thing', status: 'blocked' },
+      { id: 'P-002', text: 'Independent acceptance grading', status: 'todo' },
+    ] } } as never);
+    const result = await recruit('ship-the-thing', {} as never, d);
+    expect(result).toMatchObject({ state: 'failed', openBuildItems: ['P-001'] });
+    expect(result.error).toContain('build_items_open');
+    expect(d.getRubric).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it('pins routine-scoped fresh and retry launches to the requested gateway model', async () => {
     const launch = vi.fn().mockResolvedValueOnce({
       data: { launch: { tasks: [{ taskId: 'pinned-quota', logPath: '/tmp/pinned-quota.log' }] } },

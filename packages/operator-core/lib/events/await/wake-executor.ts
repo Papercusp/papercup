@@ -122,6 +122,7 @@ import { resolveSessionStates } from '../../agent-tools/coordination/liveness-or
 // mocks './wake-executor' wholesale, which silently undefined-ed it and deleted the
 // park nudge inside a best-effort catch.
 import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { prepareCellWakeFold } from './cell-wake-fold';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
@@ -1103,6 +1104,188 @@ type BlockedBoundDeliveryFreshness = {
   staleOnly: boolean;
   staleIds: string[];
 };
+
+export interface GradingAuditResumeTaskLookup {
+  workspaceId: string;
+  subscriberId: string;
+  sessionId: string;
+}
+
+export interface GradingAuditResumeTaskRow {
+  workspaceId?: unknown;
+  taskId?: unknown;
+  class?: unknown;
+  sessionId?: unknown;
+  detail?: unknown;
+}
+
+export interface GradingAuditResumeTarget {
+  issueId?: unknown;
+  evidenceFingerprint?: unknown;
+  gradingAudit?: unknown;
+}
+
+export interface GradingAuditResumeGuardDeps {
+  readTasks?: (input: GradingAuditResumeTaskLookup) => Promise<GradingAuditResumeTaskRow[]>;
+  readTarget?: (input: { workspaceId: string; issueId: string }) => Promise<GradingAuditResumeTarget | null>;
+  cancelAwait?: (input: {
+    awaitId: number;
+    subscriberId: string;
+    reason: typeof AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent;
+  }) => Promise<unknown>;
+  timeoutMs?: number;
+}
+
+const GRADING_AUDIT_RESUME_LOOKUP_TIMEOUT_MS = 1_000;
+
+type GradingAuditTaskBinding = {
+  issueId: string;
+  evidenceFingerprint: string;
+  reservation: { key: string; reservedAt: string };
+};
+
+function gradingAuditBindingFromTask(task: GradingAuditResumeTaskRow): GradingAuditTaskBinding | null {
+  if (!isRecord(task.detail) || !isRecord(task.detail.gradingAudit)) return null;
+  const raw = task.detail.gradingAudit;
+  const reservation = isRecord(raw.reservation) ? raw.reservation : null;
+  const issueId = typeof raw.issueId === 'string' ? raw.issueId.trim() : '';
+  const evidenceFingerprint = typeof raw.evidenceFingerprint === 'string' ? raw.evidenceFingerprint.trim() : '';
+  const key = typeof reservation?.key === 'string' ? reservation.key.trim() : '';
+  const reservedAt = typeof reservation?.reservedAt === 'string' ? reservation.reservedAt.trim() : '';
+  if (
+    !issueId || !evidenceFingerprint || key !== `grading-audit:${issueId}` ||
+    !reservedAt || !Number.isFinite(Date.parse(reservedAt))
+  ) return null;
+  return { issueId, evidenceFingerprint, reservation: { key, reservedAt } };
+}
+
+/**
+ * Channel 2 is the process-gone resume path. A grading-auditor task is tied to
+ * one scorecard and lease; before claimResume clears the adv-session's terminal
+ * markers, confirm that its exact task still targets that pending audit. Reads
+ * are bounded and fail-open. A lapsed (absent) dispatch lease is deliberately
+ * unknown: an auditor may continue under its historical receipt. Only an
+ * explicitly settled target, changed evidence, or a present changed lease
+ * drops this delivery and cancels its exact await registration.
+ */
+export async function revalidateGradingAuditChannel2Delivery(
+  delivery: DeliveryWork,
+  sessionId: string | null | undefined,
+  deps: GradingAuditResumeGuardDeps = {},
+): Promise<{ action: 'proceed' } | { action: 'drop'; reason: string }> {
+  const nativeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!nativeSessionId || !delivery.workspaceId || !delivery.subscriberId) return { action: 'proceed' };
+  const timeoutMs = Math.max(1, deps.timeoutMs ?? GRADING_AUDIT_RESUME_LOOKUP_TIMEOUT_MS);
+  const readTasks = deps.readTasks ?? (async (input: GradingAuditResumeTaskLookup) => {
+    const { listTasks } = await import('../../task-manager/store');
+    return listTasks({
+      workspaceId: input.workspaceId,
+      coordOwnerId: input.subscriberId,
+      sessionId: input.sessionId,
+      classes: ['agent-session'],
+      includeEnded: true,
+      limit: 2,
+    });
+  });
+  let tasks: GradingAuditResumeTaskRow[] | null;
+  try {
+    tasks = await withWakeTimeout(
+      Promise.resolve().then(() => readTasks({
+        workspaceId: delivery.workspaceId,
+        subscriberId: delivery.subscriberId,
+        sessionId: nativeSessionId,
+      })),
+      `grading-audit task binding/${delivery.subscriberId}`,
+      timeoutMs,
+    );
+  } catch {
+    return { action: 'proceed' };
+  }
+  if (!Array.isArray(tasks) || tasks.length !== 1) return { action: 'proceed' };
+  const task = tasks[0]!;
+  if (
+    task.workspaceId !== delivery.workspaceId || task.class !== 'agent-session' ||
+    task.sessionId !== nativeSessionId || !isRecord(task.detail) ||
+    task.detail.coordOwnerId !== delivery.subscriberId
+  ) return { action: 'proceed' };
+  const binding = gradingAuditBindingFromTask(task);
+  if (!binding) return { action: 'proceed' };
+
+  const readTarget = deps.readTarget ?? (async (input: { workspaceId: string; issueId: string }) => {
+    const { getIssueInWorkspace } = await import('../../issues-engineer');
+    const issue = await getIssueInWorkspace(input.workspaceId, input.issueId, { includeBody: false });
+    if (!issue) return null;
+    const payload = isRecord(issue.payload) ? issue.payload : null;
+    const observation = payload && isRecord(payload.observation) ? payload.observation : null;
+    return {
+      issueId: issue.id,
+      evidenceFingerprint: observation?.evidenceFingerprint,
+      gradingAudit: observation?.gradingAudit,
+    };
+  });
+  let target: GradingAuditResumeTarget | null;
+  try {
+    target = await withWakeTimeout(
+      Promise.resolve().then(() => readTarget({ workspaceId: delivery.workspaceId, issueId: binding.issueId })),
+      `grading-audit target/${binding.issueId}`,
+      timeoutMs,
+    );
+  } catch {
+    return { action: 'proceed' };
+  }
+  if (!target || target.issueId !== binding.issueId || !isRecord(target.gradingAudit)) {
+    return { action: 'proceed' };
+  }
+
+  const audit = target.gradingAudit;
+  let staleReason: string | null = null;
+  if (audit.state === 'passed' || audit.state === 'failed' || audit.state === 'cancelled' || audit.state === 'awaiting-reemit') {
+    staleReason = `grading-audit target ${binding.issueId} is settled (${audit.state})`;
+  } else if (audit.state === 'pending') {
+    if (
+      typeof target.evidenceFingerprint === 'string' && target.evidenceFingerprint.trim() &&
+      target.evidenceFingerprint.trim() !== binding.evidenceFingerprint
+    ) {
+      staleReason = `grading-audit target ${binding.issueId} has a changed evidence fingerprint`;
+    } else if (typeof target.evidenceFingerprint !== 'string' || !target.evidenceFingerprint.trim()) {
+      return { action: 'proceed' };
+    } else {
+      const reservation = isRecord(audit.dispatchReservation) ? audit.dispatchReservation : null;
+      const currentKey = typeof reservation?.key === 'string' ? reservation.key.trim() : '';
+      const currentReservedAt = typeof reservation?.reservedAt === 'string' ? reservation.reservedAt.trim() : '';
+      // A missing or malformed current reservation is a lapsed/unknown lease,
+      // not proof that the retained auditor was superseded.
+      if (!currentKey || !currentReservedAt || !Number.isFinite(Date.parse(currentReservedAt))) {
+        return { action: 'proceed' };
+      }
+      if (currentKey !== binding.reservation.key || currentReservedAt !== binding.reservation.reservedAt) {
+        staleReason = `grading-audit target ${binding.issueId} has a newer dispatch reservation`;
+      }
+    }
+  } else {
+    return { action: 'proceed' };
+  }
+  if (!staleReason) return { action: 'proceed' };
+
+  const cancelAwait = deps.cancelAwait ?? (async (input) => {
+    const { cancelAwait: cancel } = await import('./store');
+    return cancel(input);
+  });
+  try {
+    await withWakeTimeout(
+      Promise.resolve().then(() => cancelAwait({
+        awaitId: delivery.awaitId,
+        subscriberId: delivery.subscriberId,
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      })),
+      `grading-audit await cancellation/${delivery.awaitId}`,
+      timeoutMs,
+    );
+  } catch {
+    // The current stale delivery is still dropped even if await cancellation fails.
+  }
+  return { action: 'drop', reason: `${staleReason}; cancelled only await ${delivery.awaitId} for ${delivery.subscriberId}` };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -2844,6 +3027,14 @@ export interface ExecuteWakeDeps {
   forceResume?: (pid: number) => Promise<boolean>;
   /** EI-212246: atomic single-winner claim immediately before Channel 2 resume. */
   claimResume?: (advSessionId: number, key?: string | null, windowSec?: number, ownerId?: string | null) => Promise<boolean | 'retired'>;
+  /** Delivery-time grading-auditor task lookup before a Channel 2 resume claim. */
+  readGradingAuditTasks?: GradingAuditResumeGuardDeps['readTasks'];
+  /** Delivery-time exact scorecard read for a grading-auditor task. */
+  readGradingAuditTarget?: GradingAuditResumeGuardDeps['readTarget'];
+  /** Exact await cancellation when that grading-audit target or lease is no longer current. */
+  cancelGradingAuditAwait?: GradingAuditResumeGuardDeps['cancelAwait'];
+  /** Per-read bound for Channel 2 grading-audit freshness checks. */
+  gradingAuditResumeLookupTimeoutMs?: number;
   /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
@@ -5077,6 +5268,23 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // a datastore fault as a lost race sends the operator hunting a competing
     // resumer that never existed. Park either way (never risk a second writer),
     // but say which happened.
+    const nativeResumeSessionId = resumeAgent === 'codex'
+      ? codexSessionId
+      : fresh?.sessionId ?? handle.sessionId;
+    const gradingAuditFreshness = await revalidateGradingAuditChannel2Delivery(
+      d,
+      nativeResumeSessionId,
+      {
+        readTasks: deps.readGradingAuditTasks,
+        readTarget: deps.readGradingAuditTarget,
+        cancelAwait: deps.cancelGradingAuditAwait,
+        timeoutMs: deps.gradingAuditResumeLookupTimeoutMs,
+      },
+    );
+    if (gradingAuditFreshness.action === 'drop') {
+      return { kind: 'drop', reason: gradingAuditFreshness.reason };
+    }
+
     let claimed: boolean | 'retired';
     try {
       claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);

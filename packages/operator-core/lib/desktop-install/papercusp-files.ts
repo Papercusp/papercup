@@ -17,6 +17,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { resolveOperatorAppRootFromModuleDir } from '../operator-app-root';
+import { deferSuPromptReferences, SU_KERNEL_END } from '../prompt-reference-sections';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
@@ -4221,6 +4222,8 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
 }
 
 export interface RenderSuPlaybookInput {
+  /** Operational runbooks are fetched on demand; inline supports full-reference diagnosis/baselines. */
+  referenceMode?: 'on-demand' | 'inline';
   /** Which client's tooling overlay to splice in (omp/claude/codex). */
   agent: string;
   /** Resolved launch restrictions, when the caller already has them. Defaults to the canonical policy. */
@@ -4443,7 +4446,7 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // Deliberately NOT PROJECT_GUIDE_MARKER alone: that is precisely the assumption that broke
   // when the blueprint base (AUTO-MODE yes, PROJECT-GUIDE no) became the live one.
   const isSuPlaybook = base.includes(PROJECT_GUIDE_MARKER) || base.includes(AUTO_MODE_MARKER);
-  const withNotes = injectSharedBaseNotes(withCompaction, {
+  const withNotes = injectSharedBaseNotes(withCompaction + (base.includes('<!-- PAPERCUSP-KERNEL:SEAL -->') ? '\n' + SU_KERNEL_END : ''), {
     repoSpecific: profile === 'engineer',
     eligible: isSuPlaybook,
   });
@@ -4473,5 +4476,10 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // FULL tier keeps the content but drops the marker comment lines — no
   // internal marker leaks into a rendered prompt (psu-prompt-isolation).
   text = tier === 'fleet' ? stripFullOnlySections(text) : stripFullOnlyMarkers(text);
+  if (input.referenceMode !== 'inline') {
+    text = deferSuPromptReferences(text, {
+      base: baseSource, overlay: overlaySource, repoRoot: path.resolve(operatorAppRoot, '../..'),
+    }).text;
+  } else text = text.replace(SU_KERNEL_END, '');
   return { text, baseSource, overlaySource, projectGuideSource, projectGuideAddressed };
 }

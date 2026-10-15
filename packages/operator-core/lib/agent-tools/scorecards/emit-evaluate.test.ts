@@ -2676,3 +2676,4 @@ describe('scorecards:emit — author acceptance by exact reference (P-003)', () 
     expect(captureM).not.toHaveBeenCalled();
   });
 });
+vi.mock('../../acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));

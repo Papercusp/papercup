@@ -201,6 +201,35 @@
       "adequacyResult": "AUTO-BAR-R-03-P-003, AUTO-BAR-R-03-P-006 and AUTO-BAR-R-03-P-008 pass with no wouldBlock reasons.",
       "evaluatorReceipt": "/tmp/p032-r03-tasks-adequacy-final-9086d.json"
     },
+    "r01AttachedChatControl": {
+      "status": "pass-clean-current-proof",
+      "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
+      "candidateSourceEquality": ["apps/tui/src/main.rs", "packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts"],
+      "baselineTestRunId": 21260544,
+      "relocatedBaselineTestRunId": 21260572,
+      "mutantTestRunId": 21260599,
+      "allThreeWorktreesClean": true,
+      "baselineResult": "Each baseline passed the existing first exact draft, tool/reply and reopen PTY case; 93 unrelated cases were skipped.",
+      "mutantResult": "The sole attached_engine:true request site was changed to false. The selected case failed its rendered structured-reply wait after 60000ms.",
+      "probeInvocationId": "e8bf4583-0a1a-4d6f-a56d-15b3f02395ba",
+      "relocation": "overlay",
+      "destructiveIsolation": "--fake-destructive",
+      "privateDatabaseShutdownVerified": true,
+      "sourceIntegrity": "verified-byte-identical",
+      "positiveBindingIds": [47675, 47676, 47677],
+      "mutantBindingIds": [47669, 47671, 47673],
+      "scope": "Current-build Rust/PTY/production-handler control with the scripted engine peer and PUI_REAL_ENGINE=0. The debug control binary is separate from the accepted ce62/c292 release artifact and its retained native acceptance.",
+      "adequacy": {
+        "specIds": ["AUTO-BAR-R-01-P-003", "AUTO-BAR-R-01-P-004", "AUTO-BAR-R-01-P-005"],
+        "passed": 3,
+        "failed": 0,
+        "unknown": 0,
+        "wouldBlock": [],
+        "readbackPath": "/tmp/p032-r01-targeted-final-adequacy-9086d-20261015.json"
+      },
+      "logPath": "/tmp/p032-r01-clean-control-9086d-20261015.log",
+      "logSha256": "d481983f5a947a64d8850c4bd33fd4e3a459862220fc26abc15807b07cb3c8b4"
+    },
     "r02ReplayControl": {
       "status": "pass-clean-current-proof",
       "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
@@ -235,7 +264,33 @@
     "taskSourceProof": {
       "testRunId": 21258081,
       "bindingIds": [47259, 47260, 47261, 47262, 47263, 47264, 47265, 47266, 47269],
-      "result": "The nine PUI-TASK clauses pass correct-layer using the retained real operator/PTY owner-and-agent task journey. Falsifiability and risk-floor remain unknown."
+      "result": "The nine PUI-TASK clauses pass correct-layer using the retained real operator/PTY owner-and-agent task journey. PUI-TASK-ADD additionally passes its complete adequacy evaluation after the targeted route control below; other task defect controls are in progress.",
+      "addControl": {
+        "status": "pass-clean-current-proof",
+        "harnessCommit": "c2ebf8b88f3077c5dff177d95fd7c91d170a5b6e",
+        "subject": "packages/operator-core/lib/endpoint-route/routes/agent-chats/task-ops.ts",
+        "test": "packages/operator-core/lib/endpoint-route/routes/agent-chats/task-ops.test.ts",
+        "candidateSourceComparison": "Subject and test blobs are identical at ce62 and c2eb.",
+        "baselineTestRunId": 21260571,
+        "relocatedBaselineTestRunId": 21260578,
+        "mutantTestRunId": 21260581,
+        "allThreeWorktreesClean": true,
+        "mutation": "The add action returns canonical op view instead of append.",
+        "assertion": "The existing maps-user-action-add test rejects the wrong canonical operation.",
+        "bindingIds": [47659, 47660],
+        "adequacyResult": "PUI-TASK-ADD passes with no wouldBlock reasons; installed operator/PTY journey 21258081 remains the separate UI proof.",
+        "readbackPath": "/tmp/p032-task-add-and-layers-adequacy-9086d-20261015.json",
+        "logPath": "/tmp/p032-task-add-clean-control-9086d-20261015.log",
+        "logSha256": "3132e7eab04e900574ff28de0f7012274f23aa9f827cca156f400efd14f06a1b"
+      }
+    },
+    "supplementaryReleaseMatrixSourceProof": {
+      "testRunId": 21260445,
+      "bindingIds": [47661, 47662, 47663, 47664, 47665],
+      "specIds": ["PUI-COMMANDS", "PUI-FILE-CONTEXT", "PUI-QUESTION", "PUI-TOOLS-DIFF", "PUI-USAGE"],
+      "result": "All five clauses now pass correct-layer; falsifiability and risk-floor remain unknown.",
+      "scope": "The already-executed R14 fixture case loops through every required release capability and its evidence mapping. It supplies the missing registered release-acceptance suite leg; retained 21258081 supplies the installed PUI interaction proof. The installed-candidate stage was outside this fixture selection.",
+      "readbackPath": "/tmp/p032-task-add-and-layers-adequacy-9086d-20261015.json"
     },
     "r14CapabilityControl": {
       "status": "pass-clean-current-proof",

@@ -51,6 +51,7 @@ import {
   type AcceptanceBarCohort,
 } from './acceptance-bar-seed';
 import type { AcceptanceEvidencePlane } from './agent-tools/plans/rubric-template';
+import { readCurrentAcceptanceRubricCritique, type AcceptanceRubricCritique } from './acceptance-rubric-critique';
 
 export const ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION = 1 as const;
 export const ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT = 2;
@@ -217,6 +218,7 @@ export interface AcceptanceBarSnapshotProblem {
 }
 
 export interface AcceptanceBarContractSnapshotInput {
+  vettingCritique?: AcceptanceRubricCritique | null;
   planRows: BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>;
   rubrics: BoundedAcceptanceBarRows<Rubric>;
   planItems: BoundedAcceptanceBarRows<AcceptanceBarPlanItemSource>;
@@ -555,6 +557,7 @@ export interface AcceptanceBarContractSnapshot {
 }
 
 export interface AcceptanceBarSnapshotDeps {
+  readCurrentCritique?: typeof readCurrentAcceptanceRubricCritique;
   readPlans: (planSlug: string, scope?: { harnessSlug: string }) => Promise<BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>>;
   readRubrics: (planSlug: string, scope?: { harnessSlug: string }) => Promise<BoundedAcceptanceBarRows<Rubric>>;
   readPlanItems: (
@@ -817,11 +820,12 @@ export function nextRepair(
     bar_snapshot_grading_not_pass: 'Satisfy the BAR and record a pass-equivalent independent rating.',
     bar_snapshot_vetting_missing:
       'Vet the current acceptance-rubric criteria BEFORE binding proof or emitting adequacy cards '
-      + '(amend → vet → attest → bind → cards → grade): a vetting critique usually becomes an amendment, '
+      + '(amend → critique → bind → cards → grade): name the rubric and current criteriaHash in the critique request; '
+      + 'critique is read directly without an attestation card. A vetting critique usually becomes an amendment, '
       + 'and proof bound first must then be re-bound.',
     bar_snapshot_vetting_stale:
       'Re-vet the current acceptance-rubric criteria before binding more proof or commissioning grading '
-      + '(amend → vet → attest → bind → cards → grade).',
+      + '(amend → critique → bind → cards → grade); name the current rubric identity in the request.',
     bar_snapshot_author_verdict_missing: 'Record the author-side verdict after reading the independent grading.',
     bar_snapshot_author_verdict_stale: 'Record a new author verdict for the authoritative grading.',
     bar_snapshot_author_rejected: 'Address the rejected grading before recording a newer verdict.',
@@ -1559,7 +1563,9 @@ export function projectAcceptanceBarContractSnapshot(
   const anyVetting = input.vettingScorecards.rows
     .filter((card) => completeScorecard(card) && Boolean(card.vetting?.consultId || card.vetting?.workItemId))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-  const vettingState: AcceptanceBarContractSnapshot['grading']['vetting']['state'] = input.vettingScorecards.truncated
+  const vettingState: AcceptanceBarContractSnapshot['grading']['vetting']['state'] = input.vettingCritique
+    ? 'current'
+    : input.vettingScorecards.truncated
     ? 'truncated'
     : currentVetting
       ? 'current'
@@ -1696,8 +1702,8 @@ export function projectAcceptanceBarContractSnapshot(
       vetting: {
         state: vettingState,
         scorecardId: currentVetting?.issueId ?? anyVetting?.issueId ?? null,
-        rubricRevision: currentVetting?.vetting?.rubricRevision ?? anyVetting?.vetting?.rubricRevision ?? null,
-        criteriaHash: currentVetting?.vetting?.criteriaHash ?? anyVetting?.vetting?.criteriaHash ?? null,
+        rubricRevision: input.vettingCritique?.rubricRevision ?? currentVetting?.vetting?.rubricRevision ?? anyVetting?.vetting?.rubricRevision ?? null,
+        criteriaHash: input.vettingCritique?.criteriaHash ?? currentVetting?.vetting?.criteriaHash ?? anyVetting?.vetting?.criteriaHash ?? null,
       },
       authorVerdict: {
         state: authorVerdictState,
@@ -1980,6 +1986,7 @@ const DEFAULT_DEPS: AcceptanceBarSnapshotDeps = {
   readLineage: defaultReadLineage,
   readScorecards: defaultReadScorecards,
   readVettingScorecards: defaultReadVettingScorecards,
+  readCurrentCritique: readCurrentAcceptanceRubricCritique,
   readParties: (identities, workspaceId) => lineagePartyKeys(identities, { workspaceId }),
   readGraderSelectionVia,
 };
@@ -2041,6 +2048,9 @@ export async function readAcceptanceBarContractSnapshot(
   for (const result of [planItems, clauses, workContracts, evidence, lineage, scorecards, vetting]) {
     if (result.failure) failures[result.failure[0]] = result.failure[1];
   }
+  const critique = await captured('vetting',
+    () => rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null, vetting.value.rows) : Promise.resolve(null), null);
+  if (critique.failure) failures[critique.failure[0]] = critique.failure[1];
 
   const partyIds = [
     ...(rubric ? [rubric.createdBy, rubric.proposedBy] : []),
@@ -2071,6 +2081,7 @@ export async function readAcceptanceBarContractSnapshot(
     evidence: evidence.value,
     scorecards: scorecards.value,
     vettingScorecards: vetting.value,
+    vettingCritique: critique.value,
     lineage: lineage.value,
     partyByIdentity: parties.value,
     graderSelectionVia: selectionVia.value,

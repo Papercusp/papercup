@@ -384,7 +384,19 @@ export async function inspectRetentionTrees(root: string, opts: {
   const args = [...(opts.paths ?? [root]), '-ignore_readdir_race', '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
     ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
     ')', '-printf', format, '-prune', '-o', '-printf', format];
-  const [command, argv] = censusCommand('find', args, { sudo, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  const [nativeCommand, nativeArgs] = censusCommand('find', args, { sudo: null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  // sudo may exec with every UID set to root. The caller then cannot signal
+  // it (EPERM), and killing a sudo monitor can leave find holding its pipes.
+  // Put the existing native deadline mechanism INSIDE elevation: timeout has
+  // authority to kill and reap its child. find/nice/ionice do not fork workers,
+  // so --foreground targets that child without signalling the caller's group.
+  // Elevated callers always have an absolute bound; scheduled reclaim supplies
+  // its remaining run budget. Ordinary-owner scans retain progress deadlines.
+  const timeout = sudo ? await resolveBin('timeout') : null;
+  if (sudo && !timeout) return { ...result, error: 'timeout executable unavailable for privileged retention census' };
+  const command = sudo ?? nativeCommand;
+  const argv = sudo ? ['-n', '--', timeout!, '--foreground', '--signal=KILL',
+    `${Math.max(1, opts.timeoutMs ?? opts.progressTimeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs] : nativeArgs;
   return new Promise<RetentionTreeCensus>((done) => {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
     let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
@@ -433,22 +445,24 @@ export async function inspectRetentionTrees(root: string, opts: {
     };
     try { child = (opts.spawn ?? defaultCensusSpawn)(command, argv); }
     catch (error) { finish(`find failed: ${String(error)}`); return; }
-    // Explicit caller deadlines stay absolute. Production's liveness bound is
-    // lack of valid metadata progress, so a large ADVANCING walk can complete.
-    if (opts.timeoutMs !== undefined) timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
-    else armProgressDeadline();
+    // Ordinary-owner scans can use metadata progress rather than an absolute
+    // bound. Elevated scans are supervised by their native timeout above.
+    if (!sudo) {
+      if (opts.timeoutMs !== undefined) timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
+      else armProgressDeadline();
+    }
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       const before = result.inspectedNodes;
       const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
       for (const value of records) { fields.push(value); if (fields.length === 8) { take(fields); fields = []; } }
       // Noise, partial records and malformed data cannot keep a wedged scan alive.
-      if (opts.timeoutMs === undefined && !malformed && result.inspectedNodes > before) armProgressDeadline();
+      if (!sudo && opts.timeoutMs === undefined && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
     child.once('error', (error) => finish(`find failed: ${String(error)}`));
-    child.once('close', (code) => finish(timedOut ? 'retention native census timed out' :
+    child.once('close', (code) => finish(timedOut || (sudo && code === 137) ? 'retention native census timed out' :
       code !== 0 ? `find exited ${code}: ${stderr.trim()}` :
       malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined));
   });

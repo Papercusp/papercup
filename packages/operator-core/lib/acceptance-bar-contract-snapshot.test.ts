@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('./acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));
 import {
   ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
   ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT,

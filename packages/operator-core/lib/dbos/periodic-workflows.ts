@@ -429,6 +429,16 @@ function logLiveSkipInvariant(skippedLive: number, oldestAgeMs: number | null): 
 }
 
 async function sessionArchiveReconcileTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const { runScheduledColdArchiveMigration } = await import('../session-archive');
+      const result = await runScheduledColdArchiveMigration();
+      console.log(`[session-archive-cold] ${JSON.stringify(result)}`);
+    } catch (error) {
+      // Cold media absence never prevents archiving newly ended sessions to PG.
+      console.warn(`[session-archive-cold] ${String(error)}`);
+    }
+  }, { name: 'session-archive-cold-migration' });
   await DBOS.runStep(
     async () => {
       try {
@@ -1662,6 +1672,36 @@ const specTriadSweepWorkflow = idempotentRegisterWorkflow('specTriadSweep', () =
   }),
 );
 DBOS.registerScheduled(specTriadSweepWorkflow, { name: 'specTriadSweep', crontab: '0 20 5 * * *' });
+
+// Every 5 min: spec evidence binds itself from the test ledger (agent-paperwork-and-restart-tax-
+// reduction-2026-10-15 P-002 / R-2). For each requirement-projected clause on a live plan, the
+// newest terminal run of each named test file binds (pass, once its measured code is committed)
+// or retracts older proof (fail/error) through the same pipeline plans:bind-spec-evidence runs.
+// Bounded (≤50 writes/tick), idempotent, never throws, shed under loop pressure.
+// Kill-switch PAPERCUSP_SPEC_EVIDENCE_AUTOBIND=0.
+async function specEvidenceAutobindTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_SPEC_EVIDENCE_AUTOBIND === '0') return;
+      if (shouldShedHeavyTick('spec-evidence-autobind')) return;
+      try {
+        const { runSpecEvidenceAutobindOnce } = await import('../agent-tools/plans/spec-evidence-autobind');
+        const r = await runSpecEvidenceAutobindOnce();
+        console.log(`[spec-evidence-autobind] ${r.summary}`);
+      } catch (err) {
+        console.warn(`[spec-evidence-autobind] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'spec-evidence-autobind' },
+  );
+}
+const specEvidenceAutobindWorkflow = idempotentRegisterWorkflow('specEvidenceAutobind', () =>
+  DBOS.registerWorkflow(specEvidenceAutobindTick, {
+    name: 'specEvidenceAutobind',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(specEvidenceAutobindWorkflow, { name: 'specEvidenceAutobind', crontab: '0 */5 * * * *' });
 
 // Weekly (Sun 05:30 UTC, off the daily 03:00–05:00 GC/prune cluster): code-recipes
 // hygiene (recipes-reuse-activation-2026-06-22 P-003). There was NO scheduled automation

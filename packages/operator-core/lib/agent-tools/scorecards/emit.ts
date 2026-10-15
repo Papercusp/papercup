@@ -71,7 +71,7 @@ import {
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
-import { realGitProbe } from '../../release/judged-sha-containment';
+import { revParseAsync } from '../../release/judged-sha-containment';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import {
   CLIPPED_SCORECARD_TEXT_CODE,
@@ -99,7 +99,7 @@ import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
 import { closeSourceAuditConsults } from '../../grading-audit-routing';
 import {
-  assessGenerationAncestry,
+  assessGenerationAncestryAsync,
   dispatchPendingGradingAudits,
   GRADING_INTEGRITY_RUBRIC_REF,
   gradingAuditGateEnabled,
@@ -313,13 +313,13 @@ export async function runRecoverableScorecardChecks(
     readRows?: typeof readHarnessTestRunEvidence;
     listTaskRows?: (launchedBy: string, workspaceId: string) => Promise<Array<Pick<TaskRow, 'state' | 'exitCode'>>>;
     runFiles?: CriterionCheckRunner;
-    sourceSha?: (root: string) => string | null;
+    sourceSha?: (root: string) => string | null | Promise<string | null>;
   } = {},
 ): Promise<CriterionCheckRunnerResult> {
   const runFiles = deps.runFiles ?? runCriterionCheckFiles;
   const workspaceId = opts.workspaceId;
   const harnessSlug = opts.harnessSlug;
-  const sourceSha = (deps.sourceSha ?? ((root) => realGitProbe.revParse(root, 'HEAD')))(opts.root);
+  const sourceSha = await (deps.sourceSha ?? ((root) => revParseAsync(root, 'HEAD')))(opts.root);
   // Non-repository or unattributed rubrics retain the ordinary route. They
   // cannot make a durable replay claim because its source/scope is unknown.
   if (!sourceSha || !workspaceId || !harnessSlug) return runFiles(opts);
@@ -539,6 +539,7 @@ const specTestAdequacyBindingMeasurementSchema = z
     evidenceRef: z.string().trim().min(1).max(2000),
     status: z.enum(['measured', 'unavailable', 'unmeasured']),
     measuredAtCommit: z.string().trim().min(1).max(128).optional(),
+    measurementFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   })
   .strict()
   .superRefine((binding, ctx) => {
@@ -547,6 +548,13 @@ const specTestAdequacyBindingMeasurementSchema = z
         code: z.ZodIssueCode.custom,
         path: ['measuredAtCommit'],
         message: 'only a server-measured binding can carry measuredAtCommit',
+      });
+    }
+    if (binding.status !== 'measured' && binding.measurementFingerprint !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['measurementFingerprint'],
+        message: 'only a server-measured binding can carry measurementFingerprint',
       });
     }
   });
@@ -862,7 +870,7 @@ type SpecTestAdequacyReplayRow = {
   measurementEvidence?: unknown;
 };
 
-function measurementEvidenceFingerprint(value: unknown): string | undefined {
+function measurementEvidenceFingerprint(value: unknown, contentBindings: ReadonlySet<number>): string | undefined {
   const parsed = specTestAdequacyMeasurementEvidenceSchema.safeParse(value);
   if (!parsed.success) return undefined;
   const evidence = parsed.data;
@@ -876,7 +884,13 @@ function measurementEvidenceFingerprint(value: unknown): string | undefined {
     withoutMeasurementBasis: [...evidence.withoutMeasurementBasis].sort((a, b) =>
       a.id - b.id || a.evidenceKind.localeCompare(b.evidenceKind) || a.evidenceRef.localeCompare(b.evidenceRef),
     ),
-    bindings: [...evidence.bindings].sort((a, b) => a.bindingId - b.bindingId),
+    bindings: [...evidence.bindings].sort((a, b) => a.bindingId - b.bindingId).map(binding =>
+      // New recipes compare the measured bytes. Legacy recipes still require
+      // the exact commit; adding a fresh digest must not relax their contract.
+      contentBindings.has(binding.bindingId)
+        ? { ...binding, measuredAtCommit: undefined }
+        : { ...binding, measurementFingerprint: undefined },
+    ),
   });
 }
 
@@ -926,8 +940,8 @@ function unwrapSpecTestAdequacyReplay(result: unknown): unknown {
 }
 
 /**
- * The replay guard compares only clause identity, criterion ratings, and
- * wouldBlock. Replaying an evaluator-authored `detail:"full"` recipe needlessly
+ * The replay guard reads clause identity, measurement provenance, criterion
+ * ratings, and wouldBlock. Replaying an evaluator-authored `detail:"full"` recipe needlessly
  * materializes every evidence narrative and another scorecard draft; real plans
  * can exceed the result door and return a spill envelope instead of the payload
  * the guard must inspect. Force the evaluator's contract-equivalent summary
@@ -955,6 +969,7 @@ function compactSpecTestAdequacyReplayArgs(
 async function validateSpecTestAdequacyReplay(
   args: z.infer<typeof scorecardEmitArgs>,
   dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+  onMeasurementVerified?: (evidence: z.infer<typeof specTestAdequacyMeasurementEvidenceSchema>) => void,
 ): Promise<SpecTestAdequacyBindingError | undefined> {
   if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe) return undefined;
 
@@ -1069,9 +1084,31 @@ async function validateSpecTestAdequacyReplay(
     };
   }
 
+  // Keep the measurement failure from THIS replay before provenance or rating
+  // comparisons replace it with a generic mismatch. A later read cannot recover it.
+  const replayMeasurement = specTestAdequacyMeasurementEvidenceSchema.safeParse(row.measurementEvidence);
+  if (replayMeasurement.success && replayMeasurement.data.unavailableBindings.length > 0) {
+    const unavailable = replayMeasurement.data.unavailableBindings;
+    const diagnostic = unavailable.slice(0, 4).map(binding =>
+      `binding ${binding.id} (${binding.evidenceRef.slice(0, 160)}): ${binding.reason.slice(0, 400)}` +
+      (binding.evidenceRef.length > 160 || binding.reason.length > 400 ? ' [truncated]' : ''),
+    ).join('; ');
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' replay measurement unavailable ` +
+        `(${unavailable.length} unavailable bindings): ${diagnostic}; ` +
+        (unavailable.length > 4 ? `${unavailable.length - 4} additional unavailable bindings omitted; ` : '') +
+        'repair the unavailable measurements and re-run plans:evaluate-spec-test-adequacy; no scorecard was persisted',
+    };
+  }
+
   if (recordedMeasurementEvidence !== undefined) {
-    const recordedFingerprint = measurementEvidenceFingerprint(recordedMeasurementEvidence);
-    const replayFingerprint = measurementEvidenceFingerprint(row.measurementEvidence);
+    const contentBindings = new Set(recordedMeasurementEvidence.bindings
+      .filter(binding => binding.measurementFingerprint !== undefined)
+      .map(binding => binding.bindingId));
+    const recordedFingerprint = measurementEvidenceFingerprint(recordedMeasurementEvidence, contentBindings);
+    const replayFingerprint = measurementEvidenceFingerprint(row.measurementEvidence, contentBindings);
     if (recordedFingerprint === undefined || replayFingerprint === undefined || recordedFingerprint !== replayFingerprint) {
       return {
         code: 'invalid_spec_test_adequacy_binding',
@@ -1117,6 +1154,11 @@ async function validateSpecTestAdequacyReplay(
           'use the evaluator ratings returned by plans:evaluate-spec-test-adequacy',
       };
     }
+  }
+  if (recordedMeasurementEvidence !== undefined) {
+    // Persist only the fresh server provenance, including its actual commit.
+    // A supplied commit is never promoted into the canonical observation.
+    onMeasurementVerified?.(specTestAdequacyMeasurementEvidenceSchema.parse(row.measurementEvidence));
   }
   return undefined;
 }
@@ -1888,7 +1930,9 @@ export async function emitScorecard(
     // so it can reuse the emitter's guards without replaying the evaluator again.
     const specTestAdequacyReplayError = input.previewOnly
       ? undefined
-      : await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
+      : await validateSpecTestAdequacyReplay(args, deps.dispatchTool, measurementEvidence => {
+          args = { ...args, rerunRecipe: { ...args.rerunRecipe!, measurementEvidence } };
+        });
     if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
     // acceptance rubric is the vetting attestation consumed by the completion
@@ -2249,10 +2293,9 @@ export async function emitScorecard(
                 ? `acceptance rubric '${rubric.rubricId}' was vetted at revision ` +
                   `${vettingStatus.attestedRevisions.join('/') || '(unrecorded)'}, but the rubric is now at ` +
                   `revision ${vettingStatus.currentRevision} — the content changed after vetting, so the ` +
-                  `attestation no longer covers what you are about to grade. Re-vet the CURRENT revision first: ` +
-                  `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
-                  `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
-                  `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade. ` +
+                  `record no longer covers what you are about to grade. Obtain independent critique naming ` +
+                  `'${rubric.rubricId}' and criteriaHash '${rubric.criteriaHash ?? '(unrecorded)'}' ` +
+                  `or revision ${vettingStatus.currentRevision}, then grade. ` +
                   `Grading now would be discovered invalid only at ship, after this pass is spent.` +
                   (vettingStatus.diagnosis ? ` Other cards were rejected: ${vettingStatus.diagnosis}.` : '')
                 : vettingStatus.reason === 'rejected-attestation'
@@ -2263,19 +2306,16 @@ export async function emitScorecard(
                     `acceptance rubric '${rubric.rubricId}' has attestation card(s) on record, but NOT ONE of them ` +
                     `counts as a settled attestation — each failed a specific vetting check. ` +
                     `WHICH card failed WHICH check: ${vettingStatus.diagnosis}. ` +
-                    `Repair the named cause on the named card where you can (a pending grade-the-grader audit or a ` +
-                    `missing critique linkage is fixable in place); otherwise emit a fresh attestation: ` +
-                    `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
-                    `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
-                    `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade.`
+                    `Obtain current independent critique naming '${rubric.rubricId}' and criteriaHash ` +
+                    `'${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${vettingStatus.currentRevision}. ` +
+                    `Critique records satisfy vetting directly; an attestation card and its audit are unnecessary.`
                   : `acceptance rubric '${rubric.rubricId}' has not been VETTED against the meta-rubric yet ` +
                   `(consult-min-max-and-rubric-vetting-2026-08-17). Grading it now would be discovered invalid ` +
                   `only at ship — AFTER your independent grading pass is spent, which the independent-grader pool's ` +
                   `own constraints can make expensive to redo. Have the rubric AUTHOR vet it first: ` +
-                  `consult:get_feedback for external critique of the rubric, then scorecards:emit ` +
-                  `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
-                  `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } } ` +
-                  `— THEN grade.`,
+                  `consult:get_feedback for external critique naming '${rubric.rubricId}' and criteriaHash ` +
+                  `'${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${vettingStatus.currentRevision}, then grade. ` +
+                  `The critique is read directly without an attestation card or attestation audit.`,
           };
         }
       }
@@ -3163,12 +3203,11 @@ export async function emitScorecard(
             : undefined;
         const gradedGeneration = parseGradedGeneration(rawGeneration);
         const auditorGeneration = await readCurrentGeneration();
-        const generationCheck = assessGenerationAncestry(
+        const generationCheck = await assessGenerationAncestryAsync(
           gradedGeneration?.deployedSha,
           auditorGeneration?.deployedSha,
           input.checkRoot ?? resolveAgentWorkspaceRoot({}),
-          deps.generationAncestry ??
-            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+          deps.generationAncestry,
         );
         if (!generationCheck.ok) {
           return {

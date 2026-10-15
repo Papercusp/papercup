@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { ToolResult } from '@papercusp/tooldef';
 
 const getWorkItem = vi.fn();
 const mergeWorkItemPayload = vi.fn();
@@ -53,8 +54,8 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (value: unknown) => (tool.args as { parse: (v: unknown) => unknown }).parse(value);
-async function one(value: unknown) {
-  const result = (await tool.handler(parse(value) as never, ctx)) as { data: { results: unknown[] } };
+async function one(value: unknown, handlerCtx: unknown = ctx) {
+  const result = (await tool.handler(parse(value) as never, handlerCtx as never)) as { data: { results: unknown[] } };
   return result.data.results[0] as Record<string, any>;
 }
 
@@ -77,6 +78,60 @@ beforeEach(() => {
 });
 
 describe('work_items:set_blocker', () => {
+  it('records the expensive handler seams as named dispatch phases', async () => {
+    const item = { id: 'WI-1', family: 'issue', state: 'open', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockResolvedValue({ ...item, payload: {} });
+    setWorkItemStateWithAliasInfo.mockResolvedValue({ workItem: { ...item, state: 'blocked' } });
+    const recordedPhases: string[] = [];
+    const phases = {
+      track: async <T>(name: string, work: () => T | Promise<T>) => {
+        recordedPhases.push(name);
+        return await work();
+      },
+    };
+
+    const out = await one(
+      { id: item.id, kind: 'runtime', ref: 'runtime:probe' },
+      { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default', phases },
+    );
+
+    expect(out).toMatchObject({ ok: true, changed: true });
+    expect(recordedPhases).toEqual([
+      'set_blocker:get-work-item',
+      'set_blocker:merge-blocker-history',
+      'set_blocker:set-lifecycle',
+    ]);
+  });
+
+  it('returns an authoritative late-completion receipt for persisted and no-op rows', () => {
+    const asResult = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+    const receipt = tool.abortCompletionReceipt!;
+    const attempt = { callId: 'set-blocker-call-1', toolName: 'work_items:set_blocker' };
+
+    expect(receipt({}, asResult({ results: [{ ok: true, id: 'EI-1', changed: true }] }), attempt)).toEqual({
+      status: 'recorded', effectRef: 'work-item:EI-1',
+    });
+    expect(receipt({}, asResult({ results: [{
+      ok: false,
+      id: 'EI-2',
+      partialOutcome: { blockerHistoryPersisted: true, lifecycleApplied: false },
+    }] }), attempt)).toEqual({
+      status: 'recorded', effectRef: 'work-item:EI-2',
+    });
+    expect(receipt({}, asResult({ results: [{ ok: true, id: 'EI-3', changed: false }] }), attempt)).toEqual({
+      status: 'not-recorded', reason: 'every set_blocker row completed with changed:false',
+    });
+    expect(receipt({}, asResult({ results: [{ ok: false, id: 'EI-4', error: 'handler failure' }] }), attempt))
+      .toMatchObject({ status: 'recovery-incomplete', failures: ['set-blocker-effect-unproven'] });
+  });
+
+  it('declares the resolver on the live tool contract', () => {
+    expect(tool.abortCompletionReceipt).toBeTypeOf('function');
+  });
+
   it('stays within the shared prompt-weight budget', () => {
     expect(promptWeight(tool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });

@@ -1,5 +1,7 @@
 /** P-034: read the maintained first-party dependency snapshot, never a live compiler. */
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 
@@ -22,7 +24,9 @@ export interface PushSnapshot {
 export interface SnapshotSymbol {
   id: string; name: string; path: string; line: number; column: number; sha256: string;
   signature: string; aliases: string[];
-  callers: { path: string; line: number; column: number; sha256: string; spelling: string }[];
+  /** Definition, forwarding modules and callers that underpin the snapshot answer. */
+  sources?: { path: string; sha256: string }[];
+  callers: { path: string; line: number; column: number; sha256: string; spelling: string; workspace?: string | null }[];
 }
 
 export function parsePushSnapshot(text: string, now = Date.now()): PushSnapshot | null {
@@ -51,6 +55,8 @@ export function parsePushSnapshot(text: string, now = Date.now()): PushSnapshot 
       if (!site(row) || typeof row.id !== 'string' || !/^[A-Za-z_$][\w$]*$/.test(row.name)
         || typeof row.signature !== 'string' || !Array.isArray(row.aliases) || !Array.isArray(row.callers)) continue;
       const symbol: SnapshotSymbol = { ...row, signature: row.signature.slice(0, 300),
+        sources: Array.isArray(row.sources) && row.sources.length <= 512 && row.sources.every((source: any) =>
+          safeSnapshotPath(source?.path) && /^[a-f0-9]{64}$/i.test(source.sha256 ?? '')) ? row.sources : undefined,
         aliases: row.aliases.filter((name: unknown) => typeof name === 'string' && /^[A-Za-z_$][\w$]*$/.test(name)),
         callers: row.callers.filter((caller: any) => site(caller) && typeof caller.spelling === 'string').slice(0, 500) };
       for (const name of new Set([symbol.name, ...symbol.aliases])) {
@@ -60,6 +66,29 @@ export function parsePushSnapshot(text: string, now = Date.now()): PushSnapshot 
   }
   return { commit: raw.index.lastCommit, generatedAt: raw.generatedAt, generatedMs,
     importers: new Map([...reverse].map(([path, paths]) => [path, [...paths].sort()])), hashes, symbols: byName };
+}
+
+/** Bounded content checks, never a compiler or a synchronous read on the hook path.
+ * A large proof, changed forwarding module or unreadable source suppresses the answer.
+ */
+export async function corroboratePushSources(root: string | undefined,
+  sources: readonly { path: string; sha256: string }[], signal: AbortSignal): Promise<boolean> {
+  if (!root || !sources.length || sources.length > 64 || signal.aborted) return false;
+  let cursor = 0;
+  let valid = true;
+  await Promise.all(Array.from({ length: Math.min(8, sources.length) }, async () => {
+    while (valid && !signal.aborted && cursor < sources.length) {
+      const source = sources[cursor++]!;
+      if (!safeSnapshotPath(source.path)) { valid = false; break; }
+      try {
+        const file = join(root, source.path);
+        if ((await stat(file)).size > 2_000_000) { valid = false; break; }
+        const bytes = await readFile(file, { signal });
+        valid &&= createHash('sha256').update(bytes).digest('hex') === source.sha256;
+      } catch { valid = false; }
+    }
+  }));
+  return valid && !signal.aborted;
 }
 
 type Entry = { snapshot: PushSnapshot | null; checkedAt: number; loading: Promise<void> | null };

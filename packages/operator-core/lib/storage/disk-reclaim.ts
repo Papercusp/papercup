@@ -799,6 +799,10 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       }
     }, { timeoutMs: 1_000 });
   } catch (err) { receipt.errors.push(message(err)); }
+  // A queued writer can end the callback between effects, before the root's
+  // normal epilogue. Report retained usage after successful effects on every
+  // exit path, including a cooperative yield or a later inspection failure.
+  for (const cap of receipt.caps ?? []) cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
   const after = await snapshots();
   const paths = new Set(options.expectedDevices ?? ['/', '/mnt/data']);
   receipt.devices = [...paths].map((path) => {
@@ -983,14 +987,11 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     } },
   ];
   let runId = '';
-  const { inspectRetentionTrees, resolveCensusSudo } = await import('./disk-consumer-census');
+  const { inspectRetentionTrees } = await import('./disk-consumer-census');
   // No unprivileged fallback: permission loss must be a visible incomplete
-  // receipt, rather than silently retaining every foreign-owned agent tree.
-  const sudo = await resolveCensusSudo();
-  const inspectTrees: typeof inspectRetentionTrees = (root, options) => {
-    if (!sudo && process.getuid?.() !== 0) throw new Error('privileged retention census unavailable');
-    return inspectRetentionTrees(root, { ...options, sudo });
-  };
+  // receipt from the actual bounded operation, not a cached preflight result.
+  const inspectTrees: typeof inspectRetentionTrees = (root, options) =>
+    inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const holders = createRetentionHolderScanner();
   try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees,
     removeEntry: removePrivilegedRetentionEntry, scanHolders: holders.scan, record: async (phase, detail) => {

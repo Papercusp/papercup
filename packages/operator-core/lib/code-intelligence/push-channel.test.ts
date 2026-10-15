@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
 import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotGrepLeg, grepLookupSubject, type PushChannelDeps, type PushFact } from './push-channel';
-import { parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
+import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 
 const now = Date.now();
@@ -79,16 +83,42 @@ describe('shared snapshot-backed push channel', () => {
   it('answers a literal grep with a unique snapshot symbol and aliases, remaining quiet for ambiguous regexes', () => {
     const snap = snapshot();
     snap.symbols = new Map([['target', [{ id: 'target', name: 'target', path: 'lib/target.ts', line: 2, column: 1,
-      sha256: 'b'.repeat(64), signature: 'function target()', aliases: ['target'],
-      callers: [{ path: 'app/use.ts', line: 3, column: 1, sha256: 'c'.repeat(64), spelling: 'alias' }] }]]]);
+      sha256: 'b'.repeat(64), signature: 'function target()', aliases: ['target'], sources: [{ path: 'lib/target.ts', sha256: 'b'.repeat(64) }],
+      callers: [{ path: 'app/use.ts', line: 3, column: 1, sha256: 'c'.repeat(64), spelling: 'alias', workspace: '@example/app (app)' }] }]]]);
     const call = { tool: 'exec_command', toolInput: { cmd: "rg -n 'target\\(' packages" } };
     expect(grepLookupSubject(call)).toBe('target');
     const facts = snapshotGrepLeg({ ...input, calls: [call] }, snap);
     expect(facts[0]?.text).toContain('definition lib/target.ts:2');
     expect(facts[0]?.text).toContain('Aliases a literal grep can miss: alias');
     expect(facts[0]?.text).toContain('At least 1');
+    expect(facts[0]?.text).toContain('@example/app (app): 1');
     expect(grepLookupSubject({ tool: 'Bash', toolInput: { command: "rg 'target|another'" } })).toBeNull();
     expect(snapshotGrepLeg({ ...input, calls: [{ tool: 'Grep', toolInput: { pattern: 'missing' } }] }, snap)).toEqual([]);
+    snap.symbols.get('target')![0]!.sources = undefined;
+    expect(snapshotGrepLeg({ ...input, calls: [call] }, snap)).toEqual([]);
+  });
+
+  it('suppresses drifted definitions, forwarding modules and callers before delivery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'code-intel-push-'));
+    const text = 'export { target } from "./definition";';
+    const sources = ['definition.ts', 'barrel.ts', 'caller.ts'].map(path => ({ path,
+      sha256: createHash('sha256').update(text).digest('hex') }));
+    const signal = new AbortController().signal;
+    try {
+      for (const source of sources) await writeFile(join(root, source.path), text);
+      expect(await corroboratePushSources(root, sources, signal)).toBe(true);
+      for (const source of sources) {
+        await writeFile(join(root, source.path), '// changed');
+        const d = deps();
+        d.legs = () => new Map([['first-touch', () => [{ ...fact, sourceHashes: sources }]]]);
+        expect(await codeIntelPushText({ ...input, root }, 0, d)).toBe('');
+        expect(d.commit).not.toHaveBeenCalled();
+        await writeFile(join(root, source.path), text);
+      }
+      expect(await corroboratePushSources(root, Array(65).fill(sources[0]), signal)).toBe(false);
+      expect(await corroboratePushSources(undefined, sources, signal)).toBe(false);
+      expect(await corroboratePushSources(root, [{ ...sources[0]!, path: '../outside' }], signal)).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it('fails open for other context but never runs an abandoned commit after its wall', async () => {

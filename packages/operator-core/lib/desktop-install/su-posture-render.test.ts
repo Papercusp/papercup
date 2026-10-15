@@ -74,6 +74,7 @@ const lineSet = (text: string) =>
 
 async function splice(baseText: string): Promise<string> {
   const out = await renderSuPlaybook({
+    referenceMode: 'inline',
     agent: 'claude',
     profile: 'engineer',
     baseSource: INPUTS.base,

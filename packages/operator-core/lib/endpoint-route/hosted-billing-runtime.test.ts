@@ -176,6 +176,7 @@ async function runtime(options: {
       store,
       fetchImpl: stripe.impl,
       clock: () => NOW,
+      observeFailure: vi.fn(async () => {}),
       ...options.deps,
     },
   );
@@ -635,6 +636,24 @@ describe('hosted usage production collector composition', () => {
 // ── configuration ───────────────────────────────────────────────────────────
 
 describe('hosted billing configuration parsing', () => {
+  it('production requires pinned Secret Manager references for both Stripe secrets', () => {
+    const ref = 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-stripe/versions/2';
+    const env = { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production', PAPERCUSP_HOSTED_PUBLIC_ORIGIN: ORIGIN,
+      PAPERCUSP_STRIPE_SECRET_KEY_REF: ref, PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF: ref };
+    expect(readHostedBillingRuntimeConfiguration(env)).toMatchObject({ requireManagedSecrets: true });
+    for (const name of ['PAPERCUSP_STRIPE_SECRET_KEY_REF', 'PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF']) {
+      for (const value of ['', 'env:KEY', 'file:/run/secret', 'integration:STRIPE_KEY', ref.replace('/2', '/latest')]) {
+        expect(() => readHostedBillingRuntimeConfiguration({ ...env, [name]: value })).toThrow('requires_pinned_secret_manager');
+      }
+    }
+  });
+
+  it('refuses a manually assembled production billing config before reading local secrets', async () => {
+    const resolveSecret = vi.fn(async () => 'must-not-read');
+    await expect(runtime({ config: { requireManagedSecrets: true }, deps: { resolveSecret } }))
+      .rejects.toThrow('requires_pinned_secret_manager');
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
   it('accepts an absent or valid expected Stripe account and refuses a malformed identity', () => {
     expect(parseStripeAccountId(undefined)).toBeNull();
     expect(parseStripeAccountId(' acct_papercusp ')).toBe('acct_papercusp');
@@ -1156,10 +1175,12 @@ describe('POST /hosted/billing/webhook', () => {
   });
 
   it('a store failure is a non-2xx so Stripe redelivers', async () => {
-    const { app, store } = await runtime();
+    const observed: unknown[] = [];
+    const { app, store } = await runtime({ deps: { observeFailure: async observation => { observed.push(observation); } } });
     store.applyEvent = async () => { throw new Error('connection reset'); };
     const response = await app.request('/api/hosted/billing/webhook', signedWebhook(subscriptionEvent()));
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ error: { code: 'billing_store_unavailable' } });
+    expect(observed).toEqual([{ failureClass: 'endpoint-store-unavailable', eventId: 'evt_1' }]);
   });
 });

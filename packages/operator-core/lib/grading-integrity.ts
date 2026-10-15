@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { observeFallback } from './degradation/fallback-observations';
-import launchAgentTool from './agent-tools/capability/launch-agent';
+import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL } from './agent-tools/capability/launch-agent';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { findSessionTranscript } from './claude-sessions';
@@ -52,7 +52,7 @@ import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
-import { realGitProbe } from './release/judged-sha-containment';
+import { isAncestorAsync } from './release/judged-sha-containment';
 import { readRunningGeneration } from './scout/generation-watermark';
 import {
   describeGradingAuditDispatchSuppression,
@@ -107,6 +107,22 @@ export function assessGenerationAncestry(
     ok: false,
     reason: isAncestor === false ? 'auditor-build-older-than-graded-build' : 'generation-ancestry-unknown',
   };
+}
+
+/** Async operator-handler variant; avoids the synchronous Git probe on the host event loop. */
+export async function assessGenerationAncestryAsync(
+  gradedSha: unknown,
+  auditorSha: unknown,
+  root: string,
+  probe?: GenerationAncestryProbe,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const preliminary = assessGenerationAncestry(gradedSha, auditorSha, root, () => null);
+  if (preliminary.ok || preliminary.reason !== 'generation-ancestry-unknown') return preliminary;
+  if (typeof gradedSha !== 'string' || typeof auditorSha !== 'string') return preliminary;
+  const ancestry = probe
+    ? probe(root, gradedSha.trim(), auditorSha.trim())
+    : await isAncestorAsync(root, gradedSha.trim(), auditorSha.trim());
+  return assessGenerationAncestry(gradedSha, auditorSha, root, () => ancestry);
 }
 
 /**
@@ -356,6 +372,43 @@ export function assessEvaluatorBuildStranding(
             'the new card supersedes this one and is audited on this build.'
           : 'Re-grade it on the current build; the new card supersedes this one and is audited on this build.'),
   };
+}
+
+/** Async operator-handler variant; only reaches Git after all pure stranding guards pass. */
+export async function assessEvaluatorBuildStrandingAsync(
+  card: EvaluatorBuildStrandingCard,
+  liveBuild: { sha: string | null; version: string },
+  opts: Omit<Parameters<typeof assessEvaluatorBuildStranding>[2], 'probe'> & {
+    probe?: GenerationAncestryProbe;
+  },
+): Promise<EvaluatorBuildStranding> {
+  const preliminary = assessEvaluatorBuildStranding(card, liveBuild, {
+    ...opts,
+    probe: () => null,
+  });
+  if (
+    preliminary.stranded ||
+    preliminary.reason !== 'live-build-not-proven-descendant:generation-ancestry-unknown'
+  ) {
+    return preliminary;
+  }
+  const recorded = card.rerunRecipe?.evaluatorBuild;
+  if (typeof recorded?.sha !== 'string' || typeof liveBuild.sha !== 'string') return preliminary;
+  const ancestry = await assessGenerationAncestryAsync(
+    recorded.sha,
+    liveBuild.sha,
+    opts.root,
+    opts.probe,
+  );
+  const probeResult = ancestry.ok
+    ? true
+    : ancestry.reason === 'auditor-build-older-than-graded-build'
+      ? false
+      : null;
+  return assessEvaluatorBuildStranding(card, liveBuild, {
+    ...opts,
+    probe: () => probeResult,
+  });
 }
 /**
  * EI-22978598482930667 — reset-aware re-dispatch suppression.
@@ -796,13 +849,22 @@ export async function notifyRetainedGradingAuditor(
               if (!(await (deps.confirmReservation ?? confirmPendingGradingAuditReservation)(card.issueId, key, {
                 workspaceId, reservedAt: reservation.reservedAt, expectedCard: card, tx,
               }))) throw new Error('renewal target/fingerprint/lease changed before delivery');
+              const taskDetail = JSON.stringify({
+                gradingAudit: {
+                  issueId: card.issueId,
+                  evidenceFingerprint: card.evidenceFingerprint,
+                  reservation,
+                },
+              });
               const tasks = await tx<{ task_id: string }[]>`
-                SELECT task_id FROM harness_shared.task_ledger
+                UPDATE harness_shared.task_ledger
+                   SET detail = COALESCE(detail, '{}'::jsonb) || ${taskDetail}::text::jsonb,
+                       updated_at = now()
                  WHERE workspace_id = ${workspaceId} AND task_id = ${task.taskId}
                    AND class = 'agent-session' AND state IN ('pending', 'running')
                    AND detail->>'coordOwnerId' = ${ownerId} AND detail->>'label' = ${label}
                    AND (work_item_id IS NULL OR work_item_id = ${card.issueId})
-                 FOR SHARE`;
+                 RETURNING task_id`;
               if (!tasks[0]) throw new Error('retained auditor task changed or retired before delivery');
               const sources = [...new Set([card.createdBy, ...(card.vetting?.critics ?? [])]
                 .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
@@ -1732,11 +1794,10 @@ export async function dispatchPendingGradingAudits(
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);
         const stranding = driftCard
-          ? assessEvaluatorBuildStranding(driftCard, liveEvaluatorBuild, {
+          ? await assessEvaluatorBuildStrandingAsync(driftCard, liveEvaluatorBuild, {
               nowMs: deps.now?.() ?? Date.now(),
               root: resolveAgentWorkspaceRoot({}),
-              probe: deps.generationAncestry ??
-                ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+              probe: deps.generationAncestry,
             })
           : null;
         if (driftCard && stranding?.stranded) {
@@ -1959,12 +2020,11 @@ export async function dispatchPendingGradingAudits(
       if (generationBound) {
         const gradedGeneration = parseGradedGeneration(card.gradedGeneration);
         const currentGeneration = await (deps.readCurrentGeneration ?? readRunningGeneration)();
-        const generationCheck = assessGenerationAncestry(
+        const generationCheck = await assessGenerationAncestryAsync(
           gradedGeneration?.deployedSha,
           currentGeneration.deployedSha,
           resolveAgentWorkspaceRoot({}),
-          deps.generationAncestry ??
-            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+          deps.generationAncestry,
         );
         if (!generationCheck.ok) {
           const reason =
@@ -2327,6 +2387,19 @@ export async function dispatchPendingGradingAudits(
         // candidate snapshot after settlement.
         if (!(await confirmOwnedPendingReservation())) break;
         const useFallback = launchBackend === GRADING_AUDIT_FALLBACK.agent;
+        const taskDetail = typeof card.evidenceFingerprint === 'string' && card.evidenceFingerprint.trim()
+          ? {
+              issueId,
+              evidenceFingerprint: card.evidenceFingerprint.trim(),
+              reservation: { key: idempotencyKey, reservedAt: reservationReservedAt },
+            }
+          : null;
+        const launchContext = taskDetail
+          ? {
+              ...gradingAuditorLaunchCtx(input.ctx),
+              [INTERNAL_GRADING_AUDIT_TASK_DETAIL]: taskDetail,
+            } as GradingAuditLaunchContext
+          : gradingAuditorLaunchCtx(input.ctx);
         const result = (await launch(
           {
             brief: gradingAuditBrief(card, reservationReservedAt),
@@ -2367,7 +2440,7 @@ export async function dispatchPendingGradingAudits(
           // Never the caller's context: the caller is often the card author, and
           // a judge it launches is refused as a self-audit (see
           // GRADING_AUDIT_DISPATCH_ACTOR).
-          gradingAuditorLaunchCtx(input.ctx),
+          launchContext,
         )) as {
           isError?: boolean;
           content?: Array<{ text?: string }>;

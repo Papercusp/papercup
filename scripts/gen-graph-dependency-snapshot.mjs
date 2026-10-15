@@ -471,7 +471,7 @@ export function produceSnapshotFromSource({ files, readSource, aliasesForImporte
   });
   const moduleCache = new Map();
   const knownFiles = new Set(files);
-  result.snapshot.symbols = buildSymbolSnapshot({ files, readSource, resolveModule: (importer, specifier) => {
+  result.snapshot.symbols = buildSymbolSnapshot({ files, readSource, workspacePackages, resolveModule: (importer, specifier) => {
     const key = importer + '\0' + specifier;
     if (!moduleCache.has(key)) {
       const derived = deriveFirstPartyEdges({ files, importerFiles: [importer], knownFiles,

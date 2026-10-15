@@ -134,6 +134,29 @@ describe('streaming retention census evidence', () => {
       expect(census.entries).toEqual([]); expect(kill).toHaveBeenCalledWith('SIGKILL');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+  it.each([false, true])('bounds an elevated walk inside sudo without relying on caller signals (progress-only=%s)', async (progressOnly) => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-root-timeout-'));
+    const kill = vi.fn();
+    const spawn = ((command: string, args: string[]) => {
+      expect(command).toBe('/usr/bin/sudo');
+      expect(args.slice(0, 2)).toEqual(['-n', '--']);
+      expect(args[2]).toMatch(/\/timeout$/);
+      expect(args.slice(3, 6)).toEqual(['--foreground', '--signal=KILL', '0.025s']);
+      expect(args.indexOf('find')).toBeGreaterThan(5);
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill });
+      kill.mockImplementation(() => { child.emit('error', new Error('kill EPERM')); return false; });
+      // The elevated timeout reaps its own child; the ordinary caller cannot.
+      setTimeout(() => child.emit('close', 137), 35);
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
+        ...(progressOnly ? { progressTimeoutMs: 25 } : { timeoutMs: 25 }) });
+      expect(census.error).toBe('retention native census timed out');
+      expect(census.entries).toEqual([]); expect(kill).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
 });
 
 describe('resolveCensusSudo', () => {
@@ -196,6 +219,7 @@ describe('resolveCensusSudo', () => {
     const bin = join(dir, 'sudo');
     writeFileSync(bin, '#!/bin/sh\nprintf "fixture privilege denied" >&2\nexit 1\n');
     chmodSync(bin, 0o755);
+    process.env.PATH = [dir, '/usr/bin', '/bin'].join(delimiter);
     const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now() + 60_000,
       includeRecent: true, requirePrivilege: true, timeoutMs: 5_000 });
     expect(census.error).toContain('fixture privilege denied');
@@ -211,6 +235,15 @@ describe('resolveCensusSudo', () => {
     expect(census.error).toContain('sudo executable unavailable');
     expect(census.entries).toEqual([]);
     expect(census.inspectedNodes).toBe(0);
+  });
+
+  it.skipIf(isRoot)('refuses elevation without a native timeout instead of launching an unbounded walk', async () => {
+    const root = join(dir, 'agent'); await fsp.mkdir(root);
+    stubSudo(0);
+    const spawn = vi.fn() as unknown as CensusSpawn;
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), requirePrivilege: true, spawn });
+    expect(census.error).toBe('timeout executable unavailable for privileged retention census');
+    expect(census.entries).toEqual([]); expect(spawn).not.toHaveBeenCalled();
   });
 
   it('never elevates a process that is already root', async () => {

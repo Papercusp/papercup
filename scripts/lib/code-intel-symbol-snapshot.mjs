@@ -18,9 +18,11 @@ const identifiers = node => ts.isIdentifier(node) ? [node.text] : ts.isObjectBin
   ? node.elements.flatMap(part => ts.isBindingElement(part) ? identifiers(part.name) : []) : [];
 
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges. */
-export function buildSymbolSnapshot({ files, readSource, resolveModule }) {
+export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages = [] }) {
   const units = new Map();
   const symbols = new Map();
+  const workspaces = workspacePackages.flatMap(([name, dirs]) => dirs.map(dir => ({ name, dir })))
+    .sort((a, b) => b.dir.length - a.dir.length);
   const stats = { files: 0, skippedFiles: 0, unresolvedCalls: 0, resolvedCalls: 0, truncated: false };
   for (const path of files) {
     if (!sourceFile(path)) continue;
@@ -29,7 +31,9 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule }) {
     const ast = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
     if (ast.parseDiagnostics.length) { stats.skippedFiles++; continue; }
     const sha256 = hash(text);
-    const unit = { path, sha256, locals: new Map(), imports: new Map(), exports: new Map(), reexports: [], stars: [], shadows: new Set(), calls: [] };
+    const workspace = workspaces.find(entry => path.startsWith(entry.dir + '/'));
+    const manifest = workspace ? readSource(workspace.dir + '/package.json') : null;
+    const unit = { path, sha256, workspace, manifest, locals: new Map(), imports: new Map(), exports: new Map(), reexports: [], stars: [], shadows: new Set(), calls: [] };
     const site = node => { const at = ast.getLineAndCharacterOfPosition(node.getStart(ast)); return { path, line: at.line + 1, column: at.character + 1, sha256 }; };
     for (const node of ast.statements) {
       const exported = node.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword);
@@ -58,7 +62,7 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule }) {
         const name = decl.name.text;
         const location = site(decl.name);
         const id = `${path}:${location.line}:${name}`;
-        const symbol = { id, name, ...location, signature: text.slice(decl.getStart(ast), decl.body?.getStart(ast) ?? Math.min(decl.end, decl.getStart(ast) + 300)).slice(0, 300), callers: [], aliases: [] };
+        const symbol = { id, name, ...location, signature: text.slice(decl.getStart(ast), decl.body?.getStart(ast) ?? Math.min(decl.end, decl.getStart(ast) + 300)).slice(0, 300), callers: [], aliases: [], sources: new Map([[path, sha256]]) };
         symbols.set(id, symbol);
         add(unit.locals, name, [id]);
         if (exported) add(unit.exports, isDefault ? 'default' : name, [id]);
@@ -103,7 +107,11 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule }) {
   for (const unit of units.values()) for (const [name, values] of unit.exports) for (const id of values) {
     visible.add(id);
     const symbol = symbols.get(id);
-    if (symbol && !symbol.aliases.includes(name)) symbol.aliases.push(name);
+    if (symbol) {
+      symbol.sources.set(unit.path, unit.sha256);
+      if (unit.manifest !== null) symbol.sources.set(unit.workspace.dir + '/package.json', hash(unit.manifest));
+      if (!symbol.aliases.includes(name)) symbol.aliases.push(name);
+    }
   }
   for (const unit of units.values()) for (const call of unit.calls) {
     if (unit.shadows.has(call.local)) { stats.unresolvedCalls++; continue; }
@@ -116,12 +124,16 @@ export function buildSymbolSnapshot({ files, readSource, resolveModule }) {
     if (!symbol || !visible.has(symbol.id)) continue;
     if (symbol.callers.length >= 500) { stats.truncated = true; continue; }
     symbol.callers.push({ path: call.path, line: call.line, column: call.column, sha256: call.sha256,
+      workspace: unit.workspace ? `${unit.workspace.name} (${unit.workspace.dir})` : null,
       spelling: call.member ?? call.local }); stats.resolvedCalls++;
+    symbol.sources.set(unit.path, unit.sha256);
+    if (unit.manifest !== null) symbol.sources.set(unit.workspace.dir + '/package.json', hash(unit.manifest));
   }
   return { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound',
     limitations: ['JS/TS tracked parseable files only.', 'Dynamic dispatch, shadowed bindings, external packages and unresolved imports are unknown; counts are lower bounds.',
       'No runtime execution or compiler type-resolution is asserted.'], stats,
-    symbols: [...symbols.values()].filter(symbol => visible.has(symbol.id)).sort((a, b) => a.id.localeCompare(b.id)) };
+    symbols: [...symbols.values()].filter(symbol => visible.has(symbol.id)).map(symbol => ({ ...symbol,
+      sources: [...symbol.sources].map(([path, sha256]) => ({ path, sha256 })) })).sort((a, b) => a.id.localeCompare(b.id)) };
 }
 
 /** Reuse the dependency producer's resolver by deriving one synthetic import through it. */

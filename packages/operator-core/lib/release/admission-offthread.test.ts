@@ -5,9 +5,9 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ADMISSION_WORKER_TSX_BOOTSTRAP,
@@ -19,6 +19,7 @@ import {
 } from './admission-offthread';
 import { executeAdmissionJob } from './admission-jobs';
 import { evaluateFixPrecheck, precheckPopulation } from './admission-fix-precheck';
+import { createFrozenCandidateQueue } from './frozen-candidate-repair-queue';
 
 let repo: string;
 
@@ -171,6 +172,36 @@ describe('admission off-thread host (WI-10005223)', () => {
     // ~60 turns ideal over 1.2s; a main-thread spawnSync yields 0.
     expect(turns).toBeGreaterThanOrEqual(15);
   }, 60_000);
+
+  it('runs lineage reconciliation on the worker while its sync Git read is delayed', async () => {
+    const gitBinary = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    const queue = createFrozenCandidateQueue({ candidate, base: null, nowMs: Date.now() });
+    await runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo }); // warm the worker
+
+    const shim = mkdtempSync(join(tmpdir(), 'admission-lineage-git-shim-'));
+    const originalPath = process.env.PATH;
+    const originalRealGit = process.env.ADMISSION_TEST_REAL_GIT;
+    const wrapper = join(shim, 'git');
+    writeFileSync(wrapper, '#!/bin/sh\nsleep 0.5\nexec "$ADMISSION_TEST_REAL_GIT" "$@"\n');
+    chmodSync(wrapper, 0o755);
+    process.env.ADMISSION_TEST_REAL_GIT = gitBinary;
+    process.env.PATH = [shim, originalPath].filter(Boolean).join(delimiter);
+    try {
+      const turns = await loopTurnsDuring(runAdmissionJob(
+        { kind: 'reconcile-lineage', queue, root: repo },
+        { timeoutMs: 10_000, stepName: 'lineage-reconcile-test' },
+      ));
+      expect(turns).toBeGreaterThanOrEqual(10);
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalRealGit === undefined) delete process.env.ADMISSION_TEST_REAL_GIT;
+      else process.env.ADMISSION_TEST_REAL_GIT = originalRealGit;
+      rmSync(shim, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   it('CONTROL: the same call inline blocks the loop, so the turn count can fail', async () => {
     configureAdmissionOffthread({ mode: 'inline' });

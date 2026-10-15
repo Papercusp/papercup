@@ -2,10 +2,11 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/code-intel-symbol-snapshot.mjs and regenerate.
 /** Inputs are the exact tracked source cohort and resolver already used by dependency edges. */
-export function buildSymbolSnapshot({ files, readSource, resolveModule }: {
+export function buildSymbolSnapshot({ files, readSource, resolveModule, workspacePackages }: {
     files: any;
     readSource: any;
     resolveModule: any;
+    workspacePackages?: never[] | undefined;
 }): {
     schema: string;
     knowledge: string;
