@@ -142,9 +142,9 @@ describe('gate reuse on the degradation rail (P-004)', () => {
     armed.finish();
   });
 
-  it.each(['dirty-checkout(2)', 'proofs-unavailable(timeout)', 'disabled-by-env', 'script-cannot-run-zero-files'])('keeps a positive denominator for %s', async (reason) => {
+  it.each(['dirty-checkout(2)', 'proofs-unavailable(timeout)', 'disabled-by-env', 'script-cannot-run-zero-files'])('does not invent a denominator for an unmeasured off-path decision (%s)', async (reason) => {
     const decisions = gateReuseObservations(TASK, { offReason: reason, eligible: 0 });
-    expect(decisions).toEqual([{ eligible: 1, applied: 0, reason: reason.split('(')[0], scope: TASK }]);
+    expect(decisions).toEqual([{ eligible: 0, applied: 0, reason: reason.split('(')[0], scope: TASK }]);
   });
 
   it('records healthy primary decisions and excludes overlapping diagnostic counters', () => {
@@ -189,7 +189,7 @@ describe('gate reuse on the degradation rail (P-004)', () => {
       runContext: 'green-checkpoint', runGroupId, writer,
     })).toBe(true);
     expect(calls).toMatchObject([{
-      mechanism: 'gate-pass-reuse', eligible: 1, applied: 0,
+      mechanism: 'gate-pass-reuse', eligible: 0, applied: 0,
       options: { workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint', correlationId: runGroupId },
     }]);
     expect(flushed).toBe(1);
