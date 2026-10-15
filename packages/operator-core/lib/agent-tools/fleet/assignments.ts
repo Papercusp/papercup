@@ -37,6 +37,7 @@ import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions'
 import {
   groupByAgent,
   deriveClaimHealth,
+  isBroadClaimableParkMaskingStalledClaim,
   lastProductiveToolCallAtByOwner,
   lastToolCallAtByOwner,
   listFleetAssignments,
@@ -1547,7 +1548,20 @@ export default defineTool({
     // is NOT "covered" — surface stalled claims as reclaimable alongside orphans, so
     // no reader concludes "someone's on it" from a claim that isn't advancing.
     const healthyLoopOwners = new Set(
-      agents.filter((a) => a.monitorState != null).map((a) => a.agentId),
+      agents
+        .filter((a) => {
+          if (a.monitorState == null) return false;
+          // The standing queue wake is deliberately broad: it fires when any
+          // item becomes claimable, including items this member does not hold.
+          // If the member still has a stalled claim, that watch cannot explain
+          // the claim's inactivity and must not suppress stalled/recovery output.
+          return !isBroadClaimableParkMaskingStalledClaim(
+            a.monitorState,
+            a.parkedOn,
+            a.claims.some((claim) => claim.stalled === true),
+          );
+        })
+        .map((a) => a.agentId),
     );
     // WI-5975: the holder-liveness map every reclaim-candidate row is summarized
     // against. `agents` is already decorated (reconcileWakeability →
