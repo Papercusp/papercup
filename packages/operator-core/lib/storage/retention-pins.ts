@@ -13,16 +13,23 @@ export { retentionPinProtectsPath as pinProtectsPath } from './retention-policy'
 
 /** The final protection read and deletion share storage:pin's cross-process mutex. */
 export async function withUnpinnedPath(path: string, remove: () => boolean | Promise<boolean>): Promise<boolean> {
+  return withRetentionPinProtection((isPinned) => isPinned(path) ? false : remove());
+}
+
+/** A multi-step deleter (including Git worktree removal) must hold the same
+ * mutex from the protection read through its last destructive operation. */
+export async function withRetentionPinProtection<T>(work: (isPinned: (path: string) => boolean) => T | Promise<T>): Promise<T> {
   return withFsMutex('papercusp-disk-retention', async () => {
     const nowMs = Date.now();
     const read = await readRetentionPinsAsync({ nowMs });
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
-    let physical = path;
-    try { physical = await realpath(path); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-    if (retentionPinProtectsPath(path, read.pins, nowMs) || retentionPinProtectsPath(physical, read.pins, nowMs)) return false;
-    return remove();
+    return work((path) => {
+      let physical = path;
+      try { physical = realpathSync(path); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      return retentionPinProtectsPath(path, read.pins, nowMs) || retentionPinProtectsPath(physical, read.pins, nowMs);
+    });
   });
 }
 

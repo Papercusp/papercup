@@ -174,6 +174,9 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
       source_plan_slug text,
+      source_plan_item_ids text[] NOT NULL DEFAULT '{}',
+      status text NOT NULL DEFAULT 'open',
+      taken_by text,
       payload jsonb NOT NULL DEFAULT '{}',
       admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)

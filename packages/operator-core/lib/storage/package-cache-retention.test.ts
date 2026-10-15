@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRetentionPin } from './retention-pins';
 import {
   PACKAGE_CACHE_MUTEX_NAME,
   PRESSURE_PACKAGE_CACHE_MAX_BYTES,
@@ -62,12 +66,39 @@ describe('resolvePackageCacheTargets', () => {
 });
 
 describe('runPackageCacheRetention', () => {
+  let sandbox: string;
   beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'package-cache-pins-'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(sandbox, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(sandbox, 'mutexes'));
     // Cache fixtures use synthetic paths. Ordinary retention now probes their
     // filesystem too, so model that boundary instead of reading the real host.
     vi.spyOn(diskSpaceAlarm, 'sampleDiskSnapshots').mockResolvedValue([diskSnapshot(3 * GIB)]);
   });
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(sandbox, { recursive: true, force: true }); });
+
+  it.each([false, true])('protects pinned descendants and releases expired pins (expired=%s)', async (expired) => {
+    const cache = join(sandbox, 'cache'); const descendant = join(cache, 'needed');
+    mkdirSync(descendant, { recursive: true });
+    createRetentionPin({ path: descendant, owner: 'test', reason: 'review',
+      expiresAt: new Date(Date.now() + (expired ? -1000 : 60_000)).toISOString() },
+    { nowMs: Date.now() - 2000 });
+    const runCommand = vi.fn(async () => ({ ok: true, exitCode: 0, timedOut: false, output: '' }));
+    const out = await runPackageCacheRetention({ targets: [{ ...targets[0]!, path: cache }], maxBytes: 8,
+      measure: async () => measurement(9), runCommand, withMutex: async (_name, run) => run() });
+    expect(out[0]?.status).toBe(expired ? 'pruned' : 'pinned');
+    expect(runCommand).toHaveBeenCalledTimes(expired ? 1 : 0);
+  });
+
+  it('refuses native cleanup when the pin store cannot be decoded', async () => {
+    const dir = join(sandbox, 'leases'); mkdirSync(dir);
+    writeFileSync(join(dir, 'lease-agent-pin-corrupt.tsv'), 'broken');
+    const runCommand = vi.fn();
+    const out = await runPackageCacheRetention({ targets: [targets[0]!], maxBytes: 8,
+      measure: async () => measurement(9), runCommand, withMutex: async (_name, run) => run() });
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(out[0]?.note).toContain('retention pins unreadable');
+  });
 
   it('detects pressure on each cache filesystem for the ordinary janitor without a pressurePath', async () => {
     const sampleDisk = vi.fn(async (paths: string[] = []) => [

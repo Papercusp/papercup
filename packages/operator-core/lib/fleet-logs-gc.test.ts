@@ -9,6 +9,7 @@ import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
 import { createRetentionPin } from './storage/retention-pins';
 import { join } from 'node:path';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import {
   runFleetLogsGc,
   FLEET_LOGS_GC_DEFAULT_RETENTION_MS,
@@ -364,6 +365,16 @@ describe('runLintWorkRootGc', () => {
   };
   const scanOpenPaths = async () => ({ byPath: new Map<string, string[]>(), complete: true });
 
+  it('preserves a pinned snapshot while reclaiming an equally stale unpinned snapshot', async () => {
+    const pinned = makeRoot('pinned', 7);
+    const stale = makeRoot('stale', 7);
+    createRetentionPin({ path: join(pinned, 'source.txt'), owner: 'reviewer', reason: 'retained proof', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runLintWorkRootGc({ root: sandbox, now, dryRun: false, scanOpenPaths, log: () => {} });
+    expect(existsSync(pinned)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(result.kept).toContainEqual({ name: 'papercusp-lint-as-committed-pinned', reason: 'pinned' });
+  });
+
   it('expires an idle snapshot without starting another lint, preserving young roots and dependent artifacts', async () => {
     const expired = makeRoot('expired', 7);
     const young = makeRoot('young', 1);
@@ -450,6 +461,23 @@ describe('runLintWorkRootGc', () => {
 });
 
 describe('runPapercuspWorkdirGc', () => {
+  it('preserves pins on descendants through physical aliases and reclaims expired pins', async () => {
+    const pinned = join(sandbox, 'task.ABC123'); mkdirSync(pinned);
+    const proof = join(pinned, 'proof'); writeFileSync(proof, 'proof');
+    const alias = join(sandbox, 'proof-alias'); symlinkSync(proof, alias);
+    const nowMs = Date.now();
+    const pin = createRetentionPin({ path: alias, owner: 'reviewer', reason: 'review', expiresAt: new Date(nowMs + 3600_000).toISOString() });
+    ageTree(pinned, 10 * DAY);
+    const result = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
+    expect(existsSync(proof)).toBe(true);
+    expect(result.candidates.find((c) => c.path === pinned)?.skipped).toBe('pinned');
+    const leaseFile = join(sandbox, 'leases', `lease-agent-pin-${pin.id}.tsv`);
+    writeFileSync(leaseFile, readFileSync(leaseFile, 'utf8').replace(/^expires_ns=.*$/m, `expires_ns=${BigInt(nowMs - 1000) * 1_000_000n}`));
+    const expired = await runPapercuspWorkdirGc({ root: sandbox, dryRun: false, scanOpenPaths: noOpenPaths });
+    expect(expired.removed).toBe(1);
+    expect(existsSync(pinned)).toBe(false);
+  });
+
   it('keeps a genuinely open nested file even when its mtime is old', async () => {
     const dir = makeWorkdir(sandbox, 'p309-accept.AbC123');
     ageTree(dir, 30 * DAY);
@@ -676,6 +704,17 @@ describe('runPapercuspWorkdirGc — falsifiability control', () => {
 });
 
 describe('runWindowsBuildScratchGc', () => {
+  it('keeps the registered Git worktree and container when a descendant is pinned', async () => {
+    const { repoRoot, container, buildRoot } = makeWindowsBuildScratch(sandbox);
+    createRetentionPin({ path: buildRoot, owner: 'reviewer', reason: 'build diagnosis', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    ageTree(container, 3 * DAY);
+    const result = await runWindowsBuildScratchGc({ root: sandbox, repoRoot, dryRun: false, scanOpenPaths: noOpenPaths });
+    expect(result.removed).toBe(0);
+    expect(result.candidates[0]?.skipped).toBe('pinned');
+    expect(existsSync(buildRoot)).toBe(true);
+    expect(execFileSync('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain'], { encoding: 'utf8' })).toContain(buildRoot);
+  });
+
   it('uses a 48-hour retention window', () => {
     expect(WINDOWS_BUILD_SCRATCH_GC_DEFAULT_RETENTION_MS).toBe(48 * 60 * 60 * 1000);
   });
@@ -800,9 +839,41 @@ describe('runWindowsBuildScratchGc', () => {
 // ── launch-context render GC (WI-10002015) ───────────────────────────────────
 
 describe('runLaunchContextGc', () => {
-  it('reaps an aged render nothing is serving', () => {
+  it('reads a new pin after acquiring the mutation mutex rather than before waiting', async () => {
+    const stale = writeAged(sandbox, 'stale.md', 100, 30 * DAY);
+    let sweep!: ReturnType<typeof runLaunchContextGc>;
+    await withFsMutex('papercusp-disk-retention', async () => {
+      sweep = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+      // Give an incorrectly pre-lock read time to finish before pinning.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      createRetentionPin({ path: stale, owner: 'reviewer', reason: 'pin while GC waits', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    });
+    expect((await sweep).removed).toBe(0);
+    expect(existsSync(stale)).toBe(true);
+  });
+
+  it('preserves pinned renders while deleting unpinned peers', async () => {
+    const pinned = writeAged(sandbox, 'pinned.md', 100, 30 * DAY);
+    const stale = writeAged(sandbox, 'stale.md', 100, 30 * DAY);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'prompt evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+    expect(result.removed).toBe(1);
+    expect(result.candidates.find((c) => c.path === pinned)?.skipped).toBe('pinned');
+    expect(existsSync(pinned)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+  });
+
+  it('refuses deletion when the protection store is corrupt', async () => {
+    const stale = writeAged(sandbox, 'stale.md', 100, 30 * DAY);
+    mkdirSync(join(sandbox, 'leases'));
+    writeFileSync(join(sandbox, 'leases/lease-agent-pin-broken.tsv'), 'broken');
+    await expect(runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() })).rejects.toThrow('retention pins unreadable');
+    expect(existsSync(stale)).toBe(true);
+  });
+
+  it('reaps an aged render nothing is serving', async () => {
     writeAged(sandbox, 'session-old.md', 2048, 30 * DAY);
-    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+    const r = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
 
     expect(r.refused).toBeUndefined();
     expect(r.removed).toBe(1);
@@ -810,12 +881,12 @@ describe('runLaunchContextGc', () => {
     expect(existsSync(join(sandbox, 'session-old.md'))).toBe(false);
   });
 
-  it('keeps a render younger than the retention window', () => {
+  it('keeps a render younger than the retention window', async () => {
     writeAged(sandbox, 'session-new.md', 512, 60_000);
-    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+    const r = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
 
     expect(r.removed).toBe(0);
-    expect(r.candidates[0]?.skipped).toBe('too-new');
+    expect(r.candidates.find((c) => c.name === 'session-new.md')?.skipped).toBe('too-new');
     expect(existsSync(join(sandbox, 'session-new.md'))).toBe(true);
   });
 
@@ -825,7 +896,7 @@ describe('runLaunchContextGc', () => {
   // any agent alive longer than the retention window. The pair below pins that:
   // if the naive rule and the real one ever stop diverging, the live-session
   // exclusion has been lost and this suite no longer guards it.
-  it('refuses to reap an ANCIENT render that a live session is still serving', () => {
+  it('refuses to reap an ANCIENT render that a live session is still serving', async () => {
     const inUse = writeAged(sandbox, 'session-long-lived.md', 4096, 90 * DAY);
     const stale = writeAged(sandbox, 'session-abandoned.md', 4096, 90 * DAY);
 
@@ -835,7 +906,7 @@ describe('runLaunchContextGc', () => {
     expect(naiveWouldDelete(inUse)).toBe(true);
 
     // … and the real one holds it back while still reclaiming its twin.
-    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set([inUse]) });
+    const r = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set([inUse]) });
 
     expect(existsSync(inUse)).toBe(true);
     expect(r.liveHeld).toBe(1);
@@ -847,10 +918,10 @@ describe('runLaunchContextGc', () => {
 
   // `undefined` (no measurement) and an empty Set (a measurement that found no
   // live sessions) must never collapse into the same behaviour.
-  it('fails closed when no live-render evidence is supplied at all', () => {
+  it('fails closed when no live-render evidence is supplied at all', async () => {
     writeAged(sandbox, 'session-ancient.md', 4096, 120 * DAY);
 
-    const r = runLaunchContextGc({ dir: sandbox });
+    const r = await runLaunchContextGc({ dir: sandbox });
 
     expect(r.refused).toBe('no-live-render-evidence');
     expect(r.removed).toBe(0);
@@ -859,12 +930,12 @@ describe('runLaunchContextGc', () => {
 
     // The same directory, with an EMPTY set, does proceed — proving the refusal
     // above is about missing evidence, not about an empty exclusion list.
-    const measured = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+    const measured = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
     expect(measured.refused).toBeUndefined();
     expect(measured.removed).toBe(1);
   });
 
-  it('never recurses into or removes a subdirectory', () => {
+  it('never recurses into or removes a subdirectory', async () => {
     const sub = join(sandbox, 'nested');
     mkdirSync(sub);
     const buried = join(sub, 'payload.md');
@@ -873,7 +944,7 @@ describe('runLaunchContextGc', () => {
     utimesSync(buried, old, old);
     utimesSync(sub, old, old);
 
-    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
+    const r = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set() });
 
     expect(r.removed).toBe(0);
     expect(r.candidates[0]?.skipped).toBe('not-a-file');
@@ -881,21 +952,18 @@ describe('runLaunchContextGc', () => {
     expect(existsSync(sub)).toBe(true);
   });
 
-  it('reports what it would free without removing anything on a dry run', () => {
+  it('reports what it would free without removing anything on a dry run', async () => {
     writeAged(sandbox, 'session-old.md', 1024, 30 * DAY);
 
-    const r = runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set(), dryRun: true });
+    const r = await runLaunchContextGc({ dir: sandbox, liveRenderPaths: new Set(), dryRun: true });
 
     expect(r.removed).toBe(1);
     expect(r.bytesFreed).toBe(1024);
     expect(existsSync(join(sandbox, 'session-old.md'))).toBe(true);
   });
 
-  it('treats an unreadable directory as empty rather than throwing', () => {
+  it('treats an unreadable directory as empty rather than throwing', async () => {
     const missing = join(sandbox, 'does-not-exist');
-    expect(() =>
-      runLaunchContextGc({ dir: missing, liveRenderPaths: new Set() }),
-    ).not.toThrow();
-    expect(runLaunchContextGc({ dir: missing, liveRenderPaths: new Set() }).scanned).toBe(0);
+    expect((await runLaunchContextGc({ dir: missing, liveRenderPaths: new Set() })).scanned).toBe(0);
   });
 });

@@ -53,7 +53,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { workspacesRoot } from './workspace-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
-import { withUnpinnedPath } from './storage/retention-pins';
+import { withUnpinnedPath, withRetentionPinProtection } from './storage/retention-pins';
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 // @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
@@ -101,7 +101,11 @@ export interface LintWorkRootGcOptions {
 
 /** EI-25532904902420844: use the CLI's existing expiry/artifact/cap policy on
  * the hourly storage tick, even when no subsequent lint command starts. */
-export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}): Promise<{
+export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}) {
+  return withRetentionPinProtection((isPinned) => sweepLintWorkRoots(opts, isPinned));
+}
+
+async function sweepLintWorkRoots(opts: LintWorkRootGcOptions, isPinned: (path: string) => boolean): Promise<{
   root: string; dryRun: boolean; scanComplete: boolean; scanError?: string;
   removed: Array<{ name: string; reason: string }>;
   kept: Array<{ name: string; reason: string }>;
@@ -129,6 +133,7 @@ export async function runLintWorkRootGc(opts: LintWorkRootGcOptions = {}): Promi
   const result = sweepStaleWorkRoots({ root, nowMs,
     cwds: [...scan.byPath].filter(([, holders]) => holders.length).map(([path]) => path),
     beforeRemove: (path: string) => {
+      if (isPinned(path)) return 'pinned';
       if (!scan.complete) return 'process-scan-incomplete';
       const identity = identities.get(path);
       const current = lstatSync(path);
@@ -455,7 +460,7 @@ export interface PapercuspWorkdirGcCandidate {
   ageMs: number;
   removed: boolean;
   /** Why an eligible-looking directory was NOT removed. */
-  skipped?: 'too-new' | 'protected' | 'not-mktemp' | 'scan-capped' | 'raced' | 'error' | 'in-use' | 'process-scan-incomplete';
+  skipped?: 'too-new' | 'protected' | 'not-mktemp' | 'scan-capped' | 'raced' | 'error' | 'in-use' | 'process-scan-incomplete' | 'pinned';
   error?: string;
 }
 
@@ -538,6 +543,10 @@ function scanTree(
 export async function runPapercuspWorkdirGc(
   opts: PapercuspWorkdirGcOptions = {},
 ): Promise<PapercuspWorkdirGcResult> {
+  return withRetentionPinProtection((isPinned) => sweepPapercuspWorkdirs(opts, isPinned));
+}
+
+async function sweepPapercuspWorkdirs(opts: PapercuspWorkdirGcOptions, isPinned: (path: string) => boolean): Promise<PapercuspWorkdirGcResult> {
   let root = opts.root ?? join(homedir(), '.papercusp');
   const retentionMs = opts.retentionMs ?? PAPERCUSP_WORKDIR_GC_DEFAULT_RETENTION_MS;
   const dryRun = opts.dryRun !== false;
@@ -609,6 +618,7 @@ export async function runPapercuspWorkdirGc(
 
   for (const record of eligible) {
     const path = record.path;
+    if (isPinned(path)) { record.skipped = 'pinned'; continue; }
     if (openPaths.byPath.get(path)?.length) { record.skipped = 'in-use'; continue; }
     if (!openPaths.complete) { record.skipped = 'process-scan-incomplete'; continue; }
     const identity = identities.get(path)!;
@@ -683,6 +693,7 @@ export interface WindowsBuildScratchGcCandidate {
   ageMs: number;
   removed: boolean;
   skipped?:
+    | 'pinned'
     | 'too-new'
     | 'scan-capped'
     | 'raced'
@@ -786,6 +797,10 @@ function sameDirectory(path: string, identity: Stats): boolean {
 export async function runWindowsBuildScratchGc(
   opts: WindowsBuildScratchGcOptions = {},
 ): Promise<WindowsBuildScratchGcResult> {
+  return withRetentionPinProtection((isPinned) => sweepWindowsBuildScratch(opts, isPinned));
+}
+
+async function sweepWindowsBuildScratch(opts: WindowsBuildScratchGcOptions, isPinned: (path: string) => boolean): Promise<WindowsBuildScratchGcResult> {
   let root = opts.root ?? '/tmp';
   const retentionMs = opts.retentionMs ?? WINDOWS_BUILD_SCRATCH_GC_DEFAULT_RETENTION_MS;
   const dryRun = opts.dryRun !== false;
@@ -859,6 +874,7 @@ export async function runWindowsBuildScratchGc(
   }
 
   for (const record of eligible) {
+    if (isPinned(record.path)) { record.skipped = 'pinned'; continue; }
     if (openPaths.byPath.get(record.path)?.length) {
       record.skipped = 'in-use';
       continue;
@@ -1182,7 +1198,7 @@ export interface LaunchContextGcCandidate {
   mtimeMs: number;
   ageMs: number;
   removed: boolean;
-  skipped?: 'too-new' | 'live-session' | 'not-a-file' | 'raced' | 'error';
+  skipped?: 'too-new' | 'live-session' | 'not-a-file' | 'raced' | 'error' | 'pinned';
   error?: string;
 }
 
@@ -1217,7 +1233,11 @@ function defaultLaunchContextDir(): string {
  * Only direct FILE children are considered — a subdirectory is never recursed
  * into and never removed.
  */
-export function runLaunchContextGc(opts: LaunchContextGcOptions = {}): LaunchContextGcResult {
+export async function runLaunchContextGc(opts: LaunchContextGcOptions = {}): Promise<LaunchContextGcResult> {
+  return withRetentionPinProtection((isPinned) => sweepLaunchContext(opts, isPinned));
+}
+
+function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: string) => boolean): LaunchContextGcResult {
   const dir = opts.dir ?? defaultLaunchContextDir();
   const retentionMs = opts.retentionMs ?? LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS;
   const dryRun = opts.dryRun === true;
@@ -1290,6 +1310,8 @@ export function runLaunchContextGc(opts: LaunchContextGcOptions = {}): LaunchCon
       liveHeld++;
       continue;
     }
+
+    if (isPinned(path)) { record.skipped = 'pinned'; continue; }
 
     // Guard 2 — age.
     if (mtimeMs >= cutoff) {

@@ -209,10 +209,18 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     const progress = (record: typeof records[number]) => { records.push(record); };
     const inputs = { files: [a.file], dirs: [] };
     expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs, { progress })).toBeNull();
-    expect(records).toEqual(['source-receipt', 'input-containment', 'git-origin'].flatMap(name => [
-      { step: `restricted-hold-${name}`, event: 'start' },
-      { step: `restricted-hold-${name}`, event: 'end', status: 0 },
-    ]));
+    expect(records).toEqual([
+      { step: 'restricted-hold-source-receipt', event: 'start' },
+      ...['source-receipt-git-checkout', 'source-receipt-source-census'].flatMap(name => [
+        { step: `restricted-hold-${name}`, event: 'start' },
+        { step: `restricted-hold-${name}`, event: 'end', status: 0 },
+      ]),
+      { step: 'restricted-hold-source-receipt', event: 'end', status: 0 },
+      ...['input-containment', 'git-origin'].flatMap(name => [
+        { step: `restricted-hold-${name}`, event: 'start' },
+        { step: `restricted-hold-${name}`, event: 'end', status: 0 },
+      ]),
+    ]);
     records.length = 0;
     writeFileSync(a.file, 'export const planted = true;');
     const forged = { ...a.receipt, files: verifierSourceFiles(a.selectedRoot, { gitMetadataPaths: ['.git'] }) };
@@ -232,6 +240,11 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
       .toMatchObject({ error: 'restricted_hold_state_unknown' });
     expect(progress.mock.calls.map(([record]) => record)).toEqual([
       { step: 'restricted-hold-source-receipt', event: 'start' },
+      { step: 'restricted-hold-source-receipt-git-checkout', event: 'start' },
+      { step: 'restricted-hold-source-receipt-git-checkout', event: 'end', status: 0 },
+      { step: 'restricted-hold-source-receipt-source-census', event: 'start' },
+      { step: 'restricted-hold-source-receipt-source-census', event: 'end', status: 3,
+        error: expect.stringContaining('tampered verification source archive') },
       { step: 'restricted-hold-source-receipt', event: 'end', status: 3,
         error: expect.stringContaining('tampered verification source archive') },
     ]);

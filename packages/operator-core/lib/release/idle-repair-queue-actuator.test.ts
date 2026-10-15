@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   IDLE_REPAIR_QUEUE_MS,
   IDLE_RUNG_GRACE_MS,
+  IDLE_DISPATCH_RETRY_LIMIT,
   decideIdleQueueAction,
   dispatchIdleQueueFixer,
+  parseEpisode,
   runIdleQueueActuatorPass,
   evaluateIdleQueueActuatorWindow,
   type IdleQueueActuatorObservation,
@@ -57,7 +59,11 @@ function fixture(
     },
     dispatchFixer: async () => {
       calls.push('dispatch-fixer');
-      return next('dispatch');
+      const result = next('dispatch');
+      if (result.ok && state.snap?.phase === 'awaiting-fixer') {
+        state.snap = { ...state.snap, fixerSpawnId: 'spawn-fixture', fixerAlive: true };
+      }
+      return result;
     },
     wakeGateOwner: async (holder, msg) => {
       calls.push(`wake-gate-owner:${holder}`);
@@ -243,6 +249,69 @@ describe('idle repair-queue actuator (P-002, WI-10007476)', () => {
     expect(f.state.episode?.rungs['dispatch-fixer']?.detail).toContain('spawn-live');
     await f.at(61 + IDLE_RUNG_GRACE_MS / MIN);
     expect(f.calls).toEqual(['wake-gate-owner:su-gate-holder']);
+  });
+
+  it('retries one acted dispatch with no assigned fixer, then wakes the gate owner instead of looping', async () => {
+    const f = fixture(snapshot());
+    f.state.episode = {
+      candidate: snapshot().candidate,
+      idleSinceMs: OPENED,
+      dispatchRetryCount: 0,
+      rungs: {
+        'dispatch-fixer': {
+          atMs: OPENED + 61 * MIN,
+          outcome: 'acted',
+          detail: 'initial spawn was accepted',
+        },
+      },
+    };
+    f.deps.dispatchFixer = async () => {
+      f.calls.push('dispatch-fixer');
+      expect(f.state.episode?.dispatchRetryCount).toBe(IDLE_DISPATCH_RETRY_LIMIT);
+      return { ok: true, detail: 'bounded retry accepted' };
+    };
+
+    expect((await f.at(92)).decision).toBe('act');
+    expect(f.calls).toEqual(['dispatch-fixer']);
+    expect(f.state.episode?.dispatchRetryCount).toBe(IDLE_DISPATCH_RETRY_LIMIT);
+
+    // The retry also exits before producing a queue assignment. The budget is spent, so the
+    // next grace expiry wakes the gate owner instead of launching a third fixer.
+    expect((await f.at(123)).decision).toBe('act');
+    expect(f.calls).toEqual(['dispatch-fixer', 'wake-gate-owner:su-gate-holder']);
+    expect(f.state.episode?.dispatchRetryCount).toBe(IDLE_DISPATCH_RETRY_LIMIT);
+  });
+
+  it('retries a confirmed-dead spawn but does not guess when assigned-spawn liveness is unknown', async () => {
+    const dead = fixture(snapshot({ fixerSpawnId: 'spawn-dead', fixerAlive: false }));
+    dead.state.episode = {
+      candidate: snapshot().candidate,
+      idleSinceMs: OPENED,
+      rungs: { 'dispatch-fixer': { atMs: OPENED + 61 * MIN, outcome: 'acted', detail: 'spawn assigned' } },
+    };
+    await dead.at(92);
+    expect(dead.calls).toEqual(['dispatch-fixer']);
+    expect(dead.state.episode?.dispatchRetryCount).toBe(IDLE_DISPATCH_RETRY_LIMIT);
+
+    const unknown = fixture(snapshot({ fixerSpawnId: 'spawn-unknown', fixerAlive: null }));
+    unknown.state.episode = {
+      candidate: snapshot().candidate,
+      idleSinceMs: OPENED,
+      rungs: { 'dispatch-fixer': { atMs: OPENED + 61 * MIN, outcome: 'acted', detail: 'spawn assigned' } },
+    };
+    await unknown.at(92);
+    expect(unknown.calls).toEqual(['wake-gate-owner:su-gate-holder']);
+    expect(unknown.state.episode?.dispatchRetryCount ?? 0).toBe(0);
+  });
+
+  it('round-trips the retry budget and defaults older persisted episodes to zero', () => {
+    const legacy = {
+      candidate: snapshot().candidate,
+      idleSinceMs: OPENED,
+      rungs: { 'dispatch-fixer': { atMs: OPENED, outcome: 'acted', detail: 'legacy' } },
+    };
+    expect(parseEpisode(JSON.stringify(legacy))?.dispatchRetryCount).toBe(0);
+    expect(parseEpisode(JSON.stringify({ ...legacy, dispatchRetryCount: 1 }))?.dispatchRetryCount).toBe(1);
   });
 
   it('a queue waiting on a gate run skips the fixer and names release:checkpoint-run', async () => {

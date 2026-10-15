@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { dirSizeBytesAsync, type DiskWalkBudget } from './disk';
 import { criticalWriteHeadroomBytes, diskPolicyFromEnv, sampleDiskSnapshots } from './disk-space-alarm';
+import { withRetentionPinProtection } from './retention-pins';
 
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
@@ -57,6 +58,7 @@ export type PackageCacheOutcomeStatus =
   | 'pruned'
   | 'prune-failed'
   | 'pressure-ineligible'
+  | 'pinned'
   | 'mutex-unavailable';
 
 export interface PackageCacheOutcome {
@@ -333,7 +335,17 @@ export async function runPackageCacheRetention(
             continue;
           }
 
-          const command = await runCommand(target, repoRoot);
+          // Native managers can remove arbitrary descendants. Hold the common
+          // pin mutex through the command and retain the whole cache on overlap.
+          const command = await withRetentionPinProtection((isPinned) =>
+            isPinned(target.path) ? null : runCommand(target, repoRoot));
+          if (command === null) {
+            outcomes.set(target.manager, {
+              ...belowOutcome(target, before, limit), status: 'pinned',
+              note: 'live retention pin protects this cache or one of its descendants',
+            });
+            continue;
+          }
           if (!command.ok) {
             outcomes.set(target.manager, {
               ...belowOutcome(target, before, limit),

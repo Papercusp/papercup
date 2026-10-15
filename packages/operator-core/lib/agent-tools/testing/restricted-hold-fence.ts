@@ -268,7 +268,9 @@ export async function restrictedHoldBundleRefusal(
     // tampering and any input that reaches the shared tree fail closed.
     if (existsSync(join(realRoot, '.verifier-source.json'))) {
       const source = await phase('source-receipt', () => {
-        const receipt = readVerifierSourceReceiptSync(realRoot);
+        const receipt = readVerifierSourceReceiptSync(realRoot, undefined, {
+          progress: record => deps.progress?.({ ...record, step: `restricted-hold-source-receipt-${record.step}` }),
+        });
         if (!receipt.gitCheckout) throw new Error('archive bundle requires independently verified Git checkout');
         return receipt;
       });

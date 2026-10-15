@@ -45,6 +45,8 @@ import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-event
 
 export const IDLE_REPAIR_QUEUE_MS = 60 * 60_000;
 export const IDLE_RUNG_GRACE_MS = 30 * 60_000;
+/** Retry one accepted fixer launch if its queue assignment is absent or confirmed dead. */
+export const IDLE_DISPATCH_RETRY_LIMIT = 1;
 /** Below the 15-min watchdog interval, so the ladder runs once per tick across all hosts. */
 export const IDLE_PASS_LEASE_MS = 10 * 60_000;
 /** `harness_escalations.phase` the episode is persisted under (one row per install). */
@@ -69,6 +71,8 @@ export interface IdleQueueEpisode {
   candidate: string;
   idleSinceMs: number;
   rungs: Partial<Record<IdleQueueRung, IdleRungRecord>>;
+  /** Durable budget for the one retry after an acted dispatch leaves no live fixer assignment. */
+  dispatchRetryCount?: number;
 }
 
 export interface IdleQueueSnapshot {
@@ -179,13 +183,33 @@ export function decideIdleQueueAction(
   for (const rung of IDLE_QUEUE_RUNGS) {
     const rec = episode.rungs[rung];
     if (rec) {
-      if (rec.outcome === 'acted' && nowMs < rec.atMs + IDLE_RUNG_GRACE_MS) {
-        return {
-          kind: 'wait',
-          reason: `${rung} acted at ${new Date(rec.atMs).toISOString()} (${rec.detail}); waiting for a round to start`,
-          episode,
-          nextRungAtMs: rec.atMs + IDLE_RUNG_GRACE_MS,
-        };
+      if (rec.outcome === 'acted') {
+        if (nowMs < rec.atMs + IDLE_RUNG_GRACE_MS) {
+          return {
+            kind: 'wait',
+            reason: `${rung} acted at ${new Date(rec.atMs).toISOString()} (${rec.detail}); waiting for a round to start`,
+            episode,
+            nextRungAtMs: rec.atMs + IDLE_RUNG_GRACE_MS,
+          };
+        }
+        // An accepted dispatch is not proof that a fixer still owns the queue. If its durable
+        // assignment is absent or its exact spawn is terminal, allow one recovery dispatch.
+        // The queue reservation CAS remains the single-flight guard against a concurrent launch.
+        if (
+          rung === 'dispatch-fixer' &&
+          s.phase === 'awaiting-fixer' &&
+          (s.fixerSpawnId === null || s.fixerAlive === false) &&
+          (episode.dispatchRetryCount ?? 0) < IDLE_DISPATCH_RETRY_LIMIT
+        ) {
+          episode.dispatchRetryCount = (episode.dispatchRetryCount ?? 0) + 1;
+          return {
+            kind: 'act',
+            rung,
+            reason: 'the prior fixer dispatch left no assigned live fixer; using the bounded retry',
+            nextAction: namedNextAction(s),
+            episode,
+          };
+        }
       }
       if (rung === 'escalate-owner' && rec.outcome === 'failed') {
         // The last rung has nothing to fall through to, so a failed escalation is retried after
@@ -390,6 +414,15 @@ export async function runIdleQueueActuatorPass(deps: IdleQueueActuatorDeps): Pro
       await deps.saveEpisode(d.episode);
       return { decision: d.kind, acted };
     }
+    const previousDispatchRetryCount = episode?.dispatchRetryCount ?? 0;
+    if (
+      d.rung === 'dispatch-fixer' &&
+      (d.episode.dispatchRetryCount ?? 0) > previousDispatchRetryCount
+    ) {
+      // Persist before the external launch so a process exit cannot retry this rung forever.
+      await deps.saveEpisode(d.episode);
+      episode = d.episode;
+    }
     const msg = idleQueueMessage(deps.installSlug, s!, d.episode, now);
     let result: IdleRungResult;
     try {
@@ -436,7 +469,14 @@ export function parseEpisode(raw: unknown): IdleQueueEpisode | null {
       rungs[rung] = { atMs: rec.atMs, outcome: rec.outcome, detail: String(rec.detail ?? '') };
     }
   }
-  return { candidate: r.candidate, idleSinceMs: r.idleSinceMs, rungs };
+  const hasDispatchRetryCount = Object.prototype.hasOwnProperty.call(r, 'dispatchRetryCount');
+  const persistedRetryCount = r.dispatchRetryCount;
+  const dispatchRetryCount = hasDispatchRetryCount
+    ? typeof persistedRetryCount === 'number' && Number.isInteger(persistedRetryCount) && persistedRetryCount >= 0
+      ? Math.min(persistedRetryCount, IDLE_DISPATCH_RETRY_LIMIT)
+      : IDLE_DISPATCH_RETRY_LIMIT
+    : 0;
+  return { candidate: r.candidate, idleSinceMs: r.idleSinceMs, rungs, dispatchRetryCount };
 }
 
 /**

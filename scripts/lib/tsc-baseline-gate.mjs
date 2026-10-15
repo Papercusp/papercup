@@ -2460,16 +2460,24 @@ export function scopedFilesArg(files, { maxInlineChars = INLINE_FILES_ARG_MAX_CH
  * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
  * read as "verified in this leg". A marker with no `members=` field stays clean.
  *
- * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string}>}} opts
+ * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, childTimeoutMs?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string, timedOut?: boolean}>}} opts
  * @returns {Promise<{clean: string[], notMember: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
  */
-export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChild }) {
+export async function runCrossLegChecks({ root, plans, concurrency = 2, childTimeoutMs = 120_000, spawnChild }) {
   const spawnOne =
     spawnChild ??
     ((plan) =>
       new Promise((done) => {
         const filesArg = scopedFilesArg(plan.files);
-        execFile(
+        let settled = false;
+        const finish = (outcome) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          filesArg.cleanup();
+          done(outcome);
+        };
+        const child = execFile(
           process.execPath,
           [plan.scriptPath, filesArg.arg],
           {
@@ -2479,13 +2487,25 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChi
             env: { ...process.env, [CROSS_LEG_CONSUMER_ENV]: '1', [AUTO_TYPECHECK_ROUTE_ENV]: '1' },
           },
           (error, stdout, stderr) => {
-            filesArg.cleanup();
             const code = /** @type {any} */ (error)?.code;
-            done({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+            finish({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
           },
         );
+        // EI-26062308784379661 — a cross-leg child can enter uninterruptible filesystem wait.
+        // Waiting for execFile's callback in that state blocks the owning-leg verdict forever:
+        // SIGTERM remains pending until the kernel wait clears. Bound OUR wait independently,
+        // detach the stuck child from this gate, and report that leg as UNDETERMINED. The child
+        // is still signalled and its pipes are destroyed so it cannot retain this process.
+        const timer = setTimeout(() => {
+          child.kill('SIGTERM');
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.unref();
+          finish({ status: null, stdout: '', stderr: '', timedOut: true });
+        }, Math.max(1, childTimeoutMs));
+        timer.unref();
       }));
-  /** @type {{status: number | null, stdout: string, stderr: string}[]} */
+  /** @type {{status: number | null, stdout: string, stderr: string, timedOut?: boolean}[]} */
   const outcomes = new Array(plans.length);
   let next = 0;
   const worker = async () => {
@@ -2499,7 +2519,11 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, spawnChi
 
   const report = { clean: [], notMember: [], red: [], undetermined: [] };
   plans.forEach((plan, index) => {
-    const { status, stdout, stderr } = outcomes[index];
+    const { status, stdout, stderr, timedOut } = outcomes[index];
+    if (timedOut) {
+      report.undetermined.push({ npmScript: plan.npmScript, reason: `timed out after ${childTimeoutMs}ms` });
+      return;
+    }
     const marker = stdout.split(/\r?\n/).filter((line) => line.startsWith(`${CROSS_LEG_MARKER} `)).at(-1) ?? '';
     const verdict = /\bstatus=(\S+)/.exec(marker)?.[1] ?? null;
     const members = /\bmembers=(\d+)\b/.exec(marker)?.[1];

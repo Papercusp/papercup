@@ -400,6 +400,22 @@ describe('runCrossLegChecks', () => {
     expect(seen.consumer).toBe('1');
     expect(seen.autoRoute).toBe('1');
   });
+
+  it('stops waiting on a cross-leg child after the bounded deadline and reports it undetermined', async () => {
+    writeFileSync(join(root, 'stuck-leg.mjs'), 'setInterval(() => {}, 60_000);\n');
+    const startedAt = Date.now();
+    const report = await runCrossLegChecks({
+      root,
+      childTimeoutMs: 50,
+      plans: [{ npmScript: 'lint:tsc:stuck', scriptPath: 'stuck-leg.mjs', files: ['a/src/f.ts'] }],
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    expect(report.clean).toEqual([]);
+    expect(report.red).toEqual([]);
+    expect(report.undetermined).toEqual([
+      { npmScript: 'lint:tsc:stuck', reason: 'timed out after 50ms' },
+    ]);
+  });
 });
 
 describe('formatCrossLegReport', () => {

@@ -1109,10 +1109,10 @@ export function scopedFilesArg(files: string[], { maxInlineChars, tmpRoot }?: {
  * nothing: it goes to `notMember`, never `clean` (WI-6554700010009515). A vacuous clean would
  * read as "verified in this leg". A marker with no `members=` field stays clean.
  *
- * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string}>}} opts
+ * @param {{root: string, plans: {npmScript: string, scriptPath: string, files: string[]}[], concurrency?: number, childTimeoutMs?: number, spawnChild?: (plan: {npmScript: string, scriptPath: string, files: string[]}) => Promise<{status: number | null, stdout: string, stderr: string, timedOut?: boolean}>}} opts
  * @returns {Promise<{clean: string[], notMember: string[], red: {npmScript: string, stderr: string}[], undetermined: {npmScript: string, reason: string}[]}>}
  */
-export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
+export function runCrossLegChecks({ root, plans, concurrency, childTimeoutMs, spawnChild }: {
     root: string;
     plans: {
         npmScript: string;
@@ -1120,6 +1120,7 @@ export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
         files: string[];
     }[];
     concurrency?: number;
+    childTimeoutMs?: number;
     spawnChild?: (plan: {
         npmScript: string;
         scriptPath: string;
@@ -1128,6 +1129,7 @@ export function runCrossLegChecks({ root, plans, concurrency, spawnChild }: {
         status: number | null;
         stdout: string;
         stderr: string;
+        timedOut?: boolean;
     }>;
 }): Promise<{
     clean: string[];
