@@ -26,6 +26,19 @@ export type McpRequestTraceStage =
   | 'proxy_response_finished'
   | 'stale_contract_rejected';
 
+export type McpPreDispatchPhaseName =
+  | 'operatorToolsLoad'
+  | 'spawnContext'
+  | 'transportScopeSetup'
+  | 'toolContextBuild'
+  | 'idempotencyReplayLookup'
+  | 'dispatchPreflight';
+
+export interface McpPreDispatchPhaseTimingsMs extends Record<McpPreDispatchPhaseName, number | null> {
+  /** Wall time before inner dispatch that these measured phases did not explain. */
+  unattributedMs: number;
+}
+
 export type McpSessionBaselineObservation = 'recorded' | 'unavailable' | 'missing' | 'current' | 'stale';
 
 export interface McpRequestTraceEvent {
@@ -39,6 +52,10 @@ export interface McpRequestTraceEvent {
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
   afterDeadline?: boolean;
+  /** Await durations from request entry through the inner-dispatch boundary. */
+  preDispatchPhaseTimingsMs?: McpPreDispatchPhaseTimingsMs;
+  /** The phase still awaiting when a pre-dispatch deadline fired. */
+  preDispatchActivePhase?: McpPreDispatchPhaseName;
   /** One-shot phase snapshot when a result-door scratch spill exceeds five seconds. */
   scratchWriteProgress?: ScratchWriteProgress;
   /** Final per-write timing emitted if a spill settles after its dispatch trace. */

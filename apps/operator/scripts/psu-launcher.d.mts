@@ -4135,12 +4135,18 @@ export function resumeFirstStepChoices(session: {
     name: string;
     value: any;
 }>;
+/** The same interactive chooser serves the CLI and catalog-backed regression fixtures.
+ * @param {any} session
+ * @param {any} args
+ * @param {{prompts?: any, readLastActiveModel?: Function, fetchPortCapabilities?: Function,
+ *   readCodexModels?: Function, readOmpModels?: Function}} [dependencies]
+ */
 export function chooseResumeTarget(session: any, args: any, { prompts, readLastActiveModel, fetchPortCapabilities, readCodexModels, readOmpModels, }?: {
-    prompts?: null | undefined;
-    readLastActiveModel?: typeof lastActiveModelFor | undefined;
-    fetchPortCapabilities?: typeof fetchSessionPortCapabilities | undefined;
-    readCodexModels?: typeof listCodexInstalledModels | undefined;
-    readOmpModels?: typeof fetchOmpModelCatalog | undefined;
+    prompts?: any;
+    readLastActiveModel?: Function;
+    fetchPortCapabilities?: Function;
+    readCodexModels?: Function;
+    readOmpModels?: Function;
 }): Promise<{
     modelSource?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     operation: string;
@@ -5198,19 +5204,6 @@ import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 import { resolveLinuxCodexStartupPid } from "./psu-pty-host.mjs";
 declare function defaultListProcPids(): number[];
-import { listCodexInstalledModels } from "../../../packages/operator-core/lib/model-context-budget.mjs";
-/** WI-126377: the host-local OMP model registry (`omp models --json`), read off
- *  the SAME `/options` response this file already fetches for workspaces,
- *  harnesses, plans, accounts and fleets — and the same `ompCatalog` field the
- *  GUI's New Session launcher renders, so the terminal and the window cannot
- *  offer different models.
- *
- *  Fail-soft to `[]` on every failure mode, including the endpoint's OWN
- *  `status:'unavailable'` (it reports a catalog read failure in-band rather than
- *  erroring, precisely so one broken `omp` binary cannot take down the rest of
- *  the picker). The caller then shows its alias rows and the free-text escape —
- *  degraded, never absent. */
-declare function fetchOmpModelCatalog(workspace: any): Promise<any>;
 declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchFreshSu(selections: any, args: any, { brain }?: {
     brain?: boolean | undefined;

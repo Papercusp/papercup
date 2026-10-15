@@ -96,6 +96,8 @@ import {
   createMcpRequestTraceExecutionContext,
   logMcpRequestTrace,
   mcpRequestTraceOperationTimings,
+  type McpPreDispatchPhaseName,
+  type McpPreDispatchPhaseTimingsMs,
   mcpDataPlaneDegradedAtFromExtra,
   mcpTraceIdFromExtra,
   runWithMcpRequestTraceExecution,
@@ -3943,6 +3945,7 @@ export function registerMcpHost(server: McpServer): void {
       // dispatching — today the idempotency replay branch, whose telemetry row
       // records how long serving the stored result took (WI-6792).
       const callStartedAt = Date.now();
+      const requestStartedAtMonotonic = performance.now();
       // The local proxy owns and overwrites this UUID before forwarding. Keep a
       // generated fallback for direct/native callers, then carry the same value
       // through request, dispatch and deadline evidence without logging args.
@@ -3960,8 +3963,59 @@ export function registerMcpHost(server: McpServer): void {
           ...details,
         });
       };
+      const preDispatchPhaseTimings: Record<McpPreDispatchPhaseName, number | null> = {
+        operatorToolsLoad: null,
+        spawnContext: null,
+        transportScopeSetup: null,
+        toolContextBuild: null,
+        idempotencyReplayLookup: null,
+        dispatchPreflight: null,
+      };
+      let activePreDispatchPhase: McpPreDispatchPhaseName | null = null;
+      let activePreDispatchPhaseStartedAt: number | null = null;
+      const beginPreDispatchPhase = (phase: McpPreDispatchPhaseName): number => {
+        const startedAt = performance.now();
+        activePreDispatchPhase = phase;
+        activePreDispatchPhaseStartedAt = startedAt;
+        return startedAt;
+      };
+      const finishPreDispatchPhase = (phase: McpPreDispatchPhaseName, startedAt: number): number => {
+        const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
+        preDispatchPhaseTimings[phase] = elapsedMs;
+        if (activePreDispatchPhase === phase && activePreDispatchPhaseStartedAt === startedAt) {
+          activePreDispatchPhase = null;
+          activePreDispatchPhaseStartedAt = null;
+        }
+        return elapsedMs;
+      };
+      const measurePreDispatchPhase = async <T>(
+        phase: McpPreDispatchPhaseName,
+        run: () => PromiseLike<T>,
+      ): Promise<T> => {
+        const startedAt = beginPreDispatchPhase(phase);
+        try {
+          return await run();
+        } finally {
+          finishPreDispatchPhase(phase, startedAt);
+        }
+      };
+      const preDispatchPhaseSnapshot = (): McpPreDispatchPhaseTimingsMs => {
+        const phases = { ...preDispatchPhaseTimings };
+        if (activePreDispatchPhase && activePreDispatchPhaseStartedAt !== null) {
+          phases[activePreDispatchPhase] = Math.max(
+            0,
+            Math.round(performance.now() - activePreDispatchPhaseStartedAt),
+          );
+        }
+        const measuredMs = Object.values(phases).reduce((sum, elapsedMs) => sum + (elapsedMs ?? 0), 0);
+        const elapsedMs = Math.max(0, performance.now() - requestStartedAtMonotonic);
+        return {
+          ...phases,
+          unattributedMs: Math.max(0, Math.round(elapsedMs - measuredMs)),
+        };
+      };
       trace('request_started');
-      await ensureOperatorToolsLoaded();
+      await measurePreDispatchPhase('operatorToolsLoad', () => ensureOperatorToolsLoaded());
       // `let` (not const): the scoped-superuser clamp may RE-RESOLVE a wildcard
       // `harness:'all'` on plans:list into a workspace-wide read of the session's
       // own workspace (F-A1) before dispatch — see the clamp block below.
@@ -4033,13 +4087,13 @@ export function registerMcpHost(server: McpServer): void {
       // from the tool's capability suffix at defineTool time — skip both
       // the lookup and the store when it resolves to 'read'.
       const skipReplayForReadOnly = projected?.effect === 'read';
-      const spawnRes = await tryBuildSpawnContext(extra, {
+      const spawnRes = await measurePreDispatchPhase('spawnContext', () => tryBuildSpawnContext(extra, {
         // A stale bound plan can otherwise prevent the recovery bootstrap from
         // reaching the current fleet binding that would scope this request.
         // Direct declare-intent is admitted only for an explicit self-clear;
         // all non-clear declarations remain fail-closed on stale bindings.
         allowStalePlanRecovery: allowStalePlanRecoveryForMcpCall(toolName, args),
-      });
+      }));
 
       // Hard-fail spawn ctx with invalid signature — do NOT fall through
       // to legacy bearer dispatch. That's the whole point of the
@@ -4065,6 +4119,7 @@ export function registerMcpHost(server: McpServer): void {
       }
 
       if (projected && spawnRes.kind === 'ok') {
+        const transportScopeSetupStartedAt = beginPreDispatchPhase('transportScopeSetup');
         // Normally the session harness remains authoritative for the whole
         // request. The one narrow exception below (plans:get + an exact
         // plan-slug owner verified against the workspace index) rebinds this
@@ -4631,7 +4686,8 @@ export function registerMcpHost(server: McpServer): void {
           effectiveWs === effectiveSpawnCtx.workspaceId
             ? effectiveSpawnCtx
             : { ...effectiveSpawnCtx, workspaceId: effectiveWs };
-        const baseCtx = await buildMcpToolContext(
+        finishPreDispatchPhase('transportScopeSetup', transportScopeSetupStartedAt);
+        const baseCtx = await measurePreDispatchPhase('toolContextBuild', () => buildMcpToolContext(
           dispatchSpawnCtx,
           progressToken,
           sendNotification,
@@ -4641,7 +4697,7 @@ export function registerMcpHost(server: McpServer): void {
           requestedDelta,
           idempotencyKey ?? undefined,
           (extra as { signal?: AbortSignal } | undefined)?.signal,
-        );
+        ));
         // Cancellation may arrive during asynchronous context construction.
         // Do not dispatch a new mutation after that already-aborted request.
         baseCtx.signal.throwIfAborted();
@@ -4668,7 +4724,10 @@ export function registerMcpHost(server: McpServer): void {
         // buildMcpToolContext is construction plus one registry-backed path read.
         if (idempotencyKey && !skipReplayForReadOnly) {
           try {
-            const stored = await lookupStoredMcpResult(replayOwnerKey, idempotencyKey);
+            const stored = await measurePreDispatchPhase(
+              'idempotencyReplayLookup',
+              () => lookupStoredMcpResult(replayOwnerKey, idempotencyKey),
+            );
             if (stored) {
               // Telemetry gets its OWN try/catch, deliberately not the outer one:
               // a throw caught outside would fall through to normal execution and
@@ -4815,6 +4874,7 @@ export function registerMcpHost(server: McpServer): void {
             advisoryFlagReads: number;
             scratchWrites?: { count: number; perSpill: ScratchWriteTimings[] } & ScratchWriteTimings;
           };
+          preDispatchPhaseTimingsMs: McpPreDispatchPhaseTimingsMs | null;
         } = {
           toolOutcome: null,
           deadlineFired: false,
@@ -4822,6 +4882,19 @@ export function registerMcpHost(server: McpServer): void {
           innerDispatchSettled: false,
           postDispatchStartedAtMs: null,
           phaseTimingsMs: { resultDoor: null, advisory: null, advisoryFlagReads: 0 },
+          preDispatchPhaseTimingsMs: null,
+        };
+        let dispatchPreflightStartedAt: number | null = null;
+        const markInnerDispatchStarted = (deadlineMs: number): void => {
+          if (dispatchPreflightStartedAt !== null) {
+            finishPreDispatchPhase('dispatchPreflight', dispatchPreflightStartedAt);
+          }
+          raced.innerDispatchStarted = true;
+          raced.preDispatchPhaseTimingsMs = preDispatchPhaseSnapshot();
+          trace('inner_dispatch_started', {
+            deadlineMs,
+            preDispatchPhaseTimingsMs: raced.preDispatchPhaseTimingsMs,
+          });
         };
         const settlementPhaseTimings = () => {
           const operationTimings = mcpRequestTraceOperationTimings(traceExecution);
@@ -4837,6 +4910,9 @@ export function registerMcpHost(server: McpServer): void {
               ...(raced.phaseTimingsMs.scratchWrites ? { scratchWrites: raced.phaseTimingsMs.scratchWrites } : {}),
               ...(operationTimings ? { operationTimings } : {}),
             },
+            ...(raced.preDispatchPhaseTimingsMs
+              ? { preDispatchPhaseTimingsMs: raced.preDispatchPhaseTimingsMs }
+              : {}),
           };
         };
         const readAdvisoryFlag = async (flag: Parameters<typeof getFlag>[0]): Promise<boolean> => {
@@ -4854,11 +4930,18 @@ export function registerMcpHost(server: McpServer): void {
         const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
         const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : null;
         const timeoutResult = (): McpCallResult => {
+          const preDispatchDeadline = !raced.innerDispatchStarted;
           if (!raced.deadlineFired) {
             raced.deadlineFired = true;
             trace('deadline', {
               deadlineMs,
               phase: raced.innerDispatchStarted ? 'inner_dispatch' : 'pre_dispatch',
+              ...(preDispatchDeadline
+                ? {
+                    preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+                    ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+                  }
+                : {}),
             });
           }
           // EI-25270415606873353: read-only calls skip replay lookup and persistence,
@@ -4960,11 +5043,20 @@ export function registerMcpHost(server: McpServer): void {
                       structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
                       indirect: false,
                     }, () => dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, materializationCtx, async localCtx => {
-                      if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt))
+                      if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
+                        if (!raced.deadlineFired) {
+                          raced.deadlineFired = true;
+                          trace('deadline', {
+                            deadlineMs,
+                            phase: 'pre_dispatch',
+                            preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+                            ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+                          });
+                        }
                         throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
+                      }
                       dispatchStarted = true;
-                      raced.innerDispatchStarted = true;
-                      trace('inner_dispatch_started', { deadlineMs });
+                      markInnerDispatchStarted(deadlineMs);
                       return dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, localCtx, PROJECTED_DEPS) as Promise<McpCallResult>;
                     }), deadlineMs);
                   }
@@ -5593,6 +5685,7 @@ export function registerMcpHost(server: McpServer): void {
         // has started.
         let dispatchStarted = false;
         const dispatchPreflight = async (): Promise<McpCallResult> => {
+          dispatchPreflightStartedAt = beginPreDispatchPhase('dispatchPreflight');
           try {
             // Result projection/door remain on the receiving transport, but
             // the whole wrapper/handler and its transaction run on the owner.
@@ -5607,16 +5700,23 @@ export function registerMcpHost(server: McpServer): void {
               if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
                 if (!raced.deadlineFired) {
                   raced.deadlineFired = true;
-                  trace('deadline', { deadlineMs, phase: 'pre_dispatch' });
+                  trace('deadline', {
+                    deadlineMs,
+                    phase: 'pre_dispatch',
+                    preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+                    ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+                  });
                 }
                 throw new Error(`MCP dispatch deadline expired before tool "${toolName}" started`);
               }
               dispatchStarted = true;
-              raced.innerDispatchStarted = true;
-              trace('inner_dispatch_started', { deadlineMs });
+              markInnerDispatchStarted(deadlineMs);
               return runWithMcpRequestTraceExecution(traceExecution, () => runDispatch(ctx));
             });
           } catch (error) {
+            if (!dispatchStarted && dispatchPreflightStartedAt !== null) {
+              finishPreDispatchPhase('dispatchPreflight', dispatchPreflightStartedAt);
+            }
             // An uncertain remote attempt can already own the invocation row.
             // Its owning dispatcher also records synthesis failures; recording
             // here would manufacture a second call on the receiving worker.

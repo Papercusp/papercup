@@ -83,7 +83,9 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         codex: "gpt-6.1-sol",
         omp: "openai/gpt-6.1-sol",
       }[targetAgent];
-      const select = vi.fn(async ({ message, choices }) => {
+      const select = vi.fn(async ({ message, choices }: {
+        message: string; choices: Array<{ name: string; value: any }>;
+      }) => {
         if (message === "Continue this session with which backend/model?") {
           return choices.find((row) => row.value === "<choose-model>").value;
         }
@@ -103,7 +105,7 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         return row.value;
       });
       const readCodexModels = vi.fn(() => [{
-        id: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", reasoningEfforts: ["high"],
+        id: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: ["high"],
       }]);
       const readOmpModels = vi.fn(async () => [{
         selector: "openai/gpt-6.1-sol", name: "GPT-6.1 Sol", thinking: ["high"],

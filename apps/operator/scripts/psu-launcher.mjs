@@ -15620,6 +15620,12 @@ export function resumeFirstStepChoices(session, last) {
   ];
 }
 
+/** The same interactive chooser serves the CLI and catalog-backed regression fixtures.
+ * @param {any} session
+ * @param {any} args
+ * @param {{prompts?: any, readLastActiveModel?: Function, fetchPortCapabilities?: Function,
+ *   readCodexModels?: Function, readOmpModels?: Function}} [dependencies]
+ */
 export async function chooseResumeTarget(session, args, {
   prompts = null,
   readLastActiveModel = lastActiveModelFor,

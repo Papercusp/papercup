@@ -207,6 +207,7 @@ async function stagePsuResume(fx: Fixture, extra: string[], portFixture?: PortFi
   const targetTranscript = join(targetConfig, "projects", "fixture", `${PORT_TARGET_NATIVE}.jsonl`);
   const promptFile = join(fx.home, "fixture-persona.md");
   const seedFile = join(fx.home, "fixture-port-seed.md");
+  const ackFile = join(fx.home, "fixture-port-acknowledged");
   if (portFixture) {
     // Only operator transport and the credentialed CLI are fixtures. The real
     // launcher, port orchestration, managed PTY, seed persistence verifier and
@@ -228,7 +229,8 @@ async function stagePsuResume(fx: Fixture, extra: string[], portFixture?: PortFi
         "  seeded = true; buffer = '';",
         `  process.stdout.write('CONVERSATION ${PORT_TARGET_NATIVE}: hello from before\\nBACKEND claude READY\\n');`,
         "} else if (seeded && buffer.includes('\\r')) {",
-        "  process.stdout.write('TYPED ' + buffer.replace(/[\\r\\n]/g, '') + '\\n'); process.exit(0);",
+        "  process.stdout.write('TYPED ' + buffer.replace(/[\\r\\n]/g, '') + '\\n'); buffer = '';",
+        `  const acknowledged = setInterval(() => { if (fs.existsSync(${JSON.stringify(ackFile)})) { clearInterval(acknowledged); process.exit(0); } }, 10);`,
         "}});",
         "setTimeout(() => process.exit(24), 20000);",
       ]),
@@ -259,12 +261,13 @@ async function stagePsuResume(fx: Fixture, extra: string[], portFixture?: PortFi
         res.end(JSON.stringify({
           agent: portFixture.target, sessionId: 43, nativeSessionId: PORT_TARGET_NATIVE,
           cwd: fx.cwd, promptFile,
-          envelopeEnv: { PAPERCUSP_SID: OWNER, CLAUDE_CONFIG_DIR: targetConfig },
+          envelopeEnv: { PAPERCUSP_SID: OWNER, PAPERCUSP_AGENT: portFixture.target, CLAUDE_CONFIG_DIR: targetConfig },
           sessionPortKickoffFile: seedFile,
           sessionPort: { portId: PORT_ID, renderedHash: PORT_HASH },
         }));
       } else if (portFixture && path === "/api/adv/sessions/port/delivery") {
         const request = JSON.parse(body);
+        if (request.status === "delivered") writeFileSync(ackFile, "delivered");
         res.end(JSON.stringify({ ok: true, status: request.status, targetAdvSessionId: 43 }));
       } else if (path.endsWith("/session-resumed")) {
         res.end(JSON.stringify({ ok: true, acquired: true, status: "acquired" }));
@@ -347,6 +350,7 @@ interface PtyRun {
   screen: string;
   launches: Launch[];
   requests: RunResult["requests"];
+  output: string;
 }
 
 /**
@@ -396,7 +400,7 @@ async function runPsuResumePty(fx: Fixture, extra: string[], typed?: string, por
       setTimeout(() => reject(new Error(`pty run did not exit:\n${screen()}`)), 90_000),
     ),
   ]);
-  return { code, screen: backendFrame ?? screen(), launches: staged.launches(), requests: staged.requests };
+  return { code, screen: backendFrame ?? screen(), launches: staged.launches(), requests: staged.requests, output: raw };
 }
 
 /** The argv slice that names WHICH conversation the backend reopens. */
@@ -477,17 +481,17 @@ describe("PUI resume on a real terminal, as PUI's pane runs it (R-11, R-25)", ()
     expect(bootstrap.session_port_token).toBe(`${PORT_ID}.fixture`);
     expect(bootstrap.owner_id).toBe(OWNER);
     const delivery = JSON.parse(run.requests.find((r) => r.path === "/api/adv/sessions/port/delivery")!.body);
-    expect(delivery).toMatchObject({ status: "delivered", proof: { persisted: true, renderedHash: PORT_HASH } });
+    expect(delivery, JSON.stringify({ delivery, output: run.output })).toMatchObject({ status: "delivered", proof: { persisted: true, renderedHash: PORT_HASH } });
     expect(readFileSync(delivery.proof.nativeRef, "utf8")).toContain("hello from before");
   }, 150_000);
 
   it("CONTROL: a port target that exits before opening its pane fails visibly and cannot pass as completion (R-25)", async () => {
     const run = await runPsuResumePty(fixture("codex"), ["--agent", "claude", "--account", "default"], undefined, { target: "claude", brokenPane: true });
     expect(run.code, run.screen).not.toBe(0);
-    expect(run.screen).toContain("BROKEN_PANE_CONTROL");
+    expect(run.output).toContain("BROKEN_PANE_CONTROL");
     expect(run.screen).not.toContain("BACKEND claude READY");
     const delivery = JSON.parse(run.requests.find((r) => r.path === "/api/adv/sessions/port/delivery")!.body);
-    expect(delivery).toMatchObject({ status: "failed" });
+    expect(delivery, JSON.stringify({ delivery, output: run.output })).toMatchObject({ status: "failed" });
     expect(delivery.error).toMatch(/exited|persist|seed/i);
   }, 150_000);
 

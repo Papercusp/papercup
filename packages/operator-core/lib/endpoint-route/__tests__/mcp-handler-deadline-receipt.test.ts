@@ -487,6 +487,57 @@ afterEach(async () => {
 describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6914)', () => {
   const scoped = (ws: string) => superuserExtra(`&workspace=${ws}`);
 
+  it('attributes pre-dispatch time to the workspace principal transaction and persists the phase profile', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = 'c8b63439-fd54-44e4-ae1d-a78246337d54';
+    const forcedWorkspaceWaitMs = 35;
+    h.withWorkspaceDelayMs = forcedWorkspaceWaitMs;
+    try {
+      const result = await callTool(
+        'deadlinetest:progress',
+        {},
+        superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+      );
+      expect(result.isError).toBe(false);
+      expect(h.withWorkspaceCalls).toContain('ws-test');
+
+      const started = traceEvents(info.mock.calls).find((event) =>
+        event.traceId === traceId && event.stage === 'inner_dispatch_started',
+      );
+      expect(started?.preDispatchPhaseTimingsMs).toMatchObject({
+        operatorToolsLoad: expect.any(Number),
+        spawnContext: expect.any(Number),
+        transportScopeSetup: expect.any(Number),
+        toolContextBuild: expect.any(Number),
+        idempotencyReplayLookup: null,
+        dispatchPreflight: expect.any(Number),
+        unattributedMs: expect.any(Number),
+      });
+      const startedProfile = started?.preDispatchPhaseTimingsMs as Record<string, number | null>;
+      expect(Number(startedProfile.dispatchPreflight)).toBeGreaterThanOrEqual(forcedWorkspaceWaitMs - 5);
+
+      await vi.waitFor(() => {
+        const settled = traceEvents(info.mock.calls).find((event) =>
+          event.traceId === traceId && event.stage === 'inner_dispatch_settled',
+        );
+        expect(settled?.preDispatchPhaseTimingsMs).toEqual(startedProfile);
+      });
+
+      let persistedSettlement: { sql: string; params: unknown[] } | undefined;
+      await vi.waitFor(() => {
+        persistedSettlement = h.unsafeCalls.find((call) =>
+          call.sql.includes('UPDATE harness_shared.tool_invocations') &&
+          call.sql.includes("metadata_json->'requestOrigin'->>'mcpRequestTraceId' = $4"),
+        );
+        expect(persistedSettlement).toBeDefined();
+      });
+      const settlementMetadata = JSON.parse(String(persistedSettlement?.params[0])).mcpRequestSettlement;
+      expect(settlementMetadata.preDispatchPhaseTimingsMs).toEqual(startedProfile);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
   it('answers with a clean request_timeout error once the deadline fires, without waiting for the tool', async () => {
     const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'), { idempotencyKey: 'idem-deadline-1' });
     expect(res.isError).toBe(true);
