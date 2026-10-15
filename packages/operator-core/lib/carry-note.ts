@@ -1317,15 +1317,17 @@ function priorRowForIncoming<T extends { id?: string; claim: string }>(
 /**
  * P-025 (review-system-rework-reduction-2026-09-23) — does `ref` name this carried row?
  * A ref is the row's stable id (bare, `#id` or `[#id]`, exactly as the note renders it)
- * or its exact trimmed claim text. Claim text is accepted because most carried rows
- * have no id: requiring one would leave exactly the rows this exists for unreachable.
+ * for retirement. Exact trimmed claim text remains an edit alias and a retirement
+ * fallback only for legacy rows that have not yet been assigned an ID.
  */
-function carryRowMatchesRef(row: { id?: string; claim: string }, ref: string): boolean {
+function carryRowMatchesRef(row: { id?: string; claim: string }, ref: string, allowClaimEdit = false): boolean {
   const trimmed = ref.trim();
   if (!trimmed) return false;
   const id = sanitizeCarryRowId(row.id);
   const refAsId = trimmed.replace(/^\[?#/, '').replace(/\]$/, '');
-  return (id !== null && id === refAsId) || row.claim.trim() === trimmed;
+  // Once a row has an ID, wording is never a retirement authority. Exact claim
+  // aliases remain only for legacy rows that have not yet been migrated.
+  return (id !== null && id === refAsId) || ((id === null || allowClaimEdit) && row.claim.trim() === trimmed);
 }
 
 /** A stable id for a row that is being edited by `replaces` and has none. Derived from
@@ -1399,8 +1401,16 @@ export function resolveCarryRowRefs<
     const bound = new Set<number>();
     return supplied.map((row) => {
       const { replaces, ...rest } = row;
-      if (replaces === undefined || !replaces.trim()) return rest;
-      const index = prior.findIndex((p, i) => !bound.has(i) && carryRowMatchesRef(p, replaces));
+      if (replaces === undefined || !replaces.trim()) {
+        // Compatibility for unchanged claim-only updates after the writer minted
+        // an ID. Never infer an identity for rewording or an ambiguous claim.
+        if (!sanitizeCarryRowId(rest.id)) {
+          const matches = prior.filter((p) => sanitizeCarryRowId(p.id) && p.claim.trim() === rest.claim.trim());
+          if (matches.length === 1) return { ...rest, id: matches[0]!.id };
+        }
+        return rest;
+      }
+      const index = prior.findIndex((p, i) => !bound.has(i) && carryRowMatchesRef(p, replaces, true));
       if (index < 0) {
         unmatched.push(replaces.trim());
         return rest;
@@ -1854,6 +1864,27 @@ export function withCarryNoteChecks(body: string, checks: CheckEntry[]): string 
   return parts.join('\n\n');
 }
 
+/** Give every persisted checkpoint row a durable identity. Keep this at checkpoint
+ * writer boundaries: parsing/rendering historical notes remains lossless, while
+ * a rewrite promotes old id-less rows without restamping evidence or age. */
+export function withStableCarryRowIds(note: string): string {
+  const { body: withoutWalls, walls } = splitCarryNoteWalls(note);
+  const { body, checks } = splitCarryNoteChecks(withoutWalls);
+  const taken = new Set<string>();
+  for (const row of [...walls, ...checks]) {
+    const id = sanitizeCarryRowId(row.id);
+    if (id) taken.add(id);
+  }
+  const identify = <T extends { id?: string; claim: string }>(rows: T[], kind: string): T[] =>
+    rows.map((row) => {
+      if (sanitizeCarryRowId(row.id)) return row;
+      const id = mintCarryRowId(`${kind}:${row.claim}`, taken);
+      taken.add(id);
+      return { ...row, id };
+    });
+  return withCarryNoteWalls(withCarryNoteChecks(body, identify(checks, 'check')), identify(walls, 'wall'));
+}
+
 /** Normalize an incoming checks write against the prior set — same contract as
  *  {@link normalizeWallEntries}: trim + drop blank claims, dedup by claim, preserve
  *  the ORIGINAL sinceMs for a claim that already stood, inherit recheck/verified
@@ -2130,7 +2161,8 @@ export function mergeCarryRows(opts: {
    */
   mode?: 'replace' | 'merge';
   /**
-   * P-025 — carried rows to RETIRE in this same write, named by `[#id]` or exact claim,
+   * P-025 — carried rows to RETIRE in this same write, named by `[#id]` (exact claim
+   * remains a compatibility fallback only for legacy rows without IDs),
    * across walls and checks. Valid under either mode, so dropping one row no longer
    * requires a full `'replace'` re-send. Retired rows are reported in
    * `retiredWalls`/`retiredChecks`, NOT in `droppedWalls`/`droppedChecks`.
