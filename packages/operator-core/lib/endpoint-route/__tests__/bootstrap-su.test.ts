@@ -2357,7 +2357,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     it('a CODEX agent never consults the default (it stands in for the CLAUDE login)', async () => {
       loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
       const r = await pin(null, 'codex');
-      expect(r.env).toEqual({});
+      expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
       expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
     });
 
@@ -2418,16 +2418,23 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     // gateway: the session egressed direct-to-ChatGPT on the local credential, unmetered. Now
     // auto returns provider:'codex' + gatewayAuto:true — the CODEX_HOME writers translate that
     // into the UNPINNED gateway provider block (x-papercusp-account header omitted; the gateway
-    // auto-selects via its bearer-pool → codex-CLI fallback). env stays {} deliberately: codex
-    // routing rides in config.toml, never ANTHROPIC_* env.
+    // auto-selects via its bearer-pool → codex-CLI fallback). The env carries only the route
+    // marker needed by PTY carry/recycle repair; transport routing still rides in config.toml.
     getFlagMock.mockResolvedValue(true);
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const r = await pin('auto', 'codex');
-    expect(r.env).toEqual({});
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'auto' });
     expect(r.provider).toBe('codex');
     expect(r.accountId).toBeNull();
     expect(r.gatewayAuto).toBe(true);
     expect(r.notice).toMatch(/routing through the inference gateway \(auto/i);
+  });
+
+  it("'default' + codex stamps the system route for carry restoration", async () => {
+    const r = await pin(null, 'codex');
+    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
+    expect(r.accountId).toBeNull();
+    expect(r.provider).toBeNull();
   });
 
   it("'auto' + omp emits an unpinned gateway models.yml", async () => {
@@ -2481,7 +2488,10 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     const r = await pin('codex-main', 'codex');
     expect(r.provider).toBe('codex');
     expect(r.accountId).toBe('codex-main');
-    expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ID: 'codex-main' });
+    expect(r.env).toEqual({
+      PAPERCUSP_ACCOUNT_ID: 'codex-main',
+      PAPERCUSP_ACCOUNT_ROUTING_MODE: 'pin',
+    });
     expect(r.notice).toMatch(/pinned to Codex account codex-main/i);
   });
 
@@ -2533,6 +2543,9 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
     const response = await callPost({ agent: 'codex', harness_slug: 'papercup', account: 'codex-main' });
     expect(response.status, await response.clone().text()).toBe(200);
+    const json = await response.json();
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('pin');
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
       expect.objectContaining({
         codexGatewayAccountId: 'codex-main',
@@ -2542,11 +2555,25 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     );
   });
 
+  it('POST Codex auto carries its route mode into the fresh envelope', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    const json = await (await callPost({ agent: 'codex', harness_slug: 'papercup', account: 'auto' })).json();
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ codexGatewayAuto: true }),
+    );
+  });
+
   it('POST without account → no accountNotice, explicit default marker, no gateway env', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.accountNotice).toBeNull();
     expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+    const codex = await (await callPost({ agent: 'codex', harness_slug: 'papercup' })).json();
+    expect(codex.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+    expect(codex.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBeUndefined();
   });
 
   it('POST with explicit account=default stays on the system route when a default account is configured', async () => {

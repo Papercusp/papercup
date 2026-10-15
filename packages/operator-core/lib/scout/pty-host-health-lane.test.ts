@@ -270,7 +270,9 @@ describe('PTY host event classification for Blender', () => {
     );
     const kinds = emittedHostKinds(hostSource);
     expect(kinds.length).toBeGreaterThan(0);
+    expect(kinds).toContain('pty-spawned');
     expect(kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified')).toEqual([]);
+    expect(classifyPtyHostEvent('pty-spawned')).toBe('routine');
     expect(classifyPtyHostEvent('inject-mutex-force-released')).toBe('recovered');
     expect(classifyPtyHostEvent('mcp-reconnect-completed')).toBe('recovered');
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');
