@@ -4446,7 +4446,17 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // Deliberately NOT PROJECT_GUIDE_MARKER alone: that is precisely the assumption that broke
   // when the blueprint base (AUTO-MODE yes, PROJECT-GUIDE no) became the live one.
   const isSuPlaybook = base.includes(PROJECT_GUIDE_MARKER) || base.includes(AUTO_MODE_MARKER);
-  const withNotes = injectSharedBaseNotes(withCompaction + (base.includes('<!-- PAPERCUSP-KERNEL:SEAL -->') ? '\n' + SU_KERNEL_END : ''), {
+  // The sealed source kernel ends BEFORE the generated reference bundle. Its
+  // insertion anchor may be inside the original base, so an EOF sentinel would
+  // incorrectly protect the entire generated bundle too.
+  const kernelBoundary = base.includes('<!-- PAPERCUSP-KERNEL:SEAL -->')
+    ? withCompaction.includes(SHARED_BASE_NOTES_MARKER)
+      ? withCompaction.replace(SHARED_BASE_NOTES_MARKER, SU_KERNEL_END + '\n' + SHARED_BASE_NOTES_MARKER)
+      : withCompaction.includes(PROJECT_GUIDE_MARKER)
+        ? withCompaction.replace(PROJECT_GUIDE_MARKER, SU_KERNEL_END + '\n' + PROJECT_GUIDE_MARKER)
+        : withCompaction + '\n' + SU_KERNEL_END
+    : withCompaction;
+  const withNotes = injectSharedBaseNotes(kernelBoundary, {
     repoSpecific: profile === 'engineer',
     eligible: isSuPlaybook,
   });
