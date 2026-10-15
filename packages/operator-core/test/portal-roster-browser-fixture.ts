@@ -3016,6 +3016,7 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
   const hostDenied = await context.request.get(input.base + '/api/zero-harness/rest-query?name=health.snapshot&args=%7B%7D',
     { headers: { host: 'foreign-health.invalid' } });
   verifyPrivateHudHostDenial(hostDenied.status(), await hostDenied.text());
+  const hosted = await verifyPrivateHostedHealthPage(page, input);
   const link = card.getByRole('link', { name: 'Open Work', exact: true });
   await link.focus(); await page.keyboard.press('Enter');
   await page.waitForURL(url => url.searchParams.get('app') === 'work');
@@ -3030,7 +3031,104 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
     shellQueryPreserved: true, foreignSeedExcluded: true, denialStatus: 403, deniedAckNoWrite: true,
     denialControlRecovery: true, cancelledAckNoWrite: true, reasonValidation: true,
     acknowledged: true, unacknowledged: true, ackReload: true, unackReload: true, workItemsCollectorNeedsHuman: 1,
-    scope: 'Actual HealthTab, private shared snapshot/history reads, native Host denial, Origin-denied acknowledgement and successful ack/unack through the maintained Work-items collector. Initial snapshot/history population and destination geometry are supplied; other collector accuracy, hosted tenant authorization and full Portal acceptance remain unmeasured' };
+    hosted,
+    scope: 'Actual HealthTab, private shared snapshot/history reads, native Host denial, Origin-denied acknowledgement and successful ack/unack through the maintained Work-items collector; real hosted ledger, health attestation producer and infra collector populate failure/recovery and owned-cost metrics. Initial acknowledgement snapshot/history and destination geometry are supplied; hosted tenant authorization and shipment remain unmeasured' };
+}
+
+/** Use the existing ledger and whole-health collector, then observe their actual
+ * shared-query and DOM output. The initial acknowledgement fixture is not proof
+ * of these collectors. All rows here live in the verifier-owned disposable PG. */
+async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrowserInput) {
+  const { upsertWorkspaceHost, recordWorkspaceHostHealth, readWorkspaceHostReliability } =
+    await import('../lib/workspace-host/observability-store');
+  const { computeSystemHealth } = await import('../lib/system-health/compute');
+  const { writeSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
+  const { recordHealthHistory } = await import('../lib/system-health/history');
+  const { sql } = getOrgPg();
+  const now = Date.now();
+  const hostId = 'private-cloud-health-host';
+  for (const workspaceId of [input.workspace, input.workspace + '-foreign']) {
+    const platform = workspaceId === input.workspace;
+    await sql`INSERT INTO harness_shared.workspace_host_connections
+      (workspace_id, id, target, label, credential_ref, status)
+      VALUES (${workspaceId}, 'private-cloud-health-connection', 'gcp', 'private-health', 'cloudCredentialRef:test', 'degraded')`;
+    await upsertWorkspaceHost({ workspaceId, id: hostId, name: hostId,
+      connectionId: 'private-cloud-health-connection', target: 'gcp', scopeLabel: 'private-health',
+      region: 'us-central1', size: 'e2-standard-4', image: 'private-health', diskGiB: 64, network: 'default',
+      desiredState: 'running', observedState: 'running',
+      controllerAuthority: { controllerId: 'private-cloud-health', fence: 1 } });
+    await recordWorkspaceHostHealth(workspaceId, { hostId, status: 'unreachable',
+      observedAt: new Date(now).toISOString(), checks: [] });
+    await sql`INSERT INTO harness_shared.customer_workspaces
+      (workspace_id, id, organization_id, workspace_host_id, display_name, state,
+       created_by_principal_kind, created_by_principal_id, billing_owner_kind, billing_owner_id,
+       monthly_lifecycle_budget_cents, lifecycle_budget_period_started_at)
+      VALUES (${workspaceId}, 'private-cloud-health-customer', 'private-health-org', ${hostId},
+        'private customer content must stay absent', 'active', 'hosted-user', 'private-health-user',
+        ${platform ? 'platform' : 'organization'}, 'private-health-billing', 1000, ${new Date(now - 60_000)})`;
+    await sql`INSERT INTO harness_shared.workspace_host_operations
+      (workspace_id, id, host_id, action, status, created_at, finished_at, customer_workspace_id,
+       organization_id, provider_target, billing_owner_kind, billing_owner_id, estimated_cost_cents,
+       cost_currency, cost_estimate_source, cost_estimate_ref, cost_estimated_at)
+      VALUES (${workspaceId}, 'private-cloud-health-ready', ${hostId}, 'provision', 'succeeded',
+        ${new Date(now - 1000)}, ${new Date(now - 750)}, 'private-cloud-health-customer',
+        'private-health-org', 'gcp', ${platform ? 'platform' : 'organization'}, 'private-health-billing',
+        ${platform ? 2400 : 99999}, 'USD', 'private-controlled-estimate', 'private-estimate', ${new Date(now)})`;
+    await sql`INSERT INTO harness_shared.route_invocations (workspace_id, method, path, status, duration_ms, invoked_at)
+      VALUES (${workspaceId}, 'GET', '/api/hosted/workspaces/:id', 'ok', 25, ${new Date(now)}),
+        (${workspaceId}, 'GET', '/api/hosted/workspaces/:id', 'timeout', 500, ${new Date(now)}),
+        (${workspaceId}, 'INTERNAL', 'internal:private-cloud-health', 'error', 9000, ${new Date(now)})`;
+  }
+  const foreign = await readWorkspaceHostReliability(input.workspace + '-foreign', now);
+  assert.equal(foreign.ownedCost?.estimatedUsdCents, null, 'customer-funded spend must not become platform spend');
+  const snapshots: Awaited<ReturnType<typeof computeSystemHealth>>[] = [];
+  const publishAndObserve = async (unhealthy: number) => {
+    const snapshot = await computeSystemHealth(input.workspace);
+    const hosted = snapshot.panels.infra.data?.hostedControlPlane;
+    assert.deepEqual(hosted?.hosts, { expectedRunning: 1, unhealthy, unobserved: 0, platformOwnedRunning: 1 });
+    assert.deepEqual(hosted?.lifecycle, { succeeded: 1, failed: 0, queued: 0, running: 0, successP95Ms: 250 });
+    assert.deepEqual(hosted?.api, { samples: 2, errors: 1, p95Ms: 25 });
+    assert.deepEqual(hosted?.ownedCost, { estimatedUsdCents: 2400, estimates: 1, unpriced: 0, breachedBudgets: 1 });
+    assert.equal(JSON.stringify(hosted).includes('private customer content'), false);
+    const previous = snapshots.at(-1) ?? snapshot;
+    snapshots.push(snapshot);
+    await writeSharedSnapshot('system.health', input.workspace, snapshot, 1);
+    await recordHealthHistory(previous, snapshot);
+    const responsePromise = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
+    });
+    await page.reload();
+    const response = await responsePromise;
+    const body = await response.json();
+    assert.deepEqual(body.rows[0].panels.infra.data.hostedControlPlane, hosted,
+      'actual workspace-scoped HTTP query must return the collector reading');
+    const infra = page.locator('[data-panel="infra"]');
+    const metric = (label: string) => infra.locator('.pc-hcard__m').filter({ has: page.locator('span', { hasText: label }) }).locator('b');
+    const expectMetric = async (label: string, value: string) => {
+      await metric(label).waitFor();
+      assert.equal(await metric(label).textContent(), value, label);
+    };
+    await expectMetric('hosted running / unhealthy / unobserved', `1 / ${unhealthy} / 0`);
+    await expectMetric('Papercusp-owned running hosts', '1');
+    await expectMetric('sampled hosted API errors / samples (1h)', '1 / 2');
+    await expectMetric('provision / restore p95 ms (admission to success)', '250');
+    await expectMetric('Papercusp-funded lifecycle estimates USD (current budget periods)', '$24.00 (estimated)');
+    await expectMetric('provider infrastructure invoices', 'unknown — account access not granted');
+    assert.equal((await infra.textContent())?.includes('$999.99'), false, 'foreign customer cost must stay out of this view');
+    writeFileSync(join(input.evidence, 'portal-cloud-health-observations.json'), JSON.stringify({
+      snapshots, query: body, rendered: await infra.textContent(), foreignCustomerCost: foreign.ownedCost,
+      scope: 'Controlled real PG records and actual health producer/collector/query/HealthTab; no provider invoice access or shipment claim',
+    }, null, 2));
+  };
+  await publishAndObserve(1);
+  await recordWorkspaceHostHealth(input.workspace, { hostId, status: 'healthy',
+    observedAt: new Date().toISOString(), checks: [] });
+  await sql`UPDATE harness_shared.workspace_host_connections SET status = 'connected'
+    WHERE workspace_id = ${input.workspace} AND id = 'private-cloud-health-connection'`;
+  await publishAndObserve(0);
+  return { healthProducer: true, infraCollector: true, actualQuery: true, populatedView: true,
+    failureRecovery: true, sampledApi: true, estimatedPlatformCost: true, customerCostExcluded: true, invoiceUnknown: true };
 }
 
 /** Named slug lookup may cross workspaces; domain/file reads must stay on the

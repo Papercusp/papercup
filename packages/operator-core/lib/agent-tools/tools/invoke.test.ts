@@ -34,6 +34,14 @@ import dbMigrateTool from '../db/migrate';
 
 const markEnabledMock = vi.mocked(dispatchWrapperMarkEnabled);
 
+const servingGenerationMock = vi.hoisted(() => ({
+  read: vi.fn(),
+}));
+vi.mock('../../serving-generation', () => ({
+  readServingGeneration: servingGenerationMock.read,
+}));
+import { readServingGeneration } from '../../serving-generation';
+
 type ToolDef = {
   name: string;
   capability: string;
@@ -56,6 +64,11 @@ describe('tools:invoke registration', () => {
     const dbMigrateTimeoutSec = (dbMigrateTool as unknown as { timeoutSec: number }).timeoutSec;
     expect(def.timeoutSec - dbMigrateTimeoutSec).toBeGreaterThanOrEqual(60);
     expect(def.args.safeParse({ name: 'flags:set', args: { key: 'x', value: true } }).success).toBe(true);
+    expect(def.args.safeParse({
+      name: 'flags:set',
+      args: { key: 'x', value: true },
+      servingGeneration: 'serving-generation-v1:test',
+    }).success).toBe(true);
     expect(def.args.safeParse({ name: 'flags:set' }).success).toBe(true); // args optional
     expect(def.args.safeParse({}).success).toBe(false); // name required
     expect(def.args.safeParse({ name: '' }).success).toBe(false); // non-empty
@@ -159,6 +172,44 @@ describe('tools:invoke registration', () => {
 });
 
 describe('tools:invoke handler', () => {
+  it('dispatches only when the discovered serving generation matches', async () => {
+    vi.mocked(readServingGeneration).mockResolvedValue({
+      state: 'known',
+      revision: 'serving-generation-v1:test',
+      buildSha: 'test-build',
+      appliedMigrationDigest: 'test-migrations',
+      toolRegistryRevision: 'test-registry',
+    });
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: 'ok' }] }));
+
+    await def.handler({
+      name: 'flags:get',
+      args: {},
+      servingGeneration: 'serving-generation-v1:test',
+    }, { dispatchTool });
+
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('flags:get', {});
+  });
+
+  it('refuses a mismatched serving generation before dispatching the target', async () => {
+    vi.mocked(readServingGeneration).mockResolvedValue({
+      state: 'known',
+      revision: 'serving-generation-v1:current',
+      buildSha: 'current-build',
+      appliedMigrationDigest: 'current-migrations',
+      toolRegistryRevision: 'current-registry',
+    });
+    const dispatchTool = vi.fn();
+
+    await expect(def.handler({
+      name: 'flags:set',
+      args: { key: 'k', value: true },
+      servingGeneration: 'serving-generation-v1:stale',
+    }, { dispatchTool })).rejects.toThrow(/stale_tool_contract/);
+
+    expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
   it('routes the call through ctx.dispatchTool with name + args and returns its result', async () => {
     const calls: Array<[string, unknown]> = [];
     const metadata = vi.fn();

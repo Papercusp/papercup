@@ -6,7 +6,84 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
-import { stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
+import { privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('measures native Codex effort overrides over absent and conflicting TOML', () => {
+  for (const config of [{ model: 'gpt-6.1-sol' }, { model: 'gpt-6.1-sol', model_reasoning_effort: 'low' }]) {
+    expect(privateCodexModelConfig(['/native/codex', 'exec', '-c', 'model_reasoning_effort="xhigh"'], config))
+      .toEqual({ model: 'gpt-6.1-sol', effort: 'xhigh' });
+  }
+});
+
+it('measures dedicated Codex model flags and the last config override without role inference', () => {
+  for (const modelArgs of [['--model', 'gpt-6.1-sol'], ['--model=gpt-6.1-sol'], ['-m', 'gpt-6.1-sol']]) {
+    expect(privateCodexModelConfig(['/native/codex', ...modelArgs, '-c', 'model="toml-override"',
+      '-c', 'model_reasoning_effort="low"', '--config=model_reasoning_effort=high',
+      '--config', "model_reasoning_effort='xhigh'"], { model: 'toml-model', model_reasoning_effort: 'minimal' }))
+      .toEqual({ model: 'gpt-6.1-sol', effort: 'xhigh' });
+  }
+  expect(privateCodexModelConfig(['/native/codex', 'exec', '-c', 'unrelated="high"'],
+    { model: 'toml-model', model_reasoning_effort: 'low' })).toEqual({ model: 'toml-model', effort: 'low' });
+  expect(privateCodexModelConfig(['/native/codex', 'exec'], {})).toEqual({ model: undefined, effort: undefined });
+});
+
+it('retains a classified provider model refusal without credentials or request content', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-provider-refusal-'));
+  const secret = NEVER_EMIT_MARKER;
+  const prompt = 'Private inert request content never belongs in evidence';
+  const detail = `The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account. ${secret} ${prompt}`;
+  const body = JSON.stringify({ detail });
+  const response = new Response(body, { status: 400 });
+  try {
+    const observation = await retainPrivateProviderResponse(directory, response, {
+      headers: { authorization: `Bearer ${secret}` }, diagnosticAccountId: 'configured-account',
+      body: JSON.stringify({ model: 'gpt-5.4', reasoning: { effort: 'high' }, stream: true,
+        instructions: prompt, input: [{ role: 'user', content: prompt }], tools: [{ type: 'function', name: 'inert' }] }),
+    });
+    expect(observation).toMatchObject({ status: 400, accountId: 'configured-account',
+      error: { class: 'permanent', retryable: false, modelRefusal: true },
+      requestShape: { model: 'gpt-5.4', effort: 'high', instructionsBytes: Buffer.byteLength(prompt), toolsCount: 1 } });
+    const artifact = readFileSync(join(directory, 'provider-response.json'), 'utf8');
+    expect(JSON.parse(artifact)).toEqual(observation);
+    expect(artifact).toContain("model is not supported");
+    expect(artifact).not.toContain(secret);
+    expect(artifact).not.toContain(prompt);
+    expect(await response.text()).toBe(body);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+it('bounds retained provider refusal diagnostics across streamed secret boundaries', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-provider-bounds-'));
+  const secret = NEVER_EMIT_MARKER;
+  const prefix = 'x'.repeat(16 * 1024 - 10);
+  const chunks = [prefix + secret.slice(0, 10), secret.slice(10) + 'z'.repeat(40_000)];
+  const response = new Response(new ReadableStream({ start(controller) {
+    for (const chunk of chunks) controller.enqueue(Buffer.from(chunk)); controller.close();
+  } }), { status: 400 });
+  try {
+    const observation = await retainPrivateProviderResponse(directory, response,
+      { headers: { authorization: `Bearer ${secret}` }, body: '{}' });
+    expect(observation.response).toMatchObject({ truncated: true, bytes: Buffer.byteLength(chunks.join('')) });
+    expect(observation.response.sampledBytes).toBe(16 * 1024 + Buffer.byteLength(secret));
+    expect(observation.error!.detail.length).toBeLessThanOrEqual(300);
+    expect(readFileSync(join(directory, 'provider-response.json'), 'utf8')).not.toContain(secret);
+    expect(await response.text()).toBe(chunks.join(''));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+it('drains successful provider evidence without retaining model output', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-provider-success-'));
+  const output = 'private model completion never belongs in evidence';
+  const response = new Response(output, { status: 200 });
+  try {
+    const observation = await retainPrivateProviderResponse(directory, response, { headers: {}, body: '{}' });
+    expect(observation).toMatchObject({ status: 200, error: null,
+      response: { bytes: Buffer.byteLength(output), sampledBytes: 0, truncated: false } });
+    expect(readFileSync(join(directory, 'provider-response.json'), 'utf8')).not.toContain(output);
+    expect(await response.text()).toBe(output);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 it('reaps a native descendant after host exit before waiting for inherited pipes', async () => {
   const host = spawn(process.execPath, ['-e', `
@@ -133,11 +210,20 @@ process.once('message', async message => {
     let runId: string | undefined;
     const run = recordIsolatedIntegrationProof({
       root, filePath: 'packages/operator-core/lib/isolated-integration-proof.test.ts', sourcePaths: [],
+      retainedArtifacts: ['phases/execute/provider-response.json'],
       prepare: evidenceDir => {
         writeFileSync(join(evidenceDir, 'operator-api-build-result.json'), JSON.stringify({ status: 0, pid: 123 }));
+        writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original preparation compiler diagnostic\n');
+        writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"step":"prepare-compile","event":"end","status":0}\n');
       },
       execute: async (observe, evidenceDir) => {
         runId = JSON.parse(readFileSync(join(evidenceDir, '../prepare/source.json'), 'utf8')).runId;
+        writeFileSync(join(evidenceDir, 'operator-api-build.log'), 'original nested bundle rejection\n');
+        writeFileSync(join(evidenceDir, 'hono-host.mjs.build-steps.jsonl'), '{"step":"host-compile","event":"end","status":17}\n');
+        writeFileSync(join(evidenceDir, 'build.log'), 'original legacy builder diagnostic\n');
+        await retainPrivateProviderResponse(evidenceDir, new Response(JSON.stringify({
+          detail: "The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.",
+        }), { status: 400 }), { headers: {}, body: '{}' });
         const nativeLog = join(runtimeRoot, 'native.log');
         writeFileSync(nativeLog, 'native bootstrap stopped before first turn\n');
         retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: 'private-native', state: 'running',
@@ -163,6 +249,10 @@ process.once('message', async message => {
       .toContain('original journey assertion');
     const artifacts = new Map<string, string>();
     for (const path of ['phases/prepare/operator-api-build-result.json',
+      'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
+      'phases/execute/operator-api-build.log', 'phases/execute/hono-host.mjs.build-steps.jsonl',
+      'phases/execute/build.log',
+      'phases/execute/provider-response.json',
       'phases/execute/worker-result.json', 'phases/execute/lifecycle-observation.json',
       'phases/execute/native-task-stdout.log', 'phases/execute/native-task-diagnostics.json'])
       artifacts.set(path, readFileSync(join(evidenceRoot, runId!, path), 'utf8'));

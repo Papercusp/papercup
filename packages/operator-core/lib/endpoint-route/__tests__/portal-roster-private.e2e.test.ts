@@ -426,6 +426,7 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
         'packages/operator-core/test/isolated-integration-proof.ts', 'packages/operator-core/lib/derived-reads/shared-snapshot.ts',
         'packages/operator-core/lib/system-health/history.ts', 'packages/operator-core/lib/system-health/acks.ts',
         'packages/operator-core/lib/agent-tools/system-health/ack.ts', 'packages/operator-core/lib/system-health/compute.ts',
+        'packages/operator-core/lib/workspace-host/observability-store.ts',
         'packages/operator-core/lib/agent-tools/system-health/unack.ts', 'packages/operator-core/lib/work-items.ts',
         'packages/operator-core/lib/sync-resolver/index.ts', 'apps/operator-vite/src/components/adv/HealthTab.tsx',
         'apps/operator/bin/hono-host.ts', 'apps/operator/bin/host-handler.ts'],
@@ -458,7 +459,9 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
           snapshotRead: true, historyRead: true, keyboardExpansion: true, keyboardDrill: true, deepLinkReload: true,
           shellQueryPreserved: true, foreignSeedExcluded: true, denialStatus: 403, deniedAckNoWrite: true,
           denialControlRecovery: true, cancelledAckNoWrite: true, reasonValidation: true,
-          acknowledged: true, unacknowledged: true, ackReload: true, unackReload: true, workItemsCollectorNeedsHuman: 1 });
+          acknowledged: true, unacknowledged: true, ackReload: true, unackReload: true, workItemsCollectorNeedsHuman: 1,
+          hosted: { healthProducer: true, infraCollector: true, actualQuery: true, populatedView: true,
+            failureRecovery: true, sampledApi: true, estimatedPlatformCost: true, customerCostExcluded: true, invoiceUnknown: true } });
       },
     });
     Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

@@ -256,6 +256,20 @@ describe('runWedgedIdentitySweepOnce — fail-closed', () => {
     }));
     expect(out).toMatchObject({ verdict: 'wedged', wedged: [{ liveness: 'unknown' }] });
   });
+
+  it('keeps a no-launch-record wedge visible when liveness is recorded (an open live session)', async () => {
+    const escalateWedged = vi.fn(async () => {});
+    const out = await runWedgedIdentitySweepOnce(deps({
+      loadCandidates: async () => [row({ ownerId: 'su-recorded', advSessionId: null, launchSpec: null })],
+      resolveLiveness: async () => new Map([['su-recorded', 'recorded' as WedgedLiveness]]),
+      escalateWedged,
+    }));
+    expect(out).toMatchObject({
+      verdict: 'wedged',
+      wedged: [{ ownerId: 'su-recorded', reason: 'no-launch-record', liveness: 'recorded' }],
+    });
+    expect(escalateWedged).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('runWedgedIdentitySweepOnce — verdicts', () => {
@@ -784,6 +798,20 @@ describe('runUnappliedActivationCensusOnce — verdicts', () => {
     }));
     expect(out).toEqual({ verdict: 'clean', scanned: 1, ended: 1, unmeasured: 0, escalated: 0 });
     expect(escalateUnapplied).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unapplied activation visible when liveness is recorded (an open live session)', async () => {
+    const escalateUnapplied = vi.fn(async () => {});
+    const out = await runUnappliedActivationCensusOnce(censusDeps({
+      resolveLiveness: async () => new Map([['su-stuck', 'recorded' as WedgedLiveness]]),
+      escalateUnapplied,
+    }));
+    expect(out).toMatchObject({
+      verdict: 'unapplied',
+      unapplied: [{ ownerId: 'su-stuck', liveness: 'recorded' }],
+      ended: 0,
+    });
+    expect(escalateUnapplied).toHaveBeenCalledTimes(1);
   });
 
   it('is clean when every unapplied session is still inside its window, and never resolves liveness', async () => {

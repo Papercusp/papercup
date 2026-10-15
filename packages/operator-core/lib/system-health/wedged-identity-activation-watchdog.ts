@@ -166,8 +166,8 @@ const WATCHDOG_IDENTITY: AgentIdentity = {
 /** A session's liveness as far as this sweep could establish it. */
 export type WedgedLiveness = SessionState | 'unknown';
 
-/** Terminal states — a wedged session that has already ended harms nobody. */
-const TERMINAL_STATES: ReadonlySet<string> = new Set(['ended', 'recorded']);
+/** Only confirmed-dead sessions are terminal; `recorded` means a live open adv_sessions row. */
+const TERMINAL_STATES: ReadonlySet<WedgedLiveness> = new Set(['ended']);
 
 export interface CandidateRow {
   ownerId: string;

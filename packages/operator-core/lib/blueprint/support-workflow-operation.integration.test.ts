@@ -151,21 +151,25 @@ describe('support operation durable native funding (synthetic; no provider sends
       attemptId: crypto.randomUUID(), attemptMaximumMicros: maximum, bodySha256: 'c'.repeat(64) });
     // A distinct, wide pool plus a connection barrier makes this a real race.
     // The fixture's normal max:2 pool must not serialize it accidentally.
-    const wide = postgres(db.adminDsn, { max: 4, prepare: false, onnotice: () => {} });
+    const racePools = Array.from({ length: 4 }, () =>
+      postgres(db.adminDsn, { max: 1, prepare: false, onnotice: () => {} }));
     let arrived = 0, release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const requests = Array.from({ length: 4 }, () => request(40_000));
     try {
-      const results = await Promise.all(requests.map(r => wide.reserve().then(async connection => {
-        try {
-          if (++arrived === requests.length) release();
-          await gate;
-          return await reserveSupportOperationAttempt(connection as unknown as Sql, r);
-        } finally { connection.release(); }
-      })));
+      // A ReservedSql has no begin(). Use real pools, and establish four
+      // distinct connections before the barrier so the transaction race is
+      // neither an interface cast nor accidental max:1 pool serialization.
+      const backends = await Promise.all(racePools.map(pool => pool<{ pid: number }[]>`SELECT pg_backend_pid() AS pid`));
+      expect(new Set(backends.map(rows => rows[0]!.pid)).size).toBe(requests.length);
+      const results = await Promise.all(requests.map(async (r, index) => {
+        if (++arrived === requests.length) release();
+        await gate;
+        return reserveSupportOperationAttempt(racePools[index]!, r);
+      }));
       expect(results.filter(Boolean)).toHaveLength(2);
-      expect(await reserveSupportOperationAttempt(wide, requests[results.indexOf(true)]!)).toBe(false);
-    } finally { await wide.end(); }
+      expect(await reserveSupportOperationAttempt(racePools[0]!, requests[results.indexOf(true)]!)).toBe(false);
+    } finally { await Promise.all(racePools.map(pool => pool.end())); }
     // A new pool has no process-local allowance state from the race.
     const restarted = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
     try {
