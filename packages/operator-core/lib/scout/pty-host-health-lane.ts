@@ -37,6 +37,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'launch-kickoff-respawn-redelivery' ||
     kind === 'launch-kickoff-model-turn-retry-result' ||
     kind === 'submit-verify-human-input-retry' ||
+    // The guarded verifier emitted one safe CR after confirming the prior
+    // submit did not start a turn; payload carries the resubmit counters.
+    kind === 'submit-verify-recovery-resubmit' ||
     kind === 'respawn-carry-fresh-epoch-retry' ||
     kind === 'respawn-carry-turn-start-retry' ||
     // WI-10005472: a headless Claude child whose composer paint was never seen
@@ -54,7 +57,8 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'quota-block-dismissed-transcript-echo' ||
     // WI-6554700010008412: a codex quota latch released at the provider's
     // stated reset so the next deferred wake can run.
-    kind === 'quota-block-expired-at-reset'
+    kind === 'quota-block-expired-at-reset' ||
+    kind === 'quota-recovery-resumed'
   ) return 'recovered';
 
   if (
@@ -98,6 +102,12 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'codex-startup-update-dialog-escape-sent' ||
     kind === 'codex-startup-update-dialog-escape-skipped' ||
     kind === 'headless-claude-onboarding-advanced' ||
+    // A requested hooks observation records its structured result separately;
+    // the result itself is diagnostic data, not a PTY-host failure verdict.
+    kind === 'hooks-observation-result' ||
+    // Waiting while the backend explicitly shows Starting is an in-deadline
+    // hold; the terminal timeout/drop has its own failure event.
+    kind === 'kickoff-waiting-for-codex-startup' ||
     kind === 'claude-resume-compaction-summary-selected' ||
     kind === 'shutdown-accepted' ||
     kind === 'host-teardown' ||
@@ -139,6 +149,14 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'turn-deferred-quota-blocked' ||
     kind === 'launch-kickoff-model-turn-absent' ||
     kind === 'launch-role-mcp-unavailable' ||
+    // The submitted kickoff was rejected by a provider quota wall.
+    kind === 'launch-kickoff-quota-rejected' ||
+    // The predecessor remains alive/unconfirmed after the force-kill request;
+    // the recycle fence correctly stays held until exit is observed.
+    kind === 'respawn-predecessor-stop-pending' ||
+    // Native seed persistence was verified, but the operator receipt remains
+    // unconfirmed and must not be reported as delivered.
+    kind === 'session-port-delivery-ack-pending' ||
     // The carry-respawn sibling of launch-role-mcp-unavailable (computed kind in
     // psu-pty-host.mjs: result.ok ? 'respawn-carry-mcp-ready' : '...-unavailable').
     kind === 'respawn-carry-mcp-unavailable' ||

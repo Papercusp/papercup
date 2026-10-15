@@ -48,6 +48,28 @@ function emittedHostKinds(hostSource: string): string[] {
     return undefined;
   };
 
+  const returnedProperty = (expression: ts.Expression, name: string): ts.Expression | undefined => {
+    if (ts.isParenthesizedExpression(expression)) return returnedProperty(expression.expression, name);
+    if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
+      const helper = bindingBefore(expression.expression.text, expression);
+      if (helper && ts.isArrowFunction(helper) && ts.isBlock(helper.body)) {
+        const returns = helper.body.statements
+          .filter(ts.isReturnStatement)
+          .flatMap((statement) => statement.expression ? [statement.expression] : []);
+        return returns.map((value) => returnedProperty(value, name)).find(Boolean);
+      }
+    }
+    if (!ts.isObjectLiteralExpression(expression)) return undefined;
+    const property = expression.properties.find((candidate) => {
+      if (!ts.isPropertyAssignment(candidate) && !ts.isShorthandPropertyAssignment(candidate)) return false;
+      return (ts.isIdentifier(candidate.name) || ts.isStringLiteral(candidate.name)) && candidate.name.text === name;
+    });
+    if (!property) return undefined;
+    if (ts.isPropertyAssignment(property)) return property.initializer;
+    if (ts.isShorthandPropertyAssignment(property)) return bindingBefore(property.name.text, property);
+    return undefined;
+  };
+
   const resolve = (expression: ts.Expression, seen = new Set<ts.Node>()): string[] => {
     if (seen.has(expression)) throw new Error(`cyclic PTY event kind: ${expression.getText(source)}`);
     seen.add(expression);
@@ -59,6 +81,13 @@ function emittedHostKinds(hostSource: string): string[] {
     if (ts.isIdentifier(expression)) {
       const initializer = bindingBefore(expression.text, expression);
       if (initializer) return resolve(initializer, seen);
+    }
+    if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) {
+      const initializer = bindingBefore(expression.expression.text, expression);
+      if (initializer) {
+        const propertyValue = returnedProperty(initializer, expression.name.text);
+        if (propertyValue) return resolve(propertyValue, seen);
+      }
     }
     if (ts.isTemplateExpression(expression) && expression.getText(source) === '`${msg.mode}-inject-error`') {
       const guarded = hostSource.includes("if (msg.mode === 'reset' || msg.mode === 'recycle')");
@@ -76,7 +105,7 @@ function emittedHostKinds(hostSource: string): string[] {
   expect(delegated).toHaveLength(2);
   const direct = hostCalls.filter((call) => !delegated.includes(call));
   const emitted = calls.filter((call) => callee(call) === 'emitEvent');
-  expect(emitted).toHaveLength(7); // every pass-through producer is included in this census.
+  expect(emitted).toHaveLength(9); // every pass-through producer is included in this census.
   // recordAdoptedCarryDrillTerminal delegates into recordAdoptedCarryDrillEvent with `kind`.
   const drill = calls.filter((call) =>
     callee(call).startsWith('recordAdoptedCarryDrill') && call.arguments[0]?.getText(source) !== 'kind');
@@ -247,6 +276,13 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');
     expect(classifyPtyHostEvent('persona-refresh-skipped')).toBe('failure');
     expect(classifyPtyHostEvent('headless-codex-model-choice-select-existing')).toBe('routine');
+    expect(classifyPtyHostEvent('hooks-observation-result')).toBe('routine');
+    expect(classifyPtyHostEvent('kickoff-waiting-for-codex-startup')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-kickoff-quota-rejected')).toBe('failure');
+    expect(classifyPtyHostEvent('quota-recovery-resumed')).toBe('recovered');
+    expect(classifyPtyHostEvent('respawn-predecessor-stop-pending')).toBe('failure');
+    expect(classifyPtyHostEvent('session-port-delivery-ack-pending')).toBe('failure');
+    expect(classifyPtyHostEvent('submit-verify-recovery-resubmit')).toBe('recovered');
     // Pending is a non-terminal slow-echo state; confirmed/unconfirmed carry the verdict.
     expect(classifyPtyHostEvent('launch-kickoff-marker-echo-pending')).toBe('routine');
     // WI-10004943: replacing a stuck fresh Codex child is a recovery; the
