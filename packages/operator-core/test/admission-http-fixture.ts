@@ -228,6 +228,7 @@ process.exitCode = result.status ?? 1;
     let settled: ReturnType<typeof parseFrozenCandidateRepairQueue> | undefined;
     while (Date.now() < precheckDeadline) {
       settled = parseFrozenCandidateRepairQueue(await readQueue());
+      assert.ok(settled, 'private queue must remain valid while the precheck is running');
       assert.equal(settled.admissionPrecheck?.operationId, operationId);
       if (settled.admissionPrecheck?.status !== 'running') break;
       await new Promise(done => setTimeout(done, 250));
@@ -242,6 +243,7 @@ process.exitCode = result.status ?? 1;
     assert.equal(response.ok, true, JSON.stringify(response));
     assert.equal(response.admitted, true, JSON.stringify(response));
     const after = parseFrozenCandidateRepairQueue(await readQueue());
+    assert.ok(after, 'admitted private queue must remain valid');
     assert.notEqual(after.repairHead, candidate);
     assert.equal(git(fixture, 'rev-parse', lineageRef), after.repairHead);
     assert.match(git(fixture, 'show', after.repairHead + ':' + admittedPath), /assert.equal\(true, true\)/);
