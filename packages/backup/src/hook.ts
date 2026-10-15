@@ -32,6 +32,7 @@ import { createWriteStream, type Dirent } from 'node:fs';
 import type { Readable } from 'node:stream';
 import { appendFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 
 interface HookContext {
   workspaceId: string;
@@ -916,10 +917,30 @@ async function dumpPg(opts: {
   });
 }
 
-async function renameAtomic(from: string, to: string): Promise<void> {
+export async function renameAtomic(from: string, to: string): Promise<void> {
   const { rename } = await import('node:fs/promises');
   // POSIX rename replaces an existing regular file atomically. Unlinking the
   // destination first created a real missing-file window in which a concurrent
   // Kopia scan could omit the DB dump altogether.
-  await rename(from, to);
+  const install = async (holdIds: readonly string[]) => {
+    const { link, rm } = await import('node:fs/promises');
+    if (!Array.isArray(holdIds) || holdIds.some((id) => typeof id !== 'string' || !id)) {
+      throw new Error('backup dump retention: unreadable legal holds; replacement refused');
+    }
+    const archive = `${to}.legal-hold`;
+    if (holdIds.length) {
+      await mkdir(archive, { recursive: true, mode: 0o700 });
+      // Hardlink keeps the previous bytes without opening a missing-target
+      // window or doubling their disk use. The archive is in the snapshot tree.
+      await link(to, join(archive, `${randomUUID()}.gz`)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    } else {
+      await rm(archive, { recursive: true, force: true });
+    }
+    await rename(from, to);
+  };
+  const lease = backupHost().withRetentionLease;
+  if (lease) await lease(install);
+  else await rename(from, to);
 }
