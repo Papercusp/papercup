@@ -8,6 +8,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { providerAppRegistrationView, type ProviderDescriptor } from '@papercusp/plugin-sdk/provider';
 
 const H = vi.hoisted(() => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
@@ -278,6 +281,28 @@ afterEach(() => {
 });
 
 describe('Settings → Integrations', () => {
+  it.each(['facebook-pages', 'instagram', 'x'])('renders actual %s package setup in the generic provider card', async (id) => {
+    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), '../../libs/papercusp/plugins', id, 'papercusp.json'), 'utf8'));
+    const d = manifest.provider as ProviderDescriptor;
+    // The backend's real installer/registry integration tests the overview projection;
+    // this browser test uses the package's actual descriptor and SDK setup view.
+    serve({ providers: [{
+      ...CHAT, id: d.id, displayName: d.displayName, capabilities: d.capabilities, datatypes: d.datatypes,
+      requiredConfig: d.configSchema?.required ?? [],
+      connectHref: `/api/oauth/start?plugin=${d.id}`,
+      credentials: [], appRegistration: providerAppRegistrationView(d),
+      oauthClient: { ...oauthClient(d.oauth!.clientRegistrationRef!), configured: false, secretRequired: !d.oauth!.pkce },
+    }], sources: [] });
+    render(<Page />);
+    const card = within(await screen.findByRole('region', { name: d.displayName }));
+    expect(card.getByRole('link', { name: `Create ${d.displayName} app` }).getAttribute('href')).toBe(d.setup!.appRegistration!.createUrl);
+    expect(card.getByRole('button', { name: `Connect ${d.displayName}` })).toBeTruthy();
+    for (const capability of d.capabilities) expect(card.getByText(capability)).toBeTruthy();
+    expect(card.getByLabelText('Client ID')).toBeTruthy();
+    expect(Boolean(card.queryByLabelText('Client secret'))).toBe(!d.oauth!.pkce);
+    expect(card.queryByRole('button', { name: 'What syncs' })).toBeNull();
+  });
+
   it('renders each provider from the overview and subscribes the live query as the resolved user', async () => {
     serve({ providers: [LINEAR, ASANA], sources: [source({ mirrored: 1, admitted: 0 })] });
     render(<Page />);
