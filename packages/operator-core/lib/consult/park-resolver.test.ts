@@ -260,6 +260,75 @@ describe('runParkTriggers', () => {
     expect(d.calls).toEqual(['record', 'clear', 'emit:consult:park-verdict:conv-park-1']);
   });
 
+  it.each([
+    { verdict: 'proceed', state: park(), now: AFTER, alternative: null, objectionReason: null, ownerText: null, cleared: true },
+    { verdict: 'consider-alternative', state: park({ replies: [objection()] }), now: BEFORE,
+      alternative: 'Use the Postgres-backed cache', objectionReason: 'LRU loses state across restarts', ownerText: null, cleared: false },
+    { verdict: 'owner-deciding', state: park({ replies: [objection()], reviewersExhausted: true }), now: BEFORE,
+      alternative: 'Use the Postgres-backed cache', objectionReason: 'LRU loses state across restarts', ownerText: null, cleared: false },
+    { verdict: 'owner-decided', state: park({ ownerAnswer: { at: BEFORE, text: 'Use Redis' } }), now: BEFORE,
+      alternative: null, objectionReason: null, ownerText: 'Use Redis', cleared: true },
+    { verdict: 'adopted', state: park({ replies: [objection()], parkerResponses: [{ kind: 'adopt', at: BEFORE, text: 'Adopting Postgres' }] }), now: BEFORE,
+      alternative: 'Use the Postgres-backed cache', objectionReason: 'LRU loses state across restarts', ownerText: null, cleared: true },
+  ])('forwards the exact $verdict payload to the parker verdict event', async ({ verdict, state, now, alternative, objectionReason, ownerText, cleared }) => {
+    const d = deps(state);
+    const result = await runParkTriggers(d, 'conv-park-1', now);
+    expect(result?.verdict).toBe(verdict);
+    expect(d.loadPark).toHaveBeenCalledExactlyOnceWith('conv-park-1');
+    expect(d.emitVerdict).toHaveBeenCalledExactlyOnceWith('consult:park-verdict:conv-park-1', {
+      verdict, consultId: 'conv-park-1', workItemId: 'WI-1', blockerRef: 'product-decision:pick-cache',
+      defaultAction: 'Use the in-process LRU', alternative, objectionReason, ownerText,
+      recordedAs: verdict === 'owner-decided' ? 'owner' : 'peer-review',
+    });
+    expect(d.recordOutcome).toHaveBeenCalledExactlyOnceWith(state, {
+      verdict, at: now, objectionId: alternative ? 'post-obj-1' : null,
+    });
+    expect(d.clearBlocker).toHaveBeenCalledTimes(cleared ? 1 : 0);
+    if (cleared) {
+      expect(d.clearBlocker).toHaveBeenCalledWith(state, {
+        recordedAs: verdict === 'owner-decided' ? 'owner' : 'peer-review',
+        note: verdict === 'proceed'
+          ? 'Peer review: no standing objection at the deadline; proceeding with the default: Use the in-process LRU'
+          : verdict === 'adopted'
+            ? "Peer review: adopted the reviewer's alternative: Use the Postgres-backed cache"
+            : 'Owner decided: Use Redis',
+      });
+    }
+    expect(d.advanceCascade).not.toHaveBeenCalled();
+    expect(d.askOwner).toHaveBeenCalledTimes(verdict === 'owner-deciding' ? 1 : 0);
+  });
+
+  it('forwards both rebuttal positions to the cascade without waking or clearing the parker', async () => {
+    const state = park({
+      replies: [objection()],
+      parkerResponses: [{ kind: 'rebut', at: BEFORE, text: 'Restarts are rare; state is rebuildable' }],
+      outcomes: [{ verdict: 'consider-alternative', at: '2026-10-12T12:11:00.000Z', objectionId: 'post-obj-1' }],
+    });
+    const d = deps(state);
+    const result = await runParkTriggers(d, 'conv-park-1', BEFORE);
+    expect(result?.applied).toEqual(['advance-cascade', 'record-outcome']);
+    expect(d.advanceCascade).toHaveBeenCalledExactlyOnceWith(state, {
+      default: 'Use the in-process LRU', rebuttal: 'Restarts are rare; state is rebuildable',
+      objection: 'LRU loses state across restarts', alternative: 'Use the Postgres-backed cache',
+    });
+    expect(d.emitVerdict).not.toHaveBeenCalled();
+    expect(d.clearBlocker).not.toHaveBeenCalled();
+    expect(d.askOwner).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { reason: 'exhausted disagreement', state: park({ replies: [objection()], reviewersExhausted: true }), alternative: 'Use the Postgres-backed cache', question: 'Which cache backend?' },
+    { reason: 'owner authority', state: park({ ownerAuthority: true, ownerAuthorityTopic: 'spend' }), alternative: 'Do not take the default action', question: 'Which cache backend? [owner-authority: spend]' },
+  ])('forwards exactly the two owner options for $reason', async ({ state, alternative, question }) => {
+    const d = deps(state);
+    await runParkTriggers(d, 'conv-park-1', AFTER);
+    expect(d.askOwner).toHaveBeenCalledExactlyOnceWith(state, {
+      question, options: ['Use the in-process LRU', alternative],
+    });
+    expect(d.clearBlocker).not.toHaveBeenCalled();
+    expect(d.advanceCascade).not.toHaveBeenCalled();
+  });
+
   it('returns null for a consult that is not a park', async () => {
     expect(await runParkTriggers(deps(null), 'conv-x', AFTER)).toBeNull();
   });

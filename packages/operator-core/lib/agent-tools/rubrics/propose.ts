@@ -237,7 +237,7 @@ export const rubricsProposeArgs = refineEvenWithShapeIssues(
       .enum(RUBRIC_GRADING_AUTHORITIES)
       .optional()
       .describe(
-        "who may grade the plan this rubric governs. 'independent' (the DEFAULT when omitted, and the fail-closed one) requires a lineage-independent non-implementer to file the grading; 'owner-authorized' ALSO admits an owner-filed grading, for a plan the owner drove themselves and that an independence-only gate could therefore never satisfy. It never removes the independent route",
+        "For acceptance-kind plan/goal rubrics, controls who may file the acceptance grade: 'independent' (the default, fail-closed) requires a lineage-independent non-implementer; 'owner-authorized' also permits an owner-filed grade. It never removes the independent route. It does not control standard-kind terminal scorecards, which use the separate P-013 non-author grading-integrity audit. A standard-kind value may separately inform goal-rubric stewardship.",
       ),
     releaseGating: z
       .boolean()

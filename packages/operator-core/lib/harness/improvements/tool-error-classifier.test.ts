@@ -416,6 +416,21 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }).class).toBe('caller');
   });
 
+  it('classifies typed unknown and ambiguous owner-filter refusals as caller input', () => {
+    for (const [errorCode, message] of [
+      ['owner_not_found', "Owner 'system:judge/su-owner' matches no known ownerId; pass the full ownerId."],
+      ['owner_ambiguous', "Owner 'su-peer' matches more than one live ownerId; pass the full ownerId."],
+    ] as const) {
+      expect(classifyToolError(errorCode, 'handler_error', message)).toBe('caller');
+      expect(normalizeSuspectedToolFailure({
+        toolName: 'activity:tool-log',
+        errorCode,
+        status: 'handler_error',
+        message,
+      })).toMatchObject({ class: 'caller', direct: false });
+    }
+  });
+
   it('keeps a caller-authored pg_query 42703 refusal out of the structural wrapper lane', () => {
     const wrappedPgQueryRefusal = 'column "passed" does not exist: ' + JSON.stringify({
       error: 'column "passed" does not exist',

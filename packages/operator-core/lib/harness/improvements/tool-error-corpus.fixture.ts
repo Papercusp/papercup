@@ -513,6 +513,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'caller',
     note: 'events:await correctly refused an attempt to await the current assignee’s own work-item completion; the refusal prevents self-deadlock and must not be promoted as a structural tool bug (EI-25327017880527713)',
   },
+  {
+    n: 1, errorCode: 'owner_not_found', status: 'handler_error',
+    message: "Owner 'system:judge/su-9fc0d5e2-95e7-424b-a62f-66e00e1c1a55' matches no known ownerId; pass the full ownerId or check coord:presence.",
+    expectedClass: 'caller',
+    note: 'activity:tool-log correctly refused an unsupported namespaced owner label; unknown owner filters are caller input, not a structural tool failure (EI-25267413190818941)',
+  },
+  {
+    n: 0, errorCode: 'owner_ambiguous', status: 'handler_error',
+    message: "Owner 'su-peer' matches more than one live ownerId; pass the full ownerId.",
+    expectedClass: 'caller',
+    note: 'synthetic typed owner-resolution refusal: ambiguous owner filters are caller input, not a structural tool failure',
+  },
 
   // ── structural: genuine bugs/misconfig (the low-bar auto-implement lane) ────
   {

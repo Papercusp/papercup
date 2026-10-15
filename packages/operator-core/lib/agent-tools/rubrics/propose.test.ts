@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import proposeTool, { rubricsProposeArgs } from './propose';
 import { normalizeRequirementSections } from '../../requirement-contract';
+import { rubricTemplateDataSchema } from '../plans/rubric-template';
 
 const mocks = vi.hoisted(() => ({
   proposeRubric: vi.fn(),
@@ -53,6 +54,24 @@ const lightAcceptanceCriterion = {
 describe('rubrics:propose args — standard-only watchdog fields', () => {
   it('keeps the complete tool schema JSON-Schema-representable', () => {
     expect(() => z.toJSONSchema(proposeTool.args as never)).not.toThrow();
+  });
+
+  it('scopes gradingAuthority descriptions to acceptance grading, separate from standard scorecards', () => {
+    const descriptionOf = (schema: unknown): string => {
+      const jsonSchema = z.toJSONSchema(schema as never) as {
+        properties?: { gradingAuthority?: { description?: string } };
+      };
+      return jsonSchema.properties?.gradingAuthority?.description ?? '';
+    };
+    const descriptions = [descriptionOf(rubricsProposeArgs), descriptionOf(rubricTemplateDataSchema)];
+
+    expect(descriptions).toHaveLength(2);
+    for (const description of descriptions) {
+      expect(description).toContain('acceptance-kind plan/goal rubrics');
+      expect(description).toContain('standard-kind terminal scorecards');
+      expect(description).toContain('P-013');
+      expect(description).toContain('goal-rubric stewardship');
+    }
   });
 
   it('documents the conditional acceptance ratingScale normalization without requiring caller input', () => {
