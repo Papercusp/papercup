@@ -202,10 +202,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
       'dynamic_import_unsupported', 'mcp_auth_failed', 'evidence_class_not_found',
       'tenant_scope_required', 'positive_control_tenant_scope_required',
       'scratch_line_window_too_large', 'mixed_window_modes', 'client_id_required', 'client_not_found',
+      'owner_not_found', 'owner_ambiguous',
     ],
     statuses: ['role-not-allowed', 'scratch_line_window_too_large', 'mixed_window_modes'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, supplied an owner handle that matches no or multiple known owners, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
   },
   {
     class: 'caller',
