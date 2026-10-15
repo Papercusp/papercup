@@ -61,7 +61,7 @@ describe('dispatch-level premises', () => {
   it('executes a confirmed call and protects the recorded premises from handler metadata', async () => {
     const recordInvocation = vi.fn();
     const fn = vi.fn(async (_args: unknown, context: UnifiedToolContext) => {
-      context.metadata({ premises: { provided: false }, other: 'kept' });
+      context.metadata!({ premises: { provided: false }, other: 'kept' });
       return { content: [{ type: 'text' as const, text: 'ok' }] };
     });
     const result = await dispatchProjectedTool(tool(fn), 'test:premises', { value: 7, premises: ['verified'] }, ctx(), {
