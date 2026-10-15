@@ -308,7 +308,7 @@ describe('ensure-codex-home pinned-source recovery', () => {
 
   it('restores an archived featureless judge with its recorded identity, state, model and auto route', async () => {
     mocks.readRecord.mockResolvedValue({ model: 'gpt-5.6-sol', effort: 'high',
-      codexSqliteHome: '/original-state/session-123' });
+      codexSqliteHome: '/original-state/session-123', mcpTarget: 'spawn-host' });
     mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', role: 'judge',
       feature: null, workspaceId: 'papercusp-workspace', sessionId: 'original-native',
       launchArgv: ['psu', '--role=judge', '--harness=papercusp', '--model=gpt-5.6-sol:high',
@@ -318,14 +318,14 @@ describe('ensure-codex-home pinned-source recovery', () => {
       specificationRevision: REVISION, stateRevision: 'judge-state', specificationArtifact: {} });
     expect(await (await call()).json()).toMatchObject({ repaired: true, role: 'judge', acceptedOperation: false });
     expect(mocks.buildRole).toHaveBeenCalledWith(expect.objectContaining({ role: 'judge',
-      harnessSlug: 'papercusp', acceptedOperation: null,
+      harnessSlug: 'papercusp', acceptedOperation: null, mcpTarget: 'spawn-host',
       launchIdentity: { sid: OWNER, nativeSessionId: 'original-native' } }));
     expect(mocks.roleHome).toHaveBeenCalledWith(expect.objectContaining({ preserveExisting: true,
       recordedSqliteHome: '/original-state/session-123', sid: OWNER,
       model: 'gpt-5.6-sol:high', codexGatewayAuto: true, headless: true,
       mcpUrl: 'http://localhost:3170/api/mcp?role=judge&sig=valid' }));
     expect(mocks.recordLaunchSpec).toHaveBeenCalledWith(ADV_SESSION_ID, OWNER, expect.objectContaining({
-      role: 'judge', codexSqliteHome: '/original-state/session-123', acceptedOperation: null }));
+      role: 'judge', codexSqliteHome: '/original-state/session-123', acceptedOperation: null, mcpTarget: 'spawn-host' }));
     expect(mocks.rebuild).not.toHaveBeenCalled();
     expect(mocks.ensureHome).not.toHaveBeenCalled();
   });

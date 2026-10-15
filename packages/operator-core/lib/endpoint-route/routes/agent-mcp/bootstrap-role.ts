@@ -208,6 +208,8 @@ const post = defineTool({
       model_source?: 'explicit' | 'inherited' | 'configured-default' | null;
       /** Windowless/unattended launch posture supplied by psu. */
       headless?: boolean | null;
+      /** Existing explicit spawn-host route; never an arbitrary endpoint URL. */
+      mcp_target?: 'stable' | 'spawn-host';
       /** named-su-agent-fleets P-009: the durable slug of a named fleet to JOIN
        *  (member). Folded into PAPERCUSP_FLEET_SLUG/PAPERCUSP_FLEET_ROLE on the
        *  spawn env, mirroring bootstrap-su. Ignored when `fleet_name` is present
@@ -239,6 +241,9 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: 'launched_by must be a string' }, 400);
     }
     const launchedBy = body.launched_by?.trim() || null;
+    if (body.mcp_target !== undefined && body.mcp_target !== 'stable' && body.mcp_target !== 'spawn-host') {
+      return jsonRes({ status: 'error', error: 'mcp_target must be stable or spawn-host' }, 400);
+    }
     if (launchedBy && !/^[A-Za-z0-9._:-]{1,120}$/.test(launchedBy)) {
       return jsonRes({ status: 'error', error: 'launched_by must be an owner id' }, 400);
     }
@@ -560,6 +565,7 @@ const post = defineTool({
         ...(planContext ? { planContext } : {}),
         ...(handoff ? { handoff } : {}),
         operatorBaseUrl: new URL(req.url).origin,
+        ...(body.mcp_target === 'spawn-host' ? { mcpTarget: 'spawn-host' as const } : {}),
         featureId: feature,
         contextSize,
         stack: body.stack?.map((ref) => ref.trim()) ?? null,
@@ -729,6 +735,7 @@ const post = defineTool({
         harnessSlug,
         role,
         stack: spec.stack,
+        ...(spec.mcpTarget ? { mcpTarget: spec.mcpTarget } : {}),
         specificationRevision: spec.specificationRevision,
         stateRevision: spec.stateRevision,
         specificationArtifact: spec.specificationArtifact,

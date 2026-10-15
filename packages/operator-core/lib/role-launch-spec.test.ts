@@ -312,6 +312,32 @@ beforeEach(() => {
 });
 
 describe('buildRoleLaunchSpec', () => {
+  it.each([
+    ['direct host', 'http://127.0.0.1:9071', '3070', '3271'],
+    ['same-host proxy', 'http://127.0.0.1:9271', '3271', '9271'],
+  ])('preserves an explicit spawn-host role route through signed MCP composition (%s)', async (_name, proxy, targetPort, expectedPort) => {
+    vi.stubEnv('PAPERCUSP_HONO_PORT', '3271');
+    vi.stubEnv('PAPERCUSP_BG_HOST_AGENTS_MCP_BASE', 'http://127.0.0.1:9071');
+    vi.stubEnv('PAPERCUSP_MCP_PROXY_BASE', proxy);
+    vi.stubEnv('PAPERCUSP_MCP_PROXY_TARGET_PORT', targetPort);
+    try {
+      const input = { role: 'worker', workspaceId: 'default', harnessSlug: 'papercup',
+        operatorBaseUrl: 'http://localhost:3271', featureId: 'F-001' };
+      const ordinary = await buildRoleLaunchSpec(input);
+      const pinned = await buildRoleLaunchSpec({ ...input, mcpTarget: 'spawn-host' });
+      expect(new URL(ordinary.mcpUrl).port).toBe('9071');
+      expect(new URL(pinned.mcpUrl).port).toBe(expectedPort);
+      expect(pinned.mcpTarget).toBe('spawn-host');
+      const url = new URL(pinned.mcpUrl);
+      expect(url.searchParams.get('client')).toBe(pinned.sid);
+      expect(url.searchParams.get('role')).toBe('worker');
+      expect(url.searchParams.get('sig')).toBeTruthy();
+      expect(JSON.parse(pinned.mcpJsonContents).mcpServers.papercusp.url).toBe(pinned.mcpUrl);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('composes assembleRolePrompt + a signed role-scoped MCP URL', async () => {
     const spec = await buildRoleLaunchSpec({
       role: 'worker',

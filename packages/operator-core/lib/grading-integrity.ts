@@ -54,7 +54,7 @@ import {
   type GradingAuditDispatchSuppression,
 } from './acceptance-rubric-vetting';
 import { routeSourceGradingAudit } from './grading-audit-routing';
-import { getTask, listTasks } from './task-manager/store';
+import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
 import type { TaskRow } from './task-manager/types';
 import type { PgCoordLog } from '@papercusp/coordination/event-log';
@@ -550,6 +550,8 @@ export interface DispatchPendingGradingAuditsDeps {
   release?: typeof releasePendingGradingAudit;
   /** Check for a still-live task from an earlier reservation epoch. */
   listTasks?: typeof listTasks;
+  /** Reconcile a legacy/late-enrolled task through the existing owner-bound session binder. */
+  bindTaskNativeSession?: typeof bindAgentSessionTaskToLatestNativeSession;
   /** Exact native session bindings for the retained tasks' recorded session ids. */
   listNativeSessionsByTranscriptHandles?: (
     sessionIds: readonly string[],
@@ -1372,7 +1374,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     ? `scorecards:list { rubricRef:'${card.rubricRef}', subjectRef:'${card.subject.ref}', provisional:true }`
     : `scorecards:list { rubricRef:'${card.rubricRef}'${card.sourceHive ? `, sourceHive:'${card.sourceHive}'` : ''}, provisional:true }`;
   return [
-    `Currentness guard: at the start of the audit and immediately before emitting, require scorecard.gradingAuditCurrentness.state to be 'current'. If it is 'stale' or 'unknown', report its reason and stop without grading or emitting; the pending-audit dispatcher must refresh the stamp first.`,
+    `Currentness guard: at the start of the audit and immediately before emitting, call scorecards:get { issueId:'${card.issueId}' } and require its returned scorecard.gradingAuditCurrentness.state to be 'current'. This is a field of that scorecard response, not a state:read registry cell. If the field is absent, 'stale' or 'unknown', report the missing field or its reason and stop without grading or emitting; the pending-audit dispatcher must refresh the stamp or repair the auditor's serving route first.`,
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
@@ -2010,6 +2012,19 @@ export async function dispatchPendingGradingAudits(
         labelPrefix: idempotencyKey,
         limit: 10,
       });
+      // EI-26004619150008295: older headless tasks can retain a null
+      // session_id even after their owner has a tracked native transcript.
+      // Repair that missing link through the enrollment binder before using
+      // native error proof; never infer a transcript from an owner alone.
+      for (const task of liveTasks) {
+        if (task.sessionId?.trim() || !task.detail?.coordOwnerId) continue;
+        try {
+          const sessionId = await (deps.bindTaskNativeSession ?? bindAgentSessionTaskToLatestNativeSession)(task.taskId);
+          if (sessionId?.trim()) task.sessionId = sessionId.trim();
+        } catch {
+          // An unavailable binder is unknown. Keep log-only checks and dedupe.
+        }
+      }
       const nativeSessionIds = [...new Set(liveTasks.flatMap((task) => {
         const sessionId = task.sessionId?.trim();
         return sessionId ? [sessionId] : [];

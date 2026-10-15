@@ -220,6 +220,8 @@ export interface BuildRoleLaunchSpecInput {
   harnessSlug?: string | null;
   /** Operator base URL the signed MCP URL points at (e.g. http://localhost:3070). */
   operatorBaseUrl: string;
+  /** Preserve an explicitly selected spawn host instead of the ordinary agents endpoint. */
+  mcpTarget?: 'stable' | 'spawn-host';
   /** Optional feature scope (required for feature-consuming roles — caller gates via roleConsumes). */
   featureId?: string | null;
   /** Optional plan context already fetched by the caller (operator has PG access). */
@@ -273,6 +275,7 @@ export interface BuildRoleLaunchSpecInput {
 
 export interface RoleLaunchSpec {
   role: string;
+  mcpTarget?: 'spawn-host';
   runId: string;
   spawnId: string;
   /** null = a workspace-level (harness-less) role session. */
@@ -1051,12 +1054,16 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
   // WI-573: route the spawned agent's MCP through the resilient proxy when the env opts in
   // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
-  const base = resolveAgentMcpBaseUrl(input.operatorBaseUrl);
+  const base = resolveAgentMcpBaseUrl(input.operatorBaseUrl,
+    input.mcpTarget === 'spawn-host'
+      ? { ...process.env, PAPERCUSP_BG_HOST_AGENTS_MCP_BASE: undefined }
+      : process.env);
   const mcpUrl = `${base}/api/mcp?${params.toString()}`;
   const mcpJsonContents = JSON.stringify({ mcpServers: { [PAPERCUSP_MCP_SERVER]: { type: 'http', url: mcpUrl } } }, null, 2);
 
   return {
     role: input.role,
+    ...(input.mcpTarget === 'spawn-host' ? { mcpTarget: 'spawn-host' as const } : {}),
     runId,
     spawnId,
     harnessSlug,

@@ -282,6 +282,26 @@ describe('bootstrap-role', () => {
   const pinnedOwner = 'su-auditor-canonical';
   const pinnedRequest = { role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', owner_id: pinnedOwner };
 
+  it('passes the spawn-host route to signed role composition without accepting an endpoint URL', async () => {
+    const compose = buildRoleLaunchSpecMock.getMockImplementation()!;
+    buildRoleLaunchSpecMock.mockImplementationOnce(async (input) => ({
+      ...await compose(input), mcpTarget: input.mcpTarget,
+      specificationArtifact: { configuration: { grants: {} } },
+    }));
+    const response = await callPost({ ...pinnedRequest, mcp_target: 'spawn-host' });
+    expect(response.status).toBe(200);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      mcpTarget: 'spawn-host', operatorBaseUrl: 'http://localhost:3070',
+      launchIdentity: { sid: pinnedOwner, nativeSessionId: 'nsid-abc' },
+    }));
+    expect(recordSuLaunchSpecMock).toHaveBeenCalledWith(7, pinnedOwner,
+      expect.objectContaining({ mcpTarget: 'spawn-host', role: 'worker' }));
+    vi.clearAllMocks();
+    const refused = await callPost({ ...pinnedRequest, mcp_target: 'http://other-host:3271' });
+    expect(refused.status).toBe(400);
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
+  });
+
   it('lets a committed slow role bootstrap return past the generic route watchdog (WI-10006975)', async () => {
     const mod = await import('../routes/agent-mcp/bootstrap-role');
     const route = (mod.default as Array<{ method: string; timeoutSec?: number | null }>)

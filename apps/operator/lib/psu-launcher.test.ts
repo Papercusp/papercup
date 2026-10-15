@@ -5059,6 +5059,15 @@ describe("psu-launcher arg parsing", () => {
     ).not.toHaveProperty("account");
   });
 
+  it('roleBootstrapBody forwards only the existing explicit spawn-host route', () => {
+    const input = { role: 'judge', agent: 'codex', workspace: 'ws1', harness: 'h1' };
+    expect(roleBootstrapBody({ ...input, mcpTarget: 'spawn-host' })).toMatchObject({
+      mcp_target: 'spawn-host', role: 'judge', workspace: 'ws1', harness_slug: 'h1',
+    });
+    expect(roleBootstrapBody(input)).not.toHaveProperty('mcp_target');
+    expect(roleBootstrapBody({ ...input, mcpTarget: 'stable' })).not.toHaveProperty('mcp_target');
+  });
+
   it("forkSeedPaths points at the projects/ subtree of each config dir", () => {
     expect(forkSeedPaths("/orig/cfg", "/fork/cfg")).toEqual({
       src: "/orig/cfg/projects",

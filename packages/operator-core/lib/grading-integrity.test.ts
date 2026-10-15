@@ -194,6 +194,8 @@ function deps() {
     confirmReservation,
     release,
     listTasks,
+    bindTaskNativeSession: vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['bindTaskNativeSession']>>()
+      .mockResolvedValue(null),
     getTask,
     notifyRetainedAuditor,
     readCurrentGeneration,
@@ -2241,7 +2243,9 @@ describe('dispatchPendingGradingAudits', () => {
     // EI-24583166035391772: the brief must name fields scorecards:get actually returns.
     expect(brief).toContain('scorecard.auditTarget');
     expect(brief).toContain("scorecard.gradingAuditCurrentness.state to be 'current'");
-    expect(brief).toContain("If it is 'stale' or 'unknown'");
+    expect(brief).toContain("call scorecards:get { issueId:'EI-state-recheck' }");
+    expect(brief).toContain('field of that scorecard response, not a state:read registry cell');
+    expect(brief).toContain("If the field is absent, 'stale' or 'unknown'");
     expect(brief).toContain("gradingAudit.state is exactly 'pending'");
     expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');
@@ -2874,7 +2878,7 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
-  it('uses the exact retained Claude session transcript to recover a gateway failure without a PTY footer', async () => {
+  it.each([false, true])('uses the exact retained Claude session transcript (missing task binding: %s) to recover a gateway failure without a PTY footer', async (missingBinding) => {
     const d = deps();
     const sessionId = 'native-retained-session';
     const ownerId = 'su-retained-auditor';
@@ -2888,7 +2892,7 @@ describe('dispatchPendingGradingAudits', () => {
     });
     const task = {
       taskId: 'task-retained-native',
-      sessionId,
+      sessionId: missingBinding ? null : sessionId,
       workspaceId: 'ws-test',
       class: 'agent-session',
       state: 'running',
@@ -2898,6 +2902,7 @@ describe('dispatchPendingGradingAudits', () => {
     } as unknown as TaskRow;
     d.listScorecards.mockResolvedValue([card('EI-retained-native')]);
     d.listTasks.mockResolvedValue([task]);
+    d.bindTaskNativeSession.mockResolvedValue(sessionId);
     d.launch.mockResolvedValueOnce(launchResult({
       deduped: false,
       launch: { tasks: [{ taskId: 'task-retained-fallback', logPath: '/tmp/grading-retained-fallback.log' }] },
@@ -2931,6 +2936,8 @@ describe('dispatchPendingGradingAudits', () => {
     );
 
     expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
+    if (missingBinding) expect(d.bindTaskNativeSession).toHaveBeenCalledExactlyOnceWith(task.taskId);
+    else expect(d.bindTaskNativeSession).not.toHaveBeenCalled();
     expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
     expect(killTask).toHaveBeenCalledWith(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
     expect(d.launch).toHaveBeenCalledOnce();
@@ -2942,6 +2949,36 @@ describe('dispatchPendingGradingAudits', () => {
         codes: ['inference_gateway_error'],
       },
     });
+  });
+
+  it.each(['missing', 'unavailable', 'foreign-owner'])('preserves a retained task when recovered native binding is %s', async (binding) => {
+    const d = deps();
+    const issueId = 'EI-unproven-native';
+    const ownerId = 'su-retained-auditor';
+    const sessionId = 'native-recovered-session';
+    const task = { taskId: 'task-unproven-native', sessionId: null, workspaceId: 'ws-test',
+      class: 'agent-session', state: 'running', startedAt: new Date().toISOString(),
+      logPath: '/tmp/unproven-native.log', detail: { label: 'grading-audit:' + issueId, coordOwnerId: ownerId },
+    } as unknown as TaskRow;
+    d.listScorecards.mockResolvedValue([card(issueId)]);
+    d.listTasks.mockResolvedValue([task]);
+    if (binding === 'unavailable') d.bindTaskNativeSession.mockRejectedValue(new Error('binding unavailable'));
+    else d.bindTaskNativeSession.mockResolvedValue(binding === 'missing' ? null : sessionId);
+    const listNativeSessions = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['listNativeSessionsByTranscriptHandles']>>()
+      .mockResolvedValue([{ sessionId, coordOwnerId: 'su-foreign-auditor', agent: 'claude' }]);
+    const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findSessionTranscript']>>();
+    const killTask = vi.fn();
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx, harness: 'papercusp' },
+      { ...d, listNativeSessionsByTranscriptHandles: listNativeSessions, findSessionTranscript: resolveTranscript,
+        killTask, readLogTail: () => 'API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s',
+        readLogMtimeMs: () => Date.now(), terminalLogMaxRechecks: 0 },
+    );
+    expect(d.bindTaskNativeSession).toHaveBeenCalledExactlyOnceWith(task.taskId);
+    expect(resolveTranscript).not.toHaveBeenCalled();
+    expect(killTask).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts[0]).toMatchObject({ state: 'deduped', launch: { mode: 'live-task-guard' } });
   });
 
   it('preserves a recovering capacity-screen fallback after retiring a gateway-failed primary', async () => {

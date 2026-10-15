@@ -1758,6 +1758,7 @@ const ensureCodexHome = defineTool({
       const spec = await buildRoleLaunchSpec({
         role: sessionRow.role, workspaceId: sessionRow.workspaceId, harnessSlug,
         featureId: sessionRow.feature, operatorBaseUrl: new URL(req.url).origin,
+        ...(saved.mcpTarget === 'spawn-host' ? { mcpTarget: 'spawn-host' as const } : {}),
         acceptedOperation: accepted && selection ? { ...accepted, modelSelection: selection } : accepted,
         ...(!accepted && Array.isArray(saved.stack) ? { stack: saved.stack as string[] } : {}),
         launchIdentity: { sid: owner, nativeSessionId: sessionRow.sessionId },
