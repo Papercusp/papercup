@@ -50,10 +50,15 @@ describe('FSWE-P011-ONETOGGLE: one registered ablation per capability shipped si
     expect(() => requireRunnableAblation(protocol, 'missing')).toThrow(/not in the frozen protocol/);
   });
 
-  it('runs fleet-leader-off on its bound independent-solver control', () => {
+  it('withholds fleet-leader-off readiness and launch until the maintained native control is bound', () => {
     const protocol = ablationOf('fleet-leader');
-    expect(requireRunnableAblation(protocol, 'coordinated-no-locks')).toBe(CAPABILITY_ABLATIONS['fleet-leader']);
-    expect(launchAblation(protocol)).toEqual(protocol);
+    // A valid frozen one-toggle pair does not establish a native enforcement path.
+    // The old bespoke runner's offeredTools filter cannot attest the current su launcher.
+    expect(currentBenchmarkProtocolSchema.safeParse(protocol).success).toBe(true);
+    expect(capabilityAblationReadiness().find(row => row.capability === 'fleet-leader'))
+      .toMatchObject({ runnable: false });
+    expect(() => requireRunnableAblation(protocol, 'coordinated-no-locks')).toThrow(/not runnable/);
+    expect(() => launchAblation(protocol)).toThrow(/not runnable/);
   });
 
   it.each(D018_CAPABILITIES.filter(capability => CAPABILITY_ABLATIONS[capability as AblatedCapability].nativeControl.status === 'unavailable'))

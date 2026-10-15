@@ -295,13 +295,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function waitForSignal<T>(signal: Promise<T>, label: string, timeoutMs = 5_000): Promise<T> {
+function waitForSignal<T>(
+  signal: Promise<T>,
+  label: string,
+  timeoutMs = 5_000,
+  diagnostics?: () => unknown,
+): Promise<T> {
   let poll: NodeJS.Immediate | undefined;
   const timeout = new Promise<never>((_, reject) => {
     const deadline = Date.now() + timeoutMs;
     const check = () => {
       if (Date.now() >= deadline) {
-        reject(new Error(`${label} was not received within ${timeoutMs}ms`));
+        let detail = '';
+        try {
+          if (diagnostics) detail = `; diagnostics=${JSON.stringify(diagnostics())}`;
+        } catch {
+          detail = '; diagnostics unavailable';
+        }
+        reject(new Error(`${label} was not received within ${timeoutMs}ms${detail}`));
         return;
       }
       poll = setImmediate(check);
@@ -870,11 +881,23 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const traceId = '4429f9ae-11d4-4ea6-95d6-958f4ee77f9e';
     const receiptKey = 'idem-real-checkpoint-spill';
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const response = callTool('deadlinetest:spill', {},
         superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
         { idempotencyKey: receiptKey });
-      await waitForSignal(enteredWrite, 'scratch spill write entry');
+      await waitForSignal(enteredWrite, 'scratch spill write entry', 5_000, () => ({
+        traceEvents: traceEvents(info.mock.calls).filter((event) => event.traceId === traceId),
+        resultDoorCalls: h.resultDoorCalls,
+        spillPaths: [...h.spillPaths],
+      }));
+      expect(traceEvents(info.mock.calls)).toContainEqual(
+        expect.objectContaining({ traceId, stage: 'inner_dispatch_started' }),
+      );
+      // Let dispatch and the scratch writer reach the intended post-deadline gate
+      // before expiring the request-entry timer. This keeps unrelated pre-dispatch
+      // startup variation from turning the spill-path test into a setup timeout.
+      await vi.advanceTimersByTimeAsync(TEST_DEADLINE_MS);
       const timedOut = await response;
       expect(timedOut.isError).toBe(true);
       expect(textOf(timedOut)).toContain('request_timeout');
@@ -882,6 +905,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(traceEvents(info.mock.calls).some((event) =>
         event.traceId === traceId && event.stage === 'inner_dispatch_settled')).toBe(false);
 
+      vi.useRealTimers();
       releaseWrite();
       await vi.waitFor(() => expect(h.replayStores.some((store) =>
         store.idempotencyKey === receiptKey)).toBe(true));
@@ -911,6 +935,7 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       expect(textOf(receipt)).not.toContain('request_timeout');
       expect(JSON.stringify(receipt)).toContain(h.spillPaths[0]);
     } finally {
+      vi.useRealTimers();
       releaseWrite();
       await sleep(SLOW_TOOL_MS + 100);
       info.mockRestore();
@@ -1139,6 +1164,56 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
       else process.env.PAPERCUSP_RESULT_DOOR_OFF = previousKillSwitch;
       rmSync(sandbox, { recursive: true, force: true });
     }
+  });
+
+  it('returns at the request-entry deadline while the scoped transport gate is held, then blocks late handler start', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const traceId = '2bc6eafe-a0fa-4d50-9e56-0bcc88a1bfc6';
+    let releaseScope!: () => void;
+    let enterScope!: () => void;
+    const scopeGate = new Promise<void>((resolve) => { releaseScope = resolve; });
+    const scopeEntered = new Promise<void>((resolve) => { enterScope = resolve; });
+    h.resolveWorkspaceForHarnessSlugIn.mockImplementationOnce(async () => {
+      enterScope();
+      await scopeGate;
+      return 'ws-test';
+    });
+
+    const responsePromise = callTool(
+      'deadlinetest:slow',
+      { harness: 'papercusp' },
+      superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+    );
+    let responseBeforeRelease: CallResult | null = null;
+    let traceAtDeadline: Array<Record<string, unknown>> = [];
+    try {
+      await waitForSignal(scopeEntered, 'scoped transport harness resolver');
+      responseBeforeRelease = await Promise.race([
+        responsePromise,
+        sleep(TEST_DEADLINE_MS * 3).then(() => null),
+      ]);
+      traceAtDeadline = traceEvents(info.mock.calls);
+    } finally {
+      releaseScope();
+      info.mockRestore();
+    }
+
+    const result = responseBeforeRelease ?? await responsePromise;
+    expect(responseBeforeRelease).not.toBeNull();
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('request_timeout');
+    expect(textOf(result)).toContain('during MCP request setup');
+    expect(traceAtDeadline).toContainEqual(
+      expect.objectContaining({
+        traceId,
+        toolName: 'deadlinetest:slow',
+        stage: 'deadline',
+        phase: 'pre_dispatch',
+        preDispatchActivePhase: 'transportScopeSetup',
+      }),
+    );
+    await sleep(50);
+    expect(slowCalls).toBe(0);
   });
 
   it('marks a delayed workspace acquisition as pre-dispatch and blocks late handler start', async () => {

@@ -3919,7 +3919,7 @@ export function registerMcpHost(server: McpServer): void {
 
   server.server.setRequestHandler(
     sdk.CallToolRequestSchema,
-    withMcpSessionSurfaceRecheck(withFuzzyToolName(
+    withMcpRequestDeadline(withMcpSessionSurfaceRecheck(withFuzzyToolName(
     async (
       req: {
         params: {
@@ -3944,8 +3944,10 @@ export function registerMcpHost(server: McpServer): void {
       // a real dispatch; this one exists for the paths that answer WITHOUT
       // dispatching — today the idempotency replay branch, whose telemetry row
       // records how long serving the stored result took (WI-6792).
-      const callStartedAt = Date.now();
-      const requestStartedAtMonotonic = performance.now();
+      const requestDeadline = mcpRequestDeadlineFor(extra);
+      const callStartedAt = requestDeadline?.startedAtMs ?? Date.now();
+      const requestStartedAtMonotonic = requestDeadline?.startedAtMonotonicMs ?? performance.now();
+      let deadlineMs = requestDeadline?.durationMs ?? effectiveMcpDeadlineMs(undefined);
       // The local proxy owns and overwrites this UUID before forwarding. Keep a
       // generated fallback for direct/native callers, then carry the same value
       // through request, dispatch and deadline evidence without logging args.
@@ -4015,6 +4017,23 @@ export function registerMcpHost(server: McpServer): void {
         };
       };
       trace('request_started');
+      const earlyTimeoutResult = (): McpCallResult => {
+        trace('deadline', {
+          deadlineMs,
+          phase: 'pre_dispatch',
+          preDispatchPhaseTimingsMs: preDispatchPhaseSnapshot(),
+          ...(activePreDispatchPhase ? { preDispatchActivePhase: activePreDispatchPhase } : {}),
+        });
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: 'request_timeout: tool "' + toolName + '" exceeded ' + deadlineMs +
+              'ms during MCP request setup (target dispatch had not started; no mutation was started; request trace id: ' + traceId + ').',
+          }],
+        };
+      };
+      requestDeadline?.setTimeoutResult(earlyTimeoutResult);
       await measurePreDispatchPhase('operatorToolsLoad', () => ensureOperatorToolsLoaded());
       // `let` (not const): the scoped-superuser clamp may RE-RESOLVE a wildcard
       // `harness:'all'` on plans:list into a workspace-wide read of the session's
@@ -4077,6 +4096,8 @@ export function registerMcpHost(server: McpServer): void {
       // superuser-mode.mdx — the bypass logic lives in
       // dispatch-projected.ts, never in dispatch().
       const projected = lookupByMcpName(toolName);
+      deadlineMs = effectiveMcpDeadlineMs(projected?.timeoutSec);
+      requestDeadline?.setDurationMs(deadlineMs);
       // EI-9510: the replay-store round-trip (lookupStoredMcpResult /
       // storeMcpResult, both awaited on the hot path below) only matters for
       // a WRITE — a read-only tool has no mutation to double-apply, so
@@ -4877,7 +4898,7 @@ export function registerMcpHost(server: McpServer): void {
           preDispatchPhaseTimingsMs: McpPreDispatchPhaseTimingsMs | null;
         } = {
           toolOutcome: null,
-          deadlineFired: false,
+          deadlineFired: requestDeadline?.didExpire ?? false,
           innerDispatchStarted: false,
           innerDispatchSettled: false,
           postDispatchStartedAtMs: null,
@@ -4927,8 +4948,10 @@ export function registerMcpHost(server: McpServer): void {
         // handler. Keep one deadline result and one deadline origin for both
         // races so a slow pre-dispatch acquisition cannot start a handler
         // after the caller has already received a timeout.
-        const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
-        const deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : null;
+        const deadlineAt = requestDeadline?.deadlineAtMs ??
+          (deadlineMs > 0 ? callStartedAt + deadlineMs : null);
+        const remainingDeadlineMs = () => requestDeadline?.remainingMs() ??
+          (deadlineAt === null ? deadlineMs : Math.max(0, deadlineAt - Date.now()));
         const timeoutResult = (): McpCallResult => {
           const preDispatchDeadline = !raced.innerDispatchStarted;
           if (!raced.deadlineFired) {
@@ -4993,6 +5016,7 @@ export function registerMcpHost(server: McpServer): void {
             ],
           };
         };
+        requestDeadline?.setTimeoutResult(timeoutResult);
         const runDispatch = async (ctx: UnifiedToolContext): Promise<McpCallResult> => {
           // The tool execution as ONE promise, so the P2-5 deadline can return a
           // clean client error WITHOUT cancelling it: keyed writes persist their
@@ -5648,7 +5672,7 @@ export function registerMcpHost(server: McpServer): void {
             });
           };
           return raceDeadline<McpCallResult>(
-            deadlineMs,
+            remainingDeadlineMs(),
             () => {
               const outcome = execute();
               raced.toolOutcome = outcome;
@@ -5726,7 +5750,7 @@ export function registerMcpHost(server: McpServer): void {
             throw error;
           }
         };
-        const dispatched = await raceDeadline<McpCallResult>(deadlineMs, dispatchPreflight, timeoutResult);
+        const dispatched = await raceDeadline<McpCallResult>(remainingDeadlineMs(), dispatchPreflight, timeoutResult);
         // EI-19301511582594101: persist the replay receipt HERE — after
         // dispatchWithSynthesizedTx has resolved, which is after the tool's
         // `withWorkspace` transaction has COMMITTED, and still before this result is
@@ -5819,7 +5843,7 @@ export function registerMcpHost(server: McpServer): void {
       };
     },
     MCP_FUZZY_DEPS,
-    )),
+    ))),
   );
 
   // ── Resources ────────────────────────────────────────────────────
@@ -6128,6 +6152,146 @@ export function effectiveMcpDeadlineMs(
   if (!(baseDeadlineMs > 0)) return baseDeadlineMs;
   if (!toolTimeoutSec || !(toolTimeoutSec > 0)) return baseDeadlineMs;
   return Math.max(baseDeadlineMs, toolTimeoutSec * 1000 + MCP_DEADLINE_TOOL_BUFFER_MS);
+}
+
+interface McpRequestDeadlineContext {
+  readonly startedAtMs: number;
+  readonly startedAtMonotonicMs: number;
+  readonly timeout: Promise<McpCallResult>;
+  readonly didExpire: boolean;
+  readonly durationMs: number;
+  readonly deadlineAtMs: number | null;
+  setDurationMs(durationMs: number): void;
+  setTimeoutResult(factory: () => McpCallResult): void;
+  remainingMs(): number;
+  dispose(): void;
+}
+
+const mcpRequestDeadlineByExtra = new WeakMap<object, McpRequestDeadlineContext>();
+
+function createMcpRequestDeadlineContext(
+  startedAtMs: number,
+  initialDurationMs: number,
+  initialTimeoutResult: () => McpCallResult,
+): McpRequestDeadlineContext {
+  let durationMs = initialDurationMs;
+  let deadlineAtMs = durationMs > 0 ? startedAtMs + durationMs : null;
+  let didExpire = false;
+  let disposed = false;
+  let timeoutResult = initialTimeoutResult;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let resolveTimeout!: (result: McpCallResult) => void;
+  const timeout = new Promise<McpCallResult>((resolve) => { resolveTimeout = resolve; });
+
+  const clearTimer = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = undefined;
+  };
+  const fire = () => {
+    if (didExpire || disposed) return;
+    didExpire = true;
+    resolveTimeout(timeoutResult());
+  };
+  const schedule = () => {
+    clearTimer();
+    if (didExpire || disposed || deadlineAtMs === null) return;
+    const remainingMs = deadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      fire();
+      return;
+    }
+    timer = setTimeout(fire, remainingMs);
+    (timer as { unref?: () => void }).unref?.();
+  };
+  schedule();
+
+  return {
+    startedAtMs,
+    startedAtMonotonicMs: performance.now(),
+    timeout,
+    get didExpire() { return didExpire; },
+    get durationMs() { return durationMs; },
+    get deadlineAtMs() { return deadlineAtMs; },
+    setDurationMs(nextDurationMs) {
+      if (didExpire || disposed) return;
+      durationMs = nextDurationMs;
+      deadlineAtMs = durationMs > 0 ? startedAtMs + durationMs : null;
+      schedule();
+    },
+    setTimeoutResult(factory) { timeoutResult = factory; },
+    remainingMs() {
+      return deadlineAtMs === null ? 0 : Math.max(0, deadlineAtMs - Date.now());
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      clearTimer();
+    },
+  };
+}
+
+function mcpRequestDeadlineFor(extra: unknown): McpRequestDeadlineContext | null {
+  return extra !== null && typeof extra === 'object'
+    ? mcpRequestDeadlineByExtra.get(extra)
+    ?? null
+    : null;
+}
+
+function withMcpRequestDeadline<Req, Res>(
+  handler: (req: Req, extra: unknown) => Promise<Res>,
+): (req: Req, extra: unknown) => Promise<Res> {
+  return async (req, extra) => {
+    const requestedName = (req as { params?: { name?: unknown } } | null)?.params?.name;
+    const toolName = typeof requestedName === 'string' ? requestedName.slice(0, 120) : 'tools/call';
+    const startedAtMs = Date.now();
+    const startedAtMonotonicMs = performance.now();
+    const traceId = resolveMcpRequestTraceId(extra);
+    const fallbackTimeoutResult = (): McpCallResult => {
+      const deadlineMs = requestDeadline.durationMs;
+      logMcpRequestTrace({
+        traceId,
+        toolName,
+        stage: 'deadline',
+        elapsedMs: Math.max(0, Date.now() - startedAtMs),
+        deadlineMs,
+        phase: 'pre_dispatch',
+      });
+      return {
+        isError: true,
+        content: [{
+          type: 'text',
+          text: 'request_timeout: tool "' + toolName + '" exceeded ' + deadlineMs +
+            'ms during MCP request setup (target dispatch had not started; no mutation was started; request trace id: ' + traceId + ').',
+        }],
+      };
+    };
+    let timeoutFactory = fallbackTimeoutResult;
+    const requestDeadline = createMcpRequestDeadlineContext(
+      startedAtMs,
+      effectiveMcpDeadlineMs(lookupByMcpName(toolName)?.timeoutSec),
+      () => timeoutFactory(),
+    );
+    const extraObject = extra !== null && typeof extra === 'object' ? extra : null;
+    if (extraObject) mcpRequestDeadlineByExtra.set(extraObject, requestDeadline);
+    const work = Promise.resolve().then(() => handler(req, extra));
+    let workSettled = false;
+    const cleanup = () => {
+      if (extraObject && mcpRequestDeadlineByExtra.get(extraObject) === requestDeadline) {
+        mcpRequestDeadlineByExtra.delete(extraObject);
+      }
+      requestDeadline.dispose();
+    };
+    void work.then(
+      () => { workSettled = true; if (requestDeadline.didExpire) cleanup(); },
+      () => { workSettled = true; if (requestDeadline.didExpire) cleanup(); },
+    );
+    try {
+      return await Promise.race([work, requestDeadline.timeout]) as Res;
+    } finally {
+      if (workSettled || !requestDeadline.didExpire) cleanup();
+      requestDeadline.dispose();
+    }
+  };
 }
 
 /** Read-only MCP results are not stored for idempotent replay. */

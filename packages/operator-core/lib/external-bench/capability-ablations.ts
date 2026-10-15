@@ -92,11 +92,10 @@ export const CAPABILITY_ABLATIONS: Readonly<Record<AblatedCapability, Capability
     },
     inadmissibleWhen: ['the off arm shows any leader decision or coordination delivery', 'solver population differs'],
     nativeControl: {
-      status: 'bound',
-      // The off arm's topology blueprint sets coordinator:none, broadcast:none and discipline.forbid over
-      // every coord/* tool; coordination-runtime.ts forbiddenCoordTools carries it into each RunAgentInput
-      // and the runagents' offeredTools filter (frontier-swe-runagent.ts, swe-pro-runagent.ts) enforces it.
-      ref: 'packages/operator-core/lib/external-bench/coordination-topology.ts#CoordinationSpec {coordinator:none, broadcast:none, central:false, disciplineForbid:coord/*} enforced by coordination-runtime.ts#forbiddenCoordTools and frontier-swe-runagent.ts offeredTools',
+      status: 'unavailable',
+      // The bespoke runagents' offeredTools filter is not a control on the maintained native launcher.
+      // current-su.ts refuses controlled su arms until their delivered capabilities are host-verified.
+      reason: 'No verified assignment-scoped fleet-leader control on the maintained native launcher; the bespoke runagent coordination filter does not bind this runtime. The variant is non-runnable until a native control is bound and tested.',
     },
   },
   'locks': {
