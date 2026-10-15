@@ -412,6 +412,17 @@ const session = (over: Record<string, unknown> = {}) => ({
 
 const livePresence = { stale: false, revoked: false };
 const stalePresence = { stale: true, revoked: false };
+const parkedMemberLiveness = (ownerId = 'su-abc') =>
+  vi.fn(async () => new Map([
+    [ownerId, {
+      ownerId,
+      sessionState: 'parked',
+      wakeable: false,
+      liveTurn: false,
+      confirmLiveness: null,
+      heartbeatFresh: true,
+    } as never],
+  ]));
 const testPtyAccessScope = {
   tenantId: 'ws',
   workspaceId: 'ws',
@@ -3720,6 +3731,8 @@ describe('executeWake — the liveness ladder', () => {
       deps({
         getSession: vi.fn(async () => session({ harnessSlug: null })) as never,
         alive: vi.fn(() => false),
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: parkedMemberLiveness() as never,
         spawnDetached,
       }),
     );
@@ -3736,6 +3749,8 @@ describe('executeWake — the liveness ladder', () => {
         getSession: vi.fn(async () => session({ harnessSlug: null })) as never,
         getLoopStatusFn: vi.fn(async () => ({ harnessSlug: 'current-loop-harness' })) as never,
         alive: vi.fn(() => false),
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: parkedMemberLiveness() as never,
         spawnDetached,
       }),
     );
@@ -4371,15 +4386,182 @@ describe('executeWake — the liveness ladder', () => {
 
   it('NO recorded pid + fresh presence → park (never concurrent-resume a live session)', async () => {
     const spawnManagedPty = vi.fn(() => ({ id: 'x' }));
+    const resolveMemberLiveness = vi.fn();
     const out = await executeWake(
       work({ wakeHandle: advHandle({ pid: null }) }),
       deps({
         getSession: vi.fn(async () => session({ pid: null })) as never,
         spawnManagedPty: spawnManagedPty as never,
+        resolveMemberLiveness: resolveMemberLiveness as never,
       }),
     );
     expect(out).toMatchObject({ kind: 'park' });
     expect(spawnManagedPty).not.toHaveBeenCalled();
+    expect(resolveMemberLiveness).not.toHaveBeenCalled();
+  });
+
+  it('NO recorded pid + fresh presence + armed loop + parked verdict → resume', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const resolveMemberLiveness = parkedMemberLiveness();
+    const isLoopArmed = vi.fn(async () => true);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle({ pid: null }),
+        payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+      }),
+      deps({
+        getSession: vi.fn(async () => session({ pid: null })) as never,
+        spawnDetached,
+        isLoopArmed,
+        resolveMemberLiveness: resolveMemberLiveness as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(spawnDetached).toHaveBeenCalled();
+    expect(isLoopArmed).toHaveBeenCalledWith('su-abc');
+    expect(resolveMemberLiveness).toHaveBeenCalledWith(
+      [{ ownerId: 'su-abc' }],
+      { hydratePerId: true },
+    );
+  });
+
+  it('NO recorded pid + fresh presence + inactive loop → park without resolving liveness', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const resolveMemberLiveness = vi.fn();
+    const isLoopArmed = vi.fn(async () => false);
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle({ pid: null }),
+        payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+      }),
+      deps({
+        getSession: vi.fn(async () => session({ pid: null })) as never,
+        spawnDetached,
+        isLoopArmed,
+        resolveMemberLiveness: resolveMemberLiveness as never,
+      }),
+    );
+
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+    expect(resolveMemberLiveness).not.toHaveBeenCalled();
+  });
+
+  it.each(['live', 'suspect', 'draining', 'ended', 'unknown', null])(
+    'NO recorded pid + fresh presence + armed loop + %s verdict → park',
+    async (sessionState) => {
+      const spawnDetached = vi.fn(() => 4321);
+      const resolveMemberLiveness = vi.fn(async () => new Map([
+        ['su-abc', {
+          ownerId: 'su-abc',
+          sessionState,
+          wakeable: false,
+          liveTurn: false,
+          confirmLiveness: null,
+          heartbeatFresh: true,
+        } as never],
+      ]));
+      const out = await executeWake(
+        work({
+          wakeHandle: advHandle({ pid: null }),
+          payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+        }),
+        deps({
+          getSession: vi.fn(async () => session({ pid: null })) as never,
+          spawnDetached,
+          isLoopArmed: vi.fn(async () => true),
+          resolveMemberLiveness: resolveMemberLiveness as never,
+        }),
+      );
+
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(resolveMemberLiveness).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('NO recorded pid + fresh presence + liveness resolver error → park', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spawnDetached = vi.fn(() => 4321);
+    try {
+      const out = await executeWake(
+        work({
+          wakeHandle: advHandle({ pid: null }),
+          payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+        }),
+        deps({
+          getSession: vi.fn(async () => session({ pid: null })) as never,
+          spawnDetached,
+          isLoopArmed: vi.fn(async () => true),
+          resolveMemberLiveness: vi.fn(async () => { throw new Error('resolver unavailable'); }) as never,
+        }),
+      );
+
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('session liveness/su-abc failed'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('loop wake with ended liveness stays parked at the Channel 2 boundary', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const resolveMemberLiveness = vi.fn(async () => new Map([
+      ['su-abc', {
+        ownerId: 'su-abc',
+        sessionState: 'ended',
+        wakeable: false,
+        liveTurn: false,
+        confirmLiveness: null,
+        heartbeatFresh: false,
+      } as never],
+    ]));
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+      }),
+      deps({
+        alive: vi.fn(() => false),
+        spawnDetached,
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: resolveMemberLiveness as never,
+      }),
+    );
+
+    expect(out).toMatchObject({ kind: 'park' });
+    expect(spawnDetached).not.toHaveBeenCalled();
+    expect(resolveMemberLiveness).toHaveBeenCalledTimes(1);
+  });
+
+  it('NO recorded pid + fresh presence + liveness resolver timeout → park', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spawnDetached = vi.fn(() => 4321);
+    try {
+      const pending = executeWake(
+        work({
+          wakeHandle: advHandle({ pid: null }),
+          payload: { carry: 'warm', wakeCount: 1, harness: 'papercusp' },
+        }),
+        deps({
+          getSession: vi.fn(async () => session({ pid: null })) as never,
+          spawnDetached,
+          isLoopArmed: vi.fn(async () => true),
+          resolveMemberLiveness: vi.fn(() => new Promise(() => undefined)) as never,
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      await expect(pending).resolves.toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('session liveness/su-abc timed out'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('NO recorded pid + stale presence → resume (the session is gone)', async () => {
@@ -5296,6 +5478,8 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
         findPsuHost: vi.fn(() => null) as never,
         coldAutoEnabled: vi.fn(async () => false),
         alive: vi.fn(() => false),
+        isLoopArmed: vi.fn(async () => true),
+        resolveMemberLiveness: parkedMemberLiveness() as never,
         spawnDetached,
       }),
     );
