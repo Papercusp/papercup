@@ -170,6 +170,9 @@ function SupportHandoff({ handoff }: { handoff: SupportToEngineeringResult }) {
     <ul>{handoff.citations.map((citation) => <li key={citation.id}>
       <strong>{citation.source}</strong>{citation.externalId && <> · {citation.externalId}</>}
       {' '}· Document <code>{citation.id}</code>
+      {citation.sourceUrl && <> · <a href={citation.sourceUrl} target="_blank" rel="noopener noreferrer">
+        Open source in {citation.source}
+      </a></>}
     </li>)}</ul>
   </section>;
 }

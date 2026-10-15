@@ -31,7 +31,18 @@ export interface SupportToEngineeringResult {
   readonly reproduction: readonly string[];
   readonly checklist: readonly string[];
   readonly suggestedRole: string;
-  readonly citations: readonly { id: string; source: string; externalId: string | null }[];
+  readonly citations: readonly { id: string; source: string; externalId: string | null; sourceUrl?: string }[];
+}
+
+/** Display-only link from current corpus metadata, never a provider URL invented
+ * by the worker. The browser repeats this guard at its output boundary. */
+export function safeSupportSourceUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 2048 ||
+      !/^https:\/\//i.test(value) || /[\u0000-\u0020\u007f]/.test(value)) return;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined;
+  } catch { return; }
 }
 
 const REVISION = /^[0-9a-f]{64}$/;
@@ -104,6 +115,7 @@ export function parseSupportToEngineeringResultShape(value: unknown): SupportToE
     checklist: Object.freeze([...result.checklist] as string[]), suggestedRole: result.suggestedRole,
     citations: Object.freeze(result.citations.map((row) => Object.freeze({
       id: row.id as string, source: row.source as string, externalId: row.externalId as string | null,
+      ...(safeSupportSourceUrl(row.sourceUrl) ? { sourceUrl: safeSupportSourceUrl(row.sourceUrl) } : {}),
     }))),
   });
 }

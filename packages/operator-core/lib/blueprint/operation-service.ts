@@ -1374,6 +1374,9 @@ export async function prepareDirectOperationCompletion(
 
 interface ValidatedCanonicalOperation {
   status: BlueprintOperationStatus;
+  /** Current authorized source links are for app display only. Canonical worker
+   * attribution, rubric subjects and business-review fingerprints keep raw output. */
+  displayOutput?: unknown;
   /** Available only after the canonical result passes validation. */
   items?: WorkItem[];
   result?: { output: unknown; evidenceRef: string; acceptanceEvidenceRef?: string;
@@ -1438,12 +1441,13 @@ async function readValidatedCanonicalOperation(
   }
   const validation = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
   if (!validation.ok) return invalid(`canonical target output is invalid: ${validation.errors.join('; ')}`);
+  let displayOutput = output;
   if (operation.policy.supportCase) {
     if (handle.target.kind !== 'work-item' || !items[0]) return invalid('support result has no accepted case');
     const { pin } = await readAcceptedBlueprintDirectWorkItem(sql, handle.workspaceId, items[0]);
     const { validateSupportOperationResult } = await import('./support-workflow-case');
-    try { await validateSupportOperationResult(sql, handle.workspaceId, operation, pin, output,
-      reviewAccess?.principalId ?? callerId.split('/')[0]); }
+    try { displayOutput = await validateSupportOperationResult(sql, handle.workspaceId, operation, pin, output,
+      reviewAccess?.principalId ?? callerId.split('/')[0]) ?? output; }
     catch (error) {
       if (error instanceof BlueprintOperationRefusal) return invalid(error.message);
       throw error;
@@ -1484,7 +1488,7 @@ async function readValidatedCanonicalOperation(
   const businessReview = operation.acceptance.businessReview ? await readBusinessReview(sql, handle,
     output, evidenceRef, operation.acceptance.businessReview.accountableOwner,
     handle.target.kind === 'work-item' ? items[0]?.terminalCompletionRef : `plan-run:${handle.target.runId}`) : undefined;
-  return { status, items, result: { output, evidenceRef,
+  return { status, items, displayOutput, result: { output, evidenceRef,
     ...(acceptanceEvidenceRef ? { acceptanceEvidenceRef } : {}),
     ...(businessReview ? { businessReview } : {}) } };
 }
@@ -1567,7 +1571,7 @@ function reviewBlueprintOperation(sql: Sql, handle: BlueprintOperationHandle, ca
 export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperationHandle, callerId: string,
   reviewAccess?: BlueprintOperationReviewAccess): Promise<BlueprintOperationResult> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationResult> => {
-    const { status, result, invalidReason } = await readValidatedCanonicalOperation(sql, handle, callerId, reviewAccess);
+    const { status, result, displayOutput, invalidReason } = await readValidatedCanonicalOperation(sql, handle, callerId, reviewAccess);
     if (status.phase !== 'terminal') return { state: 'pending', status };
     if (status.outcome !== 'succeeded') {
       return { state: status.outcome === 'unverified' ? 'unavailable' : (status.outcome ?? 'failed'),
@@ -1575,6 +1579,6 @@ export function getBlueprintOperationResult(sql: Sql, handle: BlueprintOperation
     }
     if (!result) return { state: 'unavailable', status: { ...status, outcome: 'unverified' },
       reason: 'canonical target has no validated operation output' };
-    return { state: 'ready', status, ...result };
+    return { state: 'ready', status, ...result, output: displayOutput ?? result.output };
   });
 }

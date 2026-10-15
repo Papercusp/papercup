@@ -3,7 +3,8 @@ import type { Sql } from 'postgres';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
 import type { WorkItem } from '../work-items';
-import { getBlueprintOperationResult, prepareDirectOperationCompletion, type BlueprintOperationHandle } from './operation-service';
+import { getBlueprintOperationResult, getBlueprintOperationTerminalWorker, prepareDirectOperationCompletion,
+  type BlueprintOperationHandle } from './operation-service';
 import { supportToEngineeringOperation } from './support-workflow-operation';
 
 const ports = vi.hoisted(() => ({ item: vi.fn(), snapshot: vi.fn(), source: vi.fn(), accepted: vi.fn() }));
@@ -61,6 +62,31 @@ beforeEach(() => {
 });
 
 describe('canonical support result domain gate', () => {
+  it('adds only current viewer-authorized source metadata without changing the reviewed output fingerprint', async () => {
+    const original = await getBlueprintOperationResult(sql, handle, `${reviewerId}/client`, { principalId: reviewerId });
+    ports.source.mockImplementation(async (_sql: unknown, _ctx: unknown, params: { principalUserId: string }) => ({
+      allowed: true, results: [{ ...document, metadata: { permalink: params.principalUserId === reviewerId
+        ? 'https://support.example/cases/current' : 'https://support.example/cases/employee' } }], withheld: 0, disclosed: 1,
+    }));
+    const result = await getBlueprintOperationResult(sql, handle, `${reviewerId}/client`, { principalId: reviewerId });
+    expect(result).toMatchObject({ state: 'ready', output: { citations: [{ ...document,
+      sourceUrl: 'https://support.example/cases/current' }] } });
+    if (original.state !== 'ready' || result.state !== 'ready') throw new Error('fixture');
+    expect(result.businessReview?.resultFingerprint).toBe(original.businessReview?.resultFingerprint);
+    expect((await prepareDirectOperationCompletion(sql, workspaceId, item(), output)).output).toEqual(output);
+    expect((await getBlueprintOperationTerminalWorker(sql, handle, callerId)).output).toEqual(output);
+    expect(output.citations[0]).not.toHaveProperty('sourceUrl');
+  });
+
+  it.each(['javascript:alert(1)', 'http://support.example/case', 'https://user:secret@support.example/case', '/case/12'])
+    ('omits unsafe canonical source links: %s', async permalink => {
+      ports.source.mockResolvedValue({ allowed: true, results: [{ ...document, metadata: { permalink } }], withheld: 0, disclosed: 1 });
+      const result = await getBlueprintOperationResult(sql, handle, callerId);
+      expect(result).toMatchObject({ state: 'ready', output });
+      if (result.state !== 'ready') throw new Error('fixture');
+      expect((result.output as typeof output).citations[0]).not.toHaveProperty('sourceUrl');
+    });
+
   it('uses the accepted employee selection and current source read for completion and reviewer display', async () => {
     expect((await runWithWorkspace(workspaceId, () => prepareDirectOperationCompletion(sql, workspaceId, item(), output))).output)
       .toEqual(output);

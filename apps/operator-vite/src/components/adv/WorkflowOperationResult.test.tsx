@@ -153,6 +153,28 @@ describe('existing Workflows operation receipt journey', () => {
     expect(screen.getByText('Business outcome: pending')).toBeTruthy();
   });
 
+  it('opens the canonical source link returned through the real seam', async () => {
+    const sourceUrl = 'https://support.example/case/12';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true,
+      result: { content: [{ text: JSON.stringify({ ...ready(), output: { ...supportOutput,
+        citations: [{ ...supportOutput.citations[0], sourceUrl }] } }) }] } }) }));
+    render(<WorkflowOperationResult handle={handle} />);
+    const link = await screen.findByRole('link', { name: 'Open source in slack' });
+    expect(link.getAttribute('href')).toBe(sourceUrl);
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(screen.getByText('Business outcome: pending')).toBeTruthy();
+  });
+
+  it('never turns an unsafe source URL into a navigable link', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true,
+      result: { content: [{ text: JSON.stringify({ ...ready(), output: { ...supportOutput,
+        citations: [{ ...supportOutput.citations[0], sourceUrl: 'javascript:alert(1)' }] } }) }] } }) }));
+    render(<WorkflowOperationResult handle={handle} />);
+    await screen.findByRole('region', { name: 'Prepared support handoff' });
+    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.getByText(supportOutput.citations[0].id)).toBeTruthy();
+  });
+
   it.each([
     { ...supportOutput, citations: [] },
     { ...supportOutput, reproduction: [], checklist: [] },

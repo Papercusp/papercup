@@ -12,7 +12,8 @@ import {
   type OrganizationSearchOutcome,
 } from '../data-sources/documents-corpus';
 import type { PersonalToolContext } from '../personal-vault/types';
-import { assertSupportCaseInput, parseSupportToEngineeringResult, type ApprovedSupportWorkflow, type SupportCaseInput } from './support-workflow-contract';
+import { assertSupportCaseInput, parseSupportToEngineeringResult, safeSupportSourceUrl,
+  type ApprovedSupportWorkflow, type SupportCaseInput, type SupportToEngineeringResult } from './support-workflow-contract';
 import { BlueprintOperationRefusal } from './operation-refusal';
 import type { AcceptedOperationPin } from './operation-admission';
 import { supportWorkflowFromOperation } from './support-workflow-operation';
@@ -55,10 +56,10 @@ export async function readSelectedSupportCase(
  * fresh canonical corpus read; worker output never supplies its own evidence. */
 export async function validateSupportOperationResult(sql: Sql, workspaceId: string,
   operation: ReturnType<typeof operationFromSpecification>['operation'], pin: AcceptedOperationPin, output: unknown,
-  viewerPrincipalId?: string): Promise<void> {
+  viewerPrincipalId?: string): Promise<SupportToEngineeringResult | undefined> {
   const workflow = supportWorkflowFromOperation(operation, pin.harnessSlug, pin.specificationRevision);
   if (!workflow) return;
-  await runWithWorkspace(workspaceId, async () => {
+  return runWithWorkspace(workspaceId, async () => {
     const selection = assertSupportCaseInput(workflow, pin.input as unknown as SupportCaseInput);
     const selected = await readSelectedSupportCase(sql, { workspaceId, harnessSlug: pin.harnessSlug,
       role: operation.execution?.kind === 'agent' ? operation.execution.role : undefined,
@@ -66,7 +67,9 @@ export async function validateSupportOperationResult(sql: Sql, workspaceId: stri
     }, workflow, selection);
     if (!selected.allowed) throw new BlueprintOperationRefusal('invalid_payload',
       'support result source access was revoked');
-    try { parseSupportToEngineeringResult(output, selection, selected.results); }
+    let parsed: SupportToEngineeringResult;
+    let documents = selected.results;
+    try { parsed = parseSupportToEngineeringResult(output, selection, selected.results); }
     catch (error) {
       throw new BlueprintOperationRefusal('invalid_payload',
         `support result is invalid: ${error instanceof Error ? error.message : 'invalid evidence'}`);
@@ -83,6 +86,14 @@ export async function validateSupportOperationResult(sql: Sql, workspaceId: stri
       try { parseSupportToEngineeringResult(output, selection, visible.results); }
       catch (error) { throw new BlueprintOperationRefusal('invalid_payload',
         `support reviewer evidence is invalid: ${error instanceof Error ? error.message : 'invalid evidence'}`); }
+      documents = visible.results;
     }
+    // Use the current viewer read after both authorization checks. These links
+    // are presentation metadata, not part of the saved worker output/review.
+    return Object.freeze({ ...parsed, citations: Object.freeze(parsed.citations.map(citation => {
+      const sourceUrl = safeSupportSourceUrl(documents.find(document => document.id === citation.id)?.metadata?.permalink);
+      return Object.freeze({ id: citation.id, source: citation.source, externalId: citation.externalId,
+        ...(sourceUrl ? { sourceUrl } : {}) });
+    })) });
   });
 }
