@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
@@ -44,6 +44,8 @@ import {
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { recordRecipeRun } from '../../code-recipes-store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
+import { buildScratchUri, safeScratchFilesystemPath } from '../../scratch-uri';
+import { storeVolatileScratchReference, writeScratchReference } from '../../scratch-reference';
 import {
   normalizeExecutionTrace,
   type NormalizedExecutionTrace,
@@ -731,18 +733,28 @@ export default defineTool({
         ),
       ),
     );
+    const summaryNotice = (shownResult as { summaryNotice?: CodeRunSummaryNotice }).summaryNotice;
+    const rawSummaryCursor = summaryNotice?.truncated
+      ? await createCodeRunRawSummaryCursor(result.summary, ctx)
+      : undefined;
+    const shownResultWithRawCursor = summaryNotice && rawSummaryCursor
+      ? {
+          ...shownResult,
+          summaryNotice: { ...summaryNotice, rawSummaryCursor },
+        }
+      : shownResult;
 
     const similarRecipePayload = similarRecipes.length > 0 ? shapeCodeRunSimilarRecipes(similarRecipes) : {};
     const payload =
       similarRecipes.length > 0 || facadeHelp || fieldMissHelp || sleepCapHelp
         ? {
-            ...shownResult,
+            ...shownResultWithRawCursor,
             ...similarRecipePayload,
             ...(facadeHelp ? { facadeHelp } : {}),
             ...(fieldMissHelp ? { fieldMissHelp } : {}),
             ...(sleepCapHelp ? { sleepCapHelp } : {}),
           }
-        : shownResult;
+        : shownResultWithRawCursor;
 
     // EI-10892 (fleet telemetry half). The MCP handler already tells THIS agent, in
     // THIS response, when its script returned `ok:true` with every field blank — a
@@ -1215,7 +1227,130 @@ export interface CodeRunSummaryNotice {
   valuesTruncated: number;
   omittedItems: number;
   paths: string[];
+  rawSummaryCursor?: CodeRunRawSummaryCursor;
   note: string;
+}
+
+export type CodeRunRawSummaryCursor =
+  | {
+      status: 'available' | 'volatile-fallback';
+      tool: 'capability:read';
+      args: { uri: string; byte_offset: 0; byte_limit: 3072 };
+      bodyOffsetInPayload: 0;
+      byteCount: number;
+      sha256: string;
+      expiresAt: string;
+      note: string;
+    }
+  | {
+      status: 'unavailable';
+      reason: 'scope-unavailable' | 'serialization-failed' | 'scratch-write-failed' | 'fallback-capacity-exceeded';
+      note: string;
+    };
+
+const CODE_RUN_RAW_SUMMARY_SPILL_WAIT_MS = 5_000;
+
+/**
+ * Keep the complete script return recoverable when the inline summary shaper
+ * has to omit array entries or clip nested strings. This uses the existing
+ * owner-scoped scratch-reference reader, so the model-facing result stays
+ * bounded while the original bytes remain available through capability:read.
+ */
+async function createCodeRunRawSummaryCursor(
+  summary: unknown,
+  ctx: UnifiedToolContext,
+): Promise<CodeRunRawSummaryCursor> {
+  const workspaceId = ctx.workspaceId?.trim() ?? '';
+  const ownerId = resolveAgentIdentity(ctx).ownerId;
+  if (!workspaceId || !ownerId) {
+    return {
+      status: 'unavailable',
+      reason: 'scope-unavailable',
+      note: 'The original summary was not spilled because workspace or owner scope could not be resolved.',
+    };
+  }
+
+  let rawSummary: string;
+  try {
+    const serialized = JSON.stringify(summary);
+    if (typeof serialized !== 'string') throw new TypeError('summary is not JSON serializable');
+    rawSummary = serialized;
+  } catch {
+    return {
+      status: 'unavailable',
+      reason: 'serialization-failed',
+      note: 'The original summary could not be serialized for exact recovery.',
+    };
+  }
+
+  const byteCount = Buffer.byteLength(rawSummary, 'utf8');
+  const content = [{ index: 0, type: 'text', byteCount }];
+  const cursorFor = (
+    status: 'available' | 'volatile-fallback',
+    uri: string,
+    manifest: { byteCount: number; sha256: string; expiresAt: string },
+  ): CodeRunRawSummaryCursor => ({
+    status,
+    tool: 'capability:read',
+    args: { uri, byte_offset: 0, byte_limit: 3072 },
+    bodyOffsetInPayload: 0,
+    byteCount: manifest.byteCount,
+    sha256: manifest.sha256,
+    expiresAt: manifest.expiresAt,
+    note: status === 'available'
+      ? 'Read this owner-scoped scratch reference with capability:read, follow next_cursor, and parse the JSON body after the manifest header.'
+      : 'The exact bytes are in a short-lived in-memory fallback; read them with capability:read before expiresAt and follow next_cursor.',
+  });
+
+  try {
+    const uri = buildScratchUri({
+      workspaceId,
+      toolName: 'code:run',
+      runId: randomUUID(),
+      basename: `raw-summary-${Date.now()}.json`,
+    });
+    const deferredWrites: Promise<void>[] = [];
+    const manifest = writeScratchReference({
+      filePath: safeScratchFilesystemPath(uri),
+      payload: rawSummary,
+      workspaceId,
+      ownerId,
+      audience: 'owner',
+      mediaType: 'application/json',
+      content,
+      bodyOffsetInPayload: 0,
+      deferredWrites,
+    });
+    const settled = await withBoundedTimeout(Promise.all(deferredWrites), {
+      fallback: null,
+      timeoutMs: CODE_RUN_RAW_SUMMARY_SPILL_WAIT_MS,
+      label: 'code:run raw summary scratch spill',
+    });
+    if (!settled.degraded) return cursorFor('available', uri, manifest);
+  } catch {
+    // Keep the code:run result useful even when scratch persistence is unavailable.
+  }
+
+  try {
+    const fallback = storeVolatileScratchReference({
+      payload: rawSummary,
+      workspaceId,
+      ownerId,
+      audience: 'owner',
+      mediaType: 'application/json',
+      content,
+      bodyOffsetInPayload: 0,
+    });
+    if (fallback) return cursorFor('volatile-fallback', fallback.uri, fallback.manifest);
+  } catch {
+    // The explicit unavailable status below is the final, honest fallback.
+  }
+
+  return {
+    status: 'unavailable',
+    reason: byteCount > 16 * 1024 * 1024 ? 'fallback-capacity-exceeded' : 'scratch-write-failed',
+    note: 'The original summary could not be persisted; re-run code:run with a smaller return split into bounded slices.',
+  };
 }
 
 interface CodeRunSummaryProjectionStats {
