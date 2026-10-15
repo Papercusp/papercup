@@ -2268,6 +2268,31 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(openEscalationMock).not.toHaveBeenCalled(); // never 3 CONSECUTIVE nulls
   });
 
+  it('resets the dark-telemetry grace when the Codex native session ref changes', async () => {
+    estimateMock.mockResolvedValue(null);
+    resolveSessionRefMock
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-old', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-old', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-new', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-new', sessionKey: 1 })
+      .mockResolvedValueOnce({ agent: 'codex', sessionId: 'codex-new', sessionKey: 1 });
+
+    const old1 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const old2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const new1 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const new2 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+    const new3 = await checkCompactionCompliance(fakeSql({ seeded: active() }));
+
+    expect(old1.bootConfigAlerts).toEqual([]);
+    expect(old2.bootConfigAlerts).toEqual([]);
+    expect(new1.bootConfigAlerts).toEqual([]);
+    expect(new2.bootConfigAlerts).toEqual([]);
+    expect(new3.bootConfigAlerts).toEqual([
+      { owner: 'blind', kind: 'dark-telemetry', detail: '3 null sweeps' },
+    ]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
   it('WI-2140608: an IDLE blind session never accumulates a streak — no turns, nothing to overflow', async () => {
     estimateMock.mockResolvedValue(null);
     for (let i = 0; i < 5; i++) {

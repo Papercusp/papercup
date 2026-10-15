@@ -570,9 +570,9 @@ const noHostWarned = new Set<string>();
  *  sanity is covered upstream: P-016 seeds the tier-aware default, P-017 lowers any >cap
  *  drift, so a boot-time limit re-assert here would be redundant.) */
 const bootConfigEscalated = new Set<string>();
-/** P-018 dark-telemetry counter: consecutive sweeps a live limit-carrying session's
- *  context estimate stayed null. Cleared when it resolves. */
-const nullEstimateStreak = new Map<string, number>();
+/** P-018 dark-telemetry counter: consecutive active sweeps on one native session ref
+ *  whose context estimate stayed null. A carry-respawned session starts fresh grace. */
+const nullEstimateStreak = new Map<string, { sessionId: string | null; count: number }>();
 
 /** EI-10434: warn ONCE per owner while its readings stay implausible; cleared
  *  the moment a plausible reading is seen again so a later genuine crossing
@@ -2771,8 +2771,10 @@ export async function checkCompactionCompliance(
         // Idle sweeps neither advance nor reset the streak: the hazard is turns-while-blind,
         // and three of those over ANY span is the signal, however much idle time sits between.
         if (!activeWithin(r.last_active_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
-        const streak = (nullEstimateStreak.get(r.owner_id) ?? 0) + 1;
-        nullEstimateStreak.set(r.owner_id, streak);
+        const sessionId = estimateRef?.sessionId ?? null;
+        const previous = nullEstimateStreak.get(r.owner_id);
+        const streak = previous?.sessionId === sessionId ? previous.count + 1 : 1;
+        nullEstimateStreak.set(r.owner_id, { sessionId, count: streak });
         if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
           // A null estimate is a FALSE POSITIVE for two owner classes — neither is a blind
           // managed session, so neither may raise a dark-telemetry alarm:
@@ -2788,7 +2790,9 @@ export async function checkCompactionCompliance(
           // adv_sessions row, so it still escalates below — the overflow signal is preserved.
           // EI-13477: reconciled — see resolveLiveTranscriptPath for why the raw
           // ref can under/over-classify an owner across a same-pid relaunch.
-          const ref = await resolveSessionRefReconciled(r.owner_id);
+          // Reuse the same ref used to estimate this sample. Resolving again here can
+          // classify a new session using a null sample read from its predecessor.
+          const ref = estimateRef;
           if (!ref || ref.agent === 'omp') {
             nullEstimateStreak.delete(r.owner_id); // by-design / synthetic null — don't accumulate a streak
             continue;
