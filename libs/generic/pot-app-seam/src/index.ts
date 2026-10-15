@@ -418,6 +418,47 @@ export function operationDraftFromPlanRun<TInput extends JsonObject>(
 /** Calls one public tool by name. Must THROW on a refusal (an MCP isError / non-200). */
 export type BlueprintToolInvoke = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
 
+/** Administration shares the canonical operation tools and immutable revisions.
+ * The host authenticates the owner; no caller-supplied principal is accepted. */
+export interface WorkflowAdministration {
+  harnessSlug: string; operationId: string; approvedRevision: string; version: string;
+  accountableOwner: string; reviewerPrincipals: string[];
+  retainedRevisions: { revision: string; version: string }[];
+  funding: null | { allocationId: string; month: string; maximumCostMicros: number;
+    capMicros: number | null; availableMicros: number | null; committedMicros: number | null;
+    unknownReason: string | null;
+    costs: { reservationId: string; observedCostMicros: { value: number } | { unknownReason: string };
+      providerFinalCostMicros: { value: number } | { unknownReason: string } }[] };
+  history: { eventId: string; body: Record<string, unknown> }[];
+  businessReviews: { eventId: string; body: Record<string, unknown> }[];
+}
+export interface WorkflowAdministrationAction {
+  action: 'promote' | 'rollback' | 'stop' | 'revoke';
+  expectedSpecificationRevision: string; reason: string;
+  targetRevision?: string; handle?: BlueprintOperationHandle;
+}
+export function workflowAdministrationHostFromInvoker(invoke: BlueprintToolInvoke) {
+  return {
+    async read(selection: { harness: string; operationId: string }): Promise<WorkflowAdministration> {
+      const out = requireFields(await invoke(BLUEPRINT_OPERATION_TOOL_NAMES.status,
+        { ...selection, administration: true }), 'blueprint:status', ['administration']);
+      const value = requireFields(out.administration, 'workflow administration', ['harnessSlug', 'operationId',
+        'approvedRevision', 'version', 'accountableOwner', 'reviewerPrincipals', 'retainedRevisions', 'funding', 'history', 'businessReviews']) as unknown as WorkflowAdministration;
+      if (value.harnessSlug !== selection.harness || value.operationId !== selection.operationId)
+        throw new Error('Workflow administration returned a different workflow');
+      return value;
+    },
+    async act(selection: { harness: string; operationId: string }, administration: WorkflowAdministrationAction,
+      requestKey: string): Promise<BlueprintOperationInputReceipt> {
+      const receipt = requireFields(await invoke(BLUEPRINT_OPERATION_TOOL_NAMES.signal,
+        { ...selection, administration, requestKey }), 'blueprint:signal',
+      ['eventId', 'replayed', 'accepted', 'wakeQueued', 'handled']) as unknown as BlueprintOperationInputReceipt;
+      if (receipt.accepted !== true) throw new Error('Workflow administration was not accepted');
+      return receipt;
+    },
+  };
+}
+
 /** Reviewed instrument and producing-task identity, pinned before filing. */
 export interface AppScorecardDraft {
   readonly rubricRef: string;
