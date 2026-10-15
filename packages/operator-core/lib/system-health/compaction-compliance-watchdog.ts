@@ -395,10 +395,6 @@ const carryRespawnStreak = new Map<
 >();
 /** One loop-detected escalation per owner per process; un-deduped on failure. */
 const carryRespawnLoopEscalated = new Set<string>();
-/** EI-237397: one durable escalation per owner when the observed fixed prompt
- * floor is already at/above the configured soft limit. A cut cannot reduce a
- * fixed floor, so repeatedly respawning such a session is a livelock. */
-const unsatisfiableLimitEscalated = new Set<string>();
 /** WI-10006236: one owner-facing escalation per owner per process when a session whose
  * model family Papercusp serves at 1M by default is MEASURED at the 200k window. */
 const default1mServedSmallEscalated = new Set<string>();
@@ -431,16 +427,15 @@ const CARRY_RESPAWN_STREAK_WINDOW_MS = 30 * 60_000;
  *  reachable from any first-cut estimate. */
 const CARRY_RESPAWN_MOVED_MIN_TOKENS = 5_000;
 
-/** Headroom above an observed prompt floor before a repaired soft limit may
+/** Headroom above a verified fixed context cost before a repaired soft limit may
  * become actionable. Rounded limits keep the gauge stable and leave room for
  * one small turn after the fixed prefix. */
 export const UNSATISFIABLE_LIMIT_HEADROOM_TOKENS = 10_000;
 
-/** Derive a model-safe limit that sits above a measured fixed prompt floor.
+/** Derive a model-safe limit that sits above a verified fixed context cost.
  * Returns null when no model window is known or the requested floor cannot fit
- * under the platform's hard window. This helper intentionally ignores the
- * lean fleet-member role cap: that cap is a spend default, but a limit below a
- * proven fixed floor makes every carry/force cut repeat forever (EI-237397). */
+ * under the platform's hard window. Do not pass the gateway's observed prompt
+ * floor here: that metric is minimum total input, not a static-prefix measure. */
 export function satisfiableCompactionLimitForPromptFloor(
   promptFloorTokens: number,
   windowTokens: number | null,
@@ -463,59 +458,6 @@ export function satisfiableCompactionLimitForPromptFloor(
   const ceiling = selfSetCeilingForWindow(windowTokens, { fleetMember: false });
   if (required > ceiling || required <= currentLimit) return null;
   return Math.max(required, defaultCompactionLimitForWindow(windowTokens, { fleetMember: false }));
-}
-
-/** EI-237397: fixed prompt/carry context already consumes the force band, so
- * another carry-respawn cannot make progress. Keep the condition durable and
- * owner-addressable instead of emitting the ordinary "self-compact" nudge. */
-async function escalateUnsatisfiableCompactionLimit(input: {
-  ownerId: string;
-  ownerLabel: string;
-  estimate: number;
-  fixedFloor: number;
-  limit: number;
-  forceAt: number;
-  window: number | null;
-}): Promise<void> {
-  if (unsatisfiableLimitEscalated.has(input.ownerId)) return;
-  unsatisfiableLimitEscalated.add(input.ownerId);
-  const windowText = input.window == null ? 'unknown model window' : `${input.window}-token model window`;
-  try {
-    const { openEscalation } = await import('../agent-tools/coordination/escalations');
-    await openEscalation(
-      {
-        ownerId: 'compaction-watchdog',
-        ownerLabel: 'system · compaction-watchdog',
-        source: 'principal',
-        workspaceId: null,
-        userId: null,
-      },
-      {
-        severity: 'blocker',
-        summary: `soft compaction limit below fixed context cost: ${input.ownerLabel} (${input.ownerId})`,
-        body:
-          `The session's measured fixed/post-compaction context floor is ~${Math.round(input.fixedFloor)} ` +
-          `tokens, already at/above the FORCE threshold ~${Math.round(input.forceAt)} for its ` +
-          `configured soft limit ${Math.round(input.limit)} (${windowText}). Another carry-respawn ` +
-          `would recreate the same floor and livelock. Raise the soft limit toward the model ceiling ` +
-          `or reduce the fixed launch context before allowing another cut. (EI-237397)`,
-        meta: {
-          subjectSignature: `compaction-watchdog:unsatisfiable-limit:${input.ownerId}`,
-          estimate: Math.round(input.estimate),
-          fixedFloor: Math.round(input.fixedFloor),
-          limit: Math.round(input.limit),
-          forceAt: Math.round(input.forceAt),
-          window: input.window,
-        },
-      },
-    );
-  } catch (e) {
-    unsatisfiableLimitEscalated.delete(input.ownerId);
-    console.warn(
-      `[compaction-watchdog] unsatisfiable-limit escalation failed (will retry): ` +
-        `${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
 }
 
 /**
@@ -764,7 +706,6 @@ export function resetCarryRespawnForTests(): void {
   carryRespawnLoopEscalated.clear();
   carryRespawnUnderLimitSince.clear();
   carryRespawnHealthySampleAt.clear();
-  unsatisfiableLimitEscalated.clear();
   default1mServedSmallEscalated.clear();
 }
 
@@ -2397,8 +2338,8 @@ export interface CompactionComplianceResult {
   /** WI-10006236: subset of `relimited` — sessions whose model family is served at 1M by
    *  default but were MEASURED at the 200k window and lowered; each is escalated once. */
   default1mServedSmall: Array<{ owner: string; spec: string; from: number; to: number; window: number }>;
-  /** EI-237397: sessions whose observed fixed prompt floor consumes the force
-   *  band; repairedTo is present when the watchdog raised a derived limit. */
+  /** Legacy result field retained for callers; gateway total-input floors no
+   *  longer establish an unsatisfiable fixed-context limit. */
   unsatisfiableLimits: Array<{
     owner: string;
     fixedFloor: number;
@@ -3057,12 +2998,23 @@ export async function checkCompactionCompliance(
         sampleEntry.minEstSince = est;
       }
 
-      // EI-237397 applies even when the ordinary estimate is still BELOW the
-      // configured limit: the route-bound floor can materialize on the next
-      // turn, so waiting for `est >= limit` would miss the exact first sample
-      // that proves the limit is unsatisfiable.
+      // The gateway's observed prompt floor is a minimum total-input measure
+      // and may include first-turn conversation content. It cannot prove that
+      // static context alone makes a cut impossible. Retire legacy episodes
+      // based on that inference only when the floor sample itself is fresh.
+      if (
+        observedPromptFloor != null &&
+        Number.isFinite(observedPromptFloor.tokens) &&
+        observedPromptFloor.tokens >= 0 &&
+        Number.isFinite(observedPromptFloor.at) &&
+        observedPromptFloor.at > 0 &&
+        observedPromptFloor.at <= Date.now()
+      ) {
+        await recover('unsatisfiable-limit', observedPromptFloor.at);
+      }
+
       let windowForCut: number | null = liveWindow;
-      if (observedPromptFloor?.tokens != null || est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
+      if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
         windowForCut ??= await resolveWindowForOwner(sql, r.owner_id, tierMenu);
         if (windowForCut != null && est >= windowForCut * WINDOW_CONTRADICTED_FACTOR) {
           console.warn(
@@ -3071,54 +3023,6 @@ export async function checkCompactionCompliance(
               `stale/shared model-spec input (EI-7632); treating the window as unknown.`,
           );
           windowForCut = null;
-        }
-      }
-      const fixedFloor = observedPromptFloor?.tokens;
-      if (fixedFloor != null && Number.isFinite(fixedFloor) && fixedFloor >= 0 &&
-          observedPromptFloor && Number.isFinite(observedPromptFloor.at) && observedPromptFloor.at > 0 &&
-          observedPromptFloor.at <= Date.now()) {
-        const fractionAt = r.compaction_limit * FORCE_COMPACT_FRACTION;
-        const capAt =
-          windowForCut != null
-            ? windowForCut - COMPACTION_WINDOW_MARGIN_TOKENS
-            : r.compaction_limit * COMPACTION_OVERSHOOT_FACTOR;
-        const forceAt = Math.min(fractionAt, capAt);
-        if (fixedFloor >= forceAt) {
-          await raiseCompactionCondition(r.workspace_id, r.owner_id, 'unsatisfiable-limit', `Measured fixed floor ${fixedFloor} exceeds force threshold ${forceAt}.`, deps);
-          const repairedTo = r.compaction_limit_explicit
-            ? null
-            : satisfiableCompactionLimitForPromptFloor(fixedFloor, windowForCut, r.compaction_limit);
-          if (repairedTo != null) {
-            const from = r.compaction_limit;
-            await setCompactionLimit(r.owner_id, repairedTo);
-            r.compaction_limit = repairedTo;
-            out.relimited.push({ owner: r.owner_id, from, to: repairedTo });
-            out.unsatisfiableLimits.push({ owner: r.owner_id, fixedFloor, limit: from, forceAt, repairedTo });
-            recordContextUsage(r.owner_id, est, repairedTo, Date.now(), observedPromptFloor);
-            overLimitOwners.delete(r.owner_id);
-            forceCompactedAt.delete(r.owner_id);
-            carryRespawnRequestedAt.delete(r.owner_id);
-            carryRespawnUnderLimitSince.delete(r.owner_id);
-            carryRespawnLoopEscalated.delete(r.owner_id);
-            unsatisfiableLimitEscalated.delete(r.owner_id);
-            if (est < repairedTo) continue;
-          } else {
-            out.unsatisfiableLimits.push({ owner: r.owner_id, fixedFloor, limit: r.compaction_limit, forceAt });
-            await escalateUnsatisfiableCompactionLimit({
-              ownerId: r.owner_id,
-              ownerLabel: r.owner_label,
-              estimate: est,
-              fixedFloor,
-              limit: r.compaction_limit,
-              forceAt,
-              window: windowForCut,
-            });
-            // Do not issue the standard self-compact/carry/force advice: it
-            // is the action that recreates the fixed-floor livelock.
-            continue;
-          }
-        } else {
-          await recover('unsatisfiable-limit', observedPromptFloor.at);
         }
       }
 
@@ -3265,7 +3169,6 @@ export async function checkCompactionCompliance(
         overLimitOwners.delete(r.owner_id); // recovered (compacted / back under limit)
         forceCompactedAt.delete(r.owner_id); // re-arm the force for a future crossing
         carryRespawnRequestedAt.delete(r.owner_id); // re-arm the deterministic cut
-        unsatisfiableLimitEscalated.delete(r.owner_id);
         const streakEntry = carryRespawnStreak.get(r.owner_id);
         if (streakEntry == null && !episodes(r.workspace_id, r.owner_id, 'carry-respawn-loop').length) {
           carryRespawnUnderLimitSince.delete(r.owner_id);

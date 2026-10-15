@@ -524,15 +524,17 @@ describe('original compaction durable episodes', () => {
     estimateMock.mockResolvedValue(Number.NaN); await h.run(); expect(h.open.size).toBe(2);
     estimateMock.mockResolvedValue(50_000); await h.run(); expect(h.open.size).toBe(0);
   });
-  it('an absent or stale fixed-floor measurement preserves the episode until the new floor fits', async () => {
+  it('retires a legacy unsatisfiable-limit episode only after a fresh total-input observation', async () => {
     const h = fixture(); estimateMock.mockResolvedValue(50_000);
+    const key = h.key('unsatisfiable-limit');
+    h.open.set(key, Date.now() - 100);
+    observedPromptFloorMock.mockReturnValue(null);
+    await h.run(); expect(h.open.has(key)).toBe(true);
+    observedPromptFloorMock.mockReturnValue({ tokens: 150_000, observations: 3, at: 1 });
+    await h.run(); expect(h.open.has(key)).toBe(true);
     observedPromptFloorMock.mockReturnValue({ tokens: 150_000, observations: 3, at: Date.now() });
-    await h.run(); expect(h.open.has(h.key('unsatisfiable-limit'))).toBe(true);
-    observedPromptFloorMock.mockReturnValue(null); await h.run(); expect(h.open.size).toBe(1);
-    observedPromptFloorMock.mockReturnValue({ tokens: 10_000, observations: 3, at: 1 });
-    await h.run(); expect(h.open.size).toBe(1);
-    observedPromptFloorMock.mockReturnValue({ tokens: 10_000, observations: 3, at: Date.now() });
-    await h.run(); expect(h.open.size).toBe(0);
+    await h.run(); expect(h.open.has(key)).toBe(false);
+    expect(h.resolvedKeys).toContain(key);
   });
   it('a missing measured model window preserves the default-window alarm after restart', async () => {
     const h = fixture(); h.open.set(h.key('default-1m-served-small'), Date.now() - 1);
@@ -1780,9 +1782,9 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
   });
 });
 
-describe('EI-237397 fixed prompt-floor livelock guard', () => {
-  it('raises a fleet member limit above the measured fixed floor and skips another respawn', async () => {
-    estimateMock.mockResolvedValue(396_171);
+describe('gateway observed total-input floor semantics', () => {
+  it('does not re-limit or skip ordinary over-limit handling for a high total-input floor', async () => {
+    estimateMock.mockResolvedValue(300_000);
     observedPromptFloorMock.mockReturnValue({ tokens: 396_171, observations: 3, at: Date.now() });
     contextWindowMock.mockResolvedValue(1_000_000);
     const out = await checkCompactionCompliance(
@@ -1798,23 +1800,17 @@ describe('EI-237397 fixed prompt-floor livelock guard', () => {
       }),
     );
 
-    expect(setLimitMock).toHaveBeenCalledWith('floor-bound', 450_000);
-    expect(out.relimited).toEqual([{ owner: 'floor-bound', from: 250_000, to: 450_000 }]);
-    expect(out.unsatisfiableLimits).toEqual([{
-      owner: 'floor-bound',
-      fixedFloor: 396_171,
-      limit: 250_000,
-      forceAt: 325_000,
-      repairedTo: 450_000,
-    }]);
-    expect(out.overLimit).toEqual([]);
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.relimited).toEqual([]);
+    expect(out.unsatisfiableLimits).toEqual([]);
+    expect(out.overLimit).toEqual(['floor-bound']);
     expect(out.carryRespawned).toEqual([]);
     expect(out.forceCompacted).toEqual([]);
     expect(openEscalationMock).not.toHaveBeenCalled();
   });
 
-  it('does not override a deliberate limit; emits a blocker and suppresses the cut loop', async () => {
-    estimateMock.mockResolvedValue(340_000);
+  it('keeps an explicit limit and ordinary over-limit handling under a high total-input floor', async () => {
+    estimateMock.mockResolvedValue(300_000);
     observedPromptFloorMock.mockReturnValue({ tokens: 340_000, observations: 3, at: Date.now() });
     contextWindowMock.mockResolvedValue(1_000_000);
     const out = await checkCompactionCompliance(
@@ -1828,19 +1824,12 @@ describe('EI-237397 fixed prompt-floor livelock guard', () => {
       }),
     );
 
-    expect(out.unsatisfiableLimits).toEqual([{
-      owner: 'explicit-floor-bound',
-      fixedFloor: 340_000,
-      limit: 250_000,
-      forceAt: 325_000,
-    }]);
+    expect(out.unsatisfiableLimits).toEqual([]);
     expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.overLimit).toEqual(['explicit-floor-bound']);
     expect(out.carryRespawned).toEqual([]);
     expect(out.forceCompacted).toEqual([]);
-    expect(openEscalationMock).toHaveBeenCalledTimes(1);
-    const [, payload] = openEscalationMock.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
-    expect(payload.summary).toContain('soft compaction limit below fixed context cost');
-    expect(payload.body).toContain('EI-237397');
+    expect(openEscalationMock).not.toHaveBeenCalled();
   });
 });
 
