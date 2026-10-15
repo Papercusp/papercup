@@ -617,7 +617,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         try {
           const names = await readdir(root.path);
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
-            (root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
+            (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
             (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) ||
             !deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy));
           if (options.inspectTrees && (retainAfterMs !== undefined || capped)) {
@@ -646,7 +646,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             const retain = (reason: string, status: 'protected' | 'changed' = 'protected') => {
               receipt.entries.push({ path, classId: root.classId, status, bytes: 0, reason });
             };
-            if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
+            if (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
             if (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
             if (!deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
@@ -669,6 +669,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // Leave its entries untouched and retain the independent owner delegates.
         if (budgetStopped) continue;
         for (const entry of entries) {
+          // The workspace owner controls deletion, but its retained usage still
+          // belongs in this root's cap census on both inspection routes.
+          if (root.classId === 'papercusp-scratch' && workspaceIds.includes(entry.path.slice(root.path.length + 1))) {
+            entry.protectedReason = 'registered workspace scratch owner';
+            receipt.entries.push({ path: entry.path, classId: entry.classId, status: 'protected', bytes: entry.bytes, reason: entry.protectedReason });
+          }
           if (rootProtectedPaths.some((path) => overlap(entry.path, path))) entry.protectedReason = 'live retention lease';
         }
         const rootCaps: RetentionCapReceipt[] = [];
