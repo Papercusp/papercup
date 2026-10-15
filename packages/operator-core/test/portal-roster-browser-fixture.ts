@@ -1,5 +1,6 @@
 /** Actual Portal roster controls against the disposable cookie-authenticated API. */
 import assert from 'node:assert/strict';
+import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -3035,6 +3036,26 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
     scope: 'Actual HealthTab, private shared snapshot/history reads, native Host denial, Origin-denied acknowledgement and successful ack/unack through the maintained Work-items collector; real hosted ledger, health attestation producer and infra collector populate failure/recovery and owned-cost metrics. Initial acknowledgement snapshot/history and destination geometry are supplied; hosted tenant authorization and shipment remain unmeasured' };
 }
 
+/** A request worker may retain the previous snapshot until its next shared read.
+ * Observe convergence through the actual query; a successful HTTP response alone
+ * does not witness the generation just published by the collector. */
+export async function waitForPrivateHealthSnapshot<T extends { workspaceId: string }>(
+  read: () => Promise<{ rows: T[] }>, workspaceId: string, matches: (row: T) => boolean,
+  options: { timeoutMs?: number; now?: () => number; pause?: (ms: number) => Promise<void> } = {},
+): Promise<{ rows: T[] }> {
+  const now = options.now ?? Date.now;
+  const pause = options.pause ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  const deadline = now() + (options.timeoutMs ?? 45_000);
+  let last: { rows: T[] };
+  do {
+    last = await read();
+    if (last.rows.length === 1 && last.rows[0].workspaceId === workspaceId && matches(last.rows[0])) return last;
+    if (now() >= deadline) break;
+    await pause(Math.min(1_000, deadline - now()));
+  } while (now() <= deadline);
+  assert.fail('private Health query did not converge to the selected workspace collector reading: ' + JSON.stringify(last!));
+}
+
 /** Use the existing ledger and whole-health collector, then observe their actual
  * shared-query and DOM output. The initial acknowledgement fixture is not proof
  * of these collectors. All rows here live in the verifier-owned disposable PG. */
@@ -3094,14 +3115,15 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
     snapshots.push(snapshot);
     await writeSharedSnapshot('system.health', input.workspace, snapshot, 1);
     await recordHealthHistory(previous, snapshot);
-    const responsePromise = page.waitForResponse(response => {
-      const url = new URL(response.url());
-      return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
-    });
-    await page.reload();
-    const response = await responsePromise;
-    const body = await response.json();
-    assert.deepEqual(body.rows[0].panels.infra.data.hostedControlPlane, hosted,
+    const body = await waitForPrivateHealthSnapshot<Awaited<ReturnType<typeof computeSystemHealth>>>(async () => {
+      const responsePromise = page.waitForResponse(response => {
+        const url = new URL(response.url());
+        return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
+      });
+      await page.reload();
+      return (await responsePromise).json();
+    }, input.workspace, row => isDeepStrictEqual(row.panels.infra.data?.hostedControlPlane, hosted));
+    assert.deepEqual(body.rows[0].panels.infra.data?.hostedControlPlane, hosted,
       'actual workspace-scoped HTTP query must return the collector reading');
     const infra = page.locator('[data-panel="infra"]');
     const metric = (label: string) => infra.locator('.pc-hcard__m').filter({ has: page.locator('span', { hasText: label }) }).locator('b');
