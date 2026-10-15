@@ -1566,6 +1566,19 @@ export type ScorecardEvidenceReadResult =
   | { kind: 'not_found' }
   | { kind: 'not_scorecard' };
 
+/** Scorecard identity and audit metadata needed to page the stored rerun recipe. */
+export type ScorecardRecipeHeader = Omit<
+  ScorecardEvidenceRow,
+  'criteria' | 'nKeys' | 'missingKeys' | 'extraKeys' | 'rubricResolved'
+>;
+
+export type ScorecardRecipeHeaderReadResult =
+  | { kind: 'found'; scorecard: ScorecardRecipeHeader }
+  | { kind: 'not_found' }
+  | { kind: 'not_scorecard' };
+
+type ScorecardReadResult = ScorecardEvidenceReadResult | ScorecardRecipeHeaderReadResult;
+
 interface ScorecardEvidenceDb {
   issue_id: string;
   created_by: string | null;
@@ -1585,6 +1598,7 @@ interface ScorecardEvidenceDb {
   provisional: unknown;
   retracted: unknown;
   subject_rubric_identity: unknown;
+  has_ratings: boolean;
   superseded_by: string | null;
   cited_binding_ids: unknown;
   rerun_harness: unknown;
@@ -1780,7 +1794,23 @@ function classifyScorecardEvidenceBindingCurrentness(
  * keeps the exact evidence available while making the bounded wire contract
  * independent of those unrelated fields (EI-22710824425098387).
  */
-export async function readScorecardEvidence(issueId: string): Promise<ScorecardEvidenceReadResult> {
+export function readScorecardEvidence(issueId: string): Promise<ScorecardEvidenceReadResult> {
+  return readScorecard(issueId, 'evidence') as Promise<ScorecardEvidenceReadResult>;
+}
+
+/**
+ * Read only the audit header and stored replay recipe for a recipe cursor page.
+ * It shares the same currentness checks as the evidence reader but does not
+ * return rating JSON or normalize per-criterion evidence on every page.
+ */
+export function readScorecardRecipeHeader(issueId: string): Promise<ScorecardRecipeHeaderReadResult> {
+  return readScorecard(issueId, 'recipe-header') as Promise<ScorecardRecipeHeaderReadResult>;
+}
+
+async function readScorecard(
+  issueId: string,
+  mode: 'evidence' | 'recipe-header',
+): Promise<ScorecardReadResult> {
   const rows = await acquireWithContentionRetry(() =>
     boundedPgReadTxn<ScorecardEvidenceDb[]>((tx) => tx<ScorecardEvidenceDb[]>`
       SELECT scorecard.issue_id,
@@ -1794,7 +1824,11 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' ->> 'sourceHive' AS source_hive,
              scorecard.payload -> 'observation' -> 'subject' AS subject,
              scorecard.payload -> 'observation' -> 'rerunRecipe' AS rerun_recipe,
-             scorecard.payload -> 'observation' -> 'ratings' AS ratings,
+             CASE WHEN ${mode === 'evidence'}
+               THEN scorecard.payload -> 'observation' -> 'ratings'
+               ELSE NULL
+             END AS ratings,
+             jsonb_typeof(scorecard.payload -> 'observation' -> 'ratings') = 'object' AS has_ratings,
              scorecard.payload -> 'observation' -> 'rollup' AS rollup,
              scorecard.payload -> 'observation' -> 'synthesized' AS synthesized,
              scorecard.payload -> 'observation' -> 'gradingAudit' AS grading_audit,
@@ -1911,35 +1945,15 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     retracted: row.retracted,
     subjectRubricIdentity: row.subject_rubric_identity,
   });
-  if (!observation?.rubricRef || !observation.ratings) return { kind: 'not_scorecard' };
+  if (!observation?.rubricRef || !(mode === 'evidence' ? observation.ratings : row.has_ratings)) {
+    return { kind: 'not_scorecard' };
+  }
 
   const rubric = await getRubricWithoutSeeding(observation.rubricRef);
   const rubricCurrentness = scorecardRubricCurrentness(
     { revision: observation.rubricRevision, criteriaHash: observation.criteriaHash },
     rubric,
   );
-  const criteriaKeys = rubric
-    ? rubric.criteria.map((criterion) => criterion.key)
-    : builtInCriterionKeysForRubric(observation.rubricRef);
-  const rubricResolved = criteriaKeys !== null;
-  const normalizedRatings = normalizeScorecardRatings(
-    observation.ratings,
-    rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
-  );
-  const ratedKeys = new Set(Object.keys(normalizedRatings));
-  const missingKeys = rubricResolved ? criteriaKeys!.filter((key) => !ratedKeys.has(key)) : [];
-  const criterionKeySet = rubricResolved ? new Set(criteriaKeys!) : null;
-  const extraKeys = criterionKeySet
-    ? [...ratedKeys].filter((key) => !criterionKeySet.has(key))
-    : [];
-  const orderedKeys = [
-    ...(criteriaKeys ?? []),
-    ...Object.keys(normalizedRatings).filter((key) => !criteriaKeys?.includes(key)),
-  ];
-  const criteria = orderedKeys.flatMap((key) => {
-    const rating = normalizedRatings[key];
-    return rating ? [{ key, ...rating }] : [];
-  });
 
   // Read-time currentness, computed exactly as listScorecards does. These are
   // RELATIONS (a later superseding card; the live subject rubric), never stamps
@@ -1978,37 +1992,65 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     ...(evidenceBindingCurrentness ? { evidenceBindingCurrentness } : {}),
   };
 
+  const header: ScorecardRecipeHeader = {
+    issueId: row.issue_id,
+    createdAt: tsIso(row.created_at),
+    createdBy: row.created_by,
+    rubricRef: observation.rubricRef,
+    ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
+    rubricCurrentness,
+    ...(observation.rubricMeaningRevision != null
+      ? { rubricMeaningRevision: observation.rubricMeaningRevision }
+      : {}),
+    ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
+    ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
+    ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
+    ...(observation.subject ? { subject: observation.subject } : {}),
+    ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
+    ...(observation.rollup ? { rollup: observation.rollup } : {}),
+    synthesized: row.synthesized === true || row.synthesized === 'true',
+    ...(observation.gradingAudit ? { gradingAudit: observation.gradingAudit } : {}),
+    ...(observation.provisional ? { provisional: observation.provisional } : {}),
+    ...(observation.retracted ? { retracted: observation.retracted } : {}),
+    ...(subjectRubricCurrentness ? { subjectRubricCurrentness } : {}),
+    ...(evidenceBindingCurrentness ? { evidenceBindingCurrentness } : {}),
+    ...(supersededBy ? { supersededBy } : {}),
+    auditTarget,
+  };
+  if (mode === 'recipe-header') return { kind: 'found', scorecard: header };
+
+  const criteriaKeys = rubric
+    ? rubric.criteria.map((criterion) => criterion.key)
+    : builtInCriterionKeysForRubric(observation.rubricRef);
+  const rubricResolved = criteriaKeys !== null;
+  const normalizedRatings = normalizeScorecardRatings(
+    observation.ratings!,
+    rubric ? { ratingScale: rubric.ratingScale, criteria: rubric.criteria } : null,
+  );
+  const ratedKeys = new Set(Object.keys(normalizedRatings));
+  const missingKeys = rubricResolved ? criteriaKeys!.filter((key) => !ratedKeys.has(key)) : [];
+  const criterionKeySet = rubricResolved ? new Set(criteriaKeys!) : null;
+  const extraKeys = criterionKeySet
+    ? [...ratedKeys].filter((key) => !criterionKeySet.has(key))
+    : [];
+  const orderedKeys = [
+    ...(criteriaKeys ?? []),
+    ...Object.keys(normalizedRatings).filter((key) => !criteriaKeys?.includes(key)),
+  ];
+  const criteria = orderedKeys.flatMap((key) => {
+    const rating = normalizedRatings[key];
+    return rating ? [{ key, ...rating }] : [];
+  });
+
   return {
     kind: 'found',
     scorecard: {
-      issueId: row.issue_id,
-      createdAt: tsIso(row.created_at),
-      createdBy: row.created_by,
-      rubricRef: observation.rubricRef,
-      ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
-      rubricCurrentness,
-      ...(observation.rubricMeaningRevision != null
-        ? { rubricMeaningRevision: observation.rubricMeaningRevision }
-        : {}),
-      ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
-      ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
-      ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
-      ...(observation.subject ? { subject: observation.subject } : {}),
-      ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
-      ...(observation.rollup ? { rollup: observation.rollup } : {}),
+      ...header,
       criteria,
       nKeys: ratedKeys.size,
       missingKeys,
       extraKeys,
       rubricResolved,
-      synthesized: row.synthesized === true || row.synthesized === 'true',
-      ...(observation.gradingAudit ? { gradingAudit: observation.gradingAudit } : {}),
-      ...(observation.provisional ? { provisional: observation.provisional } : {}),
-      ...(observation.retracted ? { retracted: observation.retracted } : {}),
-      ...(subjectRubricCurrentness ? { subjectRubricCurrentness } : {}),
-      ...(evidenceBindingCurrentness ? { evidenceBindingCurrentness } : {}),
-      ...(supersededBy ? { supersededBy } : {}),
-      auditTarget,
     },
   };
 }

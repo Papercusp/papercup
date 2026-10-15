@@ -15,9 +15,10 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { currentStageDiagnosticContext, STAGE_STALL_LOG_MS } from '../../sync/hyperbee/stage-stall-log';
 
-const { doorConstantsMock, gradingAuditRubricMock } = vi.hoisted(() => ({
+const { doorConstantsMock, gradingAuditRubricMock, recipeHeaderMock } = vi.hoisted(() => ({
   doorConstantsMock: vi.fn(),
   gradingAuditRubricMock: vi.fn(),
+  recipeHeaderMock: vi.fn(),
 }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
 
@@ -28,14 +29,24 @@ vi.mock('../../rubrics', async (importOriginal) => {
 
 vi.mock('../../scorecards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scorecards')>();
-  return { ...actual, readScorecardEvidence: vi.fn() };
+  return {
+    ...actual,
+    readScorecardEvidence: vi.fn(),
+    readScorecardRecipeHeader: recipeHeaderMock,
+  };
 });
 
-import { readScorecardEvidence } from '../../scorecards';
+import { readScorecardEvidence, readScorecardRecipeHeader } from '../../scorecards';
 import { BAKED_DOOR_CONSTANTS, CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { applyResultDoor, resetResultDoorAggregatesForTests } from '../../result-door';
 
 const readScorecardEvidenceM = vi.mocked(readScorecardEvidence);
+const readScorecardRecipeHeaderM = vi.mocked(readScorecardRecipeHeader);
+const recipeHeaderOf = (card: Record<string, unknown>) => Object.fromEntries(
+  Object.entries(card).filter(([key]) => ![
+    'criteria', 'nKeys', 'missingKeys', 'extraKeys', 'rubricResolved',
+  ].includes(key)),
+);
 const { default: getTool, scorecardGetArgs } = await import('./get');
 /** The registered output contract, narrowed to the parse surface these cases exercise. */
 const resultContract = getTool.result as unknown as {
@@ -118,7 +129,28 @@ describe('scorecards:get evidence-first projection', () => {
     vi.clearAllMocks();
     doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
     gradingAuditRubricMock.mockResolvedValue(null);
+    readScorecardRecipeHeaderM.mockResolvedValue({
+      kind: 'found', scorecard: recipeHeaderOf(scorecard) as never,
+    });
     resetResultDoorAggregatesForTests();
+  });
+
+  it('distinguishes live adequacy freshness checks from creation-time grading audits', () => {
+    const prompt = getTool as unknown as {
+      description: string;
+      guidance: { when: string; notWhen: string; chaining: string };
+    };
+    const guidance = [
+      prompt.description,
+      prompt.guidance.when,
+      prompt.guidance.notWhen,
+      prompt.guidance.chaining,
+    ].join('\n');
+
+    expect(guidance).toContain('scorecardId');
+    expect(guidance).toContain('historicalAuditOnly.asOf');
+    expect(guidance).toContain('current-state');
+    expect(guidance).toContain('freshness can change after evidence changes');
   });
 
   it('declares optional result roots with concrete scorecard and paging fields', () => {
@@ -689,6 +721,9 @@ describe('scorecards:get evidence-first projection', () => {
       criteria: [{ key: 'criterion-1', rating: 'pass', evidence: 'exact evidence' }],
     };
     readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: largeMetadata });
+    readScorecardRecipeHeaderM.mockResolvedValue({
+      kind: 'found', scorecard: recipeHeaderOf(largeMetadata) as never,
+    });
     const smallDoors = { ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 3_200 };
     doorConstantsMock.mockReturnValue(smallDoors);
     const scratchRoot = mkdtempSync(join(tmpdir(), 'scorecards-get-large-metadata-'));
@@ -787,6 +822,9 @@ describe('scorecards:get evidence-first projection', () => {
     const encodedRecipe = JSON.stringify(large.rerunRecipe);
     expect(encodedRecipe.length).toBeGreaterThan(16_468);
     readScorecardEvidenceM.mockResolvedValue({ kind: 'found', scorecard: large });
+    readScorecardRecipeHeaderM.mockResolvedValue({
+      kind: 'found', scorecard: recipeHeaderOf(large) as never,
+    });
     const invokeTool = (await import('../tools/invoke')).default;
     const read = async (args: Record<string, unknown>) => {
       const dispatched = await dispatchProjectedTool(
@@ -862,6 +900,73 @@ describe('scorecards:get evidence-first projection', () => {
     expect(scorecardGetArgs.safeParse({
       issueId: large.issueId, rerunRecipeOffset: 0, criterionKey: 'criterion-1',
     }).success).toBe(false);
+  });
+
+  it('uses the header-only reader for recipe pages and preserves audit currentness', async () => {
+    const gradingAudit = {
+      state: 'pending' as const,
+      metaRubricRef: 'grading-integrity',
+      stampedAt: '2026-10-09T00:00:00.000Z',
+    };
+    const evidenceBindingCurrentness = {
+      state: 'current' as const,
+      reason: 'current' as const,
+      citedBindingCount: 1,
+      retractedBindingIds: [],
+      unavailableBindingIds: [],
+    };
+    const subjectRubricCurrentness = {
+      state: 'current' as const,
+      reason: 'current' as const,
+      recordedRevision: 2,
+      currentRevision: 2,
+      recordedCriteriaHash: 'subject-hash-v2',
+      currentCriteriaHash: 'subject-hash-v2',
+    };
+    const recipeHeader = {
+      ...recipeHeaderOf(scorecard),
+      gradingAudit,
+      evidenceBindingCurrentness,
+      subjectRubricCurrentness,
+      supersededBy: 'EI-newer-card',
+      auditTarget: {
+        ...scorecard.auditTarget,
+        current: false,
+        superseded: true,
+        supersededBy: 'EI-newer-card',
+        subjectRubricCurrentness,
+        evidenceBindingCurrentness,
+      },
+    };
+    readScorecardRecipeHeaderM.mockResolvedValueOnce({
+      kind: 'found', scorecard: recipeHeader as never,
+    });
+
+    const response = await getTool.handler(
+      { issueId: scorecard.issueId, rerunRecipeOffset: 0 } as never,
+      makeDispatchContext(),
+    ) as { data: Record<string, unknown> };
+
+    expect(readScorecardRecipeHeaderM).toHaveBeenCalledWith(scorecard.issueId);
+    expect(readScorecardEvidenceM).not.toHaveBeenCalled();
+    expect(response.data).toMatchObject({
+      ok: true,
+      scorecard: {
+        issueId: scorecard.issueId,
+        gradingAudit,
+        evidenceBindingCurrentness,
+        subjectRubricCurrentness,
+        supersededBy: 'EI-newer-card',
+        auditTarget: { current: false, superseded: true, supersededBy: 'EI-newer-card' },
+      },
+      rerunRecipeRead: {
+        complete: true,
+        chunk: JSON.stringify(rerunRecipe),
+      },
+    });
+    expect(response.data.scorecard).not.toHaveProperty('criteria');
+    expect(response.data.scorecard).not.toHaveProperty('nKeys');
+    expect(resultContract.safeParse(response.data).success).toBe(true);
   });
 
   it('preserves typed transient contention failures', async () => {

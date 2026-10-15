@@ -10,7 +10,9 @@ import { COORD_ROLES } from '../coordination/roles';
 import {
   classifyGradingAuditCurrentness,
   readScorecardEvidence,
+  readScorecardRecipeHeader,
   type ScorecardEvidenceRow,
+  type ScorecardRecipeHeader,
 } from '../../scorecards';
 import { getRubricWithoutSeeding } from '../../rubrics';
 import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
@@ -265,6 +267,14 @@ const scorecardEvidenceSchema = z.object({
   }).passthrough(),
 }).passthrough();
 
+const scorecardRecipeHeaderSchema = scorecardEvidenceSchema.omit({
+  criteria: true,
+  nKeys: true,
+  missingKeys: true,
+  extraKeys: true,
+  rubricResolved: true,
+});
+
 const scorecardEvidenceReadSchema = z.object({
   complete: z.boolean(),
   reason: z.string().optional(),
@@ -300,7 +310,7 @@ const scorecardGetDiagnosticsSchema = z.object({
 const scorecardGetResultSchema = z.object({
   ok: z.boolean(),
   diagnostics: scorecardGetDiagnosticsSchema.optional(),
-  scorecard: scorecardEvidenceSchema.optional(),
+  scorecard: z.union([scorecardEvidenceSchema, scorecardRecipeHeaderSchema]).optional(),
   evidenceRead: scorecardEvidenceReadSchema.optional(),
   rerunRecipeRead: z.object({
     complete: z.boolean(),
@@ -447,17 +457,53 @@ function boundedEvidenceRead(
   return result;
 }
 
+function boundedRerunRecipeHeaderRead(
+  scorecard: ScorecardRecipeHeader & {
+    gradingAuditCurrentness?: ReturnType<typeof classifyGradingAuditCurrentness>;
+  },
+  offset: number,
+  issueId: string,
+  inlineBudgetChars: number,
+) {
+  const encodedRecipe = scorecard.rerunRecipe === undefined ? undefined : JSON.stringify(scorecard.rerunRecipe);
+  if (encodedRecipe === undefined) return { ok: false as const, error: 'rerun_recipe_not_found' };
+  if (offset > encodedRecipe.length || (offset === encodedRecipe.length && offset !== 0)) {
+    return { ok: false as const, error: 'invalid_rerun_recipe_offset' };
+  }
+  const { rerunRecipe: _recipe, ...header } = scorecard;
+  let count = Math.min(inlineBudgetChars, encodedRecipe.length - offset);
+  const page = () => ({
+    ok: true as const,
+    scorecard: header,
+    evidenceRead: { complete: false, reason: 'rerun-recipe-page' },
+    rerunRecipeRead: {
+      complete: offset + count === encodedRecipe.length,
+      encoding: 'json' as const,
+      offset,
+      totalChars: encodedRecipe.length,
+      chunk: encodedRecipe.slice(offset, offset + count),
+      ...(offset + count < encodedRecipe.length ? { next: rerunRecipeReadCall(issueId, offset + count) } : {}),
+    },
+  });
+  let result = page();
+  while (!fitsInlineResult(result, inlineBudgetChars) && count > 1) {
+    count = Math.max(1, Math.floor(count / 2));
+    result = page();
+  }
+  return result;
+}
+
 export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted.',
+    'Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted. For spec-test-adequacy cards, direct rerunRecipe.args measure current evidence freshness; scorecardId replay reconstructs the creation-time grading for an audit.',
   guidance: {
-    when: 'Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias.',
+    when: 'Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias. For grade-the-grader comparison of a spec-test-adequacy card, call plans:evaluate-spec-test-adequacy with its harness, slug, and scorecardId: issueId to reproduce the emission-time ratings.',
     notWhen:
-      'Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.',
+      'Use the stored rerunRecipe.args when checking current evidence freshness; that live remeasurement may differ from the emitted rating after evidence changes. Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.',
     chaining:
-      'Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last.',
+      'Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For a spec-test-adequacy grading audit, call plans:evaluate-spec-test-adequacy with { harness, slug, scorecardId: issueId } and no direct selectors; compare rows[].ratings to the card and confirm historicalAuditOnly.asOf matches the card creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last.',
     returns:
       'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
@@ -478,6 +524,7 @@ export default defineTool({
       const handlerStartedAt = performance.now();
       const diagnosticAttempt = createStageAttempt({ rowId: '', onEvent: () => {} });
       let handlerState: 'running' | 'completed' | 'failed' = 'running';
+      let handlerCompleted = false;
       const makeDiagnostics = (state: typeof handlerState) => {
         const timing = namedQueryStageTimings();
         return {
@@ -502,6 +549,7 @@ export default defineTool({
       };
       const respond = (data: Record<string, unknown>) => {
         handlerState = 'completed';
+        handlerCompleted = true;
         return { data: { ...data, diagnostics: recordDiagnostics(handlerState) } };
       };
       const runDiagnosticStage = async <T>(stage: ScorecardGetDiagnosticStage, run: () => PromiseLike<T>): Promise<T> => {
@@ -530,9 +578,10 @@ export default defineTool({
             if (!issueId) {
               return respond({ ok: false, error: 'issueId or id is required' });
             }
+            const recipePage = args.rerunRecipeOffset !== undefined;
             const result = await runDiagnosticStage(
               SCORECARD_GET_DIAGNOSTIC_STAGE.evidenceRead,
-              () => readScorecardEvidence(issueId),
+              () => recipePage ? readScorecardRecipeHeader(issueId) : readScorecardEvidence(issueId),
             );
             if (result.kind === 'not_found') {
               return respond({ ok: false, error: `scorecard '${issueId}' not found` });
@@ -555,7 +604,22 @@ export default defineTool({
                   ),
                 }
               : result.scorecard;
-            return respond(boundedEvidenceRead(scorecard, args, issueId, inlineResultBudgetChars(identity.ownerId)));
+            if (recipePage) {
+              return respond(boundedRerunRecipeHeaderRead(
+                scorecard as ScorecardRecipeHeader & {
+                  gradingAuditCurrentness?: ReturnType<typeof classifyGradingAuditCurrentness>;
+                },
+                args.rerunRecipeOffset!,
+                issueId,
+                inlineResultBudgetChars(identity.ownerId),
+              ));
+            }
+            return respond(boundedEvidenceRead(
+              scorecard as ScorecardEvidenceRow,
+              args,
+              issueId,
+              inlineResultBudgetChars(identity.ownerId),
+            ));
           } catch (error) {
             if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
               return respond({
@@ -576,7 +640,7 @@ export default defineTool({
         recordDiagnostics(handlerState);
         throw error;
       } finally {
-        diagnosticAttempt.finish(handlerState === 'completed' ? 'fulfilled' : 'rejected');
+        diagnosticAttempt.finish(handlerCompleted ? 'fulfilled' : 'rejected');
       }
     });
   },
