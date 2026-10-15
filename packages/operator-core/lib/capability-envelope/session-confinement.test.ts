@@ -164,6 +164,24 @@ describe('session confinement — exact assignment arguments', () => {
     }
     expect(evaluateSessionConfinement({ toolName: 'capability:bash', confinement, purpose: 'listing' }).allowed).toBe(false);
   });
+  it('permits enumerated coverage required by a scoped verification completion', () => {
+    const coverage = { population: ['task implementation', 'local verification'],
+      checked: ['task implementation', 'local verification'], notChecked: [], notApplicable: [], residue: [] };
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification: { coverage } } }).allowed).toBe(true);
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification: { coverage: { population: ['task'], checked: ['task'], residue: ['none'] } } } }).allowed).toBe(true);
+  });
+  it.each([null, [], {}, { probes: [] },
+    { coverage: null }, { coverage: [] }, { coverage: { population: [], residue: [] } },
+    { coverage: { population: ['task'], checked: [{ ref: 'WI-other' }], residue: [] } },
+    { coverage: { population: ['task'], checked: ['task'], residue: ['WI-other'] } },
+    { coverage: { population: ['task'], checked: ['task'], residue: [], filesChanged: ['/etc/passwd'] } },
+    { coverage: { population: ['task'], checked: ['task'], residue: [] }, probes: [{ tool: 'consult:get_feedback' }] },
+  ])('refuses malformed coverage and verification side effects %j', verification => {
+    expect(evaluate('work_items:complete', { ...own, state: 'done', assumptions: 'none',
+      completion: { ...completion, verification } }).allowed).toBe(false);
+  });
   it.each([undefined, {}, { ...own, id: 'F-neighbor' }, { ...own, harness: 'other' },
     { ...own, ids: ['F-bench', 'F-neighbor'] }, { ...own, items: [{ id: 'F-neighbor' }] },
     { ...own, priorAttemptRefs: ['thread-post:other'] }, { ...own, workItem: 'F-neighbor' },

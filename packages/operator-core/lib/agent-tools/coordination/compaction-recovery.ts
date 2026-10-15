@@ -305,14 +305,33 @@ export async function buildCompactionRecovery(
     recovery.control = null;
   }
 
-  // P-006 — the compact CTRL anchor tells us exactly which ONE plan matters.
-  // Read its canonical current row/spec revisions once, at the boundary, and
-  // carry that authority ahead of every older checkpoint/summary. Absence and
-  // wrong scope are explicit failures, never an empty snapshot that looks safe.
+  // P-006 — an explicit CTRL plan is the current lane authority. A fleet member
+  // can have no scoped plan claim while its persisted launch profile still
+  // identifies the plan that launched the fleet; use that only as a fallback.
+  // Planless claim-spec fleets intentionally stay planless. Read the selected
+  // plan's canonical current row/spec revisions once at the boundary and carry
+  // that authority ahead of every older checkpoint/summary.
   const control = recovery.control;
-  const scopedPlan = control?.state.scope.plan ?? null;
+  let scopedPlan = control?.state.scope.plan ?? null;
+  let scopedHarness = control?.state.scope.harness ?? null;
+  let fleetProfileReadFailed = false;
+  if (control && !scopedPlan && control.state.route.kind === 'fleet') {
+    try {
+      const { getFleetHeadcountTarget } = await import('../../agent-fleets-store');
+      const profile = await getFleetHeadcountTarget(workspaceId, control.state.route.fleet);
+      const profilePlan = profile?.config.plan?.trim();
+      if (profilePlan) {
+        scopedPlan = profilePlan;
+        scopedHarness = scopedHarness ?? profile.config.harness ?? null;
+      }
+    } catch {
+      // We cannot claim a complete recovery when we cannot determine whether
+      // this fleet carries a launching plan whose current decisions must lead.
+      fleetProfileReadFailed = true;
+      recovery.coverage.planAuthority = false;
+    }
+  }
   if (control && scopedPlan) {
-    const scopedHarness = control.state.scope.harness;
     const unavailable = (
       reason: CompactionPlanAuthorityUnavailable['reason'],
       detail?: string,
@@ -406,7 +425,7 @@ export async function buildCompactionRecovery(
     }
   } else {
     recovery.planAuthority = null;
-    recovery.coverage.planAuthority = null;
+    if (!fleetProfileReadFailed) recovery.coverage.planAuthority = null;
   }
 
   // (a) held work-items' checkpoints — normally re-injected only on pickup;

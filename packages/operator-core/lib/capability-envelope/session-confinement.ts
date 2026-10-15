@@ -179,7 +179,25 @@ function withinWorkItemBoundary(toolName: string, args: unknown,
   if (row.state !== 'done' || row.assumptions !== 'none' || !row.completion ||
       typeof row.completion !== 'object' || Array.isArray(row.completion)) return false;
   const completion = row.completion as Record<string, unknown>;
-  if (Object.keys(completion).some(key => !['summary', 'testsRun', 'testResult', 'verifiedHow', 'filesChanged', 'filesDeleted'].includes(key))) return false;
+  if (Object.keys(completion).some(key => !['summary', 'testsRun', 'testResult', 'verifiedHow', 'filesChanged', 'filesDeleted', 'verification'].includes(key))) return false;
+  if (completion.verification !== undefined) {
+    const verification = completion.verification;
+    if (!verification || typeof verification !== 'object' || Array.isArray(verification) ||
+        Object.keys(verification).some(key => key !== 'coverage')) return false;
+    const coverage = (verification as Record<string, unknown>).coverage;
+    if (!coverage || typeof coverage !== 'object' || Array.isArray(coverage)) return false;
+    const row = coverage as Record<string, unknown>;
+    const keys = ['population', 'checked', 'notChecked', 'notApplicable', 'residue'];
+    if (Object.keys(row).some(key => !keys.includes(key)) ||
+        !Array.isArray(row.population) || !row.population.length ||
+        keys.some(key => row[key] !== undefined && (!Array.isArray(row[key]) ||
+          !(row[key] as unknown[]).every(value => typeof value === 'string' && value.trim().length > 0)))) return false;
+    // Coverage is inert description; the completion tool validates its partition.
+    // Residue references can trigger cross-item ownership reads, so a confined
+    // assignment may submit only the maintained zero-residue forms.
+    if (!Array.isArray(row.residue) || row.residue.length > 0 &&
+        !(row.residue.length === 1 && row.residue[0] === 'none')) return false;
+  }
   // The completion tool reads named files server-side. Keep those proof reads
   // inside the assignment checkout, including on platforms with backslashes.
   return ['filesChanged', 'filesDeleted'].every(key => completion[key] === undefined ||

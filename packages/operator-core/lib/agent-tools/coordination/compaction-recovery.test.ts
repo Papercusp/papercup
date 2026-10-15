@@ -35,6 +35,10 @@ vi.mock('../../search/self-session', () => ({
 vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: vi.fn(async () => null),
 }));
+vi.mock('../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-fleets-store')>()),
+  getFleetHeadcountTarget: vi.fn(async () => null),
+}));
 vi.mock('./control-anchor', () => ({
   buildAndPersistControlAnchor: vi.fn(async () => {
     throw new Error('not exercised by this test');
@@ -309,6 +313,119 @@ describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-
       specs: [{ specId: 'SPEC-P-017', revision: 4, contentHash: 'spec-hash-4' }],
     });
     expect(delivery.marker.controlStateHash).toBeTruthy();
+  });
+
+  it('uses the matching fleet launch plan only when the control scope has no plan', async () => {
+    const [
+      { getFleetHeadcountTarget },
+      { getPlanRow },
+      { buildAndPersistControlAnchor },
+      { buildAutomaticCompactionRecovery },
+    ] = await Promise.all([
+      import('../../agent-fleets-store'),
+      import('../plans/source'),
+      import('./control-anchor'),
+      import('./compaction-recovery'),
+    ]);
+    const fleetControl: ControlAnchor = {
+      ...CONTROL,
+      state: {
+        ...CONTROL.state,
+        route: { kind: 'fleet', fleet: 'feature-drain', role: 'member' },
+        scope: { ...CONTROL.state.scope, harness: null, plan: null, items: [] },
+      },
+    };
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce(fleetControl);
+    vi.mocked(getFleetHeadcountTarget).mockClear().mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'feature-drain',
+      enabled: false,
+      target: 1,
+      config: { plan: 'feature-plan', harness: 'h', agent: 'codex' },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    vi.mocked(getPlanRow).mockClear();
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(getFleetHeadcountTarget).toHaveBeenCalledWith('ws-1', 'feature-drain');
+    expect(getPlanRow).toHaveBeenCalledWith('feature-plan', {
+      workspaceId: 'ws-1',
+      harnessSlug: 'h',
+    });
+    expect(delivery.marker.complete).toBe(true);
+    expect(delivery.recovery.coverage.planAuthority).toBe(true);
+    expect(delivery.recovery.planAuthority).toMatchObject({
+      resolution: 'current',
+      planSlug: 'feature-plan',
+      harness: 'h',
+    });
+  });
+
+  it('keeps plan authority not-applicable for a planless claim-spec fleet profile', async () => {
+    const [
+      { getFleetHeadcountTarget },
+      { getPlanRow },
+      { buildAndPersistControlAnchor },
+      { buildAutomaticCompactionRecovery },
+    ] = await Promise.all([
+      import('../../agent-fleets-store'),
+      import('../plans/source'),
+      import('./control-anchor'),
+      import('./compaction-recovery'),
+    ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce({
+      ...CONTROL,
+      state: {
+        ...CONTROL.state,
+        route: { kind: 'fleet', fleet: 'claim-spec-drain', role: 'member' },
+        scope: { ...CONTROL.state.scope, plan: null, items: [] },
+      },
+    });
+    vi.mocked(getFleetHeadcountTarget).mockClear().mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'claim-spec-drain',
+      enabled: false,
+      target: 1,
+      config: { harness: 'h', agent: 'codex' },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    vi.mocked(getPlanRow).mockClear();
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(getFleetHeadcountTarget).toHaveBeenCalledWith('ws-1', 'claim-spec-drain');
+    expect(getPlanRow).not.toHaveBeenCalled();
+    expect(delivery.marker.complete).toBe(true);
+    expect(delivery.recovery.coverage.planAuthority).toBeNull();
+    expect(delivery.recovery.planAuthority).toBeNull();
+  });
+
+  it('keeps recovery incomplete when a fleet launch profile needed for plan scope is unreadable', async () => {
+    const [{ getFleetHeadcountTarget }, { buildAndPersistControlAnchor }, { buildAutomaticCompactionRecovery }] =
+      await Promise.all([
+        import('../../agent-fleets-store'),
+        import('./control-anchor'),
+        import('./compaction-recovery'),
+      ]);
+    vi.mocked(buildAndPersistControlAnchor).mockResolvedValueOnce({
+      ...CONTROL,
+      state: {
+        ...CONTROL.state,
+        route: { kind: 'fleet', fleet: 'unknown-profile', role: 'member' },
+        scope: { ...CONTROL.state.scope, plan: null, items: [] },
+      },
+    });
+    vi.mocked(getFleetHeadcountTarget).mockRejectedValueOnce(new Error('profile store unavailable'));
+
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', { heldItems: [] });
+
+    expect(delivery.marker.complete).toBe(false);
+    expect(delivery.recovery.coverage.planAuthority).toBe(false);
   });
 
   it('keeps the marker incomplete when the control-scoped plan is absent in that harness', async () => {
