@@ -4229,16 +4229,17 @@ async function completeOne(
   }
 
   // P-029: read the existing plan linkage and BAR map before any completion write.
-  if (closeIntentRequested && !isAbandonedClose && !duplicateCloseCoverageException) {
+  if (closeIntentRequested && !isAbandonedClose) {
     const stamp = finishPlanStamp(existing as unknown as Record<string, unknown>);
     const planSlug = existing.sourcePlanSlug ?? stamp?.plan_slug;
     const planItemIds = existing.sourcePlanItemIds?.length ? existing.sourcePlanItemIds : stamp ? [stamp.item_id] : [];
-    if (planSlug && planItemIds.length) {
+    if (planSlug) {
       try {
         const refusal = await conformanceClosureRefusal({
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
           harnessSlug: existing.harness ?? stamp?.harness_slug ?? '',
-          planSlug, planItemIds, completion: it.completion,
+          planSlug, planItemIds, completion: it.completion, item: existing,
+          skipConformance: duplicateCloseCoverageException,
         });
         if (refusal) refuseGate(refusal.error, { specConformanceRefusal: refusal });
         setContractRequirement('spec-conformance-closure', true, refusal?.error);
