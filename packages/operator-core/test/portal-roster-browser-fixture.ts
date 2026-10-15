@@ -3121,7 +3121,12 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
         return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
       });
       await page.reload();
-      return (await responsePromise).json();
+      const response = await responsePromise;
+      // The page may consume/release the response while the reload settles.
+      // Wait for network completion before asking CDP for the body; otherwise
+      // Network.getResponseBody can race the browser's response cleanup.
+      await response.finished();
+      return response.json();
     }, input.workspace, row => isDeepStrictEqual(row.panels.infra.data?.hostedControlPlane, hosted));
     assert.deepEqual(body.rows[0].panels.infra.data?.hostedControlPlane, hosted,
       'actual workspace-scoped HTTP query must return the collector reading');
