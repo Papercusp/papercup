@@ -281,7 +281,6 @@ import '../../spec-conformance/sweep-action';
 // one scheduled activation of an existing goal via the startGoalById primitive.
 import './goal-start-action';
 import './external-trigger-dispatch-action';
-import './facebook-personal-vault-poll-action';
 // GitHub Issues, Gmail and Google Calendar have no poll action of their own: they are provider
 // plugins synced by connector-sync (generalized-integrations-google-migration-cupboard-workflows-
 // 2026-10-05 P-010 / D-015, P-008 / D-017, P-009 / D-021).
