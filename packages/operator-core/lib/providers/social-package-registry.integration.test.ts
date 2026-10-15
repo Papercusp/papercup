@@ -13,9 +13,10 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOT = join(tmpdir(), `social-package-install-${process.pid}-${Date.now()}`);
 afterAll(async () => { await fs.rm(ROOT, { recursive: true, force: true }); });
 
-const PACKAGES = ['facebook-pages', 'instagram'];
+const PACKAGES = ['facebook-pages', 'instagram', 'x'];
 describe('installed social packages use the generic Integrations model', () => {
   it.each(PACKAGES)('%s loads from the install path with declared setup and capabilities', async (id) => {
+    const providerId = id === 'x' ? 'x-twitter' : id;
     const projectDir = join(ROOT, id);
     const installed = join(projectDir, 'plugins', id);
     await fs.mkdir(installed, { recursive: true });
@@ -26,29 +27,29 @@ describe('installed social packages use the generic Integrations model', () => {
     expect(errors).toEqual([]);
     const registry = createProviderRegistry();
     const failures: unknown[] = [];
-    expect(await registerPluginProviders(loaded, (failure) => failures.push(failure), registry)).toEqual([id]);
+    expect(await registerPluginProviders(loaded, (failure) => failures.push(failure), registry)).toEqual([providerId]);
     expect(failures).toEqual([]);
-    const entry = registry.get(id)!;
+    const entry = registry.get(providerId)!;
     expect(entry.descriptor.datatypes).toEqual(['social-post']);
     expect(await entry.adapter!.describe()).toEqual(entry.descriptor);
     const model = summarizeIntegrationProvider(entry, [], {
-      ref: 'facebook', configured: false, clientId: null, hasClientSecret: false,
+      ref: id === 'x' ? 'x' : 'facebook', configured: false, clientId: null, hasClientSecret: false,
       redirectUri: 'https://operator.example/api/oauth/callback', savedAt: null,
     });
-    expect(model).toMatchObject({ id, tracksTickets: false });
+    expect(model).toMatchObject({ id: providerId, tracksTickets: false });
     expect(model.capabilities).toEqual(entry.descriptor.capabilities);
-    expect(model.displayName).toBe(id === 'facebook-pages' ? 'Facebook Pages' : 'Instagram');
-    expect(model.requiredConfig).toEqual([id === 'facebook-pages' ? 'pageId' : 'igUserId']);
-    expect(new URL(model.connectHref!, 'https://operator.example').searchParams.get('plugin')).toContain(id);
-    expect(model.appRegistration?.createUrl).toBe('https://developers.facebook.com/apps/');
-    expect(model.oauthClient).toMatchObject({ configured: false, secretRequired: true });
-    expect(registry.forDatatype('social-post', 'social.post').map((e) => e.descriptor.id)).toEqual([id]);
+    expect(model.displayName).toBe(id === 'facebook-pages' ? 'Facebook Pages' : id === 'x' ? 'X' : 'Instagram');
+    expect(model.requiredConfig).toEqual(id === 'x' ? ['userId', 'username'] : [id === 'facebook-pages' ? 'pageId' : 'igUserId']);
+    expect(new URL(model.connectHref!, 'https://operator.example').searchParams.get('plugin')).toContain(providerId);
+    expect(model.appRegistration?.createUrl).toBe(id === 'x' ? 'https://console.x.com/' : 'https://developers.facebook.com/apps/');
+    expect(model.oauthClient).toMatchObject({ configured: false, secretRequired: id !== 'x' });
+    expect(registry.forDatatype('social-post', 'social.post').map((e) => e.descriptor.id)).toEqual([providerId]);
     if (id === 'facebook-pages') {
       const triggerPack = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins/social-facebook-pages/papercusp.json'), 'utf8'));
       expect(triggerPack.triggerPack.bindings.map((b: { source: { sourceKind: string }; eventPattern: string }) => [b.source.sourceKind, b.eventPattern])).toEqual([
         [id, `ext:${id}:post`], [id, `ext:${id}:comment`], [id, `ext:${id}:reply`],
       ]);
-    } else {
+    } else if (id === 'instagram') {
       const triggerPack = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins/social-instagram/papercusp.json'), 'utf8'));
       expect(triggerPack.triggerPack.bindings.map((b: { eventPattern: string }) => b.eventPattern)).toEqual([
         'ext:instagram:mention', 'ext:instagram:comment', 'ext:instagram:reply',
