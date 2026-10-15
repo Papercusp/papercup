@@ -1580,12 +1580,26 @@ export function currentBenchRunLabel(runId: string): string {
 export const currentBenchAttemptLabel = (runId: string, handle: BenchHarnessHandle) => `${currentBenchRunLabel(runId)}${hash(handle.slug).slice(0, 24)}:`;
 const attemptLabel = currentBenchAttemptLabel;
 
+function currentBenchLedgerEnabled(arm: CurrentBenchmarkProtocol['arms'][number]): boolean {
+  // Uncontrolled legacy runs keep their existing workflow. Controlled runs
+  // derive exposure only from the frozen arm, never a caller launch option.
+  return arm.control?.capabilities['work-item-ledger'] !== 'off';
+}
+function currentBenchTaskInstruction(handle: BenchHarnessHandle, ledger: boolean): string {
+  const task = 'Resolve the assigned benchmark task in this repository. Preserve your work in the checkout.';
+  return ledger
+    ? `${task} Use work_items:get or work_items:checkpoint with id=${handle.featureId} and harness=${handle.slug}. When finished, use work_items:complete with that exact id/harness, state="done", assumptions="none", and completion:{summary,testsRun,testResult,verifiedHow,filesChanged}. Name checkout-relative files.`
+    : `${task} When finished, report your changes and verification in your final response. Name checkout-relative files.`;
+}
+
 export function currentBenchLaunchRequest(opts: CurrentSuBenchOptions, handle: BenchHarnessHandle, problem: string, context?: BenchmarkContextReceipt): LaunchArgs {
   resolveBenchWorkspace(opts.workspaceId);
   if (!opts.model.trim() || !opts.account.trim()) throw new Error('Current benchmark model/account must be explicit.');
+  const arm = currentBenchmarkProtocolSchema.parse(opts.preregistration.config).arms.find(arm => arm.id === opts.armId);
+  if (!arm) throw new Error('Current benchmark launch arm is not in the frozen protocol.');
   return {
     harness: handle.slug, cwd: handle.worktreePath, feature: handle.featureId, workItem: handle.featureId,
-    brief: `Resolve the assigned benchmark task in this repository. Preserve your work in the checkout. Use work_items:get or work_items:checkpoint with id=${handle.featureId} and harness=${handle.slug}. When finished, use work_items:complete with that exact id/harness, state="done", assumptions="none", and completion:{summary,testsRun,testResult,verifiedHow,filesChanged}. Name checkout-relative files.\n\n${problem}${context?.contextText ?? ''}`,
+    brief: `${currentBenchTaskInstruction(handle, currentBenchLedgerEnabled(arm))}\n\n${problem}${context?.contextText ?? ''}`,
     independent: true, headless: true, count: 1, mcpTarget: 'spawn-host',
     // No human is present at this bounded assignment's console. Independent
     // launches have no fleet AUTO default; register it explicitly at bootstrap.
@@ -2791,18 +2805,26 @@ export function liveCurrentSuBenchPorts(
       if (!input || args.cwd !== input.checkout || args.workItem !== input.workItemId || args.feature !== input.workItemId || typeof args.brief !== 'string' ||
           !args.brief.endsWith(readRestoredBenchmarkContext(input).contextText))
         throw new Error('Benchmark native launch requires its physically restored frozen context.');
+      const ledger = currentBenchLedgerEnabled(requireBinding().arm);
+      const instruction = currentBenchTaskInstruction({ slug: input.binding.harnessSlug,
+        featureId: input.workItemId, worktreePath: input.checkout }, ledger);
+      if (!args.brief.startsWith(`${instruction}\n\n`))
+        throw new Error('Benchmark native launch ledger exposure differs from its frozen host arm.');
       const module = await import('../agent-tools/capability/launch-agent');
       requireHost(args);
       const verifySession = beginCurrentBenchNativeSession(observations, opts, { slug: args.harness as string,
         featureId: input.workItemId, worktreePath: input.checkout });
       verifySession();
       // Server-side operations run outside the native OS boundary. Only local
-      // assignment progress/completion and identity are admitted here; the native sandbox supplies
+      // assignment progress/completion (when its frozen arm enables them) and identity are admitted here; the native sandbox supplies
       // coding tools. Discovery, remote brains, arbitrary server execution and
       // lifecycle fan-out cannot cause unmetered inference for this assignment.
       const confinement = Object.freeze({ denyTools: Object.freeze([] as string[]),
-        denyOutside: Object.freeze(['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete']),
+        denyOutside: Object.freeze(ledger
+          ? ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'] : ['coord:whoami']),
         denyAmbientContext: true as const,
+        // Observer ownership/authorization is identical in both arms; the
+        // experimental tool ceiling cannot widen this exact-item boundary.
         denyWorkItemsOutside: Object.freeze({ id: input.workItemId, harness: input.binding.harnessSlug, checkout: input.checkout }),
         imposedBy: `benchmark-host ${accounting!.assignmentId}`,
         reason: 'All benchmark inference must cross the assignment\'s private metered gateway; native sandboxed tools perform local coding.' });

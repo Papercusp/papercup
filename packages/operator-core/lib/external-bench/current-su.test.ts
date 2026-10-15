@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBearerCredentialResolver } from '../inference-gateway/credential-store';
 import {
-  currentBenchLaunchRequest, currentBenchRunLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
+  currentBenchLaunchRequest, currentBenchRunLabel, currentBenchAttemptLabel, currentSuBenchHarnessDriver, currentStockBenchHarnessDriver,
   liveCurrentSuBenchPorts, recoverCurrentBenchRun, beginCurrentBenchNativeSession,
   currentBenchIdentityFromObservation, type CurrentBenchIdentityObservation,
   currentBenchObservationReader, liveCurrentBenchObservationReaderPorts, type CurrentBenchObservationReaderPorts,
@@ -20,6 +20,7 @@ import {
 import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapters';
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { BenchmarkContextReceipt } from './reproducibility/context';
+import { evaluateSessionConfinement, type SessionToolConfinement } from '../capability-envelope/session-confinement';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -1384,7 +1385,7 @@ function fixture(opts = options) {
   let clock = 0;
   const row: CurrentBenchTask = {
     taskId: 'task-own', workspaceId: opts.workspaceId, state: 'exited', exitCode: 0,
-    detail: { label: currentBenchLaunchRequest(opts, handle, 'issue').label },
+    detail: { label: `${currentBenchAttemptLabel(opts.runId, handle)}solver` },
   };
   const lifecycle: BenchHarnessOps = {
     now: () => clock,
@@ -1855,10 +1856,16 @@ describe('current benchmark restart and live binding', () => {
     await expect(recoverCurrentBenchRun(f.ports, options)).rejects.toThrow(/census exceeded/);
     expect(f.ports.killTask).not.toHaveBeenCalled();
   });
-  it('calls the maintained handler with the original authenticated context and subtree controller', async () => {
+  it.each([undefined, 'on', 'off'] as const)('binds native ledger exposure %s while retaining authenticated observer ownership', async ledger => {
     const f = fixture();
     const ctx = { workspaceId: 'bench-private', authenticatedPrincipal: { retained: true } } as unknown as PapercuspUnifiedToolContext;
     const protocol = currentProtocolFixture(), preregHash = 'a'.repeat(64);
+    if (ledger) {
+      protocol.arms[0].control = { topology: 'solo', solverGroup: 'ledger-control',
+        solverToolsHash: 'f'.repeat(64), capabilities: { ...allCapabilities('off'), 'work-item-ledger': ledger } };
+      protocol.arms[1].control = { topology: 'stock-native-reference', solverGroup: 'stock-control',
+        solverToolsHash: 'f'.repeat(64), capabilities: allCapabilities('off') };
+    }
     const snapshotRoot = mkdtempSync(join(tmpdir(), 'bench-launch-context-'));
     const checkout = join(snapshotRoot, 'assignment'); mkdirSync(checkout);
     const snapshot = JSON.stringify({ entries: [{ key: 'permitted:fixture', text: 'Frozen initial context.' }] });
@@ -1884,14 +1891,35 @@ describe('current benchmark restart and live binding', () => {
     expect(forwarded.workspaceId).toBe(ctx.workspaceId);
     expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);
     expect(forwarded[Symbol.for('benchmark-test-server-ceiling')]).toMatchObject({
-      denyTools: [], denyOutside: ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
+      denyTools: [], denyAmbientContext: true,
+      denyOutside: ledger === 'off' ? ['coord:whoami'] : ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
       denyWorkItemsOutside: { id: restoredHandle.featureId, harness: restoredHandle.slug, checkout },
       imposedBy: expect.stringContaining('benchmark-host') });
     expect(Object.getOwnPropertySymbols(ctx)).not.toContain(Symbol.for('benchmark-test-private-route'));
     // A host launch (no containerExec) never pins the backend binary.
     expect(forwarded[Symbol.for('benchmark-test-backend-bin')]).toBeUndefined();
-    expect(args.brief).toContain(`id=${restoredHandle.featureId} and harness=${restoredHandle.slug}`);
+    const launched = native.launch.mock.calls.at(-1)![0];
+    // The worker's binding remains for observer admission/cancellation, even
+    // when its experimental ledger prompt and tools are withheld.
+    expect(launched).toMatchObject({ workItem: restoredHandle.featureId, feature: restoredHandle.featureId });
+    expect(launched.brief.includes(`id=${restoredHandle.featureId} and harness=${restoredHandle.slug}`)).toBe(ledger !== 'off');
+    expect(launched.brief.includes('work_items:complete')).toBe(ledger !== 'off');
+    expect(launched.brief).toContain(context.contextText);
+    const confinement = forwarded[Symbol.for('benchmark-test-server-ceiling')] as SessionToolConfinement;
+    for (const toolName of ['work_items:get', 'work_items:checkpoint', 'work_items:complete']) {
+      const own = { id: restoredHandle.featureId, harness: restoredHandle.slug,
+        ...(toolName === 'work_items:complete' ? { state: 'done', assumptions: 'none',
+          completion: { summary: 'finished', testsRun: ['unit'], testResult: 'passed', verifiedHow: 'unit', filesChanged: ['src/fix.ts'] } } : {}) };
+      expect(evaluateSessionConfinement({ toolName, args: own, confinement }).allowed).toBe(ledger !== 'off');
+      expect(evaluateSessionConfinement({ toolName, args: { ...own, id: 'WI-neighbor' }, confinement }).allowed).toBe(false);
+      expect(evaluateSessionConfinement({ toolName, args: { ...own, harness: 'neighbor' }, confinement }).allowed).toBe(false);
+    }
+    expect(evaluateSessionConfinement({ toolName: 'work_items:list', args: {}, confinement }).allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'coord:inbox', args: {}, confinement }).allowed).toBe(false);
     const calls = native.launch.mock.calls.length;
+    // A caller cannot reintroduce an agent-facing instruction prefix outside
+    // the frozen host arm, even if the frozen context suffix is unchanged.
+    await expect(ports.launch({ ...args, brief: `Use work_items:get for another task.\n${args.brief}` })).rejects.toThrow(/ledger exposure/);
     await expect(ports.launch({ ...args, workItem: 'WI-neighbor' })).rejects.toThrow(/physically restored/);
     await expect(ports.launch({ ...args, feature: 'F-neighbor' })).rejects.toThrow(/physically restored/);
     expect(native.launch.mock.calls).toHaveLength(calls);
