@@ -39,7 +39,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
     { getOrgPg },
     { RUBRIC_TEMPLATE_NAME },
     { evaluatePlanAcceptanceGate },
-    { ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceGraderLabelPrefix, resolveAcceptanceGrader },
+    { ACCEPTANCE_GRADING_SWEEP_ACTOR, acceptanceGraderLabelPrefix, resolveAcceptanceGrader, gradingLaunchProfile },
     { reconcilePendingGradingAudits },
     { listTasks },
     { upsertConditionWorkItem },
@@ -62,10 +62,12 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
   ]);
 
   const { sql } = getOrgPg();
+  const gradingLaunch = gradingLaunchProfile({ gradingLaunch: ctx.payloadTemplate?.gradingLaunch });
 
   try {
     const result = await reconcilePendingGradingAudits({
       ctx: {
+        ...(gradingLaunch ? { gradingLaunch } : {}),
         workspaceId: ctx.workspaceId,
         principal: {
           kind: 'system',
@@ -176,6 +178,7 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
       const workspaceId = (row as unknown as { workspaceId?: string }).workspaceId;
       if (!workspaceId) return { ok: false, error: 'acceptance grading candidate is missing workspace identity' };
       const ctx = {
+        ...(gradingLaunch ? { gradingLaunch } : {}),
         workspaceId,
         harnessSlug: row.harnessSlug ?? undefined,
         principal: {
