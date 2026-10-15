@@ -1807,8 +1807,8 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted', rubricId: 'ar-some-plan' });
     // The refusal is the teaching surface: it must name the full flow.
-    expect(v.message).toContain('vettingConsult');
-    expect(v.message).toContain('meta-acceptance-rubric');
+    expect(v.message).toContain('Current independent critique is read directly');
+    expect(v.message).toContain('criteriaHash');
     expect(v.message).toContain('consult:get_feedback');
   });
 

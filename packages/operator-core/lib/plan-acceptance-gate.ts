@@ -1509,11 +1509,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           unboundIds.length > 0
             ? ` A subject-less meta-scorecard exists in history (${unboundIds.join(', ')}${
                 unboundMetaCards.length > unboundIds.length ? ', …' : ''
-              }), but it names no acceptance rubric and cannot satisfy this gate; re-emit with ` +
-              `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }` +
-              (stale
-                ? ` and a current vetting linkage.`
-                : ` plus vettingConsult:'<consult conversation_id>' (or vettingWorkItem:'<review WI-/EI- id>').`)
+              }), but it names no acceptance rubric and cannot establish current critique.`
             : '';
         const candidateDiagnostic = vettingStatus.diagnosis
           ? ` Candidate diagnostics: ${vettingStatus.diagnosis}.`
@@ -1537,7 +1533,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `criteriaHash '${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${currentRevision ?? '(unrecorded)'} ` +
               `in the opening request; (2) improve the rubric from the critique as needed. ` +
               `Current independent critique is read directly; no attestation card or attestation audit is required. ` +
-              `${unboundDiagnostic ? 'Historical unbound cards do not establish current critique. ' : ''}` +
+              `${unboundDiagnostic ? unboundDiagnostic.slice(1) : ''}` +
               `${candidateDiagnostic}`),
           ...(vettingStatus.gradingAuditDispatchSuppressed
             ? { gradingAuditDispatchSuppressed: vettingStatus.gradingAuditDispatchSuppressed }
