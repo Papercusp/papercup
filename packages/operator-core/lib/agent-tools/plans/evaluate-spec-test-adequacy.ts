@@ -859,7 +859,18 @@ export default defineTool({
       recordedEvaluatorBuild && evaluatorBuildDiff(recordedEvaluatorBuild, liveEvaluatorBuild)
         ? { recorded: recordedEvaluatorBuild, live: liveEvaluatorBuild }
         : undefined;
-    const classResolution = await resolveEvaluatorClassRef(args.slug, harnessSlug, args);
+    const evaluatorStartedAt = Date.now();
+    const phaseMs: Record<string, number> = {};
+    const timePhase = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
+      const startedAt = Date.now();
+      try {
+        return await action();
+      } finally {
+        phaseMs[name] = Math.max(0, Date.now() - startedAt);
+      }
+    };
+    const classResolution = await timePhase('classResolution', () =>
+      resolveEvaluatorClassRef(args.slug, harnessSlug, args));
     if (!classResolution.ok) {
       return {
         data: {
@@ -907,13 +918,13 @@ export default defineTool({
     // Resolve plan-item selectors before the bounded evidence read. Otherwise a
     // large unrelated part of the plan can exhaust the limit before these clauses
     // are selected. Reuse the same clause snapshot when evaluating below.
-    const itemClauses = args.planItemIds === undefined ? undefined : await listSpecClauses({
+    const itemClauses = args.planItemIds === undefined ? undefined : await timePhase('planItemClausesRead', () => listSpecClauses({
       harnessSlug,
       planSlug: args.slug,
       specIds: args.specIds ?? classResolution.contractSpecIds,
       planItemIds: args.planItemIds,
       revision: args.specRevision,
-    });
+    }));
     const itemSpecIds = itemClauses?.filter((clause) =>
       (!classResolution.contractSpecIds || classResolution.contractSpecIds.includes(clause.specId)) &&
       (!args.specFingerprint || clause.contentHash === args.specFingerprint),
@@ -923,7 +934,7 @@ export default defineTool({
       args.workItemIds !== undefined || args.evidenceRefs !== undefined || args.bindingIds !== undefined;
     // An empty spec filter means all specs in the store. Never widen an empty
     // plan-item selection into that read; the existing selection guard handles it.
-    const allEvidence = itemSpecIds?.length === 0 ? [] : await listSpecEvidence({
+    const allEvidence = itemSpecIds?.length === 0 ? [] : await timePhase('selectedEvidenceRead', () => listSpecEvidence({
       harnessSlug,
       planSlugs: [args.slug],
       workItemIds: args.workItemIds,
@@ -944,7 +955,7 @@ export default defineTool({
       current,
       bindingIds: args.bindingIds,
       limit: evidenceLimit,
-    });
+    }));
     if (allEvidence.length >= evidenceLimit) {
       return {
         data: {
@@ -1006,13 +1017,13 @@ export default defineTool({
     const requestedSpecIds = args.specIds ?? (bindingSelection ? [...evidenceSpecIds] : classResolution.contractSpecIds);
     const clauses = itemClauses?.filter((clause) =>
       !requestedSpecIds || requestedSpecIds.includes(clause.specId),
-    ) ?? await listSpecClauses({
+    ) ?? await timePhase('clausesRead', () => listSpecClauses({
       harnessSlug,
       planSlug: args.slug,
       specIds: requestedSpecIds,
       planItemIds: args.planItemIds,
       revision: args.specRevision,
-    });
+    }));
     const pinnedClauses = clauses.filter((clause) =>
       (!classResolution.contractSpecIds || classResolution.contractSpecIds.includes(clause.specId)) &&
       (!args.specFingerprint || clause.contentHash === args.specFingerprint),
@@ -1033,7 +1044,7 @@ export default defineTool({
     // be checked. Keep that population separate so binding selectors cannot hide a
     // disclosure without widening the rest of the diagnostic read.
     const disclosedGapEvidence = bindingSelection && eligible.length > 0
-      ? await listSpecEvidence({
+      ? await timePhase('disclosedGapEvidenceRead', () => listSpecEvidence({
           harnessSlug,
           planSlugs: [args.slug],
           specIds: [...new Set(eligible.map((clause) => clause.specId))],
@@ -1045,7 +1056,7 @@ export default defineTool({
             : {}),
           current,
           limit: evidenceLimit,
-        })
+        }))
       : allEvidence;
     if (bindingSelection && disclosedGapEvidence.length >= evidenceLimit) {
       return {
@@ -1067,11 +1078,11 @@ export default defineTool({
         },
       };
     }
-    const artifactDisclosures = await readCurrentOperationalArtifactDisclosures(
+    const artifactDisclosures = await timePhase('artifactDisclosureRead', () => readCurrentOperationalArtifactDisclosures(
       typeof ctx.workspaceId === 'string' ? ctx.workspaceId : '',
       harnessSlug,
       disclosedGapEvidence,
-    );
+    ));
     const withArtifactDisclosures = (rows: typeof allEvidence) => rows.map((row) => {
       const gaps = row.id === undefined ? undefined : artifactDisclosures.get(row.id);
       if (!gaps?.length) return row;
@@ -1140,7 +1151,7 @@ export default defineTool({
     }
     const now = args.now ? new Date(args.now) : new Date();
     const sourceBarRubricCache: SourceBarRubricCache = new Map();
-    const rows = await Promise.all(eligible.map(async (clause) => {
+    const rows = await timePhase('evaluation', () => Promise.all(eligible.map(async (clause) => {
       const sourceBarTestRequirements = await resolveSourceBarTestRequirements(
         clause.sourceBar,
         sourceBarRubricCache,
@@ -1201,7 +1212,7 @@ export default defineTool({
         },
         measurementEvidence,
       };
-    }));
+    })));
     // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): a read whose EVIDENCE COHORT is
     // pinned (workItemIds / evidenceRefs / bindingIds) is a DIAGNOSTIC, not the ship verdict — the ship gate
     // (acceptance-bar-contract-snapshot) grades every binding of a clause unscoped, so a pinned
@@ -1318,6 +1329,26 @@ export default defineTool({
       classRef,
       classRefSource: classResolution.source,
       passingCount: rows.filter((row) => row.verdict === 'pass').length,
+    });
+    phaseMs.totalBeforeResponse = Math.max(0, Date.now() - evaluatorStartedAt);
+    ctx.metadata?.({
+      plansEvaluateSpecTestAdequacyStageTimings: {
+        schemaVersion: 'plans-evaluate-spec-test-adequacy-stage-timings-v1',
+        detail: isFullDetail(args.detail) ? 'full' : 'summary',
+        phaseMs,
+        counts: {
+          selectedEvidence: allEvidence.length,
+          disclosedGapEvidence: disclosedGapEvidence.length,
+          clauses: clauses.length,
+          eligibleClauses: eligible.length,
+          artifactDisclosures: artifactDisclosures.size,
+        },
+        paths: {
+          bindingSelection,
+          planItemPrefilter: itemClauses !== undefined,
+          selectedEvidenceSkipped: itemSpecIds?.length === 0,
+        },
+      },
     });
     return {
       data: {

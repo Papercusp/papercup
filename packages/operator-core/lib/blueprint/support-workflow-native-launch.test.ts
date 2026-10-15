@@ -2,7 +2,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { hermeticEnv } from '../../../../apps/operator/vitest-shims/psu-pty-temp-dir';
 import { prepareSupportOperationNativeLaunch, stopSupportOperationNativeLaunch, SUPPORT_NATIVE_ROUTE_LEASE_MS } from './support-workflow-native-launch';
@@ -207,8 +207,8 @@ it.each(['socket-boundary', 'installed-codex'] as const)(
         'set -e',
         `test "$(${request})" = 200`,
         `test "$(${request})" = 403`,
-        `if /usr/bin/curl --silent --max-time 3 http://127.0.0.1:${upstreamPort}/v1/responses; then exit 41; fi`,
-        `if /usr/bin/curl --silent --max-time 3 --noproxy '*' ${quote(privateRoute.baseURL)}; then exit 42; fi`,
+        `if /usr/bin/curl --silent --fail --max-time 3 http://127.0.0.1:${upstreamPort}/v1/responses; then exit 41; fi`,
+        `if /usr/bin/curl --silent --fail --max-time 3 --noproxy '*' ${quote(privateRoute.baseURL)}; then exit 42; fi`,
         `printf 'SUPPORT_BOUNDARY_VERIFIED' > ${quote(resultPath)}`,
       ].join('\n');
       const overrides = { 'model_providers.papercusp-codex-gateway.request_max_retries': 0,
@@ -220,8 +220,24 @@ it.each(['socket-boundary', 'installed-codex'] as const)(
         'Return the local synthetic support receipt.',
       ];
       const env = hermeticEnv({ ...route!.envelopeEnv, PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
-        PAPERCUSP_SID: 'test-support-native-srt', PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '1',
+        PAPERCUSP_SID: `test-support-native-${root.split('/').at(-1)}`, PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_PSU_PTY: '1',
+        // The socket probe uses sh, so it must not receive Codex's automatic
+        // `-c model_provider=...` argv prefix. The private SRT route stays set.
+        PAPERCUSP_ACCOUNT_ROUTING_MODE: mode === 'socket-boundary' ? 'default' : route!.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE,
         PAPERCUSP_MCP_PROXY: '0', PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${operatorPort}` });
+      // Preserve inherited source guards and passive diagnostics byte-for-byte.
+      // Their original repository paths are deliberately unreadable inside SRT;
+      // materialize these dependency-free preloads in the allowed fixture home.
+      // No NODE_OPTIONS switch or source-verification guard is removed.
+      const preloadDir = join(codexHome, 'fixture-preloads'); mkdirSync(preloadDir);
+      for (const name of ['committed-source-loader.mjs', 'vitest-startup-trace.mjs']) {
+        const original = fileURLToPath(new URL(`../../../../scripts/lib/${name}`, import.meta.url));
+        const staged = join(preloadDir, name);
+        writeFileSync(staged, readFileSync(original));
+        env.NODE_OPTIONS = (env.NODE_OPTIONS ?? '').split(pathToFileURL(original).href)
+          .join(pathToFileURL(staged).href).split(original).join(staged);
+      }
+      env.PAPERCUSP_COMMITTED_SOURCE_GIT = '/usr/bin/git';
       const launcher = fileURLToPath(new URL('../../../../apps/operator/scripts/psu-launcher.mjs', import.meta.url));
       const fixture = join(root, 'launcher-fixture.mjs');
       writeFileSync(fixture, `import { runWrapper, applyScopedNativeGateway } from ${JSON.stringify(launcher)};\n` +

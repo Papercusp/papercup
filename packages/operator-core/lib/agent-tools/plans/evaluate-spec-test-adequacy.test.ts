@@ -139,6 +139,38 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('records timings for class, evidence, clause, disclosure, and evaluation stages', async () => {
+    listClauses.mockResolvedValue([clause('active')]);
+    const metadata = vi.fn();
+    const result = await call(
+      tool.args.parse({ harness: 'papercusp', slug: 'plan-a', specIds: ['SPEC-001'], detail: 'summary' }),
+      { metadata },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      plansEvaluateSpecTestAdequacyStageTimings: expect.objectContaining({
+        schemaVersion: 'plans-evaluate-spec-test-adequacy-stage-timings-v1',
+        detail: 'summary',
+        phaseMs: expect.objectContaining({
+          classResolution: expect.any(Number),
+          selectedEvidenceRead: expect.any(Number),
+          clausesRead: expect.any(Number),
+          artifactDisclosureRead: expect.any(Number),
+          evaluation: expect.any(Number),
+          totalBeforeResponse: expect.any(Number),
+        }),
+        counts: expect.objectContaining({
+          selectedEvidence: expect.any(Number),
+          disclosedGapEvidence: expect.any(Number),
+          clauses: 1,
+          eligibleClauses: 1,
+          artifactDisclosures: expect.any(Number),
+        }),
+      }),
+    }));
+  });
+
   it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve the exact clause verdict and tier', async (booleanDetail, stringDetail) => {
     listClauses.mockResolvedValue([clause('active')]);
     const base = { harness: 'papercusp', slug: 'plan-a', specIds: ['SPEC-001'] };

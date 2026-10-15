@@ -79,12 +79,12 @@ describe('dispatch-level premises', () => {
     expect(recordInvocation.mock.calls[0][0].metadataJson.premises).toMatchObject({ provided: false, refs: [], irreversible: true });
   });
 
-  it('records unconfirmed premises on reversible calls without blocking them', async () => {
+  it.each(['missing', 'retracted'] as const)('records %s premises on reversible calls without blocking them', async status => {
     const recordInvocation = vi.fn();
-    expect((await dispatchProjectedTool(tool(undefined, false), 'test:premises', { premises: ['missing'] }, ctx(), {
-      resolvePremises: async () => [{ ref: 'missing', status: 'missing' }], recordInvocation,
+    expect((await dispatchProjectedTool(tool(undefined, false), 'test:premises', { premises: ['unconfirmed'] }, ctx(), {
+      resolvePremises: async () => [{ ref: 'unconfirmed', status }], recordInvocation,
     })).ok).toBe(true);
-    expect(recordInvocation.mock.calls[0][0].metadataJson.premises.resolutions[0].status).toBe('missing');
+    expect(recordInvocation.mock.calls[0][0].metadataJson.premises.resolutions[0].status).toBe(status);
   });
 
   it('fails closed on a resolver failure when premises were supplied', async () => {

@@ -348,7 +348,7 @@ describe('acceptance BAR seed builder', () => {
     // (probe twice: single and all), so a new kind added to the union without a case
     // here is caught by the length assertion below.
     const everyShape: Record<string, Record<string, unknown>> = {
-      tests: { kind: 'tests', files: ['lib/evidence.test.ts'] },
+      tests: { kind: 'tests', files: ['lib/evidence.test.ts'], testName: 'suite > exact case' },
       cargo: { kind: 'cargo', manifestPath: 'native/Cargo.toml', sourceFiles: ['native/src/lib.rs'], test: 'limits' },
       instrument: { kind: 'instrument', instrumentKey: 'upload-limit-meter' },
       'probe-single': { kind: 'probe', probe: probes[0] },
@@ -368,7 +368,11 @@ describe('acceptance BAR seed builder', () => {
 
     // Controls: the shared refinement refuses neither/both on both paths alike, so the
     // calibration above cannot pass vacuously on a parser that accepts anything.
-    for (const bad of [{ kind: 'probe' }, { kind: 'probe', probe: probes[0], all: probes }]) {
+    for (const bad of [
+      { kind: 'probe' },
+      { kind: 'probe', probe: probes[0], all: probes },
+      { kind: 'tests', files: ['a.test.ts', 'b.test.ts'], testName: 'selected case' },
+    ]) {
       expect(rubricCriterionCheckSchema.safeParse(bad).success).toBe(false);
       expect(parseRequirementBars(content(bad))).toMatchObject({
         ok: false,
