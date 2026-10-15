@@ -7,8 +7,9 @@ import { FLAGS } from '@papercusp/flags';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { runWithWorkspace, currentRequestWorkspaceId } from '../workspace-als';
 import { LiveHealthMonitor, type LiveHealthPaths } from '../resource-governor/live-health-monitor';
-import { writeSharedSnapshot, readSharedSnapshot } from '../derived-reads/shared-snapshot';
+import { writeSharedSnapshot } from '../derived-reads/shared-snapshot';
 import { computeSystemHealth, getSystemHealth, _resetSystemHealthCache } from './compute';
+import { resolveNamedQueryV2 } from '../sync-resolver';
 
 let db: OrgTestDb;
 let readSql: Sql;
@@ -16,7 +17,7 @@ let localRoot: string;
 const paths = new Map<string, LiveHealthPaths>();
 
 // Keep the established migrated test database, substituting only its connection.
-// The final reads use the real harness_app principal and its workspace RLS scope.
+// The final reads use the real harness_app principal and authorized request scope.
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: readSql }),
@@ -84,8 +85,7 @@ it('serves each BYOC workspace its recorded provider failure and local resource 
       await tx`SELECT set_config('app.workspace_id', ${fixture.workspace}, true)`;
       readSql = tx as unknown as Sql;
       _resetSystemHealthCache();
-      // This is the same reader called by health.snapshot. There is no new
-      // diagnostic endpoint, table, telemetry destination, or export grant.
+      // There is no new diagnostic endpoint, table, destination, or export grant.
       const health = await runWithWorkspace(fixture.workspace, () => getSystemHealth());
       expect(health?.workspaceId).toBe(fixture.workspace);
       expect(health?.panels.infra.data?.toolFailures?.brokenTools).toEqual([fixture.tool]);
@@ -93,7 +93,13 @@ it('serves each BYOC workspace its recorded provider failure and local resource 
         memoryPsiSomePct: fixture.memoryPsi, memoryPsiFullPct: fixture.memoryFull });
       expect(JSON.stringify(health)).not.toContain(foreign.error);
       expect(JSON.stringify(health)).not.toContain(foreign.tool);
-      await expect(readSharedSnapshot('system.health', foreign.workspace, 1, 60_000)).resolves.toBeNull();
+      // Auth supplies the request workspace. A caller's query args must not
+      // redirect the named query into a different workspace's local snapshot.
+      const rows = await runWithWorkspace(fixture.workspace, () =>
+        resolveNamedQueryV2('health.snapshot', { workspaceId: foreign.workspace }));
+      expect(Array.isArray(rows)).toBe(true);
+      expect(rows).toEqual([health]);
+      expect(JSON.stringify(rows)).not.toContain(foreign.tool);
     });
     readSql = db.adminSql;
   }

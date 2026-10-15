@@ -9,9 +9,10 @@ import type { Sql } from 'postgres';
 import postgres from 'postgres';
 import { compileAgentSpecification, BlueprintSchema } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { projectBlueprintToPg } from './project-to-pg';
+import { projectBlueprintToPg, readBlueprintFromPg, readBlueprintHashFromPg } from './project-to-pg';
 import { readAcceptedBlueprintDirectWorkItem } from './operation-admission';
-import { submitBlueprintOperation } from './operation-service';
+import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, OperationEventBodySchema, prepareDirectOperationCompletion,
+  signalBlueprintOperation, submitBlueprintOperation } from './operation-service';
 import { validateSupportOperationResult } from './support-workflow-case';
 import { supportToEngineeringOperation } from './support-workflow-operation';
 import { getWorkItem } from '../work-items';
@@ -106,9 +107,18 @@ beforeAll(async () => {
     inputUsdPerMillion: 30, cachedInputUsdPerMillion: 30, cacheWriteUsdPerMillion: 30,
     outputUsdPerMillion: 100,
   });
+  // The business-review fixture exercises the real corpus, receipt and funding
+  // stores with a synthetic executor completion. Native execution/model
+  // authority is exercised separately by support-native-joint above.
+  const businessOperation = structuredClone(operation);
+  businessOperation.id = 'support-business-journey';
+  businessOperation.policy.supportCase!.funding = {
+    organization: { controlWorkspaceId: workspaceId, organizationId: 'synthetic-business-org' },
+    allocationId: 'synthetic-business-project', month: '2026-10',
+  };
   const source = BlueprintSchema.parse({ id: harnessSlug, grants: {}, workItem: { kind: 'task' }, roles: [{ id: role }],
     spine: { edges: { DONE: { to: 'done' } } }, dependencies: { tools: ['blueprint:read-private-input'] },
-    operations: [operation, nativeOperation] });
+    operations: [operation, nativeOperation, businessOperation] });
   const specification = compileAgentSpecification({ source });
   expect(specification.configuration.grants).toBeDefined();
   specificationArtifact = specification;
@@ -493,4 +503,200 @@ describe('support operation durable native funding (synthetic; no provider sends
       expect(report.byCostClass.model).toMatchObject({ committedMicros: 123_000, unreconciledMicros: 100_000 });
     } finally { await restarted.end(); }
   }, 30_000);
+});
+
+describe('support business review with real corpus and funding (synthetic completion)', () => {
+  const funding = { organization: { controlWorkspaceId: workspaceId, organizationId: 'synthetic-business-org' },
+    allocationId: 'synthetic-business-project', month: '2026-10' };
+  const employee = { provider: 'slack', providerUserId: 'T1:EMPLOYEE' };
+  const reviewer = { provider: 'slack', providerUserId: 'T1:REVIEWER' };
+  beforeAll(async () => {
+    await db.adminSql.begin(async tx => {
+      for (const [allocationId, parentAllocationId, level] of [
+        [funding.organization.organizationId, null, 'organization'],
+        ['synthetic-business-dept', funding.organization.organizationId, 'department'],
+        [funding.allocationId, 'synthetic-business-dept', 'project'],
+      ] as const) {
+        const outcome = await defineHostedAllocation(tx as unknown as Sql, { ...funding,
+          allocationId, parentAllocationId, level, costClass: 'model', capMicros: 1_000_000,
+          maxUnreconciledMicros: 1_000_000, evidenceRef: 'synthetic:business-review', recordedBy: 'fixture' });
+        expect(outcome.outcome, JSON.stringify(outcome)).toBe('created');
+      }
+    });
+  });
+  it.each(['accept', 'reject', 'rework'] as const)('persists a distinct %s decision only while both principals retain source access', async decision => {
+    for (const id of [userId, reviewerId]) await createPersonalGrant(db.adminSql, {
+      workspaceId, userId: id, principalType: 'agent-role', principalId: role,
+      scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
+    await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee, reviewer]);
+    const callerId = `${userId}/employee`;
+    const access = { principalId: reviewerId };
+    const handle = await submit(`business:${decision}`, { operationId: 'support-business-journey' });
+    if (handle.target.kind !== 'work-item') throw new Error('business fixture requires a work item');
+    const workItemId = handle.target.id;
+    const item = await runWithWorkspace(workspaceId, () => getWorkItem(workItemId, harnessSlug));
+    if (!item) throw new Error('business fixture admission is missing');
+    expect(await reserveSupportOperationAttempt(db.adminSql, { handle, funding, operationMaximumMicros: 100_000,
+      attemptId: crypto.randomUUID(), attemptMaximumMicros: 10_000, bodySha256: 'c'.repeat(64) })).toBe(true);
+    const output = { supportCaseId: 'case-cobalt', summary: 'Cited engineering handoff',
+      reproduction: ['Open the synthetic case'], checklist: ['Confirm the failure'], suggestedRole: 'engineering',
+      citations: [{ id: documentId, source: 'slack', externalId: 'T1:CSUPPORT:123' }] };
+    // Match the maintained operation-admission fixture's two independent model
+    // records. These are synthetic evidence, not a second native launch proof.
+    const nativeSessionId = `synthetic-business-${crypto.randomUUID()}`;
+    const workerId = `worker-${nativeSessionId}`;
+    const { pin } = await readAcceptedBlueprintDirectWorkItem(db.adminSql, workspaceId, item);
+    await db.adminSql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, mode, role, feature, agent, session_id, launch_spec, coord_owner_id)
+      VALUES (${workspaceId}, 'console', ${role}, ${workItemId}, 'codex', ${nativeSessionId},
+        ${db.adminSql.json(JSON.parse(JSON.stringify({ acceptedOperation: { pin } })))}, ${workerId})`;
+    const attestation = OperationEventBodySchema.parse({ kind: 'model-attestation', receiptId: handle.receiptId,
+      workItemId, runId: null, ownerId: workerId, nativeSessionId,
+      requestId: crypto.randomUUID(), providerResponseId: `response-${nativeSessionId}`, backend: 'codex', provider: 'openai',
+      requestedModel: 'gpt-6.1-sol', actualModel: 'gpt-6.1-sol', forwardedEffort: 'medium', effortSource: 'forwarded-request',
+      usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0, inputTokenBasis: 'inclusive' }, source: 'gateway' });
+    if (attestation.kind !== 'model-attestation') throw new Error('expected model attestation fixture');
+    await db.adminSql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body)
+      VALUES (${workspaceId}, 'blueprint-operation', ${`receipt:${handle.receiptId}`}, ${`model-${nativeSessionId}`}, ${db.adminSql.json(attestation)})`;
+    await db.adminSql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, session_id, ts, bucket_key, provider, model, model_class, source, input_tokens, output_tokens,
+        cache_read_tokens, cache_creation_tokens, usage_provenance)
+      VALUES (${workspaceId}, ${nativeSessionId}, 1000, ${nativeSessionId}, 'openai', 'gpt-6.1-sol', 'default', 'interactive',
+        10, 2, 0, 0, ${db.adminSql.json({ grain: 'request', modelSource: 'transcript',
+          sourceId: `turn:${nativeSessionId}`, inputTotalTokens: 10 })})`;
+    const [modelFixture] = await db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n
+      FROM harness_shared.adv_sessions s JOIN harness_shared.agent_usage_samples u
+        ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
+      WHERE s.workspace_id = ${workspaceId} AND s.feature = ${workItemId}
+        AND s.launch_spec->'acceptedOperation'->'pin' = ${db.adminSql.json(JSON.parse(JSON.stringify(pin)))}
+        AND u.model = 'gpt-6.1-sol' AND u.usage_provenance->>'modelSource' = 'transcript'`;
+    expect(modelFixture?.n, 'seed paired model evidence before preparing the completion').toBe(1);
+    const completion = await runWithWorkspace(workspaceId, () => prepareDirectOperationCompletion(db.adminSql, workspaceId, item, output));
+    // This is an issue-family task: seed the canonical terminal vocabulary,
+    // just as the state writer does, rather than a legacy feature status.
+    await db.adminSql`UPDATE harness_shared.work_items SET status = 'done', authority = 'committed',
+      terminal_owner = ${workerId}, terminal_completion_ref = ${`business:${decision}`},
+      payload = payload || ${JSON.stringify({ blueprintResult: completion })}::text::jsonb
+      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${workItemId}`;
+    expect(await getBlueprintOperationStatus(db.adminSql, handle, callerId)).toMatchObject({
+      phase: 'terminal', outcome: 'succeeded', items: [{ state: 'done' }],
+    });
+    const prepared = await getBlueprintOperationResult(db.adminSql, handle, callerId);
+    if (prepared.state !== 'ready' || !prepared.businessReview) throw new Error(`business output was not validated: ${JSON.stringify(prepared)}`);
+    expect(prepared.businessReview.state).toBe('pending');
+    const request = { channel: 'business-review', requestKey: `decision:${decision}`,
+      payload: { decision, reason: 'Reviewed the cited internal handoff', resultFingerprint: prepared.businessReview.resultFingerprint } };
+    await expect(signalBlueprintOperation(db.adminSql, handle, callerId, request, { principalId: userId }))
+      .rejects.toThrow(/distinct authenticated reviewer/);
+    await db.adminSql`UPDATE harness_shared.personal_grants SET revoked_at = now()
+      WHERE workspace_id = ${workspaceId} AND user_id = ${reviewerId}::uuid`;
+    expect(await getBlueprintOperationResult(db.adminSql, handle, reviewerId, access)).toMatchObject({ state: 'unavailable' });
+    await expect(signalBlueprintOperation(db.adminSql, handle, reviewerId, request, access)).rejects.toThrow(/validated successful result/);
+    await createPersonalGrant(db.adminSql, { workspaceId, userId: reviewerId, principalType: 'agent-role',
+      principalId: role, scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
+    await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee]);
+    expect(await getBlueprintOperationResult(db.adminSql, handle, reviewerId, access)).toMatchObject({ state: 'unavailable' });
+    await expect(signalBlueprintOperation(db.adminSql, handle, reviewerId, request, access)).rejects.toThrow(/validated successful result/);
+    await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee, reviewer]);
+    expect(await getBlueprintOperationResult(db.adminSql, handle, reviewerId, access)).toMatchObject({ state: 'ready',
+      output: { citations: [{ sourceUrl: 'https://support.example/internal/cobalt' }] } });
+    const saved = await signalBlueprintOperation(db.adminSql, handle, reviewerId, request, access);
+    expect(await signalBlueprintOperation(db.adminSql, handle, reviewerId, request, access))
+      .toMatchObject({ replayed: true, eventId: saved.eventId });
+    const restarted = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
+    try {
+      expect(await getBlueprintOperationResult(restarted, handle, callerId)).toMatchObject({ state: 'ready',
+        businessReview: { state: decision === 'accept' ? 'accepted' : decision === 'reject' ? 'rejected' : 'rework',
+          accountableOwner: 'engineering-owner', decision: { reviewerPrincipal: reviewerId, eventId: saved.eventId } } });
+      const events = await getBlueprintOperationEvents(restarted, handle, reviewerId, { reviewAccess: access });
+      expect(events.events.filter(event => event.kind === 'business-review')).toHaveLength(1);
+      const report = await restarted.begin(tx => readHostedAllocationReport(tx as unknown as Sql, funding));
+      expect(report.outcomes[0]).toMatchObject({ evidenceClasses: ['internal-simulation'], reviewEffortUnknown: expect.any(Number) });
+      const [stored] = await restarted<{ output: unknown }[]>`SELECT payload->'blueprintResult'->'output' AS output
+        FROM harness_shared.work_items WHERE workspace_id = ${workspaceId} AND feature_id = ${workItemId}`;
+      expect(stored!.output).toEqual(output);
+      await replacePermissionListMembers(restarted, workspaceId, listId, [reviewer]);
+      expect(await getBlueprintOperationResult(restarted, handle, reviewerId, access)).toMatchObject({ state: 'unavailable' });
+      await expect(signalBlueprintOperation(restarted, handle, reviewerId, request, access)).rejects.toThrow(/validated successful result/);
+    } finally {
+      await restarted.end();
+      await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee]);
+    }
+  });
+});
+
+describe('support operation administrative lifecycle', () => {
+  it('preserves accepted revisions across promotion, rollback, cancellation and live source revocation', async () => {
+    const employee = { provider: 'slack', providerUserId: 'T1:EMPLOYEE' };
+    const callerId = `${userId}/employee`;
+    await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
+      scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
+    await replacePermissionListMembers(db.adminSql, workspaceId, listId, [employee]);
+    const original = await readBlueprintFromPg(db.adminSql, workspaceId, harnessSlug);
+    if (!original) throw new Error('administrative fixture has no approved blueprint');
+    expect(await readBlueprintHashFromPg(db.adminSql, workspaceId, harnessSlug)).toBe(revision);
+    const originalHandle = await submit('admin-original');
+    const accepted = async (handle: typeof originalHandle, sql: Sql = db.adminSql) => {
+      if (handle.target.kind !== 'work-item') throw new Error('administrative fixture requires a work item');
+      const item = await runWithWorkspace(workspaceId, () => getWorkItem(handle.target.kind === 'work-item'
+        ? handle.target.id : '', harnessSlug));
+      if (!item) throw new Error('administrative fixture lost its accepted item');
+      return readAcceptedBlueprintDirectWorkItem(sql, workspaceId, item);
+    };
+    const promoted = structuredClone(original);
+    const operation = promoted.operations.find(value => value.id === 'support-to-engineering');
+    if (!operation) throw new Error('administrative fixture lost its support operation');
+    operation.version = '2';
+    try {
+      await projectBlueprintToPg(db.adminSql, { workspaceId, harnessSlug, blueprint: promoted,
+        specification: compileAgentSpecification({ source: promoted }) });
+      const promotedRevision = await readBlueprintHashFromPg(db.adminSql, workspaceId, harnessSlug);
+      if (!promotedRevision || promotedRevision === revision) throw new Error('promotion did not change the approved revision');
+      await expect(submit('admin-stale')).rejects.toThrow(/revision/);
+      expect(await submit('admin-original')).toEqual(originalHandle);
+      const promotedHandle = await submit('admin-promoted', { expectedSpecificationRevision: promotedRevision,
+        input: { ...selection(), approvedRevision: promotedRevision } });
+      expect(promotedHandle.specificationRevision).toBe(promotedRevision);
+      expect((await accepted(originalHandle)).operation.version).toBe('1');
+      expect((await accepted(promotedHandle)).operation.version).toBe('2');
+
+      await projectBlueprintToPg(db.adminSql, { workspaceId, harnessSlug, blueprint: original,
+        specification: compileAgentSpecification({ source: original }) });
+      expect(await readBlueprintHashFromPg(db.adminSql, workspaceId, harnessSlug)).toBe(revision);
+      const rolledBack = await submit('admin-rollback');
+      expect(rolledBack.specificationRevision).toBe(revision);
+      // Rollback changes new admissions, never the accepted snapshot of a run.
+      expect((await accepted(promotedHandle)).operation.version).toBe('2');
+      const stop = { requestKey: 'admin-stop', reason: 'Internal operator stop drill' };
+      const cancelled = await cancelBlueprintOperation(db.adminSql, promotedHandle, callerId, stop);
+      expect(cancelled).toMatchObject({ accepted: true, handled: false, effected: false });
+      expect(await cancelBlueprintOperation(db.adminSql, promotedHandle, callerId, stop))
+        .toMatchObject({ replayed: true, eventId: cancelled.eventId });
+      const restarted = postgres(db.adminDsn, { max: 2, prepare: false, onnotice: () => {} });
+      try {
+        expect(await getBlueprintOperationStatus(restarted, promotedHandle, callerId)).toMatchObject({
+          handle: { specificationRevision: promotedRevision }, cancellationRequested: true, outcome: null,
+        });
+        expect(await getBlueprintOperationStatus(restarted, originalHandle, callerId)).toMatchObject({
+          handle: { specificationRevision: revision }, cancellationRequested: false,
+        });
+        const events = await getBlueprintOperationEvents(restarted, promotedHandle, callerId);
+        expect(events.events.filter(event => event.kind === 'cancel')).toHaveLength(1);
+      } finally { await restarted.end(); }
+      await db.adminSql`UPDATE harness_shared.personal_grants SET revoked_at = now()
+        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid`;
+      await expect(submit('admin-revoked')).rejects.toThrow(/no_live_grant/);
+      const [refused] = await db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n
+        FROM harness_shared.blueprint_operation_invocations WHERE workspace_id = ${workspaceId}
+          AND request_key IN ('admin-stale', 'admin-revoked')`;
+      expect(refused!.n).toBe(0);
+      expect((await accepted(originalHandle)).pin.specificationRevision).toBe(revision);
+      expect((await accepted(promotedHandle)).pin.specificationRevision).toBe(promotedRevision);
+    } finally {
+      await projectBlueprintToPg(db.adminSql, { workspaceId, harnessSlug, blueprint: original,
+        specification: compileAgentSpecification({ source: original }) });
+      await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
+        scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: 'owner' });
+    }
+  });
 });

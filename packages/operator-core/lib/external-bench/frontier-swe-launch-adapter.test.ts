@@ -3,6 +3,7 @@ import { currentNativeCostFixture } from './reproducibility/_protocol-test-fixtu
 import type { CurrentBenchTaskRequestCensus } from './run-launcher';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
 import type { CurrentSuBenchOptions, CurrentSuBenchObservations } from './current-su';
+import { requireCurrentBenchNativeRunCost } from './current-su';
 import type { BenchEgress } from './bench-egress';
 import type { CodexHookBridge } from './codex-hook-bridge';
 import type { RunAgentInput } from './run-topology';
@@ -109,7 +110,7 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
     f.spinRunAndCost.mockImplementation(async request => {
       const result = await drive(request);
       if (f.spinRunAndCost.mock.calls.length === 2) {
-        if (kind === 'source') result.telemetry.armMeta!.nativeCostAccounting.sources[0].sourceSha256 = '0'.repeat(64);
+        if (kind === 'source') requireCurrentBenchNativeRunCost(result.telemetry).armMeta.nativeCostAccounting.sources[0].sourceSha256 = '0'.repeat(64);
         else vi.mocked(f.assignment.readRequestCensus!).mockImplementation(async () => ({
           binding: { workspaceId: 'other' } as CurrentBenchTaskRequestCensus['binding'], populationSha256: 'f'.repeat(64), requests: [] }));
       }
@@ -130,7 +131,7 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
     const adapter = await startFrontierSweLaunchAdapter(f.config, f.ports);
     try {
       const result = await adapter.runAgent(f.input);
-      expect(result.costUsd).toBe(0.2); expect(result.armMeta?.repeatedSession.stop).toBe('matched-cost');
+      expect(result.costUsd).toBe(0.2); expect(result.armMeta).toMatchObject({ repeatedSession: { stop: 'matched-cost' } });
       expect(f.spinRunAndCost).toHaveBeenCalledOnce();
     } finally { await adapter.stop(); }
   });
