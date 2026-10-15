@@ -851,8 +851,9 @@ describe('organization data receipts (P-007c)', () => {
       await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
         VALUES (${tenant}::uuid, ${id}::uuid, 'owner', 'organization_bootstrap')`;
     }
-    await org.adminSql`INSERT INTO harness_shared.customer_workspaces (id, organization_id, display_name)
-      VALUES (${workspaceId}::uuid, ${organizationId}::uuid, 'Support export workspace')`;
+    await org.adminSql`INSERT INTO harness_shared.customer_workspaces
+      (workspace_id, id, organization_id, display_name)
+      VALUES ('control', ${workspaceId}::uuid, ${organizationId}::uuid, 'Support export workspace')`;
     await org.adminSql`INSERT INTO papercusp_auth.support_access_grants
       (id, organization_id, staff_principal_id, granted_by_user_id, purpose, scopes, banner_message, starts_at, expires_at)
       VALUES (${grantId}::uuid, ${organizationId}::uuid, ${staffId}, ${userId}::uuid, 'Requested customer export',
