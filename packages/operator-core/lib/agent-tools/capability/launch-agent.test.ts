@@ -1710,7 +1710,7 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       },
     };
     const internalCtx = {
-      ...ctx,
+      ...(ctx as object),
       [launchAgentModule.INTERNAL_GRADING_AUDIT_TASK_DETAIL]: gradingAudit,
     } as never;
 

@@ -63,7 +63,7 @@ function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?:
   // deliberately malformed body — e.g. `{ ok: true }` with no rows — without a mock cast.
   const evaluate = vi.fn(async (_args: Body): Promise<Body> => ({ ok: true, rows }));
   const audit = vi.fn(async () => options.audit ?? { ok: true });
-  const certify = vi.fn(async (_args: Body = {}) => options.certify ?? { ok: true, counts: { filed: 0 } });
+  const certify = vi.fn(async (_args: Body) => options.certify ?? { ok: true, counts: { filed: 0 } });
   const create = vi.fn(async () => options.filed ?? { ok: true, results: [{ ok: true, id: 'WI-gap', workItem: { id: 'WI-gap', assignee: 'converge-owner' } }] });
   const tools = { plans: { evaluateSpecTestAdequacy: evaluate, audit, certifySpecClauses: certify },
     coord: { whoami: async () => ({ ownerId: 'converge-owner' }) }, workItems: { create } };
@@ -89,7 +89,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
       deps: {}, inputs: { planSlug: 'converge-pg', harness: 'papercusp',
         classRef: 'plan-class-feature-ship', auditItems },
       tools: [tool('plans:audit', 'read', () => c.audit()),
-        tool('plans:certify-spec-clauses', 'write', () => c.certify()),
+        tool('plans:certify-spec-clauses', 'write', args => c.certify(args)),
         tool('plans:evaluate-spec-test-adequacy', 'read', args => c.evaluate(args))],
       wrapDispatch: bindCurrentCallerDispatch,
     });

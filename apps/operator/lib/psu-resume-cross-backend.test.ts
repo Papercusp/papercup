@@ -87,7 +87,7 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         message: string; choices: Array<{ name: string; value: any }>;
       }) => {
         if (message === "Continue this session with which backend/model?") {
-          return choices.find((row) => row.value === "<choose-model>").value;
+          return choices.find((row) => row.value === "<choose-model>")!.value;
         }
         if (message === "Reasoning effort") return "high";
         expect(message).toBe("Target backend and model");
@@ -101,8 +101,8 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         const row = choices.find((row) => row.value.kind === "model" &&
           row.value.targetAgent === targetAgent && row.value.model === expectedModel);
         expect(row).toBeDefined();
-        expect(row.name).toContain(`Port to ${targetAgent}`);
-        return row.value;
+        expect(row!.name).toContain(`Port to ${targetAgent}`);
+        return row!.value;
       });
       const readCodexModels = vi.fn(() => [{
         id: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: ["high"],

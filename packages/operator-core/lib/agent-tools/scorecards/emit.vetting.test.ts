@@ -70,6 +70,12 @@ vi.mock('../../scorecards', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../scorecards')>();
   return { ...real, listScorecards: (...a: unknown[]) => listScorecards(...a) };
 });
+// The independent grading path asks for a live critique before falling back to
+// historical meta-scorecards. This unit file owns the historical fallback
+// behavior; keep the live critique reader deterministic and database-free.
+vi.mock('../../acceptance-rubric-critique', () => ({
+  readCurrentAcceptanceRubricCritique: async () => null,
+}));
 vi.mock('../../harness/improvements/capture-core', () => ({
   captureImprovement: (...a: unknown[]) => captureImprovement(...a),
 }));
@@ -433,10 +439,12 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
   // query FALSE, so the drain item the refusal told the caller to claim could
   // never match. The rubric's own subjectHarnessSlug must fill the gap.
   it('resolves seat succession in the rubric subject harness when the caller has no ctxHarness', async () => {
-    getRubric.mockImplementation(async (id: unknown) => {
-      if (id === 'meta-acceptance-rubric') return META_RUBRIC;
-      if (id === 'ar-some-plan') return { ...ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' };
-      return null;
+    readRubric.mockImplementation(async (id: unknown) => {
+      if (id === 'meta-acceptance-rubric') return { kind: 'found', rubric: META_RUBRIC };
+      if (id === 'ar-some-plan') {
+        return { kind: 'found', rubric: { ...ACCEPTANCE_RUBRIC, subjectHarnessSlug: 'papercusp' } };
+      }
+      return { kind: 'missing' };
     });
     const resolveAcceptanceSeatSuccession = vi.fn().mockResolvedValue({
       eligible: false,

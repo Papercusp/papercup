@@ -305,7 +305,7 @@
     "fixtureObservationFollowup": "EI-26082309434961331 is owned/open for two private PostgreSQL agent_chats relation errors during the passing run; expectedness and cause remain unconfirmed."
   },
   "barAdequacyPreparation": {
-    "status": "not-ready",
+    "status": "diagnostic-cohort-pass",
     "bindingIds": {
       "first": 47058,
       "last": 47104
@@ -1092,30 +1092,154 @@
         "fixturePath": "apps/tui/src/change_card.rs",
         "logPath": "/tmp/p032-tools-diff-control-9086d-20261015.log",
         "result": "removed-line text mutation caught; baseline/copy-baseline pass, mutant fails exact diff hunk assertion, overlay/tree integrity verified."
+      },
+      {
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "specId": "AUTO-BAR-R-04-P-010",
+        "verdict": "pass",
+        "baselineTestRunId": 21264947,
+        "copyBaselineTestRunId": 21264950,
+        "mutantTestRunId": 21264952,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-review-consent-size-controls-9086d-20261015.log",
+        "logSha256": "53340ee9ccb44bd81d3b2ee87040f6ab542bd35c13c02348781649634c66f6ec",
+        "result": "Exact assertion catches isolated mutant; baseline and copy-baseline pass; source integrity verified.",
+        "bindingIds": [
+          48698,
+          48699
+        ]
+      },
+      {
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "specId": "AUTO-BAR-R-09-P-011",
+        "verdict": "pass",
+        "baselineTestRunId": 21264954,
+        "copyBaselineTestRunId": 21264956,
+        "mutantTestRunId": 21264958,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-review-consent-size-controls-9086d-20261015.log",
+        "logSha256": "53340ee9ccb44bd81d3b2ee87040f6ab542bd35c13c02348781649634c66f6ec",
+        "result": "Exact assertion catches isolated mutant; baseline and copy-baseline pass; source integrity verified.",
+        "bindingIds": [
+          48701,
+          48702
+        ]
+      },
+      {
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "specId": "AUTO-BAR-R-07-P-002",
+        "verdict": "pass",
+        "baselineTestRunId": 21264960,
+        "copyBaselineTestRunId": 21264962,
+        "mutantTestRunId": 21264964,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-review-consent-size-controls-9086d-20261015.log",
+        "logSha256": "53340ee9ccb44bd81d3b2ee87040f6ab542bd35c13c02348781649634c66f6ec",
+        "result": "Exact assertion catches isolated mutant; baseline and copy-baseline pass; source integrity verified.",
+        "bindingIds": [
+          48704,
+          48705
+        ]
+      },
+      {
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "specId": "AUTO-BAR-R-07-P-008",
+        "verdict": "pass",
+        "baselineTestRunId": 21264960,
+        "copyBaselineTestRunId": 21264962,
+        "mutantTestRunId": 21264964,
+        "fixturePath": "apps/tui/src/app.rs",
+        "logPath": "/tmp/p032-review-consent-size-controls-9086d-20261015.log",
+        "logSha256": "53340ee9ccb44bd81d3b2ee87040f6ab542bd35c13c02348781649634c66f6ec",
+        "result": "Exact assertion catches isolated mutant; baseline and copy-baseline pass; source integrity verified.",
+        "bindingIds": [
+          48706,
+          48707
+        ]
+      },
+      {
+        "harnessCommit": "6c9ba2bb85a141d14be3bb1aa6fbdb0b4216ba3a",
+        "allThreeWorktreesClean": true,
+        "specId": "AUTO-BAR-R-08-P-010",
+        "verdict": "pass",
+        "baselineTestRunId": 21264968,
+        "copyBaselineTestRunId": 21264970,
+        "mutantTestRunId": 21264974,
+        "fixturePath": "apps/tui/src/self_install.rs",
+        "logPath": "/tmp/p032-standalone-control-9086d-20261015.log",
+        "logSha256": "61dcd1cf5f31f4aa05239c539440c44814fe75a41bdc24ac86290f230ac0543a",
+        "result": "Exact assertion catches isolated mutant; baseline and copy-baseline pass; source integrity verified.",
+        "bindingIds": [
+          48721,
+          48720
+        ]
       }
     ],
     "currentScopedProofCohort": {
       "count": 48,
       "verdicts": {
-        "pass": 38,
+        "pass": 48,
         "fail": 0,
-        "unknown": 10
+        "unknown": 0
       },
-      "scope": "Diagnostic adequacy cohort after P032 calibration, PUI-COMMANDS, R04, R05, PUI-FILE-CONTEXT and PUI-TOOLS-DIFF controls; not the independent product grade."
+      "readbackPath": "/tmp/p032-all-48-eval.json",
+      "scope": "Diagnostic scope pinned to WI-6554700010014883; this is not independent product grading or the governing plan ship verdict."
     },
     "openControlGaps": [
       {
-        "specId": "AUTO-BAR-R-06-P-009",
-        "status": "unknown",
         "followUp": "EI-26086716576780857",
-        "reason": "Two attempted fail_su_turn mutations survived selected unit case; no falsifiability claim made."
+        "status": "owned-followup",
+        "reason": "Earlier R06 selected unit mutation survived; interruption bar now has a different valid causal control. Failure-branch test gap remains separate."
       },
       {
-        "specId": "AUTO-BAR-R-08-P-010",
-        "status": "unknown",
         "followUp": "EI-26086917110362533",
-        "reason": "Selected setup review mutation survived unit case; no falsifiability claim made."
+        "status": "owned-followup",
+        "reason": "Earlier R08 attempt targeted session-review branch with unrelated unit case. Final standalone-source-dependency control now passes; original false premise must be dispositioned explicitly."
       }
-    ]
+    ],
+    "reusedCausalControls": {
+      "receiptPath": "/tmp/p032-reused-controls-bind.json",
+      "bindingIds": [
+        48585,
+        48586,
+        48587,
+        48588,
+        48589,
+        48590,
+        48591,
+        48592
+      ],
+      "specIds": [
+        "PUI-TOOL-TURN",
+        "PUI-QUESTION",
+        "PUI-USAGE",
+        "AUTO-BAR-R-06-P-009"
+      ],
+      "scope": "Existing current exact controls reused only where behavior and falsifier match; each binding records causal rationale. PUI interaction uses attached-engine control; question/usage use required-capability matrix refusal; lifecycle interruption uses ESC queue-clear control. Original complete installed/native proof retained without provider replay."
+    },
+    "draftControlReplication": {
+      "specId": "AUTO-BAR-R-05-P-016",
+      "bindingIds": [
+        48618,
+        48619
+      ],
+      "baselineTestRunId": 21264340,
+      "mutantTestRunId": 21264345,
+      "scope": "Same exact draft preservation requirement as P-007; retained paste-corruption control reused."
+    },
+    "bindingWriteTimeoutReconciliation": {
+      "idempotencyKey": "cb91a510-af90-4197-89f7-beca48d6a147",
+      "writeStatus": "landed-without-retry",
+      "bindingIds": [
+        48720,
+        48721
+      ],
+      "stateReadbackPath": "/tmp/p032-standalone-state-isolated.json"
+    },
+    "remainingReleaseWork": "Governing whole-plan BAR snapshot still has pre-grading proof/plane obligations (R10/R11/R15). Certify current passing clauses, resolve those contracts honestly, then eligible independent product grade, Avi exact-candidate approval before publication, public install and ship. No forced gate, native replay or premature publication."
   }
 }

@@ -4,7 +4,7 @@
   "parent": "WI-10004735",
   "publicRouteIssue": "EI-25946131547854574",
   "plan": "iphone-public-release-2026-08-11#P-008",
-  "result": "source-regression-passed-live-custody-verification-pending",
+  "result": "source-regression-passed-containing-restart-partial",
   "scope": "Server listener ownership across unsuccessful health probes; desktop port recovery retained.",
   "rootCause": {
     "writer": "packages/operator-core/lib/own-tunnel/service.ts reconcileOnce",
@@ -69,7 +69,7 @@
     "diffCheck": "git diff --check passed for the two changed source/test paths."
   },
   "liveVerification": {
-    "status": "pending",
+    "status": "partial",
     "runtimeRoute": "operator-api currentBuildTestRoute: staging operator on 3170, containing committed source required; the background host also must load the adoption fix.",
     "hostRepair": {
       "workItem": "WI-6554700010015345",
@@ -98,14 +98,73 @@
       "socketObservation": "Structured listener inspection correlated both 3170 and 41179 with PID 3147568; 3271 belongs to background PID 2196630.",
       "limit": "Preparation on staging d5b292ed83; containing-build restart and health-gap acceptance remain pending."
     },
-    "blocker": "Containing staging generation pending",
-    "blockerEvidence": "The existing auto-commit is progressing through local-sync. Staging synchronization is building candidate 3355796413 while serving the prior generation. Vite made measurable read/write progress during a bounded sample despite observed filesystem IO waits; no stalled-process or pressure-source conclusion is established.",
+    "containingRestart": {
+      "source": "Maintained staging-sync journal and live health, physical source and socket inspection.",
+      "verifiedAt": "2026-10-15T23:17:28Z",
+      "oldPid": 3147568,
+      "newPid": 3708098,
+      "healthSha": "3355796413",
+      "loadedServiceSha256": "a2de74b38d2eece4f40d1aa97c702c1de646111c929a20f8b01cb5dbd81cbfdb",
+      "readyJournalAt": "2026-10-15T23:07:59Z",
+      "configuredOperatorPort": 3170,
+      "stagingListeningPorts": [3170, 41179],
+      "backgroundPid": 2196630,
+      "backgroundListeningPorts": [3271],
+      "status": "manual listener up, no lastError; staging serves it and background does not",
+      "limit": "The automatic restart is observed before/after. A health gap was not sampled during that restart."
+    },
+    "boundedObserver": {
+      "shellSession": 83056,
+      "finishedAt": "2026-10-15T23:15:38.207885Z",
+      "durationSeconds": 181.04,
+      "successfulBackgroundStatusSamples": 142,
+      "gapSamplesWithBackgroundStatus": 0,
+      "everWrongOwner": false,
+      "recoveredAfterGap": false,
+      "restartAttempt": "dev:restart refused with staging_sync_collision_staging_sync_in_flight; no collision override and no retry while the sync held its lock",
+      "limit": "This observation proves stable custody in its sampled window, not custody during a sampled outage. Several background status requests timed out."
+    },
+    "localSecurity": {
+      "startedAt": "2026-10-15T23:15:02.288444Z",
+      "finishedAt": "2026-10-15T23:15:02.530076Z",
+      "healthShaBeforeAndAfter": "3355796413",
+      "passedChecks": 33,
+      "probeErrors": 1,
+      "verified": "Both exact public Host and localhost on ingress41179 reject eight admin routes, reject missing JWTs, accept a private paired JWT for heartbeat/runtime-config, and reject a revoked JWT. Invalid JWT and pairing-token replay are rejected. Desktop mint advertises the protected public hostname.",
+      "temporaryDeviceId": "bb6aeac4-beb0-44e6-ade6-84363b1f72d8",
+      "cleanupVerified": true,
+      "probeCorrection": "The unknown-workspace probe incorrectly sent x-workspace-id and received200. Current middleware reads x-papercusp-workspace. The correction attempt timed out on its initial desktop mint before pairing, so the corrected header check remains pending; no second device was created by that attempt.",
+      "limit": "Local socket proof; no public provider or native acceptance is implied."
+    },
+    "rawProviderRead": {
+      "verifiedAt": "2026-10-15T23:16:58.846Z",
+      "method": "Maintained Cloudflare API getTunnelConfig client using the existing certificate, read only.",
+      "version": 18,
+      "configSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b",
+      "originalRollbackHashMatches": true,
+      "deviceRule": { "hostname": "api.papercuspai.com", "path": "^/api/device", "service": "http://localhost:3070", "originRequest": {} },
+      "providerMutation": false
+    },
+    "blocker": "Controlled health-gap sample pending; another staging sync held the restart lock",
+    "blockerEvidence": "The containing staging runtime is now serving. A second coordinated restart was safely refused while staging-sync held its exclusive checkout lock; the bounded observer finished without an outage sample.",
     "remaining": [
-      "Commit the verified host repair through git-sync and load the containing staging generation.",
-      "Verify recovered explicit listener custody survives a coordinated restart and health gap without background adoption.",
-      "Recheck listener provenance, containment, JWT boundaries and raw provider configuration before any public route correction."
+      "Sample a coordinated restart health gap once staging-sync releases its lock, without overriding the collision guard.",
+      "Verify the unknown-workspace boundary using the current x-papercusp-workspace header.",
+      "Recheck current custody and provider state before any public route correction; full P-008 remains open."
     ],
-    "ownedFollowUp": "EI-26087030423583632: manual listener recovery can leave a historical error in status; resetting configuration is not a durable fix for that separate issue."
+    "ownedFollowUp": "EI-26087030423583632 source fix passes55 registered tests; completion recorded done with authority proposed pending source/test commit identity. This is not a deployed-fix claim."
+  },
+  "manualErrorRecoverySourceFix": {
+    "workItem": "EI-26087030423583632",
+    "beforeFix": { "passed": 28, "failed": 1, "observed": "The recovered manual listener was listeningtrue but healthdown with historical EADDRINUSE." },
+    "afterFix": { "passed": 55, "failed": 0, "skipped": 0, "shellSession": 62917, "exitCode": 0 },
+    "behavior": "Clear the previous manual error only after an error-free listener=open result; preserve other-operator, disabled, non-serving, static-listener and Cloudflare warm-up error state.",
+    "serviceSha256": "177b78ddb27da9f945ba7f99b58b90986b7d05912a4eb022eef89b144885f8b5",
+    "testSha256": "827f2184301d65ae5927fcfcd9cc7e68a1710ff63fad023cd6ecb24d9255105c",
+    "originalSourceMap": "~/.papercusp/evidence/EI-26087030423583632-source-map-20261015T2309Z.json",
+    "originalSourceMapSha256": "9ea7fbc822a459048b0990de1ff8ab246e8be8583e231fa964eec68bfd121627",
+    "provenance": "Vite original-source evidence is stable and matches the changed source/test hashes. The shared checkout was dirty and moved; external/config capture is incomplete. No whole-candidate or deployment claim.",
+    "teardown": "Vitest reported a10-second close timeout after the passing tests; the shell returned0. Captured separately as an observation without assigning a cause."
   },
   "limits": [
     "These tests exercise the reconciler with injected dependencies; they are not live restart or native simulator acceptance.",

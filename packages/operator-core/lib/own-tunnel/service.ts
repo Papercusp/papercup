@@ -581,6 +581,12 @@ async function reconcileOnce(deps: OwnTunnelDeps): Promise<ReconcileResult> {
   }
 
   if (row && error && error !== row.lastError) await deps.store.recordError(error);
+  // Manual tunnels have no connector health transition to retire a listener
+  // failure. Only the serving operator's successful open proves recovery;
+  // another process closing its own listener must not erase the shared error.
+  else if (row?.mode === 'manual' && row.lastError && !error && listener === 'open') {
+    await deps.store.recordError(null);
+  }
   return { listener, connector, adoptedOperatorPort, error };
 }
 

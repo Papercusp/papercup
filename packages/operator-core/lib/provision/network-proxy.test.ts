@@ -15,6 +15,11 @@ describe('provision connection policy', () => {
     ])).rejects.toThrow(/denied address range/);
   });
 
+  it.each(['vendor.example/path', ' vendor.example:443', 'vendor.example:8443 ',
+    'vendor.example\\', 'user@vendor.example'])('rejects malformed rule %s', async rule => {
+    await expect(provisionConnectionPolicy('vendor.example', 443, [rule])).rejects.toThrow(/Invalid provision host rule/);
+  });
+
   it('pins the validated dial address and never resolves again at connect time', async () => {
     const resolve = vi.fn().mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }])
       .mockResolvedValue([{ address: '169.254.169.254', family: 4 }]);
@@ -38,6 +43,14 @@ describe('provision connection policy', () => {
     await expect(provisionConnectionPolicy('127.0.0.1', 32002, ['127.0.0.1:32001'])).rejects.toThrow(/not allowlisted/);
     await expect(provisionConnectionPolicy('vendor.example', 443, ['vendor.example'],
       async () => [{ address: '127.0.0.1', family: 4 }])).rejects.toThrow(/denied/);
+  });
+
+  it('preserves fallback among validated public answers without another lookup', async () => {
+    const addresses = [{ address: '8.8.8.8', family: 4 as const }, { address: '2606:4700:4700::1111', family: 6 as const }];
+    const policy = await provisionConnectionPolicy('vendor.example', 443, ['vendor.example'], async () => addresses);
+    const callback = vi.fn();
+    policy.dnsLookup('vendor.example', { all: true }, callback);
+    expect(callback).toHaveBeenCalledWith(null, addresses);
   });
 
   it('retains single-label versus explicit multi-label wildcards and HTTP port defaults', async () => {

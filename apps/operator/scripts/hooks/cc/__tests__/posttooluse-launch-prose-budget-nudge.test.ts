@@ -76,7 +76,7 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
   });
 
   it('finds the repository from a nested hook path', () => {
-    expect(findRepoRoot('/repo/apps/operator/prompts/foo.md', (path) => path === '/repo/scripts/check-launch-prose-budget.ts')).toBe('/repo');
+    expect(findRepoRoot('/repo/apps/operator/prompts/foo.md', (path: string) => path === '/repo/scripts/check-launch-prose-budget.ts')).toBe('/repo');
   });
 
   it.each([

@@ -612,7 +612,7 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(captureRecipeMock).toHaveBeenCalledTimes(1);
     const [, input] = captureRecipeMock.mock.calls[0] as unknown as [
       unknown,
-      { script: string; workspaceId: string; title?: string; executionTrace?: unknown },
+      { script: string; workspaceId: string; title?: string; executionTrace?: unknown; recommendationContext?: unknown },
     ];
     expect(input.script).toBe('return 1 + 1;');
     expect(input.workspaceId).toBe('ws-test');

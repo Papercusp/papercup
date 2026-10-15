@@ -50,6 +50,8 @@ import {
   resolveCitation,
   resolvePlanItemHomeHarness,
   summarizeCoverage,
+  deadActivationAuditTargets,
+  describeActivationAuditPlanTargetProblems,
   validateActivationAuditPlanTargets,
   type AuditCitation,
   type AuditItemEntry,
@@ -524,11 +526,12 @@ export default defineTool({
       // A prior target whose destination the current plan no longer contains (an R-N removed
       // by a rubric amendment, a deleted item/decision/section) is dead: it may be retired,
       // because keeping it could never pass the plan-target validation below. A malformed
-      // target is not "dead" — it never named a destination, so it stays a conflict.
+      // target is not "dead" — it never named a destination, so it stays a conflict; nor is
+      // an R-N this build cannot parse (deadActivationAuditTargets, WI-6554700010015337).
       const deadTargets = previousAudit?.activation && currentPlan
-        ? validateActivationAuditPlanTargets(previousAudit.activation, currentPlan.content)
-          .filter((problem) => problem.code !== 'invalid_plan_target')
-          .map(({ mappingId, target }) => ({ mappingId, target }))
+        ? deadActivationAuditTargets(
+          validateActivationAuditPlanTargets(previousAudit.activation, currentPlan.content),
+        )
         : [];
       const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation, {
         deadTargets,
@@ -728,7 +731,7 @@ export default defineTool({
             preview: true as const,
             error: 'plan_targets_invalid' as const,
             problems: targetProblems,
-            message: `${targetProblems.length} mapping target(s) do not exist in the current plan revision; no writes were performed.`,
+            message: describeActivationAuditPlanTargetProblems(targetProblems, 'no writes were performed.'),
           } };
         }
         // BAR seeding is a precondition on the PLAN, not on this payload, so the

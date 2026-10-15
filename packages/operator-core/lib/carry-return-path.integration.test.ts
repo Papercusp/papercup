@@ -46,7 +46,7 @@ async function scenario() {
     ['fact:guard-rail:scenario', 'live:7@1'],
     ['decision:scenario-plan#D-001', 'sha256:unchanged'],
   ]);
-  const resolve: CarryRefResolver = vi.fn(async deps => new Map(deps.map(dep => [dep, current.get(dep) ?? null])));
+  const resolve = vi.fn<CarryRefResolver>(async deps => new Map(deps.map(dep => [dep, current.get(dep) ?? null])));
   let state = 'green';
   const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text' as const, text: JSON.stringify({ state }) }] }));
   const checks: CheckEntry[] = [{
@@ -70,6 +70,7 @@ async function scenario() {
     attempts: 1, lastError: null, nextAttemptAt: new Date().toISOString(),
     createdAt: new Date().toISOString(), deliveredAt: null, urgent: false,
     minSleepSec: null, coalescedCount: 1, source: null, wakeHandle: null, note: null,
+    turnProof: null, turnStartedAt: null, pickupDeadlineAt: null,
   };
   return {
     change() {

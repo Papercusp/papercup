@@ -36,7 +36,7 @@ function serviceEnvNumber(name: string, source = service): number {
 describe('papercup-mcp-proxy production admission profile', () => {
   it('starts the real tsx service entry across the CommonJS/ESM boundary', async () => {
     const root = fileURLToPath(new URL('../../', import.meta.url));
-    const env = {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       PAPERCUSP_MCP_PROXY_PORT: '0',
       PAPERCUSP_MCP_PROXY_TARGET_PORT: '3170',

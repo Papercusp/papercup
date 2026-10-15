@@ -124,6 +124,29 @@ describe('retention on a real fixture tree', () => {
     expect(await stat(pin)).toBeTruthy(); await expect(stat(disposable)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it.each([undefined, inspectRetentionTrees])('counts registered workspace scratch in the cap while preserving its owner (%s)', async (inspectTrees) => {
+    const { root, options } = await setup(); const workspace = join(root, 'ws'), disposable = join(root, 'disposable');
+    await mkdir(workspace); await writeFile(join(workspace, 'payload'), Buffer.alloc(8192));
+    await writeFile(disposable, Buffer.alloc(4096));
+    const census = await inspectRetentionTrees(root, { retainAfterMs: 0, includeRecent: true });
+    expect(census.error).toBeUndefined();
+    const workspaceBytes = census.entries.find((entry) => entry.path === workspace)!.bytes;
+    const beforeBytes = census.entries.reduce((sum, entry) => sum + entry.bytes, 0);
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees, nowMs: Date.now(), registeredWorkspaces: () => ['ws'],
+      roots: [{ path: root, classId: 'papercusp-scratch' }],
+      policy: options.policy.map((cls) => ({ ...cls, id: 'papercusp-scratch', maxBytes: 4096 })) });
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes, afterBytes: workspaceBytes, pinnedBytes: 0,
+      overByBytes: workspaceBytes - 4096, pinnedOverageBytes: 0 });
+    expect(receipt.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: workspace, status: 'protected', reason: 'registered workspace scratch owner' }),
+      expect.objectContaining({ path: disposable, status: 'removed' }),
+    ]));
+    expect(receipt.complete).toBe(false);
+    expect(receipt.errors).toContain(`size cap remains exceeded:${root}:${workspaceBytes - 4096}`);
+    expect((await stat(join(workspace, 'payload'))).size).toBe(8192);
+    await expect(stat(disposable)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('writes an incomplete receipt when its whole-pass deadline is already exhausted', async () => {
     const { root, options } = await setup(); const path = join(root, 'retain'); await writeFile(path, 'keep');
     const record = vi.fn(); const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 0, record });

@@ -3140,7 +3140,7 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
       });
     }));
     await listen(upstream);
-    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), handshakeTimeoutMs: 40, retryBackoffMs: 5, log: () => {} }));
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryWindowMs: 5_000, handshakeTimeoutMs: 40, retryBackoffMs: 5, log: () => {} }));
     await listen(proxy);
     const response = await request(port(proxy), JSON.stringify(delivery), "/api/adv/sessions/port/delivery");
     expect(response.status).toBe(200);
@@ -3152,7 +3152,9 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
     let hits = 0;
     const upstream = track(http.createServer((req) => { hits++; req.socket.destroy(); }));
     await listen(upstream);
-    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryBackoffMs: 5, log: () => {} }));
+    // A real retry window, so hits===1 proves the post-connect reset is NOT replayed
+    // (an absent window would pass vacuously — nothing would ever retry).
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 5, log: () => {} }));
     await listen(proxy);
     const response = await request(port(proxy), JSON.stringify({ status: "delivered", targetAdvSessionId: 99 }), "/api/adv/sessions/port/delivery");
     expect(response.status).toBe(502);

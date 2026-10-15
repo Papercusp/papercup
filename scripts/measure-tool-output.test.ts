@@ -103,7 +103,7 @@ describe('measurement acceptance comparison (R5/R7)', () => {
       (r: typeof after) => { r.drivers.sessions[0].role = 'worker'; },
       (r: typeof after) => { r.method.requests = 'changed request definition'; },
       (r: typeof after) => { r.clients.codex.modelCalls += 1; },
-      (r: typeof after) => { delete r.sourceCoverage; },
+      (r: typeof after) => { delete (r as { sourceCoverage?: unknown }).sourceCoverage; },
     ]) {
       const altered = structuredClone(after);
       change(altered);
@@ -120,7 +120,7 @@ describe('measurement acceptance comparison (R5/R7)', () => {
     expect(verifyMeasurementReportReadback(compared, readback, 'report-1')).toBe(true);
     for (const metric of ['bytes', 'rereadBytes', 'modelCalls']) {
       const altered = structuredClone(after);
-      delete altered.clients.codex[metric];
+      delete (altered.clients.codex as Record<string, unknown>)[metric];
       const missing = compareMeasurementWindows(before, altered, refs);
       expect(missing.reportReady).toBe(false);
       expect(() => renderMeasurementComparison(missing)).toThrow('Incomplete');
@@ -187,12 +187,12 @@ describe('measurement acceptance comparison (R5/R7)', () => {
     const { before, after } = await pairedWindows();
     for (const key of ['parseErrors', 'requestsWithoutTimestamp', 'requestsWithoutIdentity', 'resultsWithoutTimestamp', 'unmatchedResults']) {
       const altered = structuredClone(after);
-      altered.sourceCoverage[key] = 1;
+      (altered.sourceCoverage as Record<string, unknown>)[key] = 1;
       const compared = compareMeasurementWindows(before, altered, { ...refs, disclosure: 'Source coverage is incomplete.' });
       expect(compared.reductionSatisfied).toBe(false);
       expect(compared.reportReady).toBe(true);
       expect(renderMeasurementComparison(compared)).toContain(`"${key}":1`);
-      delete altered.sourceCoverage[key];
+      delete (altered.sourceCoverage as Record<string, unknown>)[key];
       expect(compareMeasurementWindows(before, altered, refs).reportReady).toBe(false);
     }
   });
@@ -245,8 +245,9 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(r.clients.codex.rereadBytes).toBe(4 * 2);
     expect(r.clients.codex.modelCalls).toBe(4);
     expect(r.rereadBytes).toBe(18);
-    expect(r.sourceCoverage.duplicateRequests).toBe(2);
-    expect(r.sourceCoverage.nativeCompactions).toBe(2);
+    // Spread in from scan()'s coverage counters, which the inferred declaration cannot see.
+    expect((r.sourceCoverage as Record<string, unknown>).duplicateRequests).toBe(2);
+    expect((r.sourceCoverage as Record<string, unknown>).nativeCompactions).toBe(2);
   });
 
   it('TE-MEASURE-CAPS: distinguishes outer exec, nested shell, and door, including overlapping caps', async () => {
@@ -288,7 +289,7 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(r.rerunWindowSeconds).toBe(120);
     expect(r.clients.claude.reruns).toEqual({ callsAfterTruncation: 1, bytesAfterTruncation: 11 });
     expect(r.clients.codex.reruns).toEqual({ callsAfterTruncation: 1, bytesAfterTruncation: 4 });
-    expect(r.clients.claude.tools.find((x) => x.tool === 'Read').reruns.callsAfterTruncation).toBe(0);
+    expect(r.clients.claude.tools.find((x) => x.tool === 'Read')!.reruns.callsAfterTruncation).toBe(0);
     expect(r.truncation.byCap['papercusp-door'].reruns).toBe(1);
   });
 
@@ -417,8 +418,8 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(frozen.window).toEqual(baseline.window);
     expect(frozen.clients.codex.modelCalls).toBe(1);
     expect((await run(f)).clients.codex.modelCalls).toBe(2);
-    expect(frozen.sourceCoverage.files.find((s) => s.client === 'codex').snapshotBytes)
-      .toBe(baseline.sourceCoverage.files.find((s) => s.client === 'codex').snapshotBytes);
+    expect(frozen.sourceCoverage.files.find((s) => s.client === 'codex')!.snapshotBytes)
+      .toBe(baseline.sourceCoverage.files.find((s) => s.client === 'codex')!.snapshotBytes);
     writeFileSync(f.codexFile, '');
     rmSync(f.claudeFile);
     const missing = await measure([], 24, { snapshot: baseline });
@@ -442,7 +443,8 @@ describe('measure-tool-output raw transcript instrument', () => {
     const replay = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--snapshot', snapshot, '--metadata', metadata], { encoding: 'utf8' }));
     expect(replay.window).toEqual(persisted.window);
     expect(replay.metadataCoverage).toEqual({ capturedAt: time(), source: 'fixture', rows: 0 });
-    await expect(measure(f.roots, 24, { sessionMetadata: {} })).rejects.toThrow('sessionMetadata must be an array');
+    // Deliberately invalid input: exercises the runtime array guard, so the type is bypassed.
+    await expect(measure(f.roots, 24, { sessionMetadata: {} as unknown as unknown[] })).rejects.toThrow('sessionMetadata must be an array');
     expect(() => execFileSync(process.execPath, [SCRIPT, '--out'], { stdio: 'pipe' })).toThrow();
     expect(() => execFileSync(process.execPath, [SCRIPT, '--hours', '-1'], { stdio: 'pipe' })).toThrow();
   });

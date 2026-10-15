@@ -7,13 +7,18 @@ import type * as dns from 'node:dns';
 import { BlockList, isIP } from 'node:net';
 import { Server } from 'proxy-chain';
 import { isNonPublicFetchAddress } from '../agent-tools/capability/fetch-policy';
-import { isHostAllowed } from './network-policy';
+import { buildNetworkPolicy, isHostAllowed } from './network-policy';
 
 type Address = { address: string; family: 4 | 6 };
 type Resolve = (host: string) => Promise<Address[]>;
 const loopback = new BlockList();
 loopback.addSubnet('127.0.0.0', 8, 'ipv4');
 loopback.addAddress('::1', 'ipv6');
+const denyFloor = new BlockList();
+for (const cidr of buildNetworkPolicy({}).deniedCidrs) {
+  const [address, prefix] = cidr.split('/');
+  denyFloor.addSubnet(address!, Number(prefix), isIP(address!) === 4 ? 'ipv4' : 'ipv6');
+}
 
 function canonicalHost(host: string): string {
   const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
@@ -21,6 +26,7 @@ function canonicalHost(host: string): string {
 }
 
 function parseRule(rule: string) {
+  if (/[\s\\/?#@]/.test(rule)) throw new Error('Invalid provision host rule');
   const url = new URL(`http://${rule}`);
   if (url.username || url.password || url.pathname !== '/' || url.search || url.hash || url.hostname === '*') {
     throw new Error('Invalid provision host rule');
@@ -49,7 +55,8 @@ export async function provisionConnectionPolicy(
   if (!addresses.length) throw new Error('Provision destination has no addresses');
   const explicitSelfTalk = matching.some(rule => rule.port !== undefined && rule.host === host) &&
     addresses.every(a => loopback.check(a.address, a.family === 4 ? 'ipv4' : 'ipv6'));
-  if (!explicitSelfTalk && addresses.some(a => isNonPublicFetchAddress(a.address))) {
+  if (!explicitSelfTalk && addresses.some(a => isNonPublicFetchAddress(a.address) ||
+    denyFloor.check(a.address, a.family === 4 ? 'ipv4' : 'ipv6'))) {
     throw new Error('Provision destination is in a denied address range');
   }
   const chosen = addresses[0]!;
@@ -57,9 +64,9 @@ export async function provisionConnectionPolicy(
     _host: string, options: { all?: boolean },
     callback: (error: null, address: string | Address[], family?: number) => void,
   ) => {
-    if (options.all) callback(null, [{ ...chosen }]);
+    if (options.all) callback(null, addresses.map(address => ({ ...address })));
     else callback(null, chosen.address, chosen.family);
-  }) as typeof dns.lookup;
+  }) as unknown as typeof dns.lookup;
   return { dnsLookup: pinnedLookup };
 }
 

@@ -332,6 +332,52 @@ describe('reconcileOwnTunnel — who acts', () => {
     expect(h.errors.at(-1)).toMatch(/cloudflared is not installed/);
   });
 
+  it('clears a manual listener failure only after the serving operator successfully reopens it', async () => {
+    const h = harness({ row: cloudflareRow({ mode: 'manual' }), owner: false });
+    const ensureListener = h.deps.ensureListener;
+    let fail = true;
+    const deps: OwnTunnelDeps = {
+      ...h.deps,
+      ensureListener: async (port) => {
+        if (fail) throw new Error('EADDRINUSE');
+        return ensureListener(port);
+      },
+    };
+
+    expect((await reconcileOwnTunnel(deps)).listener).toBe('failed');
+    expect(await ownTunnelStatus(deps)).toMatchObject({ health: 'down', listening: false });
+    expect(h.row.current?.lastError).toContain('EADDRINUSE');
+    fail = false;
+
+    expect(await reconcileOwnTunnel(deps)).toMatchObject({ listener: 'open', error: null });
+    expect(await ownTunnelStatus(deps)).toMatchObject({ health: 'up', listening: true, lastError: null });
+    expect(h.errors.at(-1)).toBeNull();
+  });
+
+  it.each([
+    { name: 'another operator', row: { operatorPort: 51000 }, env: {}, serves: true },
+    { name: 'a disabled tunnel', row: { enabled: false }, env: {}, serves: true },
+    { name: 'a non-serving process', row: {}, env: {}, serves: false },
+    { name: 'an externally managed listener', row: {}, env: { PAPERCUSP_EXTERNAL_INGRESS_PORT: '9999' }, serves: true },
+  ])('retains the manual error without observed recovery: $name', async ({ row, env, serves }) => {
+    const h = harness({
+      row: cloudflareRow({ mode: 'manual', lastError: 'listener failed', ...row }),
+      env: { PAPERCUSP_HONO_PORT: String(OP_PORT), ...env },
+      serves,
+    });
+    await reconcileOwnTunnel(h.deps);
+    expect(h.row.current?.lastError).toBe('listener failed');
+    expect(h.errors).toEqual([]);
+  });
+
+  it('retains a Cloudflare error until the connector has demonstrated healthy operation', async () => {
+    const h = harness({ row: cloudflareRow({ lastError: 'cloudflared exited' }) });
+    await reconcileOwnTunnel(h.deps);
+    await reconcileOwnTunnel(h.deps);
+    expect(h.row.current?.lastError).toBe('cloudflared exited');
+    expect(h.errors).toEqual([]);
+  });
+
   it('backs off after cloudflared exits, reports why, then restarts', async () => {
     const h = harness();
     await reconcileOwnTunnel(h.deps);

@@ -128,7 +128,7 @@ afterAll(async () => {
   await _closeGradingAuditSubjectMutexForTests();
   if (db) {
     const fallbackFlush = await flushFallbackObservations({ sql: db.adminSql });
-    expect(fallbackFlush.failed).toBe(0, 'fallback observations must flush before their private PG pool closes');
+    expect(fallbackFlush.failed, 'fallback observations must flush before their private PG pool closes').toBe(0);
   }
   await db?.cleanup();
   _resetHarnessAdminUrlCacheForTests();
