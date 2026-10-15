@@ -57,9 +57,11 @@
  * unit-tested without PG or a filesystem; the sweep + gather wrap it with real fs
  * + PG reads. Server-only.
  */
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
+import { pinProtectsPath, readRetentionPins, readRetentionPinsAsync, type RetentionPin } from './storage/retention-pins';
 import { listLiveHostsAsync, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import {
   sessionClaudeRoot,
@@ -339,6 +341,8 @@ export function sweepStaleSessionDirs(opts: {
   dryRun?: boolean;
   /** See {@link planSessionDirGc}. Omitted ⇒ unguarded (legacy) removal. */
   unarchivedPaths?: ReadonlySet<string>;
+  /** Production supplies a snapshot read under the storage:pin mutex. */
+  retentionPins?: readonly RetentionPin[];
 }): SessionDirGcResult {
   const roots = opts.roots ?? defaultSessionDirRoots();
   const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
@@ -353,7 +357,16 @@ export function sweepStaleSessionDirs(opts: {
   });
   const removed: string[] = [];
   const errors: Array<{ path: string; error: string }> = [];
+  const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: opts.nowMs });
+  if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
+  let keptPinned = 0;
   for (const c of plan.remove) {
+    let physical = c.path;
+    try { physical = realpathSync(c.path); } catch { /* A missing candidate cannot have a physical alias. */ }
+    if (pinProtectsPath(c.path, read.pins, opts.nowMs) || pinProtectsPath(physical, read.pins, opts.nowMs)) {
+      keptPinned++;
+      continue;
+    }
     if (dryRun) {
       removed.push(c.path);
       continue;
@@ -371,7 +384,7 @@ export function sweepStaleSessionDirs(opts: {
   return {
     scanned: candidates.length,
     removed,
-    keptProtected: plan.keptProtected.length,
+    keptProtected: plan.keptProtected.length + keptPinned,
     keptFresh: plan.keptFresh.length,
     keptUnarchived: plan.keptUnarchived.length,
     keptForeign: plan.keptForeign.length,
@@ -587,12 +600,17 @@ export async function runSessionDirGc(
     unarchivedPaths = await findUnarchivedSessionDirs(provisional.remove);
   }
 
-  return sweepStaleSessionDirs({
-    protectedIdentity,
-    candidates,
-    nowMs,
-    retentionMs,
-    dryRun: opts.dryRun,
-    unarchivedPaths,
+  return withFsMutex('papercusp-disk-retention', async () => {
+    const read = await readRetentionPinsAsync();
+    if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
+    return sweepStaleSessionDirs({
+      protectedIdentity,
+      candidates,
+      nowMs,
+      retentionMs,
+      dryRun: opts.dryRun,
+      unarchivedPaths,
+      retentionPins: read.pins,
+    });
   });
 }
