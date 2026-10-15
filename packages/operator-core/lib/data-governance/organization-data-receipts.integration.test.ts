@@ -893,18 +893,34 @@ describe('organization data receipts (P-007c)', () => {
       .toEqual([expect.objectContaining({ id: userId })]);
     await expect(support.exportData({ ...staff, slug: 'another-staff-member' }, input)).rejects.toThrow('grant_inactive');
     await expect(support.exportData(staff, { ...input, organizationId: foreignOrg })).rejects.toThrow('grant_inactive');
-    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET workspace_id = ${workspaceId}::uuid WHERE id = ${grantId}::uuid`;
+    const workspaceGrantId = randomUUID();
+    await org.adminSql`INSERT INTO papercusp_auth.support_access_grants
+      (id, organization_id, workspace_id, staff_principal_id, granted_by_user_id, purpose, scopes,
+       banner_message, starts_at, expires_at)
+      VALUES (${workspaceGrantId}::uuid, ${organizationId}::uuid, ${workspaceId}::uuid, ${staffId},
+        ${userId}::uuid, 'Workspace-scoped grant', ${[CUSTOMER_DATA_EXPORT_SCOPE]},
+        'Workspace-scoped support', now() - interval '1 minute', now() + interval '1 hour')`;
+    await expect(support.exportData(staff, { ...input, grantId: workspaceGrantId })).rejects.toThrow('grant_inactive');
+    const readOnlyGrantId = randomUUID();
+    await org.adminSql`INSERT INTO papercusp_auth.support_access_grants
+      (id, organization_id, staff_principal_id, granted_by_user_id, purpose, scopes, banner_message,
+       starts_at, expires_at)
+      VALUES (${readOnlyGrantId}::uuid, ${organizationId}::uuid, ${staffId}, ${userId}::uuid,
+        'Read-only grant', ${['database:read']}, 'Read-only support', now() - interval '1 minute', now() + interval '1 hour')`;
+    await expect(support.exportData(staff, { ...input, grantId: readOnlyGrantId })).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.support_access_grants
+      SET revoked_at = now(), revoked_by_user_id = ${userId}::uuid,
+          revocation_reason = 'Customer revoked support' WHERE id = ${grantId}::uuid`;
     await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
-    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET workspace_id = NULL, scopes = ${['database:read']} WHERE id = ${grantId}::uuid`;
-    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
-    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET scopes = ${[CUSTOMER_DATA_EXPORT_SCOPE]},
-      revoked_at = now(), revoked_by_user_id = ${userId}::uuid, revocation_reason = 'Customer revoked support' WHERE id = ${grantId}::uuid`;
-    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
-    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET revoked_at = NULL, revoked_by_user_id = NULL,
-      revocation_reason = NULL, starts_at = now() - interval '2 hours', expires_at = now() - interval '1 hour' WHERE id = ${grantId}::uuid`;
-    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
-    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET expires_at = now() + interval '1 hour' WHERE id = ${grantId}::uuid`;
-    await org.adminSql`UPDATE papercusp_auth.organizations SET status = 'suspended' WHERE id = ${organizationId}::uuid`;
+    const expiredGrantId = randomUUID();
+    await org.adminSql`INSERT INTO papercusp_auth.support_access_grants
+      (id, organization_id, staff_principal_id, granted_by_user_id, purpose, scopes, banner_message,
+       starts_at, expires_at)
+      VALUES (${expiredGrantId}::uuid, ${organizationId}::uuid, ${staffId}, ${userId}::uuid,
+        'Expired grant', ${[CUSTOMER_DATA_EXPORT_SCOPE]}, 'Expired support', now() - interval '2 hours', now() - interval '1 hour')`;
+    await expect(support.exportData(staff, { ...input, grantId: expiredGrantId })).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.organizations
+      SET status = 'suspended', suspended_at = now() WHERE id = ${organizationId}::uuid`;
     await expect(support.exportData(staff, input)).rejects.toThrow('organization_inactive');
     expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
       WHERE organization_id = ${organizationId}::uuid AND action = ${RECEIPT_ACTIONS.export}`).toHaveLength(2);
