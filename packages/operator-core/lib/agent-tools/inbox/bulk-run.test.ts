@@ -478,6 +478,34 @@ describe('inbox:bulk-run-report standing-policy auto-accept', () => {
     expect(h.upsertTriage).not.toHaveBeenCalled();
   });
 
+  it.each(['auto_resolved', 'dismissed'] as const)(
+    'excludes a preserved %s receipt while auto-accepting an ordinary pending sibling',
+    async (outcome) => {
+      const sibling = { ...item, itemId: `${item.itemId}-pending` };
+      arrangeSuccessfulAction(sibling);
+      h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L1', minConfidence: 'high' });
+      h.reportOutcomes.mockResolvedValue({
+        updated: [sibling.itemId], unknown: [],
+        preserved: [{ ...item, outcome, rationale: 'Canonical protected decision.' }],
+        run, refused: null,
+      });
+      const result = body(await bulkRunReport.handler({
+        runId: run.runId,
+        items: [reportItem(), reportItem({ itemId: sibling.itemId })],
+      }, { workspaceId: run.workspaceId } as never));
+      expect(result.preservedOutcomes).toEqual([
+        expect.objectContaining({ itemId: item.itemId, outcome, rationale: 'Canonical protected decision.' }),
+      ]);
+      expect(result.autoAccept).toMatchObject({
+        reportedRecommendations: 1, actionCandidates: 1, terminalCandidates: 1,
+        attempted: 1, resolved: 1, unresolved: [],
+      });
+      expect(h.executeBulkRunAction).toHaveBeenCalledTimes(1);
+      expect(h.executeBulkRunAction).toHaveBeenCalledWith(expect.objectContaining({ itemId: sibling.itemId }));
+      expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('returns a retryable action-discovery error before accepting a report', async () => {
     h.callPlansRead.mockRejectedValue(new Error('temporary attention read failure'));
 
