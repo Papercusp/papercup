@@ -8,7 +8,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
-import { hostedBillingAllocationSource } from '../../../endpoint-route/hosted-billing-runtime';
+import { hostedBillingAllocationAdmin, hostedBillingAllocationSource } from '../../../endpoint-route/hosted-billing-runtime';
 import { HOSTED_COST_CLASSES, PostgresHostedAllocationStore, type HostedAllocationHoldRequest,
   type HostedAllocationLevel, type HostedAllocationOrganization, type HostedAllocationRequest,
   type HostedAllocationSettlement, type HostedCostClass, type HostedOutcomeRecordRequest } from './allocation-store';
@@ -445,6 +445,36 @@ describe('PostgresHostedAllocationStore (real hosted service transactions)', () 
     expect((await source({ organization: o, month: '2026-11', asOfMs: T })).accounting.rows).toEqual([]);
     // Read-only finance views never revise the accounting facts.
     expect(await store.accountingExport({ organization: o, month: MONTH })).toEqual(snapshot.accounting);
+  });
+
+  it('composes billing allocation administration with durable hierarchy rules and tenant isolation', async () => {
+    const o = org(); const other = { ...o, organizationId: randomUUID() };
+    let transactions = 0;
+    const admin = hostedBillingAllocationAdmin(fn => { transactions++; return service(fn); });
+    for (const scope of [o, other]) {
+      for (const input of [node(scope, 'org', null, 'organization', 1_000_000),
+        node(scope, 'dept', 'org', 'department', 500_000), node(scope, 'project', 'dept', 'project', 100_000)]) {
+        expect(await admin(input)).toMatchObject({ organization: scope, result: { outcome: 'created',
+          allocation: { allocationId: input.allocationId, revision: 1 } } });
+      }
+    }
+    expect(transactions).toBe(6);
+    const project = node(o, 'project', 'dept', 'project', 100_000);
+    expect((await admin(project)).result.outcome).toBe('duplicate');
+    expect((await admin({ ...project, capMicros: 200_000, maxUnreconciledMicros: 200_000 })).result)
+      .toMatchObject({ outcome: 'revised', allocation: { revision: 2 } });
+    expect((await position(o, 'project'))?.capMicros).toBe(200_000);
+    expect((await position(other, 'project'))?.capMicros).toBe(100_000);
+    const before = await count('hosted_budget_allocations', o);
+    for (const [input, reason] of [
+      [{ ...project, capMicros: 500_001 }, 'children-exceed-parent'],
+      [{ ...project, parentAllocationId: 'org' }, 'immutable-allocation-fields'],
+      [node(o, 'dept', 'org', 'department', 199_999), 'cap-below-children'],
+    ] as const) expect((await admin(input)).result).toMatchObject({ outcome: expect.stringMatching(/refused|conflict/), reason });
+    expect(await count('hosted_budget_allocations', o)).toBe(before);
+    expect((await store.reserve(hold(o, 'project', 150_000))).outcome).toBe('admitted');
+    expect((await admin(project)).result).toMatchObject({ outcome: 'refused', reason: 'cap-below-committed' });
+    expect(await count('hosted_budget_allocations', o)).toBe(before);
   });
 
   it('enforces dense immutable revisions and service-only access in the database itself', async () => {
