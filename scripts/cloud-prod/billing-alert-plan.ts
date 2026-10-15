@@ -7,6 +7,7 @@
 import type { HostedBillingFailureClass } from '@papercusp/operator-core/lib/auth/hosted/billing/billing-recovery';
 import { PROD_SPEC, type CloudSqlProdSpec, type GcloudRunner } from './provision-cloud-sql';
 import type { BackupApi } from './nightly-backup-plan';
+import { isDeepStrictEqual } from 'node:util';
 
 export const BILLING_FAILURE_LOG_ID = 'papercusp_hosted_billing';
 // Record exhaustiveness makes a new runtime failure class a compile failure
@@ -30,13 +31,20 @@ export interface BillingAlertOptions {
   spec?: CloudSqlProdSpec;
 }
 
-export function buildBillingFailureAlertPlan(options: BillingAlertOptions) {
+type BillingRuntimeOptions = Omit<BillingAlertOptions, 'notificationChannels'>;
+
+function billingRuntimeSpec(options: BillingRuntimeOptions) {
   const spec = options.spec ?? PROD_SPEC;
   if (!/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(spec.project)
       || !/^[a-z][a-z0-9-]{0,61}[a-z0-9]$/.test(options.vmName)
       || !/^[1-9][0-9]{0,19}$/.test(options.instanceId)
       || !new RegExp('^' + spec.region + '-[a-z]$').test(options.zone))
     throw new Error('billing_alert_runtime_identity_invalid');
+  return spec;
+}
+
+export function buildBillingFailureAlertPlan(options: BillingAlertOptions) {
+  const spec = billingRuntimeSpec(options);
   const channels = [...new Set(options.notificationChannels)].sort();
   if (!channels.length || channels.some(ref => !new RegExp(
     '^projects/' + spec.project + '/notificationChannels/[0-9]+$').test(ref)))
@@ -69,6 +77,71 @@ export function buildBillingFailureAlertPlan(options: BillingAlertOptions) {
       'Install this policy and read it back before injecting a private detector failure',
       'Verify log ingestion, incident creation and actual recipient delivery; configuration alone is insufficient',
     ] };
+}
+
+/** Prepare the maintained Ops Agent's journald receiver rather than a new
+ * forwarding process. The hosted unit is a USER service, so _SYSTEMD_USER_UNIT
+ * is the identity field; _SYSTEMD_UNIT would select its user-manager parent.
+ * The receiver preserves system journal metadata. Drop command/source-location
+ * fields, and admit MESSAGE only when the entire bounded marker matches.
+ *
+ * Ops Agent merges its built-in defaults with this file. An empty default
+ * pipeline is necessary: adding a narrow pipeline alone also exports syslog.
+ * The receiver id becomes the Cloud Logging log id used by the alert policy.
+ * Current provider sources: GoogleCloudPlatform/ops-agent confgenerator/
+ * logging_receivers.go, logging_processors.go and logging_modify_fields.go.
+ * Installation still requires the actual pinned agent's config validation.
+ */
+export function buildBillingFailureCollectorPlan(options: BillingRuntimeOptions) {
+  const spec = billingRuntimeSpec(options);
+  const unit = 'papercusp-hosted-control-plane.service';
+  const keep = `jsonPayload._SYSTEMD_USER_UNIT = ${JSON.stringify(unit)} AND jsonPayload.MESSAGE =~ ${JSON.stringify(BILLING_FAILURE_LOG_PATTERN)}`;
+  const config = {
+    logging: {
+      receivers: { [BILLING_FAILURE_LOG_ID]: { type: 'systemd_journald' } },
+      processors: {
+        billing_only: { type: 'exclude_logs', match_any: [`NOT (${keep})`] },
+        billing_fields: { type: 'modify_fields', fields: {
+          'jsonPayload.message': { move_from: 'jsonPayload.MESSAGE' },
+          'jsonPayload._CMDLINE': { omit_if: 'jsonPayload._CMDLINE:*' },
+          'jsonPayload.CODE_FILE': { omit_if: 'jsonPayload.CODE_FILE:*' },
+          'jsonPayload.CODE_FUNC': { omit_if: 'jsonPayload.CODE_FUNC:*' },
+          'jsonPayload.CODE_LINE': { omit_if: 'jsonPayload.CODE_LINE:*' },
+          'sourceLocation.file': { omit_if: 'sourceLocation.file:*' },
+          'sourceLocation.func': { omit_if: 'sourceLocation.func:*' },
+          'sourceLocation.line': { omit_if: 'sourceLocation.line:*' },
+          severity: { static_value: 'ERROR' },
+        } },
+      },
+      service: { pipelines: {
+        default_pipeline: { receivers: [] as string[] },
+        billing_failures: { receivers: [BILLING_FAILURE_LOG_ID], processors: ['billing_only', 'billing_fields'] },
+      } },
+    },
+  };
+  return { mode: 'preview-only' as const, project: spec.project, vmName: options.vmName,
+    instanceId: options.instanceId, zone: options.zone, unit,
+    logName: `projects/${spec.project}/logs/${BILLING_FAILURE_LOG_ID}`,
+    config, configText: JSON.stringify(config, null, 2) + '\n',
+    prerequisites: [
+      'Read back the exact production VM and dedicated runtime identity before installing',
+      'Confirm this user unit runs on that VM and its stderr reaches the system journal',
+      'Validate this configuration with the installed pinned Ops Agent before restarting it',
+      'Review the complete effective merged logging config; reject any additional forwarding pipeline',
+      'Verify bounded log ingestion, incident creation and approved recipient delivery separately',
+    ] };
+}
+
+/** Compare a parsed, COMPLETE user configuration, not a substring or fragment.
+ * No remote command, write, restart or notification is performed. Runtime and
+ * effective built-in configuration remain separate acceptance obligations. */
+export function verifyBillingFailureCollectorConfiguration(options: BillingRuntimeOptions, actual: unknown) {
+  const plan = buildBillingFailureCollectorPlan(options);
+  if (!isDeepStrictEqual(actual, plan.config)) throw new Error('billing_collector_config_drift');
+  return { status: 'configuration-verified' as const, instanceId: plan.instanceId, logName: plan.logName,
+    verified: ['supplied-user-configuration'],
+    notVerified: ['vm-identity', 'installed-agent-validation', 'effective-merged-config', 'collector-running',
+      'log-ingestion', 'incident-creation', 'recipient-delivery'] };
 }
 
 /** Read-only verification on the existing provider seams. Intentionally has no

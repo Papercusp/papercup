@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { observeHostedBillingFailure, logHostedBillingFailure } from '@papercusp/operator-core/lib/auth/hosted/billing/billing-recovery';
-import { BILLING_FAILURE_LOG_PATTERN, buildBillingFailureAlertPlan, verifyBillingFailureAlertConfiguration } from './billing-alert-plan';
+import { BILLING_FAILURE_LOG_ID, BILLING_FAILURE_LOG_PATTERN, buildBillingFailureAlertPlan,
+  buildBillingFailureCollectorPlan, verifyBillingFailureAlertConfiguration,
+  verifyBillingFailureCollectorConfiguration } from './billing-alert-plan';
 import { PROD_SPEC, type GcloudRunner } from './provision-cloud-sql';
 import type { BackupApi } from './nightly-backup-plan';
 
@@ -87,5 +89,44 @@ describe('production billing log alarm preparation', () => {
     if (kind === 'rate-limit') p.policy.alertStrategy.notificationRateLimit.period = '3600s';
     await expect(verifyBillingFailureAlertConfiguration({ ...input, policyRef }, p)).rejects.toThrow('policy_drift');
     expect(p.api.mock.calls.every(([method]) => method === 'GET')).toBe(true);
+  });
+
+  it('selects the hosted USER journal unit and disables the inherited syslog forwarding pipeline', () => {
+    const plan = buildBillingFailureCollectorPlan(input);
+    const { logging } = JSON.parse(plan.configText);
+    expect(logging.receivers).toEqual({ [BILLING_FAILURE_LOG_ID]: { type: 'systemd_journald' } });
+    expect(logging.service.pipelines.default_pipeline.receivers).toEqual([]);
+    const filter = logging.processors.billing_only.match_any[0];
+    expect(filter).toBe('NOT (jsonPayload._SYSTEMD_USER_UNIT = "papercusp-hosted-control-plane.service" AND jsonPayload.MESSAGE =~ '
+      + JSON.stringify(BILLING_FAILURE_LOG_PATTERN) + ')');
+    expect(filter).not.toContain('jsonPayload._SYSTEMD_UNIT =');
+    expect(logging.service.pipelines.billing_failures.processors).toEqual(['billing_only', 'billing_fields']);
+    expect(logging.processors.billing_fields.fields['jsonPayload.message']).toEqual({ move_from: 'jsonPayload.MESSAGE' });
+    expect(logging.processors.billing_fields.fields['jsonPayload._CMDLINE']).toEqual({ omit_if: 'jsonPayload._CMDLINE:*' });
+    expect(plan.logName).toBe(buildBillingFailureAlertPlan(input).logName);
+    expect(verifyBillingFailureCollectorConfiguration(input, logging ? { logging } : null).notVerified)
+      .toContain('effective-merged-config');
+  });
+
+  it.each(['broader-filter', 'extra-pipeline', 'syslog-default', 'processor-order', 'command-leak', 'wrong-log'] as const)(
+    'rejects %s collector drift before configuration acceptance', kind => {
+      const { config } = buildBillingFailureCollectorPlan(input);
+      const actual: any = JSON.parse(JSON.stringify(config));
+      if (kind === 'broader-filter') actual.logging.processors.billing_only.match_any = ['NOT jsonPayload.MESSAGE:*'];
+      if (kind === 'extra-pipeline') actual.logging.service.pipelines.unreviewed = { receivers: [BILLING_FAILURE_LOG_ID] };
+      if (kind === 'syslog-default') delete actual.logging.service.pipelines.default_pipeline;
+      if (kind === 'processor-order') actual.logging.service.pipelines.billing_failures.processors.reverse();
+      if (kind === 'command-leak') delete actual.logging.processors.billing_fields.fields['jsonPayload._CMDLINE'];
+      if (kind === 'wrong-log') actual.logging.service.pipelines.billing_failures.receivers = ['syslog'];
+      expect(() => verifyBillingFailureCollectorConfiguration(input, actual)).toThrow('billing_collector_config_drift');
+    });
+
+  it('accepts key reordering and refuses an unpinned collector runtime without calling a provider', () => {
+    const { config } = buildBillingFailureCollectorPlan(input);
+    const logging = { service: config.logging.service, processors: config.logging.processors,
+      receivers: config.logging.receivers };
+    expect(verifyBillingFailureCollectorConfiguration(input, { logging }).verified).toEqual(['supplied-user-configuration']);
+    expect(() => buildBillingFailureCollectorPlan({ ...input, instanceId: 'unmeasured' })).toThrow('runtime_identity_invalid');
+    expect(() => verifyBillingFailureCollectorConfiguration(input, null)).toThrow('billing_collector_config_drift');
   });
 });
