@@ -388,14 +388,30 @@ describe('capability:read', () => {
     process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, original);
+    const trackedPhases = new Set<string>();
+    const trackedCtx = {
+      ...baseCtx,
+      phases: {
+        track: async (phase: string, work: () => Promise<unknown>) => {
+          trackedPhases.add(phase);
+          return work();
+        },
+        addCompleted: (phase: string) => trackedPhases.add(phase),
+      },
+    };
 
     try {
-      const lineRead = (await readTool.handler!({ uri }, ctx)) as {
+      const lineRead = (await readTool.handler!({ uri }, trackedCtx as never)) as {
         content: Array<{ text: string }>;
         isError?: boolean;
       };
       expect(lineRead.isError).not.toBe(true);
       expect(lineRead.content[0].text).toContain('[line truncated]');
+      expect([...trackedPhases]).toEqual(expect.arrayContaining([
+        'capability:read:scratch:stat',
+        'capability:read:scratch:file-read',
+        'capability:read:scratch:scratch-reference-parse',
+      ]));
 
       const recovered: Buffer[] = [];
       let byteOffset = 0;

@@ -38,6 +38,8 @@ it.for(['primary', 'capacity-failover'] as const)('records the exact real %s blu
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/blueprint/launch-blueprint-account-route.e2e.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'scripts/lib/git-index-fault.mjs',
+      'scripts/lib/batch-watchdog.mjs', 'apps/operator/bin/bundle-host.sh',
+      'apps/operator/bin/bundle-host-common.sh',
       'packages/operator-core/lib/util/cli-entry.ts',
       'packages/operator-core/test/staging-first-http-fixture.ts',
       'packages/operator-core/test/blueprint-account-route-http-scenario.ts',
@@ -67,10 +69,12 @@ it.for(['primary', 'capacity-failover'] as const)('records the exact real %s blu
       'phases/execute/provider-response.json',
       'phases/execute/shared-effects.json',
       'phases/execute/worker.log'],
-    prepare: evidenceDir => {
+    prepare: async evidenceDir => {
       // Compilation and its real restricted-write census run before allocating
       // a private PG or starting the bounded provider/request journey.
-      prepared = preparePrivateOperatorApiBundle(root, evidenceDir);
+      prepared = await preparePrivateOperatorApiBundle(root, evidenceDir, {
+        builder: { timeoutMs: 240_000, maxMs: 420_000 },
+      });
     },
     execute: async (observe, evidenceDir) => {
       expect(prepared, 'private API preparation must finish before runtime allocation').toBeTruthy();

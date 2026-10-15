@@ -22,6 +22,8 @@ import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@pap
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 import { provisionPinnedRubric } from '../../rubrics';
 import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
+import { runToolOrchestration } from '@papercusp/agent-mcp';
+import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
 // Fix external class/root metadata for the isolated baseline. Clause/evidence
 // reads and all three handlers use their real production SQL and file measurers.
@@ -68,6 +70,32 @@ function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?:
 const row = (overrides: Body = {}) => ({ specId: 'SPEC-A', specRevision: 3, planItemId: 'P-003', verdict: 'unknown', wouldBlock: ['falsifiability'], ...overrides });
 
 describe('converge recipe controls (not PostgreSQL proof)', () => {
+  it('classifies gaps through the actual dispatch wrapper without certifying after a stopped evaluation', async () => {
+    const c = controls([row(), row({ specId: 'SPEC-PASS', verdict: 'pass', wouldBlock: [] })]);
+    const calls: string[] = [];
+    const tool = (name: string, effect: 'read' | 'write', handler: (args: Body) => Promise<Body>): ProjectedTool => ({
+      pluginName: 'converge-dispatch-regression', description: name,
+      inputSchema: { type: 'object' }, capabilities: [], effect, expose: { mcp: { name } },
+      fn: async args => {
+        calls.push(name);
+        return { content: [{ type: 'text', text: JSON.stringify(await handler(z.record(z.string(), z.unknown()).parse(args))) }] };
+      },
+    });
+    const result = await runToolOrchestration(script, {
+      ctx: { workspaceId: 'converge-dispatch-fixture', harnessSlug: 'papercusp', role: 'su',
+        isSuperuser: true, log: vi.fn(), progress: vi.fn(), emit: vi.fn() } as never,
+      deps: {}, inputs: { planSlug: 'converge-pg', harness: 'papercusp',
+        classRef: 'plan-class-feature-ship', auditItems },
+      tools: [tool('plans:audit', 'read', () => c.audit()),
+        tool('plans:certify-spec-clauses', 'write', () => c.certify()),
+        tool('plans:evaluate-spec-test-adequacy', 'read', args => c.evaluate(args))],
+      wrapDispatch: bindCurrentCallerDispatch,
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, summary: { ok: true, nonPassing: 1 } });
+    expect(calls).toEqual(['plans:audit', 'plans:certify-spec-clauses', 'plans:evaluate-spec-test-adequacy']);
+    expect(c.certify).toHaveBeenCalledOnce();
+    expect(c.create).not.toHaveBeenCalled();
+  });
   it('passes preflight against the current evaluator, audit and certifier output schemas', async () => {
     const catalog = [evaluateTool, auditTool, certifyTool].map((tool): ProjectedTool => ({
       pluginName: 'converge-preflight',
@@ -83,12 +111,12 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
       issues: [],
     });
   });
-  it('refuses missing evaluator rows without auditing, certifying or filing', async () => {
+  it('refuses missing classification rows without filing gaps or retrying certification', async () => {
     const c = controls([]);
     c.evaluate.mockResolvedValueOnce({ ok: true } as never);
     expect(await execute(c.tools)).toMatchObject({ ok: false, phase: 'evaluate' });
-    expect(c.audit).not.toHaveBeenCalled();
-    expect(c.certify).not.toHaveBeenCalled();
+    expect(c.audit).toHaveBeenCalledOnce();
+    expect(c.certify).toHaveBeenCalledOnce();
     expect(c.create).not.toHaveBeenCalled();
   });
   it('defaults to an actually executed read-only audit/certifier preview', async () => {
@@ -97,7 +125,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
       gaps: [{ classification: 'major', action: 'would-file' }] });
     expect(c.audit).toHaveBeenCalledWith(expect.objectContaining({ phase: 'completion', dryRun: true, items: auditItems }));
     expect(c.evaluate.mock.calls[0][0]).not.toHaveProperty('planItemIds');
-    expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ specIds: ['SPEC-PASS'], dryRun: true }));
+    expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-003'], dryRun: true }));
     expect(c.create).not.toHaveBeenCalled();
   });
   it('keeps critical/major/minor/outdated distinct and maps outdated to the existing issue vocabulary', async () => {
@@ -119,7 +147,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     const c = controls([row({ verdict: 'pass', wouldBlock: [] })]);
     expect(await execute(c.tools, { dryRun: false, auditItems: [{ itemId: 'P-003', verdict: 'partial' }] }))
       .toMatchObject({ ok: true, nonPassing: 1, gaps: [{ blockers: ['code-truth'] }] });
-    expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
+    expect(c.certify).not.toHaveBeenCalled();
     const stale = controls([row({ wouldBlock: ['freshness', 'falsifiability', 'plan-class-risk-floor'],
       ratings: { freshness: { rating: 'fail' } }, measurementEvidence: { selectedBindings: 1 } })]);
     expect(await execute(stale.tools)).toMatchObject({ ok: true, gaps: [{ classification: 'outdated' }] });
@@ -135,6 +163,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(partial.create).not.toHaveBeenCalled(); expect(partial.certify).not.toHaveBeenCalled();
     const cert = controls([row()], { certify: { ok: false, error: 'replay_failed' } });
     expect(await execute(cert.tools)).toMatchObject({ ok: false, phase: 'certify' });
+    expect(cert.evaluate).not.toHaveBeenCalled();
     const refused = controls([row()], { certify: { ok: true, counts: { refused: 1 } } });
     expect(await execute(refused.tools)).toMatchObject({ ok: false, phase: 'certify' });
     expect(refused.create).not.toHaveBeenCalled();
@@ -159,7 +188,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(JSON.stringify(preview).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
     const failing = controls(many, { certify: { ok: false, error: bulky } });
     const refused = await execute(failing.tools);
-    expect(refused).toMatchObject({ ok: false, phase: 'certify', proposalsOmitted: 7 });
+    expect(refused).toMatchObject({ ok: false, phase: 'certify' });
     expect(JSON.stringify(refused).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
   });
   it('fits a realistic worst case by measuring the serialized return, never by row count alone', async () => {
@@ -183,7 +212,6 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     const refusedWorst = await execute(controls(longRows, { certify: { ok: false, error: nested, counts: nested } }).tools);
     expect(JSON.stringify(refusedWorst).length).toBeLessThanOrEqual(DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS);
     expect(refusedWorst).toMatchObject({ ok: false, phase: 'certify' });
-    expect(refusedWorst.proposals.length + refusedWorst.proposalsOmitted).toBe(31);
   });
 });
 

@@ -49,6 +49,7 @@ vi.mock('../../coord-ops/prod-caps', () => ({
 
 import tool, { ownerActionFlagsReleasedByClear } from './set_blocker';
 import { activeExternalBlockers } from '../../external-blockers';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (value: unknown) => (tool.args as { parse: (v: unknown) => unknown }).parse(value);
@@ -76,6 +77,10 @@ beforeEach(() => {
 });
 
 describe('work_items:set_blocker', () => {
+  it('stays within the shared prompt-weight budget', () => {
+    expect(promptWeight(tool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
+  });
+
   it.each(['defaultIfUnanswered', 'decideBy'] as const)(
     'R-3 refuses a product-decision park missing %s before opening or persisting anything',
     async (missingField) => {

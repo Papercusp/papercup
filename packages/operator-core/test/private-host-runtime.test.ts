@@ -7,7 +7,8 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { createHash } from 'node:crypto';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
@@ -15,8 +16,9 @@ afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: tru
 
 it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
-  for (const file of readdirSync(import.meta.dirname).filter(name =>
-    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts')) {
+  const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
+  for (const file of [...readdirSync(import.meta.dirname).filter(name =>
+    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), routingProof]) {
     const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
       ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
@@ -26,10 +28,14 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
           `${file} must use the shared builder instead of launching the build script directly`).toBe(false);
       }
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
-        && node.expression.text === 'buildPrivateOperatorApiBundle') {
+        && (node.expression.text === 'buildPrivateOperatorApiBundle'
+          || file === routingProof && node.expression.text === 'preparePrivateOperatorApiBundle')) {
         callers.push(file);
         expect(ts.isAwaitExpression(node.parent), `${file} must await build completion`).toBe(true);
-        const policy = node.arguments[2];
+        let policy = node.arguments[2];
+        if (file === routingProof && policy && ts.isObjectLiteralExpression(policy))
+          policy = policy.properties.find((property): property is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(property) && property.name.getText(source) === 'builder')?.initializer;
         expect(policy && ts.isObjectLiteralExpression(policy), `${file} needs a bounded progress policy`).toBe(true);
         if (policy && ts.isObjectLiteralExpression(policy)) {
           const values = Object.fromEntries(policy.properties.flatMap(property =>
@@ -43,7 +49,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     };
     visit(source);
   }
-  expect(callers.sort()).toEqual(['consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
     'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
@@ -152,6 +158,34 @@ it('allows a progressing real build beyond its checkpoint and retains its bounde
   expect(receipt.elapsedMs).toBeGreaterThan(600);
   expect(receipt.progress.extensions).toBeGreaterThan(0);
   expect(receipt.elapsedMs).toBeLessThan(2400);
+});
+
+it('prepares the real bundle receipt after progress renews the build checkpoint', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-prepared-builder-')); dirs.push(evidenceDir);
+  const bundle = join(evidenceDir, 'hono-host.mjs');
+  const result = await preparePrivateOperatorApiBundle(evidenceDir, evidenceDir, { builder: {
+    command: 'bash', args: ['-c',
+      'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .25; done; echo bundle > "$3"',
+      '_', common, `${bundle}.build-steps.jsonl`, bundle], timeoutMs: 600, maxMs: 2400, pollMs: 20,
+  } });
+  const retained = readFileSync(join(evidenceDir, 'operator-api-preflight.json'));
+  expect(JSON.parse(String(retained))).toEqual({ path: bundle, sha256: result.sha256 });
+  expect(result.receiptSha256).toBe(createHash('sha256').update(retained).digest('hex'));
+  expect(result.sha256).toBe(createHash('sha256').update(readFileSync(bundle)).digest('hex'));
+  const build = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(build.elapsedMs).toBeGreaterThan(600);
+  expect(build.progress.extensions).toBeGreaterThan(0);
+  expect(build.status).toBe(0);
+});
+
+it('withholds a prepared receipt when the progress builder stalls', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-prepared-stall-')); dirs.push(evidenceDir);
+  await expect(preparePrivateOperatorApiBundle(evidenceDir, evidenceDir, { builder: {
+    command: 'bash', args: ['-c', 'sleep 60'], timeoutMs: 600, maxMs: 2400, pollMs: 20,
+  } })).rejects.toThrow(/ETIMEDOUT.*progress-unknown/);
+  expect(readdirSync(evidenceDir)).not.toContain('operator-api-preflight.json');
+  const build = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
+  expect(build.watchdog).toMatchObject({ reason: 'progress-unknown', completedSteps: 0, extensions: 0 });
 });
 
 it.each(['logs', 'repeated-step', 'repeated-step-new-pid', 'incomplete-step'])('does not renew a stalled build for %s', async noise => {

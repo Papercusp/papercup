@@ -49,15 +49,6 @@ const compactGaps = list => list.slice(0, MAX_GAPS).map(gap => ({ specId: gap.sp
 if (!planSlug || !harness || !classRef || !Array.isArray(auditItems) || auditItems.length === 0) {
   return { ok: false, error: "scope_and_reviewed_auditItems_required" };
 }
-const evaluation = await tools.plans.evaluateSpecTestAdequacy({
-  harness, slug: planSlug, classRef, includeDraft: true, detail: "full",
-});
-// Error/selection replies may omit rows. Normalize the optional field before
-// validating it so the current catalog preflight can also prove the read safe.
-const rows = evaluation.rows ?? null;
-if (evaluation.ok !== true || !Array.isArray(rows)) {
-  return fit({ ok: false, phase: "evaluate", evaluation: brief(evaluation, FAILURE_KEYS) });
-}
 const audit = await tools.plans.audit({
   harness, slug: planSlug, phase: "completion", items: auditItems, dryRun,
 });
@@ -65,8 +56,30 @@ if (audit.ok !== true || audit.partial || (audit.rejectedItemIds || []).length) 
   return fit({ ok: false, phase: "code-truth",
     audit: brief(audit, [...FAILURE_KEYS, "partial", "rejectedItemIds"]) });
 }
+// The certifier owns its authoritative evaluation and exact-replay card writer.
+// Audit first and select only reviewed implementations. A separate non-passing
+// plan evaluation stops subsequent certification in the orchestration wrapper;
+// do not issue that redundant pre-evaluation or weaken the fail-stop barrier.
+const reviewedItemIds = auditItems.filter(item => ["implemented", "not-code"].includes(item.verdict))
+  .map(item => item.itemId);
+const certification = reviewedItemIds.length > 0
+  ? await tools.plans.certifySpecClauses({ harness, slug: planSlug, classRef,
+    planItemIds: reviewedItemIds, includeDraft: true, dryRun })
+  : { ok: true, skipped: "no-reviewed-implementation" };
+if (certification.ok !== true || (certification.counts && certification.counts.refused > 0)) {
+  return fit({ ok: false, phase: "certify",
+    certification: brief(certification, [...FAILURE_KEYS, "counts"]) });
+}
+// This final evaluation classifies the whole plan, including unreviewed items.
+// No certification or delivery gate follows a non-passing/uncertain receipt.
+const evaluation = await tools.plans.evaluateSpecTestAdequacy({
+  harness, slug: planSlug, classRef, includeDraft: true, detail: "full",
+});
+const rows = evaluation.rows ?? null;
+if (evaluation.ok !== true || !Array.isArray(rows)) {
+  return fit({ ok: false, phase: "evaluate", evaluation: brief(evaluation, FAILURE_KEYS) });
+}
 const proposals = [];
-const certifiable = [];
 for (const row of rows) {
   if (typeof row.specId !== "string" || !Number.isInteger(row.specRevision) || row.specRevision < 1) {
     return { ok: false, error: "invalid_clause_identity" };
@@ -74,7 +87,7 @@ for (const row of rows) {
   const reviewed = auditItems.find(item => item.itemId === row.planItemId);
   const blockers = [...(row.wouldBlock || [])];
   if (!reviewed || !["implemented", "not-code"].includes(reviewed.verdict)) blockers.push("code-truth");
-  if (row.verdict === "pass" && blockers.length === 0) { certifiable.push(row.specId); continue; }
+  if (row.verdict === "pass" && blockers.length === 0) continue;
   // Missing proof is not evidence of broken behavior. Only a reviewed missing
   // implementation is critical. "outdated" is a conformance label; work-items
   // retain their existing critical/major/minor/nit severity vocabulary.
@@ -90,16 +103,7 @@ for (const row of rows) {
   proposals.push({ specId: row.specId, revision: row.specRevision, classification, severity,
     conditionKey, blockers, planItemId: row.planItemId, verdict: row.verdict });
 }
-// Never certify a clause whose code review is incomplete, even if its tests pass.
 if (rows.length === 0) return { ok: false, error: "selected_clauses_empty" };
-const certification = await tools.plans.certifySpecClauses({ harness, slug: planSlug, classRef,
-  specIds: certifiable.length ? certifiable : rows.map(row => row.specId),
-  includeDraft: true, dryRun: dryRun || certifiable.length === 0 });
-if (certification.ok !== true || (certification.counts && certification.counts.refused > 0)) {
-  return fit({ ok: false, phase: "certify",
-    certification: brief(certification, [...FAILURE_KEYS, "counts"]),
-    proposals: compactGaps(proposals), proposalsOmitted: Math.max(0, proposals.length - MAX_GAPS) });
-}
 const identity = dryRun ? null : await tools.coord.whoami({});
 const gapOwner = inputs.gapOwner || (identity && identity.ownerId);
 if (!dryRun && !gapOwner) return { ok: false, error: "gap_owner_required" };
@@ -126,5 +130,5 @@ const byClassification = {};
 for (const gap of gaps) byClassification[gap.classification] = (byClassification[gap.classification] || 0) + 1;
 return fit({ ok: true, dryRun, planSlug, evaluated: rows.length, nonPassing: gaps.length, byClassification,
   audit: brief(audit, ["ok", "preview", "itemsAuditedThisPass", "partial", "rejectedItemIds"]),
-  certification: brief(certification, ["ok", "counts"]),
+  certification: brief(certification, ["ok", "counts", "skipped"]),
   gaps: compactGaps(gaps), gapsOmitted: Math.max(0, gaps.length - MAX_GAPS) });

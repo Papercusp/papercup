@@ -703,7 +703,16 @@ export default defineTool({
 
     // Result-door scratch references get a bounded set of nested timings so a slow
     // raw line read can be localized without adding phases to ordinary file reads.
-    const scratchReferencePath = /(?:^|[\\/])\.papercusp[\\/]scratch[\\/]/.test(filePath);
+    const scratchPathPattern = /(?:^|[\\/])\.papercusp[\\/]scratch[\\/]/;
+    let scratchReferencePath = scratchPathPattern.test(filePath);
+    if (!scratchReferencePath && filePath.startsWith(`${SCRATCH_SCHEME}/`)) {
+      try {
+        safeScratchFilesystemPath(filePath);
+        scratchReferencePath = true;
+      } catch {
+        // Keep the normal path resolver responsible for returning the URI error.
+      }
+    }
     const trackScratchAsync = <T>(phase: string, work: () => Promise<T>): Promise<T> => {
       if (!scratchReferencePath || !ctx.phases) return work();
       return ctx.phases.track(`capability:read:scratch:${phase}`, work);
