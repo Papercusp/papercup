@@ -90,7 +90,7 @@ it('a scheduled conformance fire runs the check and records durable liveness', a
   expect(runConformance).toHaveBeenCalledTimes(1);
   expect(receipts).toEqual([{ diagnostics: { specConformanceSweep: {
     scanned: 1, candidates: 1, ran: [{ key: 'conformance-test/one-plan', triggers: ['never-run'], ok: true }],
-    failed: 0, deferred: 0, idle: [], skipped: 0, footprintProbeErrors: 0,
+    failed: 0, deferred: 0, idle: 0, skipped: 0, footprintProbeErrors: 0,
   } } }]);
   const [stored] = await db.sql`SELECT metadata->>'last_error' AS error,
     (SELECT count(*)::int FROM harness_shared.routines) AS count FROM harness_shared.routines WHERE id=${row.id}`;

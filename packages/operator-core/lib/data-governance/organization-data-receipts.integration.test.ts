@@ -14,6 +14,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
+import type { Principal } from '@papercusp/agent-mcp';
 import { existsSync, readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -21,6 +22,7 @@ import { createHostedPrincipal } from '../auth/hosted-principal';
 import { HostedSessionStore } from '../auth/hosted-session';
 import { PostgresHostedMembershipAuthority } from '../auth/hosted-membership-authority';
 import { admitHostedCustomerDeletion, exportHostedOrganizationData, exportHostedUserData } from './hosted-customer-data';
+import { CUSTOMER_DATA_EXPORT_SCOPE, PostgresHostedCustomerDataSupport } from './hosted-customer-data-support';
 import { authorizeHostedCustomerDeletion, freezeHostedCustomerDeletionAccess, HOSTED_DELETION_SNAPSHOT_ACTION,
   readHostedCustomerDeletionSnapshot } from './hosted-customer-deletion-store';
 import { deleteHostedCustomerDatabase } from './hosted-customer-deletion-database';
@@ -834,6 +836,65 @@ describe('organization data receipts (P-007c)', () => {
     expect(JSON.stringify(stepRows)).not.toContain('private provider text');
     expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
       WHERE organization_id=${organizationId}::uuid AND action='organization.data.deletion'`).toHaveLength(1);
+  });
+
+  it('exports support data only under current staff consent, active lifecycle and the canonical receipt (P-010)', async () => {
+    const organizationId = randomUUID(), foreignOrg = randomUUID(), userId = randomUUID(), foreignUser = randomUUID();
+    const grantId = randomUUID(), workspaceId = randomUUID(), staffId = `staff-${randomUUID()}`;
+    for (const id of [organizationId, foreignOrg]) {
+      await org.adminSql`INSERT INTO papercusp_auth.organizations (id, external_organization_id, display_name, status)
+        VALUES (${id}::uuid, ${`support-${id}`}, 'Support export', 'active')`;
+    }
+    for (const [id, tenant] of [[userId, organizationId], [foreignUser, foreignOrg]]) {
+      await org.adminSql`INSERT INTO papercusp_auth.hosted_users (id, primary_email, status)
+        VALUES (${id}::uuid, ${`${id}@example.test`}, 'active')`;
+      await org.adminSql`INSERT INTO papercusp_auth.organization_memberships (organization_id, user_id, role, created_via)
+        VALUES (${tenant}::uuid, ${id}::uuid, 'owner', 'organization_bootstrap')`;
+    }
+    await org.adminSql`INSERT INTO harness_shared.customer_workspaces (id, organization_id, display_name)
+      VALUES (${workspaceId}::uuid, ${organizationId}::uuid, 'Support export workspace')`;
+    await org.adminSql`INSERT INTO papercusp_auth.support_access_grants
+      (id, organization_id, staff_principal_id, granted_by_user_id, purpose, scopes, banner_message, starts_at, expires_at)
+      VALUES (${grantId}::uuid, ${organizationId}::uuid, ${staffId}, ${userId}::uuid, 'Requested customer export',
+        ${[CUSTOMER_DATA_EXPORT_SCOPE]}, 'Support exporting customer data', now() - interval '1 minute', now() + interval '1 hour')`;
+    const runService: HostedServiceContextRunner = fn => org.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return fn(tx as unknown as Sql);
+    }) as ReturnType<typeof fn>;
+    const support = new PostgresHostedCustomerDataSupport({ runService,
+      client: { recoverCustomerDeletion: async () => { throw new Error('export must not touch DBOS'); } } });
+    const staff: Principal = { kind: 'user', slug: staffId, workspaceId: 'control', authMethod: 'cookie-session',
+      trust: 'verified', roles: new Set(['staff']), capabilities: new Set([CUSTOMER_DATA_EXPORT_SCOPE]) };
+    const input = { organizationId, grantId };
+    const exported = await support.exportData(staff, input);
+    expect(exported.stores.find(s => s.store === 'papercusp_auth.hosted_users')?.rows)
+      .toEqual([expect.objectContaining({ id: userId })]);
+    expect(JSON.stringify(exported)).not.toContain(foreignUser);
+    const receipt = await org.adminSql`SELECT actor_kind, actor_id, purpose FROM papercusp_auth.organization_audit_events
+      WHERE id = ${exported.receiptId}::uuid`;
+    expect(receipt).toEqual([expect.objectContaining({ actor_kind: 'staff_admin', actor_id: staffId, purpose: 'Requested customer export' })]);
+    const personal = await support.exportData(staff, { ...input, userId });
+    expect(personal.stores.find(s => s.store === 'papercusp_auth.organizations')?.rows).toEqual([]);
+    expect(personal.stores.find(s => s.store === 'papercusp_auth.hosted_users')?.rows)
+      .toEqual([expect.objectContaining({ id: userId })]);
+    await expect(support.exportData({ ...staff, slug: 'another-staff-member' }, input)).rejects.toThrow('grant_inactive');
+    await expect(support.exportData(staff, { ...input, organizationId: foreignOrg })).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET workspace_id = ${workspaceId}::uuid WHERE id = ${grantId}::uuid`;
+    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET workspace_id = NULL, scopes = ${['database:read']} WHERE id = ${grantId}::uuid`;
+    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET scopes = ${[CUSTOMER_DATA_EXPORT_SCOPE]},
+      revoked_at = now(), revoked_by_user_id = ${userId}::uuid, revocation_reason = 'Customer revoked support' WHERE id = ${grantId}::uuid`;
+    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET revoked_at = NULL, revoked_by_user_id = NULL,
+      revocation_reason = NULL, starts_at = now() - interval '2 hours', expires_at = now() - interval '1 hour' WHERE id = ${grantId}::uuid`;
+    await expect(support.exportData(staff, input)).rejects.toThrow('grant_inactive');
+    await org.adminSql`UPDATE papercusp_auth.support_access_grants SET expires_at = now() + interval '1 hour' WHERE id = ${grantId}::uuid`;
+    await org.adminSql`UPDATE papercusp_auth.organizations SET status = 'suspended' WHERE id = ${organizationId}::uuid`;
+    await expect(support.exportData(staff, input)).rejects.toThrow('organization_inactive');
+    expect(await org.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+      WHERE organization_id = ${organizationId}::uuid AND action = ${RECEIPT_ACTIONS.export}`).toHaveLength(2);
   });
 
   it('exports a member’s own user records and joined sealed-session metadata without other users or organization-level records (P-010)', async () => {
