@@ -4,6 +4,8 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
@@ -215,4 +217,59 @@ describe('hosted billing reconciliation action composition (real Postgres)', () 
       registerSystemAction(HOSTED_BILLING_RECONCILE, original.fn, original);
     }
   });
+
+  it('recovers the actual durable routine after process death between billing commit and DBOS checkpoint', async () => {
+    const f = await fixture();
+    const event = f.event('active', T0 + 5);
+    const workspaceId = 'test-billing-recovery';
+    const routine = await materializePlanSchedule({ sql: db.adminSql, workspaceId,
+      harnessSlug: 'papercusp', templateSlug: `billing-crash-${hex()}`,
+      schedule: { kind: 'cron', cron: '*/5 * * * *' },
+      action: { system: HOSTED_BILLING_RECONCILE, input: { accountId,
+        createdFrom: T0 - 1, createdBefore: T0 + 100, maxPages: 3 } },
+      concurrency: 'skip', active: true });
+    await db.adminSql`UPDATE harness_shared.routines SET next_fire_at = ${new Date(Date.now() - 1_000)}
+      WHERE id = ${routine.id}`;
+    const due = (await listDueCronRoutines(db.adminSql)).find(row => row.id === routine.id)!;
+    expect(await claimDueRoutine(db.adminSql, due)).toBe(true);
+    await db.adminSql.unsafe('CREATE TABLE public.p016_recovery_test_calls (mode text NOT NULL, path text NOT NULL)');
+    const workflowId = `billing-routine-crash:${routine.id}`;
+    const runChild = (mode: 'crash' | 'recover') => spawnSync(process.execPath,
+      ['--import', 'tsx', fileURLToPath(new URL('../../../test/_hosted-billing-routine-crash-child.ts', import.meta.url))], {
+        cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+        env: { ...process.env, DATABASE_URL: db.adminDsn, HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
+          HARNESS_DATABASE_URL: db.appDsn, PAPERCUSP_DBOS_ROUTINES: '0',
+          P016_ROUTINE_CRASH_MODE: mode, P016_ROUTINE_CRASH_INPUT: JSON.stringify({
+            workflowId, organizationId: f.organizationId, event, routine: due }) },
+        encoding: 'utf8', timeout: 90_000,
+      });
+
+    const crashed = runChild('crash');
+    expect(crashed.signal, `child stdout: ${crashed.stdout}\nstderr: ${crashed.stderr}`).toBe('SIGKILL');
+    expect(await f.mirror()).toMatchObject({ status: 'active', plan_key: 'team' });
+    expect(await f.checkpoint()).toMatchObject({ complete: true });
+    const committedAudit = await f.audit();
+    expect(committedAudit.filter(row => row.action === 'billing.event.reconciled')).toHaveLength(1);
+    const originalSteps = await db.adminSql`SELECT function_name FROM dbos.operation_outputs
+      WHERE workflow_uuid = ${workflowId} ORDER BY function_id`;
+    expect(originalSteps.map(row => row.function_name)).toEqual(['routine-fire-start', 'routine-fire-active-fence']);
+
+    const recovered = runChild('recover');
+    expect(recovered.status, `child stdout: ${recovered.stdout}\nstderr: ${recovered.stderr}`).toBe(0);
+    expect(recovered.stdout).toContain('HOSTED_BILLING_ROUTINE_RECOVERED');
+    expect(await db.adminSql`SELECT status FROM dbos.workflow_status WHERE workflow_uuid = ${workflowId}`)
+      .toEqual([{ status: 'SUCCESS' }]);
+    expect(await f.audit()).toEqual(committedAudit);
+    const calls = await db.adminSql`SELECT mode, path FROM public.p016_recovery_test_calls ORDER BY path`;
+    expect(calls).toEqual([
+      { mode: 'crash', path: '/v1/account' },
+      { mode: 'crash', path: `/v1/customers/${event.data.object.customer}` },
+      { mode: 'crash', path: '/v1/events' },
+    ]);
+    const steps = await db.adminSql`SELECT function_name FROM dbos.operation_outputs
+      WHERE workflow_uuid = ${workflowId} ORDER BY function_id`;
+    expect(steps.map(row => row.function_name)).toEqual([
+      'routine-fire-start', 'routine-fire-active-fence', `system:${HOSTED_BILLING_RECONCILE}`, 'clear-reaper-last-error',
+    ]);
+  }, 240_000);
 });
