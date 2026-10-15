@@ -106,6 +106,8 @@ export interface ResultDoorOpts {
   toolName: string;
   /** When the outer call is tools:invoke, the nested target whose result reached this door. */
   nestedTargetToolName?: string;
+  /** Effective per-call effect, including a tool's effectForCall classification. */
+  effect?: 'read' | 'write';
   /** Caller's workspace id; '*'/invalid shapes spill under 'unscoped'. */
   workspaceId?: string | null;
   /** Spawn run id when it is a UUID; otherwise a fresh UUID names the spill dir. */
@@ -413,21 +415,26 @@ function upstreamProjectionRecoveryInstruction(
   toolName: string,
   nestedTargetToolName?: string,
   innerTruncationMarkers: readonly string[] = [],
+  effect?: 'read' | 'write',
 ): string {
   const recoveryToolName = toolName === 'tools:invoke' ? nestedTargetToolName : toolName;
-  if (!recoveryToolName || recoveryToolName === 'tools:invoke') {
-    return (
-      'The outer `tools:invoke` result does not identify a re-callable nested target. ' +
-      'Use the original target\'s documented recovery route; `tools:invoke` cannot invoke itself.'
-    );
-  }
+  const writeRecovery =
+    recoveryToolName === 'scorecards:emit'
+      ? 'scorecards:emit may have recorded a card. Do NOT repeat this non-idempotent emit to recover fields omitted upstream; ' +
+        'page the reference for its emitted receipt and inspect the scorecard ledger before any follow-up.'
+      : `${recoveryToolName ? `The ${recoveryToolName} write` : 'The nested write'} may have committed. ` +
+        'Do NOT repeat the write to recover fields omitted by upstream shaping; page the reference for its emitted receipt, ' +
+        'then read the operation’s authoritative state before deciding on any follow-up.';
+  const projectionRecovery =
+    effect === 'write' || recoveryToolName === 'scorecards:emit'
+      ? writeRecovery
+      : !recoveryToolName || recoveryToolName === 'tools:invoke'
+        ? 'The outer `tools:invoke` result does not identify a re-callable nested target. ' +
+          'Use the original target\'s documented recovery route; `tools:invoke` cannot invoke itself.'
+        : `Re-call ${recoveryToolName} with payloadTier:'full' (or narrower args) for the missing detail. ` +
+          `If your client validates against the target tool schema, use \`tools:invoke { name:'${recoveryToolName}', args:{ …original args, payloadTier:'full' } }\`. `;
   if (recoveryToolName === 'coord:send') return COORD_SEND_RECEIPT_RECOVERY;
   if (recoveryToolName === 'plans:start') return PLANS_START_RECEIPT_RECOVERY;
-  const rawDispatch =
-    `tools:invoke { name:'${recoveryToolName}', args:{ …original args, payloadTier:'full' } }`;
-  const projectionRecovery =
-    `Re-call ${recoveryToolName} with payloadTier:'full' (or narrower args) for the missing detail. ` +
-    `If your client validates against the target tool schema, use \`${rawDispatch}\`. `;
   if (innerTruncationMarkers.length === 0) return projectionRecovery;
 
   // Upstream payload shaping and tool-owned field bounds are independent loss
@@ -1521,7 +1528,7 @@ type SpillReason =
  */
 function spillRecoveryNote(
   reason: SpillReason,
-  input: { toolName: string; nestedTargetToolName?: string; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
+  input: { toolName: string; nestedTargetToolName?: string; effect?: 'read' | 'write'; upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] },
 ): string {
   const referenceReader =
     'The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. ' +
@@ -1587,6 +1594,7 @@ function spillRecoveryNote(
         input.toolName,
         input.nestedTargetToolName,
         innerTruncationMarkers,
+        input.effect,
       )
     );
   }
@@ -1603,7 +1611,7 @@ function spillRecoveryNote(
       'The emitted result was already marked partial before it reached this result door. ' +
       referenceReader +
       'The reference preserves what the tool emitted for inspection; ' +
-      upstreamProjectionRecoveryInstruction(input.toolName, input.nestedTargetToolName)
+      upstreamProjectionRecoveryInstruction(input.toolName, input.nestedTargetToolName, [], input.effect)
     );
   }
   if (reason === 'aggregate-output-budget-exceeded') {
@@ -2189,6 +2197,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
               : spillRecoveryNote(input.reason, {
                   toolName: input.opts.toolName,
                   nestedTargetToolName: input.opts.nestedTargetToolName,
+                  effect: input.opts.effect,
                   upstreamProjection: Boolean(upstreamProjection?.truncated),
                   innerTruncationMarkers,
                   aggregateMode: input.aggregate?.mode,
@@ -3100,7 +3109,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `forced=${upstreamProjection.forced} originalChars=${upstreamProjection.originalChars} ` +
         `returnedChars=${upstreamProjection.returnedChars} omittedCount=${upstreamProjection.omittedCount}.\n` +
         `# The ${upstreamProjection.omittedCount} omitted field(s)/row(s) were NEVER serialized and are ` +
-        `NOT recoverable from this file — ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers)}\n` +
+        `NOT recoverable from this file — ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers, opts.effect)}\n` +
         `# What follows is only that already-partial projection, further capped at the ` +
         `per-result door (${doorTokens} tokens) below.\n\n`
       : innerTruncationMarkers.length > 0
@@ -3250,7 +3259,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       ? 'upstream payloadProjection'
       : `the tool marked ${innerTruncationMarkers.join(', ')}`;
     const partialJsonReRead = upstreamJsonProjection
-      ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers)
+      ? upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers, opts.effect)
       : innerTruncationRecoveryInstruction(opts.toolName, innerTruncationMarkers, opts.nestedTargetToolName);
     const agentReviewClaim = fsPath == null ? agentReviewClaimReceipt(result, opts) : undefined;
     // The claim committed before the optional scratch write. Recover the item
@@ -3375,7 +3384,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
                     `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
                     `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
-                  `fields. ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers)}`
+                  `fields. ${upstreamProjectionRecoveryInstruction(opts.toolName, opts.nestedTargetToolName, innerTruncationMarkers, opts.effect)}`
                   : innerTruncationMarkers.length > 0
                     ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
                       `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
