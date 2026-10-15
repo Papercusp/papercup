@@ -358,6 +358,37 @@
       }
     }
   },
+  "candidateCe62Acceptance": {
+    "sourceSha": "ce62d173d11f5920bf71bf04bc086f2a69d6d640",
+    "packageTaskId": "0mv9plrw1i0tejg1wx8",
+    "packageLogPath": ".papercusp/scratch/bash-fdc6dd0b-184.log",
+    "packageTerminalAt": "2026-10-15T15:46:30.974Z",
+    "packageExitCode": 0,
+    "archive": "/tmp/pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-0.1.0-linux-x86_64.tar.gz",
+    "archiveSha256": "c292d6942fcac6c50a7df439d6e4552af3591c0d52f8c3666c9b095c3812bb41",
+    "binarySha256": "3602b3154090498cd1b09647a2fc047b13ae21b408e070ebd7aea6935ae2afb2",
+    "companionSha256": "248702154be831721f4967a5cce730260c860c4ee8ac89c205ae08a66114d3e7",
+    "sourceDirty": false,
+    "verification": "Rehashed the retained archive and both manifest artifacts, and verified the manifest's committed source and sourceDirty:false. Six relevant source modules matched this commit before packaging.",
+    "attemptAuditRef": "thread-post:1183418",
+    "fullAcceptance": {
+      "taskId": "0mv9pt7qbxd4nvpbfp2",
+      "rootLogPath": ".papercusp/scratch/bash-f143e934-134.log",
+      "deadline": "2026-10-15T17:50:11.613Z",
+      "work": "/tmp/pui-acceptance-7534f/run-ce62-full-approval-20261015-1550",
+      "verdictPath": "/tmp/pui-acceptance-7534f/candidates/source-ce62d173d11f5920bf71bf04bc086f2a69d6d640/pui-ce62-full-approval-20261015-1550.acceptance.json",
+      "launcher": "apps/tui/scripts/release-acceptance.sh with its maintained immutable checkout isolation",
+      "advertise": ["Linux x86_64:Claude", "Linux x86_64:Codex", "Linux x86_64:OMP"],
+      "models": { "claude": "sonnet", "codex": "gpt-6.1-sol", "omp": "automatic selected model" },
+      "account": "auto",
+      "mode": "auto",
+      "planEnabled": true,
+      "approvalEnabled": true,
+      "testFilter": null,
+      "status": "running; no full-candidate pass inferred from earlier focused repairs"
+    },
+    "publicationStatus": "Not published; full matching acceptance, required grade and final candidate-specific Avi approval remain pending"
+  },
   "scope": {
     "plane": "local current-build fixture",
     "backend": "claude",
