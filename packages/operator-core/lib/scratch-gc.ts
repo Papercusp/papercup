@@ -52,6 +52,15 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 import { scratchRoot, scratchRootForWorkspace } from './scratch-uri';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
+import { withUnpinnedPath } from './storage/retention-pins';
+
+/** Serialize the final protection read and delete with storage:pin mutations. */
+async function removeUnpinnedScratchPath(path: string, dryRun = false): Promise<boolean> {
+  return withUnpinnedPath(path, async () => {
+    if (!dryRun) await rmAsync(path, { recursive: true, force: true });
+    return true;
+  });
+}
 
 /** Retention window for run-dirs since last mtime. 24h default. */
 export const RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -458,7 +467,7 @@ async function isProvenWorkspaceScratchRoot(dir: string, name: string): Promise<
 }
 
 /** Why a provably-dead workspace root was kept this sweep. */
-export type DeadWorkspaceDeferral = 'recent-write' | 'open-writer' | 'process-scan-incomplete';
+export type DeadWorkspaceDeferral = 'recent-write' | 'open-writer' | 'process-scan-incomplete' | 'retention-pin';
 
 /** Default open-writer scan: descendants + cwd, fail-closed, deadline-bounded (as fleet-logs-gc). */
 function defaultScanOpenPaths(paths: readonly string[]): Promise<OpenWriterScan> {
@@ -622,6 +631,10 @@ export async function runScratchGc(opts: {
         continue;
       }
       if (dryRun) {
+        if (!(await removeUnpinnedScratchPath(c.dir, true))) {
+          summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'retention-pin' });
+          continue;
+        }
         summary.deadWorkspaces += 1;
         summary.deadWorkspaceBytes += c.bytes;
         continue;
@@ -635,7 +648,10 @@ export async function runScratchGc(opts: {
           summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'recent-write' });
           return;
         }
-        await rmAsync(c.dir, { recursive: true, force: true });
+        if (!(await removeUnpinnedScratchPath(c.dir))) {
+          summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'retention-pin' });
+          return;
+        }
         await removeSharedScratchQuotaState(c.workspaceId);
         invalidateLocalScratchUsage(c.workspaceId);
         summary.deadWorkspaces += 1;
@@ -651,8 +667,8 @@ export async function runScratchGc(opts: {
       for (const run of await runDirsOf(scratchRootForWorkspace(workspaceId))) {
         if (now - run.mtimeMs > retentionMs) {
           const bytes = await sizeOfDirAsync(run.dir);
+          if (!(await removeUnpinnedScratchPath(run.dir, dryRun))) continue;
           if (!dryRun) {
-            await rmAsync(run.dir, { recursive: true, force: true });
             removed = true;
           }
           summary.retentionEvictions += 1;
@@ -981,7 +997,7 @@ async function evictWorkspaceQuotaLocked(
       if (diagnostics) diagnostics.deleteAttempts += 1;
       const deletionStartedAt = performance.now();
       try {
-        await rmAsync(run.dir, { recursive: true, force: true });
+        if (!(await removeUnpinnedScratchPath(run.dir))) continue;
       } finally {
         if (diagnostics) diagnostics.deletionMs += Math.max(0, performance.now() - deletionStartedAt);
       }
