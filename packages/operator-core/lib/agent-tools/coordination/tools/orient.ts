@@ -4093,14 +4093,17 @@ export default defineTool({
     // as the agent's — coming back clean nearly always, which reads as "nothing
     // was withheld". See agent-orient-disclosures.ts for the full argument.
     //
-    // Awaited, not fire-and-forget: it is one bounded upsert that no-ops when
-    // the markers are unchanged, and its own catch turns any failure into "no
-    // recording" — which renders as nothing, never as a false clean.
+    // This optional presentation record must not hold orientation open. Snapshot
+    // the markers after composition and persist them in the background; the
+    // recorder handles storage and push failures without changing the orient result.
     if (ownerId) {
       const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
-      await phaseTracker.track('handler:recordOrientDisclosures', () =>
-        recordOrientDisclosures(ownerId, ws, collectOrientDisclosures(result)),
-      );
+      const disclosures = collectOrientDisclosures(result);
+      void phaseTracker
+        .track('background:recordOrientDisclosures', () =>
+          recordOrientDisclosures(ownerId, ws, disclosures),
+        )
+        .catch(() => {});
     }
     // Fold in the caller's own identity so the orientation states YOUR ownerId
     // explicitly (the roster/assignments it composes are about peers; `self` is
