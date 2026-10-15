@@ -11,21 +11,29 @@ import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptio
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
+import { ONE_MILLION_MODEL_ALIASES } from '../inference-gateway/model-aliases';
+import { makeCredentialResolver } from '../inference-gateway/credential-store';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(240_000);
 
-// Explicit e2e selection only: this test spends one real provider request.
-it('records the exact real primary blueprint request on its private spawn row', async context => {
+// Explicit e2e selection only: each case spends exactly one real provider request.
+it.for(['primary', 'capacity-failover'] as const)('records the exact real %s blueprint request on its private spawn row',
+  { timeout: options.testTimeoutMs }, async (mode, context) => {
   const sourceWorkspace = process.env.PAPERCUSP_TEST_RUN_WORKSPACE || process.env.PAPERCUSP_WORKSPACE_ID;
   expect(sourceWorkspace, 'source workspace must be explicit').toBeTruthy();
   const pool = await loadAccountPool(sourceWorkspace);
   const observedAt = Date.now();
-  const eligible = accountsForProvider(pool, 'codex').filter(account => isSpawnEligible(account, observedAt));
-  expect(eligible.length, 'real primary proof requires an available configured Codex account').toBeGreaterThan(0);
+  const codex = accountsForProvider(pool, 'codex').filter(account => mode === 'capacity-failover' || isSpawnEligible(account, observedAt));
+  const claude = accountsForProvider(pool, 'claude').filter(account => isSpawnEligible(account, observedAt));
+  expect(codex.length, 'routing proof requires a configured Codex account (available on the primary path)').toBeGreaterThan(0);
+  if (mode === 'capacity-failover') expect(claude.length, 'real failover requires an available Claude account').toBeGreaterThan(0);
+  const eligible = mode === 'capacity-failover' ? [...codex, ...claude] : codex;
   // Transfer only maintained credential references; never read/export credential bytes.
   const accounts = eligible.map(account => ({ ...account, boundTo: [], softPin: [],
     credentialRef: account.credentialRef.replace(/~/g, homedir()) }));
+  // Validate schemes before compiling a host or allocating PG, without reading tokens.
+  for (const account of accounts.filter(row => row.provider === 'claude')) makeCredentialResolver(account.credentialRef);
   let prepared: ReturnType<typeof preparePrivateOperatorApiBundle> | undefined;
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/blueprint/launch-blueprint-account-route.e2e.test.ts',
@@ -61,7 +69,7 @@ it('records the exact real primary blueprint request on its private spawn row', 
       await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
       await mkdir(join(evidenceDir, 'tmp'));
       const referenceFile = join(evidenceDir, 'account-pool-references.json');
-      await writeFile(referenceFile, JSON.stringify({ accounts, observedAt,
+      await writeFile(referenceFile, JSON.stringify({ accounts, observedAt, mode,
         headroom: eligible.map(({ id, provider, rate }) => ({ id, provider, rate })) }), { mode: 0o600 });
       const env: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '0', PC_ISOLATED_RUNTIME_PROOF: '1',
         STAGING_FIRST_HTTP_SCENARIO: 'blueprint-account-route', STAGING_FIRST_HTTP_EVIDENCE_DIR: evidenceDir,
@@ -97,11 +105,15 @@ it('records the exact real primary blueprint request on its private spawn row', 
       expect(receipt.firstRequest.model).toBe(receipt.route.launchedModel);
       expect(receipt.firstRequest.effort).toBe(receipt.route.launchedEffort);
       const [model, effort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
+      const launchedModel = mode === 'capacity-failover' ? ONE_MILLION_MODEL_ALIASES.sonnet : model;
+      const launchedEffort = mode === 'capacity-failover' ? 'high' : effort;
       expect(receipt.route).toMatchObject({ ownerId: receipt.spawnId, accountRoute: 'auto',
-        requestedBackend: 'codex', launchedBackend: 'codex', requestedModel: model,
-        launchedModel: model, requestedEffort: effort, launchedEffort: effort });
-      expect(receipt.upstream).toMatchObject({ requestShape: { model, effort }, error: null });
-      expect(receipt.childConfig).toMatchObject({ model, effort });
+        requestedBackend: 'codex', launchedBackend: mode === 'capacity-failover' ? 'claude-code' : 'codex', requestedModel: model,
+        launchedModel, requestedEffort: effort, launchedEffort });
+      expect(receipt).toMatchObject({ mode, injectedPrimaryWall: mode === 'capacity-failover' });
+      expect(receipt.route.reason ?? null).toBe(mode === 'capacity-failover' ? 'capacity' : null);
+      expect(receipt.upstream).toMatchObject({ requestShape: { model: launchedModel, effort: launchedEffort }, error: null });
+      expect(receipt.childConfig).toMatchObject({ model: launchedModel, effort: launchedEffort });
       expect(receipt.bundleSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(receipt.runtimeInputs.invoke).toBe(join(root, 'libs/papercusp/packages/orchestrator/bin/invoke-once.ts'));
       expect(receipt.privateGateUnchanged).toBe(true);
@@ -124,4 +136,4 @@ it('records the exact real primary blueprint request on its private spawn row', 
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
   console.info('BLUEPRINT_ACCOUNT_ROUTE_PROOF_RUN ' + runId);
-}, options.testTimeoutMs);
+});

@@ -118,6 +118,16 @@ async function main() {
       throw new Error('private preparation exception control');
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('blueprint-account-route-setup')) {
+    assert.equal(e.FGR_R6_NO_PROVIDER, '1', 'setup must prohibit real provider requests');
+    const scenario = await (await import('./blueprint-account-route-http-scenario')).prepareBlueprintAccountRouteScenario({ workspace, evidenceDir });
+    disposeScenario = scenario.dispose;
+    const receipt = scenario.measureSetup();
+    writeFileSync(join(evidenceDir, 'account-route-setup.json'), JSON.stringify(receipt));
+    console.log('BLUEPRINT_ACCOUNT_ROUTE_SETUP_RECEIPT ' + JSON.stringify(receipt));
+    if (e.STAGING_FIRST_HTTP_SCENARIO.endsWith('-exception')) throw new Error('private routing setup exception control');
+    return;
+  }
   const sourcePath = 'packages/operator-core/lib/agent-tools/plans/staging-first-activation-guard.ts';
   const sourceSha256 = createHash('sha256').update(readFileSync(join(root, sourcePath))).digest('hex');
   const isCommittedReader = e.STAGING_FIRST_HTTP_SCENARIO === 'committed-reader';

@@ -1,4 +1,4 @@
-/** Real primary routing proof, composed inside the maintained private HTTP fixture. */
+/** Real primary/failover routing proof inside the maintained private HTTP fixture. */
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -6,16 +6,22 @@ import { createHash } from 'node:crypto';
 import { parse as parseToml } from '@iarna/toml';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../lib/harness-registry';
-import { updateAccountPool } from '../lib/deployment/account-pool-store';
+import { accountStatus, poolVerdictByProvider, updateAccountPool } from '../lib/deployment/account-pool-store';
+import { accountProvider } from '../lib/deployment/account-pool';
+import { readAgentConfig, writeAgentConfig } from '../lib/agent-config';
 import { startGatewayService } from '../lib/inference-gateway/launch';
 import { fireLaunchBlueprint } from '../lib/blueprint/launch-blueprint';
 import { readProcessIdentity } from '../lib/process-identity';
 import { harnessPackageDir, invokeOnceBin, tsxBin } from '../lib/harness-paths';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../lib/model-context-budget.mjs';
-import { privateCodexModelConfig, retainPrivateProviderResponse } from './private-http-workspace-preflight';
+import { ONE_MILLION_MODEL_ALIASES } from '../lib/inference-gateway/model-aliases';
+import { makeCredentialResolver } from '../lib/inference-gateway/credential-store';
+import { privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse } from './private-http-workspace-preflight';
 
 // Reuse the maintained launch policy rather than a retired fixture model id.
 const [primaryModel, primaryEffort] = CODEX_SAFE_DEFAULT_MODEL.split(':');
+const backupModel = ONE_MILLION_MODEL_ALIASES.sonnet;
+const backupEffort = 'high';
 
 function descendants(rootPid: number): number[] {
   const parents = new Map<number, number>();
@@ -60,8 +66,29 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
     'primary proof must execute the selected checkout orchestrator');
   assert.ok(runtimeInputs.invoke.endsWith('.ts'), 'current-source proof must not use a stale packaged invoke bundle');
   const source = JSON.parse(readFileSync(e.FGR_R6_ACCOUNT_POOL_REFERENCE_FILE!, 'utf8'));
+  const failover = source.mode === 'capacity-failover';
+  assert.ok(source.mode === 'primary' || failover, 'explicit primary/failover mode required');
+  const launchedBackend = failover ? 'claude-code' : 'codex';
+  const launchedModel = failover ? backupModel : primaryModel;
+  const launchedEffort = failover ? backupEffort : primaryEffort;
   assert.ok(source.accounts.length > 0, 'private pool requires real configured account references');
-  await updateAccountPool(() => ({ accounts: source.accounts }), workspace);
+  for (const account of source.accounts.filter((row: any) => accountProvider(row) === 'claude'))
+    makeCredentialResolver(account.credentialRef);
+  // Inject only private persisted capacity facts. Production accountStatus,
+  // resolved-route filtering and ordered preflight make the actual decision.
+  // The original source headroom snapshot remains separately recorded below.
+  const injectedAt = Date.now();
+  await updateAccountPool(() => ({ accounts: source.accounts.map((account: any) => failover && accountProvider(account) === 'codex'
+    ? { ...account, rate: { ...account.rate, utilization: 1, utilization7d: 1,
+      utilizationAt: injectedAt, windowResetAt: injectedAt + 300_000, windowResetAt7d: injectedAt + 300_000,
+      usageCreditsAvailable: false, lastProbeFailedAt: undefined } } : account) }), workspace);
+  const agentConfig = await readAgentConfig();
+  await writeAgentConfig({ ...agentConfig, models: { ...agentConfig.models, 'release-fixer': CODEX_SAFE_DEFAULT_MODEL },
+    roleBackends: { ...agentConfig.roleBackends, 'release-fixer': 'codex' },
+    roleAccounts: { ...agentConfig.roleAccounts, 'release-fixer': 'auto' },
+    roleBackups: { ...agentConfig.roleBackups, 'release-fixer': [
+      { backend: 'claude-code', model: backupModel, effort: backupEffort, account: 'auto' },
+    ] } });
   const registry = await loadHarnessRegistry(workspace, { fresh: true });
   const home = registry.projects.find(project => project.slug === workspace);
   assert.ok(home, 'private home harness missing');
@@ -79,13 +106,27 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       ...config } } : entry) }, workspace);
   writeFileSync(join(evidenceDir, 'account-route-preflight.json'), JSON.stringify({ runtimeInputs,
     declared: { codexGatewayPresent: Object.hasOwn(e, 'PAPERCUSP_CODEX_GATEWAY'), account: 'auto' },
-    prompt, config, observedAt: source.observedAt, accountIds: source.accounts.map((account: any) => account.id) }));
+    prompt, config, mode: source.mode, injectedPrimaryWall: failover, injectedAt,
+    observedAt: source.observedAt, accountIds: source.accounts.map((account: any) => account.id) }));
   console.log('BLUEPRINT_ACCOUNT_ROUTE_PHASE runtime-preflight-ready');
   const { sql } = getOrgPg();
   const privateGateBefore = await sql`SELECT name, active, next_fire_at, metadata
     FROM harness_shared.routines WHERE workspace_id=${workspace} AND name='green-checkpoint'`;
   assert.equal(privateGateBefore.length, 1);
   assert.equal(privateGateBefore[0].active, false, 'private publication must stay paused');
+  // Validate private injected facts before allocating a gateway that needs disposal.
+  // The real launcher later reads these same rows through its ordinary live path.
+  const capacity = poolVerdictByProvider(await accountStatus(workspace, Date.now(), {
+    gatewayStats: null, readCodexWalletId: async () => null,
+  }));
+  const primaryVerdict = capacity.find(row => row.provider === 'codex');
+  assert.ok(primaryVerdict);
+  assert.equal(primaryVerdict.atCapacity, failover, 'production preflight must observe the injected primary wall');
+  if (failover) {
+    assert.equal(primaryVerdict.walledFresh, primaryVerdict.total, 'every private primary account must be freshly walled');
+    const backupVerdict = capacity.find(row => row.provider === 'claude');
+    assert.ok(backupVerdict && !backupVerdict.atCapacity, 'backup route must have usable capacity');
+  }
   let spawnId: string | undefined;
   let stopped = false;
   let nativeProcesses: Array<{ pid: number; identity: ReturnType<typeof readProcessIdentity> }> = [];
@@ -98,8 +139,10 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
   const gateway = await startGatewayService({ workspace, port: 0, refreshIntervalMs: 0,
     poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0, durableAdmission: false,
     fetchImpl: async (url, init) => {
-      assert.match(String(url), /\/responses(?:\?|$)/, 'only the declared real first inference request is permitted');
-      assert.equal(++requestCount, 1, 'bounded primary fixture permits exactly one real request');
+      assert.notEqual(e.FGR_R6_NO_PROVIDER, '1', 'setup calibration must never contact a provider');
+      assert.match(String(url), failover ? /\/messages(?:\?|$)/ : /\/responses(?:\?|$)/,
+        'only the declared backend real first inference request is permitted');
+      assert.equal(++requestCount, 1, 'bounded routing fixture permits exactly one real request');
       const response = await fetch(url, init);
       // Read the real body while withholding it from the native child. No mock response
       // or model completion can reach the child before its whole lineage is stopped.
@@ -147,47 +190,58 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       try {
         // CODEX_HOME is also inherited by wrappers. Measure the native binary
         // that actually consumes CLI config overrides, not an ancestor shell.
-        if (!realpathSync(`/proc/${pid}/exe`).endsWith('/codex')) return [];
         const argv = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').slice(0, -1);
+        if (failover ? !argv.includes('--mcp-config') : !realpathSync(`/proc/${pid}/exe`).endsWith('/codex')) return [];
         const env = Object.fromEntries(readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0')
           .filter(Boolean).map(entry => { const i = entry.indexOf('='); return [entry.slice(0, i), entry.slice(i + 1)]; }));
-        return env.CODEX_HOME ? [{ pid, home: env.CODEX_HOME, argv }] : [];
+        return (failover ? env.CLAUDE_CONFIG_DIR : env.CODEX_HOME)
+          ? [{ pid, home: (failover ? env.CLAUDE_CONFIG_DIR : env.CODEX_HOME)!, argv, env }] : [];
       } catch { return []; }
     });
     const child = candidates.at(-1);
-    assert.ok(child, 'actual native lineage must expose its per-spawn CODEX_HOME');
-    assert.equal(candidates.length, 1, 'the bounded primary proof must expose exactly one native Codex child');
+    assert.ok(child, 'actual native lineage must expose its per-spawn config');
+    assert.equal(candidates.length, 1, 'the bounded proof must expose exactly one actual native consumer');
     assert.ok(child.home.startsWith(resolve(e.HOME!, '..') + '/'), 'native config escaped private runtime');
-    const bytes = readFileSync(join(child.home, 'config.toml'));
-    const config = parseToml(bytes.toString('utf8')) as any;
-    const effective = privateCodexModelConfig(child.argv, config);
-    const provider = config.model_providers?.[config.model_provider];
-    assert.equal(provider?.base_url, `http://127.0.0.1:${gateway.port}/v1`);
-    assert.equal(provider.http_headers['x-papercusp-owner'], spawnId);
-    assert.equal(provider.http_headers['x-papercusp-account'], undefined, 'auto must not acquire a pin');
-    const mcp = new URL(config.mcp_servers.papercusp.url);
-    assert.equal(mcp.origin, new URL(e.PAPERCUSP_OPERATOR_URL!).origin);
-    assert.equal(mcp.searchParams.get('client'), spawnId);
-    assert.equal(mcp.searchParams.get('workspace'), workspace);
+    const config = failover ? undefined : parseToml(readFileSync(join(child.home, 'config.toml'), 'utf8')) as any;
+    const provider = config?.model_providers?.[config.model_provider];
+    const mcp = config ? new URL(config.mcp_servers.papercusp.url) : undefined;
+    const measured = failover ? privateClaudeModelConfig(child.argv, child.env)
+      : { ...privateCodexModelConfig(child.argv, config), baseUrl: provider?.base_url,
+        ownerId: provider?.http_headers?.['x-papercusp-owner'],
+        accountPinPresent: Boolean(provider?.http_headers?.['x-papercusp-account'] || child.env.PAPERCUSP_ACCOUNT_ID),
+        mcpOrigin: mcp!.origin, mcpOwnerId: mcp!.searchParams.get('client'),
+        mcpWorkspace: mcp!.searchParams.get('workspace') };
+    assert.equal(measured.baseUrl, `http://127.0.0.1:${gateway.port}${failover ? '' : '/v1'}`);
+    assert.equal(measured.ownerId, spawnId);
+    assert.equal(measured.accountPinPresent, false, 'auto must not acquire an ambient pin');
+    assert.equal(measured.mcpOrigin, new URL(e.PAPERCUSP_OPERATOR_URL!).origin);
+    assert.equal(measured.mcpOwnerId, spawnId);
+    assert.equal(measured.mcpWorkspace, workspace);
     const mounts = readFileSync(`/proc/${child.pid}/mountinfo`, 'utf8').trim().split('\n').map(line => {
       const fields = line.split(' ');
       return { path: fields[4].replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8))), options: fields[5].split(',') };
     }).filter(mount => root === mount.path || root.startsWith(mount.path.endsWith('/') ? mount.path : mount.path + '/'))
       .sort((a, b) => b.path.length - a.path.length);
     assert.ok(mounts[0]?.options.includes('ro'), 'actual native mount must deny canonical tree writes');
-    return { pid: child.pid, sha256: createHash('sha256').update(bytes).digest('hex'),
+    return { pid: child.pid, sha256: createHash('sha256').update(JSON.stringify(measured)).digest('hex'),
       argvSha256: createHash('sha256').update(JSON.stringify(child.argv)).digest('hex'),
-      provider: config.model_provider, baseUrl: provider.base_url, ownerId: provider.http_headers['x-papercusp-owner'],
-      accountPinPresent: false, ...effective,
-      mcpOrigin: mcp.origin, mcpOwnerId: mcp.searchParams.get('client'),
-      canonicalMount: mounts[0] };
+      ...measured, canonicalMount: mounts[0] };
   }
   return {
+    measureSetup() {
+      assert.equal(requestCount, 0, 'preflight must not make inference requests');
+      assert.equal(spawnId, undefined, 'preflight must not launch a native child');
+      return { workspace, mode: source.mode, injectedPrimaryWall: failover, capacity,
+        requestedBackend: 'codex', primaryModel, primaryEffort,
+        backups: [{ backend: 'claude-code', model: backupModel, effort: backupEffort, account: 'auto' }],
+        codexGatewayPresent: Object.hasOwn(e, 'PAPERCUSP_CODEX_GATEWAY'),
+        providerRequests: requestCount, nativeStarted: false, bundleStarted: false, httpStarted: false };
+    },
     async execute(stopInvokeHost: (afterExit?: () => Promise<void>) => Promise<void>) {
-      console.log('BLUEPRINT_ACCOUNT_ROUTE_PHASE launch-real-primary');
+      console.log('BLUEPRINT_ACCOUNT_ROUTE_PHASE launch-real-' + source.mode);
       const launched = await fireLaunchBlueprint('release-fix', { installSlug: workspace, workspaceId: workspace,
         kickoff: 'Inert routing proof: reply READY without tools.', timeoutMs: 90_000,
-        bodyExtra: { account: 'auto', spawnBackend: 'codex', spawnModel: CODEX_SAFE_DEFAULT_MODEL } });
+        bodyExtra: { account: 'auto' } });
       spawnId = launched.spawn?.spawnId ?? undefined;
       assert.ok(spawnId, 'production blueprint launcher must return its exact spawn identity');
       await Promise.race([realResponseReady, eventually(async () => {
@@ -226,13 +280,14 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       assert.equal(childConfig.model, row.account_route.launchedModel);
       assert.equal(childConfig.effort, row.account_route.launchedEffort);
       assert.equal(row.account_route.requestedBackend, 'codex');
-      assert.equal(row.account_route.launchedBackend, 'codex');
+      assert.equal(row.account_route.launchedBackend, launchedBackend);
       assert.equal(row.account_route.requestedModel, primaryModel);
-      assert.equal(row.account_route.launchedModel, primaryModel);
+      assert.equal(row.account_route.launchedModel, launchedModel);
       assert.equal(row.account_route.requestedEffort, primaryEffort);
-      assert.equal(row.account_route.launchedEffort, primaryEffort);
-      assert.equal(upstream?.requestShape.model, primaryModel);
-      assert.equal(upstream?.requestShape.effort, primaryEffort);
+      assert.equal(row.account_route.launchedEffort, launchedEffort);
+      assert.equal(row.account_route.reason ?? null, failover ? 'capacity' : null);
+      assert.equal(upstream?.requestShape.model, launchedModel);
+      assert.equal(upstream?.requestShape.effort, launchedEffort);
       // Host exit closes admission. Descendant reaping then closes inherited
       // pipes; waiting for pipe-close before reaping would deadlock this order.
       await stopInvokeHost(stopNative);
@@ -241,7 +296,8 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       const privateGateAfter = await sql`SELECT name, active, next_fire_at, metadata
         FROM harness_shared.routines WHERE workspace_id=${workspace} AND name='green-checkpoint'`;
       assert.deepEqual(privateGateAfter, privateGateBefore, 'inert child must not alter private gate controls');
-      return { workspace, spawnId, route: row.account_route, firstRequest: row.first_gateway_request,
+      return { workspace, mode: source.mode, injectedPrimaryWall: failover, capacity,
+        spawnId, route: row.account_route, firstRequest: row.first_gateway_request,
         upstream, telemetry: { servingAccountId: first.cache.servingAccountId,
           requestId: `${ownerReport.process.instanceId}:${first.requestId}` }, childConfig,
         childStopped: stopped, stoppedPids: nativeProcesses.map(({ pid }) => pid),

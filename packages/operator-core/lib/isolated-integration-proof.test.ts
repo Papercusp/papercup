@@ -6,8 +6,39 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
-import { privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
+import { privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+it('measures Claude native model, effort, owner, pin and private MCP without retaining credentials', () => {
+  const argv = ['/native/claude', '--model=claude-sonnet-5', '--effort', 'high',
+    '--mcp-config', '/private/mcp.json', '--strict-mcp-config'];
+  const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1234', ANTHROPIC_AUTH_TOKEN: NEVER_EMIT_MARKER,
+    ANTHROPIC_CUSTOM_HEADERS: 'x-papercusp-owner: s-private\nx-papercusp-account: ', PAPERCUSP_ACCOUNT_ID: '' };
+  const read = () => JSON.stringify({ mcpServers: { papercusp: {
+    url: 'http://127.0.0.1:1235/api/mcp?client=s-private&workspace=test-runtime-proof&token=' + NEVER_EMIT_MARKER,
+  } } });
+  const result = privateClaudeModelConfig(argv, env, read);
+  expect(result).toEqual({ model: 'claude-sonnet-5', effort: 'high', baseUrl: env.ANTHROPIC_BASE_URL,
+    ownerId: 's-private', accountPinPresent: false, mcpOrigin: 'http://127.0.0.1:1235',
+    mcpOwnerId: 's-private', mcpWorkspace: 'test-runtime-proof' });
+  expect(JSON.stringify(result)).not.toContain(NEVER_EMIT_MARKER);
+  expect(privateClaudeModelConfig(argv, { ...env, PAPERCUSP_ACCOUNT_ID: 'stale-pin' }, read).accountPinPresent).toBe(true);
+  expect(privateClaudeModelConfig(argv, { ...env, ANTHROPIC_CUSTOM_HEADERS: env.ANTHROPIC_CUSTOM_HEADERS + 'pinned' }, read)
+    .accountPinPresent).toBe(true);
+  expect(() => privateClaudeModelConfig(argv.filter(arg => arg !== '--strict-mcp-config'), env, read)).toThrow(/ambient MCP/);
+  expect(() => privateClaudeModelConfig(['/native/claude'], env, read)).toThrow(/explicit signed MCP/);
+});
+
+it('retains the actual Claude output effort on a successful bounded response', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'private-claude-response-'));
+  try {
+    const result = await retainPrivateProviderResponse(directory, new Response('private output', { status: 200 }), {
+      body: JSON.stringify({ model: 'claude-sonnet-5', output_config: { effort: 'high' }, stream: true }),
+    });
+    expect(result.requestShape).toMatchObject({ model: 'claude-sonnet-5', effort: 'high', stream: true });
+    expect(readFileSync(join(directory, 'provider-response.json'), 'utf8')).not.toContain('private output');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 it('measures native Codex effort overrides over absent and conflicting TOML', () => {
   for (const config of [{ model: 'gpt-6.1-sol' }, { model: 'gpt-6.1-sol', model_reasoning_effort: 'low' }]) {

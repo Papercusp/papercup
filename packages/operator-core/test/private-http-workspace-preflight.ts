@@ -34,7 +34,7 @@ export async function retainPrivateProviderResponse(evidenceDir: string, respons
   const fields = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value)
     ? Object.keys(value).filter(key => /^[a-z0-9_]{1,100}$/i.test(key)).sort() : [];
   const requestShape = { bytes: requestBytes.length, parsed: Boolean(request), fields: fields(request),
-    model: label(request?.model), effort: label(request?.reasoning?.effort), stream: request?.stream === true,
+    model: label(request?.model), effort: label(request?.reasoning?.effort ?? request?.output_config?.effort), stream: request?.stream === true,
     instructionsBytes: typeof request?.instructions === 'string' ? Buffer.byteLength(request.instructions) : null,
     inputCount: Array.isArray(request?.input) ? request.input.length : null,
     toolsCount: Array.isArray(request?.tools) ? request.tools.length : null,
@@ -102,6 +102,33 @@ export function privateCodexModelConfig(argv: readonly string[], config: Record<
     }
   }
   return { model: modelFlag ?? model, effort };
+}
+
+/** Read only routing fields from the actual Claude argv/env and signed MCP file.
+ * Never return the environment, token, or full MCP URL to the evidence recorder. */
+export function privateClaudeModelConfig(argv: readonly string[], env: NodeJS.ProcessEnv,
+  readConfig: (path: string) => string = path => readFileSync(path, 'utf8')) {
+  const flag = (name: string) => {
+    let value: string | undefined;
+    for (let i = 1; i < argv.length; i++) {
+      if (argv[i] === name) value = argv[++i];
+      else if (argv[i].startsWith(name + '=')) value = argv[i].slice(name.length + 1);
+    }
+    return value;
+  };
+  const path = flag('--mcp-config');
+  assert.ok(path, 'native Claude must load its explicit signed MCP file');
+  assert.ok(argv.includes('--strict-mcp-config'), 'native Claude must exclude ambient MCP servers');
+  const mcp = new URL(JSON.parse(readConfig(path)).mcpServers.papercusp.url);
+  const headers = Object.fromEntries((env.ANTHROPIC_CUSTOM_HEADERS ?? '').split('\n').filter(Boolean).map(line => {
+    const split = line.indexOf(':');
+    return [line.slice(0, split).trim().toLowerCase(), line.slice(split + 1).trim()];
+  }));
+  return { model: flag('--model'), effort: flag('--effort'), baseUrl: env.ANTHROPIC_BASE_URL,
+    ownerId: headers['x-papercusp-owner'],
+    accountPinPresent: Boolean(env.PAPERCUSP_ACCOUNT_ID || headers['x-papercusp-account']),
+    mcpOrigin: mcp.origin, mcpOwnerId: mcp.searchParams.get('client'),
+    mcpWorkspace: mcp.searchParams.get('workspace') };
 }
 
 /** Stop admission before reaping descendants that can keep the host's pipes open. */
