@@ -52,7 +52,10 @@ if (!planSlug || !harness || !classRef || !Array.isArray(auditItems) || auditIte
 const evaluation = await tools.plans.evaluateSpecTestAdequacy({
   harness, slug: planSlug, classRef, includeDraft: true, detail: "full",
 });
-if (evaluation.ok !== true || !Array.isArray(evaluation.rows)) {
+// Error/selection replies may omit rows. Normalize the optional field before
+// validating it so the current catalog preflight can also prove the read safe.
+const rows = evaluation.rows ?? null;
+if (evaluation.ok !== true || !Array.isArray(rows)) {
   return fit({ ok: false, phase: "evaluate", evaluation: brief(evaluation, FAILURE_KEYS) });
 }
 const audit = await tools.plans.audit({
@@ -62,7 +65,6 @@ if (audit.ok !== true || audit.partial || (audit.rejectedItemIds || []).length) 
   return fit({ ok: false, phase: "code-truth",
     audit: brief(audit, [...FAILURE_KEYS, "partial", "rejectedItemIds"]) });
 }
-const rows = evaluation.rows;
 const proposals = [];
 const certifiable = [];
 for (const row of rows) {

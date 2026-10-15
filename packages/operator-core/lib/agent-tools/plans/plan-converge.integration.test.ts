@@ -6,6 +6,8 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import type { ProjectedTool } from '@papercusp/tooldef';
 import { setupPlanPgFixture, seedPlan, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 import { setSpecClause } from './spec-clauses-store';
 import evaluateTool from './evaluate-spec-test-adequacy';
@@ -19,6 +21,7 @@ import { createOneWorkItem } from '../work_items/_create-core';
 import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 import { provisionPinnedRubric } from '../../rubrics';
+import { validateRecipeScriptAgainstCatalog } from '../recipes/recipe-schema-validation';
 
 // Fix external class/root metadata for the isolated baseline. Clause/evidence
 // reads and all three handlers use their real production SQL and file measurers.
@@ -65,6 +68,29 @@ function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?:
 const row = (overrides: Body = {}) => ({ specId: 'SPEC-A', specRevision: 3, planItemId: 'P-003', verdict: 'unknown', wouldBlock: ['falsifiability'], ...overrides });
 
 describe('converge recipe controls (not PostgreSQL proof)', () => {
+  it('passes preflight against the current evaluator, audit and certifier output schemas', async () => {
+    const catalog = [evaluateTool, auditTool, certifyTool].map((tool): ProjectedTool => ({
+      pluginName: 'converge-preflight',
+      description: tool.name,
+      inputSchema: z.toJSONSchema(tool.args as z.ZodType),
+      outputJsonSchema: z.toJSONSchema(tool.result as z.ZodType),
+      capabilities: [],
+      expose: { mcp: { name: tool.name } },
+      fn: (async () => ({ content: [] })) as never,
+    }));
+    expect(await validateRecipeScriptAgainstCatalog(script, catalog)).toMatchObject({
+      ok: true,
+      issues: [],
+    });
+  });
+  it('refuses missing evaluator rows without auditing, certifying or filing', async () => {
+    const c = controls([]);
+    c.evaluate.mockResolvedValueOnce({ ok: true } as never);
+    expect(await execute(c.tools)).toMatchObject({ ok: false, phase: 'evaluate' });
+    expect(c.audit).not.toHaveBeenCalled();
+    expect(c.certify).not.toHaveBeenCalled();
+    expect(c.create).not.toHaveBeenCalled();
+  });
   it('defaults to an actually executed read-only audit/certifier preview', async () => {
     const c = controls([row(), row({ specId: 'SPEC-PASS', verdict: 'pass', wouldBlock: [] })]);
     expect(await execute(c.tools)).toMatchObject({ ok: true, dryRun: true, nonPassing: 1,
