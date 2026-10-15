@@ -644,7 +644,7 @@ describe('support operation administrative lifecycle', () => {
       return readAcceptedBlueprintDirectWorkItem(sql, workspaceId, item);
     };
     const promoted = structuredClone(original);
-    const operation = promoted.operations.find(value => value.id === 'support-to-engineering');
+    const operation = promoted.operations?.find(value => value.id === 'support-to-engineering');
     if (!operation) throw new Error('administrative fixture lost its support operation');
     operation.version = '2';
     try {
