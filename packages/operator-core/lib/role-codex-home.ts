@@ -1465,6 +1465,9 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     '# Per-session codex role MCP config (managed by bootstrap-role / writeRoleCodexHome).',
     '[mcp_servers.papercusp]',
     `url = "${tomlEscape(opts.mcpUrl)}"`,
+    // tools:invoke allows 1080s and the MCP host adds a 5s buffer; keep
+    // Codex's per-server timeout 5s above that 1085s wrapper deadline.
+    'tool_timeout_sec = 1090',
     '',
   ].join('\n');
   writeFileSync(configPath, toml, { mode: 0o600 });
