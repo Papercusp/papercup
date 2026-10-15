@@ -993,7 +993,62 @@ export default defineTool({
         );
         return bulkContent({ ...retractions, ...(lost ? { advisories: [lost] } : {}) });
       }
-      const requested = args.items ?? [args.binding!];
+      return bulkContent(
+        await bindSpecEvidenceItems(
+          {
+            harnessSlug,
+            actorId,
+            workspaceId: resolveAgentIdentity(ctx).workspaceId ?? undefined,
+            items: args.items ?? [args.binding!],
+            ...(args.slug ? { slug: args.slug } : {}),
+            ...(args.harness ? { harnessArg: args.harness } : {}),
+            ...(args.dependencies ? { dependencies: args.dependencies } : {}),
+            ...(args.supersedeAtRevision ? { supersedeAtRevision: true } : {}),
+          },
+          timing,
+        ),
+      );
+    } finally {
+      timing.emit();
+    }
+  },
+});
+
+type BindSpecEvidenceArgs = z.infer<typeof argsSchema>;
+
+export interface BindSpecEvidenceItemsInput {
+  harnessSlug: string;
+  /** Who the binding is attributed to — an agent owner id, or a `system:` actor for a sweep. */
+  actorId: string;
+  /** The caller's concrete workspace, used only for the vet-before-proof advisory. */
+  workspaceId?: string;
+  items: NonNullable<BindSpecEvidenceArgs['items']>;
+  slug?: string;
+  /** The caller's literal `harness` argument, echoed into targeting refusals. */
+  harnessArg?: string;
+  dependencies?: BindSpecEvidenceArgs['dependencies'];
+  supersedeAtRevision?: boolean;
+}
+
+/**
+ * The binding pipeline behind `plans:bind-spec-evidence` (everything except `retract`), callable
+ * without a tool context so a server-side sweep binds through EXACTLY the checks an agent call
+ * runs: run expansion, mutation targeting, declared configuration, instrument provenance,
+ * measurement and the supersession of replaced rows (agent-paperwork-and-restart-tax-reduction-
+ * 2026-10-15 P-002 — the evidence autobind sweep is its first non-tool caller).
+ */
+export async function bindSpecEvidenceItems(
+  input: BindSpecEvidenceItemsInput,
+  timing: ReturnType<typeof bindingStageDiagnostics> = bindingStageDiagnostics(() => {}),
+) {
+      const { harnessSlug, actorId } = input;
+      const args = {
+        slug: input.slug,
+        harness: input.harnessArg,
+        dependencies: input.dependencies,
+        supersedeAtRevision: input.supersedeAtRevision,
+      };
+      const requested = input.items;
       // P-044: expand every `{ fromTestRun }` item into an ordinary binding FIRST, then re-validate
       // it through bindingSchema, so a derived binding meets exactly the contract a hand-built one
       // does (including the P-043 targeting check below). A failed expansion stays index-aligned
@@ -1168,7 +1223,7 @@ export default defineTool({
       // lands on a rubric revision nobody has vetted yet. Computed only for bindings that
       // actually succeeded, so a refused binding never triggers it.
       const boundSpecIds = env.results.flatMap((result, index) => (result.ok ? [bindings[index]?.specId] : []));
-      const workspaceId = resolveAgentIdentity(ctx).workspaceId ?? undefined;
+      const workspaceId = input.workspaceId;
       const advisory = await timing.phase('vettingAdvisory', () =>
         runWithWorkspaceIfConcrete(workspaceId, () =>
           unvettedRubricBindAdvisory(
@@ -1216,13 +1271,9 @@ export default defineTool({
           )
         : undefined;
       const advisories = [advisory, gap].filter(Boolean);
-      return bulkContent({
+      return {
         ...env,
         ...(advisories.length > 0 ? { advisories } : {}),
         ...(supersession ? { supersession } : {}),
-      });
-    } finally {
-      timing.emit();
-    }
-  },
-});
+      };
+}
