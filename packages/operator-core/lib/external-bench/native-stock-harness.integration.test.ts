@@ -146,7 +146,7 @@ async function refusedAssignment(name: string, problemStatement: string, inConta
           AND t.detail->>'coordOwnerId'=a.coord_owner_id AND t.session_id=a.session_id
         WHERE a.workspace_id=${workspaceId}
           AND t.detail->>'assignmentId'=${currentBenchAssignmentId(config.runId, 'baseline', 't1', 1)}`;
-      expect(observed).toHaveLength(index + 1);
+      expect(observed, JSON.stringify({ index, telemetry: result.telemetry, observed, seen })).toHaveLength(index + 1);
       const added = observed.filter(row => !nativeSessionIds.includes(row.session_id));
       expect(added).toHaveLength(1); nativeSessionIds.push(added[0].session_id);
       if (index) expect(readFileSync(checkpoint, 'utf8')).toBe('Preserve the task checkpoint across fresh sessions.');
