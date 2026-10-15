@@ -2863,5 +2863,58 @@
     "operationalAcceptance": false,
     "fullPlan": "unshipped"
   },
-  "next": "Original public-docs parent passed locally after the redundant-provider fix; original fixture parent passed with 37 tests and 12 conditional skips, with partial native npm lifecycle/process receipts. Both still lack full ordered-step qualification and runtime closure; original desktop eight-step parent remains missing. Continue actual per-step/report bindings and pre-setup/external-loader/non-module/other-runner closure using existing collectors. Do not repeat unchanged commands or saved guards absent drift. Preserve D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
+  "currentFixtureHostBoundary20261015": {
+    "workItemId": "EI-26015814184804894",
+    "status": "warning-root-cause-fixed-current-local-host-verified",
+    "rootCause": "Route imports of the data package also exposed host-only bootData to Webpack. Its dynamic createRequire(require.resolve('embedded-postgres')) argument cannot be statically evaluated by the CommonJsImportsParserPlugin, which emitted two warnings. Native host packaging also implicitly depended on Next tracing those unused route imports.",
+    "fix": "Keep route access in the existing data entry, move startup to a directly bundled host entry, and share the unchanged singleton key through a private state module. Reuse Next's nodeFileTrace for host externals before existing native hydration; retain artifact containment checks and tracer warnings.",
+    "sourcePins": [
+      { "path": "apps/slack-asana-bug-drill/packages/data/src/index.ts", "sha256": "883e2e44df600fc7a1450de271ee49bbbc1d10702357600c46bbc3b0c6ebc4f1" },
+      { "path": "apps/slack-asana-bug-drill/packages/data/src/host.ts", "sha256": "091ff601157fa34b6467d1490dbd95ded7ed3c9733f84af641c32525108a3d55" },
+      { "path": "apps/slack-asana-bug-drill/packages/data/src/state.ts", "sha256": "7edd8bd6243f7dbbc564b87b1490a795dff410eb9f969005839f2c57315f491b" },
+      { "path": "apps/slack-asana-bug-drill/scripts/build.mjs", "sha256": "9eeb8807bc2387b17d72da8871fb264a9390a065ab4f6aa7da629626ed4dd80d" },
+      { "path": "apps/slack-asana-bug-drill/tests/data-route-bundle.test.ts", "sha256": "9d8791ee52731b790785289ccc3a1adebc1b670227ee49488059d51d64cabaf3" },
+      { "path": "apps/slack-asana-bug-drill/tests/host-smoke.test.ts", "sha256": "2c16895371ec4d44e85a057e2eb19107a10b80b75e38f430354da35f8d599ad4" }
+    ],
+    "causalRegression": {
+      "command": "npm run test:file -- tests/data-route-bundle.test.ts",
+      "red": { "ref": "~/.papercusp/scratch/c0523-data-route-bundle-red-v3-20261015.log", "sha256": "08bc42617551fd2bd3f26d0ce11259a82a0101748a5611e1e7a187b1c34b3084", "exitCode": 1, "observedWarnings": 2 },
+      "green": { "ref": "~/.papercusp/scratch/c0523-data-route-bundle-green-20261015.log", "sha256": "784cea18a8ea76e03d0b395ddb995d00f26091a38ec40cf213e5660d9e7566ac", "exitCode": 0, "testsPassed": 1, "skipped": 0 },
+      "preparationLimits": "v1 failed on the test compiler's external type; v2 used the ESM parser and was a false-negative preparation. Only v3 used Next's automatic parser and reproduced the original warnings."
+    },
+    "build": {
+      "command": "node scripts/build.mjs",
+      "exitCode": 0,
+      "stdout": { "ref": "~/.papercusp/scratch/c0523-data-route-build-v2-20261015.log", "sha256": "ea56173cdbb3c6934de8dcdd4cf98253f517e132109fb997ae7b5bd978b6c4ad" },
+      "stderr": { "ref": "~/.papercusp/scratch/c0523-data-route-build-v2-20261015.err", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "bytes": 0 },
+      "buildId": "af6f42346aeb0a4028800a9b19c0f71c5bb2c1383c221ec8b84cde34508b2557",
+      "tracer": "Next's bundled @vercel/nft; 88 retained file references, 15 retained optional-platform/native-analysis warnings; not complete runtime closure",
+      "earlierFailure": "The first changed-source build compiled Next and TypeScript without warnings, then failed native hydration because the artifact lacked the formerly implicit host dependencies. v2 adds explicit host tracing before hydration."
+    },
+    "hostSmoke": {
+      "command": "npm run test:file -- tests/host-smoke.test.ts",
+      "exitCode": 0,
+      "testsPassed": 2,
+      "skipped": 0,
+      "childWallMs": 11254,
+      "namedInputPinsUnchanged": 9,
+      "receipt": { "ref": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015.json", "sha256": "0b6e9d6d38514c5dc3841789852b9f3faf09ba7605de77770f8532505f627a65" },
+      "nativeArchive": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015-artifacts",
+      "nativeReceiptSha256": "3f9213df1a8c663061d0e55135aedd80fa66046d47d52f81e2d823bd232a6838",
+      "stdout": { "ref": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015.log", "sha256": "5d6418381fe4f005ba8defbf5d3dc4560621c4e6a1430da52c64b09b0db0b13b" },
+      "stderr": { "ref": "~/.papercusp/scratch/c0523-data-route-host-smoke-20261015.err", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      "coverage": "Artifact-contained embedded-postgres/postgres/async-exit-hook/pg/platform resolution; actual browser quote flow, API validation, persistence across restart and clean discovery shutdown. Private fixture runtime, not an operator serving build."
+    },
+    "limits": [
+      "The preceding original fixture parent remains a historical 37-pass/12-skip receipt on its recorded source. It was not rerun, restamped, or promoted to the changed host source.",
+      "Source was current-local at verification. Four of six changed paths matched app commit cc5e1cea at the subsequent read; build.mjs and host-smoke.test.ts were still pending automatic commit at that read.",
+      "This fixes the observed compiler warning and verifies the named standalone host behavior. Bootstrap, engine-byte retention, full dependency/final-transform/population/containment closure and original ordered-step bindings remain unmeasured.",
+      "Engine archive proposal EI-26014170316247986 remains mandatory-review-pending; no implementation bypass, comparison, live gate operation or shipment claim."
+    ],
+    "orderedChainQualified": false,
+    "runtimeClosure": "unmeasured",
+    "operationalAcceptance": false,
+    "fullPlan": "unshipped"
+  },
+  "next": "Preserve original public-docs and fixture parent receipts as recorded, including the fixture's 12 conditional skips. The new host-boundary repair has focused parser/build/host proof but does not qualify either original chain or full runtime closure. Original desktop eight-step parent remains missing. Continue actual per-step/report bindings and pre-setup/external-loader/non-module/other-runner closure using existing collectors. Do not repeat unchanged commands or saved guards absent drift. Preserve mandatory engine-archive review, D020/P006 hold, all six forms, P018 genuine seven-day/idle/alarm/P028/P031 and complete outside-lineage/final shipment requirements. Full plan remains unshipped."
 }
