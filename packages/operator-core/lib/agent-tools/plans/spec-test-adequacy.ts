@@ -6,6 +6,7 @@ import {
   repoFilesEvidenceMeasurementSchema,
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
+import { readMeasurementPin } from './evidence-measurement-pin';
 import {
   SPEC_PROOF_OBLIGATION_ID_RE,
   SPEC_TARGET_ID_RE,
@@ -1034,6 +1035,19 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const evidenceRef = row.testRunProvenance?.worktreeDirty === true
     ? row.evidenceRef.replace(/\s*,?\s*at current HEAD\.?$/i, '')
     : row.evidenceRef;
+  const measurementPin = readMeasurementPin(row.details);
+  const renderedMeasurementPin = measurementPin
+    ? `measurementPin=${JSON.stringify({
+        repos: measurementPin.repos.map(({ repo, rootHarnessSlug, head, gitlink }) => ({
+          repo, ...(rootHarnessSlug ? { rootHarnessSlug } : {}), head, gitlink,
+        })),
+        files: measurementPin.files.map(({ path, repo, rootHarnessSlug }) => ({
+          repositoryPath: repo,
+          path: repo !== '.' && path.startsWith(`${repo}/`) ? path.slice(repo.length + 1) : path,
+          ...(rootHarnessSlug ? { rootHarnessSlug } : {}),
+        })),
+      })}`
+    : null;
   const fields = [
     // P-019: lead with the row id so a reader can act on THIS row (retract it, or re-bind
     // over it with supersedeAtRevision) without a separate plans:get-spec-evidence hunt.
@@ -1071,6 +1085,7 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
         `testRunLedgerCommit=${JSON.stringify(row.testRunProvenance.commitSha)}, ` +
         `testRunLedgerWorktreeDirty=${row.testRunProvenance.worktreeDirty ?? 'unknown'}`
       : null,
+    renderedMeasurementPin,
     ...mutationProvenanceDescription(row),
     details.fixtureCalibrated !== undefined ? `fixtureCalibrated=${details.fixtureCalibrated}` : null,
     details.fixtureFree !== undefined ? `fixtureFree=${details.fixtureFree}` : null,
@@ -1148,6 +1163,7 @@ function evidenceWithBindings(statement: string, rows: SpecEvidenceForAdequacy[]
 function scorecardBindingEvidence(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rows: SpecEvidenceForAdequacy[],
+  rerunRecipe: SpecTestAdequacyRerunRecipe,
 ): { ratings: typeof ratings; table: string } {
   // One immutable binding can reach this presentation layer through multiple
   // evidence projections. Their rendered descriptions may differ, but they must
@@ -1165,6 +1181,9 @@ function scorecardBindingEvidence(
       evidence: references.reduce(
         (text, binding) => text.replaceAll(binding.description, binding.ref),
         rating.evidence,
+      ).replace(
+        ratingRerunProbeText(criterion as AdequacyCriterion, rerunRecipe),
+        ratingRerunProbeReference(criterion as AdequacyCriterion),
       ),
     }])) as typeof ratings,
     table: references.length > 0
@@ -1387,6 +1406,14 @@ function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
   const provenance = row.testRunProvenance;
   const mutation = provenance?.mutation;
   const baseline = provenance?.mutationBaseline;
+  const measurement = mutation === undefined
+    ? null
+    : repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  const mutationSubjectMeasured =
+    mutation !== undefined &&
+    measurement !== null &&
+    measurement.success &&
+    measurement.data.sourcePaths.includes(mutation.subjectPath);
   const declaredCases = detailsOf(row).testCases ?? [];
   // A focused runner counts filtered-out cases as skipped. Credit only cases the
   // calibration row actually measured passing; an incomplete list never proves
@@ -1394,7 +1421,7 @@ function hasLinkedMutationBaseline(row: SpecEvidenceForAdequacy): boolean {
   const baselineScopePassed = baseline != null && (baseline.skipped === 0 ||
     (declaredCases.length > 0 && declaredCases.every(caseTitle =>
       hasMatchingDeclaredCaseTitle(caseTitle, baseline.passedCaseTitles ?? []))));
-  return mutation !== undefined && mutation.leg === 'mutant' &&
+  return mutation !== undefined && mutationSubjectMeasured && mutation.leg === 'mutant' &&
     provenance?.source === 'mutation-probe' && provenance.mutationPhase === 'mutant' &&
     baseline != null && baseline.testRunId !== row.testRunId &&
     baseline.status === 'pass' && baseline.passed > 0 && baseline.failed === 0 &&
@@ -2213,6 +2240,22 @@ export function crossGenerationAuditProbeArgs(rerunRecipe: SpecTestAdequacyRerun
   return { ...rerunRecipe.args };
 }
 
+function ratingRerunProbeText(
+  criterion: AdequacyCriterion,
+  rerunRecipe: SpecTestAdequacyRerunRecipe,
+): string {
+  return (
+    `Replay the shared scorecard rerunRecipe (${rerunRecipe.evaluator}) once with its stored args; ` +
+    `inspect rows[0].ratings[${JSON.stringify(criterion)}] against the current evidence state. ` +
+    'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
+    'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.'
+  );
+}
+
+function ratingRerunProbeReference(criterion: AdequacyCriterion): string {
+  return `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`;
+}
+
 function appendRatingRerunProbes(
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>,
   rerunRecipe: SpecTestAdequacyRerunRecipe,
@@ -2221,11 +2264,7 @@ function appendRatingRerunProbes(
     const rating = ratings[criterion];
     ratings[criterion] = {
       ...rating,
-      evidence:
-        `${rating.evidence} Replay the shared scorecard rerunRecipe (${rerunRecipe.evaluator}) once with its stored args; ` +
-        `inspect rows[0].ratings[${JSON.stringify(criterion)}] against the current evidence state. ` +
-        'This replay remeasures currentness at replay time, so freshness-dependent ratings may differ from the emitted card after evidence changes. ' +
-        'It is not a historical as-of replay; grading-integrity audits reconstruct the emitted card using its creation-time snapshot.',
+      evidence: `${rating.evidence} ${ratingRerunProbeText(criterion, rerunRecipe)}`,
     };
   }
 }
@@ -3655,8 +3694,12 @@ export function evaluateSpecTestAdequacy(input: {
     ...exactEvidence,
     ...disclosedGapRows,
     ...freeFormNoteRows,
-  ]);
-  const cardBody = `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`;
+  ], rerunRecipe);
+  const replayInstructions =
+    `Replay instructions: execute the card-level rerunRecipe (${rerunRecipe.evaluator}) once with its stored args. ` +
+    'Compare each returned criterion rating with this card and the current evidence. Replay remeasures currentness at replay time, so freshness-dependent ratings can differ after evidence changes. ' +
+    'It is not a historical as-of replay; grading-integrity audits reconstruct this card from its creation-time snapshot.';
+  const cardBody = `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.\n\n${replayInstructions}`;
   // emit caps body at 8,000 characters. Keep the full shared proof in an existing
   // uncapped criterion evidence field when it cannot fit, with an explicit pointer
   // for every B reference. This changes presentation only, never evaluator ratings.

@@ -42,7 +42,11 @@ function proof(kind: 'test' | 'mutation'): SpecEvidenceForAdequacy {
     details: { adequacy: { collected: true, skipped: false, executed: true,
       outcome: kind === 'test' ? 'passed' : 'caught', falsifiable: kind === 'mutation',
       testLayer: 'unit', targeted: clause.specId,
-      testCases: [failedCase], fixtureCalibrated: true, pathReachable: true, oracleIndependent: true } },
+      testCases: [failedCase], fixtureCalibrated: true, pathReachable: true, oracleIndependent: true },
+      currentMeasurement: {
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/guard.ts'], testPaths: [file],
+      },
+    },
     currentness: { comparisonSupplied: true, provenance: 'server-measured', overall: 'current',
       dimensions: { spec: 'current', source: 'current', test: 'current', fixture: 'current',
         rubric: 'current', environment: 'current', coverageEvidence: 'current', testRun: 'current' },
@@ -79,6 +83,20 @@ describe('ledger-derived mutation catches (R-7)', () => {
       passedCaseTitlesIncomplete: true,
     });
     expect(rating(row).rating).toBe('pass');
+  });
+
+  it('does not credit a fixture-only mutant outside the measured implementation source set', () => {
+    const row = proof('mutation');
+    const fixturePath = 'fixtures/decision.json';
+    const provenance = row.testRunProvenance!;
+    provenance.mutation = { ...provenance.mutation!, subjectPath: fixturePath };
+    provenance.mutationBaseline!.mutation = {
+      ...provenance.mutationBaseline!.mutation,
+      subjectPath: fixturePath,
+    };
+    (row.details.currentMeasurement as { fixturePaths?: string[] }).fixturePaths = [fixturePath];
+    expect(rating(row).rating).toBe('unknown');
+    expect(rating(row).evidence).toContain('mutationLinkage=unverified');
   });
 
   it.each(['missing', 'different', 'partial', 'incomplete', 'binder-only'])
