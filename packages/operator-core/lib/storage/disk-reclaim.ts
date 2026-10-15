@@ -52,6 +52,9 @@ export interface DiskReclaimReceipt {
   effects?: Array<{
     root: string; selected: number; processed: number; remaining: number;
     nextPath: string | null; elapsedMs: number; stopped: boolean;
+    /** Measured effect phases, including failed/incomplete checks. Progress
+     * writes, initial policy census and delegates are outside these counters. */
+    timings?: { initialHolderScanMs: number; freshHolderScanMs: number; reinspectionMs: number; removalMs: number; removalAuditMs: number };
   }>;
 }
 export interface DiskReclaimOptions {
@@ -610,9 +613,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (!selected.length) continue;
         const effectStarted = Date.now();
         const effectDeadline = effectStarted + (options.effectBudgetMs ?? 60_000);
+        const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 };
         const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
-          nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false };
+          nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false, timings };
         (receipt.effects ??= []).push(effect);
+        const measureEffect = async <T>(phase: keyof typeof timings, operation: () => Promise<T>): Promise<T> => {
+          const began = Date.now();
+          try { return await operation(); }
+          finally { timings[phase] += Math.max(0, Date.now() - began); }
+        };
         let lastProgressAt = effectStarted;
         const recordProgress = async () => {
           effect.remaining = selected.length - effect.processed;
@@ -629,7 +638,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
-        const holders = await outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path)));
+        const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path))));
         if (!holders.complete) {
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
@@ -644,25 +653,27 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
             // Write the intent before the last identity/holder checks, so a
             // slow database round trip cannot widen the check-to-effect window.
-            if (!receipt.dryRun) await outsideInspectionBudget(async () => options.record?.('remove-intent', entry));
+            if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('remove-intent', entry)));
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             // Rescan write activity + identity and process holders immediately before the effect.
-            let fresh: RetentionEntry | null;
             // A regular file's complete newest-write/identity census is one
             // lstat. Preserve that check without spawning the tree inspector
             // for every file; directories still require its complete walk.
-            const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
-            if (options.inspectTrees && retainAfterMs !== undefined && !regularFile) {
-              const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, { retainAfterMs, paths: [entry.path] }));
-              if (census.error) throw new Error(census.error);
-              const current = census.entries.find((candidate) => candidate.path === entry.path);
-              fresh = current ? { ...current, root: entry.root, classId: entry.classId } : null;
-              if (!fresh) outcome.reason = census.retained[0]?.reason ?? 'recent write';
-            } else fresh = await inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
-              (reason) => { outcome.reason = reason; });
+            const fresh = await measureEffect('reinspectionMs', async () => {
+              const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
+              if (options.inspectTrees && retainAfterMs !== undefined && !regularFile) {
+                const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, { retainAfterMs, paths: [entry.path] }));
+                if (census.error) throw new Error(census.error);
+                const current = census.entries.find((candidate) => candidate.path === entry.path);
+                if (!current) outcome.reason = census.retained[0]?.reason ?? 'recent write';
+                return current ? { ...current, root: entry.root, classId: entry.classId } : null;
+              }
+              return inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
+                (reason) => { outcome.reason = reason; });
+            });
             if (!fresh) continue;
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            const freshHolders = await outsideInspectionBudget(() => scanRoot([entry.path]));
+            const freshHolders = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() => scanRoot([entry.path])));
             if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
               outcome.reason = 'process evidence unavailable or held';
               if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
@@ -671,9 +682,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs) { outcome.status = 'changed'; continue; }
             if (receipt.dryRun) { outcome.status = 'would-remove'; continue; }
-            await outsideInspectionBudget(() => rm(entry.path, { recursive: true, force: false }));
+            await measureEffect('removalMs', () => outsideInspectionBudget(() => rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
-            await outsideInspectionBudget(async () => options.record?.('removed', outcome));
+            await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', outcome)));
           } catch (err) {
             if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
             outcome.status = 'failed'; outcome.reason = message(err);

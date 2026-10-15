@@ -274,8 +274,10 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
       expect(receipt.errors).toEqual([expect.stringContaining(`incomplete retention effects:${root}:`)]);
       expect(receipt.effects).toEqual([
-        { root, selected: 2, processed: 1, remaining: 1, nextPath: paths[1], elapsedMs: 300, stopped: true },
-        { root: secondRoot, selected: 1, processed: 1, remaining: 0, nextPath: null, elapsedMs: 200, stopped: false },
+        expect.objectContaining({ root, selected: 2, processed: 1, remaining: 1, nextPath: paths[1], elapsedMs: 300, stopped: true,
+          timings: { initialHolderScanMs: 100, freshHolderScanMs: 200, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 } }),
+        expect.objectContaining({ root: secondRoot, selected: 1, processed: 1, remaining: 0, nextPath: null, elapsedMs: 200, stopped: false,
+          timings: { initialHolderScanMs: 100, freshHolderScanMs: 100, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 } }),
       ]);
       expect(progress).toContainEqual(receipt.effects![0]);
       expect(delegate).toHaveBeenCalledOnce();
@@ -320,6 +322,31 @@ describe('retention on a real fixture tree', () => {
       }
       expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
     } finally { vi.useRealTimers(); }
+  });
+  it.each([true, false])('attributes fresh-check and audit time even when final holder evidence is incomplete (%s)', async (complete) => {
+    const { root, options } = await setup(); const path = join(root, 'timed'); await writeFile(path, 'expired');
+    let clock = Date.now(), intent = false, reinspectionMs = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    inspectionProbe.before = () => { if (intent) { clock += 5; reinspectionMs += 5; } return undefined; };
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options,
+        record: async (phase) => {
+          if (phase === 'remove-intent' || phase === 'removed') { clock += 7; intent = true; }
+          else clock += 1000; // Progress/receipt persistence is outside the named counters.
+        },
+        scanHolders: async () => {
+          clock += intent ? 30 : 20;
+          return { complete: !intent || complete, byPath: new Map<string, string[]>() };
+        },
+      });
+      expect(receipt.complete).toBe(complete);
+      expect(reinspectionMs).toBeGreaterThan(0);
+      expect(receipt.effects?.[0]?.timings).toEqual({ initialHolderScanMs: 20, freshHolderScanMs: 30,
+        reinspectionMs, removalMs: 0, removalAuditMs: complete ? 14 : 7 });
+      expect(receipt.entries[0]?.status).toBe(complete ? 'removed' : 'protected');
+      if (complete) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      else expect(await readFile(path, 'utf8')).toBe('expired');
+    } finally { now.mockRestore(); }
   });
   it('charges durable intent waits to the effect budget before launching another safety check', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
