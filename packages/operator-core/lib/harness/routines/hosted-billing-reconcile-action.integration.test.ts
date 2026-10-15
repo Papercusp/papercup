@@ -7,12 +7,16 @@ import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { listDueCronRoutines } from '@papercusp/db-org';
 import type { HostedServiceContextRunner } from '../../auth/hosted/workos-lifecycle-postgres';
 import { PostgresHostedBillingStore } from '../../auth/hosted/billing/billing-store';
 import { createStripeBillingClient } from '../../auth/hosted/billing/stripe-billing-client';
 import { parseHostedBillingEvent } from '../../auth/hosted/billing/stripe-billing-events';
 import { webhookBodyDigest } from '../../cupboard/webhook-inbox';
-import { makeHostedBillingReconcileAction } from './hosted-billing-reconcile-action';
+import { HOSTED_BILLING_RECONCILE, makeHostedBillingReconcileAction } from './hosted-billing-reconcile-action';
+import { materializePlanSchedule, deactivatePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
+import { claimDueRoutine, claimedRoutineDispatchAllowed } from './claim';
+import { getSystemActionEntry, registerSystemAction } from './system-actions';
 
 let db: OrgTestDb;
 const T0 = 1_790_000_000;
@@ -86,7 +90,7 @@ async function fixture() {
     if (!parsed.ok) throw new Error('fixture event refused');
     return store.applyEvent({ event: parsed.event, bodyDigest: webhookBodyDigest(raw), expectedLivemode: false, planKeyForPrice });
   };
-  return { store, organizationId, event, observe, requests, fire, page, setProvider, checkpoint, mirror, audit, receipt, deliver };
+  return { store, organizationId, event, observe, requests, action, fire, page, setProvider, checkpoint, mirror, audit, receipt, deliver };
 }
 
 describe('hosted billing reconciliation action composition (real Postgres)', () => {
@@ -158,5 +162,57 @@ describe('hosted billing reconciliation action composition (real Postgres)', () 
     expect((await f.fire()).diagnostics).toMatchObject({ hostedBillingReconcile: { completed: 1, failed: 0 } });
     expect(await f.mirror()).toMatchObject({ status: 'active' });
     expect((await f.audit()).filter(row => row.action === 'billing.event.reconciled')).toHaveLength(1);
+  });
+
+  it('claims a materialized cadence once, dispatches its persisted input and fences a paused fire', async () => {
+    const f = await fixture(); const event = f.event('active', T0 + 5);
+    f.setProvider(() => f.page([event]));
+    const templateSlug = `billing-recovery-${hex()}`;
+    const workspaceId = 'test-billing-recovery';
+    const input = { accountId, createdFrom: T0 - 1, createdBefore: T0 + 100,
+      overlapSeconds: 5, maxCustomers: 100, maxPages: 3 };
+    const materialize = (active: boolean) => materializePlanSchedule({ sql: db.adminSql,
+      workspaceId, harnessSlug: 'papercusp', templateSlug,
+      schedule: { kind: 'cron', cron: '*/5 * * * *' },
+      action: { system: HOSTED_BILLING_RECONCILE, input }, concurrency: 'skip', active,
+    });
+    const authored = await materialize(false);
+    expect((await listDueCronRoutines(db.adminSql)).some(row => row.id === authored.id)).toBe(false);
+    expect(f.requests).toHaveLength(0);
+    await materialize(true);
+    await db.adminSql`UPDATE harness_shared.routines SET next_fire_at = ${new Date(Date.now() - 1_000)}
+      WHERE id = ${authored.id}`;
+    const due = (await listDueCronRoutines(db.adminSql)).find(row => row.id === authored.id)!;
+    expect(due).toMatchObject({ name: planScheduleRoutineName(templateSlug),
+      targetRole: `system:${HOSTED_BILLING_RECONCILE}`, concurrency: 'skip',
+      payloadTemplate: { templateSlug, harnessSlug: 'papercusp', input } });
+    expect(due.triggerConfig).not.toHaveProperty('action');
+    expect((await Promise.all([claimDueRoutine(db.adminSql, due), claimDueRoutine(db.adminSql, due)]))
+      .filter(Boolean)).toHaveLength(1);
+    const [afterClaim] = await db.adminSql`SELECT next_fire_at FROM harness_shared.routines WHERE id = ${due.id}`;
+    expect(new Date(afterClaim!.next_fire_at).getTime()).toBeGreaterThan(Date.now());
+    expect(await claimedRoutineDispatchAllowed(db.adminSql, due)).toBe(true);
+
+    // Substitute only private provider/alert dependencies. The same registry lookup
+    // and persisted context used by routineFireWorkflow select the actual action.
+    const original = getSystemActionEntry(HOSTED_BILLING_RECONCILE)!;
+    registerSystemAction(HOSTED_BILLING_RECONCILE, f.action(), original);
+    try {
+      const entry = getSystemActionEntry(due.targetRole.slice('system:'.length))!;
+      const result = await entry.fn({ installSlug: due.installSlug, workspaceId: due.workspaceId,
+        routineId: due.id, triggerConfig: due.triggerConfig, payloadTemplate: due.payloadTemplate });
+      expect(result).toMatchObject({ diagnostics: { hostedBillingReconcile: { completed: 1, failed: 0 } } });
+      expect(await f.mirror()).toMatchObject({ status: 'active', plan_key: 'team' });
+      const request = f.requests.find(row => row.url.pathname === '/v1/events')!.url;
+      expect(request.searchParams.get('created[gte]')).toBe(String(input.createdFrom));
+      expect(request.searchParams.get('created[lt]')).toBe(String(input.createdBefore));
+      const requestCount = f.requests.length;
+      expect(await deactivatePlanSchedule('papercusp', templateSlug, { sql: db.adminSql })).toBe(true);
+      expect(await claimedRoutineDispatchAllowed(db.adminSql, due)).toBe(false);
+      expect(await claimDueRoutine(db.adminSql, due)).toBe(false);
+      expect(f.requests).toHaveLength(requestCount);
+    } finally {
+      registerSystemAction(HOSTED_BILLING_RECONCILE, original.fn, original);
+    }
   });
 });
