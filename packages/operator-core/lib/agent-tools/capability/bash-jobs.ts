@@ -2090,6 +2090,7 @@ export interface RunOptions {
   planSlug?: string | null;
   harnessSlug?: string | null;
   sessionId?: string | null;
+  parentTaskId?: string;
   /** The live goal ref used to derive workItemId/planSlug. Diagnostic-only, so a
    *  future reader can distinguish "no goal" from a parser miss. */
   goalRef?: string | null;
@@ -2859,6 +2860,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       planSlug: opts.planSlug ?? null,
       harnessSlug: opts.harnessSlug ?? null,
       sessionId: opts.sessionId ?? null,
+      parentTaskId: opts.parentTaskId ?? null,
       runtimeMaxSec,
       ...testBudget,
       logPath,

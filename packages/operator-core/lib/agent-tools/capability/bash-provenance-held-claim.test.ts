@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import type { TaskRow } from '../../task-manager/types';
 import {
   BashProvenanceRefusal,
   resolveBashTaskProvenance,
@@ -47,6 +48,37 @@ function deps(over: {
 }
 
 const CTX = { workspaceId: 'papercusp-workspace' } as never;
+
+describe('nested API task lineage', () => {
+  const parent = { taskId: 'parent123', workspaceId: 'papercusp-workspace',
+    harnessSlug: 'papercusp', launchedBy: OWNER, workItemId: 'WI-current',
+    state: 'running', endedAt: null } as TaskRow;
+  const options = { explicitWorkItemId: 'WI-current', explicitParentTaskId: 'parent123' };
+  const resolveParent = (readParentTask: (id: string) => Promise<TaskRow | null>) =>
+    resolveCapabilityBashTaskProvenance(CTX, 'papercusp', {
+      ...deps({ held: [{ id: 'WI-current' }] }), readParentTask,
+    }, options);
+
+  it('preserves the caller task across the API boundary', async () => {
+    const read = vi.fn(async () => parent);
+    expect(await resolveParent(read)).toMatchObject({ parentTaskId: 'parent123', workItemId: 'WI-current' });
+    expect(read).toHaveBeenCalledWith('parent123');
+  });
+
+  it.each([
+    { workspaceId: 'foreign' }, { harnessSlug: 'foreign' }, { launchedBy: 'peer' },
+    { workItemId: 'WI-other' }, { state: 'exited' }, { endedAt: '2026-10-15T00:00:00Z' },
+  ])('refuses a contradictory parent %j before launch', async (change) => {
+    await expect(resolveParent(async () => ({ ...parent, ...change } as TaskRow)))
+      .rejects.toMatchObject({ code: 'parent_task_invalid' });
+  });
+
+  it('refuses missing and unreadable parents instead of launching an independent root', async () => {
+    await expect(resolveParent(async () => null)).rejects.toMatchObject({ code: 'parent_task_invalid' });
+    await expect(resolveParent(async () => { throw new Error('unavailable'); }))
+      .rejects.toMatchObject({ code: 'parent_task_invalid' });
+  });
+});
 
 describe('bash task provenance — goal ref that IS a work-item id', () => {
   it('uses a work-item goal only when it is still held', async () => {

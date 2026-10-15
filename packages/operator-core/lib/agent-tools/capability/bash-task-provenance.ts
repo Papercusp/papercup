@@ -14,6 +14,7 @@ import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/i
 import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { readHeldWorkItems } from '../../carry-brief';
+import type { TaskRow } from '../../task-manager/types';
 
 export interface BashTaskProvenance {
   launchedBy: string;
@@ -22,6 +23,7 @@ export interface BashTaskProvenance {
   workItemId: string | null;
   planSlug: string | null;
   goalRef: string | null;
+  parentTaskId?: string;
 }
 
 interface BashTaskProvenanceDeps {
@@ -35,6 +37,7 @@ interface BashTaskProvenanceDeps {
    * surfaces cannot disagree about what an agent holds.
    */
   readHeldWorkItems: typeof readHeldWorkItems;
+  readParentTask?: (id: string) => Promise<TaskRow | null>;
 }
 
 export interface BashTaskProvenanceOptions {
@@ -45,6 +48,8 @@ export interface BashTaskProvenanceOptions {
    * against WI-10003976 (the declared goal) and counted in THAT item's loop-gate window.
    */
   explicitWorkItemId?: string | null;
+  /** A nested API launch must keep the durable caller's task tree. */
+  explicitParentTaskId?: string;
   /** Launchers without an implicit goal contract must not guess among held items. */
   requireExplicitForMultipleHeldItems?: boolean;
 }
@@ -52,7 +57,7 @@ export interface BashTaskProvenanceOptions {
 /** A caller-named work-item the resolver can positively show is not the caller's. */
 export class BashProvenanceRefusal extends Error {
   constructor(
-    readonly code: 'work_item_id_invalid' | 'work_item_not_held' | 'work_item_id_required',
+    readonly code: 'work_item_id_invalid' | 'work_item_not_held' | 'work_item_id_required' | 'parent_task_invalid',
     message: string,
   ) {
     super(message);
@@ -184,6 +189,25 @@ export async function resolveBashTaskProvenance(
   }
   const planMatch = goalRef?.match(/^(?:plan:)?(.+?)#P-\d+$/) ?? null;
   const principalFallback = ctx.principal?.slug?.trim() || 'capability:bash';
+  const parentTaskId = options.explicitParentTaskId;
+  if (parentTaskId !== undefined) {
+    // An explicit parent is a lifetime/ownership assertion. Unlike optional
+    // attribution above, an unreadable or foreign parent must refuse the fork.
+    const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId;
+    let parent: TaskRow | null = null;
+    if (/^[0-9a-z]{4,64}$/.test(parentTaskId)) {
+      try {
+        const readParent = deps.readParentTask ?? (await import('../../task-manager/store')).getTask;
+        parent = await readParent(parentTaskId);
+      } catch { /* Unmeasured lineage cannot safely authorize a nested task. */ }
+    }
+    if (!ownerId || !workspaceId || !parent || parent.workspaceId !== workspaceId ||
+      parent.launchedBy !== ownerId || parent.harnessSlug !== harnessSlug ||
+      parent.workItemId !== workItemId || !['pending', 'running'].includes(parent.state) || parent.endedAt) {
+      throw new BashProvenanceRefusal('parent_task_invalid',
+        'parent_task_id must name a readable live task owned by this caller in the same workspace, harness and work-item.');
+    }
+  }
   return {
     launchedBy: ownerId ?? principalFallback,
     sessionId: ownerId,
@@ -191,6 +215,7 @@ export async function resolveBashTaskProvenance(
     workItemId,
     planSlug: planMatch?.[1] ?? null,
     goalRef,
+    ...(parentTaskId === undefined ? {} : { parentTaskId }),
   };
 }
 

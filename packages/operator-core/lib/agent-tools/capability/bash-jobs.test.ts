@@ -846,6 +846,18 @@ describe('background jobs', () => {
     }
   });
 
+  it('enrolls an API-launched child beneath its explicit durable parent', async () => {
+    const complete = vi.spyOn(enrollSync, 'completeSyncEnrolment').mockImplementation(() => {});
+    const finish = vi.spyOn(enrollSync, 'finishSyncEnrolment').mockImplementation(() => {});
+    try {
+      const job = startBackground({ command: 'true', cwd: STATE, stateDir: STATE,
+        parentTaskId: 'parent123' }, 10_000);
+      await waitForStatus(job.id);
+      expect(complete).toHaveBeenCalledWith(expect.anything(),
+        expect.objectContaining({ parentTaskId: 'parent123' }), expect.anything());
+    } finally { complete.mockRestore(); finish.mockRestore(); }
+  });
+
   it('stamps background children with durable task provenance and rejects caller overrides', async () => {
     const enrolledAtSpawn = taskManagerEnabledSync();
     const job = startBackground(

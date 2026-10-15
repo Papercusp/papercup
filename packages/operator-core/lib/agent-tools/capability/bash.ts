@@ -537,6 +537,9 @@ export default defineTool({
       .describe(
         'Held work-item this job is for. Required when you hold multiple work-items or held-item attribution cannot be measured; name one you currently hold. Otherwise optional. Overrides your declared goal for task-ledger attribution and the slow-attempt loop gate.',
       ),
+    parent_task_id: z.string().regex(/^[0-9a-z]{4,64}$/).optional().describe(
+      'Durable task that owns this nested launch. Pass PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID from a managed caller. Must be live and owned by the same caller, workspace, harness and work-item; subtree cancellation then includes this child.',
+    ),
     integration_env: integrationEnvSchema
       .optional()
       .describe(
@@ -803,6 +806,7 @@ export default defineTool({
     try {
       provenance = await resolveCapabilityBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null, undefined, {
         explicitWorkItemId: args.work_item_id ?? null,
+        explicitParentTaskId: args.parent_task_id,
       });
     } catch (error) {
       if (!(error instanceof BashProvenanceRefusal)) throw error;
