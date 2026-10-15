@@ -30654,7 +30654,7 @@
           "POST"
         ]
       },
-      "description": "Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted.",
+      "description": "Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted. For spec-test-adequacy cards, direct rerunRecipe.args measure current evidence freshness; scorecardId replay reconstructs the creation-time grading for an audit.",
       "capabilities": [
         "coord:read"
       ],
@@ -30681,9 +30681,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias.",
-        "notWhen": "Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.",
-        "chaining": "Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last."
+        "when": "Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias. For grade-the-grader comparison of a spec-test-adequacy card, call plans:evaluate-spec-test-adequacy with its harness, slug, and scorecardId: issueId to reproduce the emission-time ratings.",
+        "notWhen": "Use the stored rerunRecipe.args when checking current evidence freshness; that live remeasurement may differ from the emitted rating after evidence changes. Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.",
+        "chaining": "Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For a spec-test-adequacy grading audit, call plans:evaluate-spec-test-adequacy with { harness, slug, scorecardId: issueId } and no direct selectors; compare rows[].ratings to the card and confirm historicalAuditOnly.asOf matches the card creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last."
       }
     },
     {

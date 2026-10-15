@@ -221,10 +221,15 @@ it.runIf(enabled).each(cases)('actual model records $id once from the installed 
   }
   await fileTicketFromPlanRun(sql, { ...inputs[0], reason: 'Changed replay reason' }, deps);
   expect(await outcomeOf(run)).toEqual(beforeReplay);
-  await expect(fileTicketFromPlanRun(sql, { ...inputs[0], classification: expected === 'bug' ? 'non-bug' : 'bug' }, deps))
+  // Supply valid bug content even when the original negative verdict needed none;
+  // otherwise content validation hides the immutable-classification check.
+  await expect(fileTicketFromPlanRun(sql, { ...inputs[0], classification: expected === 'bug' ? 'non-bug' : 'bug',
+    title: 'Conflicting replay', observed: 'A later replay changes the verdict',
+    expected: 'The original verdict stays immutable' }, deps))
     .rejects.toMatchObject({ code: 'ticket_classification_conflict' });
   expect(await outcomeOf(run)).toEqual(beforeReplay);
   expect(posts - postsBefore).toBe(expected === 'bug' ? 1 : 0);
+  if (expected !== 'bug') expect(providerCalls).toBe(callsBefore);
   console.info('BUG_TRIAGE_MODEL_RECEIPT ' + JSON.stringify({ case: id, expected, run,
     installationId, templatePath, templateSha256: createHash('sha256').update(template).digest('hex'),
     classification: beforeReplay.classification, posts: posts - postsBefore, providerCalls: providerCalls - callsBefore,

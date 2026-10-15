@@ -30,6 +30,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { emitScorecard, scorecardEmitMutexKey, _closeScorecardEmitMutexForTests } = await import('./emit');
 const {
   GRADING_AUDIT_RESERVATION_TTL_MS,
+  GRADING_AUDIT_DISPATCH_ACTOR,
   reservePendingGradingAudit,
 } = await import('../../grading-integrity');
 const { proposeRubric, getRubric } = await import('../../rubrics');
@@ -39,6 +40,7 @@ const {
   isCurrentSourceAuditResponder,
 } = await import('../../scorecards');
 const { createIssue } = await import('../../issues-engineer');
+const { closeTask, registerTask } = await import('../../task-manager/store');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -396,6 +398,15 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     expect(persistedReservations[0]?.reservation).toEqual(reservation);
     console.info('[grading-audit concurrency fixture] dispatch reservation verified');
 
+    const directFallbackTask = await registerTask({
+      class: 'agent-session',
+      title: 'direct fallback grading auditor',
+      argv: [],
+      launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+      harnessSlug: SOURCE_HIVE,
+      detail: { label: reservation.key, coordOwnerId: 'su-audit-concurrency-a' },
+    }, { workspaceId: activeWorkspaceId() }, db.adminSql);
+
     const passRatings = Object.fromEntries(
       auditRubric.criteria.map((criterion) => [criterion.key, {
         rating: 'pass',
@@ -514,6 +525,10 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
       limit: 10,
     });
     console.info(`[grading-audit concurrency fixture] persisted audit count=${persistedAudits.length}`);
+    await closeTask(directFallbackTask.taskId, {
+      state: 'killed',
+      exitReason: 'concurrency fixture complete',
+    }, db.adminSql);
     expect({
       secondPassedBeforeFirstSettled,
       competingReservationCompletedBeforeFirstSettled,

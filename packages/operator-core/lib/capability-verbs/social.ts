@@ -270,6 +270,7 @@ export type SocialReplyTarget =
     }
   | { platform: 'mastodon'; inReplyToId: string; instanceHost: string }
   | { platform: 'reddit'; parentFullname: string; subreddit: string }
+  | { platform: 'x-twitter'; objectId: string }
   | {
       platform: 'youtube';
       /**
@@ -601,6 +602,17 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
         parentVisibility,
         label: `${row.label} · ${subreddit ? `r/${subreddit}` : parentFullname}`,
       };
+    }
+
+    case 'facebook-pages': {
+      if (!/^\d+(?:_\d+)*$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:facebook-pages');
+      if (payload.canComment === false) throw new Error('social_reply_refused:facebook-pages:cannot_comment');
+      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
+    }
+
+    case 'x-twitter': {
+      if (!/^\d{1,19}$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:x-twitter');
+      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
     }
 
     case 'youtube':
