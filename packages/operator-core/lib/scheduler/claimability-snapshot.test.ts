@@ -65,6 +65,8 @@ function makeHandle(log: Log, opts: { failAtQuery?: number } = {}) {
     };
   }) as unknown as Record<string, unknown> & ((s: TemplateStringsArray) => unknown);
   handle.unsafe = (text: string) => ({
+    strings: [text],
+    args: [],
     then(resolve: (rows: unknown[]) => void) {
       log.push(`EXEC:${text}`);
       resolve([]);
@@ -189,7 +191,7 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(where).toContain('= ?');
   });
 
-  it('materializes pushed-down matches before evaluating claim floors', async () => {
+  it('pushes the observation-lane floor into snapshot materialization before evaluating claim floors', async () => {
     const pg = makePool();
     await readIssueClaimability(
       { field: 'kind', op: '=', value: 'bug' },
@@ -205,6 +207,7 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     const cteEnd = materialization.indexOf(') SELECT');
     const fromFiltered = materialization.indexOf('FROM filtered_claim_candidates wi');
     expect(cteEnd).toBeGreaterThan(-1);
+    expect(materialization.slice(0, cteEnd)).toMatch(/wi\.lane IS DISTINCT FROM 'observation'/);
     expect(materialization.indexOf('COALESCE(item_kind, kind)')).toBeLessThan(cteEnd);
     expect(fromFiltered).toBeGreaterThan(cteEnd);
   });

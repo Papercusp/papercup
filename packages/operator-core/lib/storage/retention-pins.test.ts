@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isLeaseLive, readRetentionLeases } from '../release-cut-reclaim';
-import { createRetentionPin, pinProtectsPath, readRetentionPins, removeRetentionPin } from './retention-pins';
+import { createRetentionPin, pinProtectsPath, readRetentionPins, readRetentionPinsAsync, removeRetentionPin } from './retention-pins';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -15,6 +15,17 @@ function fixture() {
 }
 
 describe('agent retention pins in the existing lease store', () => {
+  it('async reads share sync metadata validation, expiry and malformed-store protection', async () => {
+    const f = fixture();
+    expect(await readRetentionPinsAsync(f)).toEqual(readRetentionPins(f));
+    createRetentionPin({ path: f.target, owner: 'a', reason: 'review', expiresAt: f.expiresAt }, f);
+    expect(await readRetentionPinsAsync(f)).toEqual(readRetentionPins(f));
+    const expired = { ...f, nowMs: Date.parse(f.expiresAt) };
+    expect(await readRetentionPinsAsync(expired)).toEqual({ pins: [], errors: [] });
+    writeFileSync(join(f.dir, 'lease-agent-pin-corrupt.tsv'), 'broken');
+    expect((await readRetentionPinsAsync(f)).errors).toHaveLength(1);
+  });
+
   it('round-trips owner, reason and finite expiry while existing deleters recognize the same lease', () => {
     const f = fixture();
     const pin = createRetentionPin({ path: f.target, owner: 'agent-a', reason: 'Avi’s review\nretain evidence', expiresAt: f.expiresAt }, f);

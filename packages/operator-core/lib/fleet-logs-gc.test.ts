@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync
 import { execFileSync } from 'node:child_process';
 import { openWriterPidsMany } from './native-bg-task-ledger';
 import { tmpdir } from 'node:os';
+import { createRetentionPin } from './storage/retention-pins';
 import { join } from 'node:path';
 import {
   runFleetLogsGc,
@@ -23,12 +24,22 @@ import {
 } from './fleet-logs-gc';
 
 let sandbox: string;
+let previousRetentionRoot: string | undefined;
+let previousMutexRoot: string | undefined;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-fleet-logs-gc-test-'));
+  previousRetentionRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+  previousMutexRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = join(sandbox, 'leases');
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(sandbox, 'mutex');
 });
 
 afterEach(() => {
+  if (previousRetentionRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+  else process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = previousRetentionRoot;
+  if (previousMutexRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousMutexRoot;
   // A permission-locked test file (see the "unlink failure" case) refuses a
   // plain rm; restore write perms before cleanup so afterEach itself never
   // throws mid-suite.
@@ -50,6 +61,17 @@ function writeAged(dir: string, name: string, bytes: number, ageMs: number): str
 
 describe('runFleetLogsGc', () => {
   const scanIdlePaths = async () => ({ complete: true, byPath: new Map<string, string[]>() });
+  it('pins survive both age and byte-ceiling eviction while unpinned logs are removed', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const pinned = writeAged(dir, 'pinned.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
+    const unpinned = writeAged(dir, 'unpinned.log', 100, 1000);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'review log', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
+    expect(existsSync(pinned)).toBe(true);
+    expect(existsSync(unpinned)).toBe(false);
+    expect(result.dirs[0]!.bytesRemaining).toBe(100);
+  });
+
   it('defaults are sane: 3-day age window, 10 GiB ceiling', () => {
     expect(FLEET_LOGS_GC_DEFAULT_RETENTION_MS).toBe(3 * 24 * 60 * 60 * 1000);
     expect(FLEET_LOGS_GC_DEFAULT_MAX_TOTAL_BYTES).toBe(10 * 1024 * 1024 * 1024);

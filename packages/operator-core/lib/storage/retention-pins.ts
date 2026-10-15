@@ -4,9 +4,27 @@
  */
 import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, mkdirSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readdir, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, normalize } from 'node:path';
-import { defaultRetentionDir, isLeaseLive, readRetentionLeases, RETENTION_SCHEMA } from '../release-cut-reclaim';
+import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, type RetentionLease } from '../release-cut-reclaim';
+import { retentionPinProtectsPath } from './retention-policy';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 export { retentionPinProtectsPath as pinProtectsPath } from './retention-policy';
+
+/** The final protection read and deletion share storage:pin's cross-process mutex. */
+export async function withUnpinnedPath(path: string, remove: () => boolean | Promise<boolean>): Promise<boolean> {
+  return withFsMutex('papercusp-disk-retention', async () => {
+    const nowMs = Date.now();
+    const read = await readRetentionPinsAsync({ nowMs });
+    if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
+    let physical = path;
+    try { physical = await realpath(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (retentionPinProtectsPath(path, read.pins, nowMs) || retentionPinProtectsPath(physical, read.pins, nowMs)) return false;
+    return remove();
+  });
+}
 
 const TAG_PREFIX = 'agent-pin-';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -25,6 +43,35 @@ export function readRetentionPins(options: { dir?: string; nowMs?: number; inclu
   pins: RetentionPin[]; errors: string[];
 } {
   const read = readRetentionLeases(options.dir ?? defaultRetentionDir());
+  return pinsFromLeases(read, options);
+}
+
+/** Background deleters must not synchronously walk the lease store on the event loop. */
+export async function readRetentionPinsAsync(options: { dir?: string; nowMs?: number; includeExpired?: boolean } = {}) {
+  const dir = options.dir ?? defaultRetentionDir();
+  const read: { leases: RetentionLease[]; errors: string[] } = { leases: [], errors: [] };
+  try {
+    for (const name of await readdir(dir)) {
+      if (!/^lease-.*\.tsv$/.test(name)) continue;
+      const file = join(dir, name);
+      try {
+        const parsed = parseRetentionLease(file, await readFile(file, 'utf8'));
+        if (parsed.ok) read.leases.push(parsed.lease);
+        else read.errors.push(`${name}:${parsed.reason}`);
+      } catch (error) {
+        read.errors.push(`${name}:${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      read.errors.push(`${dir}:${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return pinsFromLeases(read, options);
+}
+
+function pinsFromLeases(read: { leases: RetentionLease[]; errors: string[] },
+  options: { nowMs?: number; includeExpired?: boolean }): { pins: RetentionPin[]; errors: string[] } {
   const errors = [...read.errors];
   const pins: RetentionPin[] = [];
   for (const lease of read.leases) {

@@ -53,6 +53,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { workspacesRoot } from './workspace-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
+import { withUnpinnedPath } from './storage/retention-pins';
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 // @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
@@ -244,7 +245,7 @@ function listFilesWithStat(dir: string): FleetLogFile[] {
   return out;
 }
 
-function gcOneDir(
+async function gcOneDir(
   dir: string,
   identity: Stats | null,
   files: FleetLogFile[],
@@ -252,7 +253,7 @@ function gcOneDir(
   retentionMs: number,
   maxTotalBytes: number,
   dryRun: boolean,
-): FleetLogsGcDirResult {
+): Promise<FleetLogsGcDirResult> {
   const errors: Array<{ path: string; error: string }> = [];
   const cutoff = Date.now() - retentionMs;
   let removedByAge = 0;
@@ -262,26 +263,28 @@ function gcOneDir(
   let wouldUnlinkBytes = 0;
   const open = new Set<string>();
   const raced = new Set<string>();
-  const unlink = (f: FleetLogFile): boolean => {
+  const unlink = async (f: FleetLogFile): Promise<boolean> => {
     if (!scan.complete) return false;
     if (scan.byPath.get(f.path)?.length) { open.add(f.path); return false; }
     // No async gap between this identity check and unlink. Reject replacements,
     // symlinks, new writes and parent swaps since the holder scan's snapshot.
     try {
-      const parent = lstatSync(dir);
-      const st = lstatSync(f.path);
-      const old = f.stat;
-      if (!identity || !parent.isDirectory() || parent.dev !== identity.dev || parent.ino !== identity.ino
-        || !st.isFile() || st.dev !== old.dev || st.ino !== old.ino || st.size !== old.size
-        || st.mtimeMs !== old.mtimeMs || st.ctimeMs !== old.ctimeMs || st.nlink !== old.nlink
-        || st.blocks !== old.blocks) { raced.add(f.path); return false; }
-      if (dryRun) wouldUnlinkBytes += st.size;
-      else {
-        unlinkSync(f.path);
-        bytesUnlinked += st.size;
-        if (st.nlink === 1) allocatedBytesUnlinked += st.blocks * 512;
-      }
-      return true;
+      return await withUnpinnedPath(f.path, () => {
+        const parent = lstatSync(dir);
+        const st = lstatSync(f.path);
+        const old = f.stat;
+        if (!identity || !parent.isDirectory() || parent.dev !== identity.dev || parent.ino !== identity.ino
+          || !st.isFile() || st.dev !== old.dev || st.ino !== old.ino || st.size !== old.size
+          || st.mtimeMs !== old.mtimeMs || st.ctimeMs !== old.ctimeMs || st.nlink !== old.nlink
+          || st.blocks !== old.blocks) { raced.add(f.path); return false; }
+        if (dryRun) wouldUnlinkBytes += st.size;
+        else {
+          unlinkSync(f.path);
+          bytesUnlinked += st.size;
+          if (st.nlink === 1) allocatedBytesUnlinked += st.blocks * 512;
+        }
+        return true;
+      });
     } catch (e) {
       errors.push({ path: f.path, error: (e as Error)?.message ?? String(e) });
       return false;
@@ -295,7 +298,7 @@ function gcOneDir(
       remaining.push(f);
       continue;
     }
-    if (unlink(f)) removedByAge++;
+    if (await unlink(f)) removedByAge++;
     else remaining.push(f);
   }
 
@@ -308,7 +311,7 @@ function gcOneDir(
   let total = remaining.reduce((s, f) => s + f.size, 0);
   for (const f of remaining) {
     if (total <= maxTotalBytes) break;
-    if (!unlink(f)) continue;
+    if (!(await unlink(f))) continue;
     total -= f.size;
     removedByCeiling++;
   }
@@ -348,8 +351,12 @@ export async function runFleetLogsGc(opts: FleetLogsGcOptions = {}): Promise<Fle
     try { scan = await (opts.scanOpenPaths ?? scanGcPathHolders)(paths); }
     catch (error) { scanError = error instanceof Error ? error.message : String(error); }
   }
+  const results: FleetLogsGcDirResult[] = [];
+  for (const { dir, identity, files } of snapshots) {
+    results.push(await gcOneDir(dir, identity, files, scan, retentionMs, maxTotalBytes, dryRun));
+  }
   return {
-    dirs: snapshots.map(({ dir, identity, files }) => gcOneDir(dir, identity, files, scan, retentionMs, maxTotalBytes, dryRun)),
+    dirs: results,
     dryRun,
     scanComplete: scan.complete,
     ...(scanError ? { scanError } : {}),
