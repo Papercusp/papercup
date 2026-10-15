@@ -9,6 +9,11 @@
  * reads the installed product, and each oracle is computed independently of the
  * code under test (git rev-parse, node's sha256, readelf/objdump).
  *
+ * To verify an existing accepted generation with a newer committed test harness,
+ * set PUI_PUBLIC_PACKAGE_ARCHIVE, PUI_PUBLIC_PACKAGE_SOURCE_SHA (full commit),
+ * and PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256. The archive becomes B after preflight;
+ * A still builds its predecessor, and reproducibility still cold-builds B.
+ *
  * "No operator" is modelled by pointing the default-port selector at a port
  * nothing listens on, so the dev box's own operator on :3070 cannot answer and
  * no working endpoint is injected. zellij gets a private socket dir so the
@@ -29,6 +34,7 @@ import { spawn as ptySpawn } from '@lydell/node-pty';
 import { WebSocketServer } from 'ws';
 import { VtScreen } from './vt-screen';
 import { hostedForwardInput } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
+import { loadPinnedPackageCandidate, type PackageResult } from './public-package-candidate';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const PACKAGER = path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh');
@@ -52,16 +58,6 @@ const PACKAGING_SECRETS = {
   PUI_OPERATOR_TOKEN: 'P011-PACKAGING-OPERATOR-TOKEN',
   PUI_SETUP_DRAFT: 'P011-PACKAGING-PRIVATE-DRAFT',
 };
-
-interface PackageResult {
-  archive: string;
-  sha256: string;
-  name: string;
-  version: string;
-  target: string;
-  sourceSha: string;
-  glibcFloor: string;
-}
 
 interface Provenance {
   version: string;
@@ -318,16 +314,24 @@ function ptyRun(file: string, args: string[], env: NodeJS.ProcessEnv, cwd: strin
 
 beforeAll(async () => {
   WORK = mkdtempSync(path.join(tmpdir(), 'pui-public-package-'));
+  // A repaired committed harness can prove an already accepted product without
+  // replacing it with that harness's HEAD. Pins fail before either costly build.
+  const pinned = loadPinnedPackageCandidate(process.env, path.join(WORK, 'dist-b'), TARGET);
+  HEAD = pinned?.sourceSha ?? subjectGeneration(git('rev-parse', 'HEAD'), WORK);
+  if (pinned) {
+    expect(git('rev-parse', '--verify', `${HEAD}^{commit}`)).toBe(HEAD);
+    expect(/^version = "([^"]+)"$/m.exec(git('show', `${HEAD}:apps/tui/Cargo.toml`))?.[1]).toBe(pinned.version);
+    console.log(`PUI_PUBLIC_PACKAGE_CANDIDATE ${JSON.stringify({ harnessSha: git('rev-parse', 'HEAD'), ...pinned })}`);
+  }
   TOOLS = path.join(WORK, 'tools');
   mkdirSync(TOOLS);
   for (const tool of SANDBOX_TOOLS) {
     symlinkSync(execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), path.join(TOOLS, tool));
   }
   NO_OPERATOR_PORT = await closedPort();
-  HEAD = subjectGeneration(git('rev-parse', 'HEAD'), WORK);
   const previous = previousGeneration(HEAD);
   A = packageAt(previous, path.join(WORK, 'dist-a'));
-  B = packageAt(HEAD, path.join(WORK, 'dist-b'));
+  B = pinned ?? packageAt(HEAD, path.join(WORK, 'dist-b'));
 }, 2 * BUILD_TIMEOUT_MS);
 
 afterAll(() => {

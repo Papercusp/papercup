@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotGrepLeg, grepLookupSubject, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 
@@ -106,12 +106,13 @@ describe('shared snapshot-backed push channel', () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const d = deps();
-      d.context = vi.fn(() => new Promise(() => {}));
+      const context = vi.fn(() => new Promise<FirstTouchContext>(() => {}));
+      d.context = context;
       expect(await codeIntelPushText(input, 0, d)).toContain('Static consumer');
       expect(d.commit).toHaveBeenCalledOnce();
       expect(warning).toHaveBeenCalledWith(expect.stringContaining('code-intel-first-touch-context exceeded'));
       vi.mocked(d.enabled).mockResolvedValue(false);
-      vi.mocked(d.context).mockClear();
+      context.mockClear();
       expect(await codeIntelPushText(input, 0, d)).toBe('');
       expect(d.context).not.toHaveBeenCalled();
     } finally { warning.mockRestore(); }
