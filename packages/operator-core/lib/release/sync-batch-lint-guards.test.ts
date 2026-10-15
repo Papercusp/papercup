@@ -40,6 +40,20 @@ describe('classifyGuardRun', () => {
     expect(classifyGuardRun({ exitCode: 0, output: '✓ clean' })).toBe('pass');
     expect(classifyGuardRun({ exitCode: 1, output: '✗ NEW bare setInterval() call(s)\n  apps/a/b.ts' })).toBe('fail');
   });
+  it('does not treat incomplete design-lint runner output as a source violation', () => {
+    const runnerOnly = [
+      'COMMITTED_SOURCE substituted scripts/npm-install-safe.mjs: working tree differs from HEAD; entry scripts/test-files.mjs',
+      'TEST_FILE_SCOPE_PREFLIGHT {"ok":true}',
+      'TEST_FILE_LIST_PROGRESS state=started cwd="apps/operator" elapsedMs=9 capturedBytes=0 completedFiles=[] pendingFiles=[] timeoutMs=120000 exitStatus=pending signal=pending',
+    ].join('\n');
+    expect(classifyGuardRun({ exitCode: 1, output: runnerOnly }, 'lint:design-primitives')).toBe('undetermined');
+    expect(parseGuardOffenders(runnerOnly, ROOT, 'lint:design-primitives')).toEqual([]);
+
+    const assertion = `TEST_FILE_ASSERTION_FAILURE file="${ROOT}/apps/operator/app/_lints/design-primitives.test.ts" name="blocks native tables" message=${JSON.stringify('Native <table> found in unapproved files:\n  operator/app/example.tsx\n\nUse the shared primitive.')}`;
+    const actualLintFailure = `${runnerOnly}\n${assertion}`;
+    expect(classifyGuardRun({ exitCode: 1, output: actualLintFailure }, 'lint:design-primitives')).toBe('fail');
+    expect(parseGuardOffenders(actualLintFailure, ROOT, 'lint:design-primitives')).toEqual(['apps/operator/app/example.tsx']);
+  });
   it('timeouts, spawn failures, crashes and environment faults are undetermined', () => {
     expect(classifyGuardRun({ exitCode: null, output: '' })).toBe('undetermined');
     expect(

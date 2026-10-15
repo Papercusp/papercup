@@ -132,11 +132,18 @@ const STACK_FRAME_RE = /^\s+at \S.*:\d+:\d+\)?\s*$/m;
 const ENVIRONMENT_FAILURE_RE = /ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOMEM|Missing script:|command not found|Cannot find module/;
 
 /** Classify a run. A non-zero exit is a FAIL only when it looks like the guard's own verdict. */
-export function classifyGuardRun(run: GuardRun): GuardVerdict {
+export function classifyGuardRun(run: GuardRun, script?: SyncLintGuardScript): GuardVerdict {
   const outcome = run.diagnostic?.outcome;
   if (outcome === 'timeout' || outcome === 'output-buffer-limit' || outcome === 'spawn-error') return 'undetermined';
   if (run.exitCode === null) return 'undetermined';
   if (run.exitCode === 0) return 'pass';
+  // Every measured design-lint violation is emitted as a structured assertion
+  // record by scripts/test-files.mjs. A nonzero exit without one is a runner or
+  // harness failure, not evidence that a source file violates a design rule.
+  if (script === 'lint:design-primitives' &&
+    !run.output.split(/\r?\n/).some((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='))) {
+    return 'undetermined';
+  }
   if (STACK_FRAME_RE.test(run.output) || ENVIRONMENT_FAILURE_RE.test(run.output)) return 'undetermined';
   return 'fail';
 }
@@ -214,7 +221,7 @@ export function parseGuardOffenders(output: string, repoRoot: string, script?: S
         // A malformed structured record is not permission to fall back to unrelated path tokens.
       }
     }
-  } else {
+  } else if (script !== 'lint:design-primitives') {
     for (const m of output.matchAll(PATH_TOKEN_RE)) candidates.push(`${m[1]}.${m[2]}`);
   }
   for (const candidate of candidates) {
@@ -416,7 +423,7 @@ export async function runSyncLintGuardTick(
     } catch (e) {
       run = { exitCode: null, output: e instanceof Error ? e.message : String(e) };
     }
-    const verdict = classifyGuardRun(run);
+    const verdict = classifyGuardRun(run, script);
     const offenders = verdict === 'fail' ? parseGuardOffenders(run.output, deps.repoRoot, script) : [];
     return { script, run, verdict, offenders };
   });
