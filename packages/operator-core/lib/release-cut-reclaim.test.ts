@@ -29,6 +29,7 @@ import {
   planCutReclaim,
   probeTree,
   reclaimPathRefusal,
+  reclaimCutWorktrees,
   renderReclaimPlan,
   resolveReclaimTargets,
   scanProcHolders,
@@ -542,6 +543,117 @@ describe('gather + execute against a real temporary repo', () => {
     expect(audit[0]).toContain('deleter=release:cut-reclaim');
     expect(g(repo, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('staging');
     expect(fs.readdirSync(tmp).filter((n) => n.startsWith('.reclaim-trash-'))).toEqual([]);
+  });
+
+  it('reclaims expired cuts oldest first and reports allocated pinned overage', async () => {
+    const newer = path.join(tmp, 'a-newer'), older = path.join(tmp, 'z-older'), pinned = path.join(tmp, 'pinned');
+    for (const tree of [newer, older, pinned]) {
+      g(repo, 'worktree', 'add', '-q', '--detach', tree);
+      fs.writeFileSync(path.join(tree, 'package-lock.json'), Buffer.alloc(8192, 1));
+    }
+    const plan = await gather();
+    for (const v of plan.verdicts) {
+      v.disposition = v.path === pinned ? 'protected' : 'reclaimable';
+      v.reasons = v.path === pinned ? ['lease:agent-pin-test'] : [];
+      v.createdAt = v.lastHeadMoveAt = new Date(NOW - (v.path === older ? 10 : 5) * DAY).toISOString();
+    }
+    const deps = { scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {} };
+    const dry = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 }, deps);
+    expect(dry.ok).toBe(true);
+    expect(dry.targets).toEqual([older, newer]);
+    expect(dry.cap.beforeBytes).toBeGreaterThan(8192 * 3);
+    expect(fs.existsSync(older)).toBe(true);
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, deps);
+    expect(result.ok).toBe(true);
+    expect(result.targets).toEqual(dry.targets);
+    expect(result.execution?.ok && result.execution.results.map((r) => r.path)).toEqual([older, newer]);
+    expect(result.cap.pinnedPaths).toEqual([pinned]);
+    expect(result.cap.afterBytes).toBe(result.cap.pinnedBytes);
+    expect(result.cap.overByBytes).toBe(result.cap.afterBytes! - 1);
+    expect(result.cap.retainedPaths).toEqual([pinned]);
+    expect(fs.existsSync(pinned)).toBe(true);
+  });
+
+  it('counts an interrupted physical removal in the cap after the worktree was moved aside', async () => {
+    const tree = path.join(tmp, 'partial-cut');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.writeFileSync(path.join(tree, 'package-lock.json'), Buffer.alloc(8192, 1));
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, {
+      scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf: async () => { throw new Error('injected incomplete physical deletion'); },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.cap.afterBytes).toBe(result.cap.beforeBytes);
+    expect(result.cap.overByBytes).toBeGreaterThan(8192);
+    expect(result.cap.retainedPaths[0]).toContain('.reclaim-trash-partial-cut-');
+  });
+
+  it('retains named-only cuts over cap without inventing deletion authority', async () => {
+    const tree = path.join(tmp, 'named-only');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    expect(plan.verdicts[0]!.disposition).toBe('named-only');
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.targets).toEqual([]);
+    expect(result.cap.afterBytes).toBeGreaterThan(1);
+    expect(result.cap.retainedPaths).toEqual([tree]);
+    expect(fs.existsSync(tree)).toBe(true);
+  });
+
+  it('collects an expired cut below cap and reports zero remaining allocated bytes', async () => {
+    const tree = path.join(tmp, 'below-cap');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const result = await reclaimCutWorktrees(plan, {}, {
+      scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {},
+    });
+    expect(result.ok).toBe(true);
+    expect(result.cap.beforeBytes).toBeGreaterThan(0);
+    expect(result.cap.beforeBytes).toBeLessThan(result.cap.maxBytes);
+    expect(result.cap.afterBytes).toBe(0);
+    expect(result.cap.overByBytes).toBe(0);
+    expect(result.cap.retainedPaths).toEqual([]);
+    expect(fs.existsSync(tree)).toBe(false);
+  });
+
+  it('charges shared hardlink allocation to pins before unpinned cuts', async () => {
+    const unpinned = path.join(tmp, 'a-unpinned'), pinned = path.join(tmp, 'z-pinned');
+    for (const tree of [unpinned, pinned]) g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const data = path.join(unpinned, 'package-lock.json');
+    fs.writeFileSync(data, Buffer.alloc(32768, 1));
+    fs.linkSync(data, path.join(pinned, 'package-lock.json'));
+    const plan = await gather();
+    const v = plan.verdicts.find((v) => v.path === pinned)!;
+    v.disposition = 'protected';
+    v.reasons = ['lease:agent-pin-test'];
+    const result = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.cap.pinnedBytes).toBeGreaterThanOrEqual(fs.statSync(data).blocks * 512);
+    expect(result.cap.pinnedOverageBytes).toBe(result.cap.pinnedBytes! - 1);
+  });
+
+  it('refuses the whole sweep when allocated-byte measurement fails', async () => {
+    const tree = path.join(tmp, 'unmeasurable');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const bin = path.join(tmp, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan, { maxBytes: 1 });
+      expect(result.ok).toBe(false);
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(result.cap.afterBytes).toBeNull();
+      expect(result.errors[0]).toContain('usage before reclaim');
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
   });
 
   it('removes an OFFLOADED tree: the real directory and the symlink both go', async () => {

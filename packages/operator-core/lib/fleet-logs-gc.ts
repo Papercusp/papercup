@@ -54,6 +54,8 @@ import { promisify } from 'node:util';
 import { workspacesRoot } from './workspace-registry';
 import { openWriterPidsMany, NATIVE_BG_SCAN_DEADLINE_MS, type OpenWriterScan } from './native-bg-task-ledger';
 import { withUnpinnedPath, withRetentionPinProtection } from './storage/retention-pins';
+import { AGENT_ROOT_MAX_BYTES } from './storage/retention-policy';
+import type { RetentionCapReceipt } from './storage/disk-reclaim';
 import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 // @ts-expect-error The maintained CLI policy is JavaScript without declarations.
 import { sweepStaleWorkRoots, OWNER_MARKER } from '../../../scripts/lint-as-committed.mjs';
@@ -1169,15 +1171,16 @@ async function sweepWindowsBuildScratch(opts: WindowsBuildScratchGcOptions, isPi
 // harmless for a notifier and load-bearing here: a truncated exclusion set
 // silently converts live renders into deletion candidates.
 
-/** Renders older than this are reclaimable — if, and only if, no live session
- *  is serving them. Matches the workdir sweep's 7 days. */
-export const LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+/** Renders expire after the policy's three days unless protected by a live session or pin. */
+export const LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS = 3 * 24 * 60 * 60 * 1000;
 
 export interface LaunchContextGcOptions {
   /** Defaults to `PAPERCUSP_LAUNCH_CONTEXT_DIR` or `~/.papercusp/launch-context`.
    *  Injectable so a test points at a tmp dir. */
   dir?: string;
   retentionMs?: number;
+  /** Logical file-byte ceiling; the flat render collector never follows directories or links. */
+  maxTotalBytes?: number;
   dryRun?: boolean;
   now?: number;
   /**
@@ -1213,6 +1216,8 @@ export interface LaunchContextGcResult {
   /** How many candidates were held back because a live session serves them. */
   liveHeld: number;
   candidates: LaunchContextGcCandidate[];
+  /** Dry runs report projected usage after the same oldest-first selection. */
+  cap?: RetentionCapReceipt;
 }
 
 /** The canonical launch-context directory, honouring the same env override as
@@ -1234,12 +1239,14 @@ function defaultLaunchContextDir(): string {
  * into and never removed.
  */
 export async function runLaunchContextGc(opts: LaunchContextGcOptions = {}): Promise<LaunchContextGcResult> {
-  return withRetentionPinProtection((isPinned) => sweepLaunchContext(opts, isPinned));
+  return withRetentionPinProtection((isPinned) => sweepLaunchContext(opts, isPinned), { nowMs: opts.now });
 }
 
 function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: string) => boolean): LaunchContextGcResult {
   const dir = opts.dir ?? defaultLaunchContextDir();
   const retentionMs = opts.retentionMs ?? LAUNCH_CONTEXT_GC_DEFAULT_RETENTION_MS;
+  const maxBytes = opts.maxTotalBytes ?? AGENT_ROOT_MAX_BYTES;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error('invalid launch-context size cap');
   const dryRun = opts.dryRun === true;
   const now = opts.now ?? Date.now();
   const cutoff = now - retentionMs;
@@ -1262,13 +1269,16 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
   }
 
   let entries: Dirent[];
+  let rootIdentity: { dev: number; ino: number };
   try {
+    rootIdentity = statSync(dir);
     entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     return { dir, scanned: 0, removed: 0, bytesFreed: 0, dryRun, liveHeld: 0, candidates: [] };
   }
 
   const candidates: LaunchContextGcCandidate[] = [];
+  const identities = new Map<string, { dev: number; ino: number }>();
   let removed = 0;
   let bytesFreed = 0;
   let liveHeld = 0;
@@ -1287,9 +1297,11 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     let mtimeMs: number;
     let bytes: number;
     try {
-      const st = statSync(path);
+      const st = lstatSync(path);
+      if (!st.isFile()) throw new Error('render changed to a non-file');
       mtimeMs = st.mtimeMs;
       bytes = st.size;
+      identities.set(path, { dev: st.dev, ino: st.ino });
     } catch (e) {
       candidates.push({
         path, name: entry.name, bytes: 0, mtimeMs: 0, ageMs: 0,
@@ -1312,9 +1324,18 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     }
 
     if (isPinned(path)) { record.skipped = 'pinned'; continue; }
+  }
 
-    // Guard 2 — age.
-    if (mtimeMs >= cutoff) {
+  // One ordering for both age and pressure eviction. Names never outrank writes.
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
+  const beforeBytes = candidates.reduce((sum, entry) => sum + entry.bytes, 0);
+  const pinned = candidates.filter((entry) => identities.has(entry.path) && isPinned(entry.path));
+  const pinnedBytes = pinned.reduce((sum, entry) => sum + entry.bytes, 0);
+  let afterBytes = beforeBytes;
+  for (const record of candidates) {
+    if (record.skipped) continue;
+    const { path, mtimeMs, bytes } = record;
+    if (mtimeMs >= cutoff && afterBytes <= maxBytes) {
       record.skipped = 'too-new';
       continue;
     }
@@ -1322,8 +1343,12 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     // Guard 3 — re-stat immediately before unlinking. The readdir above may be
     // many seconds old, and a launch can have rewritten this path since.
     try {
-      const confirm = statSync(path);
-      if (confirm.mtimeMs >= cutoff) {
+      const parent = statSync(dir);
+      const confirm = lstatSync(path);
+      const identity = identities.get(path)!;
+      if (parent.dev !== rootIdentity.dev || parent.ino !== rootIdentity.ino ||
+          !confirm.isFile() || confirm.dev !== identity.dev || confirm.ino !== identity.ino ||
+          confirm.mtimeMs !== mtimeMs || confirm.size !== bytes) {
         record.skipped = 'raced';
         record.mtimeMs = confirm.mtimeMs;
         record.ageMs = now - confirm.mtimeMs;
@@ -1347,7 +1372,11 @@ function sweepLaunchContext(opts: LaunchContextGcOptions, isPinned: (path: strin
     record.removed = true;
     removed++;
     bytesFreed += bytes;
+    afterBytes -= bytes;
   }
 
-  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates };
+  return { dir, scanned: candidates.length, removed, bytesFreed, dryRun, liveHeld, candidates,
+    cap: { root: dir, classId: 'fleet-logs', maxBytes, beforeBytes, afterBytes,
+      pinnedBytes, pinnedPaths: pinned.map((entry) => entry.path),
+      overByBytes: Math.max(0, afterBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) } };
 }

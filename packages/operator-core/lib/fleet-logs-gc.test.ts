@@ -839,6 +839,47 @@ describe('runWindowsBuildScratchGc', () => {
 // ── launch-context render GC (WI-10002015) ───────────────────────────────────
 
 describe('runLaunchContextGc', () => {
+  it('evicts fresh renders oldest first until the byte ceiling is met', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const newest = writeAged(dir, 'a-newest.md', 8, 1000);
+    const oldest = writeAged(dir, 'z-oldest.md', 8, 3000);
+    const middle = writeAged(dir, 'm-middle.md', 8, 2000);
+    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set(), maxTotalBytes: 8 });
+    expect(result.candidates.filter((c) => c.removed).map((c) => c.path)).toEqual([oldest, middle]);
+    expect(existsSync(newest)).toBe(true);
+    expect(result.cap).toMatchObject({ maxBytes: 8, beforeBytes: 24, afterBytes: 8, overByBytes: 0 });
+  });
+
+  it('reports pinned overage and holds live renders under byte pressure', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const pinned = writeAged(dir, 'pinned.md', 12, 3000);
+    const live = writeAged(dir, 'live.md', 8, 2000);
+    const idle = writeAged(dir, 'idle.md', 8, 1000);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'prompt evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set([live]), maxTotalBytes: 8 });
+    expect(result.candidates.find((c) => c.path === pinned)?.skipped).toBe('pinned');
+    expect(result.candidates.find((c) => c.path === live)?.skipped).toBe('live-session');
+    expect(existsSync(idle)).toBe(false);
+    expect(result.cap).toMatchObject({ beforeBytes: 28, afterBytes: 20, pinnedBytes: 12, pinnedPaths: [pinned], overByBytes: 12, pinnedOverageBytes: 4 });
+  });
+
+  it('dry-run cap selection is identical and expiry releases a pinned render', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const older = writeAged(dir, 'older.md', 8, 2000);
+    const newer = writeAged(dir, 'newer.md', 8, 1000);
+    const now = Date.now();
+    createRetentionPin({ path: older, owner: 'reviewer', reason: 'short review', expiresAt: new Date(now + 1000).toISOString() });
+    const options = { dir, liveRenderPaths: new Set<string>(), maxTotalBytes: 8, now: now + 2000 };
+    const preview = await runLaunchContextGc({ ...options, dryRun: true });
+    expect(preview.candidates.filter((c) => c.removed).map((c) => c.path)).toEqual([older]);
+    expect(existsSync(older)).toBe(true);
+    expect(existsSync(newer)).toBe(true);
+    const actual = await runLaunchContextGc(options);
+    expect(actual.cap).toEqual(preview.cap);
+    expect(existsSync(older)).toBe(false);
+    expect(existsSync(newer)).toBe(true);
+  });
+
   it('reads a new pin after acquiring the mutation mutex rather than before waiting', async () => {
     const stale = writeAged(sandbox, 'stale.md', 100, 30 * DAY);
     let sweep!: ReturnType<typeof runLaunchContextGc>;

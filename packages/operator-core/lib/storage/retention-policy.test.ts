@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_MAX_AGE_HOURS,
+  AGENT_ROOT_MAX_BYTES,
   BUILD_DIR_MAX_AGE_HOURS,
   CACHEDIR_TAG_SIGNATURE,
   RETENTION_POLICY,
@@ -27,6 +28,22 @@ const del = (p: string) => deletionClassFor(p, policy)?.id ?? null;
 describe('retention policy (disk-headroom P-003 / R-2)', () => {
   it('the shipped policy passes every structural check', () => {
     expect(validatePolicy(RETENTION_POLICY, HOME)).toEqual([]);
+  });
+
+  it('declares the same finite cap enforced by the private Cargo-slot owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'cargo-target-slots')!;
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const owner = readFileSync(join(root, 'papercusp-desktop/bin/lib/claim-target-dir.sh'), 'utf8');
+    const defaultBytes = /PAPERCUSP_DESKTOP_PRIVATE_SLOT_MAX_BYTES:-([0-9]+)/.exec(owner);
+    expect(cls.keep.kind).toBe('lease');
+    expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
+    expect(Number(defaultBytes?.[1])).toBe(cls.maxBytes);
+  });
+
+  it('declares a finite cap for the existing release-cut owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'release-cut-worktrees')!;
+    expect(cls.keep.kind).toBe('lease');
+    expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
   });
 
   it('derives every named shell enforcer from the registry and pins its reviewed executable source', () => {

@@ -51,6 +51,8 @@ import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLea
 export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag };
 export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
+import { RETENTION_POLICY } from './storage/retention-policy';
+import type { RetentionCapReceipt } from './storage/disk-reclaim';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
@@ -1227,6 +1229,100 @@ export async function executeCutReclaim(
     done({ removed: true, archive });
   }
   return { ok: true, results };
+}
+
+/** The scheduled adapter holds the pin mutex across discovery and this owner call.
+ * A cap never overrides the existing published/authored/lease/holder guards. All
+ * expired eligible cuts are still collected, even when usage is already below cap. */
+export async function reclaimCutWorktrees(
+  plan: ReclaimPlan,
+  options: { dryRun?: boolean; maxBytes?: number } = {},
+  deps: ReclaimExecDeps = {},
+) {
+  const maxBytes = options.maxBytes ?? RETENTION_POLICY.find((c) => c.id === 'release-cut-worktrees')!.maxBytes!;
+  const targets = plan.verdicts.filter((v) => v.disposition === 'reclaimable')
+    .sort((a, b) => {
+      const activity = (v: ReclaimVerdict) => Math.max(Date.parse(v.createdAt ?? '') || 0, Date.parse(v.lastHeadMoveAt ?? '') || 0);
+      return activity(a) - activity(b) || a.path.localeCompare(b.path);
+    }).map((v) => v.path);
+  const pinnedPaths = plan.verdicts.filter((v) => v.reasons.some((r) => r.startsWith('lease:agent-pin-'))).map((v) => v.path);
+  const cap: Omit<RetentionCapReceipt, 'beforeBytes' | 'afterBytes' | 'overByBytes' | 'pinnedBytes' | 'pinnedOverageBytes'> & {
+    beforeBytes: number | null; afterBytes: number | null; overByBytes: number | null;
+    pinnedBytes: number | null; pinnedOverageBytes: number | null; retainedPaths: string[];
+  } = {
+    root: plan.canonicalRoot ?? '', classId: 'release-cut-worktrees', maxBytes,
+    beforeBytes: null, afterBytes: null, overByBytes: null, pinnedBytes: null,
+    pinnedOverageBytes: null, pinnedPaths, retainedPaths: [],
+  };
+  const errors = [...plan.failClosed];
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) errors.push('invalid release-cut byte cap');
+  if (plan.verdicts.some((v) => !v.realPath)) errors.push('release-cut population has unreadable paths');
+  if (errors.length) return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
+  const population = () => {
+    const interrupted = readInterruptedCutReclaims(deps.archiveDir ?? path.join(defaultRetentionDir(), 'reclaim-archive'), plan.canonicalRoot!);
+    if (interrupted.errors.length) throw new Error(interrupted.errors.join('; '));
+    return [...new Set([
+      ...plan.verdicts.map((v) => v.realPath!),
+      ...(plan.interrupted ?? []).map((v) => v.trash),
+      ...interrupted.interrupted.map((v) => v.trash),
+    ])];
+  };
+  // GNU du supplies allocated bytes without following descendant symlinks or
+  // opening FIFOs. One process and one deadline cover the whole population. A
+  // failed/partial measurement refuses deletion rather than treating it as zero.
+  const measure = async () => {
+    const existing: string[] = [];
+    for (const p of population()) {
+      try { await fs.promises.lstat(p); existing.push(p); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    }
+    const roots = existing.filter((p) => !existing.some((other) => other !== p && p.startsWith(`${other}/`)));
+    // du deduplicates hardlinks across arguments. Charge pinned roots first so
+    // their still-allocated blocks cannot disappear into an evictable sibling's
+    // count. The total still counts each shared allocation only once.
+    const pinned = (p: string) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!));
+    roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
+    if (!roots.length) return new Map<string, number>();
+    const { stdout } = await execFileAsync('du', ['--summarize', '--one-file-system', '--block-size=1', '--null', '--', ...roots], {
+      encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
+    });
+    const bytes = new Map<string, number>();
+    for (const row of String(stdout).split('\0').filter(Boolean)) {
+      const tab = row.indexOf('\t'), n = Number(row.slice(0, tab)), p = row.slice(tab + 1);
+      if (tab < 1 || !Number.isSafeInteger(n) || n < 0 || !roots.includes(p) || bytes.has(p)) throw new Error('invalid release-cut usage output');
+      bytes.set(p, n);
+    }
+    if (bytes.size !== roots.length) throw new Error('incomplete release-cut usage output');
+    const total = [...bytes.values()].reduce((sum, n) => sum + n, 0);
+    if (!Number.isSafeInteger(total)) throw new Error('release-cut usage exceeds safe integer bytes');
+    return bytes;
+  };
+  try {
+    const before = await measure();
+    cap.beforeBytes = [...before.values()].reduce((sum, n) => sum + n, 0);
+    cap.pinnedBytes = [...before].filter(([p]) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!)))
+      .reduce((sum, [, n]) => sum + n, 0);
+    cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
+    if (options.dryRun) {
+      cap.afterBytes = cap.beforeBytes;
+      cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
+      cap.retainedPaths = [...before.keys()];
+      return { ok: true, dryRun: true, targets, errors, cap };
+    }
+  } catch (e) {
+    errors.push(`release-cut usage before reclaim: ${errText(e)}`);
+    return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
+  }
+  let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
+  try { if (targets.length) execution = await executeCutReclaim(plan, targets, deps); }
+  catch (e) { errors.push(`release-cut execution: ${errText(e)}`); }
+  try {
+    const after = await measure();
+    cap.afterBytes = [...after.values()].reduce((sum, n) => sum + n, 0);
+    cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
+    cap.retainedPaths = [...after.keys()];
+  } catch (e) { errors.push(`release-cut usage after reclaim: ${errText(e)}`); }
+  return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution };
 }
 
 /** Compact, tool-result-sized rendering (a full verdict list overruns the result cap). */

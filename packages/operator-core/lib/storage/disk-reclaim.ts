@@ -954,7 +954,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
       join(repoRoot, 'papercusp-desktop/bin/reap-private-target-slots.sh'), ...(dryRun ? ['--dry-run'] : []),
     ]) },
     { classId: 'release-cut-worktrees', run: async (dryRun) => {
-      const { gatherCutReclaimPlan, executeCutReclaim } = await import('../release-cut-reclaim');
+      const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
       const plan = await gatherCutReclaimPlan({
         repoPath: repoRoot, isAutoManaged: isAutoManagedCutWorktree, releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
@@ -965,10 +965,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
           return rows.map((row) => ({ version: row.version, gitSha: row.git_sha, cutAtMs: new Date(row.cut_at).getTime(), publishedAtMs: row.published_at ? new Date(row.published_at).getTime() : null }));
         },
       });
-      const targets = plan.verdicts.filter((v) => v.disposition === 'reclaimable').map((v) => v.path);
-      if (dryRun || targets.length === 0) return { ok: plan.failClosed.length === 0, detail: { dryRun, targets, failClosed: plan.failClosed } };
-      const detail = await executeCutReclaim(plan, targets);
-      return { ok: detail.ok && detail.results.every((r) => r.removed), detail };
+      const detail = await reclaimCutWorktrees(plan, { dryRun });
+      return { ok: detail.ok, detail };
     } },
     { classId: 'unregistered-workspaces', run: async () => {
       // Whole-workspace deletion cannot be inferred from absence in the registry:
