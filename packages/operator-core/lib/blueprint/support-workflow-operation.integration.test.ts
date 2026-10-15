@@ -100,7 +100,7 @@ beforeAll(async () => {
   nativeOperation.id = 'support-native-joint';
   nativeOperation.policy.supportCase!.funding = {
     organization: { controlWorkspaceId: workspaceId, organizationId: 'synthetic-native-joint-org' },
-    allocationId: 'synthetic-native-joint-org', month: '2026-10',
+    allocationId: 'synthetic-native-joint-project', month: '2026-10',
   };
   Object.assign(nativeOperation.policy.supportCase!.native!, {
     inputUsdPerMillion: 30, cachedInputUsdPerMillion: 30, cacheWriteUsdPerMillion: 30,
@@ -220,9 +220,18 @@ describe('support native launch with applied PostgreSQL authority and funding', 
     const { operation, pin } = await readAcceptedBlueprintDirectWorkItem(db.adminSql, workspaceId, item);
     const funding = operation.policy.supportCase!.funding!;
     await db.adminSql.begin(async tx => {
-      expect((await defineHostedAllocation(tx as unknown as Sql, { ...funding,
-        level: 'organization', parentAllocationId: null, costClass: 'model', capMicros: 100_000, maxUnreconciledMicros: 100_000,
-        evidenceRef: 'synthetic:native-joint', recordedBy: 'fixture' })).outcome).toBe('created');
+      for (const [allocationId, parentAllocationId, level] of [
+        [funding.organization.organizationId, null, 'organization'],
+        [funding.allocationId, funding.organization.organizationId, 'project'],
+      ] as const) {
+        expect((await defineHostedAllocation(tx as unknown as Sql, { ...funding, allocationId,
+          level, parentAllocationId, costClass: 'model', capMicros: 100_000, maxUnreconciledMicros: 100_000,
+          evidenceRef: 'synthetic:native-joint', recordedBy: 'fixture' })).outcome).toBe('created');
+      }
+      // Production admits model holds only against a project leaf. Catch a
+      // malformed funding fixture before paying the native launch setup cost.
+      const report = await readHostedAllocationReport(tx as unknown as Sql, funding);
+      expect(report.byCostClass.model.allocations.find(allocation => allocation.allocationId === funding.allocationId)?.level).toBe('project');
     });
     const ownerId = `role-support-native-${crypto.randomUUID()}`;
     const appliedRevision = { specificationRevision: revision, stateRevision: 'native-joint-applied' };
@@ -351,6 +360,7 @@ describe('support native launch with applied PostgreSQL authority and funding', 
         child!.once('close', value => { clearTimeout(timer); resolve(value); });
       });
       expect(code, JSON.stringify({ output, counts, attempts, upstreamSends: bodies.length })).toBe(0);
+      expect(output).not.toContain('COMMITTED_SOURCE substituted');
       expect(output).toContain('SUPPORT_FUNDED_NATIVE_RECEIPT');
       expect(bodies, output).toHaveLength(1);
       expect(JSON.parse(bodies[0]!)).toMatchObject({ model: 'gpt-6.1-sol', reasoning: { effort: 'medium' }, max_output_tokens: 100 });
