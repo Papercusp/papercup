@@ -999,6 +999,7 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(PTOOL_PLANS_GET_TIMEOUT_MS).toBeGreaterThan(125_000);
     // EI-22774777434821469: completion/activation audits resolve all submitted
     // citations before persisting. Cover direct and deferred calls so a valid
     // multi-item audit cannot be cut off at ptool's ordinary 30s deadline.
