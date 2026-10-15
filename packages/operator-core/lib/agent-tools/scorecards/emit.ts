@@ -520,6 +520,63 @@ const specTestAdequacyCurrentFingerprintSchema = z
       });
     }
   });
+const specTestAdequacyBindingMeasurementSchema = z
+  .object({
+    bindingId: z.number().int().positive(),
+    evidenceKind: z.string().trim().min(1).max(120),
+    evidenceRef: z.string().trim().min(1).max(2000),
+    status: z.enum(['measured', 'unavailable', 'unmeasured']),
+    measuredAtCommit: z.string().trim().min(1).max(128).optional(),
+  })
+  .strict()
+  .superRefine((binding, ctx) => {
+    if (binding.status !== 'measured' && binding.measuredAtCommit !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['measuredAtCommit'],
+        message: 'only a server-measured binding can carry measuredAtCommit',
+      });
+    }
+  });
+const specTestAdequacyMeasurementEvidenceSchema = z
+  .object({
+    status: z.enum(['none', 'measured', 'partial', 'unmeasured', 'degraded']),
+    selectedBindings: z.number().int().nonnegative().max(2000),
+    measuredBindings: z.number().int().nonnegative().max(2000),
+    unavailableBindings: z.array(z.object({
+      id: z.number().int().positive(),
+      evidenceKind: z.string().trim().min(1).max(120),
+      evidenceRef: z.string().trim().min(1).max(2000),
+      reason: z.string(),
+    }).strict()).max(2000),
+    withoutMeasurementBasis: z.array(z.object({
+      id: z.number().int().positive(),
+      evidenceKind: z.string().trim().min(1).max(120),
+      evidenceRef: z.string().trim().min(1).max(2000),
+    }).strict()).max(2000),
+    bindings: z.array(specTestAdequacyBindingMeasurementSchema).max(2000),
+  })
+  .strict()
+  .superRefine((evidence, ctx) => {
+    if (evidence.measuredBindings > evidence.selectedBindings) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['measuredBindings'],
+        message: 'measuredBindings cannot exceed selectedBindings',
+      });
+    }
+    const ids = new Set<number>();
+    evidence.bindings.forEach((binding, index) => {
+      if (ids.has(binding.bindingId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['bindings', index, 'bindingId'],
+          message: 'binding measurement identities must be unique',
+        });
+      }
+      ids.add(binding.bindingId);
+    });
+  });
 const specTestAdequacyRerunRecipeSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -570,6 +627,9 @@ const specTestAdequacyRerunRecipeSchema = z
           .max(500),
       })
       .strict(),
+    // Added for new recipes; omitted on historical cards. Emit verifies this
+    // server-derived snapshot against a fresh evaluator measurement before writing.
+    measurementEvidence: specTestAdequacyMeasurementEvidenceSchema.optional(),
     derivation: z
       .object({
         kind: z.literal('listSpecEvidence.currentness'),
@@ -787,7 +847,26 @@ type SpecTestAdequacyReplayRow = {
   verdict?: unknown;
   wouldBlock?: unknown;
   ratings?: unknown;
+  measurementEvidence?: unknown;
 };
+
+function measurementEvidenceFingerprint(value: unknown): string | undefined {
+  const parsed = specTestAdequacyMeasurementEvidenceSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const evidence = parsed.data;
+  return JSON.stringify({
+    status: evidence.status,
+    selectedBindings: evidence.selectedBindings,
+    measuredBindings: evidence.measuredBindings,
+    unavailableBindings: [...evidence.unavailableBindings].sort((a, b) =>
+      a.id - b.id || a.evidenceKind.localeCompare(b.evidenceKind) || a.evidenceRef.localeCompare(b.evidenceRef),
+    ),
+    withoutMeasurementBasis: [...evidence.withoutMeasurementBasis].sort((a, b) =>
+      a.id - b.id || a.evidenceKind.localeCompare(b.evidenceKind) || a.evidenceRef.localeCompare(b.evidenceRef),
+    ),
+    bindings: [...evidence.bindings].sort((a, b) => a.bindingId - b.bindingId),
+  });
+}
 
 type SpecTestAdequacyEvaluatorBuild = z.infer<typeof specTestAdequacyEvaluatorBuildSchema>;
 
@@ -865,14 +944,25 @@ async function validateSpecTestAdequacyReplay(
   args: z.infer<typeof scorecardEmitArgs>,
   dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
 ): Promise<SpecTestAdequacyBindingError | undefined> {
-  if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe || !dispatchTool) return undefined;
+  if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe) return undefined;
 
   const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(args.rerunRecipe);
   if (!parsedRecipe.success) return undefined;
   const submittedPasses = Object.entries(args.ratings ?? {}).filter(
     ([, entry]) => ratingVerdict(entry.rating) === 'pass',
   );
-  if (submittedPasses.length === 0) return undefined;
+  const recordedMeasurementEvidence = parsedRecipe.data.measurementEvidence;
+  if (submittedPasses.length === 0 && recordedMeasurementEvidence === undefined) return undefined;
+  if (!dispatchTool) {
+    return recordedMeasurementEvidence
+      ? {
+          code: 'invalid_spec_test_adequacy_binding',
+          error:
+            `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' cannot verify the recorded server measurement provenance without an evaluator replay; ` +
+            'no scorecard was persisted',
+        }
+      : undefined;
+  }
 
   // New recipes carry the pin in both the human-readable recipe and the exact
   // evaluator args. Historical cards may only have the former, so thread that
@@ -965,6 +1055,19 @@ async function validateSpecTestAdequacyReplay(
         `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' evaluator replay returned no row for ` +
         `${selection.planSlug}/${selection.specId}@${selection.specRevision}; no pass-like rating was persisted`,
     };
+  }
+
+  if (recordedMeasurementEvidence !== undefined) {
+    const recordedFingerprint = measurementEvidenceFingerprint(recordedMeasurementEvidence);
+    const replayFingerprint = measurementEvidenceFingerprint(row.measurementEvidence);
+    if (recordedFingerprint === undefined || replayFingerprint === undefined || recordedFingerprint !== replayFingerprint) {
+      return {
+        code: 'invalid_spec_test_adequacy_binding',
+        error:
+          `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' recorded server-measured per-binding measurement provenance ` +
+          'does not match the evaluator\'s fresh measurement; no scorecard was persisted',
+      };
+    }
   }
 
   const replayRatings =

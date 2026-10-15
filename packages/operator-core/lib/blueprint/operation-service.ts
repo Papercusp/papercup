@@ -205,6 +205,12 @@ export function submitBlueprintOperation(
     let privateInput = input.privateInput;
     const supportWorkflow = supportWorkflowFromOperation(operation, input.harnessSlug, revision);
     if (supportWorkflow) {
+      const support = operation.policy.supportCase!;
+      if (!support.funding || !support.native || support.funding.organization.controlWorkspaceId !== input.workspaceId ||
+          operation.policy.model?.mode !== 'exact' || operation.policy.model.models.length !== 1 ||
+          operation.policy.model.models[0] !== support.native.model || operation.policy.model.effort !== support.native.effort) {
+        throw new BlueprintOperationRefusal('invalid_payload', 'support workflow requires funded, revision-pinned native budget policy');
+      }
       if (input.expectedSpecificationRevision !== revision || input.privateInput !== undefined) {
         throw new BlueprintOperationRefusal('invalid_payload',
           'support workflow requires the displayed approved revision and server-read case content');
@@ -1498,13 +1504,24 @@ function reviewBlueprintOperation(sql: Sql, handle: BlueprintOperationHandle, ca
       if (priorKey[0] && priorKey[0].body.resultFingerprint !== parsed.data.resultFingerprint) {
         throw new BlueprintOperationRefusal('input_conflict', 'business review request key was reused for a different result');
       }
-      return appendControlEvent(tx, handle, eventIdentity('business-review', handle, parsed.data.resultFingerprint), {
+      const reviewed = await appendControlEvent(tx, handle, eventIdentity('business-review', handle, parsed.data.resultFingerprint), {
         kind: 'business-review', receiptId: handle.receiptId, ...targetEventFields(handle),
         specificationRevision: handle.specificationRevision, resultFingerprint: parsed.data.resultFingerprint,
         evidenceRef: current.result.evidenceRef, accountableOwner: current.result.businessReview.accountableOwner,
         reviewerPrincipal: access.principalId, decision: parsed.data.decision, reason: parsed.data.reason,
         requestKey: input.requestKey,
       });
+      if (!reviewed.replayed) {
+        const operation = await declaredOperation(sql, handle);
+        const funding = operation.policy.supportCase?.funding;
+        if (funding) {
+          const { recordSupportWorkflowOutcome } = await import('./support-workflow-budget');
+          await recordSupportWorkflowOutcome(tx as unknown as Sql, { handle, funding,
+            decision: parsed.data.decision, reviewerPrincipal: access.principalId,
+            evidenceRef: `blueprint-operation-review:${reviewed.id}` });
+        }
+      }
+      return reviewed;
     });
     return { eventId: receipt.id, replayed: receipt.replayed, accepted: true, wakeQueued: false, handled: false };
   });

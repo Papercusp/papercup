@@ -1010,6 +1010,12 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
 
   const gateway = createInferenceGateway({
     ...(carryTrial === undefined ? {} : { carryTrial }),
+    readAcceptedOperationBudgetBinding: async ownerId => {
+      const [{ activeWorkspaceId }, { readSupportOperationBudgetBinding }] = await Promise.all([
+        import('../workspace-registry'), import('../blueprint/support-workflow-budget'),
+      ]);
+      return readSupportOperationBudgetBinding(opts.workspace ?? activeWorkspaceId(), ownerId);
+    },
     readAcceptedOperationModelPolicy: opts.readAcceptedOperationModelPolicy ?? (async (ownerId, backend = 'claude') => {
       const [{ activeWorkspaceId }, { readActiveOperationModelPolicy }] = await Promise.all([
         import('../workspace-registry'),

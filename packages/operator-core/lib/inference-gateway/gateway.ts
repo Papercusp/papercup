@@ -1333,6 +1333,8 @@ export interface GatewayDeps {
    * inference is allowed. Reservations are never implicitly refunded on failure.
    * The controller owns durable CAS, charge settlement and R4/R5 approval checks. */
   carryTrial?: GatewayCarryTrialBinding;
+  /** Applied operation authority, refreshed for each final provider retry. */
+  readAcceptedOperationBudgetBinding?: (ownerId: string) => Promise<GatewayCarryTrialBinding | null>;
   /** Server-side accepted-operation policy read at a model substitution boundary.
    * A failed read is an explicit unavailable verdict, never permission to downgrade. */
   readAcceptedOperationModelPolicy?: (
@@ -2435,8 +2437,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
     target: string,
     init: { headers: Record<string, string>; body?: Uint8Array | null; signal: AbortSignal },
   ): Promise<(send: () => Promise<Response>) => Promise<Response>> {
-    if (!carryTrial) return send => send();
-    if (!carryTrialRequests.has(req) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
+    const ownerId = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
+    let binding: GatewayCarryTrialBinding | null = carryTrial;
+    if (!binding && ownerId && deps.readAcceptedOperationBudgetBinding) {
+      try { binding = await deps.readAcceptedOperationBudgetBinding(ownerId); }
+      catch { throw trialRefusal(); }
+    }
+    if (!binding) return send => send();
+    if ((carryTrial && !carryTrialRequests.has(req)) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
+    if (!carryTrial && transport !== 'oauth-http' && binding.outputTokenLimit !== undefined) {
+      const body = JSON.parse(Buffer.from(init.body).toString('utf8'));
+      const field = transport === 'anthropic-http' ? 'max_tokens' : 'max_output_tokens';
+      if (body[field] !== undefined && (!Number.isSafeInteger(body[field]) || body[field] <= 0)) throw trialRefusal();
+      body[field] = Math.min(body[field] ?? binding.outputTokenLimit, binding.outputTokenLimit);
+      init.body = new Uint8Array(Buffer.from(JSON.stringify(body)));
+    }
     const headers = new Headers(init.headers);
     const authorization = headers.get('authorization');
     const apiKey = transport === 'anthropic-http' ? headers.get('x-api-key') : null;
@@ -2449,7 +2464,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const attemptId = randomUUID();
     const native = transport === 'anthropic-http' ? null : readGatewayNativeCorrelation(JSON.parse(body));
     const attempt: GatewayCarryTrialAttempt = Object.freeze({
-      attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
+      attemptId, manifestSha256: binding.manifestSha256, armId: binding.armId,
       transport, accountId, target, body,
       bodySha256: createHash('sha256').update(init.body).digest('hex'),
       ...(native?.status === 'observed' ? { nativeSessionId: native.threadId!, nativeTurnId: native.turnId! } : {}),
@@ -2458,7 +2473,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     });
     let reservation: Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>;
     try {
-      reservation = await carryTrial.authorizeAttempt(attempt);
+      reservation = await binding.authorizeAttempt(attempt);
     } catch { throw trialRefusal(); } // Do not expose private controller errors.
     // Copy the receipt: mutation after return must not extend the send window.
     const receipt = reservation ? { ...reservation } : null;
@@ -7012,7 +7027,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (init.body) fetchInit.body = init.body as unknown as BodyInit;
             if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
             const authorizedSend = await authorizeCarryTrialAttempt(req, 'anthropic-http', init.diagnosticAccountId, target, init);
-            if (carryTrial) fetchInit.redirect = 'error';
+            if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+            if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
             // Authorization sees the adapter's final body and selected provider
             // account. Re-check its copied receipt synchronously at every send.
             const upstream = await authorizedSend(() => doFetch(target, fetchInit as RequestInit));
@@ -9071,7 +9087,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
           const authorizedSend = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
-          if (carryTrial) fetchInit.redirect = 'error'; // A redirect would be another, unreserved send.
+          if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+          if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
           const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
           const upstream = stageSpan
             ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
@@ -10199,7 +10216,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
         const authorizedSend = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
-        if (carryTrial) fetchInit.redirect = 'error';
+        if (init.body) fetchInit.body = init.body as unknown as BodyInit;
+        if (carryTrial || deps.readAcceptedOperationBudgetBinding) fetchInit.redirect = 'error';
         const send = () => authorizedSend(() => doFetch(target, fetchInit as RequestInit));
         const upstream = stageSpan
           ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)

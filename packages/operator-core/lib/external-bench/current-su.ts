@@ -773,6 +773,30 @@ export function currentBenchProviderAuthenticator(input: {
   const { workspaceId, preregHash } = input;
   const assignmentId = currentBenchAssignmentId(protocol.runId, arm.id, input.taskId, input.seed);
   const rate = protocol.priceSchedule.rates.find(value => value.model === arm.model)!;
+  return createNativeProviderAuthenticator({ workspaceId, manifestSha256: preregHash, assignmentId,
+    policy: arm, rate, readNativeInputCeiling: input.readNativeInputCeiling }, ports);
+}
+
+/** Shared final-provider authority for native operation and benchmark sends.
+ * The host supplies a revision-pinned policy; no benchmark lifecycle is needed.
+ * Account aliases, model price estimates and client token counts grant nothing. */
+export function createNativeProviderAuthenticator(input: {
+  workspaceId: string; manifestSha256: string; assignmentId: string;
+  policy: Pick<CurrentBenchmarkProtocol['arms'][number],
+    'agent' | 'account' | 'model' | 'effort' | 'payer' | 'generationBudget'>;
+  rate: FrozenBenchRate;
+  readNativeInputCeiling?: (attempt: GatewayCarryTrialAttempt, credential: CurrentBenchInputCredential) => Promise<CurrentBenchNativeInputCeiling | null>;
+}, ports?: {
+  readAccount: (workspaceId: string, accountId: string) => Promise<{ id: string; provider: 'claude' | 'codex'; credentialRef: string } | null>;
+  credentialResolver: (provider: 'claude' | 'codex', ref: string) => CredentialResolver;
+}): { authenticateProvider: (attempt: GatewayCarryTrialAttempt) => Promise<NativeGymProviderAuthorization | null>; revoke: () => void } {
+  // Snapshot policy before any credential read or provider counting request.
+  const { workspaceId, manifestSha256: preregHash, assignmentId } = input;
+  const arm = structuredClone(input.policy), rate = structuredClone(input.rate);
+  if (!workspaceId.trim() || !assignmentId.trim() || !/^[a-f0-9]{64}$/.test(preregHash) ||
+      arm.model !== rate.model || !Number.isFinite(arm.generationBudget.maxUsd) || arm.generationBudget.maxUsd <= 0) {
+    throw new Error('Native provider authentication requires a pinned policy and frozen price rate.');
+  }
   const payer = currentBenchArmPayer(arm), subscription = payer === 'subscription';
   const route = arm.agent === 'claude' ? { transport: 'anthropic-http', target: 'https://api.anthropic.com/v1/messages' } as const
     : currentBenchCodexRoute(payer);

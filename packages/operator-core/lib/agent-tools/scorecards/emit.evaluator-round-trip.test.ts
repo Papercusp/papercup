@@ -25,6 +25,7 @@
  * must be REFUSED, which is what makes the first a measurement rather than an echo.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -142,7 +143,10 @@ import { measureAndPinRepoFilesEvidenceAtRoot } from '../plans/spec-evidence-sto
 import { ADEQUACY_CRITERIA, SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import { resolveLocalRubric } from '../../cupboard/rubric-store';
 import { emitScorecard, scorecardEmitArgs } from './emit';
-import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
+import type {
+  SpecTestAdequacyMeasurementEvidence,
+  SpecTestAdequacyRerunRecipe,
+} from '../../harness/improvements/observation-types';
 
 const listClauses = vi.mocked(listSpecClauses);
 
@@ -323,6 +327,7 @@ type EvaluatorPayload = {
   rows: Array<{
     verdict: string;
     wouldBlock: string[];
+    measurementEvidence: SpecTestAdequacyMeasurementEvidence;
     ratings: Record<string, { rating: string; evidence: string; suggestion?: string }>;
     scorecardDraft: {
       rubricRef: string;
@@ -354,6 +359,7 @@ async function writeSubject(sourceBody: string): Promise<void> {
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'emit-evaluator-round-trip-'));
   h.measurementRoot = root;
+  execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'ignore' });
   await Promise.all([
     mkdir(join(root, 'src'), { recursive: true }),
     mkdir(join(root, 'test'), { recursive: true }),
@@ -369,6 +375,12 @@ beforeEach(async () => {
   vi.clearAllMocks();
   h.querySql = [];
   await writeSubject('export const ackedEventsReplayed = false;\n');
+  execFileSync('git', ['add', '--all'], { cwd: root, stdio: 'ignore' });
+  execFileSync('git', [
+    '-c', 'user.name=Spec Adequacy Test',
+    '-c', 'user.email=spec-adequacy@example.invalid',
+    'commit', '--quiet', '--allow-empty', '-m', 'spec adequacy measurement fixture',
+  ], { cwd: root, stdio: 'ignore' });
   // Stored fingerprints are what binding MEASURED: derive them from the fixture checkout
   // at run time, so 'current' can only mean the server re-derived them.
   const bound = await measureAndPinRepoFilesEvidenceAtRoot(root, MEASUREMENT);
@@ -515,6 +527,12 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     // cannot be what lets freshness through.
     expect(row!.scorecardDraft.rerunRecipe.current.supplied).toBe(true);
     const recipe = row!.scorecardDraft.rerunRecipe;
+    expect(row!.measurementEvidence.bindings.map(binding => binding.bindingId)).toEqual([1, 3, 4, 5]);
+    expect(recipe.measurementEvidence).toEqual(row!.measurementEvidence);
+    for (const binding of row!.measurementEvidence.bindings) {
+      expect(binding.status).toBe('measured');
+      expect(binding.measuredAtCommit).toMatch(/^[0-9a-f]{40}$/);
+    }
     // The graded rule revision is envelope metadata; executable args stay valid against
     // the evaluator's strict schema while preserving the full scored input population.
     expect(recipe.evaluatorRevision).toBe(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION);
@@ -548,6 +566,7 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
       ratings: ratingValues(exactReplay.rows[0]!.ratings),
       wouldBlock: exactReplay.rows[0]!.wouldBlock,
     }).toEqual({ ratings: ratingValues(row!.ratings), wouldBlock: row!.wouldBlock });
+    expect(exactReplay.rows[0]!.measurementEvidence).toEqual(recipe.measurementEvidence);
 
     const result = await emitDraft(row!.scorecardDraft);
 

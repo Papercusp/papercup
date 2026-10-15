@@ -302,6 +302,61 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects caller-forged measuredAtCommit and fingerprints against the evaluator measurement', async () => {
+    const forgedCurrent = RERUN_RECIPE.current.fingerprints.map(fingerprint => ({
+      ...fingerprint,
+      sourceFingerprint: 'git:caller-forged',
+    }));
+    const forgedMeasurementEvidence = {
+      status: 'measured' as const,
+      selectedBindings: 1,
+      measuredBindings: 1,
+      unavailableBindings: [],
+      withoutMeasurementBasis: [],
+      bindings: [{
+        bindingId: 1,
+        evidenceKind: 'integration fixture',
+        evidenceRef: 'surface:reconnect',
+        status: 'measured' as const,
+        measuredAtCommit: 'forged-commit',
+      }],
+    };
+    const freshMeasurementEvidence = {
+      ...forgedMeasurementEvidence,
+      bindings: [{ ...forgedMeasurementEvidence.bindings[0]!, measuredAtCommit: 'server-measured-commit' }],
+    };
+    const recipe = {
+      ...RERUN_RECIPE,
+      args: { ...RERUN_RECIPE.args, current: forgedCurrent },
+      measurementEvidence: forgedMeasurementEvidence,
+    };
+    const dispatchTool = vi.fn().mockResolvedValue({
+      ...passingReplay,
+      rows: [{ ...passingReplay.rows[0]!, measurementEvidence: freshMeasurementEvidence }],
+    });
+
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: recipe }),
+      { createdBy: 'su-grader' },
+      { dispatchTool },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('server-measured per-binding measurement provenance'),
+    });
+    expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
+      ...recipe.args,
+      detail: 'summary',
+      includeDraft: true,
+      payloadTier: 'full',
+    });
+    expect(getRubricPlanRevision).not.toHaveBeenCalled();
+    expect(listScorecards).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('deduplicates an existing spec card when only evaluator build provenance changed', async () => {
     const oldBuild = { sha: '91ea137bce', version: '0.0.0' };
     const newBuild = { sha: '95a2bc900c', version: '0.0.0' };
