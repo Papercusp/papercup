@@ -291,7 +291,7 @@ describe('Settings → Integrations', () => {
       requiredConfig: d.configSchema?.required ?? [],
       connectHref: `/api/oauth/start?plugin=${d.id}`,
       credentials: [], appRegistration: providerAppRegistrationView(d),
-      oauthClient: { ...oauthClient(d.oauth!.clientRegistrationRef!), configured: false, secretRequired: !d.oauth!.pkce },
+      oauthClient: { ...oauthClient(d.oauth!.clientRegistrationRef!, false), secretRequired: !d.oauth!.pkce },
     }], sources: [] });
     render(<Page />);
     const card = within(await screen.findByRole('region', { name: d.displayName }));
@@ -299,7 +299,7 @@ describe('Settings → Integrations', () => {
     expect(card.getByRole('button', { name: `Connect ${d.displayName}` })).toBeTruthy();
     for (const capability of d.capabilities) expect(card.getByText(capability)).toBeTruthy();
     expect(card.getByLabelText('Client ID')).toBeTruthy();
-    expect(Boolean(card.queryByLabelText('Client secret'))).toBe(!d.oauth!.pkce);
+    expect(card.getByLabelText('Client secret')).toBeTruthy();
     expect(card.queryByRole('button', { name: 'What syncs' })).toBeNull();
   });
 

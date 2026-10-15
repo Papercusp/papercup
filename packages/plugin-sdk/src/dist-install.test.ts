@@ -180,7 +180,7 @@ describe('plugin-sdk packed tarball, installed outside the monorepo (WI-10006701
     it(`the provider subpath type-checks with nothing but the SDK installed (${resolution})`, async () => {
       const diagnostics = await typecheck(
         bare,
-        "import type { ProviderDescriptor, HostFetch } from '@papercusp/plugin-sdk/provider';\nexport type T = [ProviderDescriptor, HostFetch];\n",
+        "import type { ProviderDescriptor, HostFetch } from '@papercusp/plugin-sdk/provider';\nimport { createProviderDaemon } from '@papercusp/plugin-sdk/provider-daemon';\nexport type T = [ProviderDescriptor, HostFetch];\nexport const daemon = createProviderDaemon;\n",
         resolution,
       );
       expect(diagnostics, diagnostics.join('\n')).toEqual([]);
@@ -191,11 +191,13 @@ describe('plugin-sdk packed tarball, installed outside the monorepo (WI-10006701
     const script = [
       "const sdk = await import('@papercusp/plugin-sdk');",
       "const provider = await import('@papercusp/plugin-sdk/provider');",
+      "const daemon = await import('@papercusp/plugin-sdk/provider-daemon');",
       'console.log(JSON.stringify({',
       '  version: sdk.PAPERCUSP_RUNTIME_VERSION,',
       "  validate: typeof sdk.validateTriggerPackDeclaration,",
       "  lookupTier: typeof sdk.lookupTier,",
       '  contracts: provider.PROVIDER_CONTRACT_VERSIONS,',
+      '  daemon: typeof daemon.createProviderDaemon,',
       '}));',
     ].join('\n');
     const out = execFileSync(process.execPath, ['--input-type=module', '-e', script], { cwd: bare, encoding: 'utf8' });
@@ -204,5 +206,6 @@ describe('plugin-sdk packed tarball, installed outside the monorepo (WI-10006701
     expect(got.validate).toBe('function');
     expect(got.lookupTier).toBe('function');
     expect(got.contracts).toContain(1);
+    expect(got.daemon).toBe('function');
   });
 });
