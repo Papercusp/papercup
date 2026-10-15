@@ -5,7 +5,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { loadPlugins } from '@papercusp/plugin-loader';
-import { registerPluginProviders, unregisterPluginProviders } from '../plugin-host-runtime';
+import { registerPluginProviders } from '../plugin-host-runtime';
+import { stopDaemonProvider } from '../integrations/daemon-provider';
 import { installPluginFromCupboardCore, InstallPluginError, type InstallPluginManifestReview } from '../cupboard/install-plugin-core';
 import { providerSyncErrorOf } from '@papercusp/plugin-sdk';
 import { createProviderRegistry } from '../integrations/provider-registry';
@@ -21,6 +22,7 @@ describe('installed social packages use the generic Integrations model', () => {
     const providerId = id === 'x' ? 'x-twitter' : id;
     const projectDir = join(ROOT, id);
     const globalPluginsDir = join(projectDir, 'global-plugins');
+    const manifest = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins', id, 'papercusp.json'), 'utf8'));
     const grants: unknown[] = [];
     let invalidations = 0;
     const deps = {
@@ -42,7 +44,13 @@ describe('installed social packages use the generic Integrations model', () => {
       review = (error as InstallPluginError).data?.review as InstallPluginManifestReview;
     }
     expect(review).toBeDefined();
-    expect(review!.provider).toMatchObject({ id: providerId, runtime: 'daemon' });
+    expect(review!.provider).toMatchObject({
+      id: providerId, runtime: 'daemon', contractVersion: 1,
+      datatypes: [...manifest.provider.datatypes].sort(),
+      capabilities: [...manifest.provider.capabilities].sort(),
+      oauthScopes: [...manifest.provider.oauth.scopes].sort(),
+      egressHosts: [...manifest.provider.egressHosts].sort(),
+    });
     expect(await fs.readdir(globalPluginsDir).catch(() => [])).toEqual([]);
     expect(grants).toEqual([]);
     expect(invalidations).toBe(0);
@@ -78,7 +86,7 @@ describe('installed social packages use the generic Integrations model', () => {
     const config = id === 'x' ? { userId: '42', username: 'owner' } : id === 'facebook-pages' ? { pageId: '42' } : { igUserId: '42' };
     const fetched: unknown[] = [];
     const page = await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, {
-      fetch: async (request) => { fetched.push(request); return { status: 200, headers: {}, body: JSON.stringify({ data: [] }) }; },
+      fetch: async (request) => { fetched.push(request); return { status: 200, headers: {}, body: JSON.stringify({ data: [], meta: { result_count: 0 } }) }; },
     });
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'installed-source' })]));
@@ -102,6 +110,6 @@ describe('installed social packages use the generic Integrations model', () => {
       ]);
       expect(entry.descriptor.push).toMatchObject({ delivery: 'normalize', signature: { header: 'x-hub-signature-256', prefix: 'sha256=' } });
     }
-    } finally { await unregisterPluginProviders([providerId], registry); }
+    } finally { registry.unregisterPlugin(providerId); await stopDaemonProvider(providerId); }
   });
 });
