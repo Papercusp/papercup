@@ -9,6 +9,7 @@
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
 import { randomUUID } from 'node:crypto';
+import { withRetentionPinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 import {
   appendFile,
   link,
@@ -367,7 +368,9 @@ async function runIneligibility(
   runId: string,
   now: number,
   requireTerminal: boolean,
+  isPinned: (path: string) => boolean,
 ): Promise<string | null> {
+  if (isPinned(path.join(evidenceRoot, runId))) return 'retention-pin';
   if (await latestRunId(evidenceRoot) === runId) return 'latest';
   const runDir = path.join(evidenceRoot, runId);
   const terminal = await hasTerminalResult(evidenceRoot, runId);
@@ -384,8 +387,9 @@ async function runIneligibility(
 
 async function removeRunIfEligible(
   evidenceRoot: string, runId: string, now: number, requireTerminal: boolean,
+  isPinned: (path: string) => boolean,
 ): Promise<boolean> {
-  if (await runIneligibility(evidenceRoot, runId, now, requireTerminal)) return false;
+  if (await runIneligibility(evidenceRoot, runId, now, requireTerminal, isPinned)) return false;
   const runDir = path.join(evidenceRoot, runId);
   try {
     // Recheck both protections at the removal boundary; latest can move while another
@@ -412,6 +416,13 @@ export async function pruneRunsWithReport(
   keep = keepRunsFromEnv(),
   now = Date.now(),
   options: RunPruneOptions = {},
+): Promise<RunPruneReport> {
+  return withRetentionPinProtection(isPinned => pruneRunsWithProtection(evidenceRoot, keep, now, options, isPinned),
+    { dir: options.env?.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now });
+}
+
+async function pruneRunsWithProtection(
+  evidenceRoot: string, keep: number, now: number, options: RunPruneOptions, isPinned: (path: string) => boolean,
 ): Promise<RunPruneReport> {
   const env = options.env ?? process.env;
   const measure = options.measureDisk ?? measureDiskSpace;
@@ -469,11 +480,11 @@ export async function pruneRunsWithReport(
       let reason: 'count' | 'pressure' | null = null;
       let kept = 'within-count';
       if (countNames.has(name)) {
-        const why = await runIneligibility(evidenceRoot, name, now, false);
+        const why = await runIneligibility(evidenceRoot, name, now, false, isPinned);
         if (!why) reason = 'count'; else kept = why;
       }
       if (!reason && pressure) {
-        const why = await runIneligibility(evidenceRoot, name, now, true);
+        const why = await runIneligibility(evidenceRoot, name, now, true, isPinned);
         if (!why) reason = 'pressure'; else kept = why;
       }
       const target = path.resolve(evidenceRoot, name);
@@ -486,7 +497,7 @@ export async function pruneRunsWithReport(
   }
   if (keep > 0) {
     for (const name of names.slice(0, Math.max(0, names.length - keep))) {
-      if (await removeRunIfEligible(evidenceRoot, name, now, false)) {
+      if (await removeRunIfEligible(evidenceRoot, name, now, false, isPinned)) {
         removed.add(name);
         report.removed.push(name);
       }
@@ -511,7 +522,7 @@ export async function pruneRunsWithReport(
   report.disk.status = 'unresolved';
   for (const name of names) {
     if (removed.has(name)) continue;
-    if (!(await removeRunIfEligible(evidenceRoot, name, now, true))) continue;
+    if (!(await removeRunIfEligible(evidenceRoot, name, now, true, isPinned))) continue;
     removed.add(name);
     report.removed.push(name);
     sample = await measure(evidenceRoot);
@@ -754,6 +765,13 @@ export interface ForeignPruneOptions {
  * {@link FOREIGN_FRESHNESS_CACHE}.
  */
 export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPruneOptions = {}): Promise<ForeignPruneResult> {
+  return withRetentionPinProtection(isPinned => pruneStaleForeignWithProtection(evidenceRoot, opts, isPinned),
+    { nowMs: opts.now });
+}
+
+async function pruneStaleForeignWithProtection(
+  evidenceRoot: string, opts: ForeignPruneOptions, isPinned: (path: string) => boolean,
+): Promise<ForeignPruneResult> {
   const {
     maxAgeHours = foreignMaxAgeHoursFromEnv(),
     now = Date.now(),
@@ -791,6 +809,7 @@ export async function pruneStaleForeign(evidenceRoot: string, opts: ForeignPrune
   const tombstones: ForeignPruneTombstone[] = [];
   const caller = process.argv[1] ? path.basename(process.argv[1]) : null;
   for (const { name, target } of candidates) {
+    if (isPinned(target)) continue;
     const until = cached[name];
     // If the proving file was since deleted, trusting the proof only DELAYS removal: the safe side.
     if (until !== undefined && until > now) {
