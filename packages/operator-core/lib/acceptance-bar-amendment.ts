@@ -32,9 +32,15 @@ export type AcceptanceBarAmendmentSql = Sql | TransactionSql;
  * `barSetHash`: the rubric hash captures BAR meaning, while this source
  * fingerprint also catches mapping changes that would otherwise leave the
  * clause projection stale.
+ *
+ * agent-paperwork-and-restart-tax-reduction-2026-10-15 P-001 (R-1): the fingerprint covers what a
+ * requirement MEANS, not how it is verified. An edit confined to `method`, `replication` or a
+ * `tests` check's files/test name is BAR-neutral, so the pin advances without an amendment and the
+ * acceptance read takes those fields from the live block (`acceptance-live-requirements.ts`).
  */
 export async function acceptanceBarSourceFingerprint(body: string): Promise<string | null> {
   const { parseRequirementBars, parseBarMappings } = await import('./acceptance-bar-seed');
+  const { verificationNeutralCriterion } = await import('./acceptance-live-requirements');
   const requirements = parseRequirementBars(body);
   if (!requirements.ok) return null;
   const mappings = parseBarMappings(
@@ -46,7 +52,7 @@ export async function acceptanceBarSourceFingerprint(body: string): Promise<stri
     bars: requirements.bars.map((bar) => ({
       barKey: bar.barKey,
       model: bar.model,
-      criterion: bar.criterion ?? null,
+      criterion: bar.criterion ? verificationNeutralCriterion(bar.criterion) : null,
     })),
     mappings: mappings.mappings.map((mapping) => ({
       barKey: mapping.barKey,

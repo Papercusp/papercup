@@ -3195,9 +3195,6 @@ export async function main(
   const receiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE?.trim()
     ? resolve(process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE.trim())
     : null;
-  const receiptChildEnv = receiptFile
-    ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
-    : process.env;
   let receiptStartOffset = 0;
   let receiptStartError = null;
   if (receiptFile && existsSync(receiptFile)) {
@@ -3386,6 +3383,11 @@ export async function main(
       process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
     }
   }
+  // Clone only after admission: receipt-consuming children must inherit the
+  // same real preflight result instead of repeating the disclosure-ledger read.
+  const receiptChildEnv = receiptFile
+    ? { ...process.env, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receiptFile }
+    : process.env;
   // EI-25978996299130239: a superproject can pin a reporter older than its
   // receipt contract. Refuse before collection, rather than spend a full test
   // run discovering a missing export at finalization. Keep the loaded module

@@ -2425,6 +2425,23 @@ describe('resolved module attribution (EI-25720784739215773)', () => {
   let dir = '';
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
 
+  it('skips the symbol-less named import clause while retaining actual changed-type diagnostics (EI-26067051823790156)', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-import-clause-'));
+    writeFileSync(join(dir, 'shape.ts'), 'export interface Verdict { ok: boolean; reason: string }\n');
+    writeFileSync(join(dir, 'user.ts'), "import type { Verdict } from './shape';\nconst v: Verdict = { ok: true };\n");
+    const user = join(dir, 'user.ts');
+    // A diagnostic from the earlier compile can now land on `type` in this
+    // re-read snapshot. Ascending from that token used to query ImportClause,
+    // whose undefined default-import symbol crashes TypeScript's checker.
+    const run = (output: string) => diagnosticFilesDependingOnChangedTypes({
+      root: dir, named: ['shape.ts'], candidates: ['user.ts'], output,
+    });
+    const clause = `${user}(1,8): error TS1484: a diagnostic at the import clause`;
+    expect(() => run(clause)).not.toThrow();
+    expect(run(clause)).toEqual(new Set());
+    expect(run(`${clause}\n${user}(2,7): error TS2741: Property reason is missing`)).toEqual(new Set([user]));
+  });
+
   it('gates real imported, aliased, namespace and inferred fixture regressions through a cyclic barrel', () => {
     dir = mkdtempSync(join(tmpdir(), 'tsc-module-provenance-'));
     const sources = {

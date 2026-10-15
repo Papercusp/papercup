@@ -1,12 +1,13 @@
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { pruneRunsWithReport, pruneStaleForeign } from '../../../../libs/generic/verification-harness/src/runner';
 import { isLeaseLive, readRetentionLeases } from '../release-cut-reclaim';
 import { createRetentionPin, pinProtectsPath, readRetentionPins, readRetentionPinsAsync, removeRetentionPin } from './retention-pins';
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'retention-pin-')); roots.push(root);
   const dir = join(root, 'leases'); const target = join(root, 'agent-output'); mkdirSync(target);
@@ -15,6 +16,45 @@ function fixture() {
 }
 
 describe('agent retention pins in the existing lease store', () => {
+  it('VH count and pressure passes retain pinned runs through a physical alias and expiry restores eligibility', async () => {
+    const f = fixture();
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', f.dir);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    const names = ['20261001T000000Z-1', '20261002T000000Z-2', '20261003T000000Z-3'];
+    for (const name of names) {
+      const dir = join(f.target, name); mkdirSync(dir);
+      writeFileSync(join(dir, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date(f.nowMs).toISOString(), verdict: 'pass' }));
+    }
+    const held = join(f.target, names[0]!); const child = join(held, 'review'); mkdirSync(child);
+    createRetentionPin({ path: child, owner: 'a', reason: 'review', expiresAt: f.expiresAt }, f);
+    const alias = join(f.root, 'alias'); symlinkSync(f.target, alias);
+    const options = { measureDisk: async () => ({ totalBytes: 100, availableBytes: 0 }), reserveBytes: () => 1 };
+    const preview = await pruneRunsWithReport(alias, 1, f.nowMs, { ...options, dryRun: true });
+    expect(preview.preview?.kept).toContainEqual({ path: join(alias, names[0]!), reason: 'retention-pin' });
+    const report = await pruneRunsWithReport(alias, 1, f.nowMs, options);
+    expect(report.removed).toContain(names[1]);
+    expect(report.removed).not.toContain(names[0]); expect(existsSync(held)).toBe(true);
+    expect((await pruneRunsWithReport(alias, 1, Date.parse(f.expiresAt), options)).removed).toContain(names[0]);
+  });
+
+  it('VH foreign retention honors descendant pins, expiry, and corrupt-store refusal', async () => {
+    const f = fixture();
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', f.dir);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    const held = join(f.target, 'held'); const other = join(f.target, 'other');
+    mkdirSync(held); mkdirSync(other); const child = join(held, 'review'); writeFileSync(child, 'evidence');
+    for (const path of [child, held, other]) utimesSync(path, new Date(0), new Date(0));
+    createRetentionPin({ path: child, owner: 'a', reason: 'review', expiresAt: f.expiresAt }, f);
+    expect((await pruneStaleForeign(f.target, { maxAgeHours: 72, now: f.nowMs })).removed).toEqual(['other']);
+    expect(existsSync(held)).toBe(true);
+    writeFileSync(join(f.dir, 'lease-broken.tsv'), 'broken');
+    await expect(pruneStaleForeign(f.target, { maxAgeHours: 72, now: f.nowMs })).rejects.toThrow(/retention pins unreadable/);
+    await expect(pruneRunsWithReport(f.target, 1, f.nowMs)).rejects.toThrow(/retention pins unreadable/);
+    expect(existsSync(held)).toBe(true);
+    rmSync(join(f.dir, 'lease-broken.tsv'));
+    expect((await pruneStaleForeign(f.target, { maxAgeHours: 72, now: Date.parse(f.expiresAt) })).removed).toEqual(['held']);
+  });
+
   it('async reads share sync metadata validation, expiry and malformed-store protection', async () => {
     const f = fixture();
     expect(await readRetentionPinsAsync(f)).toEqual(readRetentionPins(f));

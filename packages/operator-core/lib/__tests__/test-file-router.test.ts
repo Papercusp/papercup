@@ -2217,16 +2217,21 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
   );
 
   async function runEvidenceCase(writeReceipt: boolean,
-    failure?: { outcome: 'failed' | 'timeout'; reason: string; errorCode?: string }) {
+    failure?: { outcome: 'failed' | 'timeout'; reason: string; errorCode?: string },
+    admission: 'skip' | 'admit' | 'refuse' = 'skip') {
     const dir = mkdtempSync(join(tmpdir(), 'test-file-receipt-verdict-'));
     const receiptFile = join(dir, 'receipts.jsonl');
     const priorReceiptFile = process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
     const priorReporterDisabled = process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    const priorAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
     process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = receiptFile;
     delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
+    delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    const childAdmissionMarkers: Array<string | undefined> = [];
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const runCapturedTestProcessMock = vi.fn(async (_command: string, _args: string[], options: any) => {
+      childAdmissionMarkers.push(options.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT);
       if (writeReceipt || failure) {
         const filePath = 'packages/operator-core/lib/__tests__/test-file-router.test.ts';
         writeFileSync(options.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE, `${JSON.stringify({
@@ -2241,13 +2246,16 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
 
     try {
       const code = await main([file], {
-        restrictedHoldPreflightImpl: () => ({ verdict: 'skip' }),
+        restrictedHoldPreflightImpl: () => admission === 'refuse'
+          ? { verdict: 'refuse', error: 'restricted_write_held', hint: 'Fixture restricted write is held.' }
+          : { verdict: admission },
         runVitestListImpl: async () => ({ status: 0, signal: null,
           stdout: 'lib/__tests__/test-file-router.test.ts\n', stderr: '', timedOut: false, error: null }),
         runCapturedTestProcessImpl: runCapturedTestProcessMock,
       });
       return {
         code,
+        childAdmissionMarkers,
         output: logSpy.mock.calls.map(([line]) => String(line)).join('\n'),
         errors: errorSpy.mock.calls.map(([line]) => String(line)).join('\n'),
       };
@@ -2258,6 +2266,8 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
       else process.env.PAPERCUSP_TEST_RUN_RECEIPT_FILE = priorReceiptFile;
       if (priorReporterDisabled === undefined) delete process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER;
       else process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER = priorReporterDisabled;
+      if (priorAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = priorAdmission;
       rmSync(dir, { recursive: true, force: true });
     }
   }
@@ -2277,6 +2287,19 @@ describe('main() — evidence runs require inserted Vitest ledger receipts', () 
     expect(result.code).toBe(0);
     expect(result.output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(result.errors).not.toContain('TEST_FILE_LEDGER_RECEIPT_MISSING');
+  });
+
+  it('forwards a real router admission to receipt-consuming Vitest children', async () => {
+    const result = await runEvidenceCase(true, undefined, 'admit');
+    expect(result.code).toBe(0);
+    expect(result.childAdmissionMarkers).toEqual(['admitted-by-test-router']);
+  });
+
+  it('starts no receipt-consuming Vitest child when admission is refused', async () => {
+    const result = await runEvidenceCase(true, undefined, 'refuse');
+    expect(result.code).toBe(2);
+    expect(result.childAdmissionMarkers).toEqual([]);
+    expect(result.errors).toContain('restricted_write_held');
   });
 
   it.each(['failed', 'timeout'] as const)('retains the %s receipt reason when withholding a terminal verdict', async outcome => {

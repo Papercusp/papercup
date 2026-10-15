@@ -589,6 +589,11 @@ export function diagnosticFilesDependingOnChangedTypes({ root, named, candidates
     // Diagnostic locations include the object itself, a variable name, or a nested property.
     // Stop before the surrounding function/file can lend an unrelated contextual signature.
     for (let current = node, depth = 0; current && depth < 4 && !ts.isSourceFile(current); current = current.parent, depth += 1) {
+      // A named-only ImportClause has no default-binding symbol. TypeScript's
+      // getTypeAtLocation handles it as a default import and dereferences that
+      // missing symbol (undefined.flags). Its identifiers/specifiers are queried
+      // at their own locations; the containing clause has no value type to ask for.
+      if (ts.isImportClause(current) && !current.name) continue;
       const context = ts.isExpression(current) ? checker.getContextualType(current) : undefined;
       const receiver = ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)
         ? checker.getTypeAtLocation(current.expression) : undefined;

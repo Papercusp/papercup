@@ -46,6 +46,7 @@ import {
 } from '../process-supervision/sidecar-spawn-shared';
 import { isBenignHostError } from '../host-benign-errors';
 import { observeFallback } from '../degradation/fallback-observations';
+import { createTextCollector } from '../child-output.js';
 import {
   EMBED_SIDECAR_DEFAULT_PORT,
   EMBED_SIDECAR_LEGACY_CAPABILITIES,
@@ -582,14 +583,14 @@ export async function spawnEmbedSidecar(): Promise<void> {
     // Listen for ready handshake
     let stdoutBuffer = '';
     let idleExitAnnounced = false;
-    sidecarProcess.stdout?.on('data', (chunk: Buffer) => {
-      stdoutBuffer += chunk.toString();
+    const processStdoutText = (text: string): void => {
+      stdoutBuffer += text;
       const lines = stdoutBuffer.split('\n');
 
       // Keep the last incomplete line
-      stdoutBuffer = lines[lines.length - 1] || '';
+      stdoutBuffer = lines.pop() ?? '';
 
-      for (const line of lines.slice(0, -1)) {
+      for (const line of lines) {
         console.log('[embed-sidecar]', line);
 
         if (line.includes(EMBED_SIDECAR_IDLE_EXIT_LINE)) {
@@ -626,6 +627,10 @@ export async function spawnEmbedSidecar(): Promise<void> {
           readyWaiters.length = 0;
         }
       }
+    };
+    createTextCollector(sidecarProcess.stdout, {
+      retainText: false,
+      onDecodedText: processStdoutText,
     });
 
     // The DB resolver and passive startup preload use stderr to keep CLI stdout
@@ -660,16 +665,22 @@ export async function spawnEmbedSidecar(): Promise<void> {
       if (/^\[db\] target source=\S+ endpoint=\S+$/.test(text) || startupNodeLoaded(text)) console.log('[embed-sidecar-err]', text);
       else console.warn('[embed-sidecar-err]', text);
     };
-    sidecarProcess.stderr?.on('data', (chunk: Buffer) => {
-      stderrBuffer += chunk.toString();
+    const processStderrText = (text: string): void => {
+      stderrBuffer += text;
       const lines = stderrBuffer.split('\n');
       stderrBuffer = lines.pop()!;
       for (const line of lines) reportStderr(line);
+    };
+    createTextCollector(sidecarProcess.stderr, {
+      retainText: false,
+      onDecodedText: processStderrText,
     });
-    sidecarProcess.stderr?.on('end', () => {
+    const flushStderrBuffer = (): void => {
       reportStderr(stderrBuffer);
       stderrBuffer = '';
-    });
+    };
+    sidecarProcess.stderr?.once('end', flushStderrBuffer);
+    sidecarProcess.stderr?.once('close', flushStderrBuffer);
 
     sidecarProcess.on('error', (err) => {
       sidecarProcess = null;
