@@ -195,6 +195,19 @@ export async function postInjection(port, body, opts = {}) {
     // wallMs: this hook's own wall, so the operator spends only what is left of
     // it (the Jev memory filter's wait, WI-10004485). Derived from the spec, never
     // a second copy of the number on the server.
+    // Collect locally, where the edited file and its owning repo exist. Never run
+    // the parser/compiler on the shared operator's 250ms snapshot push path.
+    if (port === 'mid-turn' && Array.isArray(body.toolCalls)) {
+      let remaining = 2;
+      for (const call of body.toolCalls) {
+        if (!call.editedPath || remaining-- <= 0) continue;
+        try {
+          const { consequenceFor } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
+          call.interfaceEdit = await consequenceFor(call.editedPath);
+        } catch { /* optional advisory: an unreadable local repo cannot disturb the tool */ }
+      }
+    }
+    if (controller.signal.aborted) return null;
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
@@ -274,6 +287,12 @@ export function buildDigest(calls) {
       tool: typeof call.tool === 'string' ? call.tool : '',
       toolInput: clampField(call.toolInput, spec.fieldClamp),
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
+      // Preserve the path independently of the 400-char recall digest. Edits often
+      // exceed it, and a truncated JSON input cannot safely recover this field.
+      ...(/(?:^|_|:)(?:Edit|Write|MultiEdit|edit|write)$/.test(call.tool ?? '')
+        && typeof call.toolInput === 'object' && call.toolInput
+        && typeof (call.toolInput.file_path ?? call.toolInput.path) === 'string'
+        ? { editedPath: (call.toolInput.file_path ?? call.toolInput.path).slice(0, 1000) } : {}),
     });
   }
   return digest;

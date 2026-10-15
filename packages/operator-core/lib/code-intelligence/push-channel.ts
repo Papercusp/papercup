@@ -20,7 +20,7 @@ export const PUSH_LEG_FLAGS = {
   completion: FLAGS.CODE_INTEL_PUSH_COMPLETION, intent: FLAGS.CODE_INTEL_PUSH_INTENT,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
-export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown }
+export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; interfaceEdit?: unknown }
 export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
   /** Populated only from the registered harness root, never request cwd. */
@@ -124,6 +124,46 @@ export const snapshotFirstTouchLeg: PushLeg = (input, snapshot) => {
   return facts;
 };
 registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
+
+/** P-037: one note for local interface/strand triggers plus static snapshot reach.
+ * The edited file intentionally no longer hashes to the pre-edit snapshot: all
+ * reach is labelled historical/lower-bound, never a current resolver verdict.
+ */
+export const snapshotInterfaceLeg: PushLeg = (input, snapshot) => {
+  const facts: PushFact[] = [];
+  for (const call of input.calls.slice(0, 2)) {
+    if (!/(?:^|_|:)(?:Edit|Write|MultiEdit|edit|write)$/.test(call.tool ?? '')) continue;
+    const edit = call.interfaceEdit as { path?: unknown; base?: unknown; changes?: unknown; checks?: unknown } | null;
+    if (!edit || typeof edit.path !== 'string' || !safeSnapshotPath(edit.path)
+      || typeof edit.base !== 'string' || !/^[a-f0-9]{40,64}$/.test(edit.base)
+      || !Array.isArray(edit.changes) || !edit.changes.length || !Array.isArray(edit.checks)) continue;
+    const changes = edit.changes.filter((v): v is string => typeof v === 'string' && v.length <= 120).slice(0, 4);
+    // Prescriptions are built from validated path/base here, never arbitrary client commands.
+    if (!changes.length || !/^[A-Za-z0-9_./@+-]+$/.test(edit.path)) continue;
+    const scripts = ['check-required-field-strands', 'check-behavioural-strands'];
+    const rawChecks = edit.checks;
+    const checks = scripts.filter(script => rawChecks.some((v: unknown) => typeof v === 'string' && v.startsWith(`node scripts/${script}.mjs `)))
+      .map(script => `node scripts/${script}.mjs ${script === scripts[0] ? '--typecheck ' : ''}--base ${edit.base} --files=${edit.path}`);
+    const seen = new Set([edit.path]), queue = [edit.path], tests: string[] = [];
+    while (queue.length && seen.size < 200) {
+      for (const next of snapshot.importers.get(queue.shift()!) ?? []) {
+        if (seen.has(next)) continue;
+        seen.add(next); queue.push(next);
+        if (/\.(?:test|spec)\.[^.]+$/.test(next)) tests.push(next);
+        if (seen.size >= 200) break;
+      }
+    }
+    const consumers = snapshot.importers.get(edit.path) ?? [];
+    const suggestedCall = tests.length ? `testing:run ${JSON.stringify({ files: tests.slice(0, 2), harness: input.harness })}` : undefined;
+    facts.push({ leg: 'interface', subject: `${edit.path}:${changes.join('|')}`, citedPaths: [edit.path, ...consumers.slice(0, 2), ...tests.slice(0, 2)], suggestedCall,
+      text: `${edit.path}: ${changes.join('; ')}.\nStatic consumers: ${consumers.slice(0, 2).join(', ') || 'unknown'}.`
+        + `\nTests with static import reach${queue.length ? ' (bounded)' : ''}: ${suggestedCall ?? 'unknown'}.`
+        + `\nPinned strand checks (advisory; run typecheck in background):\n${checks.join('\n')}`
+        + '\nSnapshot reach predates this edit; affected consumers are candidates, not proven failures. Dynamic dispatch, new imports, source completeness and runtime execution remain unknown.' });
+  }
+  return facts;
+};
+registerCodeIntelPushLeg('interface', snapshotInterfaceLeg);
 
 /** Only a single literal identifier lookup is resolved; arbitrary regexes remain quiet. */
 export function grepLookupSubject(call: PushCall): string | null {
@@ -251,7 +291,8 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
     const snapshot = await deps.snapshot(input);
     if (!snapshot || signal.aborted) return '';
     const facts: PushFact[] = [];
-    for (const [id, leg] of deps.legs()) {
+    // Consequences take precedence over a first-touch brief for the same edit.
+    for (const [id, leg] of [...deps.legs()].sort(([a], [b]) => Number(b === 'interface') - Number(a === 'interface'))) {
       if (signal.aborted || !await deps.enabled(PUSH_LEG_FLAGS[id])) continue;
       try {
         if (id === 'first-touch' && deps.context && firstTouchPaths(input).length) {
@@ -260,6 +301,7 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
           input.firstTouchContext = context.value;
         }
         for (const fact of leg(input, snapshot)) {
+          if (id === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
           if (fact.leg === id && fact.subject.length <= 1000 && fact.subject.trim() && fact.text.trim()
             && fact.citedPaths.every(safeSnapshotPath)
             && formatPushFact(fact, snapshot).length + 2 <= requestBudget

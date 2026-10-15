@@ -755,6 +755,60 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
   return breaks;
 }
 
+/** P-037: syntax-only interface change trigger, sharing this detector's TS parser.
+ * This is advisory: neither an object shape nor a registration proves runtime reach.
+ */
+export function diffInterfaceConsequences(beforeText, afterText, fileName = 'f.ts') {
+  const changes = diffRequiredAdditions(beforeText, afterText, fileName).map(x => `required ${x.path}`);
+  const beforeSignatures = collectExportedSignatures(beforeText, fileName);
+  const afterSignatures = collectExportedSignatures(afterText, fileName);
+  for (const [name, signature] of beforeSignatures) {
+    if (JSON.stringify(signature) !== JSON.stringify(afterSignatures.get(name))) changes.push(`signature ${name}`);
+  }
+  const surfaces = text => {
+    const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+    const found = new Map();
+    const compact = node => node.getText(sf).replace(/\s+/g, ' ');
+    const visitReturns = (node, name) => {
+      if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
+        const values = found.get(`returned fields ${name}`) ?? [];
+        values.push(compact(node.expression));
+        found.set(`returned fields ${name}`, values);
+      }
+      // An inner callback's return is not the exported callable's return.
+      ts.forEachChild(node, child => { if (!ts.isFunctionLike(child)) visitReturns(child, name); });
+    };
+    const visit = node => {
+      if (ts.isCallExpression(node) && /(?:^|\.)(?:defineTool|registerTool)$/.test(node.expression.getText(sf))) {
+        const config = node.arguments.find(ts.isObjectLiteralExpression);
+        if (config) {
+          const name = config.properties.find(p => p.name?.getText(sf) === 'name');
+          const shape = config.properties.filter(p => p.name && /^(?:parameters|inputSchema|args|returns|outputSchema|schema)$/.test(p.name.getText(sf)));
+          if (name && shape.length) found.set(`registered tool ${compact(name)}`, shape.map(compact));
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    for (const stmt of sf.statements) {
+      if (!isExported(stmt)) continue;
+      if (ts.isFunctionDeclaration(stmt) && stmt.name && stmt.body) visitReturns(stmt.body, stmt.name.text);
+      if (ts.isVariableStatement(stmt)) for (const d of stmt.declarationList.declarations) {
+        if (d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) {
+          const body = d.initializer.body;
+          if (ts.isParenthesizedExpression(body) && ts.isObjectLiteralExpression(body.expression))
+            found.set(`returned fields ${d.name.getText(sf)}`, [compact(body.expression)]);
+          else visitReturns(body, d.name.getText(sf));
+        }
+      }
+    }
+    visit(sf);
+    return found;
+  };
+  const before = surfaces(beforeText), after = surfaces(afterText);
+  for (const [key, value] of before) if (JSON.stringify(value) !== JSON.stringify(after.get(key))) changes.push(key);
+  return [...new Set(changes)];
+}
+
 function workspaceFor(file) {
   return WORKSPACE_TYPECHECKS.find((w) => file.startsWith(w.prefix)) ?? null;
 }

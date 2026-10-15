@@ -12637,6 +12637,10 @@ export function hostThroughPty(o) {
               agent: env.PAPERCUSP_AGENT,
               nativeId: proofNativeId,
               proof,
+              // An adopted carry already bound this exact child before its
+              // first write. Reuse that confirmation after transcript proof.
+              alreadyReported: confirmedCarryChild === kickoffChild &&
+                confirmedCarryNativeId === proofNativeId,
               report: onRespawn,
               emit: () => {},
               timeoutMs: respawnReportTimeoutMs,

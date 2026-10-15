@@ -8,7 +8,7 @@
   "originalCensus": "/tmp/tutorial-f419-original-root-ledger-census-20261012T1634.json",
   "priorCandidateMap": "/tmp/tutorial-original-receipt-repair-map-20261012T1822.json",
   "repairInventory": "/tmp/tutorial-original-current-repairs-20261012T1819.json",
-  "scope": "Five original receipts matched to existing completed repairs. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
+  "scope": "Six original receipts matched to existing completed repairs. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
   "mappings": [
     {
       "originalTestRunId": 21103368,
@@ -56,6 +56,28 @@
       "repairState": "done",
       "completionAuthority": "committed",
       "rootConnection": "The completed repair updates the conventional guard to the current server-remeasurement writer, unknownReasons and rebind guidance, retaining rejection of obsolete caller-current-only assertions."
+    },
+    {
+      "originalTestRunId": 21103015,
+      "testFile": "packages/operator-core/lib/managed-capability-disposition-contract.test.ts",
+      "observedFailure": "The browser capability citation named runBrowserSession in capability/fetch.ts after that caller moved to runManagedBrowserSession through browser-owner.",
+      "repairId": "WI-6554700010009477",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair changes the existing shared managed-capability contract citation to runManagedBrowserSession and documents its browser-owner seam. The conventional cited-source guard verifies the maintained fetch caller; the original failed receipt remains unchanged.",
+      "retainedProof": {
+        "commit": "62493910dacff43f55159ac77f286d61f94c8588",
+        "submoduleCommit": "b134428a4629f5717a54fd16934206ebf4279284",
+        "root": "/tmp/pcv/papercusp-lint-as-committed-62493910da-kyhN1U",
+        "testRunId": 21177810,
+        "testResult": "Complete conventional suite: 13PASS0FAIL0SKIP; terminal exit0; LOCAL source, worktreeDirty=false, no test-name filter.",
+        "ledgerReadback": "/tmp/tutorial-citation-committed-ledger-62493910-20261013.json",
+        "sourceFile": "libs/papercusp/packages/orchestrator/src/managed-capability-contract.ts",
+        "sourceSha256": "d28f629edcf9d5a3a7ce7221ca611ea3186565f24fdf2b09da6670d2d8a78d07",
+        "testSha256": "dc8814e905ec29ed7aa1343a34aa88a1a5965d404b774a300d37034c5c7a94d4"
+      },
+      "verification": "On 2026-10-15, authoritative work_items:get confirmed DONE with committed completion authority. The retained ledger readback and exact committed source/test hashes were checked without rerunning or reclosing the repair.",
+      "proofBoundary": "This proves the stale citation repair at its retained immutable source. It supplies no full affected verdict or tutorial shipment acceptance."
     }
   ],
   "sharedRetainedRepairProof": {
@@ -85,7 +107,7 @@
   },
   "limitations": [
     "A literal filename candidate search missed repairs made in consumed source files. An unmapped row in that bounded inventory does not prove an unowned or unresolved defect.",
-    "The remaining original receipt population still requires root-cause and repair-owner reconciliation; these five mappings do not partition that whole population.",
+    "The remaining original receipt population still requires root-cause and repair-owner reconciliation; these six mappings do not partition that whole population.",
     "Historical failed receipts remain immutable. A present focused PASS does not relabel an original failure or prove full affected acceptance.",
     "The dispatched current guard's response was lost to upstream_died_mid_stream; its exact task and terminal sink were subsequently recovered as recorded above. No historical receipt was relabeled."
   ]

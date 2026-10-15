@@ -24,6 +24,35 @@ import { join, resolve } from 'node:path';
 const ROOT = resolve(__dirname, '../../../../../..');
 const HOOK = resolve(__dirname, '../posttooluse-required-field-strand-nudge.mjs');
 
+describe('P-037 merged interface consequence collector', () => {
+  async function collect(before: string, after: string) {
+    const hook = await loadHook();
+    return hook.consequenceFor(resolve(ROOT, 'packages/operator-core/lib/example.ts'), {
+      sizeOf: () => after.length, readFile: () => after, showAt: () => before,
+      resolveBase: () => 'a'.repeat(40),
+    });
+  }
+  it.each([
+    ['export function f(a: string) { return a; }', 'export function f(a: number) { return a; }', 'signature f'],
+    ['export function f() { return { x: 1 }; }', 'export function f() { return { y: 1 }; }', 'returned fields f'],
+    ['export const f = () => ({ x: 1 });', 'export const f = () => ({ y: 1 });', 'returned fields f'],
+    ['export const t = defineTool({ name: "t", parameters: { x: "string" } });', 'export const t = defineTool({ name: "t", parameters: { x: "number" } });', 'registered tool'],
+    ['export interface R { x: string }', 'export interface R { x: string; y: number }', 'required R.y'],
+  ])('detects the actual %s -> %s change', async (before, after, expected) => {
+    const result = await collect(before, after);
+    expect(result?.changes.join(';')).toContain(expected);
+    expect(result?.checks.join('\n')).toContain(`--base ${'a'.repeat(40)} --files=packages/operator-core/lib/example.ts`);
+  });
+  it('keeps private body-only edits quiet and combines required-field and behavioural risks', async () => {
+    expect(await collect('export function f() { const x = 1; return x; }', 'export function f() { const x = 2; return x; }')).toBeNull();
+    const result = await collect('export interface R { x: string }; export function f() { return { ok: 1 }; }',
+      'export interface R { x: string; y: number }; export function f() { return { ok: 2 }; }');
+    expect(result?.changes).toContain('required R.y');
+    expect(result?.changes).toContain('behavioural strand risk');
+    expect(result?.checks).toHaveLength(2);
+  });
+});
+
 // The REAL detector — the whole value of this suite is that it is not a fake.
 async function realDiffer() {
   const mod = await import(`file://${resolve(ROOT, 'scripts/check-required-field-strands.mjs')}`);
@@ -32,6 +61,7 @@ async function realDiffer() {
 
 async function loadHook() {
   return (await import(`file://${HOOK}`)) as {
+    consequenceFor: (p: string, deps?: Record<string, unknown>) => Promise<{ path: string; base: string; changes: string[]; checks: string[] } | null>;
     nudgeFor: (p: string, deps?: Record<string, unknown>) => Promise<string | null>;
     isCandidateFile: (p: string) => boolean;
     formatNudge: (rel: string, added: Array<{ path: string; reason: string }>) => string;

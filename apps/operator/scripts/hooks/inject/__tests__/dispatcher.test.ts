@@ -203,6 +203,15 @@ describe('adapter parse / render', () => {
     expect(parsed.toolCalls[0].toolResponse).toHaveLength(400);
   });
 
+  it('preserves an edit path beyond the recall clamp for both native and MCP edits', () => {
+    for (const tool of ['Edit', 'mcp__papercusp_su__capability_edit']) {
+      const parsed = codex.parse('mid-turn', { tool_name: tool,
+        tool_input: { old_string: 'x'.repeat(2000), file_path: '/repo/lib/example.ts' }, tool_response: 'ok' }) as any;
+      expect(parsed.toolCalls[0].editedPath).toBe('/repo/lib/example.ts');
+      expect(parsed.toolCalls[0].toolInput).toHaveLength(400);
+    }
+  });
+
   it('codex mid-turn is PER-CALL and normalises to a one-element array', () => {
     const parsed = codex.parse('mid-turn', {
       tool_name: 'shell',

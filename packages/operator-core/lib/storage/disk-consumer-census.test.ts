@@ -5,6 +5,7 @@
  * A stub `sudo` on a private PATH stands in for the real binary, so the default
  * probe (`sudo -n true`) runs for real without needing real privilege.
  */
+import { spawn as spawnProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from 'node:fs';
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
@@ -142,7 +143,10 @@ describe('streaming retention census evidence', () => {
       expect(command).toBe('/usr/bin/sudo');
       expect(args.slice(0, 2)).toEqual(['-n', '--']);
       expect(args[2]).toMatch(/\/timeout$/);
-      expect(args.slice(3, 6)).toEqual(['--foreground', '--signal=KILL', '0.025s']);
+      if (progressOnly) {
+        expect(args.slice(3, 5)).toEqual(['--signal=KILL', '900s']);
+        expect(args).toContain('-I');
+      } else expect(args.slice(3, 6)).toEqual(['--foreground', '--signal=KILL', '0.025s']);
       expect(args.indexOf('find')).toBeGreaterThan(5);
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill });
       kill.mockImplementation(() => { child.emit('error', new Error('kill EPERM')); return false; });
@@ -155,6 +159,40 @@ describe('streaming retention census evidence', () => {
         ...(progressOnly ? { progressTimeoutMs: 25 } : { timeoutMs: 25 }) });
       expect(census.error).toBe('retention native census timed out');
       expect(census.entries).toEqual([]); expect(kill).not.toHaveBeenCalled();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['advancing', 'stalled', 'noise', 'ceiling'])('supervises elevated metadata progress inside the privilege boundary (%s)', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-privileged-progress-'));
+    const info = await fsp.lstat(root);
+    let signalAttempts = 0;
+    const spawn = ((_command: string, args: string[]) => {
+      // Run the exact elevated supervisor as this test's uid. Replace only
+      // find's output producer; the native timeout and supervisor run for real.
+      expect(args).toContain('-I');
+      const find = args.indexOf('find'); expect(find).toBeGreaterThan(0);
+      const producer = `import os, sys, time
+root, dev, mode = sys.argv[1:]
+for i in range(5 if mode == 'advancing' else 30):
+    row = [b'f', dev.encode(), str(i + 1).encode(), b'1.0', b'1.0', b'1', str(os.getuid()).encode(), os.fsencode(root + '/entry-' + str(i))]
+    sys.stdout.buffer.write(b'x' if mode == 'noise' else b'\\0'.join(row) + b'\\0')
+    sys.stdout.buffer.flush()
+    time.sleep(0.25 if mode == 'advancing' else 5 if mode == 'stalled' else 0.05)
+`;
+      const child = spawnProcess(args[2]!, [...args.slice(3, find), '/usr/bin/python3', '-I', '-c', producer, root, String(info.dev), mode],
+        { stdio: ['ignore', 'pipe', 'pipe'] });
+      child.kill = () => { signalAttempts++; return false; };
+      return child;
+    }) as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
+        progressTimeoutMs: mode === 'advancing' || mode === 'ceiling' ? 1000 : 200, timeoutMs: mode === 'ceiling' ? 750 : 3000 });
+      expect(signalAttempts).toBe(0);
+      if (mode === 'advancing') {
+        expect(census.error).toBeUndefined(); expect(census.entries).toHaveLength(5);
+      } else {
+        expect(census.error).toBe('retention native census timed out'); expect(census.entries).toEqual([]);
+      }
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 
@@ -24,6 +24,44 @@ function deps(): PushChannelDeps {
 }
 
 describe('shared snapshot-backed push channel', () => {
+  const editCall = () => ({ tool: 'Edit', toolInput: { file_path: 'lib/target.ts' }, interfaceEdit: {
+    path: 'lib/target.ts', base: 'a'.repeat(40), changes: ['signature target', 'required Result.name', 'behavioural strand risk'],
+    checks: ['node scripts/check-required-field-strands.mjs --typecheck', 'node scripts/check-behavioural-strands.mjs'],
+  } });
+
+  it('merges interface and strand triggers with consumers and executable transitive tests', async () => {
+    const snap = snapshot();
+    snap.importers = new Map([['lib/target.ts', ['app/use.ts']], ['app/use.ts', ['app/use.test.ts']]]);
+    const changed = { ...input, calls: [editCall()] };
+    const facts = snapshotInterfaceLeg(changed, snap);
+    expect(facts).toHaveLength(1);
+    expect(facts[0].text).toContain('app/use.ts');
+    expect(facts[0].suggestedCall).toBe('testing:run {"files":["app/use.test.ts"],"harness":"papercusp"}');
+    expect(facts[0].text).toContain(`--base ${'a'.repeat(40)} --files=lib/target.ts`);
+    expect(facts[0].text).toContain('behavioural strand risk');
+    expect(facts[0].text).toContain('predates this edit');
+    const d = deps();
+    d.snapshot = async () => snap;
+    d.legs = () => new Map([['first-touch', snapshotFirstTouchLeg], ['interface', snapshotInterfaceLeg]]);
+    const delivered = await codeIntelPushText(changed, 0, d);
+    expect(delivered).toContain('signature target');
+    expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal));
+  });
+
+  it('keeps absent reach unknown, bounds cycles and rejects untrusted path/base/commands', () => {
+    const changed = { ...input, calls: [editCall()] };
+    const snap = snapshot(); snap.importers = new Map();
+    expect(snapshotInterfaceLeg(changed, snap)[0].text).toContain('Tests with static import reach: unknown');
+    snap.importers = new Map(Array.from({ length: 250 }, (_, i) => [i === 0 ? 'lib/target.ts' : `chain${i}.ts`, [`chain${i + 1}.ts`]]));
+    expect(snapshotInterfaceLeg(changed, snap)[0].text).toContain('(bounded)');
+    for (const patch of [{ path: '../secret.ts' }, { base: 'HEAD' }, { path: 'a$(bad).ts' }, { changes: [] }]) {
+      expect(snapshotInterfaceLeg({ ...input, calls: [{ ...editCall(), interfaceEdit: { ...editCall().interfaceEdit, ...patch } }] }, snap)).toEqual([]);
+    }
+    expect(snapshotInterfaceLeg({ ...input, calls: [{ ...editCall(), tool: 'Read' }] }, snap)).toEqual([]);
+    const injected = editCall(); injected.interfaceEdit.checks = ['node scripts/check-required-field-strands.mjs ; arbitrary payload'];
+    expect(snapshotInterfaceLeg({ ...input, calls: [injected] }, snap)[0].text).not.toContain('arbitrary payload');
+  });
+
   it('indexes static dependencies only and refuses foreign, stale and future snapshots', () => {
     expect(snapshot().importers.get('lib/target.ts')).toEqual(['app/use.ts', 'lib/target.test.ts']);
     for (const over of [

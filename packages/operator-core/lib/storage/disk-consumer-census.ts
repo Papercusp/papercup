@@ -346,6 +346,47 @@ function findTimestampMs(value: string): number | undefined {
   return seconds * 1000 + nanoseconds / 1e6;
 }
 
+// Run beside find, inside sudo, so the progress observer can kill and reap its
+// own child. The outer native timeout also bounds the whole process group if
+// the observer itself stops responding. Reuse find's existing metadata stream;
+// partial records and noise do not renew the inactivity deadline.
+const RETENTION_CENSUS_PROGRESS_WORKER = `
+import os, re, selectors, subprocess, sys, time
+idle = float(sys.argv[1]) / 1000
+prefix = os.fsencode(sys.argv[2]) + b'/'
+child = subprocess.Popen(sys.argv[3:], stdout=subprocess.PIPE)
+pending = b''
+fields = []
+deadline = time.monotonic() + idle
+try:
+    with selectors.DefaultSelector() as selector:
+        selector.register(child.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                child.kill()
+                child.wait()
+                sys.exit(137)
+            chunk = os.read(child.stdout.fileno(), 65536)
+            if not chunk:
+                sys.exit(child.wait())
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            records = (pending + chunk).split(b'\\0')
+            pending = records.pop()
+            for value in records:
+                fields.append(value)
+                if len(fields) == 8:
+                    kind, dev, ino, mtime, ctime, blocks, owner, path = fields
+                    if kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime]):
+                        deadline = time.monotonic() + idle
+                    fields = []
+finally:
+    if child.poll() is None:
+        child.kill()
+    child.wait()
+`;
+
 /** Full max-age census through the same read-only native find as own-files.
  * Stream metadata, aggregate direct children, and prune proven recent/protected
  * subtrees. A time cap or unreadable node invalidates the entire candidate set.
@@ -387,20 +428,25 @@ export async function inspectRetentionTrees(root: string, opts: {
   const [nativeCommand, nativeArgs] = censusCommand('find', args, { sudo: null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
   // sudo may exec with every UID set to root. The caller then cannot signal
   // it (EPERM), and killing a sudo monitor can leave find holding its pipes.
-  // Put the existing native deadline mechanism INSIDE elevation: timeout has
-  // authority to kill and reap its child. find/nice/ionice do not fork workers,
-  // so --foreground targets that child without signalling the caller's group.
-  // Elevated callers always have an absolute bound; scheduled reclaim supplies
-  // its remaining run budget. Ordinary-owner scans retain progress deadlines.
+  // Put deadline enforcement INSIDE elevation. A progress-supervised walk has
+  // a child process, so timeout owns a separate process group and kills the
+  // whole group at its absolute ceiling. Direct find needs no process group.
   const timeout = sudo ? await resolveBin('timeout') : null;
   if (sudo && !timeout) return { ...result, error: 'timeout executable unavailable for privileged retention census' };
+  const progressSupervised = Boolean(sudo) && opts.progressTimeoutMs !== undefined;
+  const python = progressSupervised ? await resolveBin('python3') : null;
+  if (progressSupervised && !python) return { ...result, error: 'python3 executable unavailable for privileged retention progress supervision' };
   const command = sudo ?? nativeCommand;
-  const argv = sudo ? ['-n', '--', timeout!, '--foreground', '--signal=KILL',
-    `${Math.max(1, opts.timeoutMs ?? opts.progressTimeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs] : nativeArgs;
+  const argv = !sudo ? nativeArgs : progressSupervised
+    ? ['-n', '--', timeout!, '--signal=KILL', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
+      python!, '-I', '-c', RETENTION_CENSUS_PROGRESS_WORKER, String(Math.max(1, opts.progressTimeoutMs!)), root, nativeCommand, ...nativeArgs]
+    : ['-n', '--', timeout!, '--foreground', '--signal=KILL',
+      `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
     let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
     let child: ReturnType<CensusSpawn>;
     const armProgressDeadline = () => {
       clearTimeout(timer);
@@ -434,7 +480,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     };
     const finish = (error?: string) => {
       if (settled) return;
-      settled = true; clearTimeout(timer);
+      settled = true; clearTimeout(timer); clearTimeout(absoluteTimer);
       for (const { entry, reason } of groups.values()) {
         if (reason === 'recent write') result.retainedRecentTrees++;
         else if (reason) result.retained.push({ path: entry.path, reason, ...(opts.includeRecent ? { entry } : {}) });
@@ -448,8 +494,8 @@ export async function inspectRetentionTrees(root: string, opts: {
     // Ordinary-owner scans can use metadata progress rather than an absolute
     // bound. Elevated scans are supervised by their native timeout above.
     if (!sudo) {
-      if (opts.timeoutMs !== undefined) timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
-      else armProgressDeadline();
+      if (opts.timeoutMs !== undefined) absoluteTimer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
+      if (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) armProgressDeadline();
     }
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
@@ -457,7 +503,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
       for (const value of records) { fields.push(value); if (fields.length === 8) { take(fields); fields = []; } }
       // Noise, partial records and malformed data cannot keep a wedged scan alive.
-      if (!sudo && opts.timeoutMs === undefined && !malformed && result.inspectedNodes > before) armProgressDeadline();
+      if (!sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
