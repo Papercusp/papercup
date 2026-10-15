@@ -621,11 +621,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) ||
             !deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy));
           if (options.inspectTrees && (retainAfterMs !== undefined || capped)) {
-            // Native find bounds the complete walk by elapsed time while streaming
-            // metadata. It avoids permanently restarting a large tree at a JS node cap.
+            // An advancing whole-root census must not restart at the ordinary
+            // per-root inspection allowance on every scheduled pass. Bound stalls
+            // by metadata progress and the complete walk by the remaining run.
+            // Cap accounting still requires a successful complete-root census.
             const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, {
               retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped,
-              excludedPaths: excluded, timeoutMs: Math.max(1, budget.deadline - Date.now()),
+              excludedPaths: excluded, timeoutMs: Math.max(1, runDeadline - Date.now()),
+              progressTimeoutMs: options.budgetMs ?? 60_000,
             }));
             progress.inspectedNodes += census.inspectedNodes;
             progress.retainedRecentTrees += census.retainedRecentTrees;
