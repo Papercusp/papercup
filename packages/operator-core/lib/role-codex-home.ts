@@ -787,7 +787,7 @@ export function writeCodexLockHooks(
   const launchProseNudge = join(dir, 'posttooluse-launch-prose-budget-nudge.mjs');
   if (existsSync(launchProseNudge)) {
     postToolUse.push({
-      matcher: '^(apply_patch|Edit|Write|MultiEdit|write_file|edit_file|Bash)$',
+      matcher: '^(?:Edit|Write|MultiEdit|apply_patch|write_file|edit_file|Bash|exec_command|shell_command|(?:mcp__.*__)?capability[:_-](?:edit|write|multi_?edit|patch|bash)|(?:mcp__.*__)?tools[:_]invoke)$',
       hooks: [{ type: 'command', command: launchProseNudge, timeout: 60 }],
     });
   }
