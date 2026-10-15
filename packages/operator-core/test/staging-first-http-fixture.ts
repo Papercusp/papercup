@@ -69,12 +69,19 @@ async function main() {
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup') ||
+      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-hub-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-launch-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-spawn-cleanup')) {
     // Native launch readers use pools besides the org query client. Exercise
     // the idle LISTEN connection too: ending only sql cannot release it.
     await getOrgPgApp().sql`SELECT 1`;
     await getOrgPgListener().sql.listen('private_native_cleanup', () => {});
+    if (e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-hub-cleanup')) {
+      // The native wake buses own a separate pool, outside db-org's reset.
+      // Leave this subscription active to exercise process-owner teardown.
+      const { hubListen } = await import('../lib/pg-listen-hub');
+      await hubListen('private_native_hub_cleanup', () => {});
+    }
     if (!e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-pool-cleanup')) {
       // Exercise the native launch module and its standing-wake callback without
       // spawning a CLI, container, provider request or private API build.
@@ -372,6 +379,11 @@ catch (error) {
     // listen() completion cannot reopen the retired socket.
     const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
     await _stopInvalidationListenerForTests();
+    // pg-listen-hub owns a direct postgres-js connection outside db-org's
+    // reset registry. Close it before resetting disposable pools, or its
+    // referenced socket keeps the worker alive after every native failure.
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
     const { sql } = getOrgPg();
     const pgConnections = await sql`SELECT client_port, application_name, state
       FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
