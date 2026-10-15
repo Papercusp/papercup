@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { controlPlaneTempCandidates } from './control-plane-temp.mjs';
 
 /**
  * systemd-scope — the pure `systemd-run --user --scope` argv-builder shared by every
@@ -166,24 +166,32 @@ export function createSecretEnvironmentTransport(
   env: Readonly<Record<string, string | undefined>>,
 ): SecretEnvironmentTransport {
   const bytes = encodeSecretEnvironment(env);
-  const roots = process.platform === 'linux' && existsSync('/dev/shm') ? ['/dev/shm', tmpdir()] : [tmpdir()];
+  const roots = controlPlaneTempCandidates('payload');
   let fd: number | null = null;
   let lastError: unknown = null;
   for (const root of roots) {
-    const pathname = join(root, `papercusp-env-${process.pid}-${randomUUID()}`);
+    const pathname = join(root, 'papercusp-env-' + process.pid + '-' + randomUUID());
+    let candidateFd: number | null = null;
     try {
-      fd = openSync(pathname, 'wx', 0o600);
+      candidateFd = openSync(pathname, 'wx', 0o600);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = writeSync(candidateFd, bytes, offset, bytes.length - offset);
+        if (written <= 0) throw new Error('anonymous environment fd write made no progress');
+        offset += written;
+      }
       unlinkSync(pathname);
+      fd = candidateFd;
+      candidateFd = null;
       break;
     } catch (error) {
       lastError = error;
-      if (fd != null) {
+      if (candidateFd != null) {
         try {
-          closeSync(fd);
+          closeSync(candidateFd);
         } catch {
           /* best effort */
         }
-        fd = null;
       }
       try {
         unlinkSync(pathname);
@@ -194,21 +202,6 @@ export function createSecretEnvironmentTransport(
   }
   if (fd == null) {
     throw lastError instanceof Error ? lastError : new Error('unable to create anonymous environment fd');
-  }
-  try {
-    let offset = 0;
-    while (offset < bytes.length) {
-      const written = writeSync(fd, bytes, offset, bytes.length - offset);
-      if (written <= 0) throw new Error('anonymous environment fd write made no progress');
-      offset += written;
-    }
-  } catch (error) {
-    try {
-      closeSync(fd);
-    } catch {
-      /* best effort */
-    }
-    throw error;
   }
   let released = false;
   let releaseTimer: ReturnType<typeof setTimeout> | null = null;
