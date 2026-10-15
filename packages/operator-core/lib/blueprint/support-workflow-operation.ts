@@ -22,6 +22,8 @@ export function supportToEngineeringOperation(input: {
   model?: BlueprintOperation['policy']['model'];
   accountableOwner: string; reviewerPrincipals: string[];
   allowedSources: string[]; allowedActions: string[]; maximumCostMicros: number;
+  funding?: NonNullable<BlueprintOperation['policy']['supportCase']>['funding'];
+  native?: NonNullable<BlueprintOperation['policy']['supportCase']>['native'];
 }): BlueprintOperation {
   const string = { type: 'string', minLength: 1 };
   const citation = { type: 'object', additionalProperties: false,
@@ -66,7 +68,9 @@ export function supportToEngineeringOperation(input: {
     policy: { identity: input.identity, ...(input.model ? { model: input.model } : {}),
       requiredTools: ['blueprint:read-private-input'],
       supportCase: { allowedSources: [...input.allowedSources], allowedActions: [...input.allowedActions],
-        maximumCostMicros: input.maximumCostMicros } },
+        maximumCostMicros: input.maximumCostMicros,
+        ...(input.funding ? { funding: structuredClone(input.funding) } : {}),
+        ...(input.native ? { native: structuredClone(input.native) } : {}) } },
     artifacts: [], waits: {},
     signals: { 'business-review': { payloadSchema: { type: 'object', additionalProperties: false,
       required: ['decision', 'reason', 'resultFingerprint'], properties: {

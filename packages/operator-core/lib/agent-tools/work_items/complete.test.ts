@@ -647,6 +647,33 @@ describe('EI-18793465701838962 — contrastive root-cause verification gate', ()
     expect(String(top.error)).toContain('"message": "Unrecognized key: \\"strayTop\\""');
   });
 
+  it('names the path and allowed values for an invalid requirement disposition', () => {
+    const safeParse = (
+      complete.args as { safeParse: (value: unknown) => { success: boolean; error?: unknown } }
+    ).safeParse;
+    const parsed = safeParse({
+      id: 'WI-enum',
+      state: 'done',
+      assumptions: 'none',
+      completion: {
+        summary: 'did it',
+        verification: {
+          requirementDisposition: [
+            { requirement: 'a verbatim requirement quote', disposition: 'delivered' },
+          ],
+        },
+      },
+    });
+    const diagnostic = String(parsed.error);
+    expect(parsed.success).toBe(false);
+    expect(diagnostic).toContain('completion.verification.requirementDisposition.0.disposition');
+    expect(diagnostic).toContain('implemented');
+    expect(diagnostic).toContain('not-applicable');
+    expect(diagnostic).toContain('deferred');
+    expect(diagnostic).toContain('rejected');
+    expect(diagnostic).not.toMatch(/to CLOSE a work-item, pass \\{ id, state, assumptions/);
+  });
+
   // EI-25789682554301541: an unknown key and known fields with invalid types can
   // coexist in one completion. The matching union branch must still expose the
   // concrete schema failure instead of asking for state/assumptions already sent.

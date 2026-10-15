@@ -2296,8 +2296,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("await runPhase('database-ready', () => waitForSandboxPostgres(database,") &&
         source.includes("{ run: diagnosticRun, secrets: [databasePassword], isStopped: () => stopped }));") &&
         source.includes("attempts = 31, isStopped = () => false") &&
-        source.includes("for (let attempt = 0; ; attempt++)") &&
-        source.includes("if (isStopped()) return;") &&
+        source.includes("for (let attempt = 0; ; attempt++) {\n    if (isStopped()) return;") &&
         source.includes("stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;") &&
         source.includes("if (terminal || stalledAttempts >= attempts)")
       );
@@ -2369,7 +2368,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/bench-work-item-continuations.ts: this explicit staging measurement uses the attributed mcp-call CLI to measure real work-item writes and readbacks. It requires the current session and already-owned items; each child is awaited with a 35s timeout, 1MiB output bound, and propagated abort signal. The fixed experiment drains all outstanding calls in finally.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return source.includes("const exec = promisify(execFile);") &&
+      return resourceStartCallCount(source) === 0 &&
+        source.includes("const exec = promisify(execFile);") &&
         [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
         source.includes("resolve(ROOT, 'scripts/mcp-call.mjs')") &&
         source.includes("timeout: 35_000, maxBuffer: 1024 * 1024, signal");
@@ -2399,7 +2399,8 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/bench-work-items-get.ts: this one-shot staging cohort measures attributed mcp-call startup and authoritative summary reads. It accepts 1–10 item ids and 1–10 repeats, executes calls sequentially (at most 100), and bounds each child to 35s and 1MiB output; it creates no independently managed serving capacity.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
-      return source.includes("const exec = promisify(execFile);") &&
+      return resourceStartCallCount(source) === 0 &&
+        source.includes("const exec = promisify(execFile);") &&
         [...code.matchAll(/(?<![\w$.])exec\s*\(/g)].length === 1 &&
         source.includes("timeout: 35_000, maxBuffer: 1024 * 1024") &&
         source.includes("input.ids.length > 10") && source.includes("input.repeats > 10") &&

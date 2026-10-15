@@ -30,14 +30,9 @@ import { resolveWorkItemBehaviorContract } from './behavior-contract-resolver';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 import { readScorecardEvidence } from '../../scorecards';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import type { SpecTestAdequacyMeasurementEvidence } from '../../harness/improvements/observation-types';
 
-type MeasurementEvidenceSummary = {
-  status: 'none' | 'measured' | 'partial' | 'unmeasured' | 'degraded';
-  selectedBindings: number;
-  measuredBindings: number;
-  unavailableBindings: Array<{ id: number; evidenceKind: string; evidenceRef: string; reason: string }>;
-  withoutMeasurementBasis: Array<{ id: number; evidenceKind: string; evidenceRef: string }>;
-};
+type MeasurementEvidenceSummary = SpecTestAdequacyMeasurementEvidence;
 
 type EvaluatedRow = ReturnType<typeof evaluateSpecTestAdequacy> & {
   measurementEvidence: MeasurementEvidenceSummary;
@@ -62,6 +57,24 @@ function summarizeMeasurementEvidence(
       : [],
   );
   const measuredBindings = evidence.filter((row) => row.serverMeasurement?.status === 'measured').length;
+  const bindings: SpecTestAdequacyMeasurementEvidence['bindings'] = evidence.flatMap((row) => {
+    if (!Number.isSafeInteger(row.id) || row.id <= 0) return [];
+    const status: SpecTestAdequacyMeasurementEvidence['bindings'][number]['status'] =
+      row.serverMeasurement?.status === 'measured'
+        ? 'measured'
+        : row.serverMeasurement?.status === 'unavailable'
+          ? 'unavailable'
+          : 'unmeasured';
+    return [{
+      bindingId: row.id,
+      evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef,
+      status,
+      ...(status === 'measured' && typeof row.serverMeasurement?.measuredAtCommit === 'string'
+        ? { measuredAtCommit: row.serverMeasurement.measuredAtCommit }
+        : {}),
+    }];
+  }).sort((a, b) => a.bindingId - b.bindingId);
   const status: MeasurementEvidenceSummary['status'] = evidence.length === 0
     ? 'none'
     : unavailableBindings.length > 0
@@ -77,6 +90,7 @@ function summarizeMeasurementEvidence(
     measuredBindings,
     unavailableBindings,
     withoutMeasurementBasis,
+    bindings,
   };
 }
 const PASS_LIKE = new Set(['pass', 'not-applicable']);
@@ -1171,9 +1185,21 @@ export default defineTool({
         },
         now,
       });
+      const selectedBindingIds = evaluated.scorecardDraft.rerunRecipe.selection.bindingIds;
+      const selectedMeasurementRows = selectedBindingIds === undefined
+        ? clauseEvidence
+        : clauseEvidence.filter((row) => row.id !== undefined && selectedBindingIds.includes(row.id));
+      const measurementEvidence = summarizeMeasurementEvidence(selectedMeasurementRows);
       return {
         ...evaluated,
-        measurementEvidence: summarizeMeasurementEvidence(clauseEvidence),
+        scorecardDraft: {
+          ...evaluated.scorecardDraft,
+          rerunRecipe: {
+            ...evaluated.scorecardDraft.rerunRecipe,
+            measurementEvidence,
+          },
+        },
+        measurementEvidence,
       };
     }));
     // acceptance-machinery-seam-fixes-2026-09-16 P-001 (R-1): a read whose EVIDENCE COHORT is

@@ -58,6 +58,33 @@ describe('carryNativeOwnerInputFreshness scan evidence', () => {
     });
   });
 
+  it('reports an existing transcript outside the configured isolated root and keeps the result fail-closed', () => {
+    const fixture = transcriptFixture('{"type":"event_msg"}\n');
+    const configuredHome = mkdtempSync(join(tmpdir(), 'psu-carry-freshness-root-'));
+    tempDirs.push(configuredHome);
+    const configuredRoot = join(configuredHome, 'sessions');
+    mkdirSync(configuredRoot, { recursive: true });
+    const result = carryNativeOwnerInputFreshness({
+      agent: 'codex',
+      env: { ...fixture.env, CODEX_HOME: configuredHome },
+      transcriptPath: fixture.transcriptPath,
+      systemPromptAddendum: 'Carry document built at 2026-10-14T04:30:00Z',
+    });
+
+    expect(result).toMatchObject({
+      status: 'unverifiable',
+      reason: 'native-input-read-incomplete',
+      scan: {
+        reason: 'transcript-outside-isolated-root',
+        transcriptBinding: {
+          sourceTranscriptPath: fixture.transcriptPath,
+          configuredIsolatedRoot: configuredRoot,
+          status: 'outside',
+        },
+      },
+    });
+  });
+
   it('identifies an unterminated final row instead of treating it as a clean scan', () => {
     const fixture = transcriptFixture('{"type":"event_msg","timestamp":"2026-10-14T04:00:00Z"}');
     const result = carryNativeOwnerInputFreshness({

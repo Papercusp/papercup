@@ -1435,8 +1435,15 @@ export function nativeTurnVerifierSupport(agent, env = process.env) {
  * through this, so neither can accidentally certify another live session.
  * Returns an open fd the caller MUST close, or null. */
 function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath, home = homedir(), onFailure }) {
+  // Keep the binding that was actually measured alongside a refusal. These
+  // fields are diagnostic only: they never select a root or relax the gate.
+  const transcriptBinding = {
+    sourceTranscriptPath: typeof transcriptPath === 'string' ? transcriptPath.slice(0, 4096) : null,
+    configuredIsolatedRoot: null,
+    status: 'unverifiable',
+  };
   const fail = (reason, evidence = {}) => {
-    onFailure?.({ reason, ...evidence });
+    onFailure?.({ reason, ...evidence, transcriptBinding: { ...transcriptBinding } });
     return null;
   };
   const support = nativeTurnVerifierSupport(agent, env);
@@ -1446,6 +1453,7 @@ function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath
   try {
     const rootDir = nativeTranscriptRoot(agent, env, home);
     if (!rootDir) return fail('missing-isolated-root');
+    transcriptBinding.configuredIsolatedRoot = rootDir.slice(0, 4096);
     let root;
     try { root = realpathSync(rootDir); }
     catch (error) { return fail('isolated-root-unavailable', { errorCode: error?.code ?? 'filesystem-error' }); }
@@ -1453,7 +1461,9 @@ function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath
     try { path = realpathSync(transcriptPath); }
     catch (error) { return fail('transcript-unavailable', { errorCode: error?.code ?? 'filesystem-error' }); }
     const rel = relative(root, path);
-    if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel)) return fail('transcript-outside-isolated-root');
+    const contained = Boolean(rel) && rel !== '..' && !rel.startsWith('../') && !isAbsolute(rel);
+    transcriptBinding.status = contained ? 'contained' : 'outside';
+    if (!contained) return fail('transcript-outside-isolated-root');
     if (!path.endsWith('.jsonl')) return fail('transcript-not-jsonl');
     try { fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)); }
     catch (error) { return fail('transcript-open-failed', { errorCode: error?.code ?? 'filesystem-error' }); }

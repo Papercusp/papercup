@@ -263,6 +263,26 @@ export interface SpecTestAdequacyEvaluatorBuild {
   version: string;
 }
 
+/** Server-measured provenance for one selected evidence binding. */
+export interface SpecTestAdequacyBindingMeasurement {
+  bindingId: number;
+  evidenceKind: string;
+  evidenceRef: string;
+  status: 'measured' | 'unavailable' | 'unmeasured';
+  /** Commit whose repository objects were measured; absent for ledger or non-git measurements. */
+  measuredAtCommit?: string;
+}
+
+/** Measurement summary returned by the evaluator and pinned in newly minted recipes. */
+export interface SpecTestAdequacyMeasurementEvidence {
+  status: 'none' | 'measured' | 'partial' | 'unmeasured' | 'degraded';
+  selectedBindings: number;
+  measuredBindings: number;
+  unavailableBindings: Array<{ id: number; evidenceKind: string; evidenceRef: string; reason: string }>;
+  withoutMeasurementBasis: Array<{ id: number; evidenceKind: string; evidenceRef: string }>;
+  bindings: SpecTestAdequacyBindingMeasurement[];
+}
+
 /**
  * The canonical replay contract emitted with a spec-test-adequacy scorecard.
  * It records both the exact clause/evidence selection and the caller's
@@ -343,6 +363,8 @@ export interface SpecTestAdequacyRerunRecipe {
     supplied: boolean;
     fingerprints: SpecTestAdequacyCurrentFingerprint[];
   };
+  /** Server-derived binding measurement snapshot; absent only on historical recipes. */
+  measurementEvidence?: SpecTestAdequacyMeasurementEvidence;
   derivation: {
     kind: 'listSpecEvidence.currentness';
     classifier: 'classifySpecEvidenceCurrentness';
