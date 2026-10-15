@@ -72,6 +72,7 @@ describe('Codex hook observation transaction', () => {
     const result = await realHost.runCodexHooksObservation(f.options);
     expect(result).toMatchObject({ ok: true, inputReleased: true, identity: custody,
       coverage: { complete: false, scope: 'fresh-hook-browser-viewport' } });
+    if (!('coverage' in result) || !result.coverage) throw new Error('expected an observed hooks viewport');
     expect(result.visibleRows).toContain('PreToolUse: configured hook');
     expect(f.writes).toEqual(['/hooks', '\r', '\x1b']);
     expect(result.coverage.notMeasured).toContain('nested-dispatch');
@@ -6590,6 +6591,18 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     sessionClass: 'gateway-claude-headless',
   };
 
+  // Typed explicitly: an untyped `{ …destructure… } = {}` param infers its shape from
+  // the DEFAULTED bindings only, so every new knob (maxDrillAttempts, a prompt
+  // result's quietMs/verifier) silently became a fresh TS2339/TS2353 at its callers.
+  type RearmHarnessOptions = {
+    promptResults?: Array<{ deferred: boolean; quietMs?: number; verifier?: string }>;
+    recycleError?: Error | null;
+    waitIdle?: boolean;
+    maxProductionAttempts?: number;
+    maxDrillAttempts?: number;
+    readWakeMode?: () => Promise<string>;
+    waitWakeModeRetry?: (delayMs: number) => Promise<unknown>;
+  };
   function makeHarness({
     promptResults = [{ deferred: false }],
     recycleError = null,
@@ -6598,7 +6611,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     maxDrillAttempts,
     readWakeMode,
     waitWakeModeRetry,
-  } = {}) {
+  }: RearmHarnessOptions = {}) {
     const events = [];
     const recycles = [];
     const order = [];
@@ -7012,7 +7025,9 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
   it('settles a queued production carry when the host ends, clears wake suppression, and ignores a late gate release', async () => {
     const events: Array<{ kind: string; [key: string]: unknown }> = [];
     const settlements: Array<{ ids: string[]; outcome: unknown }> = [];
-    let releasePrompt: ((result: { deferred: boolean }) => void) | null = null;
+    // `as`, not an annotation: the closure below assigns it, which control-flow
+    // analysis cannot see, so an annotated `= null` narrows to `null` at the call.
+    let releasePrompt = null as ((result: { deferred: boolean }) => void) | null;
     const controller = makeCarryRearmController({
       acquireInject: async () => () => {},
       waitAtPrompt: () => new Promise<{ deferred: boolean }>((resolve) => {
@@ -7022,7 +7037,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
         throw new Error('a disposed host must not recycle its dead child');
       },
       emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
-      onSettlement: (messages, outcome) => settlements.push({
+      onSettlement: (messages: Array<{ deliveryId?: unknown }>, outcome: unknown) => settlements.push({
         ids: messages.map((message) => String(message.deliveryId)),
         outcome,
       }),
@@ -7068,7 +7083,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
       waitAtPrompt: async () => ({ deferred: true }),
       recycle: async () => {},
       emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
-      onSettlement: (messages, outcome) => settlements.push({
+      onSettlement: (messages: Array<{ deliveryId?: unknown }>, outcome: unknown) => settlements.push({
         ids: messages.map((message) => String(message.deliveryId)),
         outcome,
       }),
