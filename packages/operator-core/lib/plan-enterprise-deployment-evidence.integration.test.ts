@@ -30,8 +30,16 @@ const inspect = (input: DeploymentEvidenceInput) => inspectEnterpriseDeployment(
 
 async function observe(db: Sql) {
   const rows = await db.unsafe('SELECT marker FROM r9_records ORDER BY marker');
-  const grants = await db.unsafe(`SELECT relname, relacl::text FROM pg_class
+  const rawAcl = await db.unsafe(`SELECT relname, relacl::text FROM pg_class
     WHERE oid IN ('r9_records'::regclass, 'r9_private'::regclass) ORDER BY relname`);
+  // ACL array order and NULL/default ACL representation need not survive a dump.
+  // Compare effective named grants including owner, grantor and grant option.
+  const grants = await db.unsafe(`SELECT c.relname, pg_get_userbyid(c.relowner) AS owner,
+      CASE WHEN a.grantee=0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+      pg_get_userbyid(a.grantor) AS grantor, a.privilege_type, a.is_grantable
+    FROM pg_class c CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
+    WHERE c.oid IN ('r9_records'::regclass, 'r9_private'::regclass)
+    ORDER BY c.relname, grantee, grantor, a.privilege_type, a.is_grantable`);
   const legitimateAllowed = await db.begin(async tx => {
     await tx.unsafe('SET LOCAL ROLE r9_reader');
     const result = await tx.unsafe("SELECT marker FROM r9_records WHERE marker='before'");
@@ -48,7 +56,7 @@ async function observe(db: Sql) {
     unauthorizedDenied = true;
   }
   return { data: hash(JSON.stringify(rows)), restrictions: hash(JSON.stringify(grants)),
-    legitimateAllowed, unauthorizedDenied };
+    rawAcl, legitimateAllowed, unauthorizedDenied };
 }
 
 describe('R9 selected deployment/recovery evidence detector', () => {
@@ -84,6 +92,10 @@ describe('R9 selected deployment/recovery evidence detector', () => {
     await promisify(execFile)(join(resolveNativePgBinDir(), 'pg_restore'),
       ['--exit-on-error', '--dbname', targetUrl.toString(), dump], { timeout: 60_000 });
     const restored = await observe(target);
+    if (JSON.stringify(expected.rawAcl) !== JSON.stringify(restored.rawAcl)) {
+      console.info('R9_ACL_REPRESENTATION', JSON.stringify({ source: expected.rawAcl, restored: restored.rawAcl,
+        effectiveGrantDigestsEqual: expected.restrictions === restored.restrictions }));
+    }
     const healthyAt = iso(Date.now());
     recovery = { backupRef, recoveryPointAt: new Date(point!.at).toISOString(), incidentAt, healthyAt,
       expectedDataSha256: expected.data, restoredDataSha256: restored.data,
@@ -97,7 +109,9 @@ describe('R9 selected deployment/recovery evidence detector', () => {
       approvedBy: 'fixture:engineering-approver', approvedAt: iso(frozenAt - 1000), frozenAt: iso(frozenAt),
       candidateSha: 'a'.repeat(40), profiles: [{ id: 'fixture:linux-desktop-hosted', os: 'fixture:linux',
         delivery: 'desktop-hosted', artifactSha256: hash('fixture candidate bytes'),
-        datasetId: 'fixture:r9-canaries', installId: 'fixture:install-1', restoreId: 'fixture:restore-1', runtime,
+        datasetId: 'fixture:r9-canaries', expectedDataSha256: expected.data,
+        expectedRestrictionsSha256: expected.restrictions,
+        installId: 'fixture:install-1', restoreId: 'fixture:restore-1', runtime,
         networkCases: ['legitimate-proxy', 'denied-proxy'], updateRings: ['pilot', 'broad'],
         managedEndpoint: true, privateNetwork: true, maxRtoMs: 120_000, maxRpoMs: 120_000 }],
     };
@@ -108,6 +122,7 @@ describe('R9 selected deployment/recovery evidence detector', () => {
       candidateSha: selection.candidateSha, recordSha256: selection.recordSha256, profileId: profile.id,
       artifactSha256: profile.artifactSha256, datasetId: profile.datasetId, installId: profile.installId,
       restoreId: profile.restoreId, phase, startedAt, finishedAt: healthyAt, verdict: 'pass',
+      ...(phase === 'backup' ? { backupRef } : {}),
       ...(phase === 'restore' ? { recovery: structuredClone(recovery) } : {}),
     })) };
   }, 120_000);
@@ -122,7 +137,7 @@ describe('R9 selected deployment/recovery evidence detector', () => {
     expect(recovery.restoredDataSha256).toBe(recovery.expectedDataSha256);
     expect(recovery.restoredRestrictionsSha256).toBe(recovery.expectedRestrictionsSha256);
     const result = inspect(fixture());
-    expect(result.verdict).toBe('pass');
+    expect(result.verdict, result.reason).toBe('pass');
     expect(result.reason).toContain('integration');
     expect(result.coverage.checked).toEqual(result.coverage.population);
     expect(result.coverage.notChecked).toEqual([]);
@@ -155,6 +170,27 @@ describe('R9 selected deployment/recovery evidence detector', () => {
     input.receipts = [...input.receipts, row]; expect(inspect(input).verdict).toBe('fail');
     row.profileId = input.selection!.profiles[0]!.id; row.verdict = 'fail';
     expect(inspect(input).verdict).toBe('fail');
+  });
+
+  it('joins restoration to the completed backup and frozen dataset/restriction pins', () => {
+    const wrong = fixture(); restoreRow(wrong).recovery!.backupRef = 'wrong-backup';
+    expect(inspect(wrong).verdict).toBe('fail');
+    const forgedBaseline = fixture(); const observation = restoreRow(forgedBaseline).recovery!;
+    observation.expectedDataSha256 = observation.restoredDataSha256 = hash('lost dataset');
+    observation.expectedRestrictionsSha256 = observation.restoredRestrictionsSha256 = hash('lost restrictions');
+    expect(inspect(forgedBaseline).verdict).toBe('fail');
+  });
+
+  it('enumerates each selected profile and refuses an unexercised second profile', () => {
+    const input = fixture(); const second = structuredClone(input.selection!.profiles[0]!);
+    second.id = 'fixture:private-cloud'; second.delivery = 'private-cloud'; second.managedEndpoint = false;
+    input.selection!.profiles = [...input.selection!.profiles, second];
+    expect(inspect(input).verdict).toBe('unknown');
+    input.receipts = [...input.receipts, ...input.receipts.filter(r => deploymentPhases(second).includes(r.phase))
+      .map(r => ({ ...structuredClone(r), profileId: second.id, ref: `${r.ref}:cloud` }))];
+    const result = inspect(input); expect(result.verdict, result.reason).toBe('pass');
+    expect(result.coverage.checked).toEqual(result.coverage.population);
+    expect(result.coverage.population).not.toContain(`profile:${second.id}/mdm-packaging`);
   });
 
   const phases = ['install', 'boot', 'configuration', 'upgrade', 'health', 'diagnostics', 'backup', 'restore',
@@ -234,5 +270,16 @@ describe('R9 selected deployment/recovery evidence detector', () => {
     const wrong = await evaluateReleaseProfile({ profileRef: 'fixture:r9', components: [component],
       expectedLineage: { sha: 'b'.repeat(40) } });
     expect(wrong.go).toBe(false); expect(wrong.components[0]!.verdict).toBe('lineage-mismatch');
+  });
+
+  it('detects invalid measurement windows and absent receipt/assertion/runtime qualification', () => {
+    const future = fixture(); restoreRow(future).finishedAt = iso(Date.now() + 60_000);
+    expect(inspect(future).verdict).toBe('fail');
+    const reverse = fixture(); restoreRow(reverse).recovery!.recoveryPointAt = iso(Date.now() + 1000);
+    expect(inspect(reverse).verdict).toBe('fail');
+    const missing = fixture(); restoreRow(missing).assertionIds = [];
+    expect(inspect(missing).verdict).toBe('unknown');
+    const runtime = fixture(); runtime.selection!.profiles[0]!.runtime.ref = '';
+    expect(inspect(runtime).verdict).toBe('unknown');
   });
 });

@@ -11,6 +11,8 @@ export interface DeploymentProfile {
   delivery: 'desktop-hosted' | 'private-cloud';
   artifactSha256: string;
   datasetId: string;
+  expectedDataSha256: string;
+  expectedRestrictionsSha256: string;
   installId: string;
   restoreId: string;
   runtime: { ref: string; owner: string; isolationBoundary: string; routeRef?: string };
@@ -61,6 +63,7 @@ export interface DeploymentReceipt {
   startedAt: string;
   finishedAt: string;
   verdict: ComponentRawVerdict;
+  backupRef?: string;
   recovery?: {
     backupRef: string;
     recoveryPointAt: string;
@@ -117,7 +120,8 @@ export function inspectEnterpriseDeployment(input: DeploymentEvidenceInput): Dep
   const add = (id: string, verdict: ComponentRawVerdict, reason: string) => checks.push({ id, verdict, reason });
   const missing = (id: string, reason: string) => add(id, 'unknown', reason);
   const compare = (id: string, actual: unknown, expected: unknown) => {
-    if (actual === undefined || actual === null || actual === '') missing(id, 'identity or observation absent');
+    if (expected === undefined || expected === null || expected === '' ||
+      actual === undefined || actual === null || actual === '') missing(id, 'identity or observation absent');
     else if (actual !== expected) add(id, 'fail', 'measured value disagrees with the frozen selection');
   };
   let oldest = now;
@@ -144,6 +148,9 @@ export function inspectEnterpriseDeployment(input: DeploymentEvidenceInput): Dep
         missing(`${prefix}:supported`, 'supported OS/delivery qualification absent');
       }
       if (!HASH.test(profile.artifactSha256 ?? '')) missing(`${prefix}:artifact`, 'artifact digest absent');
+      for (const key of ['expectedDataSha256', 'expectedRestrictionsSha256'] as const) {
+        if (!HASH.test(profile[key] ?? '')) missing(`${prefix}:${key}`, 'frozen dataset/restriction digest absent');
+      }
       if (typeof profile.managedEndpoint !== 'boolean' || typeof profile.privateNetwork !== 'boolean') {
         missing(`${prefix}:selection`, 'managed endpoint/private network selection absent');
       }
@@ -216,6 +223,11 @@ export function inspectEnterpriseDeployment(input: DeploymentEvidenceInput): Dep
           const recovery = row.recovery;
           if (!recovery) { missing(`${id}:recovery`, 'recovery observation absent'); continue; }
           if (!text(recovery.backupRef)) missing(`${id}:backup`, 'completed backup reference absent');
+          const backups = input.receipts.filter(r => r.profileId === profile.id && r.phase === 'backup');
+          if (!backups.length) missing(`${id}:backup-join`, 'completed backup receipt absent');
+          for (const backup of backups) compare(`${id}:backup-join`, recovery.backupRef, backup.backupRef);
+          compare(`${id}:dataset-pin`, recovery.expectedDataSha256, profile.expectedDataSha256);
+          compare(`${id}:restrictions-pin`, recovery.expectedRestrictionsSha256, profile.expectedRestrictionsSha256);
           for (const [expected, actual] of [
             [recovery.expectedDataSha256, recovery.restoredDataSha256],
             [recovery.expectedRestrictionsSha256, recovery.restoredRestrictionsSha256],
