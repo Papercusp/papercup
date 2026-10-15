@@ -1,288 +1,295 @@
 #!/usr/bin/env node
 /**
- * Measure raw tool output in Claude Code and Codex JSONL transcripts.
- *
- * This intentionally reads the client transcripts, rather than
- * harness_shared.session_turn_parts: the latter caps every part before it is
- * persisted.  `bytes` below are UTF-8 bytes.  No tokenizer estimate is used.
- * `rereadBytes` is the replay volume implied by later model requests in the
- * same transcript (one output is sent again for each later request).
+ * P-001: raw Claude/Codex tool-output measurement, extending WI-6882's corpus reader.
+ * Counts UTF-8 content bytes, not tokens or billed usage. See report.method.
  */
-import { createReadStream } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
-import { writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { stat, realpath, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { createInterface } from 'node:readline';
+import { pathToFileURL } from 'node:url';
+import { walkRawTranscripts, readRawTranscript } from './lib/raw-session-corpus.mjs';
 
-const DEFAULT_CLAUDE_ROOTS = [join(homedir(), '.claude', 'projects'), join(homedir(), '.papercusp', 'session-claude')];
-const DEFAULT_CODEX_ROOTS = [join(homedir(), '.codex', 'sessions')];
-const CAP_NAMES = ['codex-outer-exec', 'nested-shell', 'papercusp-door'];
+export const CAP_NAMES = ['codex-outer-exec', 'nested-shell', 'papercusp-door', 'unknown'];
+const DEFAULT_ROOTS = [
+  { client: 'claude', path: join(homedir(), '.claude/projects') },
+  { client: 'claude', path: join(homedir(), '.papercusp/session-claude') },
+  { client: 'codex', path: join(homedir(), '.codex/sessions') },
+  { client: 'codex', path: join(homedir(), '.papercusp/su-codex-homes') },
+];
+const USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens'];
+const DELIVERY_KEYS = new Set(['max_output_tokens', 'yield_time_ms', 'timeout_ms', 'timeout']);
 
-function args(argv) {
-  const out = { hours: 24, out: null, claudeRoots: [], codexRoots: [], roots: [] };
+function parseArgs(argv) {
+  const options = { hours: 24, rerunSeconds: 120, roots: [], out: null };
+  const take = (i) => {
+    if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(argv[i] + ' requires a value');
+    return argv[i + 1];
+  };
   for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    const next = argv[i + 1];
-    if (a === '--hours' || a === '--window-hours') out.hours = Number(next), i += 1;
-    else if (a === '--out') out.out = next, i += 1;
-    else if (a === '--claude-root') out.claudeRoots.push(resolve(next)), i += 1;
-    else if (a === '--codex-root') out.codexRoots.push(resolve(next)), i += 1;
-    else if (a === '--root') out.roots.push(resolve(next)), i += 1;
-    else if (!a.startsWith('-')) out.roots.push(resolve(a));
-    else throw new Error(`unknown option ${a}`);
+    const a = argv[i], value = take(i);
+    if (a === '--hours' || a === '--window-hours') options.hours = Number(value);
+    else if (a === '--since') {
+      const m = /^(\d+(?:\.\d+)?)(h|d)$/.exec(value);
+      if (!m) throw new Error('--since requires a duration such as 24h or 7d');
+      options.hours = Number(m[1]) * (m[2] === 'd' ? 24 : 1);
+    } else if (a === '--rerun-seconds') options.rerunSeconds = Number(value);
+    else if (a === '--out') options.out = value;
+    else if (a === '--claude-root' || a === '--codex-root' || a === '--root') {
+      options.roots.push({ client: a === '--root' ? 'auto' : a === '--claude-root' ? 'claude' : 'codex', path: resolve(value) });
+    } else throw new Error('unknown option ' + a);
+    i += 1;
   }
-  if (!Number.isFinite(out.hours) || out.hours <= 0) throw new Error('--hours must be a positive number');
-  if (!out.claudeRoots.length && !out.codexRoots.length && !out.roots.length) {
-    out.claudeRoots = DEFAULT_CLAUDE_ROOTS;
-    out.codexRoots = DEFAULT_CODEX_ROOTS;
+  if (!(Number.isFinite(options.hours) && options.hours > 0)) throw new Error('--hours must be positive');
+  if (!(Number.isFinite(options.rerunSeconds) && options.rerunSeconds > 0)) throw new Error('--rerun-seconds must be positive');
+  if (!options.roots.length) {
+    options.roots = [...DEFAULT_ROOTS];
+    if (process.env.CODEX_HOME) options.roots.push({ client: 'codex', path: join(process.env.CODEX_HOME, 'sessions') });
   }
-  return out;
+  return options;
 }
 
-async function* jsonlFiles(root) {
-  let entries;
-  try { entries = await readdir(root, { withFileTypes: true }); } catch { return; }
-  for (const e of entries) {
-    const p = join(root, e.name);
-    if (e.isDirectory()) yield* jsonlFiles(p);
-    else if (e.isFile() && e.name.endsWith('.jsonl')) yield p;
-  }
-}
-
-function utf8(value) {
-  if (typeof value === 'string') return Buffer.byteLength(value, 'utf8');
-  if (Array.isArray(value)) return value.reduce((n, x) => n + utf8(x), 0);
+/** Text blocks count their text; non-text blocks count their serialized representation. */
+export function contentBytes(value) {
+  if (typeof value === 'string') return Buffer.byteLength(value);
+  if (Array.isArray(value)) return value.reduce((n, x) => n + contentBytes(x), 0);
   if (value && typeof value === 'object') {
-    if (typeof value.text === 'string') return utf8(value.text);
-    if (typeof value.content !== 'undefined') return utf8(value.content);
-    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+    if (typeof value.text === 'string') return contentBytes(value.text);
+    return Buffer.byteLength(JSON.stringify(value));
   }
   return 0;
 }
-
-function text(value) {
+function contentText(value) {
   if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map(text).join('\n');
-  if (value && typeof value === 'object') {
-    if (typeof value.text === 'string') return value.text;
-    if (typeof value.content !== 'undefined') return text(value.content);
-    return JSON.stringify(value);
-  }
-  return '';
+  if (Array.isArray(value)) return value.map(contentText).join('\n');
+  return value && typeof value.text === 'string' ? value.text : '';
 }
-
-function percentile(values, p) {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+function toolName(client, name) {
+  const n = String(name || '(unmatched)').replace(/^functions\./, '');
+  return client === 'codex' && n === 'exec' ? 'code-mode-exec' : n;
 }
-
-function distribution(values) {
-  return {
-    count: values.length,
-    p50: percentile(values, 0.50),
-    p90: percentile(values, 0.90),
-    p95: percentile(values, 0.95),
-    p99: percentile(values, 0.99),
-    max: percentile(values, 1),
-  };
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().filter((k) => !DELIVERY_KEYS.has(k)).map((k) => [k, canonical(value[k])]));
+  return value;
 }
-
-function normalizeTool(client, name, input) {
-  let tool = String(name || '(unknown)');
-  if (client === 'claude' && tool === 'Bash') {
-    const command = String(input?.command ?? '').trim().split(/\s+/)[0] || '(empty)';
-    return `Bash:${command}`;
-  }
-  if (client === 'claude' && /capability_bash$/.test(tool)) {
-    const command = String(input?.cmd ?? input?.command ?? '').replace(/^cd [^;&]*(?:;|&&)\s*/, '').trim().split(/\s+/)[0] || '(empty)';
-    return `capability_bash:${command}`;
-  }
-  if (client === 'codex' && tool === 'exec') return 'code-mode-exec';
-  if (client === 'codex' && /^(exec_command|shell|local_shell_call)$/.test(tool)) {
-    let command = '';
-    try {
-      const parsed = typeof input === 'string' ? JSON.parse(input) : input || {};
-      command = String(parsed.cmd ?? parsed.command ?? parsed.action ?? '').trim().split(/\s+/)[0];
-    } catch { /* opaque command */ }
-    return `${tool}:${command || '(empty)'}`;
-  }
-  return tool;
-}
-
-function capFor(client, tool, body) {
-  const s = String(body || '');
-  // The door footer is emitted after the kept payload and is an exact marker.
-  if (/\[result-door:|\[projection:|result[- ]door overflow|output_spill_failed/i.test(s)) return 'papercusp-door';
-  if (client === 'codex' && /(?:exec_command|local_shell_call|^shell:)/.test(tool)
-    && /(?:outer exec|exec output|output (?:was )?truncated|truncated (?:at|to)|MAX_OUTPUT|EXEC_OUTPUT_TRUNCATED)/i.test(s)) return 'codex-outer-exec';
-  if (/(?:capability_bash|Bash:|nested shell|shell output)/i.test(tool)
-    && /(?:nested shell|shell output (?:was )?truncated|truncated (?:at|to)|SHELL_OUTPUT_TRUNCATED|MAX_OUTPUT)/i.test(s)) return 'nested-shell';
-  return null;
-}
-
-function emptyCap() {
-  return Object.fromEntries(CAP_NAMES.map((name) => [name, { results: 0, bytes: 0, reruns: 0, rerunBytes: 0, shareOfResults: 0, shareOfBytes: 0 }]));
-}
-
-function routeSummary(rows, modelCalls, files, parseErrors) {
-  const byTool = new Map();
-  let rereadBytes = 0;
-  let resultBytes = 0;
-  let resultCount = 0;
-  let truncatedResults = 0;
-  const sizes = [];
-  const caps = emptyCap();
-  const reruns = [];
-  for (const row of rows) {
-    const agg = byTool.get(row.tool) || { tool: row.tool, results: 0, bytes: 0, rereadBytes: 0, sizes: [], truncatedResults: 0, reruns: 0, rerunBytes: 0 };
-    agg.results += 1; agg.bytes += row.bytes; agg.rereadBytes += row.rereadBytes; agg.sizes.push(row.bytes);
-    if (row.cap) {
-      agg.truncatedResults += 1; truncatedResults += 1;
-      const c = caps[row.cap]; c.results += 1; c.bytes += row.bytes;
-      c.reruns += row.reruns; c.rerunBytes += row.rerunBytes;
-      agg.reruns += row.reruns; agg.rerunBytes += row.rerunBytes;
+function signature(tool, input) {
+  let value = input;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch {
+      // The exec pragma is a delivery setting; changing only its cap is still a repeat.
+      value = value.replace(/^\s*\/\/\s*@exec:[^\n]*\n?/, '').trim();
     }
-    if (row.reruns) reruns.push({ tool: row.tool, cap: row.cap, count: row.reruns, bytes: row.rerunBytes });
-    resultBytes += row.bytes; resultCount += 1; rereadBytes += row.rereadBytes; sizes.push(row.bytes);
   }
-  for (const c of Object.values(caps)) {
-    c.shareOfResults = resultCount ? Number((c.results / resultCount).toFixed(6)) : 0;
-    c.shareOfBytes = resultBytes ? Number((c.bytes / resultBytes).toFixed(6)) : 0;
-  }
-  const tools = [...byTool.values()].map(({ sizes: _, ...r }) => ({ ...r, size: distribution(byTool.get(r.tool).sizes) })).sort((a, b) => b.bytes - a.bytes);
-  return {
-    files, parseErrors, modelCalls,
-    results: resultCount, bytes: resultBytes, rereadBytes,
-    size: distribution(sizes), tools,
-    truncation: { results: truncatedResults, shareOfResults: resultCount ? truncatedResults / resultCount : 0, byCap: caps },
-    reruns: { resultsAfterTruncation: reruns.reduce((n, x) => n + x.count, 0), bytesAfterTruncation: reruns.reduce((n, x) => n + x.bytes, 0), rows: reruns },
-  };
+  return createHash('sha256').update(JSON.stringify([tool, canonical(value ?? null)])).digest('hex');
 }
 
-async function scan(file, client, cutoff) {
-  const names = new Map();
-  const calls = [];
-  const results = [];
-  let modelCalls = 0;
-  let parseErrors = 0;
-  let order = 0;
-  const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    let rec;
-    try { rec = JSON.parse(line); } catch { parseErrors += 1; continue; }
-    const timestamp = Date.parse(rec.timestamp || '');
-    const inWindow = !(Number.isFinite(timestamp) && timestamp < cutoff);
-    order += 1;
+/**
+ * Marker-based, overlapping attribution. The outer formatter's warning must
+ * be at the start of the rendered body; a warning inside a shell envelope is
+ * a different cap. Projection-success footers are not truncation.
+ */
+export function capFor(client, tool, value) {
+  const caps = new Set();
+  const body = contentText(value);
+  const outerBody = body.replace(/^Script [^\n]*\n(?:Wall time[^\n]*\n)?Output:\s*\n?/, '');
+  const warning = /^(?:Warning: truncated output[^\n]*|(?:\d[\d,]* tokens truncated(?:[^\n]*)))/i;
+  const nativeShell = /^(?:exec_command|write_stdin|shell|local_shell_call)$/.test(tool);
+  if (client === 'codex' && tool === 'code-mode-exec' && warning.test(outerBody.trimStart())) caps.add('codex-outer-exec');
+  if (client === 'codex' && nativeShell && /(?:Warning: truncated output|[\d,]+ tokens truncated)/i.test(body)) caps.add('nested-shell');
+  if (/^(?:Bash|.*capability[_:]bash)$/.test(tool) && /(?:output (?:was )?truncated|\[truncated|truncated output)/i.test(body)) caps.add('nested-shell');
+  if (/^\[result-door:/m.test(body)) caps.add('papercusp-door');
+
+  // Traverse only recorded output/envelope values; never evaluate tool arguments.
+  const visit = (node, depth = 0) => {
+    if (depth > 8 || node == null) return;
+    if (typeof node === 'string') {
+      const s = node.trim();
+      if (/^\[result-door:/m.test(s)) caps.add('papercusp-door');
+      if (s.startsWith('{') || s.startsWith('[')) {
+        try { visit(JSON.parse(s), depth + 1); } catch { /* outer cap may leave partial JSON */ }
+      }
+      return;
+    }
+    if (Array.isArray(node)) { for (const item of node) visit(item, depth + 1); return; }
+    if (typeof node !== 'object') return;
+    if (node._projection?.truncated === true && node._projection?.kind === 'bounded-payload') caps.add('papercusp-door');
+    if (node._meta?.resultDoor?.truncated === true) caps.add('papercusp-door');
+    if ((node.truncated === true && typeof node.log_path === 'string')
+      || (typeof node.output === 'string' && (node.original_token_count != null || node.chunk_id != null)
+        && /Warning: truncated output|[\d,]+ tokens truncated/.test(node.output))) caps.add('nested-shell');
+    for (const [key, child] of Object.entries(node)) {
+      if (key === 'input' || key === 'arguments') continue;
+      visit(child, depth + 1);
+    }
+  };
+  visit(value);
+  // JSON may be preceded by the code-mode status preamble.
+  visit(outerBody);
+  // A clipped envelope can still retain an exact escaped shell warning.
+  if (tool === 'code-mode-exec' && /"output"\s*:\s*"(?:Warning: truncated output|[^"]*\\nWarning: truncated output)/.test(body)) caps.add('nested-shell');
+  if (!caps.size && /Warning: truncated output|[\d,]+ tokens truncated|^\[TRUNCATED\b/m.test(body)) caps.add('unknown');
+  return [...caps];
+}
+
+function distribution(sizes) {
+  const sorted = [...sizes].sort((a, b) => a - b);
+  const at = (p) => sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0;
+  return { count: sorted.length, p50: at(.5), p90: at(.9), p95: at(.95), p99: at(.99), max: at(1) };
+}
+function summary(rows) {
+  const bytes = rows.reduce((n, x) => n + x.bytes, 0);
+  const byCap = Object.fromEntries(CAP_NAMES.map((cap) => {
+    const matches = rows.filter((x) => x.caps.includes(cap));
+    const capBytes = matches.reduce((n, x) => n + x.bytes, 0);
+    return [cap, { results: matches.length, bytes: capBytes, shareOfResults: rows.length ? matches.length / rows.length : 0,
+      shareOfBytes: bytes ? capBytes / bytes : 0,
+      reruns: matches.reduce((n, x) => n + x.reruns, 0), rerunBytes: matches.reduce((n, x) => n + x.rerunBytes, 0) }];
+  }));
+  const truncated = rows.filter((x) => x.caps.length).length;
+  return { results: rows.length, bytes, size: distribution(rows.map((x) => x.bytes)),
+    rereadBytes: rows.reduce((n, x) => n + x.rereadBytes, 0),
+    truncation: { results: truncated, shareOfResults: rows.length ? truncated / rows.length : 0, byCap },
+    reruns: { callsAfterTruncation: rows.reduce((n, x) => n + x.reruns, 0),
+      bytesAfterTruncation: rows.reduce((n, x) => n + x.rerunBytes, 0) } };
+}
+
+/** One finite file snapshot, with request/result identities local to that native session. */
+export async function scan(file, client, { start, end, rerunSeconds = 120, snapshotBytes } = {}) {
+  const calls = new Map(), seenResults = new Set(), seenRequests = new Set(), recentTruncated = new Map();
+  const rows = [], segments = [0];
+  const coverage = { parseErrors: 0, resultsWithoutTimestamp: 0, requestsWithoutTimestamp: 0,
+    duplicateResults: 0, duplicateRequests: 0, requestsWithoutIdentity: 0, unmatchedResults: 0, nativeCompactions: 0, futureResults: 0, lines: 0 };
+  let segment = 0, modelCalls = 0, ordinal = 0, nativeSessionId = null;
+  const inWindow = (ts) => Number.isFinite(ts) && ts >= start && ts <= end;
+  const request = (key, ts) => {
+    if (!Number.isFinite(ts)) { coverage.requestsWithoutTimestamp += 1; return; }
+    if (key && seenRequests.has(key)) { coverage.duplicateRequests += 1; return; }
+    if (key) seenRequests.add(key); else coverage.requestsWithoutIdentity += 1;
+    if (inWindow(ts)) { segments[segment] += 1; modelCalls += 1; }
+  };
+  const call = (id, name, input, ts) => {
+    if (id && calls.has(id)) return;
+    const tool = toolName(client, name), sig = signature(tool, input), previous = recentTruncated.get(sig);
+    const retryOf = previous && Number.isFinite(ts) && ts >= previous.ts && ts - previous.ts <= rerunSeconds * 1000 && inWindow(ts) ? previous : null;
+    if (retryOf) { retryOf.reruns += 1; recentTruncated.delete(sig); }
+    calls.set(id || '(anonymous-call-' + ordinal + ')', { tool, sig, retryOf });
+  };
+  const result = (id, value, ts) => {
+    const identity = id || '(anonymous-result-' + ordinal + ')';
+    if (seenResults.has(identity)) { coverage.duplicateResults += 1; return; }
+    seenResults.add(identity);
+    if (!Number.isFinite(ts)) { coverage.resultsWithoutTimestamp += 1; return; }
+    if (ts > end) coverage.futureResults += 1;
+    if (!inWindow(ts)) return;
+    const info = calls.get(id);
+    if (!info) coverage.unmatchedResults += 1;
+    const tool = info?.tool || '(unmatched)', bytes = contentBytes(value);
+    if (info?.retryOf) info.retryOf.rerunBytes += bytes;
+    const row = { tool, bytes, caps: capFor(client, tool, value), segment, at: segments[segment], ts, rereadBytes: 0, reruns: 0, rerunBytes: 0 };
+    rows.push(row);
+    if (row.caps.length && info) recentTruncated.set(info.sig, row);
+  };
+  for await (const item of readRawTranscript(file, { snapshotBytes })) {
+    coverage.lines += 1; ordinal += 1;
+    if (item.error) { coverage.parseErrors += 1; continue; }
+    const rec = item.record;
+    if (!rec || typeof rec !== 'object') { coverage.parseErrors += 1; continue; }
+    const p = rec.payload, ts = Date.parse(rec.timestamp || '');
+    if (rec.type === 'session_meta') nativeSessionId = p?.id || nativeSessionId;
+    if (rec.sessionId) nativeSessionId = rec.sessionId;
+    if (client === 'auto') {
+      if (rec.type === 'session_meta' || rec.type === 'response_item') client = 'codex';
+      else if (rec.type === 'user' || rec.type === 'assistant') client = 'claude';
+    }
+    if (rec.type === 'compacted' || p?.type === 'context_compacted' || (rec.type === 'system' && rec.subtype === 'compact_boundary')) {
+      coverage.nativeCompactions += 1; segment += 1; segments.push(0); recentTruncated.clear(); continue;
+    }
     if (client === 'claude') {
       const m = rec.message;
       if (rec.type === 'assistant' && m) {
-        // Each assistant envelope is one model request/response. Deduplication
-        // keeps retries represented by their own envelope while avoiding a
-        // duplicate UUID copied by transcript repair.
-        if (!m.id || !calls.some((x) => x.id === m.id)) modelCalls += 1;
-        for (const b of Array.isArray(m.content) ? m.content : []) if (b?.type === 'tool_use') {
-          const tool = normalizeTool(client, b.name, b.input);
-          names.set(b.id, { tool, order, index: calls.length });
-          calls.push({ tool, order });
+        request(m.id ? segment + ':' + m.id : rec.requestId ? segment + ':' + rec.requestId : null, ts);
+        for (const b of Array.isArray(m.content) ? m.content : []) {
+          if (b?.type === 'tool_use') call(b.id, b.name, b.input, ts);
+        }
+      } else if (rec.type === 'user' && m) {
+        for (const b of Array.isArray(m.content) ? m.content : []) {
+          if (b?.type === 'tool_result') result(b.tool_use_id, b.content, ts);
         }
       }
-      if (rec.type === 'user' && m) for (const b of Array.isArray(m.content) ? m.content : []) {
-        if (b?.type !== 'tool_result') continue;
-        const n = utf8(b.content);
-        const info = names.get(b.tool_use_id) || { tool: '(unmatched)', index: calls.length, order };
-        const cap = capFor(client, info.tool, text(b.content));
-        if (inWindow) results.push({ tool: info.tool, bytes: n, cap, order, callIndex: info.index, reruns: 0, rerunBytes: 0 });
-      }
-    } else {
-      const p = rec.payload;
-      if (rec.type === 'event_msg' && p?.type === 'token_count') { modelCalls += 1; continue; }
-      if (rec.type !== 'response_item' || !p) continue;
-      if (p.type === 'function_call' || p.type === 'custom_tool_call' || p.type === 'local_shell_call') {
-        const tool = normalizeTool(client, p.name || p.type, p.arguments || p.input || p.action);
-        names.set(p.call_id || p.id, { tool, order, index: calls.length });
-        calls.push({ tool, order });
-      } else if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
-        const info = names.get(p.call_id) || { tool: '(unmatched)', index: calls.length, order };
-        const body = p.output;
-        const n = utf8(body);
-        const cap = capFor(client, info.tool, text(body));
-        if (inWindow) results.push({ tool: info.tool, bytes: n, cap, order, callIndex: info.index, reruns: 0, rerunBytes: 0 });
+    } else if (client === 'codex') {
+      if (rec.type === 'event_msg' && p?.type === 'token_count') {
+        const u = p.info?.last_token_usage, total = p.info?.total_token_usage;
+        // Rate-limit updates and zero/reset notifications are not model responses.
+        if (!u || !USAGE_FIELDS.some((k) => Number.isFinite(u[k]) && u[k] > 0)) continue;
+        const entries = total && USAGE_FIELDS.filter((k) => total[k] !== undefined).map((k) => [k, total[k]]);
+        const valid = entries?.length && entries.every(([, n]) => Number.isFinite(n) && n >= 0) && entries.some(([, n]) => n > 0);
+        request(valid ? segment + ':' + JSON.stringify(entries) : null, ts);
+      } else if (rec.type === 'response_item' && p) {
+        if (['function_call', 'custom_tool_call', 'local_shell_call'].includes(p.type)) call(p.call_id || p.id, p.name || p.type, p.arguments ?? p.input ?? p.action, ts);
+        else if (['function_call_output', 'custom_tool_call_output', 'local_shell_call_output'].includes(p.type)) result(p.call_id || p.id, p.output, ts);
       }
     }
   }
-  // A result is replayed on every later model request in this same raw file.
-  // Count same-tool calls after a capped result as explicit reruns; unrelated
-  // later calls still contribute to rereadBytes.
-  for (const row of results) {
-    const later = calls.filter((c) => c.index > row.callIndex && c.order > row.order);
-    row.rereadBytes = row.bytes * Math.max(0, modelCalls - row.callIndex - 1);
-    const same = later.filter((c) => c.tool === row.tool);
-    if (row.cap && same.length) { row.reruns = same.length; row.rerunBytes = row.bytes * same.length; }
-  }
-  return { results, modelCalls, parseErrors };
+  for (const row of rows) row.rereadBytes = row.bytes * Math.max(0, segments[row.segment] - row.at);
+  return { client, nativeSessionId, rows, modelCalls, coverage };
 }
 
-async function measure(roots, hours) {
-  const cutoff = Date.now() - hours * 3600_000;
-  const grouped = { claude: { files: 0, parseErrors: 0, rows: [], modelCalls: 0 }, codex: { files: 0, parseErrors: 0, rows: [], modelCalls: 0 } };
-  const missingRoots = [];
-  for (const [client, clientRoots] of Object.entries(roots)) {
-    for (const root of clientRoots) {
-      let rootStat;
-      try { rootStat = await stat(root); } catch { missingRoots.push({ client, root }); continue; }
-      if (!rootStat.isDirectory()) { missingRoots.push({ client, root }); continue; }
-      for await (const file of jsonlFiles(root)) {
-        // Do not use file mtime as the measurement boundary: a long-lived
-        // transcript has fresh rows in an old inode. The parser applies the
-        // timestamp boundary to each result instead.
-        const scanned = await scan(file, client, cutoff);
-        grouped[client].files += 1;
-        grouped[client].parseErrors += scanned.parseErrors;
-        grouped[client].rows.push(...scanned.results);
-        grouped[client].modelCalls += scanned.modelCalls;
-      }
+export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.now(), rerunSeconds = 120 } = {}) {
+  const start = now - hours * 3600_000, end = now, rows = { claude: [], codex: [] };
+  const modelCalls = { claude: 0, codex: 0 }, seenFiles = new Set(), files = [], rootCoverage = [];
+  const diagnostics = { duplicatePaths: 0, unreadablePaths: 0, unknownClientFiles: 0 };
+  for (const root of roots) {
+    const entry = { client: root.client, path: resolve(root.path), status: 'read', files: 0, skippedBeforeWindow: 0, errors: 0 };
+    rootCoverage.push(entry);
+    for await (const file of walkRawTranscripts(root.path, { onError: () => { entry.errors += 1; entry.status = entry.files ? 'partial' : 'unavailable'; } })) {
+      if (root.client === 'codex' && !/^rollout-.*\.jsonl$/.test(file.split('/').at(-1))) continue;
+      let before, canonicalPath;
+      try { before = await stat(file); canonicalPath = await realpath(file); } catch { diagnostics.unreadablePaths += 1; continue; }
+      if (seenFiles.has(canonicalPath)) { diagnostics.duplicatePaths += 1; continue; }
+      seenFiles.add(canonicalPath);
+      // Same discovery optimization as WI-6882. The actual result boundary is
+      // still per record; discovery omissions are exposed, never called empty.
+      if (before.mtimeMs < start) { entry.skippedBeforeWindow += 1; continue; }
+      try {
+        const scanned = await scan(file, root.client, { start, end, rerunSeconds, snapshotBytes: before.size });
+        entry.files += 1;
+        if (!rows[scanned.client]) { diagnostics.unknownClientFiles += 1; continue; }
+        rows[scanned.client].push(...scanned.rows); modelCalls[scanned.client] += scanned.modelCalls;
+        const after = await stat(file);
+        files.push({ path: canonicalPath, client: scanned.client, nativeSessionId: scanned.nativeSessionId,
+          snapshotBytes: before.size, mtime: new Date(before.mtimeMs).toISOString(), changedDuringRead: before.size !== after.size || before.mtimeMs !== after.mtimeMs,
+          results: scanned.rows.length, modelCalls: scanned.modelCalls, coverage: scanned.coverage });
+      } catch { entry.errors += 1; entry.status = 'partial'; diagnostics.unreadablePaths += 1; }
     }
   }
-  const claude = routeSummary(grouped.claude.rows, grouped.claude.modelCalls, grouped.claude.files, grouped.claude.parseErrors);
-  const codex = routeSummary(grouped.codex.rows, grouped.codex.modelCalls, grouped.codex.files, grouped.codex.parseErrors);
-  return {
-    measuredAt: new Date().toISOString(), windowHours: hours,
-    cutoff: new Date(cutoff).toISOString(), missingRoots,
-    clients: { claude, codex },
-    results: claude.results + codex.results,
-    bytes: claude.bytes + codex.bytes,
-    rereadBytes: claude.rereadBytes + codex.rereadBytes,
-    truncation: {
-      results: claude.truncation.results + codex.truncation.results,
-      byCap: Object.fromEntries(CAP_NAMES.map((cap) => [cap, {
-        results: claude.truncation.byCap[cap].results + codex.truncation.byCap[cap].results,
-        bytes: claude.truncation.byCap[cap].bytes + codex.truncation.byCap[cap].bytes,
-        reruns: claude.truncation.byCap[cap].reruns + codex.truncation.byCap[cap].reruns,
-        rerunBytes: claude.truncation.byCap[cap].rerunBytes + codex.truncation.byCap[cap].rerunBytes,
-      }])),
+  const clients = Object.fromEntries(Object.entries(rows).map(([client, results]) => {
+    const tools = [...new Set(results.map((r) => r.tool))].sort().map((tool) => ({ tool, ...summary(results.filter((r) => r.tool === tool)) }));
+    return [client, { ...summary(results), modelCalls: modelCalls[client], files: files.filter((f) => f.client === client).length, tools }];
+  }));
+  const coverage = {};
+  for (const file of files) for (const [k, n] of Object.entries(file.coverage)) coverage[k] = (coverage[k] || 0) + n;
+  return { schemaVersion: 'tool-output-measurement-v1', measuredAt: new Date(now).toISOString(), windowHours: hours,
+    window: { start: new Date(start).toISOString(), end: new Date(end).toISOString() }, rerunWindowSeconds: rerunSeconds,
+    method: {
+      source: 'Raw Claude transcripts and Codex rollouts; never capped session_turn_parts.',
+      bytes: 'UTF-8 content text; non-text blocks measured as serialized JSON. Transport envelopes are excluded. No tokenizer ran.',
+      percentiles: 'Sorted byte sizes at floor(p * n), capped at n - 1; empty populations are zero.',
+      rereadBytes: 'Replay estimate: result bytes times later recorded model responses inside this window and native compaction segment. Includes the first request consuming the output; no billing/cache assertion. Server-side pruning and branches are not reconstructed.',
+      requests: 'Claude unique message.id; Codex nonzero last_token_usage deduped by cumulative usage per compaction segment. Missing request identities are counted by line and exposed.',
+      truncation: 'Marker-based lower bound; hidden inner markers are unobservable. byCap populations overlap when several caps fire. Projection-success footers do not count.',
+      reruns: 'Heuristic: next call with the same tool and canonical arguments within the declared seconds after a marked result. Delivery caps/timeouts are ignored; each repeat attaches to at most one prior result. Does not prove truncation caused the repeat. Bytes are the observed repeat result bytes.',
+      coverage: 'Finite initial file-size snapshots; mtime selects candidate files, record timestamps select results/requests. Missing timestamps excluded. Overlapping real paths deduped; distinct copied/forked files are separate transcript observations.',
     },
-    reruns: {
-      resultsAfterTruncation: claude.reruns.resultsAfterTruncation + codex.reruns.resultsAfterTruncation,
-      bytesAfterTruncation: claude.reruns.bytesAfterTruncation + codex.reruns.bytesAfterTruncation,
-    },
+    ...summary([...rows.claude, ...rows.codex]), clients,
+    sourceCoverage: { roots: rootCoverage, files, diagnostics, ...coverage,
+      changedDuringRead: files.filter((f) => f.changedDuringRead).length },
   };
 }
 
-export { capFor, measure, normalizeTool, percentile, routeSummary, scan };
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  const cli = args(process.argv.slice(2));
-  const roots = {
-    claude: cli.claudeRoots.length ? cli.claudeRoots : cli.roots.filter((r) => !/codex/i.test(r)),
-    codex: cli.codexRoots.length ? cli.codexRoots : cli.roots.filter((r) => /codex/i.test(r)),
-  };
-  if (cli.roots.length && !roots.claude.length && !roots.codex.length) roots.claude = cli.roots;
-  const baseline24h = await measure(roots, 24);
-  const result = cli.hours === 24 ? baseline24h : await measure(roots, cli.hours);
-  const output = { schemaVersion: 'tool-output-measurement-v1', ...result, baseline24h };
-  if (cli.out) await writeFile(cli.out, JSON.stringify(output, null, 2));
-  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  const options = parseArgs(process.argv.slice(2));
+  const report = await measure(options.roots, options.hours, { rerunSeconds: options.rerunSeconds });
+  if (options.out) await writeFile(options.out, JSON.stringify(report, null, 2) + '\n');
+  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
 }
