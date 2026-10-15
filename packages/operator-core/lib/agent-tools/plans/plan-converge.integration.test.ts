@@ -61,7 +61,7 @@ function execute(tools: Body, inputs: Body = {}) {
 function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?: Body } = {}) {
   const evaluate = vi.fn(async (_args: Body) => ({ ok: true, rows }));
   const audit = vi.fn(async () => options.audit ?? { ok: true });
-  const certify = vi.fn(async () => options.certify ?? { ok: true, counts: { filed: 0 } });
+  const certify = vi.fn(async (_args: Body = {}) => options.certify ?? { ok: true, counts: { filed: 0 } });
   const create = vi.fn(async () => options.filed ?? { ok: true, results: [{ ok: true, id: 'WI-gap', workItem: { id: 'WI-gap', assignee: 'converge-owner' } }] });
   const tools = { plans: { evaluateSpecTestAdequacy: evaluate, audit, certifySpecClauses: certify },
     coord: { whoami: async () => ({ ownerId: 'converge-owner' }) }, workItems: { create } };
@@ -126,6 +126,18 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
     expect(c.audit).toHaveBeenCalledWith(expect.objectContaining({ phase: 'completion', dryRun: true, items: auditItems }));
     expect(c.evaluate.mock.calls[0][0]).not.toHaveProperty('planItemIds');
     expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ planItemIds: ['P-003'], dryRun: true }));
+    expect(c.create).not.toHaveBeenCalled();
+  });
+  it('preserves existing-card refusal unless the caller explicitly acknowledges it', async () => {
+    const c = controls([row()]);
+    c.certify.mockImplementation(async args => args.acknowledgeExisting === true
+      ? { ok: true, counts: { filed: 0, refused: 0 } }
+      : { ok: false, counts: { refused: 1 }, error: 'existing_independent_scorecards' });
+    expect(await execute(c.tools)).toMatchObject({ ok: false, phase: 'certify' });
+    expect(await execute(c.tools, { acknowledgeExisting: true }))
+      .toMatchObject({ ok: true, dryRun: true, nonPassing: 1 });
+    expect(c.certify.mock.calls.map(([args]) => args.acknowledgeExisting)).toEqual([false, true]);
+    expect(c.evaluate).toHaveBeenCalledOnce();
     expect(c.create).not.toHaveBeenCalled();
   });
   it('keeps critical/major/minor/outdated distinct and maps outdated to the existing issue vocabulary', async () => {
