@@ -15,8 +15,8 @@
     "barSetHash": "22e24530001141b8d9b7ee6a5924d4e7b85d7fefcbfc433879f9907ed538f9e3",
     "subjectPlanRevision": 65
   },
-  "sourceCommit": "410b42b5daf83a578accf2e1dbc7e32644cc20b7",
-  "sourcePinStatus": "R13 notice assertion added after this commit; refresh source commit and blocker-file hash before final vetting attestation.",
+  "sourceCommit": "9e810e62f7eb9b2270e0af04fb2b4f1d422cfa85",
+  "sourcePinStatus": "Verified all 17 file bytes match this commit, including the R3/R14 handler cases and R13 notice payload assertion.",
   "files": [
     {
       "path": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
@@ -50,8 +50,8 @@
     },
     {
       "path": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
-      "sha256": "8a1eff9356a48c48a76b0f9bef416f9259ade0f97941b7fb320eca0198231e0c",
-      "blob": "c4864868861b78dde25c512f21681529dd32da33"
+      "sha256": "95eb126aaea7f8ca4e0386f2b65e5209b53c13975d3db1988039e542d724c363",
+      "blob": "2e100e1bf4b504c7a26d69eb0aed81f1794d5ac7"
     },
     {
       "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
@@ -410,7 +410,7 @@
           "assertion": "Opening failure produces no payload/lifecycle/wake/notice side effects."
         }
       ],
-      "notes": "Notice summary/body assertion strengthened during this repair; final source pin must include that assertion.",
+      "notes": "Committed handler assertion requires the work item, FYI (low importance) summary and the consult reference in the notice body.",
       "classification": "tests-bound"
     },
     {
@@ -646,7 +646,7 @@
         },
         {
           "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
-          "testCase": "it.each(CROSS_PAIRS): picker target-model cases",
+          "testCase": "a %s source picked onto %s resolves to a session port, never a refusal",
           "assertion": "Each ordered pair resolves target choices; inspect the parameterized cases and assertions, not an aggregate pass count."
         }
       ],
@@ -764,6 +764,164 @@
     },
     "source": "git show <sourceCommit>:<files[].path>; verify SHA256 and Git blob id against files[]; read each named detector and assertion.",
     "tests": "PAPERCUSP_WORKSPACE_ID=papercusp-workspace PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- <bound files>; integration/live classes require their maintained runtime route. A static detector census is not a claim that all tests or the live matrix ran."
+  },
+  "decisionTrace": {
+    "source": {
+      "tool": "plans:get",
+      "args": {
+        "slug": "consult-backed-parking-2026-10-12",
+        "harness": "papercusp",
+        "heading": "Decisions"
+      },
+      "planRevision": 65,
+      "contentHash": "8c6d67a1fbc5de0be0a13506631169bdeabf43292e4569dabcc71d94cdc75fb4"
+    },
+    "decisions": {
+      "D-001": [
+        "r-3",
+        "r-8",
+        "r-13"
+      ],
+      "D-002": [
+        "r-3",
+        "r-5",
+        "r-9"
+      ],
+      "D-003": [
+        "r-4",
+        "r-15"
+      ],
+      "D-004": [
+        "r-5",
+        "r-14",
+        "r-17",
+        "r-18"
+      ],
+      "D-005": [
+        "r-1",
+        "r-2",
+        "r-12"
+      ],
+      "D-006": [
+        "r-11",
+        "r-25"
+      ],
+      "D-007": [
+        "r-10",
+        "r-22",
+        "r-23",
+        "r-24"
+      ],
+      "D-008": [
+        "r-1",
+        "r-2",
+        "r-12"
+      ],
+      "D-009": [
+        "r-10",
+        "r-22",
+        "r-23",
+        "r-24"
+      ],
+      "D-010": [
+        "r-10",
+        "r-11"
+      ],
+      "D-011": [
+        "r-12",
+        "r-13",
+        "r-14",
+        "r-15",
+        "r-16",
+        "r-17",
+        "r-18",
+        "r-19",
+        "r-20",
+        "r-21",
+        "r-22",
+        "r-23",
+        "r-24",
+        "r-25"
+      ],
+      "D-012": [
+        "r-1",
+        "r-3",
+        "r-4",
+        "r-5",
+        "r-6",
+        "r-7",
+        "r-10",
+        "r-11",
+        "r-12",
+        "r-13",
+        "r-14",
+        "r-15",
+        "r-16",
+        "r-17",
+        "r-18",
+        "r-19",
+        "r-20",
+        "r-21",
+        "r-22",
+        "r-23",
+        "r-24",
+        "r-25"
+      ],
+      "D-013": [
+        "r-3",
+        "r-4",
+        "r-6",
+        "r-9",
+        "r-13",
+        "r-14",
+        "r-15",
+        "r-16"
+      ],
+      "D-014": [
+        "r-10",
+        "r-11"
+      ],
+      "D-015": [
+        "r-2",
+        "r-5",
+        "r-8",
+        "r-9",
+        "r-10",
+        "r-11",
+        "r-14",
+        "r-17",
+        "r-23",
+        "r-24",
+        "r-25"
+      ],
+      "D-016": [
+        "r-24"
+      ],
+      "D-017": [
+        "r-8",
+        "r-9",
+        "r-24"
+      ],
+      "D-018": [],
+      "D-019": [
+        "r-1"
+      ],
+      "D-020": [
+        "r-1"
+      ],
+      "D-021": [
+        "r-10"
+      ],
+      "D-022": [
+        "r-12"
+      ]
+    },
+    "notes": {
+      "D-009": "Explicitly rejects running credentialed target CLIs in CI. R10 deliberately uses manual-provenance per live native transcripts and session_ports rows; picker/unit fixtures cannot replace it.",
+      "D-018": "Clause lifecycle/revision procedure, not a new product behavior. Re-read active current spec revisions and preserve carried evidence.",
+      "D-021": "Matrix remains last evidence step after launcher/host edits land. R24 unit/integration proof is independent.",
+      "D-022": "Supported additive rev8 amendment binds actual multi-selectee integration detector; BAR behavior unchanged."
+    }
   },
   "limitations": [
     "No new final acceptance verdict is asserted by this detector map.",
