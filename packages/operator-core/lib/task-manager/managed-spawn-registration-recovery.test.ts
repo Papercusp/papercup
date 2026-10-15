@@ -13,7 +13,7 @@ import type { ChildProcess, spawn as nodeSpawn } from 'node:child_process';
 const M = vi.hoisted(() => ({
   registerTask: vi.fn(async (..._args: unknown[]) => ({})),
   markSpawned: vi.fn(async (..._args: unknown[]) => {}),
-  closeTask: vi.fn(async (..._args: unknown[]) => {}),
+  closeTask: vi.fn(async (..._args: unknown[]) => true),
   inspectTaskUnitTerminals: vi.fn(async (..._args: unknown[]) => new Map()),
   resetFailedTaskUnit: vi.fn(async (..._args: unknown[]) => false),
 }));
@@ -132,7 +132,7 @@ beforeEach(() => {
       registeredRow = { ...registeredRow, ...facts, state: 'running' };
     }
   });
-  M.closeTask.mockReset();
+  M.closeTask.mockReset().mockResolvedValue(true);
   M.inspectTaskUnitTerminals.mockReset().mockResolvedValue(new Map());
   M.resetFailedTaskUnit.mockReset().mockResolvedValue(false);
   vi.useFakeTimers();
@@ -231,7 +231,7 @@ describe('managedSpawn ledger registration recovery', () => {
       return registeredRow;
     });
 
-    const { emitter } = await launch(taskId, null);
+    const { emitter, result } = await launch(taskId, null);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('spawning UNLEDGERED'));
     await vi.advanceTimersByTimeAsync(1_000);
     expect(attempts).toBe(2);
@@ -250,5 +250,18 @@ describe('managedSpawn ledger registration recovery', () => {
     });
     expect(M.markSpawned).toHaveBeenCalledWith(taskId, expect.objectContaining({ scopeUnit: scopeUnitForTask(taskId) }));
     expect(M.closeTask).toHaveBeenCalledWith(taskId, expect.objectContaining({ state: 'exited', exitCode: 0 }));
+    await expect(result.waitForCompletion()).resolves.toEqual({ status: 'recorded' });
+  });
+
+  it('does not claim a queued terminal write was recorded when registration still fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    M.registerTask.mockRejectedValue(new Error('fixture ledger offline'));
+    const { emitter, result } = await launch('pendingclose1', null);
+    const completion = result.waitForCompletion();
+    emitter.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS + SCOPE_HANDOFF_RECHECK_MS + 1);
+    await expect(completion).resolves.toEqual({ status: 'unavailable', reason: 'ledger registration pending' });
+    expect(M.closeTask).not.toHaveBeenCalled();
+    vi.clearAllTimers();
   });
 });

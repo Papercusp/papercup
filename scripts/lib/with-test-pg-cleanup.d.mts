@@ -9,6 +9,10 @@ export interface CleanupOwnedTestStateOptions {
   dataDir: string;
   runtimeRoot?: string | null;
   isolatedRuntime: boolean;
+  /** Shared failures from pre-cleanup IPC and background instrumentation. */
+  receiptFailures?: Error[];
+  /** Wait for background receipts after stopping every receipt producer. */
+  drainReceipts?: () => Promise<void>;
   cleanupStage(stage: string, detail?: Record<string, unknown>): void | Promise<void>;
   observePrivatePgStop(): () => void;
 }

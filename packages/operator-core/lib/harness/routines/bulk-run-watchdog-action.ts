@@ -20,6 +20,7 @@
  * routines admin like every other recurring job.
  */
 import { registerSystemAction } from './system-actions';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 /**
  * Cadence hint consumed by the seeder. Five minutes matches the store's
@@ -32,7 +33,7 @@ export const BULK_RUN_WATCHDOG_INTERVAL_SEC = 300;
 
 export const BULK_RUN_WATCHDOG_ACTOR = 'system:bulk-run-watchdog';
 
-registerSystemAction('bulk-run-watchdog', async () => {
+registerSystemAction('bulk-run-watchdog', async (ctx) => {
   const [
     { classifyRunLiveness, readWatchdogRunRows, reconcileRunCounters, strandStaleRun },
     { runBulkRunWatchdog },
@@ -88,6 +89,7 @@ registerSystemAction('bulk-run-watchdog', async () => {
     strandRun: ({ runId, reason }) => strandStaleRun({ runId, reason }),
     reconcileCounters: ({ runId }) => reconcileRunCounters(runId),
     note: (line) => notes.push(line),
+    observe: (decision) => observeFallback('bulk-run-watchdog', decision, { workspaceId: ctx.workspaceId }),
   });
 
   if (result.stranded.length || result.deferred.length || result.countersReconciled.length || result.errors.length) {

@@ -13,6 +13,8 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { RunLiveness } from './bulk-run-store';
+import { observeFallback } from '../degradation/fallback-observations';
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import {
   decideWatchdogVerdict,
   diffCounters,
@@ -194,6 +196,29 @@ describe('runBulkRunWatchdog', () => {
     expect(result.examined).toBe(2);
     expect(result.stranded).toEqual(['good']);
     expect(result.errors).toEqual([{ runId: 'bad', error: 'deadlock' }]);
+  });
+
+  it('records one tick for empty, healthy, healed, raced and failed sweeps', async () => {
+    const observe = vi.fn();
+    await runBulkRunWatchdog(deps([], { observe }));
+    await runBulkRunWatchdog(deps([facts({ liveness: { state: 'live', ageMs: 1, measuredFrom: 'heartbeat' } })], { observe }));
+    await runBulkRunWatchdog(deps([facts()], { observe }));
+    await runBulkRunWatchdog(deps([facts()], { observe, strandRun: vi.fn(async () => ({ marked: 0 })) }));
+    await runBulkRunWatchdog(deps([facts({ liveness: { state: 'not-executing', phase: 'complete' },
+      stored: { ...ZERO, failed: 1 } })], { observe }));
+    await runBulkRunWatchdog(deps([facts()], { observe, strandRun: vi.fn(async () => { throw new Error('write failed'); }) }));
+    await expect(runBulkRunWatchdog(deps([], { observe,
+      listRuns: vi.fn(async () => { throw new Error('read failed'); }) }))).rejects.toThrow('read failed');
+    expect(observe.mock.calls.map(([row]) => row)).toEqual([
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' },
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'heal-strand', scope: 'sweep' },
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'heal-counters', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'effect-failed', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'census-failed', scope: 'sweep' },
+    ]);
+    expect(observeFallback).toHaveBeenCalledWith('bulk-run-watchdog', expect.objectContaining({ eligible: 1 }));
   });
 });
 

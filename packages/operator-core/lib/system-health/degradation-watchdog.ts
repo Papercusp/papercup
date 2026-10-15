@@ -425,6 +425,14 @@ registerDegradationMechanism({
   mechanism: 'routine-scheduler-admission', scopeKeyed: true,
   description: 'Scheduler ticks admitted ordinary work rather than retaining only the critical-queue safety floor; this records the chosen policy, not a diagnosis of latency or successful routine execution.',
 });
+registerDegradationMechanism({
+  mechanism: 'compaction-force-respawn', scopeKeyed: true, thresholds: { minEligible: 1 },
+  description: 'Flag-enabled force-cut attempts accepted carry-respawn injection rather than losing the host, capability, transcript, carry spec or injection. Disabled flags and deliberately excluded OMP sessions are ineligible.',
+});
+registerDegradationMechanism({
+  mechanism: 'bulk-run-watchdog', scopeKeyed: true,
+  description: 'Bulk-run sweep ticks needed no corrective strand or counter repair. Repeated healing or unreadable/failed sweeps collapse the primary rate; guarded writes that lose a heartbeat race remain healthy.',
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both

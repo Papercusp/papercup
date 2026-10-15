@@ -9,6 +9,7 @@ import scorecardEmitTool, {
   scorecardAbortCompletionReceipt,
 } from './emit';
 import { COORD_ROLES } from '../coordination/roles';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const task = (taskId: string, label: string, headless = true) => ({
   taskId,
@@ -92,7 +93,8 @@ describe('dedicated acceptance judge lifecycle', () => {
     // Exercise the registered defineTool wrapper and its actual payload-tier
     // dispatch. Stub only the ledger-writing handler so this test does not add
     // a synthetic scorecard to the shared workspace.
-    const handler = vi.spyOn(scorecardEmitTool, 'handler').mockResolvedValue({ data } as never);
+    const handler = vi.spyOn(scorecardEmitTool, 'handler');
+    mockResolvedTyped(handler, { data });
     try {
       const projected = lookupByMcpName('scorecards:emit');
       expect(projected?.ignoreSessionPayloadTier).toBe(true);

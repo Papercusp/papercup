@@ -2443,6 +2443,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     ownerId?: undefined;
     gated: boolean;
@@ -2456,6 +2457,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     deliveryId: any;
     ownerId: any;
@@ -2468,6 +2470,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     deliveryId?: undefined;
     ownerId: any;
@@ -2480,6 +2483,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     deliveryId: any;
     ownerId?: undefined;
@@ -2492,6 +2496,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     deliveryId?: undefined;
     ownerId?: undefined;
@@ -2504,6 +2509,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     mode: string;
     data: string;
@@ -2515,6 +2521,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt: any;
     expectedChildGeneration: any;
     expectedHostCodeVersion: any;
+    expiresAtMs: any;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2532,6 +2539,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2554,6 +2562,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2571,6 +2580,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2593,6 +2603,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2610,6 +2621,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2632,6 +2644,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2649,6 +2662,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2671,6 +2685,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2688,6 +2703,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2710,6 +2726,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2727,6 +2744,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2749,6 +2767,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2766,6 +2785,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2788,6 +2808,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2805,6 +2826,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2827,6 +2849,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2844,6 +2867,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2866,6 +2890,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs?: undefined;
@@ -2883,6 +2908,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2905,6 +2931,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceIssuedAtMs: number;
@@ -2922,6 +2949,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2944,6 +2972,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery?: undefined;
     provenanceTimestampInvalid: boolean;
@@ -2961,6 +2990,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     quotaRecovery: {
         operationId: any;
@@ -2983,6 +3013,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -3003,6 +3034,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -3023,6 +3055,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -3043,6 +3076,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -3063,6 +3097,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -3083,6 +3118,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -3103,6 +3139,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -3123,6 +3160,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -3143,6 +3181,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -3163,6 +3202,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs?: undefined;
     provenanceTimestampInvalid?: undefined;
@@ -3183,6 +3223,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceIssuedAtMs: number;
     provenanceTimestampInvalid?: undefined;
@@ -3203,6 +3244,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     provenanceTimestampInvalid: boolean;
     provenanceIssuedAtMs?: undefined;
@@ -3223,6 +3265,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     ownerId: any;
     mode: string;
@@ -3235,6 +3278,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     ownerId?: undefined;
     mode: string;
@@ -3247,6 +3291,7 @@ export function decodeControl(payload: any): {
     expectedHostStartedAt?: undefined;
     expectedChildGeneration?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3267,6 +3312,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3287,6 +3333,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3307,6 +3354,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3327,6 +3375,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3347,6 +3396,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3367,6 +3417,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3387,6 +3438,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3407,6 +3459,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3427,6 +3480,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3447,6 +3501,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3467,6 +3522,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3487,6 +3543,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3507,6 +3564,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3527,6 +3585,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3547,6 +3606,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3567,6 +3627,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3587,6 +3648,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3607,6 +3669,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3627,6 +3690,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3647,6 +3711,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3667,6 +3732,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3687,6 +3753,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3707,6 +3774,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3727,6 +3795,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3747,6 +3816,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3767,6 +3837,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3787,6 +3858,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3807,6 +3879,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3827,6 +3900,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3847,6 +3921,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3867,6 +3942,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3887,6 +3963,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3907,6 +3984,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3927,6 +4005,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3947,6 +4026,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 } | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
@@ -3967,6 +4047,7 @@ export function decodeControl(payload: any): {
     expectedAdvSessionId?: undefined;
     expectedNativeSessionId?: undefined;
     expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
 };
 /** The full logical bytes a decoded control message represents (raw: verbatim;
  *  turn: text + CR). Pure — kept for tests / one-shot external callers. NOTE the
@@ -3981,10 +4062,34 @@ export function codexHooksObservationScreen(raw: any, dims: any): {
     commandOffered: boolean;
     fullPaint: boolean;
 };
+/** Capture request lifetime BEFORE admission; custody alone cannot authorize
+ * an expired/disconnected observation or reset its owner-input epoch. */
+export function makeHooksObservationAdmission(request: any, { now, ownerEpoch }?: {
+    now?: (() => number) | undefined;
+    ownerEpoch?: (() => number) | undefined;
+}): {
+    close: () => void;
+    alive: () => boolean;
+    ownerUnchanged: () => boolean;
+};
+/** A failed lease recovers only from a later full paint in the same child.
+ * Startup output predates our draft and cannot authorize owner-input replay. */
+export function makeHooksObservationRecovery({ request, identity, tap, screenDims, takeQueued }: {
+    request: any;
+    identity: any;
+    tap: any;
+    screenDims: any;
+    takeQueued: any;
+}): {
+    reset: any;
+    close: any;
+    canClean: () => boolean;
+    takeReady: () => any;
+};
 /** Bounded viewport observation. It cannot certify all hooks, enabled policy,
  * nested dispatch, or P003. Every write revalidates exact custody. Cleanup is
  * state-driven: a second Escape is permitted only after a fresh browser paint. */
-export function runCodexHooksObservation({ request, identity, canStart, interrupted, write, readTap, resetTap, readCurrent, screenDims, sleep, now, timeoutMs, crDelayMs }: {
+export function runCodexHooksObservation({ request, identity, canStart, interrupted, write, readTap, resetTap, readCurrent, screenDims, sleep, now, timeoutMs, crDelayMs, admissionAlive }: {
     request: any;
     identity: any;
     canStart: any;
@@ -3998,6 +4103,7 @@ export function runCodexHooksObservation({ request, identity, canStart, interrup
     now?: (() => number) | undefined;
     timeoutMs?: number | undefined;
     crDelayMs?: number | undefined;
+    admissionAlive?: (() => boolean) | undefined;
 }): Promise<{
     ok: boolean;
     reason: string;
@@ -4679,10 +4785,11 @@ export function makeInjectMutex({ now, warnMs, forceReleaseMs, onStuck, }?: {
     forceReleaseMs?: number | undefined;
     onStuck?: (() => void) | undefined;
 }): {
+    pendingCount: () => number;
     /** Resolve to a release() fn once the lock is free (FIFO), or once the
      *  watchdog force-releases a wedged holder (see the doc block above).
      *  Caller MUST call the returned release(). */
-    acquire(): Promise<(value?: any) => void>;
+    acquire(): Promise<() => void>;
 };
 export function makeStaleFireGuard(): {
     /**

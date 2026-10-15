@@ -33136,7 +33136,7 @@
           "POST"
         ]
       },
-      "description": "File one ticket for your trigger-pack plan run at the destination its installation chose. You supply text only; the server picks the source and project, quotes the triggering message as untrusted evidence, and replays never file twice.",
+      "description": "Record your trigger-pack run classification and file only bug verdicts at its installation destination. Non-bug and needs-information verdicts are durable and never call a provider. Existing filing calls default to bug; replays never file twice.",
       "capabilities": [
         "operator:write"
       ],
@@ -33156,7 +33156,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A trigger-pack workflow (e.g. bug-triage) decided a ticket is warranted, with your own planRunId.",
+        "when": "A trigger-pack workflow classified its own plan run as bug, non-bug, or needs-information.",
         "notWhen": "Choosing or changing the destination, ad-hoc tickets outside a trigger-pack run, or re-filing after a pending result.",
         "chaining": "Keep externalRef as proof. pendingReconciliation means retry later with the same planRunId; it never re-creates."
       }

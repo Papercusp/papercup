@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { escalateAlarm, resolveAlarm } from './alarm-attention';
 import { isActionableConditionKey } from './coord/actionable-conditions';
+import { mockReturnOnceTyped } from './testing/typed-mock';
 const { readLatestConditionEnvelopeMock, broadcastResolvedMock } = vi.hoisted(() => ({
   readLatestConditionEnvelopeMock: vi.fn(async (_conditionKey: string) => null as null | Record<string, unknown>),
   broadcastResolvedMock: vi.fn(async () => true),
@@ -137,9 +138,22 @@ describe('default alarm recovery', () => {
     const conditionKey = 'alarm:legacy-transport';
     readLatestConditionEnvelopeMock.mockResolvedValue(null);
     const { computeConditionStates } = await import('./agent-tools/coordination/tools/conditions');
-    vi.mocked(computeConditionStates).mockReturnValueOnce([
-      { condition_key: conditionKey, open: true },
-    ] as never);
+    mockReturnOnceTyped(vi.mocked(computeConditionStates), [
+      {
+        condition_key: conditionKey,
+        open: true,
+        from: 'test',
+        category: null,
+        first_seen: '2026-10-14T00:00:00.000Z',
+        open_since: '2026-10-14T00:00:00.000Z',
+        last_seen: '2026-10-14T00:00:00.000Z',
+        alarm_count: 1,
+        latest_summary: null,
+        latest_body: null,
+        resolved_at: null,
+        resolved_summary: null,
+      },
+    ]);
 
     expect(await resolveAlarm(conditionKey, request.source)).toBe(true);
     expect(broadcastResolvedMock).toHaveBeenCalledWith(expect.objectContaining({ conditionKey }));

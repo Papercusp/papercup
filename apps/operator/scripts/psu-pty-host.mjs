@@ -6791,7 +6791,29 @@ export function makeHooksObservationAdmission(request, { now = Date.now, ownerEp
   let closed = false;
   return { close: () => { closed = true; }, alive: () => !closed &&
     Number.isFinite(deadline) && deadline > receivedAt && deadline - receivedAt <= 30_000 &&
-    now() < deadline && ownerEpoch() === epoch };
+    now() < deadline,
+    ownerUnchanged: () => ownerEpoch() === epoch };
+}
+
+/** A failed lease recovers only from a later full paint in the same child.
+ * Startup output predates our draft and cannot authorize owner-input replay. */
+export function makeHooksObservationRecovery({ request, identity, tap, screenDims, takeQueued }) {
+  let released = false;
+  tap.reset();
+  return {
+    reset: tap.reset,
+    close: tap.close,
+    canClean: () => !released && hooksObservationIdentityMatches(request, identity()),
+    takeReady: () => {
+      if (released) return [];
+      if (!hooksObservationIdentityMatches(request, identity())) return null;
+      const view = codexHooksObservationScreen(tap.read(), screenDims());
+      if (!view.fullPaint || !view.emptyComposer) return null;
+      released = true;
+      tap.close();
+      return takeQueued();
+    },
+  };
 }
 
 /** Bounded viewport observation. It cannot certify all hooks, enabled policy,
@@ -6803,7 +6825,8 @@ export async function runCodexHooksObservation({ request, identity, canStart, in
   const same = () => admissionAlive() && hooksObservationIdentityMatches(request, identity());
   const screen = (raw) => codexHooksObservationScreen(raw, screenDims());
   if (!same()) return { ok: false, reason: 'stale-observation-identity', inputReleased: true };
-  if (!canStart() || !screen(readCurrent()).emptyComposer)
+  const startingScreen = screen(readCurrent());
+  if (!canStart() || !startingScreen.fullPaint || !startingScreen.emptyComposer)
     return { ok: false, reason: 'observation-not-at-empty-composer', inputReleased: true };
   let commandWritten = false;
   let submitted = false;
@@ -11043,6 +11066,7 @@ export function hostThroughPty(o) {
   let machineTurnActive = false;
   let hooksObservationActive = false;
   let hooksObservationInputHeld = false;
+  let hooksObservationRecovery = null;
   // Latest owner-visible machine submit into THIS child. The ordinary Codex
   // native-boundary probe rejects any older task_complete record, preventing a
   // previous turn from certifying a new turn that has only just been submitted.
@@ -13678,24 +13702,26 @@ export function hostThroughPty(o) {
         const release = await injectMutex.acquire();
         const tap = makeOutputTap();
         const ownerEpoch = ownerInputGeneration;
+        let observationLeased = false;
         try {
-          if (!admission.alive()) return { ok: false, reason: 'observation-admission-expired' };
+          if (!admission.alive() || !admission.ownerUnchanged()) return { ok: false, reason: 'observation-admission-expired' };
           if (hooksObservationActive || hooksObservationInputHeld || machineTurnActive || nativeStartPending.size ||
             carryRearm.pendingCount('carry-respawn') || ownerComposerGate.hasPending() ||
             nativeExecutionBlocksInjection(currentNativeExecution()))
             return { ok: false, reason: 'observation-input-busy' };
           const initial = codexHooksObservationScreen(childStartupOutput, childScreenDims());
-          if (!initial.emptyComposer) return { ok: false, reason: 'observation-not-at-empty-composer' };
+          if (!initial.fullPaint || !initial.emptyComposer) return { ok: false, reason: 'observation-not-at-empty-composer' };
           const execution = currentNativeExecution();
           if (execution.phase !== 'settled' || !Number.isFinite(execution.observedAt) ||
             Date.now() - execution.observedAt > 10_000)
             return { ok: false, reason: 'observation-native-boundary-unverified' };
           hooksObservationActive = true;
           hooksObservationInputHeld = true;
+          observationLeased = true;
           const result = await runCodexHooksObservation({ request: msg, identity,
             admissionAlive: admission.alive,
             canStart: () => !ownerComposerGate.hasPending() && !nativeExecutionBlocksInjection(currentNativeExecution()),
-            interrupted: () => ownerInputGeneration !== ownerEpoch,
+            interrupted: () => !admission.ownerUnchanged() || ownerInputGeneration !== ownerEpoch,
             write: (bytes) => child.write(bytes), readTap: tap.read, resetTap: tap.reset,
             readCurrent: () => childStartupOutput, screenDims: () => childScreenDims(),
             crDelayMs: turnSubmitCrDelayForAgent('codex', env) });
@@ -13709,7 +13735,13 @@ export function hostThroughPty(o) {
           return result;
         } finally {
           hooksObservationActive = false;
-          tap.close(); release();
+          if (observationLeased && hooksObservationInputHeld) {
+            hooksObservationRecovery?.close();
+            hooksObservationRecovery = makeHooksObservationRecovery({ request: msg, identity, tap,
+              screenDims: childScreenDims,
+              takeQueued: () => { const pending = queuedOwnerInput; queuedOwnerInput = []; return pending; } });
+          } else tap.close();
+          release();
         }
       }
       // WI-2141435: the guard above calls appendHostEvent ONLY on its reject path, so
@@ -15283,19 +15315,22 @@ export function hostThroughPty(o) {
   /** Owner bytes → the child (or the post-submit queue while a machine turn
    *  owns the line). Shared by the live bridge and the parked-input replay. */
   function forwardOwnerInput(input) {
+    if (hooksObservationActive) { queuedOwnerInput.push(input); return; }
     if (hooksObservationInputHeld) {
-      if (!codexHooksObservationScreen(childStartupOutput, childScreenDims()).emptyComposer) {
-        // A real human may dismiss an unresolved menu; machine envelopes may
-        // not do so. Other owner bytes stay buffered until a confirmed composer.
-        if (!hooksObservationActive && input === '\x1b') { child.write(input); return; }
+      const pending = hooksObservationRecovery?.takeReady() ?? null;
+      if (pending === null) {
+        // Explicit owner cleanup stays available; text remains held until a
+        // fresh complete composer paint. Machine envelopes cannot use this path.
+        if (hooksObservationRecovery?.canClean() && ['\x1b', '\x15', '\x03'].includes(input)) {
+          hooksObservationRecovery.reset(); child.write(input); return;
+        }
         queuedOwnerInput.push(input);
         return;
       }
       hooksObservationInputHeld = false;
-      const pending = queuedOwnerInput; queuedOwnerInput = [];
+      hooksObservationRecovery = null;
       for (const held of pending) forwardOwnerInput(held);
     }
-    if (hooksObservationActive) { queuedOwnerInput.push(input); return; }
     if (bridgeTty) {
       if (machineTurnActive) {
         // The machine turn owns the current text→CR gap. Replay these bytes only
@@ -15351,6 +15386,7 @@ export function hostThroughPty(o) {
      *  already on disk by the time this is set, and `go` is what actually leaves. */
     let reexecRequested = null;
     const cleanup = (code, signal = null) => {
+      hooksObservationRecovery?.close();
       if (cleaned) return;
       cleaned = true;
       hostCleanedUp = true;
@@ -16430,10 +16466,24 @@ export function hostThroughPty(o) {
       // Native ownership follows the live child even when its carry is absent
       // or cancelled by owner input. Keep the existing exact-child resolver
       // and trusted report as the only authority (WI-10007230).
-      const carryBinding = respawnMode === 'carry-respawn' && (nativeId || resolveRespawnNativeId)
+      // A Codex recycle also starts a fresh native session even though it is
+      // not a carry-respawn. Re-anchor that owner→native mapping before the
+      // successor can submit its first prompt or accept a later wake. Quota
+      // conversation recovery resumes the existing native session, so it does
+      // not rotate the mapping.
+      const needsNativeReanchor = respawnMode === 'carry-respawn' ||
+        (respawnMode === 'recycle' && !resumeQuotaConversation &&
+          env.PAPERCUSP_AGENT === 'codex' && Boolean(resolveRespawnNativeId));
+      const respawnBinding = needsNativeReanchor && (nativeId || resolveRespawnNativeId)
         ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
         : null;
       if (!carryText) {
+        if (respawnBinding) {
+          const binding = await respawnBinding;
+          if (!binding.ok) return settleQuotaRecovery(false, binding.reason);
+          nativeId = binding.nativeId;
+          respawnReported = true;
+        }
         if (resumeQuotaConversation) {
           appendHostEvent(ownerId, 'quota-recovery-resumed', { nativeId, cause: 'quota' });
           return { delivered: false, spawned: true, reason: 'conversation-resumed' };
@@ -16506,8 +16556,8 @@ export function hostThroughPty(o) {
         // MCP endpoint is still reconnecting. Keep the carry out of the composer
         // until the closed-loop reconnect check proves papercusp-su ready.
         prepareBeforeWrite: async ({ deadline }) => {
-          if (respawnMode === 'carry-respawn' && (nativeId || resolveRespawnNativeId)) {
-            const binding = await carryBinding;
+          if (respawnBinding) {
+            const binding = await respawnBinding;
             if (!binding.ok) return binding;
             nativeId = binding.nativeId;
             respawnReported = true;

@@ -31,6 +31,7 @@
     "@papercusp/operator-core": "file:../../packages/operator-core",
     "@papercusp/operator-ui": "file:../../packages/operator-ui",
     "@papercusp/p2p-voice": "file:../../libs/generic/p2p-voice",
+    "@papercusp/pot-app-seam": "file:../../libs/generic/pot-app-seam",
     "@papercusp/sse": "file:../../libs/generic/sse",
     "@papercusp/sync": "file:../../libs/generic/sync",
     "@papercusp/testing-shell": "file:../../libs/testing-shell",

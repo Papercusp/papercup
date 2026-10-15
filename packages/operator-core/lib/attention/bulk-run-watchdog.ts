@@ -51,6 +51,7 @@
  */
 
 import type { BulkRunPhase, RunLiveness } from './bulk-run-store';
+import { observeFallback, type FallbackDecision } from '../degradation/fallback-observations';
 
 /**
  * Mirrors of the store's thresholds. Kept as literals rather than imported
@@ -274,6 +275,8 @@ export interface WatchdogDependencies {
   note?(line: string): void;
   /** Clock seam for tests; defaults to `Date.now()`. */
   nowMs?(): number;
+  /** The routine supplies its workspace partition; direct callers use the recorder default. */
+  observe?(decision: FallbackDecision): unknown;
 }
 
 export interface WatchdogSweepResult {
@@ -304,7 +307,20 @@ export async function runBulkRunWatchdog(
     errors: [],
   };
 
-  const runs = await deps.listRuns();
+  const recordTick = (applied: number, reason: string): void => {
+    const decision = { eligible: 1, applied, reason, scope: 'sweep' };
+    if (deps.observe) deps.observe(decision);
+    else observeFallback('bulk-run-watchdog', decision);
+  };
+  let runs: WatchdogRunFacts[];
+  try {
+    runs = await deps.listRuns();
+  } catch (error) {
+    // A failed census is unknown, never a healthy empty sweep.
+    recordTick(0, 'census-failed');
+    throw error;
+  }
+  let countersHealed = false;
   const nowMs = deps.nowMs?.() ?? Date.now();
   for (const facts of runs) {
     result.examined += 1;
@@ -339,6 +355,7 @@ export async function runBulkRunWatchdog(
       if (verdict.counterDrift || verdict.strand) {
         await deps.reconcileCounters({ runId: facts.runId });
         result.countersReconciled.push(facts.runId);
+        if (verdict.counterDrift) countersHealed = true;
         if (verdict.counterDrift) {
           deps.note?.(
             `reconciled ${facts.runId}: stored counters disagreed with their own rows ` +
@@ -351,5 +368,10 @@ export async function runBulkRunWatchdog(
     }
   }
 
+  const stranded = result.stranded.length > 0;
+  recordTick(result.errors.length || stranded || countersHealed ? 0 : 1,
+    result.errors.length ? 'effect-failed'
+      : stranded && countersHealed ? 'heal-strand-and-counters'
+      : stranded ? 'heal-strand' : countersHealed ? 'heal-counters' : 'healthy');
   return result;
 }

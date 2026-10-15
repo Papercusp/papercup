@@ -81,12 +81,20 @@ export interface ManagedSpawnOptions {
   scopeAvailable?: boolean;
 }
 
+export type ManagedSpawnCompletion =
+  | { status: 'recorded' }
+  | { status: 'delegated'; reason: string }
+  | { status: 'unavailable'; reason: string };
+
 export interface ManagedSpawnResult {
   taskId: string;
   row: TaskRow;
   child: ChildProcess;
   scopeUnit: string | null;
   confined: boolean;
+  /** Await this before exiting a short-lived caller. Child exit alone does not
+   * await ledger persistence; a live scope is explicitly delegated to reconciliation. */
+  waitForCompletion: () => Promise<ManagedSpawnCompletion>;
   /** Set when confinement was requested but unavailable — surfaced so a caller
    *  (and the pane) can say WHY a task is unconfined rather than guessing. */
   confinementSkippedReason?: string;
@@ -245,7 +253,7 @@ export async function managedSpawn(
   }
 
   // WI-6499 — the master switch. OFF ⇒ a plain spawn: no scope, no ledger row,
-  // no exit wiring. Byte-identical to what this seam's callers did before the
+  // no ledger exit wiring. Byte-identical to what this seam's callers did before the
   // task manager existed, which is what makes the flag an honest kill-switch
   // rather than a dashboard blanker.
   opts.stage?.('spawn-read-flag');
@@ -253,6 +261,11 @@ export async function managedSpawn(
     if (opts.requireRegistration) throw new Error('Required task enrollment is disabled; no process started.');
     opts.stage?.('spawn-fork');
     const child = spawnFn(command, args as string[], opts.spawnOptions ?? {});
+    const completion = new Promise<ManagedSpawnCompletion>((resolve) => {
+      const finish = () => resolve({ status: 'unavailable', reason: 'task manager disabled' });
+      child.once('exit', finish);
+      child.once('error', finish);
+    });
     opts.onSpawn?.(child, taskId);
     return {
       taskId,
@@ -260,6 +273,7 @@ export async function managedSpawn(
       child,
       scopeUnit: null,
       confined: false,
+      waitForCompletion: () => completion,
       confinementSkippedReason: 'task manager disabled (papercusp-task-manager)',
     };
   }
@@ -530,18 +544,18 @@ export async function managedSpawn(
     }
   };
 
-  const persistCloseWhenRegistered = async (write: () => Promise<void>): Promise<void> => {
+  const persistCloseWhenRegistered = async (write: () => Promise<void>): Promise<boolean> => {
     if (ledgered) {
       await write();
-      return;
+      return true;
     }
     pendingCloseWrites.push(write);
-    await attemptRegistrationRecovery();
+    return attemptRegistrationRecovery();
   };
 
   // A short child can finish while markSpawned waits on PG. Both ledger and
   // caller observers must be installed before that await; events are not replayed.
-  wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
+  const waitForCompletion = wireExit(child, taskId, scopeOk, scopeUnit, scopeCgroupPath, fs, persistCloseWhenRegistered);
   opts.onSpawn?.(child, taskId);
 
   if (ledgered) {
@@ -556,6 +570,7 @@ export async function managedSpawn(
     child,
     scopeUnit,
     confined: scopeOk,
+    waitForCompletion,
     confinementSkippedReason: scopeOk ? undefined : skippedReason,
   };
 }
@@ -628,9 +643,13 @@ function wireExit(
   scopeUnit: string | null,
   scopeCgroupPath: string | null,
   fs: CgroupFs,
-  persistClose: (write: () => Promise<void>) => Promise<void>,
-): void {
+  persistClose: (write: () => Promise<void>) => Promise<boolean>,
+): () => Promise<ManagedSpawnCompletion> {
   let closed = false;
+  let resolveCompletion!: (outcome: ManagedSpawnCompletion) => void;
+  const completion = new Promise<ManagedSpawnCompletion>((resolve) => { resolveCompletion = resolve; });
+  let completionRequested = false;
+  let handoffTimer: ReturnType<typeof setTimeout> | undefined;
   // WI-10004434: a kill made through task-manager control (killTask /
   // processes:kill) is deliberate by definition, so it marks this handle as an
   // intentional teardown the same way markManagedSpawnTeardown does. The
@@ -655,6 +674,7 @@ function wireExit(
   ): void => {
     if (closed) return;
     closed = true;
+    let recorded = false;
     void (async () => {
       const abnormal = state !== 'exited' || code !== 0 || Boolean(reason);
       const candidate =
@@ -666,14 +686,18 @@ function wireExit(
           ? candidate
           : null;
       const outcome = { state, exitCode: code, exitReason: reason };
-      await persistClose(async () => {
-        await closeTask(taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
+      const registered = await persistClose(async () => {
+        recorded = await closeTask(taskId, terminal ? { ...outcome, terminalProvenance: terminal } : outcome);
         if (terminal) await resetFailedTaskUnit(terminal);
       });
-    })().catch(() => {
+      resolveCompletion(recorded ? { status: 'recorded' } : {
+        status: 'unavailable', reason: registered ? 'terminal write did not update the row' : 'ledger registration pending',
+      });
+    })().catch((error) => {
       // A persistence failure leaves a retained failed unit available for the
       // reconciler's next tick. A close that merely loses the race is fine:
       // closeTask is idempotent on `ended_at`, so the first terminal writer wins.
+      resolveCompletion(recorded ? { status: 'recorded' } : { status: 'unavailable', reason: errorMessage(error) });
     });
   };
 
@@ -708,6 +732,7 @@ function wireExit(
     // at info level without raising a false orphan warning.
     if (intentionalTeardown || (!signal && code === 0)) console.info(message);
     else console.warn(message);
+    resolveCompletion({ status: 'delegated', reason: 'scope still holds processes; reconciler owns terminal persistence' });
   };
 
   /**
@@ -735,11 +760,11 @@ function wireExit(
         settle();
         return;
       }
-      const timer = setTimeout(recheck, Math.min(SCOPE_HANDOFF_RECHECK_MS, remaining));
-      timer.unref?.();
+      handoffTimer = setTimeout(recheck, Math.min(SCOPE_HANDOFF_RECHECK_MS, remaining));
+      if (!completionRequested) handoffTimer.unref?.();
     };
-    const timer = setTimeout(recheck, SCOPE_HANDOFF_RECHECK_MS);
-    timer.unref?.();
+    handoffTimer = setTimeout(recheck, SCOPE_HANDOFF_RECHECK_MS);
+    if (!completionRequested) handoffTimer.unref?.();
   };
 
   const closeAfterExit = (
@@ -815,4 +840,11 @@ function wireExit(
     const scopeFailed = confined && SCOPE_LAUNCH_FAILURE_RE.test(msg);
     close('exited', null, scopeFailed ? `scope launch failed: ${msg}` : `spawn error: ${msg}`);
   });
+  return () => {
+    completionRequested = true;
+    // Merely awaiting a Promise does not keep a CLI alive. Only an explicit
+    // waiter retains the short handoff timer; ordinary background spawns do not.
+    handoffTimer?.ref?.();
+    return completion;
+  };
 }

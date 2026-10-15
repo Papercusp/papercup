@@ -7,7 +7,8 @@ import { rm } from 'node:fs/promises';
 export async function cleanupOwnedTestState(state) {
   const { child, childLifetime, profileProcess, profileLifetime,
     pg, dataDir, runtimeRoot, isolatedRuntime, cleanupStage, observePrivatePgStop } = state;
-  const failures = [];
+  // Include receipts emitted before entry and by non-awaiting PG observers.
+  const failures = state.receiptFailures ?? [];
   const recordFailure = (stage, cause) => {
     failures.push(new Error(stage + ': ' + (cause?.message ?? String(cause)), { cause }));
   };
@@ -53,6 +54,8 @@ export async function cleanupOwnedTestState(state) {
     await Promise.all(pendingReceipts);
     try { stopObserving?.(); }
     catch (cause) { recordFailure('pg-stop-observation-stop', cause); }
+    try { await state.drainReceipts?.(); }
+    catch (cause) { recordFailure('background-cleanup-receipts', cause); }
   }
   if (failures.length) {
     await recordStage('private-state-retained', { errors: failures.map(error => error.message),

@@ -3870,7 +3870,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain, bootst
     harness_slug: any;
     plan_slug: any;
 };
-export function roleBootstrapBody({ role, agent, ownerId, launchedBy, bootstrapIdempotencyKey, workspace, harness, feature, plan, account, model, modelSource, headless, fleet, fleetRole, fleetName, fleetScheme, stack, }?: {
+export function roleBootstrapBody({ role, agent, ownerId, launchedBy, bootstrapIdempotencyKey, workspace, harness, feature, plan, account, model, modelSource, headless, mcpTarget, fleet, fleetRole, fleetName, fleetScheme, stack, }?: {
     headless?: boolean | undefined;
 }): {
     stack?: any[] | undefined;
@@ -3878,6 +3878,7 @@ export function roleBootstrapBody({ role, agent, ownerId, launchedBy, bootstrapI
     fleet_name?: any;
     fleet_role?: any;
     fleet?: any;
+    mcp_target?: string | undefined;
     headless?: boolean | undefined;
     model_source?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     model?: any;

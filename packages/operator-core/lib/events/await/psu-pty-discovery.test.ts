@@ -17,8 +17,21 @@ import {
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import net from 'node:net';
+import { qualifyHooksObservationAck } from './psu-pty-discovery';
 
 describe('hook observation capability gate', () => {
+  it('accepts only exact generation-bound viewport evidence after confirmed cleanup', () => {
+    const request = { ownerId: 'su-observe', expectedAdvSessionId: '42', expectedNativeSessionId: 'native',
+      expectedHostStartedAt: 100, expectedChildGeneration: 3, expectedHostCodeVersion: 'sha' };
+    const receipt = { ok: true, inputReleased: true, identity: { ownerId: 'su-observe', advSessionId: '42',
+      nativeSessionId: 'native', hostStartedAt: 100, childGeneration: 3, hostCodeVersion: 'sha' },
+      coverage: { scope: 'fresh-hook-browser-viewport', complete: false }, visibleRows: ['Hooks'] };
+    expect(qualifyHooksObservationAck(request, receipt)).toBe(true);
+    expect(qualifyHooksObservationAck(request, { ok: true })).toBe(false);
+    expect(qualifyHooksObservationAck(request, { ...receipt, inputReleased: false })).toBe(false);
+    expect(qualifyHooksObservationAck(request, { ...receipt, coverage: { ...receipt.coverage, complete: true } })).toBe(false);
+    expect(qualifyHooksObservationAck(request, { ...receipt, identity: { ...receipt.identity, childGeneration: 4 } })).toBe(false);
+  });
   it('never opens a socket for an old, absent, or unqualified host', async () => {
     const connect = vi.spyOn(net, 'createConnection');
     try {
