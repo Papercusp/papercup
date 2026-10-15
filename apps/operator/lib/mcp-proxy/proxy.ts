@@ -1094,6 +1094,7 @@ export const UPSTREAM_DIED_MID_STREAM_RPC_CODE = -32000;
 export function upstreamDeathSseErrorEvents(
   requestBody: Buffer,
   traceId: string,
+  forwardingClass: ForwardClass = "opaque",
 ): string | null {
   let parsed: unknown;
   try {
@@ -1115,8 +1116,11 @@ export function upstreamDeathSseErrorEvents(
         code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
         message:
           `Papercusp MCP proxy: the upstream connection for this ${method} closed before ` +
-          "the response completed. The call was dispatched, so " +
-          "its effects are UNKNOWN: check state before retrying a write.",
+          (forwardingClass === "readonly"
+            ? "the response completed. The read was dispatched, but its result is unknown. " +
+              "Retrying this read is safe."
+            : "the response completed. The call was dispatched, so " +
+              "its effects are UNKNOWN: check state before retrying a write."),
         data: {
           kind: "upstream_died_mid_stream",
           forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
@@ -1200,6 +1204,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "dev:rate_governor_status",
   // Journal reads have no application side effects; a bounded replay recovers a lost log response.
   "logs:read",
+  // The bounded audit timeline is a SELECT-only projection over audit_log.
+  "audit:list",
   // bounded activity ledger reads are safe to replay after a stale socket;
   // admission still reserves only the explicitly scoped form below.
   "activity:tool-log",
@@ -2143,6 +2149,10 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // READ_ONLY_TOOLS because reading it advances message-read state, but it is
     // still liveness-critical for recovering a fleet member.
     "coord:inbox",
+    // Thread reconstruction is the durable coordination read used to recover
+    // handoffs and acknowledgements; keep it available when ordinary traffic
+    // fills the non-reserved admission ceiling.
+    "coord:thread",
     "fleet:assignments",
     "fleet:leader-brief",
     "loop:checkpoint",
@@ -2156,7 +2166,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     "dev:pg_query",
     "loop:arm",
     "plans:get",
+    "plans:get-spec-evidence",
     "plans:search",
+    "conversations:get",
     "improvements:capture",
     "locks:acquire",
     "locks:queue",
@@ -5350,7 +5362,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   .includes("text/event-stream");
                 const errorEvents =
                   isSse && endsOnSseEventBoundary(forwardedTail)
-                    ? upstreamDeathSseErrorEvents(rawBody, traceId)
+                    ? upstreamDeathSseErrorEvents(rawBody, traceId, fwd.klass)
                     : null;
                 record({
                   kind: "upstream_died_mid_stream",

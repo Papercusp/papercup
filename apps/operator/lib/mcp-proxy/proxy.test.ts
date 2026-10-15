@@ -2654,6 +2654,39 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-25993505156348444: tools:invoke-wrapped audit:list retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":"audit-recovered"}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "audit:list", args: { detail: "summary", limit: 10 } },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"audit-recovered"}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-25897333491653710: loop:checkpoint read:true retries after an upstream reset", async () => {
     const upstream = resetOnceUpstream(
       '{"result":{"read":true,"note":"recovered"}}',
@@ -4196,12 +4229,14 @@ describe("WI-35737: a departed client stops the retry loop", () => {
  */
 describe("WI-10006908: an upstream SSE closure after headers ends the client response", () => {
   type UpstreamMode = "complete" | "die-at-boundary" | "die-mid-event";
-  const TOOL_CALL = JSON.stringify({
-    jsonrpc: "2.0",
-    id: 7,
-    method: "tools/call",
-    params: { name: "testing:run", arguments: {} },
-  });
+  function toolCall(toolName = "testing:run"): string {
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: toolName, arguments: {} },
+    });
+  }
 
   function sseUpstream(mode: UpstreamMode): http.Server {
     return track(
@@ -4229,6 +4264,7 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
   function callTool(
     p: number,
     budgetMs: number,
+    toolName = "testing:run",
   ): Promise<{ outcome: "end" | "aborted" | "error" | "still-open"; body: string; ms: number }> {
     return new Promise((resolve) => {
       const t0 = Date.now();
@@ -4266,7 +4302,7 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
         },
       );
       r.on("error", () => settle("error"));
-      r.end(TOOL_CALL);
+      r.end(toolCall(toolName));
     });
   }
 
@@ -4343,6 +4379,9 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
           "upstream connection for this tools/call closed before the response completed",
         );
         expect(events[0].error.message).not.toContain("operator process");
+        expect(events[0].error.message).toContain(
+          "effects are UNKNOWN: check state before retrying a write.",
+        );
         expect(events[0]).toMatchObject({
           jsonrpc: "2.0",
           id: 7,
@@ -4381,6 +4420,24 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
     } finally {
       traceInfo.mockRestore();
     }
+  }, 10_000);
+
+  it("SUBJECT: read-only tools/call gets safe retry guidance after upstream SSE closure", async () => {
+    const proxy = await proxyFor(sseUpstream("die-at-boundary"));
+    const r = await callTool(port(proxy), 1_500, "plans:get");
+    expect(r.outcome).toBe("end");
+    const events = r.body
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice("data: ".length)));
+    expect(events).toHaveLength(1);
+    expect(events[0].error.message).toContain(
+      "The read was dispatched, but its result is unknown. Retrying this read is safe.",
+    );
+    expect(events[0].error.message).not.toContain("effects are UNKNOWN");
+    expect(events[0].error.data.forwardingResult).toBe(
+      MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+    );
   }, 10_000);
 
   it("SUBJECT: upstream SSE closure mid-event cannot append a parseable event, so the client response is destroyed promptly", async () => {
@@ -4606,6 +4663,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(targetedCall("coord:roster", { view: "claims", owner: "su-target" }))).toBe(false);
     expect(isReservedControlPlaneCall(call("state:read"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:inbox"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("coord:thread"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:assignments"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:leader-brief"))).toBe(true);
     expect(isReservedControlPlaneCall(call("loop:checkpoint"))).toBe(true);
@@ -5635,6 +5693,10 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     "dev:pg_query",
     "loop:arm",
     "plans:get",
+    "plans:get-spec-evidence",
+    "conversations:get",
+    "tools:invoke → plans:get-spec-evidence",
+    "tools:invoke → conversations:get",
     "improvements:capture",
     "locks:acquire",
     "locks:queue",
@@ -5685,13 +5747,15 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       await new Promise((r) => setTimeout(r, 40));
       expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
 
-      const wrappedDiscovery = controlPlaneTool === "tools:invoke → tools:find";
+      const invokedTool = controlPlaneTool.startsWith("tools:invoke → ")
+        ? controlPlaneTool.slice("tools:invoke → ".length)
+        : null;
       const controlPlaneBody = JSON.stringify({
         method: "tools/call",
-        params: wrappedDiscovery
+        params: invokedTool !== null
           ? {
               name: "tools:invoke",
-              arguments: { name: "tools:find", args: {} },
+              arguments: { name: invokedTool, args: {} },
             }
           : {
               name: controlPlaneTool,
@@ -5839,7 +5903,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(results.every((result) => result.status === 200)).toBe(true);
   });
 
-  it("routes direct and deferred coord:declare-intent around a saturated ordinary class", async () => {
+  it("routes coord:thread and direct/deferred coord:declare-intent around a saturated ordinary class", async () => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       releaseUpstream = resolve;
@@ -5856,8 +5920,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         targetHost: "127.0.0.1",
         targetPort: port(upstream),
         retryWindowMs: 5_000,
-        maxInFlight: 4,
-        controlPlaneReserve: 2,
+        maxInFlight: 5,
+        controlPlaneReserve: 3,
         log: () => {},
       }),
     );
@@ -5903,6 +5967,18 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         },
       }),
     );
+    const threadRead = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "coord:thread",
+          arguments: { root_msg_id: "coord-message-fixture" },
+        },
+      }),
+    );
     await new Promise((r) => setTimeout(r, 40));
 
     const health = JSON.parse(
@@ -5910,8 +5986,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     expect(health.inFlight).toMatchObject({
       ordinary: 2,
-      reservedControlPlane: 2,
-      maxInFlight: 4,
+      reservedControlPlane: 3,
+      maxInFlight: 5,
     });
 
     releaseUpstream();
@@ -5919,6 +5995,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       ...heldOrdinary,
       directIntent,
       deferredIntent,
+      threadRead,
     ]);
     expect(results.every((result) => result.status === 200)).toBe(true);
   });
