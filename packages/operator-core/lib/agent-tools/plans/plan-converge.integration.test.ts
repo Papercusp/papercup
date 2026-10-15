@@ -4,6 +4,7 @@
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { setupPlanPgFixture, seedPlan, type PlanPgFixture } from './__tests__/_pg-tool-fixture';
 import { setSpecClause } from './spec-clauses-store';
@@ -12,7 +13,7 @@ import auditTool from './audit';
 import certifyTool from './certify-spec-clauses';
 import { validateRecipeBindings } from '../../recipe-contract';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
-import { bindSpecEvidence, measureAndPinRepoFilesEvidenceAtRoot } from './spec-evidence-store';
+import { bindSpecEvidence, measureRepoFilesEvidenceDetailedAtCommit } from './spec-evidence-store';
 import { createOneWorkItem } from '../work_items/_create-core';
 import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 
@@ -41,7 +42,7 @@ function execute(tools: Body, inputs: Body = {}) {
   return vm.runInNewContext(`(async () => {\n${script}\n})()`, { tools, inputs: checked.value.inputs }) as Promise<Body>;
 }
 function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?: Body } = {}) {
-  const evaluate = vi.fn(async () => ({ ok: true, rows }));
+  const evaluate = vi.fn(async (_args: Body) => ({ ok: true, rows }));
   const audit = vi.fn(async () => options.audit ?? { ok: true });
   const certify = vi.fn(async () => options.certify ?? { ok: true, counts: { filed: 0 } });
   const create = vi.fn(async () => options.filed ?? { ok: true, results: [{ ok: true, id: 'WI-gap', workItem: { id: 'WI-gap', assignee: 'converge-owner' } }] });
@@ -82,8 +83,11 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
       .toMatchObject({ ok: true, nonPassing: 1, gaps: [{ blockers: ['code-truth'] }] });
     expect(c.certify).toHaveBeenCalledWith(expect.objectContaining({ dryRun: true }));
     const stale = controls([row({ wouldBlock: ['freshness', 'falsifiability', 'plan-class-risk-floor'],
-      ratings: { freshness: { rating: 'fail' } } })]);
+      ratings: { freshness: { rating: 'fail' } }, measurementEvidence: { selectedBindings: 1 } })]);
     expect(await execute(stale.tools)).toMatchObject({ ok: true, gaps: [{ classification: 'outdated' }] });
+    const unbound = controls([row({ wouldBlock: ['freshness', 'falsifiability'],
+      ratings: { freshness: { rating: 'fail' } }, measurementEvidence: { selectedBindings: 0 } })]);
+    expect(await execute(unbound.tools)).toMatchObject({ ok: true, gaps: [{ classification: 'major' }] });
     const unreviewed = controls([row({ planItemId: 'P-004', verdict: 'pass', wouldBlock: [] })]);
     expect(await execute(unreviewed.tools)).toMatchObject({ ok: true, nonPassing: 1, gaps: [{ blockers: ['code-truth'] }] });
   });
@@ -155,7 +159,10 @@ describe('converge real PostgreSQL composition', () => {
     const measurement = { schemaVersion: 1 as const, kind: 'repo-files' as const,
       sourcePaths: ['packages/operator-core/lib/agent-tools/plans/fixtures/plan-converge.recipe.txt'],
       testPaths: [testPath], fixturePaths: ['packages/operator-core/lib/agent-tools/plans/fixtures/plan-converge.bindings.json'] };
-    const measured = await measureAndPinRepoFilesEvidenceAtRoot(root, measurement);
+    // The real reader measures committed repository bytes. Match its input
+    // contract instead of binding mutable working-tree hashes as current proof.
+    const commitSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    const measured = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, commitSha);
     // This ledger is fixture INPUT, not a claimed test run. Production evidence
     // reads must distinguish its pass/fail outcomes and stale measured bytes.
     await fx.admin`INSERT INTO harness_shared.work_items
@@ -176,19 +183,20 @@ describe('converge real PostgreSQL composition', () => {
         .toMatchObject({ status: 'created' });
       const execution: TestRunExecutionDetails = { schemaVersion: 1, root, filePath: testPath,
         runGroupId: null, workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp',
-        testNamePattern: null, testLayer: 'integration', mutationPhase: null, commitSha: null, worktreeDirty: false,
+        testNamePattern: null, testLayer: 'integration', mutationPhase: null, commitSha, worktreeDirty: false,
         ...(status === 'pass' ? { passedCaseTitles: ['persisted proof fixture'] } : { failedCaseTitles: ['persisted proof fixture'] }),
         passed: status === 'pass' ? 1 : 0, failed: status === 'fail' ? 1 : 0, skipped: 0, collectionFailed: false };
       // Validate fixtures with the very parser the evidence reader consumes;
       // incomplete status-only rows must never masquerade as passing proof.
       expect(parseTestRunExecutionDetails(execution)).toEqual(execution);
       const [run] = await fx.admin`INSERT INTO harness_shared.test_runs
-        (workspace_id, harness_slug, file_path, framework, status, source, worktree_dirty, execution_details)
-        VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${testPath}, 'vitest', ${status}, 'local', false,
+        (workspace_id, harness_slug, file_path, framework, status, source, commit_sha, worktree_dirty, execution_details)
+        VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${testPath}, 'vitest', ${status}, 'local', ${commitSha}, false,
           ${JSON.stringify(execution)}::text::jsonb) RETURNING id`;
       await fx.admin`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status)
         VALUES (${run.id}, 0, 'persisted proof fixture', ${status})`;
-      const { pin: _pin, ...fingerprints } = measured;
+      const { sourceFingerprint, testFingerprint, fixtureFingerprint } = measured;
+      const fingerprints = { sourceFingerprint, testFingerprint, fixtureFingerprint };
       expect(await bindSpecEvidence({ harnessSlug: 'papercusp', planSlug: slug, specId,
         workItemId: 'WI-CONVERGE-PROOF', evidenceKind: 'test', evidenceRef: `test-run:${run.id}:${testPath}`,
         testRunId: Number(run.id), ...fingerprints,
@@ -204,8 +212,8 @@ describe('converge real PostgreSQL composition', () => {
           passedCaseTitles: [], failedCaseTitles: ['persisted proof fixture'] };
         expect(parseTestRunExecutionDetails(mutant)).toEqual(mutant);
         const [red] = await fx.admin`INSERT INTO harness_shared.test_runs
-          (workspace_id, harness_slug, file_path, framework, status, source, worktree_dirty, execution_details, output_tail)
-          VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${testPath}, 'vitest', 'fail', 'mutation-probe', false,
+          (workspace_id, harness_slug, file_path, framework, status, source, commit_sha, worktree_dirty, execution_details, output_tail)
+          VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${testPath}, 'vitest', 'fail', 'mutation-probe', ${commitSha}, false,
             ${JSON.stringify(mutant)}::text::jsonb, 'persisted proof fixture: expected true to be false') RETURNING id`;
         await fx.admin`INSERT INTO harness_shared.test_case_runs (test_run_id, case_index, case_key, status)
           VALUES (${red.id}, 0, 'persisted proof fixture', 'fail')`;

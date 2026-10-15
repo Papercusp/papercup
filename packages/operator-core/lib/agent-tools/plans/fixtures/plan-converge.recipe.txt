@@ -32,7 +32,8 @@ for (const row of rows) {
   // implementation is critical. "outdated" is a conformance label; work-items
   // retain their existing critical/major/minor/nit severity vocabulary.
   const stale = blockers.includes("freshness") && row.ratings && row.ratings.freshness
-    && row.ratings.freshness.rating === "fail" && !blockers.includes("code-truth");
+    && row.ratings.freshness.rating === "fail" && row.measurementEvidence
+    && row.measurementEvidence.selectedBindings > 0 && !blockers.includes("code-truth");
   const classification = reviewed && reviewed.verdict === "missing" ? "critical"
     : stale || blockers.length > 0 && blockers.every(value => value === "freshness") ? "outdated"
     : blockers.length > 0 && blockers.every(value => value === "traceability") ? "minor" : "major";
