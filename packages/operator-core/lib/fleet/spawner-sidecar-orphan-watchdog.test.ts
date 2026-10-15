@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as recorder from '../degradation/fallback-observations';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -7,6 +8,8 @@ import {
 } from './spawner-sidecar-orphan-watchdog';
 
 describe('spawner-sidecar owner-death watchdog (P-005)', () => {
+  beforeEach(() => { vi.spyOn(recorder, 'observeFallback').mockReturnValue(true); });
+  afterEach(() => { vi.restoreAllMocks(); });
   it('keeps the server alive for a live owner and flushes before shutting down after owner death', async () => {
     const callbacks: Array<() => void> = [];
     let ownerAlive = true;
@@ -47,6 +50,7 @@ describe('spawner-sidecar owner-death watchdog (P-005)', () => {
 
     ownerAlive = false;
     const closing = callbacks[0]!();
+    await Promise.resolve(); // bounded flush starts its thunk after arming the deadline
     expect(flushObservations).toHaveBeenCalledOnce();
     expect(shutdown).not.toHaveBeenCalled();
     finishFlush();
@@ -68,6 +72,28 @@ describe('spawner-sidecar owner-death watchdog (P-005)', () => {
     expect(logger.log).toHaveBeenCalledWith(
       expect.stringContaining('orphan watchdog not armed'),
     );
+  });
+
+  it('still shuts down when the observation flush never settles', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let tick!: () => void;
+    const shutdown = vi.fn();
+    try {
+      armSpawnerSidecarOrphanWatchdog('/tmp/papercusp-spawner-49217.sock', shutdown, {
+        schedule: (_name, _interval, callback) => { tick = callback; },
+        isPidAlive: () => false,
+        flushObservations: () => new Promise(() => {}),
+        logger: { log() {}, warn() {} },
+      });
+      const closing = tick();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(shutdown).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await closing;
+      expect(shutdown).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sidecar-orphan-flush exceeded 1000ms'));
+    } finally { vi.useRealTimers(); }
   });
 
   it('remains wired into the shared DEV and PACKAGED server startup', () => {

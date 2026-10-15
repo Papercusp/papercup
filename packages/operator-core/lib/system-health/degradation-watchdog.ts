@@ -433,6 +433,14 @@ registerDegradationMechanism({
   mechanism: 'bulk-run-watchdog', scopeKeyed: true,
   description: 'Bulk-run sweep ticks needed no corrective strand or counter repair. Repeated healing or unreadable/failed sweeps collapse the primary rate; guarded writes that lose a heartbeat race remain healthy.',
 });
+registerDegradationMechanism({
+  mechanism: 'spawner-sidecar-orphan-watchdog', scopeKeyed: true,
+  description: 'Owner-PID checks found a live host rather than needing orphan shutdown or failing the liveness read. Socket paths without an owner PID do not arm and are ineligible.',
+});
+registerDegradationMechanism({
+  mechanism: 'memory-watchdog', scopeKeyed: true,
+  description: 'Memory watchdog samples needed no forced GC, native trim or recycle and retained swap visibility. Born-over-budget suppression and sample/effect failures are degraded; this measures watchdog decisions, not the cause of memory growth.',
+});
 
 /**
  * One key segment. ':' separates segments and whitespace makes keys unreadable, so both

@@ -1,6 +1,7 @@
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { ownerPidFromSocketPath } from './spawner-socket-path';
 import { flushFallbackObservations, observeFallback } from '../degradation/fallback-observations';
+import { withBoundedTimeout } from '../bounded-timeout';
 
 /** How often to ask whether the host this sidecar serves is still alive. */
 export const ORPHAN_CHECK_INTERVAL_MS = 30_000;
@@ -73,8 +74,10 @@ export function armSpawnerSidecarOrphanWatchdog(
       // The sidecar's drain ends with process.exit(), which bypasses beforeExit.
       // Persist the heal sample before asking it to terminate; a failed write
       // must still allow the orphan to shut down.
-      return (deps.flushObservations ?? flushFallbackObservations)()
-        .finally(() => shutdown('owner-gone'));
+      return withBoundedTimeout(async () => {
+        await (deps.flushObservations ?? flushFallbackObservations)();
+      }, { timeoutMs: 1000, fallback: undefined, label: 'sidecar-orphan-flush' })
+        .then(() => shutdown('owner-gone'));
     },
     { category: 'watchdog', classification: 'must-sample' },
   );

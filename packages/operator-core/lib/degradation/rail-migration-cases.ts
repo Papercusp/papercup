@@ -23,7 +23,128 @@ import { AGENT_ROUTING_MIGRATION_CASES } from './agent-routing-migration-cases';
 
 export const RAIL_MIGRATION_COMPLETE_ITEMS: string[] = ['P-005', 'P-007', 'P-008', 'P-009', 'P-010', 'P-011', 'P-012', 'P-013'];
 
+const sidecarOrphanCases: RailMigrationCase[] = [{
+  id: 'sidecar-orphan-original-healthy-shutdown-and-unknown-owner',
+  item: 'P-015', route: 'observation', mechanism: 'spawner-sidecar-orphan-watchdog',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/fleet/spawner-sidecar-orphan-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const { armSpawnerSidecarOrphanWatchdog } = await import('../fleet/spawner-sidecar-orphan-watchdog');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      if (mechanism === 'bounded-operation') return true;
+      expect(mechanism).toBe('spawner-sidecar-orphan-watchdog');
+      expect(row.scope).toBe('owner'); observations.push(row); return true;
+    });
+    let tick: (() => void) | undefined, alive = true, failRead = false, failShutdown = false, failFlush = false;
+    let flushed = false;
+    const shutdown = vi.fn(() => {
+      expect(flushed).toBe(true);
+      if (failShutdown) throw new Error('shutdown unavailable');
+    });
+    const deps = {
+      schedule: (_name: string, _interval: number, callback: () => void) => { tick = callback; },
+      isPidAlive: (pid: number) => {
+        expect(pid).toBe(49217);
+        if (failRead) throw new Error('liveness unavailable');
+        return alive;
+      },
+      logger: { log: vi.fn(), warn: vi.fn() },
+      flushObservations: async () => { flushed = true; if (failFlush) throw new Error('flush unavailable'); },
+    };
+    try {
+      armSpawnerSidecarOrphanWatchdog('/tmp/spawner.sock', shutdown, deps);
+      expect(tick).toBeUndefined(); expect(observations).toEqual([]);
+      armSpawnerSidecarOrphanWatchdog('/tmp/papercusp-spawner-49217.sock', shutdown, deps);
+      tick!(); expect(shutdown).not.toHaveBeenCalled();
+      alive = false; await tick!(); expect(shutdown).toHaveBeenCalledWith('owner-gone');
+      failShutdown = true; await expect(tick!()).rejects.toThrow('shutdown unavailable');
+      failShutdown = false; failFlush = true;
+      await tick!(); // failed telemetry cannot block the orphan shutdown
+      expect(shutdown).toHaveBeenCalledTimes(3);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sidecar-orphan-flush failed: flush unavailable'));
+      failRead = true; expect(tick!).toThrow('liveness unavailable');
+      failRead = false; alive = true; tick!();
+      expect(observations.map(row => [row.eligible, row.applied, row.reason])).toEqual([
+        [1, 1, 'healthy'], [1, 0, 'owner-gone'], [1, 0, 'owner-gone'], [1, 0, 'owner-gone'],
+        [1, 0, 'liveness-read-failed'], [1, 1, 'healthy'],
+      ]);
+    } finally { sink.mockRestore(); warn.mockRestore(); }
+    return { route: 'observation', mechanism: 'spawner-sidecar-orphan-watchdog', observations };
+  },
+}];
+
 const scoutReadPath = 'packages/operator-core/lib/';
+const memoryWatchdogCases: RailMigrationCase[] = [{
+  id: 'memory-watchdog-original-healthy-gc-trim-recycle-blind-and-failed-ticks',
+  item: 'P-015', route: 'observation', mechanism: 'memory-watchdog',
+  rowIds: ['bespoke-watchdog|packages/operator-core/lib/memory-watchdog.ts|<module>|1'],
+  run: async () => {
+    const { expect, vi } = await import('vitest');
+    const recorder = await import('./fallback-observations');
+    const { startMemoryWatchdog } = await import('../memory-watchdog');
+    const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
+    const sink = vi.spyOn(recorder, 'observeFallback').mockImplementation((mechanism, row) => {
+      expect(mechanism).toBe('memory-watchdog'); observations.push(row); return true;
+    });
+    let mb = 10, swap = 0, failSample = false, failGc = false, failTrim = false;
+    const usage = vi.spyOn(process, 'memoryUsage').mockImplementation(() => {
+      if (failSample) throw new Error('memory sample unavailable');
+      return { rss: mb * 1024 * 1024, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
+    });
+    const handles: Array<{ stop(): void }> = [];
+    vi.useFakeTimers();
+    const trip = vi.fn();
+    const start = (extra: Partial<import('../memory-watchdog').MemoryWatchdogOpts> = {}) => {
+      const handle = startMemoryWatchdog({ intervalMs: 1000, limitMb: 100, warnMb: 80,
+        proactiveGcMb: 40, gcCooldownMs: 0, tripsToRecycle: 1, readSwapMb: () => swap,
+        forceGc: () => { if (failGc) throw new Error('GC unavailable'); },
+        onTrip: trip, log: () => {}, ...extra });
+      handles.push(handle); return handle;
+    };
+    try {
+      let handle = start();
+      vi.advanceTimersByTime(1000); // establishes headroom
+      mb = 50; vi.advanceTimersByTime(1000); // GC
+      failGc = true; vi.advanceTimersByTime(1000); failGc = false;
+      mb = 110; vi.advanceTimersByTime(1000); expect(trip).toHaveBeenCalledOnce();
+      const afterRecycle = observations.length;
+      vi.advanceTimersByTime(1000); expect(observations).toHaveLength(afterRecycle); handle.stop();
+      handle = start(); vi.advanceTimersByTime(1000); vi.advanceTimersByTime(1000);
+      expect(trip).toHaveBeenCalledOnce(); handle.stop(); // born over budget stays visible each tick
+      mb = 10; swap = -1; handle = start(); vi.advanceTimersByTime(1000); handle.stop(); swap = 0;
+      failSample = true;
+      // The managed registry contains a throwing callback; extract the original
+      // producer callback below to assert the failure itself without logging it.
+      let tick!: () => void;
+      const isolatedStart = execute(original('packages/operator-core/lib/memory-watchdog.ts',
+        'export function startMemoryWatchdog(', 'function'), {
+        managedSetInterval: (_name: string, _interval: number, callback: () => void) => {
+          tick = callback; return { stop() {} };
+        },
+        bytesToMb: (bytes: number) => bytes / (1024 * 1024),
+        observeFallback: recorder.observeFallback, process,
+        backgroundWorkersEnabled: () => false,
+      }, 'startMemoryWatchdog') as typeof startMemoryWatchdog;
+      isolatedStart({ forceGc: null, readSwapMb: () => 0 });
+      expect(tick).toThrow('memory sample unavailable'); failSample = false;
+      mb = 50;
+      handle = start({ trimNativeHeap: () => { if (failTrim) throw new Error('trim unavailable'); } });
+      vi.advanceTimersByTime(1000); failTrim = true; vi.advanceTimersByTime(1000); handle.stop();
+      expect(observations.map(row => [row.eligible, row.applied, row.reason])).toEqual([
+        [1, 1, 'healthy'], [1, 0, 'proactive-gc'], [1, 0, 'gc-failed'], [1, 0, 'recycle'],
+        [1, 0, 'born-over-budget'], [1, 0, 'born-over-budget'], [1, 0, 'swap-unavailable'],
+        [1, 0, 'tick-failed'], [1, 0, 'native-heap-trim'], [1, 0, 'trim-failed'],
+      ]);
+    } finally {
+      for (const handle of handles) handle.stop();
+      vi.useRealTimers(); usage.mockRestore(); sink.mockRestore();
+    }
+    return { route: 'observation', mechanism: 'memory-watchdog', observations };
+  },
+}];
 type ScoutReadObservation = { eligible: number; applied: number; reason: string; scope?: string | null };
 function scoutReadSink(scope: string, observations: ScoutReadObservation[]) {
   return (mechanism: string, row: ScoutReadObservation, options: { workspaceId?: string }) => {
@@ -1219,7 +1340,7 @@ const dispatchEnvelopeCases: RailMigrationCase[] = [{
   },
 }];
 
-export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
+export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRATION_CASES, ...ROUTINE_FALLBACK_MIGRATION_CASES, ...sidecarOrphanCases, ...memoryWatchdogCases, ...scoutReadCases, ...scoutCycleReadCases, ...improvementReadCases, ...routeReadCases, ...hookLockCases, ...mdxRenderCases, ...dispatchEnvelopeCases, ...learningStoreCases, ...workItemCallerCases, ...workspaceRoutingCases, ...delegationCases, ...coordinationReadCases, ...remainingSyncCases, {
   id: 'bulk-run-original-core-and-routine-ticks-heal-race-failure-and-healthy',
   item: 'P-015', route: 'observation', mechanism: 'bulk-run-watchdog',
   rowIds: [
