@@ -158,6 +158,19 @@
       "worktreeDirty": true,
       "logPath": "/tmp/p032-package-version-guard-9086d-20261015.log",
       "scope": "The repaired clean-HOME case ran against current working source. This is local regression proof; it does not replace exact ce62 installed-candidate acceptance or a clean BAR receipt."
+    },
+    "candidateIdentityHarnessRepair": {
+      "workItem": "EI-26076294683834968",
+      "status": "committed-awaiting-full-clean-proof",
+      "harnessCommit": "5985979eed7f5c42d25565043b3104d02f4c1df4",
+      "inputs": ["PUI_PUBLIC_PACKAGE_ARCHIVE", "PUI_PUBLIC_PACKAGE_SOURCE_SHA", "PUI_PUBLIC_PACKAGE_ARCHIVE_SHA256"],
+      "behavior": "Both lifecycle and release-stage tests reuse a checked snapshot of the accepted archive independently of harness HEAD. The lifecycle retains its predecessor and cold rebuild controls. Dependency lock paths and versions are checked before Cargo.",
+      "correction": "Earlier carry prose incorrectly said subjectGeneration overlays RELEASE_TOOLING. It only overlays the explicitly supplied mutation file; RELEASE_TOOLING selects complete predecessor generations. The actual defect was HEAD-only candidate selection.",
+      "cleanCandidateGuards": { "testRunId": 21261424, "passed": 12, "failed": 0, "skipped": 0, "worktreeDirty": false, "harnessCommit": "a70168871c9c82624833851440149add71962357" },
+      "expandedLocalGuards": { "passed": 15, "failed": 0, "skipped": 0, "worktreeDirty": true, "logPath": "/tmp/p032-package-preflight-unit-9086d-20261015.log", "logSha256": "6a0e29f38bd701545dd7e3d65271e0a35d3a754fd6c46657d34071d6b49a8cc2" },
+      "scopedTypecheck": { "files": 4, "errors": 0, "exitCode": 0, "logPath": "/tmp/p032-package-harness-types-9086d-20261015.log", "logSha256": "e678259b90164fdb92a6d7e173ea25274805227d59d9072fcde7191d2f03b35f" },
+      "linkedDependencyAttempt": { "testRunId": 21261444, "status": "failed-before-lifecycle-cases", "passed": 0, "failed": 0, "skipped": 8, "worktreeDirty": false, "cause": "lint-as-committed linked dependencies exposed esbuild outside a reachable committed lock path; bundle-psu refused after predecessor compilation", "logPath": "/tmp/p032-package-pinned-clean-9086d-20261015.log" },
+      "nextPrerequisite": "Use maintained setup-release-checkout prepare-existing with an exact immutable independent-copy dependency generation, then run the committed preflight and full lifecycle against ce62/c292. No rerun is claimed here."
     }
   },
   "barAdequacyPreparation": {
@@ -168,6 +181,10 @@
     "evidencePath": "/tmp/p032-adequacy-full-9086d-20261015.json",
     "scope": "These are proof-adequacy verdicts for the selected bindings, not new installed-product failures.",
     "chatFirstApproval": "pui-chat-first-ux-2026-09-28#D-037 records Avi's R-05 approval on build 33287a0d19; P-006 still requires proof and independent grading. Exact final-candidate publication approval remains separate.",
+    "editorSourceControls": [
+      { "specId": "PUI-EDITOR-HISTORY", "verdict": "pass", "baselineTestRunId": 21261488, "relocatedBaselineTestRunId": 21261490, "mutantTestRunId": 21261493, "bindingIds": [47928, 47929], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-history-clean-control-9086d-20261015.log", "logSha256": "602745fce09de2280bbfcac313ad01823e479c87689b79329343f1fc390eba62" },
+      { "specId": "PUI-EDITOR-UNDO", "verdict": "pass", "baselineTestRunId": 21261498, "relocatedBaselineTestRunId": 21261501, "mutantTestRunId": 21261504, "bindingIds": [47934, 47935], "additionalFixtureBaselineBindingId": 47908, "withdrawnIncompleteFixtureBindingIds": [47896, 47897], "harnessCommit": "a70168871c9c82624833851440149add71962357", "allThreeWorktreesClean": true, "fixturePath": "apps/tui/src/app.rs", "logPath": "/tmp/p032-editor-undo-fixture-control-9086d-20261015.log", "logSha256": "b7e82dbababce0d178e7e47612db34918c3db6b2e7066700d4f4a27a1908309c" }
+    ],
     "r03HelperProof": {
       "parityTestRunId": 21259714,
       "parityPassed": 16,
