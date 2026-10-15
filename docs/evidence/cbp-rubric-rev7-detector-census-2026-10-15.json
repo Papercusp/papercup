@@ -12,102 +12,141 @@
       "post": 1183030,
       "revision": 8,
       "verdict": "not-yet-attestable"
+    },
+    "currentApplicationCritique": {
+      "posts": [
+        1183120,
+        1183121
+      ],
+      "revision": 9,
+      "verdict": "not-yet-attestable",
+      "repairDecision": "D-024",
+      "amendmentApproval": "thread-post:1183136",
+      "gaps": [
+        "F1 deadline bounds",
+        "F2 real target model menu",
+        "F3 completing PUI port and broken-pane control",
+        "F4 positive host acknowledgement table"
+      ]
     }
   },
   "currentRubric": {
     "ref": "acceptance-consult-backed-parking-2026-10-12",
-    "revision": 9,
-    "criteriaHash": "56087bfce171766fec576170b5f7dfab14e58e86a51a4c5ecdb6474f14d53883",
-    "barSetHash": "bb588c880ddfe2d8a50d12a3c055b80301de0645dc606d67316f1067aaf1a770",
-    "subjectPlanRevision": 66
+    "revision": 10,
+    "criteriaHash": "f18f2e230a4080a3cd338fb611ab8d26dc034ffc4df62bcaff4fad0fd8fdbf32",
+    "barSetHash": "6f07041d56ae4e40f4534cbf912d1466fdbdc15f9d59ff8b96865b42e3d1680b",
+    "subjectPlanRevision": 67
   },
-  "sourceCommit": "063a5d71271812796946c7b74e6d1662ed7f9e86",
-  "sourcePinStatus": "Verified all 17 file bytes at this immutable commit, including exact application payload/side-effect checks and persisted owner-authority/answer/rebuttal coverage.",
+  "sourceCommit": "2ee93add213a76f562140b9107f8b7a80242d42d",
+  "sourcePinStatus": "Source review corpus measured from current canonical tree. sourceCommit is the HEAD baseline; per-file pin marks uncommitted working-tree bytes explicitly. This map does not claim a clean committed test run.",
   "files": [
     {
       "path": "apps/operator/lib/psu-pty-host-kickoff-activity.test.ts",
       "sha256": "26cfa6f5ee45511dc9945316eb811711a9e3f56abb008eaf1ad5de6eaf178786",
-      "blob": "be11afcaace67cd2c2b10d711882966a4a1d0969"
+      "blob": "be11afcaace67cd2c2b10d711882966a4a1d0969",
+      "pin": "committed"
     },
     {
       "path": "apps/operator/lib/psu-pty-host.integration.test.ts",
       "sha256": "6f3bd2ca524715e34865402fa3ea54a0dc743f454da323fe327e1f1c9080d121",
-      "blob": "8bf69b4b9123aad36e64d4de62ae7d0fdd03ff6c"
+      "blob": "8bf69b4b9123aad36e64d4de62ae7d0fdd03ff6c",
+      "pin": "committed"
     },
     {
       "path": "apps/operator/lib/psu-pui-resume.test.ts",
       "sha256": "ac72ff5f3ccab5aaa091e5bdca135e0e2debb4d13ce7fe1a8ad69e41298e0f7f",
-      "blob": "afcad55721df9ae2760c24cd43a67a7df3301d8a"
+      "blob": "afcad55721df9ae2760c24cd43a67a7df3301d8a",
+      "pin": "committed"
     },
     {
       "path": "apps/operator/lib/psu-resume-cross-backend.test.ts",
-      "sha256": "eb1cf813dce92e67f211a91bc14a23a547db51cc97385147664e7e58efcca10b",
-      "blob": "8a9b2956ce70e17eaf225bfb8a13f232c4df257f"
+      "sha256": "df747e8304ea3cc6300ae3dc81cb5e147c3c1d66b10490e6d9b9f50fb188a086",
+      "blob": "58494cae9f33931760d9e606f4bca71541c38660",
+      "pin": "committed"
     },
     {
       "path": "apps/operator/lib/pui-resume.integration.test.ts",
-      "sha256": "e1b4d4c9142b8dd0f4381051e36adacaae68fdff15dae426bfeba515f936237b",
-      "blob": "31b6f68f0048ebfa61b9d461c37736fe780d6e9c"
+      "sha256": "aece8af71475529ea3f740c3599f040f6737caa3076626308d8e0aa2193ca39f",
+      "blob": "e8787e37e4b0581d0c65001cc3c60159210d30aa",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/agent-tools/consult/reply.test.ts",
       "sha256": "64aab0ace8e3bab0b7fc7094ee0d897a4c0f6e33db2f69e3d45c406a0b85d2fe",
-      "blob": "0820217f589acd30191f0cec959e7a0bf6e2e791"
+      "blob": "0820217f589acd30191f0cec959e7a0bf6e2e791",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
       "sha256": "95eb126aaea7f8ca4e0386f2b65e5209b53c13975d3db1988039e542d724c363",
-      "blob": "2e100e1bf4b504c7a26d69eb0aed81f1794d5ac7"
+      "blob": "2e100e1bf4b504c7a26d69eb0aed81f1794d5ac7",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/consult/consult-dispatch.test.ts",
       "sha256": "caff04a3dbef17ebbfe7783c5ad4722ec969d5a9bf8956b63a39f8639087183f",
-      "blob": "76dcadac3c503481854876218255e1157713c560"
+      "blob": "76dcadac3c503481854876218255e1157713c560",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/consult/consult-routing-health.test.ts",
       "sha256": "531d5b1002e6cdb023a8a3879704c230fc7e172a7f99766042d92653346be16f",
-      "blob": "8b203f9aee2f0658a11345576b3080543b829fb5"
+      "blob": "8b203f9aee2f0658a11345576b3080543b829fb5",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/consult/get-feedback-core.integration.test.ts",
       "sha256": "e659cd3db05801ddb30c73d1627fe23c42418b6e0b721c767422484b9e52d4d5",
-      "blob": "37d6e698e11b6fab70c1fb799fff414cce82926b"
+      "blob": "37d6e698e11b6fab70c1fb799fff414cce82926b",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/consult/park-delivery.test.ts",
       "sha256": "b3481f544f4deaae67482497dfd1d027540ea3f0c6c24ae3d01576c46cf20ca2",
-      "blob": "38d0d0799e31c6d792a809b4e54b976b96a684fb"
+      "blob": "38d0d0799e31c6d792a809b4e54b976b96a684fb",
+      "pin": "committed"
+    },
+    {
+      "path": "packages/operator-core/lib/consult/park-door.test.ts",
+      "sha256": "6efb8cedb1fb12bc4d54432dee20a2979c6b8e0971d5fdb433c58f8793457ee4",
+      "blob": "401d208914cd3bff37c945357ecfddc03ef287d0",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/consult/park-resolver.test.ts",
       "sha256": "1979117383a119f1a2bd34b99ea694c688f2ca6de28f1664032696798d21204e",
-      "blob": "ae2d226d9c6cf563f339041f162151a65e8e780f"
+      "blob": "ae2d226d9c6cf563f339041f162151a65e8e780f",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/consult/park.integration.test.ts",
       "sha256": "408364a2bf766fdb5af135a42531f0196efedfe37b7010dff90d6b8e9a033221",
-      "blob": "e7730996ce12b4b09c3b48114429be7791df25f9"
+      "blob": "e7730996ce12b4b09c3b48114429be7791df25f9",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/doc-claims/park-door-guidance.test.ts",
       "sha256": "7841108c4ef3ab6c94e0ca2d3271befa18f29778c050e41aa06ab87155523c47",
-      "blob": "3cf09c445b6c77f3115cdf45becc90e09fe7fa8b"
+      "blob": "3cf09c445b6c77f3115cdf45becc90e09fe7fa8b",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/endpoint-route/__tests__/adv-session-port-evidence-span.integration.test.ts",
       "sha256": "ed611cd2f027a869ebf4938adced7c60f370fed0fec1f40ad3e7d46bc5a04a23",
-      "blob": "c5308fd636c1ec6ec733458d7a8bcdf2236bfbc5"
+      "blob": "c5308fd636c1ec6ec733458d7a8bcdf2236bfbc5",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts",
-      "sha256": "90ad3a46efdc51b01d0e8774a406686c9e2a4f99e658eaa2665060e5a3646681",
-      "blob": "8c215e23678b43f547de2af47034e1047c4e19ea"
+      "sha256": "f1ce4d6e23a29da7ee929b3656ca5ede05a2e77f46f05f918f58f51f75ac1d8c",
+      "blob": "3f32ff0beff911780737ce8020f9c00e6d2bf296",
+      "pin": "committed"
     },
     {
       "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/pre-pinned-owner-conflicts.test.ts",
       "sha256": "9d1432883ebc6fee3385288115142a4acce4f03fc568aa1a7781db538c843efd",
-      "blob": "9cec0aea0e15354bc3194ad995e6245f0d228ca3"
+      "blob": "9cec0aea0e15354bc3194ad995e6245f0d228ca3",
+      "pin": "committed"
     }
   ],
   "criteria": [
@@ -176,9 +215,19 @@
           "file": "packages/operator-core/lib/agent-tools/work_items/set_blocker.test.ts",
           "testCase": "R-3 refuses a product-decision park missing %s before opening or persisting anything",
           "assertion": "Both it.each legs omit defaultIfUnanswered or decideBy; refusal plus zero consult, wake, notice, owner question, payload write, or lifecycle write."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-door.test.ts",
+          "testCase": "refuses a deadline outside 15..1440 minutes or unparseable",
+          "assertion": "14 minutes, 1441 minutes, a past deadline and an unparseable value each return park_deadline_out_of_bounds."
+        },
+        {
+          "file": "packages/operator-core/lib/consult/park-door.test.ts",
+          "testCase": "accepts the deadline bounds inclusively",
+          "assertion": "Both the 15-minute and 1440-minute bounds are accepted."
         }
       ],
-      "notes": "Added actual handler boundary checks to the existing bound file.",
+      "notes": "D-002 and D-024 preserve required default/deadline fields and inclusive 15..1440-minute bounds; the 60-minute default choice does not silently supply a missing required deadline.",
       "classification": "tests-bound"
     },
     {
@@ -699,9 +748,14 @@
           "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
           "testCase": "a %s source picked onto %s resolves to a session port, never a refusal",
           "assertion": "Each ordered pair resolves target choices; inspect the parameterized cases and assertions, not an aggregate pass count."
+        },
+        {
+          "file": "apps/operator/lib/psu-resume-cross-backend.test.ts",
+          "testCase": "the real %s→%s picker offers selectable target-specific model rows (R-22)",
+          "assertion": "All six ordered pairs call real chooseResumeTarget with Codex/OMP catalog fixtures and Claude aliases; selectable model rows exist, actual prompt choice returns the chosen target/model and operation=port."
         }
       ],
-      "notes": "D-007/D-009/D-014; picker scope only.",
+      "notes": "D-007/D-009/D-014/D-024; actual interactive model menu, not only backend resolution. Native target CLI proof remains R10.",
       "classification": "tests-bound"
     },
     {
@@ -770,9 +824,14 @@
           "file": "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-su.test.ts",
           "testCase": "refuses a launch whose account drifted from the prepared auto request, before reserving a target",
           "assertion": "Prepared-account drift is refused before target reservation."
+        },
+        {
+          "file": "apps/operator/lib/psu-pty-host.integration.test.ts",
+          "testCase": "publishes managed %s session-port parent proof before HTTP ack and handles %s acknowledgement (EI-259750)",
+          "assertion": "Nine host cases cross claude/codex/omp with accepted/unknown/refused acknowledgement; accepted finishes cleanly after native proof, unknown preserves child/process and native persistence, explicit refusal kills and fails with its reason."
         }
       ],
-      "notes": "Four causes are separate detectors. The OMP refusal fixture is not relabeled as a Codex reader proof.",
+      "notes": "Four causes retain separate detectors. Cause (1) also requires all nine positive acknowledgement controls; broad teardown of healthy or unknown-ack children must fail. The OMP refusal fixture is not relabeled as a Codex reader proof.",
       "classification": "tests-bound"
     },
     {
@@ -798,9 +857,19 @@
           "file": "apps/operator/lib/pui-resume.integration.test.ts",
           "testCase": "a refused cross-backend pick shows its cause on the terminal and opens no backend",
           "assertion": "Real PTY screen contains the refusal cause, no backend launch, and no READY pane."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "a resumable cross-backend source completes into a conversation and usable PUI pane (R-25)",
+          "assertion": "Real launcher and PTY port a Codex fixture to Claude: one target launch in source cwd, prior conversation and typed input on screen, bootstrap and delivered persisted proof, actual native transcript contains prior conversation."
+        },
+        {
+          "file": "apps/operator/lib/pui-resume.integration.test.ts",
+          "testCase": "CONTROL: a port target that exits before opening its pane fails visibly and cannot pass as completion (R-25)",
+          "assertion": "Broken target exits nonzero, emits BROKEN_PANE_CONTROL, never shows READY, and submits failed delivery with exit/persist/seed reason."
         }
       ],
-      "notes": "Completing cross-backend native proof belongs to final live matrix, not the stub refusal tests.",
+      "notes": "Completing cross-backend PUI proof exercises production launcher/host/PTY with deterministic backend and operator fixtures. Credentialed native proof remains the final D-021 matrix, which is not claimed here.",
       "classification": "tests-bound"
     }
   ],
@@ -824,8 +893,8 @@
         "harness": "papercusp",
         "heading": "Decisions"
       },
-      "planRevision": 66,
-      "contentHash": "70a59c27b379465e9b5089467f90f3f924b328e955328b1279765699af2ac5c5"
+      "planRevision": 67,
+      "contentHash": "fba8a27181b2e562ebdb0666c3444a1d753aaa0a33b455c3b034b1d7ec2ce204"
     },
     "decisions": {
       "D-001": [
@@ -973,6 +1042,12 @@
         "r-16",
         "r-17",
         "r-18"
+      ],
+      "D-024": [
+        "r-3",
+        "r-22",
+        "r-24",
+        "r-25"
       ]
     },
     "notes": {
@@ -980,14 +1055,16 @@
       "D-018": "Clause lifecycle/revision procedure, not a new product behavior. Re-read active current spec revisions and preserve carried evidence.",
       "D-021": "Matrix remains last evidence step after launcher/host edits land. R24 unit/integration proof is independent.",
       "D-022": "Supported additive rev8 amendment binds actual multi-selectee integration detector; BAR behavior unchanged.",
-      "D-023": "One supported additive rev9 amendment binds application and real-Postgres owner-authority/answer/rebuttal detectors; R10 remains honestly manual-provenance and no live feature verdict is inferred."
+      "D-023": "One supported additive rev9 amendment binds application and real-Postgres owner-authority/answer/rebuttal detectors; R10 remains honestly manual-provenance and no live feature verdict is inferred.",
+      "D-024": "Approved revision10 binds inclusive deadline bounds, real selectable model menus, completing PUI/broken-pane controls and positive acknowledgement recovery; all existing BAR outcomes and live proof obligations remain."
     }
   },
   "limitations": [
     "No final acceptance verdict is asserted by this detector map.",
     "The final D021 live nine-path matrix has not run.",
-    "Current proof bindings invalidated by rev8/rev9 amendments must be refreshed before certification.",
+    "Current proof bindings invalidated by rev8/rev9/rev10 amendments must be refreshed before certification.",
     "Independent current-revision vetting and grading-integrity audit remain required.",
-    "In persisted rebuttal coverage cascade transport is stubbed; production persistence, blocker status and verdict awaits are real. External owner-answer reads are supplied by the test; production owner-question creation and answer persistence are real."
+    "In persisted rebuttal coverage cascade transport is stubbed; production persistence, blocker status and verdict awaits are real. External owner-answer reads are supplied by the test; production owner-question creation and answer persistence are real.",
+    "Working-tree pins require a clean committed refresh before they support clean-source acceptance evidence; focused PUI passes and the local picker run are not a full-suite or native-live verdict."
   ]
 }

@@ -46,7 +46,9 @@ if (rows.length === 0) return { ok: false, error: "selected_clauses_empty" };
 const certification = await tools.plans.certifySpecClauses({ harness, slug: planSlug, classRef,
   specIds: certifiable.length ? certifiable : rows.map(row => row.specId),
   includeDraft: true, dryRun: dryRun || certifiable.length === 0 });
-if (certification.ok !== true) return { ok: false, phase: "certify", certification, proposals };
+if (certification.ok !== true || (certification.counts && certification.counts.refused > 0)) {
+  return { ok: false, phase: "certify", certification, proposals };
+}
 const identity = dryRun ? null : await tools.coord.whoami({});
 const gapOwner = inputs.gapOwner || (identity && identity.ownerId);
 if (!dryRun && !gapOwner) return { ok: false, error: "gap_owner_required" };
