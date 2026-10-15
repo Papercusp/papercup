@@ -14,9 +14,15 @@ import { validateRecipeBindings } from '../../recipe-contract';
 import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { bindSpecEvidence, measureAndPinRepoFilesEvidenceAtRoot } from './spec-evidence-store';
 import { createOneWorkItem } from '../work_items/_create-core';
+import { parseTestRunExecutionDetails, type TestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 
-// Only authoritative class metadata is fixed here. Clause/evidence reads and all
-// three handlers use real production SQL against the isolated baseline database.
+// Fix external class/root metadata for the isolated baseline. Clause/evidence
+// reads and all three handlers use their real production SQL and file measurers.
+vi.mock('../../harness-registry', async original => ({
+  ...(await original<typeof import('../../harness-registry')>()),
+  loadHarnessRegistry: async () => ({ projects: [{ slug: 'papercusp',
+    path: fileURLToPath(new URL('../../../../../', import.meta.url)) }] }),
+}));
 vi.mock('../../rubrics', async original => ({
   ...(await original<typeof import('../../rubrics')>()),
   getAcceptanceRubricsForPlan: async () => [{ rubricId: 'converge-acceptance', classRef: 'plan-class-feature-ship' }],
@@ -159,8 +165,13 @@ describe('converge real PostgreSQL composition', () => {
         acceptanceRef: 'fixture-accepted', actorId: 'su-converge-pg',
         falsifier: { observation: 'The wrong proof outcome passes.', probeMethod: 'Read the persisted test outcome.' } }))
         .toMatchObject({ status: 'created' });
-      const execution = { schemaVersion: 1, root, filePath: testPath, testLayer: 'integration',
+      const execution: TestRunExecutionDetails = { schemaVersion: 1, root, filePath: testPath,
+        runGroupId: null, workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp',
+        testNamePattern: null, testLayer: 'integration', mutationPhase: null, commitSha: null, worktreeDirty: false,
         passed: status === 'pass' ? 1 : 0, failed: status === 'fail' ? 1 : 0, skipped: 0, collectionFailed: false };
+      // Validate fixtures with the very parser the evidence reader consumes;
+      // incomplete status-only rows must never masquerade as passing proof.
+      expect(parseTestRunExecutionDetails(execution)).toEqual(execution);
       const [run] = await fx.admin`INSERT INTO harness_shared.test_runs
         (workspace_id, harness_slug, file_path, framework, status, source, worktree_dirty, execution_details)
         VALUES (${PAPERCUSP_WORKSPACE_ID}, 'papercusp', ${testPath}, 'vitest', ${status}, 'local', false,
@@ -188,6 +199,9 @@ describe('converge real PostgreSQL composition', () => {
       evaluateSpecTestAdequacy: (args: Body) => call(evaluateTool, args),
       audit: (args: Body) => call(auditTool, args), certifySpecClauses: (args: Body) => call(certifyTool, args),
     }, coord: { whoami: async () => ({ ownerId: 'su-converge-pg' }) }, workItems: { create } };
+    const evaluated = await call(evaluateTool, { harness: 'papercusp', slug, classRef: 'plan-class-feature-ship', detail: 'full' });
+    const passing = evaluated.rows.find((entry: Body) => entry.specId === 'SPEC-PASS');
+    expect(passing.verdict, JSON.stringify(passing.ratings)).toBe('pass');
     const preview = await execute(tools, { planSlug: slug, auditItems: reviewed });
     expect(preview, JSON.stringify(preview)).toMatchObject({ ok: true, dryRun: true, evaluated: 4, nonPassing: 3 });
     expect(create).not.toHaveBeenCalled();
@@ -203,8 +217,9 @@ describe('converge real PostgreSQL composition', () => {
       WHERE payload->'specConformanceGap'->>'planSlug' = ${slug}`;
     expect(stored).toHaveLength(3);
     expect(stored.every(item => item.taken_by === 'su-converge-pg')).toBe(true);
-    const links = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.work_item_links
-      WHERE from_id IN ${fx.admin(stored.map(item => item.feature_id))} AND target_kind = 'plan' AND target_ref = ${slug}`;
+    const links = await fx.admin`SELECT count(*)::int AS count FROM harness_shared.coord_links
+      WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND src_ref IN ${fx.admin(stored.map(item => item.feature_id))}
+        AND dst_kind = 'plan' AND dst_ref = ${slug} AND rel = 'about'`;
     expect(links[0].count).toBe(3);
   }, 120_000);
 });
