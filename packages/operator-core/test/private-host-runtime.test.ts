@@ -32,7 +32,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
           || file === routingProof && node.expression.text === 'preparePrivateOperatorApiBundle')) {
         callers.push(file);
         expect(ts.isAwaitExpression(node.parent), `${file} must await build completion`).toBe(true);
-        let policy = node.arguments[2];
+        let policy: ts.Expression | undefined = node.arguments[2];
         if (file === routingProof && policy && ts.isObjectLiteralExpression(policy))
           policy = policy.properties.find((property): property is ts.PropertyAssignment =>
             ts.isPropertyAssignment(property) && property.name.getText(source) === 'builder')?.initializer;
