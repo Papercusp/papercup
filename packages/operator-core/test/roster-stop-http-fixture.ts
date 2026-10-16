@@ -21,6 +21,7 @@ import { startPrivateCupboardCatalog } from './portal-cupboard-fixture';
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
 const healthCleanupProof = process.argv.includes('--health-cleanup-proof');
+const healthPublicationProof = process.argv.includes('--health-publication-proof');
 const socketOrigins = new Map<number, string>();
 const originalConnect = net.Socket.prototype.connect;
 // Use the same creation-stack/census evidence as the native current-build
@@ -50,7 +51,7 @@ assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
 const preparedApiBundle = resolvePreparedPrivateApiBundle(process.argv, evidence);
 const apiBundle = preparedApiBundle ?? join(evidence, 'hono-host.mjs');
-const portalSourceRoot = !healthCleanupProof && (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1')
+const portalSourceRoot = !healthCleanupProof && !healthPublicationProof && (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1')
   ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
 // Keep the mutable socket namespace short and retain its identity in the receipt.
@@ -256,6 +257,42 @@ async function coordCanary(health: unknown) {
       const { hubListen } = await import('../lib/pg-listen-hub');
       await hubListen('private_health_cleanup_probe', () => {});
       console.log('ROSTER_HEALTH_CLEANUP_SEEDED ' + JSON.stringify({ workspace }));
+      return;
+    }
+    if (healthPublicationProof) {
+      const { writeSharedSnapshot, readSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
+      const { waitForPrivateHealthSnapshot } = await import('./portal-roster-browser-fixture');
+      const headers = { cookie: cookie(ownSession.token), origin: base, 'content-type': 'application/json' };
+      const query = base + '/api/zero-harness/rest-query?name=health.snapshot&args=%7B%7D';
+      const read = async () => {
+        const response = await fetch(query, { headers, signal: AbortSignal.timeout(15_000) });
+        assert.equal(response.status, 200);
+        return response.json() as Promise<{ rows: ReturnType<typeof createPrivateHealthSnapshot>[] }>;
+      };
+      // Reproduce the browser's real acknowledgement tick before replacing the
+      // shared reading. This primes the request process's own health cache.
+      await read();
+      const ack = await fetch(base + '/api/agent-tools/health/ack', { method: 'POST', headers,
+        body: JSON.stringify({ panel: 'workItems', reason: 'private publication cache probe' }),
+        signal: AbortSignal.timeout(90_000) });
+      assert.equal(ack.status, 200);
+      const baseline = await read();
+      const replacement = createPrivateHealthSnapshot(workspace, false, Date.now());
+      replacement.panels.infra.summary = 'private-health-publication-replacement';
+      await writeSharedSnapshot('system.health', workspace, replacement, 1);
+      const observations: unknown[] = [];
+      await waitForPrivateHealthSnapshot(async () => {
+        const shared = await readSharedSnapshot<typeof replacement>('system.health', workspace, 1, 300_000);
+        const body = await read();
+        observations.push({ at: Date.now(), shared, body });
+        writeFileSync(join(evidence, 'portal-health-publication.json'), JSON.stringify({
+          workspace, baseline, replacement, observations,
+          backgroundWorkers: process.env.PAPERCUSP_BACKGROUND_WORKERS,
+          scope: 'Real shared store and private HTTP reader after an acknowledgement tick; supplied replacement isolates publication, not collector or DOM acceptance',
+        }, null, 2));
+        return body;
+      }, workspace, row => row.panels.infra.summary === replacement.panels.infra.summary);
+      console.log('ROSTER_HEALTH_PUBLICATION_RECEIPT ' + JSON.stringify({ workspace, converged: true, reads: observations.length }));
       return;
     }
     let harnesses: { hive: string; selected: string; neighbor: string; foreign: string } | undefined;
