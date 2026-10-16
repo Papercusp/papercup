@@ -303,7 +303,7 @@ function measureFsMutexOperation(phaseTimingsMs, phase, operation) {
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
  */
-export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
+async function ensureFsMutexLockRootUncached(env = process.env, options = {}) {
   const measure = (phase, operation) => measureFsMutexOperation(
     options.phaseTimingsMs,
     `lock-root.${phase}`,
@@ -422,6 +422,60 @@ export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
     );
   }
   return root;
+}
+
+// Root migration is a process-start concern, but every scratch write used to
+// repeat the legacy-root lstat/symlink validation. That check normally costs
+// sub-milliseconds and therefore hid safely in the hot path; under filesystem
+// pressure a single lstat can enter D-state for tens of seconds and consume the
+// result-door's entire 30s spill wait. Cache only a successful canonical-root
+// resolution so the migration still re-runs while a known legacy lease is
+// active, or after a failed/ambiguous inspection. The cache key tracks every
+// production input that can change the lock boundary (HOME, platform and the
+// explicit override), while custom migration seams remain uncached for tests.
+const canonicalFsMutexRootResolutions = new Map();
+
+function canCacheFsMutexRoot(options) {
+  return options?.platform === undefined &&
+    options?.homeDir === undefined &&
+    options?.legacyRoot === undefined;
+}
+
+function fsMutexRootCacheKey(env, options) {
+  const effectiveEnv = env ?? process.env;
+  const platform = options?.platform ?? process.platform;
+  const homeDir = options?.homeDir ?? userInfo().homedir;
+  const override = effectiveEnv.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? '';
+  return JSON.stringify({ platform, homeDir, override });
+}
+
+/**
+ * Resolve the mutex root, reusing a completed canonical migration and sharing
+ * one in-flight migration across concurrent callers. A call that remains on
+ * the legacy root is deliberately not retained: once that lease drains, the
+ * next caller must be allowed to complete the migration.
+ */
+export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
+  if (!canCacheFsMutexRoot(options)) {
+    return ensureFsMutexLockRootUncached(env, options);
+  }
+
+  const key = fsMutexRootCacheKey(env, options);
+  const existing = canonicalFsMutexRootResolutions.get(key);
+  if (existing) return existing;
+
+  const canonicalRoot = resolveFsMutexLockRoot(env, options);
+  const resolution = ensureFsMutexLockRootUncached(env, options)
+    .then(root => {
+      if (root !== canonicalRoot) canonicalFsMutexRootResolutions.delete(key);
+      return root;
+    })
+    .catch(error => {
+      canonicalFsMutexRootResolutions.delete(key);
+      throw error;
+    });
+  canonicalFsMutexRootResolutions.set(key, resolution);
+  return resolution;
 }
 
 function lockRoot() {
