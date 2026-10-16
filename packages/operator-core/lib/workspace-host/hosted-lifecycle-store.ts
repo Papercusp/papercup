@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { readHostedEntitlementAuthority } from '../auth/hosted-entitlement-store';
+import { checkHostedEntitlement } from '../auth/hosted-entitlements';
 import {
   appendWorkspaceHostSpendObservation,
   evaluateWorkspaceHostSpendFinality,
@@ -161,6 +163,21 @@ export interface HostedLifecycleAdmissionReceipt {
   hostId: string;
   hostDesiredRevision?: number;
   placement?: WorkspaceHostPoolPlacement;
+  /** Host capacity only; agent/storage admission is a separate, required check. */
+  resourceAdmission?: HostedPoolHostResourceAdmission;
+}
+
+interface HostedPoolHostResourceAdmission {
+  schemaVersion: 1;
+  authorityRevision: number;
+  bundleId: string;
+  bundleVersion: number;
+  auditReceiptIds: readonly string[];
+  measuredAt: string;
+  allocated: { hosts: number; cpuMillicores: number; memoryMiB: number };
+  pending: { hosts: number; cpuMillicores: number; memoryMiB: number };
+  requested: { hosts: number; cpuMillicores: number; memoryMiB: number };
+  budget: { currency: string; committedMinor: number; requestedMinor: number };
 }
 
 /** Queue/provision outcomes have no reservation and must not launch a provider workflow. */
@@ -485,6 +502,114 @@ function policyFrom(row: DirectoryRow, override?: Partial<HostedLifecyclePolicy>
   };
 }
 
+/** Same transaction, organization lock and immutable operation ledger as admission.
+ * The directory supplies tenancy. A browser tier/counter is never read here.
+ * Pending rows are counted until a real VM checkpoint exists, then that host is
+ * counted once as allocated. Unknown capacity fails closed, including old rows.
+ */
+async function admitHostedPoolHostResources(
+  tx: Sql, input: AdmitHostedLifecycleJobInput, organizationId: string, placement: WorkspaceHostPoolPlacement,
+): Promise<HostedPoolHostResourceAdmission> {
+  const now = new Date();
+  const authority = await readHostedEntitlementAuthority(tx, organizationId, now);
+  if (!authority.ok) throw new Error(`hosted_pool_entitlement_${authority.reason}`);
+  if (!['gcp', 'aws', 'azure'].includes(input.providerTarget) ||
+      !checkHostedEntitlement(authority.resolution, { kind: 'provider',
+        provider: input.providerTarget as 'gcp' | 'aws' | 'azure' }).allowed) {
+    throw new Error('hosted_pool_provider_not_allowed');
+  }
+  const hosts = await tx<Array<{ id: string; observed_state: string; host_generation: number;
+    controller_fence: number; desired_revision: number; pool_observation: HostedPoolObservation | null;
+    has_vm: boolean }>>`
+    SELECT host.id, host.observed_state, host.host_generation, host.controller_fence,
+           host.desired_revision, host.pool_observation,
+           EXISTS (SELECT 1 FROM harness_shared.workspace_host_resources resource
+             WHERE resource.workspace_id = host.workspace_id AND resource.host_id = host.id
+               AND resource.kind = 'vm' AND resource.provider_id IS NOT NULL
+               AND resource.state NOT IN ('absent', 'compensated')) AS has_vm
+      FROM harness_shared.workspace_hosts host
+      JOIN harness_shared.customer_workspaces customer
+        ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+     WHERE customer.workspace_id = ${input.workspaceId} AND customer.organization_id = ${organizationId}
+     ORDER BY host.id`;
+  const operations = await tx<Array<{ host_id: string; status: string; estimated_cost_cents: string | number | null;
+    cost_currency: string | null; admission_receipt: { result?: HostedLifecycleAdmissionReceipt } | null }>>`
+    SELECT operation.host_id, operation.status, operation.estimated_cost_cents,
+           operation.cost_currency, operation.admission_receipt
+      FROM harness_shared.workspace_host_operations operation
+     WHERE operation.workspace_id = ${input.workspaceId} AND operation.organization_id = ${organizationId}
+       AND operation.action <> 'destroy' AND operation.status <> 'failed'
+       AND (operation.status IN ('queued', 'running') OR operation.created_at >= (
+         SELECT min(lifecycle_budget_period_started_at) FROM harness_shared.customer_workspaces
+          WHERE workspace_id = ${input.workspaceId} AND organization_id = ${organizationId}))`;
+  const allocated = { hosts: 0, cpuMillicores: 0, memoryMiB: 0 };
+  const pending = { hosts: 0, cpuMillicores: 0, memoryMiB: 0 };
+  const liveHosts = new Set<string>();
+  const add = (target: typeof allocated, demand: typeof allocated) => {
+    for (const key of ['hosts', 'cpuMillicores', 'memoryMiB'] as const) {
+      safeInt(demand[key], `pool_${key}`);
+      target[key] = safeInt(target[key] + demand[key], `pool_${key}`);
+    }
+  };
+  for (const host of hosts) {
+    if (!host.has_vm && !['running', 'stopped', 'starting', 'stopping'].includes(host.observed_state)) continue;
+    const o = host.pool_observation;
+    if (!o || o.generation !== host.host_generation || o.controllerFence !== host.controller_fence ||
+        o.desiredRevision !== host.desired_revision) throw new Error('hosted_pool_allocated_capacity_unknown');
+    liveHosts.add(host.id);
+    add(allocated, { hosts: 1, cpuMillicores: host.observed_state === 'stopped' ? 0 : o.size.cpuCount * 1000,
+      memoryMiB: host.observed_state === 'stopped' ? 0 : o.size.memoryMiB });
+  }
+  let committedMinor = 0;
+  const pendingHosts = new Set<string>();
+  for (const operation of operations) {
+    const cents = Number(operation.estimated_cost_cents);
+    if (operation.cost_currency !== input.estimate.currency || operation.estimated_cost_cents === null) {
+      throw new Error('hosted_pool_budget_currency_or_cost_unknown');
+    }
+    committedMinor = safeInt(committedMinor + safeInt(cents, 'pool_committed_cost'), 'pool_committed_cost');
+    if (!['queued', 'running'].includes(operation.status) || liveHosts.has(operation.host_id)) continue;
+    const reservation = operation.admission_receipt?.result?.resourceAdmission;
+    if (!reservation || reservation.schemaVersion !== 1 || pendingHosts.has(operation.host_id)) {
+      throw new Error('hosted_pool_pending_capacity_unknown');
+    }
+    pendingHosts.add(operation.host_id);
+    add(pending, reservation.requested);
+  }
+  let size = input.pool!.minimum;
+  const selectedHostId = 'hostId' in placement ? placement.hostId : input.hostId;
+  if ('hostId' in placement) {
+    const selected = await tx<Array<{ pool_observation: HostedPoolObservation | null }>>`
+      SELECT pool_observation FROM harness_shared.workspace_hosts
+       WHERE workspace_id = ${input.workspaceId} AND id = ${selectedHostId}`;
+    if (!selected[0]?.pool_observation) throw new Error('hosted_pool_selected_capacity_unknown');
+    size = selected[0].pool_observation.size;
+  }
+  const existing = hosts.find(host => host.id === selectedHostId && liveHosts.has(host.id));
+  const requested = { hosts: existing ? 0 : 1,
+    cpuMillicores: existing && existing.observed_state !== 'stopped' ? 0 : size.cpuCount * 1000,
+    memoryMiB: existing && existing.observed_state !== 'stopped' ? 0 : size.memoryMiB };
+  for (const key of ['hosts', 'cpuMillicores', 'memoryMiB'] as const) {
+    safeInt(requested[key], `pool_${key}`);
+    const quota = { hosts: 'pool.hosts', cpuMillicores: 'pool.cpu-millicores', memoryMiB: 'pool.memory-mib' }[key];
+    if (requested[key] === 0) continue;
+    const check = checkHostedEntitlement(authority.resolution, { kind: 'quota', key: quota,
+      used: safeInt(allocated[key] + pending[key], `pool_${key}`), requested: requested[key] });
+    if (!check.allowed) throw new Error(`hosted_pool_quota_exceeded:${quota}:${check.reason}`);
+  }
+  const requestedMinor = placement.kind === 'reuse' ? 0 : input.estimate.cents;
+  if (!/^[A-Z]{3}$/.test(input.estimate.currency)) throw new Error('hosted_pool_budget_currency_invalid');
+  if (requestedMinor > 0) {
+    const check = checkHostedEntitlement(authority.resolution, { kind: 'budget',
+      key: `pool.cost.${input.estimate.currency.toLowerCase()}.minor`, used: committedMinor, requested: requestedMinor });
+    if (!check.allowed) throw new Error(`hosted_pool_budget_exceeded:${check.reason}`);
+  }
+  return { schemaVersion: 1, authorityRevision: authority.authorityRevision,
+    bundleId: authority.resolution.bundleId, bundleVersion: authority.resolution.bundleVersion,
+    auditReceiptIds: authority.resolution.auditReceiptIds, measuredAt: now.toISOString(), allocated, pending, requested,
+    budget: { currency: input.estimate.currency, committedMinor, requestedMinor } };
+}
+
 /**
  * Atomically admit one hosted lifecycle job.
  *
@@ -608,10 +733,12 @@ export async function admitHostedLifecycleJob(
 
     let placement: WorkspaceHostPoolPlacement | undefined;
     let hostDesiredRevision: number | undefined;
+    let resourceAdmission: HostedPoolHostResourceAdmission | undefined;
     if (input.pool) {
       if (input.action !== 'start' && input.action !== 'provision') throw new Error('hosted_pool_action_invalid');
       placement = await placeHostedPoolJob(tx, input);
       if (placement.kind === 'queue') throw new HostedLifecyclePlacementError(placement);
+      resourceAdmission = await admitHostedPoolHostResources(tx, input, row.organization_id, placement);
       // A new provision reserves the already-locked, customer-bound FK placeholder.
       // Existing VMs instead compare the exact observed generation and controller fence.
       if ('hostId' in placement) {
@@ -641,6 +768,7 @@ export async function admitHostedLifecycleJob(
       providerTarget: input.providerTarget, hostId: input.hostId,
       ...(hostDesiredRevision !== undefined ? { hostDesiredRevision } : {}),
       ...(placement ? { placement } : {}),
+      ...(resourceAdmission ? { resourceAdmission } : {}),
     };
 
     const approvedBy =

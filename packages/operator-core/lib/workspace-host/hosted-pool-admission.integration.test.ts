@@ -18,6 +18,7 @@ vi.mock('@papercusp/db-org', async (original) => ({
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
+const { writeHostedEntitlementAuthority } = await import('../auth/hosted-entitlement-store');
 const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation, completeHostedPoolReuse } =
   await import('./hosted-lifecycle-store');
 const { beginWorkspaceHostOperation, readWorkspaceHostDestroyTarget, upsertWorkspaceHostResourceCheckpoint,
@@ -27,6 +28,8 @@ const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/
 const migrationSql = readFileSync(existsSync(migration) ? migration : `${migration}.DRAFT`, 'utf8');
 const incarnationMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1523-workspace-host-resource-incarnation.sql', import.meta.url));
 const incarnationSql = readFileSync(existsSync(incarnationMigration) ? incarnationMigration : `${incarnationMigration}.DRAFT`, 'utf8');
+const authorityMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1524-hosted-entitlement-authority.sql', import.meta.url));
+const authoritySql = readFileSync(authorityMigration, 'utf8');
 const scope = { kind: 'project', id: 'pool-project' };
 const release = {
   version: 'pool-v1', bundleSha256: 'a'.repeat(64), signingKeySha256: 'b'.repeat(64),
@@ -35,6 +38,8 @@ const release = {
 
 describe('hosted pool admission (real Postgres + workspace RLS)', () => {
   let db: OrgTestDb;
+  const organizations = new Map<string, string>();
+  const grants = new Map<string, { userId: string; revision: number }>();
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.sql = db.appSql;
@@ -42,10 +47,37 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await db.adminSql.unsafe(migrationSql); // additive migration remains replayable
     await db.adminSql.unsafe(incarnationSql);
     await db.adminSql.unsafe(incarnationSql); // allocation identity migration is replayable too
+    await db.adminSql.unsafe(authoritySql);
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
   const fresh = () => `pool-${randomUUID()}`;
+  const organization = (ws: string, id: string) => organizations.get(`${ws}:${id}`)!;
+  async function allowance(organizationId: string, quotas: Record<string, number> = {}, budget = 1000000) {
+    let g = grants.get(organizationId);
+    if (!g) {
+      g = { userId: randomUUID(), revision: 0 };
+      await db.adminSql`INSERT INTO papercusp_auth.hosted_entitlements (organization_id, user_id, kind, source)
+        VALUES (${organizationId}::uuid, ${g.userId}::uuid, 'hosted-free', 'self_signup')`;
+      grants.set(organizationId, g);
+    }
+    const record = { source: 'migration', actor: { kind: 'service', principalId: 'service:pool-fixture' },
+      auditReceiptId: 'audit:pool-fixture-bundle', effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil: '2099-01-01T00:00:00Z' };
+    g.revision = await writeHostedEntitlementAuthority({ organizationId, userId: g.userId, kind: 'hosted-free',
+      expectedRevision: g.revision, authority: { schemaVersion: 1,
+        bundles: [{ schemaVersion: 1, bundleId: 'pool-fixture', bundleVersion: 1, record,
+          entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 100, members: 100 },
+            browserAccess: { pty: true, files: true }, supportTier: 'trial', rolloutFlags: {},
+            quotas: { 'pool.hosts': 100, 'pool.cpu-millicores': 1000000, 'pool.memory-mib': 1000000, ...quotas },
+            budgets: { 'pool.cost.usd.minor': budget } } }],
+        assignments: [{ schemaVersion: 1, assignmentId: `fixture:${organizationId}`, organizationId,
+          bundleId: 'pool-fixture', bundleVersion: 1,
+          record: { ...record, auditReceiptId: 'audit:pool-fixture-assignment' } }], overrides: [] } },
+    run => db.appSql.begin(async tx => {
+      await tx.unsafe('SET LOCAL ROLE hosted_service');
+      return run(tx as any);
+    }) as any);
+  }
   function observation(overrides: Partial<HostedPoolObservation> = {}): HostedPoolObservation {
     return {
       generation: 1, desiredRevision: 1, controllerFence: 7, scope, zone: 'us-central1-a', architecture: 'x86_64',
@@ -72,15 +104,17 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
         ${JSON.stringify(release)}::jsonb, ${o ? JSON.stringify(o) : null}::jsonb,
         ${options.placeholder ? null : 'healthy'}, now(), 1, 1)`;
   }
-  async function customer(ws: string, id: string, hostId = `${id}-placeholder`) {
+  async function customer(ws: string, id: string, hostId = `${id}-placeholder`, organizationId = randomUUID()) {
+    organizations.set(`${ws}:${id}`, organizationId);
+    if (!grants.has(organizationId)) await allowance(organizationId);
     await host(ws, hostId, { placeholder: true });
     await db.adminSql`
       INSERT INTO harness_shared.customer_workspaces
         (workspace_id, id, organization_id, workspace_host_id, display_name, state,
          created_by_principal_kind, created_by_principal_id, billing_owner_kind, billing_owner_id,
          tenant_concurrency_limit, provider_concurrency_limit, monthly_lifecycle_budget_cents)
-      VALUES (${ws}, ${id}, ${`org-${id}`}, ${hostId}, ${id}, 'active', 'user', 'test-user',
-        'organization', ${`org-${id}`}, 1, 8, 10000)`;
+      VALUES (${ws}, ${id}, ${organizationId}, ${hostId}, ${id}, 'active', 'user', 'test-user',
+        'organization', ${organizationId}, 1, 8, 10000)`;
     return hostId;
   }
   function input(ws: string, customerId: string, hostId = `${customerId}-placeholder`): AdmitHostedLifecycleJobInput {
@@ -98,6 +132,73 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
   async function operations(ws: string) {
     return db.adminSql`SELECT id, host_id, admission_receipt FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws}`;
   }
+
+  it('refuses missing or revoked authority before rebinding a warm VM and replays an existing receipt after revocation', async () => {
+    const ws = fresh();
+    await customer(ws, 'authority');
+    await host(ws, 'warm');
+    const org = organization(ws, 'authority');
+    const request = input(ws, 'authority');
+    const receipt = await admitHostedLifecycleJob(request);
+    expect(receipt.resourceAdmission).toMatchObject({ authorityRevision: 1, bundleId: 'pool-fixture',
+      requested: { hosts: 1, cpuMillicores: 4000, memoryMiB: 8192 },
+      auditReceiptIds: ['audit:pool-fixture-bundle', 'audit:pool-fixture-assignment'] });
+    await db.adminSql`UPDATE papercusp_auth.hosted_entitlements SET authority = NULL,
+      authority_revision = authority_revision + 1 WHERE organization_id = ${org}::uuid`;
+    expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
+    await customer(ws, 'missing');
+    await host(ws, 'warm-2');
+    await db.adminSql`UPDATE papercusp_auth.hosted_entitlements SET authority = NULL,
+      authority_revision = authority_revision + 1 WHERE organization_id = ${organization(ws, 'missing')}::uuid`;
+    await expect(admitHostedLifecycleJob(input(ws, 'missing'))).rejects.toThrow('entitlement_authority_missing');
+    const [bound] = await db.adminSql`SELECT workspace_host_id FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${ws} AND id = 'missing'`;
+    expect(bound.workspace_host_id).toBe('missing-placeholder');
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('counts actual selected VM size rather than its lower requested minimum and rolls back on quota rejection', async () => {
+    const ws = fresh();
+    await customer(ws, 'larger');
+    await host(ws, 'warm');
+    await allowance(organization(ws, 'larger'), { 'pool.cpu-millicores': 2000 });
+    await expect(admitHostedLifecycleJob(input(ws, 'larger'))).rejects.toThrow('quota_exceeded:pool.cpu-millicores');
+    expect(await operations(ws)).toHaveLength(0);
+    const [bound] = await db.adminSql`SELECT workspace_host_id FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${ws} AND id = 'larger'`;
+    expect(bound.workspace_host_id).toBe('larger-placeholder');
+  });
+
+  it('counts pending capacity across a deleted directory and its replacement before either VM exists', async () => {
+    const ws = fresh();
+    const org = randomUUID();
+    await customer(ws, 'one', undefined, org);
+    await allowance(org, { 'pool.hosts': 1 });
+    await admitHostedLifecycleJob({ ...input(ws, 'one'), action: 'provision' });
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'deleted', deleted_at = now() WHERE workspace_id = ${ws} AND id = 'one'`;
+    await customer(ws, 'two', undefined, org);
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'two'), action: 'provision' }))
+      .rejects.toThrow('quota_exceeded:pool.hosts');
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('applies changed authority and organization-wide committed budgets without deleting retained work', async () => {
+    const ws = fresh();
+    const org = randomUUID();
+    await customer(ws, 'one', undefined, org);
+    await allowance(org, {}, 150);
+    await admitHostedLifecycleJob({ ...input(ws, 'one'), action: 'provision' });
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'deleted', deleted_at = now() WHERE workspace_id = ${ws} AND id = 'one'`;
+    await customer(ws, 'two', undefined, org);
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'two'), action: 'provision' })).rejects.toThrow('budget_exceeded');
+    await allowance(org, {}, 1000);
+    const admitted = await admitHostedLifecycleJob({ ...input(ws, 'two'), action: 'provision' });
+    expect(admitted.resourceAdmission).toMatchObject({ authorityRevision: 3,
+      pending: { hosts: 1, cpuMillicores: 2000, memoryMiB: 4096 },
+      budget: { committedMinor: 100, requestedMinor: 100 } });
+    expect(await operations(ws)).toHaveLength(2);
+    expect(await db.adminSql`SELECT id FROM harness_shared.customer_workspaces WHERE workspace_id = ${ws}`).toHaveLength(2);
+  });
 
   it('reads the durable tenant from the exact persisted host binding under workspace RLS', async () => {
     const ws = fresh();
@@ -428,7 +529,7 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await admitHostedLifecycleJob(input(ws, 'a'));
     const asCustomer = <T>(run: (tx: any) => Promise<T>) => db.adminSql.begin(async (tx: any) => {
       await tx`SET LOCAL ROLE hosted_app`;
-      await tx`SELECT set_config('app.organization_id', 'org-a', true), set_config('app.workspace_id', 'a', true)`;
+      await tx`SELECT set_config('app.organization_id', ${organization(ws, 'a')}, true), set_config('app.workspace_id', 'a', true)`;
       return run(tx);
     });
     const visible = await asCustomer((tx) => tx`SELECT id FROM harness_shared.workspace_hosts WHERE workspace_id = ${ws} ORDER BY id`) as Array<{ id: string }>;
