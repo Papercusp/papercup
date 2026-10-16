@@ -601,6 +601,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // Pins and native cleanup share this writer lock. Yield only between
       // operations; an admitted holder check/removal must finish before release.
       await refreshProtection();
+      // Independent owners must not wait behind a whole-root census: a large
+      // root can spend the entire pass deadline before reaching this lane.
+      // Keep their existing protection, mutex and deadline contracts intact.
+      for (const delegate of options.delegates ?? []) {
+        if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
+        yield* yieldToWaiter();
+        try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
+        catch (err) { receipt.delegates.push({ classId: delegate.classId, ok: false, detail: message(err) }); }
+      }
       const censusPolicy = { ...policy, pins: [] };
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
       receipt.roots = roots;
@@ -830,12 +839,6 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
           if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
         }
-      }
-      for (const delegate of options.delegates ?? []) {
-        if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
-        yield* yieldToWaiter();
-        try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
-        catch (err) { receipt.delegates.push({ classId: delegate.classId, ok: false, detail: message(err) }); }
       }
       for (const cls of policy.classes.values()) {
         if (cls.enforcers.some((e) => e.kind === 'standing-reclaim' && (e.via || cls.keep.kind === 'lease')) &&

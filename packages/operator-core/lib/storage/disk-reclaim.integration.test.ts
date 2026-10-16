@@ -859,6 +859,29 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.delegates).toEqual([{ classId: 'independent-owner', ok: true, detail: 'independent owner completed' }]);
     for (const path of paths) expect(await stat(path)).toBeTruthy();
   });
+  it('runs independent owners when a whole-root census exhausts the run deadline', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'old'); await writeFile(path, 'keep on incomplete census');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const owners = ['first-owner', 'second-owner'].map((classId) => ({
+      classId, run: vi.fn(async () => ({ ok: true, detail: classId })),
+    }));
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 50, delegates: owners,
+        inspectTrees: async () => {
+          clock += 100;
+          return { entries: [], retained: [], inspectedNodes: 1, retainedRecentTrees: 0,
+            error: 'retention native census timed out' };
+        },
+      });
+      expect(receipt.delegates).toEqual(owners.map(({ classId }) => ({ classId, ok: true, detail: classId })));
+      for (const owner of owners) expect(owner.run).toHaveBeenCalledOnce();
+      expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+      expect(receipt.errors).toEqual([`inspect:${root}: retention native census timed out`]);
+      expect(await stat(path)).toBeTruthy();
+    } finally { now.mockRestore(); }
+  });
   it('dry-run gives a deletion plan while preserving the selected file', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'keep');
     const receipt = await runDiskReclaimOnce({ ...options, dryRun: true });
