@@ -32,7 +32,7 @@ import { join, dirname } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
-import { findMockCastEscapesInText } from '../../../../scripts/check-mock-cast-escape.mjs';
+import { pathToFileURL } from 'node:url';
 import { createFrozenCandidateRepairQueue, markFrozenRepairAdmitted } from '@papercusp/operator-core/lib/release/frozen-candidate-repair-queue';
 import { withMeasuredLegSubjects, withRepairManifest } from '@papercusp/operator-core/lib/release/repair-manifest';
 import { readGateCandidateFailures } from '@papercusp/operator-core/lib/gate-candidate-failures';
@@ -90,6 +90,7 @@ function legEntries(legs: Awaited<ReturnType<typeof runLegs>>['legs']) {
 describe('green-checkpoint post-suite legs — verdict coverage', () => {
   it('P036: a seeded real lint violation survives output truncation into manifest, admission and named per-leg evidence', async () => {
     const file = 'packages/operator-core/lib/seeded-violation.test.ts';
+    const { findMockCastEscapesInText } = await import(pathToFileURL(join(ROOT, 'scripts/check-mock-cast-escape.mjs')).href);
     const findings = findMockCastEscapesInText('vi.mocked(fn).mockResolvedValue({} as never);', file);
     expect(findings).toHaveLength(1);
     const id = 'lint:mock-cast-escape';
@@ -108,7 +109,7 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     expect(leg.subjectPaths).toEqual([file]);
     const head = 'a'.repeat(40);
     const queue = createFrozenCandidateRepairQueue({ candidate: head, base: null, nowMs: 1,
-      failingTests: [id], signature: [{ id, kind: 'lint-leg', recipe: `npm run ${id}`, admittedRound: 1, measuredHead: head }],
+      failingTests: [id], signature: [{ id, kind: 'lint-leg', recipe: `npm run ${id}` }],
     });
     const measured = withMeasuredLegSubjects(queue, head, legs.records, 2);
     const persisted = withRepairManifest(measured, 3).queue;
