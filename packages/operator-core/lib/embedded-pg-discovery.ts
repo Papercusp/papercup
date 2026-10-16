@@ -19,7 +19,7 @@
  * papercusp-systems-abstraction-2026-05-29) plus the in-process cache.
  */
 import { resolvePgUrl } from '@papercusp/embedded-pg-discovery';
-import { adminUrl, resolvedAdminDatabaseTarget } from '@papercusp/db-org/connection';
+import { readOperatorDbEnvLocal } from '@papercusp/db-org/operator-db-env';
 import { join } from 'node:path';
 
 const NATIVE_FALLBACK = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
@@ -86,8 +86,10 @@ export function getHarnessAdminUrlWithSource(): { url: string; source: string } 
   const explicitOrIsolated = ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL',
     'PAPERCUSP_PG_PORT', 'PAPERCUSP_HOME'].some(key => Boolean(process.env[key]))
     || process.env.PAPERCUSP_SKIP_PG_DISCOVERY === '1';
-  if (!explicitOrIsolated && resolvedAdminDatabaseTarget().source === 'operator-env-file') {
-    return { url: adminUrl(), source: 'operator-env-file' };
+  if (!explicitOrIsolated) {
+    const operatorEnv = readOperatorDbEnvLocal();
+    const url = operatorEnv.HARNESS_ADMIN_DATABASE_URL || operatorEnv.DATABASE_URL;
+    if (url) return { url, source: 'operator-env-file' };
   }
 
   const { url, source } = resolvePgUrl({
