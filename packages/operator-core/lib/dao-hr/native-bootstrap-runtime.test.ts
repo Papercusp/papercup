@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -81,6 +81,25 @@ describe('native bootstrap admission and lifecycle', () => {
     await expect(runNativeVerifier('does-not-exist', [], { signal: new AbortController().signal, timeoutMs: 0 }))
       .rejects.toThrow('preparation budget');
   });
+
+  it.each(['prepare', 'boot', 'assert'] as const)('enforces a separate %s phase budget and retains its output', async phase => {
+    const dir = mkdtempSync(join(tmpdir(), 'daohr-verifier-phase-'));
+    const log = join(dir, 'output.log'), fd = openSync(log, 'w');
+    const controller = new AbortController();
+    // Repeated markers simulate noisy progress; they must never renew a phase.
+    const marker = phase === 'prepare' ? '' : `console.error('VH_BEGIN phase=${phase}');`;
+    const program = marker + `setInterval(() => { ${marker} }, 10);`;
+    try {
+      await expect(runNativeVerifier(process.execPath, ['-e', program], {
+        signal: controller.signal, timeoutMs: 10_000, killGraceMs: 25, logFd: fd,
+        phaseBudgetsMs: { prepare: phase === 'prepare' ? 250 : 8000, boot: 150, assert: 150 },
+      })).rejects.toThrow(`Native verifier ${phase} phase exceeded`);
+      if (phase !== 'prepare') {
+        const output = readFileSync(log, 'utf8');
+        expect(output.match(new RegExp(`VH_BEGIN phase=${phase}`, 'g'))!.length).toBeGreaterThan(1);
+      }
+    } finally { controller.abort(); closeSync(fd); rmSync(dir, { recursive: true, force: true }); }
+  }, 15_000);
 });
 
 describe('nested frozen verifier scratch boundary', () => {

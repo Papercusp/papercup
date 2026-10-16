@@ -12,7 +12,8 @@ import { register, authenticatedAccount, accountToken } from '../../../../script
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
 import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
 import { checkNativeLedger } from '../../../../scripts/tauri-surface-verify-reports.mts';
-import { nativeBootstrapEnvironment, runNativeVerifier } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, NATIVE_BOOTSTRAP_TIMEOUT_MS,
+  NATIVE_BOOTSTRAP_TEARDOWN_MS, NATIVE_VERIFIER_PHASE_BUDGETS } from './native-bootstrap-runtime';
 
 const NATIVE_SOURCE_INPUTS = [
   'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
@@ -23,12 +24,14 @@ const NATIVE_SOURCE_INPUTS = [
   'scripts/fixtures/dao-hr-wallet-binding-contract.ts', 'packages/operator-core/lib/dao-hr/wallet-binding-fixture.ts',
   'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
   'scripts/fixtures/dao-workbench-identity.mjs',
+  'scripts/lib/batch-watchdog.mjs', 'scripts/lib/verify-tauri-assertion-env.mjs',
+  'scripts/tauri-surface-verify-reports.mts', 'scripts/source-preview.mjs',
   'scripts/with-documenso-sandbox.mjs',
 ];
 
 describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined native hire bootstrap', () => {
   it('runs the isolated native hire journey with actual provider accounts, hosted wallet routes and signed V2 chain', async ({ onTestFinished }) => {
-    const verifierDeadline = Date.now() + 1_140_000; // Leave one minute of the test budget for joined teardown.
+    const verifierDeadline = Date.now() + NATIVE_BOOTSTRAP_TIMEOUT_MS - NATIVE_BOOTSTRAP_TEARDOWN_MS;
     const cancellation = new AbortController();
     let verifier: Promise<number | null> | undefined;
     onTestFinished(async () => {
@@ -84,6 +87,7 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
         await prepareVerifierDependencies({ donor: root, dest: sourceRoot, receipt });
         Object.assign(env, verifierSourceChildEnv({ root: sourceRoot, receiptPath, env }));
       }
+      cancellation.signal.throwIfAborted();
       writeFileSync(logPath + '.invoked-source-receipt.json', JSON.stringify(receipt), { mode: 0o600 });
       env.PAPERCUSP_REPO_DIR = sourceRoot;
       env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
@@ -94,9 +98,15 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       restoreIdentity = installIdentityFixture(identity, env);
       process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
       browser = await chromium.launch({ headless: true });
-      chain = await startDaoHrTestChain(); wallet = await startDaoHrWalletBindingFixture();
+      cancellation.signal.throwIfAborted();
+      chain = await startDaoHrTestChain();
+      cancellation.signal.throwIfAborted();
+      wallet = await startDaoHrWalletBindingFixture();
+      cancellation.signal.throwIfAborted();
       const candidate = await register(browser, { personId: 'PER-native-candidate', name: 'Native candidate', email: identity.actors.candidate.email });
+      cancellation.signal.throwIfAborted();
       const company = await register(browser, { personId: 'PER-native-approver', name: 'Native countersigner', email: identity.actors.approver.email });
+      cancellation.signal.throwIfAborted();
       await authenticatedAccount(company.page, identity.actors.approver.email);
       env.DOCUMENSO_API_KEY = await accountToken(company.page);
       env.DOCUMENSO_WEBHOOK_SECRET = randomBytes(32).toString('hex');
@@ -115,6 +125,7 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
         verifier = runNativeVerifier('bash', [join(sourceRoot, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
           join(sourceRoot, 'scripts/tauri-surface-verify-dao-hr.mts')], { cwd: sourceRoot,
           signal: cancellation.signal, timeoutMs: verifierDeadline - Date.now(),
+          phaseBudgetsMs: NATIVE_VERIFIER_PHASE_BUDGETS, logFd: fd,
           env: { ...env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready', VERIFY_TAURI_WINDOW: '1440x1000',
             NODE_OPTIONS: (env.NODE_OPTIONS || '') + ' --import=' + join(sourceRoot, 'scripts/fixtures/dao-workbench-identity.mjs') },
           stdio: ['ignore', fd, fd] });
@@ -133,5 +144,5 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       if (sourceDirectory) rmSync(sourceDirectory, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 1_200_000);
+  }, NATIVE_BOOTSTRAP_TIMEOUT_MS);
 });
