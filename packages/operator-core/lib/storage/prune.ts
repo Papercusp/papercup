@@ -8,7 +8,7 @@
  *     see; D-002/D-003). Only `sync:'none'` PG + local disk stores trim.
  *   • PG deletes are CHUNKED (ctid batches) so a multi-million-row trim never
  *     takes a long lock; a bloat-queue table (substrate_outbox) then gets a
- *     VACUUM FULL to actually return disk, coordinated via the `db:migrate`
+ *     VACUUM FULL to actually return disk, coordinated via the `db-schema`
  *     exclusive resource lock with drain (the plan's lock requirement).
  *   • Disk session-dir trims reuse the audited session-dir-gc planner with a
  *     FAIL-CLOSED protected set (a live/resumable session is never collected),
@@ -256,7 +256,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
   }
 
   // Bloat-queue: logical delete does not return disk → VACUUM FULL under the
-  // db:migrate exclusive lock with drain (the plan's coordination requirement).
+  // db-schema exclusive lock with drain (the plan's coordination requirement).
   // Skipped while the trim is still partial — VACUUM FULL is a long, locking op
   // that would itself blow the budget; it runs on the final draining call.
   if (cat.bloats && removed > 0 && result.complete) {
@@ -288,7 +288,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
       );
       result.vacuumed = outcome.acquired === true;
       if (!result.vacuumed) {
-        result.note = `rows deleted; VACUUM FULL skipped (db:migrate ${outcome.acquired === false ? outcome.reason : 'busy'}) — space is freed for reuse, but relation/OS bytes are not guaranteed to shrink without a table rewrite or truncation`;
+        result.note = `rows deleted; VACUUM FULL skipped (db-schema ${outcome.acquired === false ? outcome.reason : 'busy'}) — space is freed for reuse, but relation/OS bytes are not guaranteed to shrink without a table rewrite or truncation`;
       }
     } catch (err) {
       result.note = `rows deleted; VACUUM FULL failed: ${(err as Error)?.message ?? 'error'}`;

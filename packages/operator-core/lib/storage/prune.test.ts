@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   statementTimeoutOnCount: false,
   unsafeQueries: [] as string[],
   vacuumCalls: [] as string[],
+  guardSpecs: [] as unknown[],
   guardAcquired: true,
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
   sessionCandidates: [] as Array<{ path: string; keyKind: 'owner'; key: string; mtimeMs: number }>,
@@ -40,10 +41,12 @@ function makeSql() {
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: makeSql() }) }));
 vi.mock('../agent-tools/locks/resource-lock-guard', () => ({
-  guardResource: async (_spec: unknown, run: (f: unknown) => Promise<unknown>) =>
-    h.guardAcquired
+  guardResource: async (spec: unknown, run: (f: unknown) => Promise<unknown>) => {
+    h.guardSpecs.push(spec);
+    return h.guardAcquired
       ? { acquired: true, result: await run({}), lock_id: 'x' }
-      : { acquired: false, reason: 'busy', holders: [] },
+      : { acquired: false, reason: 'busy', holders: [] };
+  },
 }));
 vi.mock('./disk', () => ({
   listDiskEntries: () => h.diskEntries,
@@ -211,6 +214,8 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.ok).toBe(true);
     expect(r.removed).toBe(40);
     expect(r.vacuumed).toBe(true);
+    expect(h.guardSpecs).toHaveLength(1);
+    expect(h.guardSpecs[0]).toMatchObject({ resource: 'db-schema', mode: 'exclusive' });
     expect(h.vacuumCalls.some((q) => q.includes('VACUUM (FULL, ANALYZE)'))).toBe(true);
     expect(r.reclaimedBytes).toBe(400); // 1000 - 600
     expect(r.reclaimEstimated).toBe(false);
@@ -225,6 +230,7 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.removed).toBe(40);
     expect(r.vacuumed).toBe(false);
     expect(r.note).toMatch(/VACUUM FULL skipped/);
+    expect(r.note).toContain('(db-schema busy)');
   });
 });
 
