@@ -18,15 +18,20 @@ export async function runNativeVerifier(command: string, args: string[], options
 }): Promise<number | null> {
   const { signal, timeoutMs, killGraceMs = 30_000, ...spawnOptions } = options;
   signal.throwIfAborted();
-  assert.ok(timeoutMs > 0, 'Native bootstrap exhausted its preparation budget before verifier launch');
+  assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0,
+    'Native bootstrap exhausted its preparation budget before verifier launch');
+  assert.ok(Number.isFinite(killGraceMs) && killGraceMs >= 0, 'Native verifier kill grace must be finite and nonnegative');
   const child = spawn(command, args, { ...spawnOptions, detached: true });
   let failure: Error | undefined;
   let escalation: ReturnType<typeof setTimeout> | undefined;
+  let termination: Promise<void> | undefined;
   const stop = (reason: Error) => {
     if (failure) return;
     failure = reason;
     killSpawnedProcessTree(child, 'SIGTERM');
-    escalation = setTimeout(() => killSpawnedProcessTree(child, 'SIGKILL'), killGraceMs);
+    termination = new Promise(resolve => {
+      escalation = setTimeout(() => { killSpawnedProcessTree(child, 'SIGKILL'); resolve(); }, killGraceMs);
+    });
   };
   const abort = () => stop(new Error('Native verifier cancelled with its enclosing test', { cause: signal.reason }));
   const deadline = setTimeout(() => stop(new Error(`Native verifier exceeded its remaining ${timeoutMs}ms budget`)), timeoutMs);
@@ -39,7 +44,10 @@ export async function runNativeVerifier(command: string, args: string[], options
     });
   } finally {
     clearTimeout(deadline);
-    if (escalation) clearTimeout(escalation);
     signal.removeEventListener('abort', abort);
+    // A shell can exit on SIGTERM while a descendant ignores it. Direct-child
+    // close must not cancel group escalation or let fixture teardown run early.
+    await termination;
+    if (escalation) clearTimeout(escalation);
   }
 }
