@@ -45,7 +45,8 @@ describe('hosted entitlement authority (real PG + hosted roles)', () => {
           browserAccess: { pty: true, files: true }, supportTier: 'trial',
           quotas: { 'pool.agents': agents, 'pool.db-gib': 256 }, budgets: {}, rolloutFlags: {} } }],
       assignments: [{ schemaVersion: 1, assignmentId: `trial:${organizationId}`, organizationId,
-        bundleId: 'trial-v1', bundleVersion: 1, record }], overrides: [] };
+        bundleId: 'trial-v1', bundleVersion: 1,
+        record: { ...record, auditReceiptId: 'audit:trial-assignment-v1' } }], overrides: [] };
   }
   it('keeps legacy labels allowance-free and stores versioned authority on the existing grant', async () => {
     const g = await grant();
@@ -53,7 +54,8 @@ describe('hosted entitlement authority (real PG + hosted roles)', () => {
     expect(await writeHostedEntitlementAuthority({ ...g, authority: authority(g.organizationId) }, service)).toBe(1);
     expect(await read(g.organizationId)).toMatchObject({ ok: true, authorityRevision: 1, grantUserId: g.userId,
       resolution: { organizationId: g.organizationId, bundleVersion: 1,
-        quotas: { 'pool.agents': 50, 'pool.db-gib': 256 }, auditReceiptIds: ['audit:trial-policy-v1'] } });
+        quotas: { 'pool.agents': 50, 'pool.db-gib': 256 },
+        auditReceiptIds: ['audit:trial-policy-v1', 'audit:trial-assignment-v1'] } });
     expect(await read(randomUUID())).toEqual({ ok: false, reason: 'authority_missing' });
     await expect(db.appSql`SELECT authority FROM papercusp_auth.hosted_entitlements`).rejects.toMatchObject({ code: '42501' });
     await db.appSql.begin(async tx => {
@@ -78,6 +80,12 @@ describe('hosted entitlement authority (real PG + hosted roles)', () => {
   });
   it('refuses foreign history, malformed persisted records and ambiguous grant authorities', async () => {
     const g = await grant();
+    for (const malformed of [{}, { schemaVersion: null, bundles: [], assignments: [], overrides: [] }]) {
+      await expect(service(async sql => {
+        await sql`UPDATE papercusp_auth.hosted_entitlements SET authority = ${JSON.stringify(malformed)}::jsonb,
+          authority_revision = 1 WHERE organization_id = ${g.organizationId}::uuid`;
+      })).rejects.toMatchObject({ code: '23514' });
+    }
     await expect(writeHostedEntitlementAuthority({ ...g, authority: authority(randomUUID()) }, service))
       .rejects.toThrow('hosted_entitlement_assignment_invalid');
     const bad = authority(g.organizationId);

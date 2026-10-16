@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_FOREIGN_MAX_AGE_HOURS,
   DEFAULT_KEEP_RUNS,
@@ -44,6 +44,20 @@ import {
  */
 const vh = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../bin/vh.sh');
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-bracket-'));
+
+// Explicit retention tests, including spawned vh.sh processes, use real locks
+// and pin parsing without joining the production retention queue.
+let privateRetention: string;
+beforeEach(() => {
+  privateRetention = tmp();
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(privateRetention, 'mutex'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(privateRetention, 'pins'));
+  vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(privateRetention, { recursive: true, force: true });
+});
 
 function run(body: string, env: Record<string, string> = {}, args: string[] = []) {
   const root = tmp();
