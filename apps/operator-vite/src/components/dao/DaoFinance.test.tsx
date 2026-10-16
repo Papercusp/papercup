@@ -3,13 +3,35 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DaoFinance from './DaoFinance';
-import { captureWorkbenchResponses } from '../../../../../scripts/lib/dao-workbench-controls.mts';
+import { captureWorkbenchResponses, workbenchVerifiedWallet } from '../../../../../scripts/lib/dao-workbench-controls.mts';
+import { normalizeEvmAddress } from '@papercusp/operator-core/lib/cupboard/wallet-binding';
 const view = { directoryId: 'dao', localHomeSlug: 'local-home', status: 'connected' as const };
 const account = { ok: true, policyVersion: 7, bindings: {}, wallet: { ok: true, value: { binding: { walletAddress: '0x' + '4'.repeat(40), chainId: 1 } } },
   equity: { status: 'ready', value: { issuedShares: '42', reservedShares: '5', blockNumber: '123', governanceBound: true, supplyInvariant: true } }, treasury: { status: 'not-bound' }, commerce: { status: 'not-bound' },
   actions: [{ contract: 'PapercuspEquity', name: 'requestRecovery', inputs: [{ name: 'memberId', type: 'uint256' }, { name: 'replacement', type: 'address' }] }] };
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (window as any).__DAO_HR_CAPTURE__; delete (window as any).__DAO_HR_RESPONSE__; });
 describe('DAO finance actions', () => {
+  it('matches a checksum wallet against the canonical verified record and rejects another address or chain', async () => {
+    const checksum = '0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf';
+    const canonical = normalizeEvmAddress(checksum)!;
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(path.includes('/policy')
+      ? { ok: true, canEdit: false, policy: null }
+      : { ...account, wallet: { ok: true, value: { binding: { walletAddress: canonical, chainId: 1 } } } })));
+    render(<DaoFinance view={view} section="ownership" />);
+    await screen.findByText('Your verified wallet: ' + canonical + ' · chain 1');
+    // The former native predicate fails despite a correctly rendered binding.
+    expect(document.body.textContent!.includes(checksum)).toBe(false);
+    const matches = (address: string, chain: number) => new Function('document', 'return ' + workbenchVerifiedWallet(address, chain))(document);
+    expect(matches(checksum, 1)).toBe(true);
+    expect(matches('0x' + '1'.repeat(40), 1)).toBe(false);
+    expect(matches(checksum, 10)).toBe(false);
+    cleanup();
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => Response.json(path.includes('/policy')
+      ? { ok: true, canEdit: false, policy: null } : { ...account, wallet: { ok: true, value: {} } })));
+    render(<DaoFinance view={view} section="ownership" />); await screen.findByText('Your verified wallet: No verified wallet bound.');
+    fireEvent.change(screen.getByLabelText('Wallet address'), { target: { value: checksum } });
+    expect(matches(checksum, 1)).toBe(false);
+  });
   it('retains wallet verification evidence after the automatic account refresh overwrites the last response', async () => {
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : {};

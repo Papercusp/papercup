@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -89,7 +89,12 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       field('Wallet address', account); field('Wallet chain ID', '1'); click('Request wallet signing challenge');
       const challenge = response('wallet-challenge').value;
       const signature = await rpc('personal_sign', [stringToHex(challenge.message), account]);
-      field('Wallet signature', signature); click('Verify wallet signature'); response('wallet-verify'); textHas(account);
+      field('Wallet signature', signature); click('Verify wallet signature'); response('wallet-verify');
+      try { wait(workbenchVerifiedWallet(account, 1)); }
+      catch (cause) {
+        writeFileSync(config.resultPath + '.wallet-render-failure.json', JSON.stringify(value('({body:document.body.innerText,responses:window.__DAO_HR_CAPTURE__?.responses})'), null, 2));
+        throw cause;
+      }
     };
     const prepareGovernor = async (name: string, args: unknown[]) => {
       navigate({ daoSection: 'ownership' }); textHas('Equity deployment & holder records'); captureResponses();
