@@ -4,7 +4,7 @@
   "parent": "WI-10004735",
   "publicRouteIssue": "EI-25946131547854574",
   "plan": "iphone-public-release-2026-08-11#P-008",
-  "result": "source-regression-passed-containing-restart-partial",
+  "result": "source-regression-and-live-restart-custody-passed",
   "scope": "Server listener ownership across unsuccessful health probes; desktop port recovery retained.",
   "rootCause": {
     "writer": "packages/operator-core/lib/own-tunnel/service.ts reconcileOnce",
@@ -69,7 +69,7 @@
     "diffCheck": "git diff --check passed for the two changed source/test paths."
   },
   "liveVerification": {
-    "status": "partial",
+    "status": "passed-for-listener-custody",
     "runtimeRoute": "operator-api currentBuildTestRoute: staging operator on 3170, containing committed source required; the background host also must load the adoption fix.",
     "hostRepair": {
       "workItem": "WI-6554700010015345",
@@ -114,16 +114,27 @@
       "limit": "The automatic restart is observed before/after. A health gap was not sampled during that restart."
     },
     "boundedObserver": {
-      "shellSession": 98190,
-      "finishedAt": "2026-10-15T23:35:22.725909Z",
-      "durationSeconds": 181.06,
-      "successfulBackgroundStatusSamples": 401,
-      "unhealthySamplesWithBackgroundStatus": 1,
-      "stoppedProcessGapSamples": 0,
+      "shellSession": 28214,
+      "finishedAt": "2026-10-15T23:41:04.942724Z",
+      "durationSeconds": 156.59,
+      "probeTimeoutSeconds": 2,
+      "successfulBackgroundStatusSamples": 285,
+      "unhealthySamplesWithBackgroundStatus": 38,
+      "stoppedProcessGapSamples": 32,
       "everWrongOwner": false,
-      "recoveredAfterGap": false,
-      "restartAttempt": "Natural staging-sync restart window was observed; the original staging PID remained alive, so no process-loss gap was measured. One 2-second staging health timeout recovered while background status remained configured3170/listeningfalse/servedByThisOperatorfalse.",
-      "limit": "This observation proves stable custody in its sampled window and records one transient health timeout, not custody across a process restart. A controlled restart-gap sample remains pending."
+      "recoveredAfterGap": true,
+      "restartAttempt": "dev:restart initially returned an opaque cross-domain resource-lease conflict. A later actual staging stop and restart was independently observed; this receipt does not attribute that lifecycle to the rejected call.",
+      "limit": "Background status remained configured3170/listeningfalse/servedByThisOperatorfalse during 32 samples where the original process was gone and health failed, followed by successful staging health and a 12-second recovery window. This verifies listener custody through the observed restart; it does not establish broader P-008 or public provider acceptance."
+    },
+    "recoveredSocketCustody": {
+      "source": "Maintained staging unit MainPID, selected LISTEN socket owners and physical serving source hash after observer completion.",
+      "oldStagingPid": 881398,
+      "stagingPid": 1048953,
+      "stagingHealthSha": "53e73accbf",
+      "loadedServiceSha256": "a2de74b38d2eece4f40d1aa97c702c1de646111c929a20f8b01cb5dbd81cbfdb",
+      "stagingListeningPorts": [3170, 41179],
+      "backgroundPid": 2196630,
+      "backgroundListeningPorts": [3271]
     },
     "localSecurity": {
       "startedAt": "2026-10-15T23:15:02.288444Z",
@@ -157,10 +168,9 @@
       "deviceRule": { "hostname": "api.papercuspai.com", "path": "^/api/device", "service": "http://localhost:3070", "originRequest": {} },
       "providerMutation": false
     },
-    "blocker": "Controlled health-gap sample pending; observed natural health timeout did not coincide with process loss",
-    "blockerEvidence": "The accurate 2-second observer saw the original staging PID remain alive; one staging health timeout recovered, and background custody remained configured3170/listeningfalse/servedByThisOperatorfalse. A controlled process-loss gap was not sampled.",
+    "blocker": null,
+    "blockerEvidence": "Observed process-loss health gap and subsequent physical socket custody passed. The separate opaque restart-tool refusal is retained as tool friction; no claim of successful tool dispatch is made.",
     "remaining": [
-      "Sample a coordinated restart health gap once staging-sync releases its lock, without overriding the collision guard.",
       "Recheck current custody and provider state before any public route correction; full P-008 remains open."
     ],
     "ownedFollowUp": "EI-26087030423583632 source fix passes55 registered tests; completion reattested with committed authority after source/test hashes matched committed bytes. This is not a deployed-fix claim."

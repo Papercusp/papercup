@@ -391,27 +391,80 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=F
                    ";", "set-window-option", "-t", name, "remain-on-exit", "on"])
         time.sleep(LAUNCH_DELAY_SEC)
     deadline, pending = time.time() + 180, set(names)
-    while pending and time.time() < deadline:
-        for name in list(pending):
-            check_codex_terminal(name, rec)
-            text = pane(name)
-            if codex_ready(text, model):
+    startup_failures = []
+    failure_settle_deadline = None
+    while (
+        pending
+        and time.time() < deadline
+        and (failure_settle_deadline is None or time.time() < failure_settle_deadline)
+    ):
+        # Inspect the whole cohort before deciding. Raising from check_codex_terminal
+        # here used to stop at the first dead pane; run()'s finally then destroyed
+        # every other terminal before its exit status and screen could be recorded.
+        for name in sorted(pending):
+            evidence = check_codex_terminal(name, rec)
+            if evidence is not None:
+                pending.discard(name)
+                startup_failures.append(evidence)
+                if failure_settle_deadline is None:
+                    # A short settling window captures siblings that fail together
+                    # during a large native launch without waiting out the full
+                    # readiness timeout after the cohort is already invalid.
+                    failure_settle_deadline = min(deadline, time.time() + 2)
+                continue
+            if codex_ready(pane(name), model):
                 pending.discard(name)
         time.sleep(0.5)
+
+    if startup_failures:
+        pending_evidence = []
+        for name in sorted(pending):
+            evidence = codex_terminal_evidence(name)
+            evidence["reason"] = "sibling-terminal-failed-before-cohort-readiness"
+            rec.rec("startup-aborted", **evidence)
+            pending_evidence.append(evidence)
+        raise RuntimeError(
+            "Codex startup cohort failed before warmup: "
+            f"{len(startup_failures)} terminal(s) exited or could not be inspected; "
+            f"{len(pending_evidence)} other terminal(s) did not reach readiness. "
+            "Per-terminal status and pane evidence recorded in results.jsonl."
+        )
+
     if pending:
         for name in sorted(pending):
-            rec.rec("startup-timeout", agent=name, pane=pane(name))
-        raise RuntimeError(f"Codex agents never ready: {sorted(pending)}; first pane: {pane(sorted(pending)[0])}")
+            rec.rec("startup-timeout", **codex_terminal_evidence(name))
+        raise RuntimeError(
+            f"Codex agents never ready: {sorted(pending)}; "
+            "per-terminal status and pane evidence recorded in results.jsonl"
+        )
     rec.rec("agents-started", agents=len(names), cli="codex", model=model, effort=effort, inference="real")
     return names
 
 
-def check_codex_terminal(name, rec):
+def codex_terminal_evidence(name):
     state = sh(TMUX + ["display-message", "-p", "-t", name, "#{pane_dead} #{pane_dead_status}"], check=False)
-    if state.returncode or state.stdout.split()[:1] == ["1"]:
-        evidence = {"agent": name, "state": state.stdout.strip(), "stderr": state.stderr.strip(), "pane": pane(name)}
+    parts = state.stdout.split()
+    return {
+        "agent": name,
+        "state": state.stdout.strip(),
+        "stderr": state.stderr.strip(),
+        "pane": pane(name),
+        "dead": parts[:1] == ["1"],
+        "inspectionFailed": state.returncode != 0,
+    }
+
+
+def check_codex_terminal(name, rec):
+    evidence = codex_terminal_evidence(name)
+    if evidence["dead"]:
         rec.rec("startup-failed", **evidence)
-        raise RuntimeError(f"Codex terminal exited before readiness: {json.dumps(evidence)}")
+        return evidence
+    if evidence["inspectionFailed"]:
+        # A vanished pane or failed tmux query is not proof of a process exit, but
+        # it is still unsafe to admit this terminal into the benchmark cohort.
+        rec.rec("startup-inspection-failed", **evidence)
+        return evidence
+    return None
 
 
 def start_agents(n, user, rec, cli="claude", model="gpt-6-luna", effort="low", gateway_url=None, owner=None, resume=False):

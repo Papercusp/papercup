@@ -972,7 +972,12 @@ if [ -f "$VH_SH" ]; then
   vh_phase prepare ""
   vh_phase boot prepare
   vh_phase assert boot
-  vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
+  verifier_retained_args=()
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
+    verifier_retained_args+=(--retain-artifact phases/prepare/verifier-source-receipt.json)
+  fi
+  vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}" \
+    ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
   vh_begin prepare
   trap 'vh_capture_phase_stop' EXIT
   vh_capture_phase_start
@@ -2922,6 +2927,11 @@ teardown() {
   fi
   vh_capture_phase_stop
   vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-1}" -ne 0 ]; then
+    artifacts_retained=0
+    [ "$ec" -ne 0 ] || ec=1
+    log "FATAL: pinned verifier completion evidence was not retained; preserving source at $OPERATOR_SOURCE_ROOT"
+  fi
   log "tearing down (exit=$ec)"
   capture_isolated_pg_diagnostics
   write_stop_script

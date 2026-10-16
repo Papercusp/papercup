@@ -370,6 +370,46 @@ export async function waitForSandboxPostgres(name, { run, secrets = [],
   }
 }
 
+/** Preserve bounded failure evidence before the caller removes its providers.
+ * Application logs may contain signup/signing tokens by this point, so record
+ * only allowlisted container state and HTTP status, never logs or response bodies.
+ */
+export async function waitForSandboxChild(child, { runtime,
+  run = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),
+  probe = fetch, report = value => console.error('[documenso-sandbox-child-failure] ' + JSON.stringify(value)),
+}) {
+  const exitCode = await new Promise((done, reject) => {
+    child.once('error', reject); child.once('exit', (code, signal) => done(code ?? (signal ? 130 : 1)));
+  });
+  if (exitCode !== 0) {
+    const containers = [runtime.container, runtime.network + '-pg', runtime.network + '-mail'].map(name => {
+      try {
+        const result = run(['inspect', '--format', '{{json .State}}', name]);
+        const state = JSON.parse(result.stdout || '{}');
+        return { name, inspectExit: result.status,
+          status: /^(created|running|paused|restarting|removing|exited|dead)$/.test(state.Status) ? state.Status : 'unknown',
+          exitCode: Number.isInteger(state.ExitCode) ? state.ExitCode : null, oomKilled: state.OOMKilled === true };
+      } catch { return { name, status: 'unknown', inspection: 'failed' }; }
+    });
+    const endpoints = await Promise.all([
+      ['provider', runtime.appUrl + '/signup'], ['mail', runtime.mailUrl + '/email'],
+    ].map(async ([name, url]) => {
+      try {
+        const response = await probe(url, { signal: AbortSignal.timeout(5000), redirect: 'manual' });
+        await response.body?.cancel();
+        return { name, status: response.status };
+      } catch (error) {
+        const code = error?.cause?.code;
+        const failure = ['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH'].includes(code) ? code :
+          ['TimeoutError', 'AbortError'].includes(error?.name) ? 'timeout' : 'request-failed';
+        return { name, status: null, failure };
+      }
+    }));
+    await report({ exitCode, containers, endpoints });
+  }
+  return exitCode;
+}
+
 export async function runSandbox({ image, command, signal }, { prepareImages = prepareSandboxImages } = {}) {
   const suffix = randomUUID().slice(0, 12);
   const network = 'daohr-documenso-' + suffix;
@@ -507,9 +547,7 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,
       env: { ...process.env, DOCUMENSO_URL: appUrl, DOCUMENSO_TEST_MAIL_URL: mailUrl,
         DOCUMENSO_TEST_RUNTIME: JSON.stringify(runtime) } });
-    const exitCode = await new Promise((done, reject) => {
-      child.once('error', reject); child.once('exit', (code, signal) => done(code ?? (signal ? 130 : 1)));
-    });
+    const exitCode = await waitForSandboxChild(child, { runtime });
     if (reaperFailure) throw reaperFailure;
     return exitCode;
   } finally {
