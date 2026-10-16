@@ -24,6 +24,9 @@ const selected = [
   'native census handles delimiter-looking names',
   'native census retains a new write between planning',
   'persists start, exact removal intent, removed path and final receipt',
+  'finishes an admitted removal, yields the real mutex, then resumes the same pass',
+  'refreshes a new pin after a FIFO handoff without repeating the census',
+  'refreshes a new lease after a FIFO handoff without repeating the census',
 ];
 const options = isolatedTestFileWorkerOptions(process.env, 1);
 
