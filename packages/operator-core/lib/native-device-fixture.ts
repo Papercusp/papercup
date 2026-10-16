@@ -13,8 +13,8 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
-import { existsSync, mkdirSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
 import { assertPort, parseArgoTunnelCert, tunnelCnameTarget } from './own-tunnel/config';
@@ -420,6 +420,14 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       ...process.env, MOBILE_JWT_SECRET: randomBytes(48).toString('base64url'),
       MOBILE_DESKTOP_PUBLIC_URL: String(receipt.publicBase), MOBILE_DESKTOP_HOST: hostname,
     };
+    // The bundle is already plain ESM; an inherited tsx hook would still
+    // transform any runtime source import and make the committed-source guard
+    // refuse it. Retain that guard as the only preload for this child rather
+    // than disabling NODE_OPTIONS or running an unjudged transformed module.
+    const bundleHostEnv = {
+      ...hostEnv,
+      NODE_OPTIONS: `--import=${resolve(ROOT, 'scripts/lib/committed-source-loader.mjs')}`,
+    };
     const startHost = (log: string) => {
       const buildLog = resolve(evidence, 'host-bundle-build.log');
       try {
@@ -442,7 +450,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       return start(process.execPath,
         [...(deviceExpiry ? ['--import', resolve(ROOT,
           'packages/operator-core/lib/native-device-fixture-clock.ts')] : []), fixtureBundlePath],
-        hostEnv, log, deviceExpiry);
+        bundleHostEnv, log, deviceExpiry);
     };
     host = startHost('host.log');
     receipt.hostPid = host.pid;
