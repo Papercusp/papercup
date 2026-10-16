@@ -22,15 +22,16 @@ const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
 const healthCleanupProof = process.argv.includes('--health-cleanup-proof');
 const healthPublicationProof = process.argv.includes('--health-publication-proof');
-const socketOrigins = new Map<number, string>();
+const socketOrigins = new Map<number, { socket: net.Socket; stack: string; createdAt: number; connectedAt: number }>();
 const originalConnect = net.Socket.prototype.connect;
 // Use the same creation-stack/census evidence as the native current-build
 // fixture. A completed cleanup await alone cannot prove the worker will exit.
 net.Socket.prototype.connect = function(this: net.Socket, ...args: unknown[]) {
   const stack = new Error('Private roster PG connection creation').stack ?? '';
+  const createdAt = Date.now();
   this.once('connect', () => {
     if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT) && this.localPort)
-      socketOrigins.set(this.localPort, stack);
+      socketOrigins.set(this.localPort, { socket: this, stack, createdAt, connectedAt: Date.now() });
   });
   return Reflect.apply(originalConnect, this, args);
 } as typeof originalConnect;
@@ -924,9 +925,17 @@ finally {
     const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
     const sockets = (report.libuv ?? []).filter(handle => handle.type === 'tcp').map(handle => {
       const local = handle.localEndpoint as { port?: number } | undefined;
-      return { active: handle.is_active, referenced: handle.is_referenced,
+      const origin = socketOrigins.get(local?.port ?? 0);
+      const socket = origin?.socket;
+      return { active: handle.is_active, referenced: handle.is_referenced, closing: handle.is_closing,
         local, remote: handle.remoteEndpoint,
-        creationStack: socketOrigins.get(local?.port ?? 0) ?? null,
+        creationStack: origin?.stack ?? null,
+        // Byte counts distinguish a cancellation-only connection from an
+        // authenticated pool connection without retaining protocol contents.
+        socketState: socket ? { readyState: socket.readyState, connecting: socket.connecting,
+          pending: socket.pending, destroyed: socket.destroyed, writableEnded: socket.writableEnded,
+          bytesRead: socket.bytesRead, bytesWritten: socket.bytesWritten,
+          createdAt: origin!.createdAt, connectedAt: origin!.connectedAt } : null,
         pgConnection: pgConnections.find(row => row.client_port === local?.port) ?? null };
     });
     const retained = sockets.filter(socket => socket.referenced &&
