@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -309,6 +310,24 @@ exit 0
     expect(open.code).toBe(0);
     expect(open.stdout).toMatch(/ran/);
     expect(open.stderr).toMatch(/VH_DISABLED harness=linear reason=plan-incomplete:no-action-for-prep/);
+  });
+
+  it('retention mutex refusal stops initialization before creating a run or entering expensive phases', () => {
+    const r = run(`
+_vh_cli() {
+  echo 'Timed out waiting for fs-mutex papercusp-disk-retention; holder: running' >&2
+  return 2
+}
+vh_phase prep ""
+vh_init linear "$ROOT/ev"
+echo EXPENSIVE_RIG_STARTED
+`);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('papercusp-disk-retention; holder: running');
+    expect(r.stderr).toContain('vh_init: retention-command-failed');
+    expect(r.stdout).not.toContain('EXPENSIVE_RIG_STARTED');
+    expect(readdirSync(path.join(r.root, 'ev'))).toEqual([]);
+    expect(r.result).toBeNull();
   });
 
   it('without VH_FAIL_OPEN a contract that cannot start is fatal', () => {
