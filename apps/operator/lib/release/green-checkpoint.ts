@@ -61,6 +61,7 @@ import {
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
+import { npmWorkspaceDirsByName } from "@papercusp/operator-core/lib/release/npm-workspace-dirs";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
   buildRedLegsAtR1,
@@ -19632,7 +19633,13 @@ export async function runPostSuiteLegs(
       .join("\n");
     const output = fullOutput.slice(-2000);
     const subjectPaths = outcome.status === "failed"
-      ? extractSubjectPathsFromLegOutput(stripAnsi(fullOutput)).slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP)
+      ? [...new Set(commands.filter((command) => command.code !== 0).flatMap((command) =>
+          extractSubjectPathsFromLegOutput(
+            stripAnsi(command.stdout + "\n" + command.stderr),
+            path.relative(treeDir, command.cwd).replace(/\\/g, "/") || undefined,
+            Object.values(npmWorkspaceDirsByName(treeDir)),
+          ),
+        ))].slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP)
       : [];
     const exitCode =
       commands.find((command) => command.code !== 0)?.code ??
@@ -22824,13 +22831,11 @@ export function realCheckpointDeps(
             });
             return {
               code: r.code,
-              subjectPaths: extractSubjectPathsFromLegOutput(stripAnsi(r.stdout + "\n" + r.stderr))
-                .map((file) => {
-                  const prefix = path.relative(cfg.checkpointRoot, invocation.cwd).replace(/\\/g, "/");
-                  return prefix && !file.startsWith(prefix + "/") && !/^(?:apps|packages|libs|scripts)\//.test(file)
-                    ? prefix + "/" + file : file;
-                })
-                .slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP),
+              subjectPaths: extractSubjectPathsFromLegOutput(
+                stripAnsi(r.stdout + "\n" + r.stderr),
+                path.relative(cfg.checkpointRoot, invocation.cwd).replace(/\\/g, "/") || undefined,
+                Object.values(npmWorkspaceDirsByName(cfg.checkpointRoot)),
+              ).slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP),
               // WI-10002075: digest-first, never a blind tail — a red lint leg's last
               // 300 chars are its generic trailer, not the files it named.
               // WI-10007516: BOTH streams — `stderr || stdout` dropped vitest's stdout
