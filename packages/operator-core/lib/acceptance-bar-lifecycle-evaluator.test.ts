@@ -436,6 +436,34 @@ describe('operational realization from the canonical BAR snapshot', () => {
       ]);
     });
 
+    function measuredManual(): AcceptanceBarContractSnapshot {
+      const s = manualProven();
+      const row = s.bars[0]!.proof.history![0]!;
+      row.evidenceKind = 'manual';
+      row.details.instrument = { none: true, reason: 'Semantic inspection of canonical content.' };
+      row.currentness.provenance = 'server-measured';
+      return s;
+    }
+
+    it('realizes a manual outcome from a declared server-measured content observation', () => {
+      expect(deriveNonCodeItemProofs(measuredManual())).toEqual([
+        { planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] },
+      ]);
+    });
+
+    it.each([
+      ['undeclared instrument', (s: AcceptanceBarContractSnapshot) => { delete s.bars[0]!.proof.history![0]!.details.instrument; }],
+      ['unexplained instrument absence', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.proof.history![0]!.details.instrument = { none: true, reason: ' ' }; }],
+      ['caller-attested currentness', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.proof.history![0]!.currentness.provenance = 'attested-current'; }],
+      ['unmeasured source', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.proof.history![0]!.currentness.dimensions.source = 'unknown'; }],
+      ['unmeasured runtime', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.proof.history![0]!.currentness.dimensions.environment = 'unknown'; }],
+      ['automated BAR', (s: AcceptanceBarContractSnapshot) => { s.bars[0]!.automatedProofRequired = true; }],
+    ] as const)('rejects a manual observation with %s', (_name, change) => {
+      const s = measuredManual();
+      change(s);
+      expect(deriveNonCodeItemProofs(s)).toEqual([]);
+    });
+
     // Falsifiability: being manual lifts the DEPTH floor and nothing else. Each of these
     // must still refuse, or the fix traded a contradiction for a hole.
     const manualGaps: Array<[string, (s: AcceptanceBarContractSnapshot) => void]> = [
