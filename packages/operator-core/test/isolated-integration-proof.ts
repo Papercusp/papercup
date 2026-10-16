@@ -582,5 +582,8 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
     'phases/execute/native-result.json', 'phases/execute/operator-api-build-result.json',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
+    'phases/execute/portal-health-reads.json', 'phases/execute/portal-health-writes.json',
+    'phases/execute/portal-health-seed.json', 'phases/execute/portal-health-publication.json',
+    'phases/execute/portal-cloud-health-observations.json',
     'phases/execute/browser-inputs.json'].filter(path => existsSync(join(runDir, path)));
 }
