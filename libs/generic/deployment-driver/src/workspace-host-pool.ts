@@ -35,7 +35,8 @@ export interface WorkspaceHostPoolCandidate extends WorkspaceHostPoolAffinity {
   runtimeBundleSha256: string;
   size: Pick<WorkspaceHostSize, "cpuCount" | "memoryMiB">;
   state: "running" | "stopped" | "draining" | "failed";
-  health: "healthy" | "unhealthy" | "unknown";
+  /** stopped-verified is provider/disk evidence for the same owner, never service health. */
+  health: "healthy" | "unhealthy" | "unknown" | "stopped-verified";
   observedAtMs: number;
   customerWorkspaceId: string | null;
   dataVolumeId: string | null;
@@ -103,7 +104,9 @@ function refuse(request: WorkspaceHostPoolRequest, host: WorkspaceHostPoolCandid
   if (!positiveInteger(host.generation) || !positiveInteger(host.controllerFence)) reasons.push("invalid-generation");
   if (!Number.isSafeInteger(host.observedAtMs) || host.observedAtMs < 0 || host.observedAtMs > request.nowMs ||
       request.nowMs - host.observedAtMs > request.maxObservationAgeMs) reasons.push("stale-observation");
-  if (host.health !== "healthy") reasons.push("unhealthy");
+  const verifiedStoppedOwner = host.state === "stopped" && host.health === "stopped-verified" &&
+    host.customerWorkspaceId === request.customerWorkspaceId && host.dataVolumeId === request.dataVolumeId;
+  if (host.state === "stopped" ? !verifiedStoppedOwner : host.health !== "healthy") reasons.push("unhealthy");
   if (host.state !== "running" && host.state !== "stopped") reasons.push("unavailable");
   if (host.reservationId !== null) reasons.push("reserved");
   if (host.customerWorkspaceId !== null && host.customerWorkspaceId !== request.customerWorkspaceId) {

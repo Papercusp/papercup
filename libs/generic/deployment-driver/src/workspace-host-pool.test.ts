@@ -31,7 +31,7 @@ describe("ordinary VM pool placement (capacity-cost P-534)", () => {
 
   it("starts the same customer's stopped VM with the same volume instead of replacing it", () => {
     expect(selectWorkspaceHostPoolPlacement(request(), [host(), host({
-      hostId: "stopped", state: "stopped", customerWorkspaceId: "customer-a", dataVolumeId: "disk-a",
+      hostId: "stopped", state: "stopped", health: "stopped-verified", customerWorkspaceId: "customer-a", dataVolumeId: "disk-a",
     })])).toMatchObject({ kind: "start", hostId: "stopped" });
   });
 
@@ -45,6 +45,19 @@ describe("ordinary VM pool placement (capacity-cost P-534)", () => {
       selectWorkspaceHostPoolPlacement(request(), inventory),
     );
     expect(inventory.map((h) => h.hostId)).toEqual(["large", "b", "a"]);
+  });
+
+  it.each(["healthy", "unknown", "unhealthy"] as const)("requires measured stopped-owner proof instead of %s health", health => {
+    expect(selectWorkspaceHostPoolPlacement(request(), [host({ state: "stopped", health,
+      customerWorkspaceId: "customer-a", dataVolumeId: "disk-a" }), host({ hostId: "spare" })]))
+      .toMatchObject({ kind: "queue", reason: "existing-tenant-needs-reconciliation" });
+  });
+
+  it("does not treat a stopped proof as running service health or clean warm capacity", () => {
+    for (const candidate of [host({ health: "stopped-verified", customerWorkspaceId: "customer-a", dataVolumeId: "disk-a" }),
+      host({ state: "stopped", health: "stopped-verified" })]) {
+      expect(selectWorkspaceHostPoolPlacement(request({ mayProvision: false }), [candidate])).toMatchObject({ kind: "queue" });
+    }
   });
 
   const refusals: [string, Partial<WorkspaceHostPoolCandidate>, WorkspaceHostPoolRefusal][] = [
