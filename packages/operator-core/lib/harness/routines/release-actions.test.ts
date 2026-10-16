@@ -4259,7 +4259,9 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
     const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
     expect(write).toBeDefined();
-    const persisted = JSON.parse(write![1]![2] as string).repair_queue;
+    const params = write?.[1];
+    if (!Array.isArray(params)) throw new Error('queue write must carry positional SQL parameters');
+    const persisted = JSON.parse(String(params[2])).repair_queue;
     const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc');
     expect(row.subjectPaths).toEqual(kind === 'current' ? ['packages/core/violating.ts'] : []);
     expect(row.admitCommand !== null).toBe(kind === 'current');
