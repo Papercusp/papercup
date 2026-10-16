@@ -431,12 +431,14 @@ describe('dispatchPendingGradingAudits', () => {
     expect(result.receipts).toEqual([]);
   });
 
-  it('cancels a pending lease and retires its auditor when an exact cited binding is stale', async () => {
+  it.each([undefined, { sha: 'recorded-evaluator-sha', version: '1.2.2' }])(
+    'cancels a pending lease for an exact stale binding across evaluator builds (%j)', async (evaluatorBuild) => {
     const d = deps();
     const issueId = 'EI-stale-binding-audit';
     const rerunRecipe = {
       args: { harness: 'papercusp' },
       selection: { bindingIds: [30308, 30309] },
+      ...(evaluatorBuild ? { evaluatorBuild } : {}),
     } as NonNullable<ScorecardEvidenceRow['rerunRecipe']>;
     const target = card(issueId, {
       evidenceFingerprint: 'scorecard-evidence-v1',
@@ -505,7 +507,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
     expect(result.receipts).toEqual([
-      expect.objectContaining({ issueId, state: 'skipped' }),
+      expect.objectContaining({ issueId, state: 'skipped', reason: expect.stringContaining('no longer a current pending') }),
     ]);
   });
 
@@ -543,15 +545,23 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
 
+    d.readEvidence.mockResolvedValue({ kind: 'found', scorecard: evidenceCard(issueId, {
+      evidenceFingerprint: target.evidenceFingerprint,
+      rerunRecipe,
+      gradingAudit: target.gradingAudit,
+    }) });
+    const cancelStaleEvidence = vi.fn(async () => true);
+
     const result = await dispatchPendingGradingAudits(
       { targetIds: [issueId], ctx },
-      { ...d, killTask },
+      { ...d, cancelStaleEvidence, killTask },
     );
 
     expect(d.listTasks).not.toHaveBeenCalled();
     expect(killTask).not.toHaveBeenCalled();
     expect(target.gradingAudit).toMatchObject({ state: 'pending', dispatchReservation: reservation });
-    expect(d.readEvidence).not.toHaveBeenCalled();
+    expect(d.readEvidence).toHaveBeenCalledWith(issueId);
+    expect(cancelStaleEvidence).not.toHaveBeenCalled();
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();

@@ -4392,6 +4392,65 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 });
 
 describe('rerunRecipe is submittable to its own evaluator', () => {
+  it('pins certified fixture-absence verifier bindings in the replay population', () => {
+    const base = evidence();
+    const cited = evidence({
+      id: 45649,
+      evidenceKind: 'test',
+      evidenceRef: 'test:fixture-free-proof',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        ...base.details,
+        adequacy: {
+          ...(base.details.adequacy as Record<string, unknown>),
+          fixtureFree: true,
+          fixtureCalibrated: undefined,
+        },
+      },
+      fixtureAbsenceVerification: { verifierBindingIds: [45679] },
+    });
+    const verifier = evidence({
+      id: 45679,
+      evidenceKind: 'independent-verification',
+      evidenceRef: 'verification:fixture-free-proof',
+      fingerprints: { ...cited.fingerprints },
+      details: {
+        ...cited.details,
+        adequacy: {
+          ...(cited.details.adequacy as Record<string, unknown>),
+          fixtureFree: true,
+        },
+      },
+    });
+    const original = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      // The shared reader can attach the certificate to the cited row while the
+      // verifier is outside a caller's selected cohort.
+      evidence: [cited],
+      classRef: 'plan-class-feature-ship',
+    });
+    const recipe = original.scorecardDraft.rerunRecipe;
+
+    expect(recipe.args.bindingIds).toEqual([45649, 45679]);
+    expect(recipe.selection.bindingIds).toEqual([45649, 45679]);
+    expect(original.ratings['fixture-calibration'].rating).toBe('not-applicable');
+
+    const replayCited = { ...cited, fixtureAbsenceVerification: undefined };
+    const replayWithoutVerifier = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      evidence: [replayCited],
+      classRef: 'plan-class-feature-ship',
+    });
+    const replayWithRecipePopulation = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      evidence: [replayCited, verifier],
+      fixtureAbsenceVerifications: new Map([[45649, [45679]]]),
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(replayWithoutVerifier.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(replayWithRecipePopulation.ratings['fixture-calibration'].rating).toBe('not-applicable');
+  });
+
   it('pins original same-kind binding ids when a later binding reuses the evidence ref', () => {
     const sharedRef = 'packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts';
     const selectedTest = evidence({ id: 37383, evidenceKind: 'test', evidenceRef: sharedRef });

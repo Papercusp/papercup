@@ -497,6 +497,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     const isPlansSetSpecsFalsifier =
       properties.some(([field]) => field === 'observation') &&
       properties.some(([field]) => field === 'probeMethod');
+    const isScorecardEmitArgs = ['rubricRef', 'ratings', 'rerunRecipe'].every((field) =>
+      properties.some(([name]) => name === field),
+    );
     if (isObservationCapture && name === 'subject') return 110;
     // `work_items:complete.specAdequacy.current` selects the exact evidence
     // fingerprints being attested. Keep it ahead of optional clause metadata
@@ -508,6 +511,10 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     // discriminator, and prioritize requiredScenarios within the falsifier.
     if (isPlansSetSpecsClause && name === 'falsifier') return 96;
     if (isPlansSetSpecsFalsifier && name === 'requiredScenarios') return 96;
+    // `scorecards:emit.rerunRecipe.current.supplied` is a required grader
+    // decision input. Keep the optional recipe itself in the root projection
+    // before the schema budget is spent on other scorecard fields.
+    if (isScorecardEmitArgs && name === 'rerunRecipe') return 115;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.
     if (name === 'behaviorClass') return 95;

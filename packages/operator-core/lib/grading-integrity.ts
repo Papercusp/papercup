@@ -1652,13 +1652,14 @@ export async function dispatchPendingGradingAudits(
   // A shared sweep sees cards from multiple serving builds. This host's mismatch
   // proves only that it cannot replay the card; it does not invalidate evidence
   // minted by another still-serving evaluator or authorize killing its judge.
-  // Leave the card and lease untouched for an exact-build dispatcher. The emit
-  // gate still refuses a replay whose actual evaluator build differs.
+  // Current evidence and its lease belong to an exact-build dispatcher. An exact
+  // binding retraction is independent of evaluator build, so still inspect it
+  // below and let the atomic stale-evidence fence decide whether to cancel.
+  // The emit gate still refuses a replay whose actual evaluator build differs.
   const evidenceCandidates = cards
     .filter((card) =>
       card.gradingAudit?.state === 'pending' &&
       Boolean(card.rerunRecipe?.selection.bindingIds?.length) &&
-      !evaluatorBuildDriftIds.has(card.issueId) &&
       !card.supersededBy &&
       !card.retracted,
     )
@@ -1714,7 +1715,11 @@ export async function dispatchPendingGradingAudits(
       }
       // The SQL fence can reject a stale read if the recipe or audit was renewed.
       // Only retire work after the cancellation itself committed.
-      if (!cancelled || !workspaceId) return;
+      if (!cancelled) return;
+      // A committed cancellation must not be offered as a stranded replay later.
+      evaluatorBuildDriftIds.delete(card.issueId);
+      evaluatorBuildDriftById.delete(card.issueId);
+      if (!workspaceId) return;
       let tasks: Awaited<ReturnType<typeof listTasks>>;
       try {
         tasks = await readTasksForCleanup({
@@ -1768,7 +1773,9 @@ export async function dispatchPendingGradingAudits(
   const requestedTargetIds =
     explicitTargetIds.length > 0
       ? explicitTargetIds
-      : [...pendingCards, ...evaluatorBuildDriftPendingCards.slice(0, GRADING_AUDIT_DISPATCH_LIMIT)]
+      : [...pendingCards, ...evaluatorBuildDriftPendingCards
+          .filter((card) => evaluatorBuildDriftIds.has(card.issueId))
+          .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)]
           .slice()
           .sort(oldestFirst)
           .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)

@@ -115,22 +115,47 @@ describe('disposable operator-api device lifecycle', () => {
   it('proves advertised-route pairing belongs to the private real operator and cleans up the probe', () => {
     const probe = `
       import assert from 'node:assert/strict';
-      import { spawn } from 'node:child_process';
+      import { execFileSync, spawn } from 'node:child_process';
       import { randomUUID, createHash } from 'node:crypto';
-      import { openSync, closeSync, readFileSync } from 'node:fs';
+      import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
       import { join } from 'node:path';
       const { fixtureIdentity, verifyAdvertisedFixtureRoute, waitForFixtureHost } =
         await import('./packages/operator-core/lib/native-device-fixture.ts');
       const e = { ...process.env, MOBILE_JWT_SECRET: 'private-route-probe-' + randomUUID(),
         MOBILE_DESKTOP_PUBLIC_URL: 'https://api.papercuspai.com', MOBILE_DESKTOP_HOST: 'api.papercuspai.com' };
       const identity = fixtureIdentity(e);
+      // Exercise the maintained host artifact path. Loading hono-host.ts via
+      // tsx here would transform a runtime source import and correctly trip
+      // the committed-source guard; the production route runs the plain ESM
+      // bundle emitted by bundle-host.sh instead.
+      const bundleDir = mkdtempSync(join(process.cwd(), 'apps/operator/dist-host-native-fixture-'));
+      const bundlePath = join(bundleDir, 'hono-host.mjs');
+      const committedLoader = join(process.cwd(), 'scripts/lib/committed-source-loader.mjs');
+      const bundleEnv = { ...e, NODE_OPTIONS: '--import=' + committedLoader };
       const logPath = join(e.HOME, 'advertised-route-host.log');
-      const fd = openSync(logPath, 'wx', 0o600);
-      const host = spawn(process.execPath, ['--import', 'tsx', 'apps/operator/bin/hono-host.ts'],
-        { cwd: process.cwd(), env: e, stdio: ['ignore', fd, fd] });
+      let fd;
+      let host;
       let hostError;
-      host.once('error', error => { hostError = error; });
       try {
+        const buildLog = join(e.HOME, 'advertised-route-host-bundle.log');
+        try {
+          const output = execFileSync('bash', [join(process.cwd(), 'apps/operator/bin/bundle-host.sh'),
+            'bin/hono-host.ts', bundlePath], {
+            cwd: process.cwd(), env: bundleEnv, encoding: 'utf8', timeout: 180000,
+            maxBuffer: 8 * 1024 * 1024,
+          });
+          writeFileSync(buildLog, output, { mode: 0o600 });
+        } catch (error) {
+          const detail = error && typeof error === 'object'
+            ? String(error.stdout ?? '') + String(error.stderr ?? '')
+            : String(error);
+          writeFileSync(buildLog, detail.slice(-32000), { mode: 0o600 });
+          throw error;
+        }
+        fd = openSync(logPath, 'wx', 0o600);
+        host = spawn(process.execPath, [bundlePath],
+          { cwd: process.cwd(), env: bundleEnv, stdio: ['ignore', fd, fd] });
+        host.once('error', error => { hostError = error; });
         try {
           await waitForFixtureHost(host, logPath, async () => {
             if (hostError) throw hostError;
@@ -172,14 +197,15 @@ describe('disposable operator-api device lifecycle', () => {
           fixtureSourceSha256: createHash('sha256').update(readFileSync(
             'packages/operator-core/lib/native-device-fixture.ts')).digest('hex') }));
       } finally {
-        if (host.exitCode === null && host.signalCode === null) {
+        if (host?.exitCode === null && host.signalCode === null) {
           const closed = new Promise(resolve => host.once('exit', resolve));
           host.kill('SIGTERM');
           const timeout = setTimeout(() => host.kill('SIGKILL'), 5000);
           await closed;
           clearTimeout(timeout);
         }
-        closeSync(fd);
+        if (fd !== undefined) closeSync(fd);
+        rmSync(bundleDir, { recursive: true, force: true });
       }
     `;
     const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
