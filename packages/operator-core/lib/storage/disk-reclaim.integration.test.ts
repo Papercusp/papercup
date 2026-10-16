@@ -1272,7 +1272,7 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.errors).toEqual(['incomplete tree scan: retention scan budget exhausted']);
     expect(receipt.entries).toEqual([]);
     expect(delegate).toHaveBeenCalledOnce();
-    expect(receipt.delegates).toEqual([{ classId: 'independent-owner', ok: true, detail: 'independent owner completed' }]);
+    expect(receipt.delegates).toMatchObject([{ classId: 'independent-owner', ok: true, detail: 'independent owner completed' }]);
     for (const path of paths) expect(await stat(path)).toBeTruthy();
   });
   it('runs independent owners when a whole-root census exhausts the run deadline', async () => {
@@ -1291,12 +1291,53 @@ describe('retention on a real fixture tree', () => {
             error: 'retention native census timed out' };
         },
       });
-      expect(receipt.delegates).toEqual(owners.map(({ classId }) => ({ classId, ok: true, detail: classId })));
+      expect(receipt.delegates).toMatchObject(owners.map(({ classId }) => ({ classId, ok: true, detail: classId })));
       for (const owner of owners) expect(owner.run).toHaveBeenCalledOnce();
       expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
       expect(receipt.errors).toEqual([`inspect:${root}: retention native census timed out`]);
       expect(await stat(path)).toBeTruthy();
     } finally { now.mockRestore(); }
+  });
+  it('persists delegate phases before the delegate ends and retains diagnostics on failure', async () => {
+    const { options } = await setup();
+    let observedPhase!: () => void;
+    const phaseWritten = new Promise<void>(done => { observedPhase = done; });
+    const progress: unknown[] = [];
+    const receipt = await runDiskReclaimOnce({ ...options,
+      record: async (phase, detail) => {
+        if (phase !== 'progress') return;
+        progress.push(detail);
+        if ((detail as { delegatePhase?: string }).delegatePhase === 'holder-scan') observedPhase();
+      },
+      delegates: [{ classId: 'failing-owner', run: async (_dryRun, onPhase) => {
+        onPhase!({ phase: 'holder-scan', stage: 'start' });
+        await phaseWritten;
+        throw new Error('fixture holder read failed');
+      } }],
+    });
+    expect(receipt.complete).toBe(false);
+    expect(receipt.delegates).toMatchObject([{ classId: 'failing-owner', ok: false,
+      detail: 'fixture holder read failed', elapsedMs: expect.any(Number),
+      phases: [{ phase: 'holder-scan', stage: 'start', observedAfterMs: expect.any(Number) }] }]);
+    expect(progress.slice(0, 3)).toEqual([
+      { phase: 'delegate-start', classId: 'failing-owner' },
+      expect.objectContaining({ phase: 'delegate-phase', delegatePhase: 'holder-scan', stage: 'start' }),
+      expect.objectContaining({ phase: 'delegate-finish', classId: 'failing-owner', ok: false }),
+    ]);
+  });
+  it('bounds delegate phase receipts and persisted writes', async () => {
+    const { options } = await setup();
+    const record = vi.fn();
+    const receipt = await runDiskReclaimOnce({ ...options, record,
+      delegates: [{ classId: 'verbose-owner', run: async (_dryRun, onPhase) => {
+        for (let i = 0; i < 100; i++) onPhase!({ phase: `phase-${i}`, stage: 'start' });
+        return { ok: true, detail: 'done' };
+      } }],
+    });
+    expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+    expect(receipt.delegates[0]!.phases).toHaveLength(32);
+    expect(receipt.delegates[0]!.omittedPhases).toBe(68);
+    expect(record.mock.calls.filter(([phase, detail]) => phase === 'progress' && detail.phase === 'delegate-phase')).toHaveLength(32);
   });
   it('dry-run gives a deletion plan while preserving the selected file', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'keep');

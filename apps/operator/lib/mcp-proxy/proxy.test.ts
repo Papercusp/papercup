@@ -69,6 +69,8 @@ import {
   staticMcpProxyTargets,
   resolveDefaultMcpProxyTargets,
   describeMcpProxyTarget,
+  mcpProxyGenerationAffinityKey,
+  isGenerationBoundMcpRequest,
   startMcpProxy,
   type McpProxyTarget,
 } from "./proxy";
@@ -1447,6 +1449,85 @@ describe("createMcpProxy — proxy-local health path stays truthful during an up
 
     expect(res.status).toBe(503); // held for the whole window, then gave up
     expect(elapsed).toBeGreaterThanOrEqual(600);
+  });
+});
+
+describe("MCP proxy serving-generation affinity", () => {
+  it("derives a bounded key from native session identity before client fallback", () => {
+    const queryKey = mcpProxyGenerationAffinityKey(
+      "/api/mcp?native_session=query-secret&client=client-a",
+    );
+    const headerKey = mcpProxyGenerationAffinityKey(
+      "/api/mcp?native_session=query-secret&client=client-a",
+      { "x-papercusp-native-session": "header-secret" },
+    );
+    expect(queryKey).toMatch(/^mcp-affinity:[0-9a-f]{32}$/);
+    expect(headerKey).toMatch(/^mcp-affinity:[0-9a-f]{32}$/);
+    expect(headerKey).not.toBe(queryKey);
+    expect(mcpProxyGenerationAffinityKey("/api/other?client=client-a")).toBeNull();
+  });
+
+  it("recognizes handshake and generation-bound tools:invoke requests", () => {
+    const path = "/api/mcp?client=client-a";
+    expect(
+      isGenerationBoundMcpRequest(
+        Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/list"}'),
+        path,
+      ),
+    ).toBe(true);
+    expect(
+      isGenerationBoundMcpRequest(
+        Buffer.from(
+          '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tools:invoke","arguments":{"name":"scorecards:get","servingGeneration":"serving-generation-v1:test"}}}',
+        ),
+        path,
+      ),
+    ).toBe(true);
+    expect(
+      isGenerationBoundMcpRequest(
+        Buffer.from('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scorecards:get","arguments":{}}}'),
+        path,
+      ),
+    ).toBe(false);
+  });
+
+  it("reuses one upstream socket for a generation-bound client while preserving fresh sockets for unbound calls", async () => {
+    let connections = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, {
+          "content-type": "application/json",
+          connection: "keep-alive",
+        });
+        res.end('{"jsonrpc":"2.0","id":1,"result":{}}');
+      }),
+    );
+    upstream.on("connection", () => {
+      connections++;
+    });
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const listBody = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
+    const invokeBody =
+      '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tools:invoke","arguments":{"name":"scorecards:get","servingGeneration":"serving-generation-v1:test"}}}';
+    const sessionPath = "/api/mcp?client=affinity-client";
+    expect((await request(port(proxy), listBody, sessionPath)).status).toBe(200);
+    expect((await request(port(proxy), invokeBody, sessionPath)).status).toBe(200);
+    expect(connections).toBe(1);
+
+    expect((await request(port(proxy), listBody)).status).toBe(200);
+    expect((await request(port(proxy), listBody)).status).toBe(200);
+    expect(connections).toBe(3);
   });
 });
 

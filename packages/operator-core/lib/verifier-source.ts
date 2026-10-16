@@ -2,7 +2,7 @@
 export * from '@papercusp/test-config/verifier-source';
 
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { lstat, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { readProcessIdentity } from '@papercusp/operator-core/lib/process-identity';
 import { readProcessCgroupPath } from '@papercusp/operator-core/lib/task-manager/cgroup-read';
@@ -59,8 +59,8 @@ export async function cleanupEndedVerifierDirectories(row: TaskRow): Promise<voi
     repoRoot = parent;
   }
   repoRoot = await realpath(repoRoot);
-  const scratch = join(repoRoot, '.papercusp', 'scratch');
-  try {
+  async function cleanupScratch(scratch: string): Promise<void> {
+    try {
     // Reject redirected scratch roots, receipts and owned directories.
     if ((await realpath(scratch)) !== scratch) return;
     for (const entry of await readdir(scratch, { withFileTypes: true })) {
@@ -93,7 +93,23 @@ export async function cleanupEndedVerifierDirectories(row: TaskRow): Promise<voi
       if (!(await scopeEmpty(cgroup)) || (await realpath(owned)) !== owned || !processGone(receipt.pid)) continue;
       await rm(owned, { recursive: true, force: true });
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+  await cleanupScratch(join(repoRoot, '.papercusp', 'scratch'));
+  if (process.platform === 'linux') {
+    try {
+      // runVerifierCommand places root-device donors here. Retain the same
+      // device boundary and apply the identical receipt/process checks to both
+      // roots, including old allocations after a donor changes filesystem.
+      const data = await realpath('/mnt/data');
+      const scratch = join(data, 'tmp');
+      const dataDevice = (await stat(data)).dev;
+      if (dataDevice !== (await stat('/')).dev && (await stat(scratch)).dev === dataDevice)
+        await cleanupScratch(scratch);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 }

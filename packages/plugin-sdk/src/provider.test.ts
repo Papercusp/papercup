@@ -22,6 +22,7 @@ import {
   PROVIDER_ACL_REF_PATTERN,
   PROVIDER_SEARCH_LIVE_CAPABILITY,
   validateProviderDescriptor,
+  providerCapabilityVerificationIssue,
   type ProviderDescriptor,
 } from './provider';
 
@@ -79,6 +80,48 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 }
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
+
+describe('package-owned API contract evidence', () => {
+  const verified = (): ProviderDescriptor => ({
+    id: 'example-social', contractVersion: 1, datatypes: ['social-post'],
+    capabilities: ['social.reply', 'social.delete'], egressHosts: ['api.example.com'],
+    verification: { verifiedAt: '2026-10-16', sources: ['https://example.com/api'], capabilities: { 'social.reply': '2026-10-16', 'social.delete': null } },
+  });
+
+  it('keeps a declared but unverified write closed and does not invent another verb', () => {
+    const d = verified();
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBeNull();
+    expect(providerCapabilityVerificationIssue(d, 'social.delete')).toBe('capability-unverified');
+    expect(providerCapabilityVerificationIssue(d, 'social.post')).toBe('capability-unsupported');
+    delete d.verification;
+    expect(validateProviderDescriptor(d)).toEqual([]); // old descriptors remain installable
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('unverified');
+  });
+
+  it('preserves an explicit contract wall even with dated write evidence', () => {
+    const d = verified(); d.verification!.blockedOn = 'owner: API access authorization';
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('owner-blocked');
+  });
+
+  it.each([
+    { verifiedAt: '2026-02-30' }, { verifiedAt: undefined }, { sources: [] },
+    { sources: ['http://example.com/api'] }, { sources: ['https://user:secret@example.com/api'] },
+    { capabilities: { 'social.post': '2026-10-16' } }, { capabilities: { 'social.reply': 'tomorrow' } },
+    { verifiedAt: null }, { blockedOn: ' ' }, { liveAccepted: true },
+  ])('rejects malformed or undeclared attestation %j', (patch) => {
+    const d = verified(); Object.assign(d.verification!, patch);
+    expect(validateProviderDescriptor(d).some((issue) => issue.startsWith('provider.verification'))).toBe(true);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).not.toBeNull();
+  });
+
+  it('represents an explicitly unverified contract without authorizing any write', () => {
+    const d = verified(); d.verification = { verifiedAt: null, sources: [], capabilities: { 'social.reply': null } };
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('unverified');
+  });
+});
 
 describe('host-held pasted credential session descriptors', () => {
   const sessionDescriptor: ProviderDescriptor = {

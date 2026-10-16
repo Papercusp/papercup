@@ -31,6 +31,7 @@ import {
   measureVerifierSourceBytes,
   prepareVerifierSource,
   prepareVerifierDependencies,
+  runVerifierDependencyCommand,
   captureVerifierDependencies,
   runVerifierCommand,
   readVerifierPhaseMeasurements,
@@ -593,6 +594,44 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
+  it('lets an advancing dependency copy cross its initial watchdog deadline', async () => {
+    const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
+      let written = 0;
+      const timer = setInterval(() => console.log('copy progress: fixture written=' + (++written) + 'MiB'), 100);
+      setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, 1800);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 });
+    expect(output).toContain('copy-complete');
+  });
+
+  it('rejects chattering stalled copies and joins a TERM-resistant descendant before cleanup', async () => {
+    const destination = join(tmp, 'dependency-copy-writer');
+    const pidPath = join(tmp, 'dependency-copy-writer.pid');
+    await fsPromises.mkdir(destination);
+    const writer = `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      fs.writeFileSync(process.argv[1], String(process.pid));
+      setInterval(() => fs.writeFileSync(process.argv[2] + '/progress', 'writing'), 10);
+    `;
+    await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', ${JSON.stringify(writer)}, ${JSON.stringify(pidPath)}, ${JSON.stringify(destination)}],
+        { stdio: 'ignore' });
+      setInterval(() => console.log('copy progress: fixture written=1MiB'), 100);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1500, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
+    expect(existsSync(pidPath)).toBe(true);
+    // Remove the actual writer's directory only AFTER the awaited exit fence.
+    // A surviving descendant would recreate it and invalidate the proof.
+    await fsPromises.rm(destination, { recursive: true });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(existsSync(destination)).toBe(false);
+    const pid = readFileSync(pidPath, 'utf8');
+    if (existsSync(`/proc/${pid}/stat`))
+      expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+  });
+
   it.each([false, true])('freezes materialized committed source without cloning on root (root donor=%s)', async rootDonor => {
     const fixtureParent = rootDonor && process.platform === 'linux'
       ? mkdtempSync('/var/tmp/source-preview-root-donor-') : tmp;
@@ -764,8 +803,11 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
     });
 
-  it.each(['spawned', 'pending'] as const)('terminal task close cleans a real SIGKILL during synchronous verifier preparation with %s enrollment and preserves peers', async (enrollment) => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + enrollment));
+  it.each([
+    ['spawned', 'repo'], ['pending', 'repo'], ['spawned', 'data'], ['pending', 'data'],
+  ] as const)('terminal task close cleans a real SIGKILL with %s enrollment in %s scratch and preserves peers', async (enrollment, scratchLocation) => {
+    const label = enrollment + '-' + scratchLocation;
+    const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + label));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, helper, '#!/bin/bash\nset -eu\nprintf "%s\\n" "$3" > "$VERIFIER_KILL_READY"\nexec sleep 60\n');
@@ -773,9 +815,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     git(fixture.repo, ['add', helper, '.gitignore']);
     git(fixture.repo, ['commit', '-qm', 'kill during verifier preparation']);
     const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
-    const ready = join(tmp, 'verifier-kill-ready-' + enrollment), taskId = 'verifierkillfixture';
+    const ready = join(tmp, 'verifier-kill-ready-' + label), taskId = 'verifierkillfixture';
     const cli = new URL('../../../scripts/source-preview.mjs', import.meta.url).href;
-    const options = { repo: fixture.repo, ref, receiptPath: join(tmp, 'verifier-kill-source-' + enrollment + '.json'),
+    const options = { repo: fixture.repo, ref, receiptPath: join(tmp, 'verifier-kill-source-' + label + '.json'),
       inputs: [helper], command: [process.execPath, '-e', 'process.exit(0)'] };
     const child = spawn(process.execPath, ['--input-type=module', '-e',
       `import { runVerifierCommand } from ${JSON.stringify(cli)}; process.exitCode = await runVerifierCommand(${JSON.stringify(options)});`],
@@ -786,9 +828,10 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     child.stdout.on('data', bytes => { output += bytes; });
     child.stderr.on('data', bytes => { output += bytes; });
     const closed = once(child, 'close');
+    const cleanupPaths: string[] = [];
     try {
       await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 15_000, interval: 20 });
-      const owned = dirname(readFileSync(ready, 'utf8').trim());
+      let owned = dirname(readFileSync(ready, 'utf8').trim());
       const receipt = JSON.parse(readFileSync(join(owned, '.verifier-task.json'), 'utf8'));
       expect(receipt).toMatchObject({ taskId, pid: child.pid, repoRoot: fixture.repo });
       expect(statSync(join(owned, '.verifier-task.json')).mode & 0o777).toBe(0o600);
@@ -799,12 +842,24 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         .split('\n').map(line => JSON.parse(line));
       expect(phases.at(-1)).toMatchObject({ phase: 'deps.snapshot', event: 'started', taskId });
       expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+      if (scratchLocation === 'data') {
+        // The exporter uses this root for root-device donors. Exercise discovery
+        // independently of the filesystem on which this synthetic repo lives.
+        const relocated = mkdtempSync(join(await fsPromises.realpath('/mnt/data/tmp'), 'verifier-command-'));
+        cleanupPaths.push(relocated);
+        cpSync(owned, relocated, { recursive: true, verbatimSymlinks: true });
+        rmSync(owned, { recursive: true, force: true });
+        owned = relocated;
+      }
       const scratch = dirname(owned);
       const peer = mkdtempSync(join(scratch, 'verifier-command-'));
+      cleanupPaths.push(peer);
       writeFileSync(join(peer, '.verifier-task.json'), JSON.stringify({ ...receipt, taskId: 'peer-task' }));
       const live = mkdtempSync(join(scratch, 'verifier-command-'));
+      cleanupPaths.push(live);
       writeVerifierTaskReceipt(live, fixture.repo, { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId });
-      const link = join(scratch, 'verifier-command-link');
+      const link = join(scratch, 'verifier-command-link-' + label);
+      cleanupPaths.push(link);
       symlinkSync(peer, link, 'dir');
       const scopeUnit = 'pc-verifierkillfixture.service';
       const cgroupPath = '/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/' + scopeUnit;
@@ -863,6 +918,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
       }
       await closed;
+      for (const path of cleanupPaths) rmSync(path, { recursive: true, force: true });
     }
   });
 

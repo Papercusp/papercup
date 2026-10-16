@@ -171,4 +171,17 @@ describe('hostless compaction successor dispatch', () => {
     expect(mocks.markAdvSessionEnded).not.toHaveBeenCalled();
     expect(mocks.dispatch).not.toHaveBeenCalled();
   });
+
+  it('continues when the exact hostless source was already marked ended by the reconciler', async () => {
+    const ended = { ...target, endedAt: '2026-10-16T13:35:06.037Z', endedBy: 'reconciler' as const };
+    mocks.markAdvSessionEnded.mockResolvedValueOnce(false);
+
+    await expect(dispatchCompactionForceSuccessor({ target: ended, brief: 'continue' })).resolves.toEqual({
+      verified: true,
+      detail: 'The successor launch and first turn were positively verified.',
+    });
+    expect(mocks.markAdvSessionEnded).not.toHaveBeenCalled();
+    expect(mocks.probeProcessLiveness).not.toHaveBeenCalled();
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+  });
 });

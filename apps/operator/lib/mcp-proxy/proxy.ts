@@ -311,6 +311,112 @@ function nativeSessionAttribution(
   };
 }
 
+/**
+ * A stateless HTTP MCP request has no server-side session key, so the proxy must
+ * carry the client's session identity when it needs to preserve a
+ * serving-generation contract. Keep the identity out of the map key itself:
+ * query strings and headers are caller-controlled and may contain secrets.
+ */
+function firstHeaderValue(
+  headers: http.IncomingHttpHeaders,
+  name: string,
+): string | null {
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name);
+  if (!key) return null;
+  const value = headers[key];
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === "string" && first.trim() ? first.trim() : null;
+}
+
+function boundedMcpAffinityIdentity(value: string | null): string | null {
+  if (!value || value.length === 0 || value.length > MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS) {
+    return null;
+  }
+  return value;
+}
+
+/** Resolve a stable, privacy-bounded affinity key for one MCP client identity. */
+export function mcpProxyGenerationAffinityKey(
+  requestPath: string,
+  headers: http.IncomingHttpHeaders = {},
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(requestPath, "http://127.0.0.1");
+  } catch {
+    return null;
+  }
+  if (url.pathname !== "/api/mcp") return null;
+
+  const nativeHeader = boundedMcpAffinityIdentity(
+    firstHeaderValue(headers, "x-papercusp-native-session"),
+  );
+  const nativeQuery = boundedMcpAffinityIdentity(url.searchParams.get("native_session"));
+  const transportSession = boundedMcpAffinityIdentity(
+    firstHeaderValue(headers, "mcp-session-id"),
+  );
+  const client = boundedMcpAffinityIdentity(url.searchParams.get("client"));
+  const identity = nativeHeader
+    ? `native:${nativeHeader}`
+    : nativeQuery
+      ? `native:${nativeQuery}`
+      : transportSession
+        ? `transport:${transportSession}`
+        : client
+          ? `client:${client}`
+          : null;
+  if (!identity) return null;
+  return `mcp-affinity:${createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 32)}`;
+}
+
+/** True when this MCP request must stay on the socket that served its catalog. */
+export function isGenerationBoundMcpRequest(
+  rawBody: Buffer,
+  requestPath: string,
+  headers: http.IncomingHttpHeaders = {},
+): boolean {
+  if (isMcpProxyWatchdogProbePath(requestPath)) return false;
+  const affinityKey = mcpProxyGenerationAffinityKey(requestPath, headers);
+  if (!affinityKey) return false;
+  if (isMcpSessionHandshakeCall(rawBody)) return true;
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    return messages.some((message) => {
+      if (!message || typeof message !== "object") return false;
+      const request = message as {
+        method?: unknown;
+        params?: { name?: unknown; arguments?: unknown; _meta?: unknown };
+      };
+      if (request.method !== "tools/call") return false;
+      const meta = request.params?._meta;
+      if (meta && typeof meta === "object" && !Array.isArray(meta) &&
+          typeof (meta as Record<string, unknown>)["papercusp/servingGeneration"] === "string" &&
+          String((meta as Record<string, unknown>)["papercusp/servingGeneration"]).trim()) {
+        return true;
+      }
+      if (normalizeMcpName(String(request.params?.name ?? "")) !== normalizeMcpName("tools:invoke")) {
+        return false;
+      }
+      let args = request.params?.arguments;
+      for (let depth = 0; depth < 2 && typeof args === "string"; depth++) {
+        try {
+          args = JSON.parse(args);
+        } catch {
+          break;
+        }
+      }
+      return Boolean(
+        args && typeof args === "object" && !Array.isArray(args) &&
+        typeof (args as Record<string, unknown>).servingGeneration === "string" &&
+        String((args as Record<string, unknown>).servingGeneration).trim(),
+      );
+    });
+  } catch {
+    return false;
+  }
+}
+
 function boundedMcpProxyStageMs(value: number): number {
   return Number.isFinite(value)
     ? Math.min(MAX_MCP_PROXY_SUCCESS_STAGE_MS, Math.max(0, Math.floor(value)))
@@ -805,6 +911,10 @@ export interface McpProxyTarget {
   port: number;
   source?: string;
 }
+
+/** Keep the per-session affinity pool bounded even when clients churn. */
+const MAX_MCP_PROXY_GENERATION_AFFINITY_SESSIONS = 512;
+const MCP_PROXY_GENERATION_AFFINITY_IDLE_MS = 10 * 60_000;
 
 /** The shared host token used by the superuser MCP endpoint. */
 export function defaultSuperuserTokenPath(): string {
@@ -3025,6 +3135,52 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       // Reserve one socket outside normal capture capacity for toolFailure incident records.
       maxSockets: improvementsCaptureConcurrencyCeiling + 1,
     });
+  // A stateless MCP client still has a serving-generation contract: tools/list and the
+  // subsequent tools/call must reach one operator worker until that worker's socket dies.
+  // Keep this lane separate from the ordinary/control-plane pools so unbound traffic retains
+  // the fresh-socket stale-worker protection above, while each bounded client identity gets a
+  // single reusable socket and therefore one SO_REUSEPORT worker.
+  const generationAffinityAgents = new Map<
+    string,
+    { agent: http.Agent; lastUsedAtMs: number }
+  >();
+  const affinityAgentHasWork = (agent: http.Agent): boolean =>
+    Object.values(agent.sockets).some((sockets) => (sockets?.length ?? 0) > 0) ||
+    Object.values(agent.requests).some((requests) => (requests?.length ?? 0) > 0);
+  const pruneGenerationAffinityAgents = (nowMs: number): void => {
+    for (const [key, entry] of generationAffinityAgents) {
+      if (
+        nowMs - entry.lastUsedAtMs > MCP_PROXY_GENERATION_AFFINITY_IDLE_MS &&
+        !affinityAgentHasWork(entry.agent)
+      ) {
+        entry.agent.destroy();
+        generationAffinityAgents.delete(key);
+      }
+    }
+  };
+  const generationAffinityAgentFor = (
+    key: string | null,
+  ): http.Agent | null => {
+    if (!key) return null;
+    const nowMs = Date.now();
+    pruneGenerationAffinityAgents(nowMs);
+    const existing = generationAffinityAgents.get(key);
+    if (existing) {
+      existing.lastUsedAtMs = nowMs;
+      return existing.agent;
+    }
+    if (generationAffinityAgents.size >= MAX_MCP_PROXY_GENERATION_AFFINITY_SESSIONS) {
+      return null;
+    }
+    const agent = new http.Agent({
+      keepAlive: true,
+      maxSockets: 1,
+      maxFreeSockets: 1,
+      keepAliveMsecs: 1_000,
+    });
+    generationAffinityAgents.set(key, { agent, lastUsedAtMs: nowMs });
+    return agent;
+  };
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
   const configuredHandshakeQueue =
@@ -5392,6 +5548,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             rawBody,
             { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID, requestPath: req.url },
           );
+          const generationAffinityKey = isGenerationBoundMcpRequest(
+            rawBody,
+            req.url ?? "/",
+            req.headers,
+          )
+            ? mcpProxyGenerationAffinityKey(req.url ?? "/", req.headers)
+            : null;
+          const generationAffinityAgent = generationAffinityAgentFor(
+            generationAffinityKey,
+          );
           const traceId = requestTraceId;
           fwd.headers = withDataPlaneDegradedHeader(
             { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId },
@@ -5502,7 +5668,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 req.url ?? "/",
                 fwd.headers,
                 fwd.body,
-                watchdogSessionProbe
+                generationAffinityAgent ??
+                  (watchdogSessionProbe
                   ? watchdogAgent
                   : improvementsCapture
                     ? improvementsCaptureAgent
@@ -5512,7 +5679,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                       ? criticalContinuationAgent
                     : reservedControlPlane && controlPlaneReserve > 0
                       ? controlPlaneAgent
-                      : upstreamAgent,
+                      : upstreamAgent),
                 fwd.klass === "idempotent"
                   ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
                   : maxHoldMs > 0
@@ -6156,6 +6323,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   server.on("close", () => {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
+    for (const entry of generationAffinityAgents.values()) entry.agent.destroy();
+    generationAffinityAgents.clear();
     // EI-21504897841052086 — queued waiters' dwell watches must not hold the loop open.
     for (const waiter of ordinaryQueue) clearQueuedWaitTimer(waiter);
     for (const waiter of handshakeQueue) clearQueuedWaitTimer(waiter);

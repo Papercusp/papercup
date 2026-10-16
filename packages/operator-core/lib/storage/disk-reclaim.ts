@@ -12,6 +12,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
+import type { ReclaimPhaseTiming } from '../release-cut-reclaim';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
 import { readRegistry } from '../workspace-registry';
@@ -42,7 +43,7 @@ export interface RetentionEntry {
 interface BuildRemovalResult { removed: Array<{ path: string; bytes: number }>; }
 export interface ReclaimDelegate {
   classId: string;
-  run: (dryRun: boolean) => Promise<{ ok: boolean; detail: unknown }>;
+  run: (dryRun: boolean, onPhase?: (event: ReclaimPhaseTiming) => void) => Promise<{ ok: boolean; detail: unknown }>;
 }
 export interface RetentionCapReceipt {
   root: string; classId: string; maxBytes: number; beforeBytes: number;
@@ -69,7 +70,8 @@ export interface DiskReclaimReceipt {
   policyExhausted: boolean | null;
   devices: Array<{ path: string; beforeFreeBytes: number | null; afterFreeBytes: number | null; atTarget: boolean | null }>;
   entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string; nativeCommand?: NativeRetentionTiming }>;
-  delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
+  delegates: Array<{ classId: string; ok: boolean; detail: unknown; elapsedMs?: number;
+    phases?: Array<ReclaimPhaseTiming & { observedAfterMs: number }>; omittedPhases?: number }>;
   errors: string[];
   caps?: RetentionCapReceipt[];
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
@@ -641,8 +643,31 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       for (const delegate of options.delegates ?? []) {
         if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
         yield* yieldToWaiter();
-        try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
-        catch (err) { receipt.delegates.push({ classId: delegate.classId, ok: false, detail: message(err) }); }
+        const delegateStarted = performance.now();
+        const phases: NonNullable<DiskReclaimReceipt['delegates'][number]['phases']> = [];
+        let omittedPhases = 0, acceptingPhases = true;
+        let phaseWrites = Promise.resolve();
+        const onPhase = (event: ReclaimPhaseTiming) => {
+          if (!acceptingPhases) return;
+          if (phases.length >= 32) { omittedPhases++; return; }
+          const measured = { ...event, observedAfterMs: performance.now() - delegateStarted };
+          phases.push(measured);
+          // The existing release-cut observer is synchronous. Serialize its
+          // bounded audit writes without delaying or cancelling safety work.
+          phaseWrites = phaseWrites.then(async () => {
+            await options.record?.('progress', { ...measured, phase: 'delegate-phase', classId: delegate.classId, delegatePhase: measured.phase });
+          }).catch(err => { receipt.errors.push(`delegate phase audit:${delegate.classId}: ${message(err)}`); });
+        };
+        await options.record?.('progress', { phase: 'delegate-start', classId: delegate.classId });
+        let result: { ok: boolean; detail: unknown };
+        try { result = await delegate.run(receipt.dryRun, onPhase); }
+        catch (err) { result = { ok: false, detail: message(err) }; }
+        finally { acceptingPhases = false; await phaseWrites; }
+        const measured = { classId: delegate.classId, ...result, elapsedMs: performance.now() - delegateStarted,
+          ...(phases.length ? { phases } : {}), ...(omittedPhases ? { omittedPhases } : {}) };
+        receipt.delegates.push(measured);
+        await options.record?.('progress', { phase: 'delegate-finish', classId: delegate.classId,
+          ok: result.ok, elapsedMs: measured.elapsedMs });
       }
       const censusPolicy = { ...policy, pins: [] };
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
@@ -1263,11 +1288,12 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
       // internal reuse context scoped to this one enrolled child.
       env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' },
     }) },
-    { classId: 'release-cut-worktrees', run: async (dryRun) => {
+    { classId: 'release-cut-worktrees', run: async (dryRun, onPhase) => {
       const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
       const plan = await gatherCutReclaimPlan({
         repoPath: repoRoot, isAutoManaged: isAutoManagedCutWorktree, releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
+        onPhase,
         loadReleases: async () => {
           const { sql } = getOrgPg();
           const rows = await sql<Array<{ version: string; git_sha: string | null; cut_at: Date; published_at: Date | null }>>`

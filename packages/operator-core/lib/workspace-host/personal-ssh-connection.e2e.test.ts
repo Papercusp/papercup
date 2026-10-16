@@ -19,6 +19,12 @@ let container = '';
 let config = '';
 const masters = new Set<string>();
 let allocations: Awaited<ReturnType<typeof startDockerAllocationOwner>> | undefined;
+// `docker start` acknowledges the daemon request before the container's
+// entrypoint finishes installing OpenSSH/python/tmux. Keep the readiness
+// window separate from Vitest's hook budget so slow dpkg setup is measured as
+// fixture startup rather than reported as an opaque hook timeout.
+const FIXTURE_READY_TIMEOUT_MS = 300_000;
+const FIXTURE_HOOK_TIMEOUT_MS = 420_000;
 // Killing the Docker CLI does not cancel the daemon's create/start/stop/rm.
 // The external owner survives the runner's cgroup kill and joins each daemon
 // outcome before removing the exact labelled container and its private keys.
@@ -107,7 +113,7 @@ beforeAll(async () => {
   process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
   await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
     '--mount', `type=bind,source=${root},target=/fixture,readonly`, image, 'sh', '-ec',
-    'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server tmux python3 >/dev/null; '
+    'set -eu; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server tmux python3; '
     + 'mkdir -p /run/sshd /root/.ssh; cp /fixture/client.pub /root/.ssh/authorized_keys; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; '
     + 'cp /fixture/host /etc/ssh/ssh_host_ed25519_key; chmod 600 /etc/ssh/ssh_host_ed25519_key; '
     + 'cp /fixture/psu /usr/local/bin/psu; chmod 755 /usr/local/bin/psu; '
@@ -127,22 +133,29 @@ beforeAll(async () => {
   mkdirSync(join(root, 'bin'));
   writeFileSync(join(root, 'bin', 'ssh'), '#!/bin/sh\nexec /usr/bin/ssh -F "$PERSONAL_SSH_FIXTURE_CONFIG" "$@"\n', { mode: 0o700 });
   let ready = false;
-  const deadline = Date.now() + 180_000;
+  let containerState = 'unknown';
+  let stateCheckedAt = 0;
+  const deadline = Date.now() + FIXTURE_READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (Date.now() - stateCheckedAt >= 5_000) {
+      stateCheckedAt = Date.now();
+      containerState = await docker(['inspect', '--format', '{{.State.Running}}', container]).catch(() => 'unavailable');
+      if (containerState.trim() !== 'true') break;
+    }
     const result = await ssh('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=1', 'personal-fixture', 'true']);
     if (result.code === 0) { ready = true; break; }
     await new Promise(resolve => setTimeout(resolve, 500));
   }
   const failureLog = ready ? '' : await docker(['logs', '--tail', '30', container]).catch(String);
-  expect(ready, `isolated sshd did not become ready: ${failureLog}`).toBe(true);
-}, 200_000);
+  expect(ready, `isolated sshd did not become ready (container state=${containerState.trim()}): ${failureLog}`).toBe(true);
+}, FIXTURE_HOOK_TIMEOUT_MS);
 
 afterAll(async () => {
   if (config) for (const socket of masters) {
     try { execFileSync('ssh', ['-F', config, '-S', socket, '-O', 'exit', '--', 'personal-fixture'], { stdio: 'ignore', timeout: 5_000 }); } catch { /* already gone */ }
   }
   if (allocations) expect(await allocations.close()).toBe('cleanup-verified');
-}, 200_000);
+}, FIXTURE_HOOK_TIMEOUT_MS);
 
 test('native psu entrypoint selects the saved machine and preserves remote argv, stdin/stdout and cwd over pinned SSH', async () => {
   savePsuConnectionStore({ version: PSU_CONNECTION_STORE_VERSION,

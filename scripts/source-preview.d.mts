@@ -151,6 +151,22 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
+/** Run a bounded dependency preflight without abandoning writers in its owned tree.
+ * The maintained copy helper emits measured byte counters; only increases extend
+ * the watchdog. Its process group must exit before callers can remove the tree.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
+ *   stallWindowMs?: number, extensionMs?: number }} options
+ */
+export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs }: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    maxMs?: number;
+    stallWindowMs?: number;
+    extensionMs?: number;
+}): Promise<string>;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
  * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options

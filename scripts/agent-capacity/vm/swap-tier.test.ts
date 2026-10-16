@@ -497,7 +497,7 @@ describe('minimum-resource active cohorts', () => {
     expect(result.stderr).not.toContain('UNSAFE_LAUNCH');
   });
 
-  it('enables the one swap arm before native startup and only disables it after stopping agents', () => {
+  it.each([false, true])('preserves provisioned swap on active startup and cleanup, including failure=%s', (fail) => {
     const code = [
       'import importlib.util, types, json',
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
@@ -507,19 +507,66 @@ describe('minimum-resource active cohorts', () => {
       'm.time.sleep=lambda *a:None; m.host_stats=lambda:{}; m.report=lambda *a:None',
       'm.stop_agents=lambda:events.append("stop"); m.swap_off=lambda:events.append("swapoff")',
       'm.swap_on=lambda *a:events.append("swapon")',
+      'm.active_swap=lambda *a:events.append("validate-swap") or {"device":"/dev/zram0","devices":[]}',
       'm.gateway_preflight=lambda *a, **kw:None; m.codex_sandbox_preflight=lambda *a:None',
       'm.start_agents=lambda *a:events.append("start") or ["a1"]',
-      'm.warm=lambda *a:events.append("warm")',
+      fail ? 'm.warm=lambda *a: (_ for _ in ()).throw(RuntimeError("warm failed"))' : 'm.warm=lambda *a:events.append("warm")',
       'm.run_arm=lambda *a, **kw:events.append({"arm":kw})',
-      'm.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
+      'try: m.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
+      'except RuntimeError: pass',
       'print(json.dumps(events))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const events = JSON.parse(result.stdout);
-    expect(events).toEqual(['stop', 'swapoff', 'swapon', 'start', 'warm', {
+    expect(events).toEqual(fail ? ['validate-swap', 'stop', 'start', 'stop'] : ['validate-swap', 'stop', 'start', 'warm', {
       arm: { active: [1], active_rounds: 3, swap_ready: true, keep_swap: true },
-    }, 'stop', 'swapoff']);
+    }, 'stop']);
+  });
+
+  it.each([
+    { devices: [], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: false },
+    { devices: [{ name: '/dev/zram0', size: 4 * 2 ** 30 - 4096 }], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: true },
+    { devices: [{ name: '/dev/zram0', size: 2 * 2 ** 30 }], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: false },
+    { devices: [{ name: '/dev/zram0', size: 4 * 2 ** 30 }], arm: 'zram:lz4', algorithm: 'lz4 [zstd]', ok: false },
+    { devices: [{ name: '/dev/zram0', size: 4 * 2 ** 30 }, { name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: true },
+    { devices: [{ name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'none', algorithm: '', ok: false },
+    { devices: [], arm: 'none', algorithm: '', ok: true },
+    { devices: [{ name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'overflow=/swapfile', algorithm: '', ok: true },
+    { devices: [{ name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'overflow=/other', algorithm: '', ok: false },
+  ])('validates provisioned active swap without mutation: $arm $ok $devices', ({ devices, arm, algorithm, ok }) => {
+    const code = [
+      'import importlib.util,types,json,io',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `devices=json.loads(${JSON.stringify(JSON.stringify(devices))})`,
+      'def read_swap(cmd):',
+      ' assert cmd==["swapon","--show","--json","--bytes","--output","NAME,SIZE,PRIO"], cmd',
+      ' return types.SimpleNamespace(stdout=json.dumps({"swapdevices":devices}))',
+      'm.sh=read_swap',
+      `m.open=lambda *a:io.StringIO(${JSON.stringify(algorithm)})`,
+      `try: result=m.active_swap(m.parse_arm(${JSON.stringify(arm)}),4); print(json.dumps({"ok":True,"result":result}))`,
+      'except RuntimeError as e: print(json.dumps({"ok":False,"error":str(e)}))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout).ok).toBe(ok);
+  });
+
+  it('refuses absent configured swap before opening output, probes, or touching agents', () => {
+    const code = [
+      'import importlib.util,types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'def forbidden(*a, **kw): raise AssertionError("unexpected mutation")',
+      'm.Recorder=forbidden; m.stop_agents=forbidden; m.subprocess.Popen=forbidden',
+      'm.sh=lambda *a:types.SimpleNamespace(stdout=\'{"swapdevices":[]}\')',
+      'try: m.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
+      'except RuntimeError as e: print(str(e))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain('must be configured before');
   });
 });
 

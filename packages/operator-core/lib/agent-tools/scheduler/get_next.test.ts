@@ -715,6 +715,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
       scope: scopeState.scope,
       identity: expect.objectContaining({ ownerId: 'su-member' }),
+      resumeLeader: expect.any(Function),
     });
     expect(getNextM).not.toHaveBeenCalled();
   });
@@ -756,6 +757,7 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     expect(reconcileFleetScopeLeaderSuccessionM).toHaveBeenCalledWith({
       scope: scopeState.scope,
       identity: expect.objectContaining({ ownerId: 'su-member' }),
+      resumeLeader: expect.any(Function),
     });
     expect(getNextM).toHaveBeenCalledOnce();
     expect(handlerPayload(out)).toMatchObject({

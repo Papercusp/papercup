@@ -117,6 +117,9 @@ export interface ProviderDescriptor {
   datatypes: string[];
   /** Capability subset `invoke` accepts. */
   capabilities: string[];
+  /** Dated API-contract evidence shipped with this package. This is neither account consent
+   * nor live-account acceptance. Capability declarations alone do not verify a write contract. */
+  verification?: ProviderVerificationDescriptor;
   /** OAuth connection descriptor; omitted for providers that need no account grant. */
   oauth?: ProviderOAuthDescriptor;
   /** Hosts `host.fetch` may reach for this provider. Everything else is refused. */
@@ -168,6 +171,67 @@ export interface ProviderDescriptor {
    * Provider code never sees the credential or the socket.
    */
   ingress?: ProviderIngressDescriptor;
+}
+
+export interface ProviderVerificationDescriptor {
+  verifiedAt: string | null;
+  sources: string[];
+  /** Only declared capabilities may be attested. Missing/null means unverified. */
+  capabilities?: Record<string, string | null>;
+  /** A contract-level wall; connection credentials and consent remain host-owned. */
+  blockedOn?: string;
+}
+
+function isVerificationDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function providerVerificationIssues(value: unknown, capabilities: readonly string[]): string[] {
+  const prefix = 'provider.verification';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [`${prefix} must be an object`];
+  const v = value as Record<string, unknown>;
+  const issues: string[] = [];
+  for (const key of Object.keys(v)) {
+    if (!['verifiedAt', 'sources', 'capabilities', 'blockedOn'].includes(key)) issues.push(`${prefix}.${key} is not supported`);
+  }
+  if (v.verifiedAt !== null && !isVerificationDate(v.verifiedAt)) issues.push(`${prefix}.verifiedAt must be an ISO calendar date or null`);
+  if (!Array.isArray(v.sources)) issues.push(`${prefix}.sources must be a list of HTTPS source URLs`);
+  else {
+    if (v.verifiedAt !== null && v.sources.length === 0) issues.push(`${prefix}.sources must cite the verified contract`);
+    for (const source of v.sources) {
+      let valid = false;
+      try {
+        const url = new URL(source);
+        valid = typeof source === 'string' && url.protocol === 'https:' && !url.username && !url.password;
+      } catch { /* invalid source is reported below */ }
+      if (!valid) issues.push(`${prefix}.sources must contain only HTTPS source URLs without credentials`);
+    }
+  }
+  if (v.blockedOn !== undefined && !isNonEmptyString(v.blockedOn)) issues.push(`${prefix}.blockedOn must explain the contract wall`);
+  if (v.capabilities !== undefined) {
+    if (!v.capabilities || typeof v.capabilities !== 'object' || Array.isArray(v.capabilities)) issues.push(`${prefix}.capabilities must map declared capabilities to dates or null`);
+    else for (const [capability, date] of Object.entries(v.capabilities)) {
+      if (!capabilities.includes(capability)) issues.push(`${prefix}.capabilities.${capability} is not a declared capability`);
+      if (date !== null && !isVerificationDate(date)) issues.push(`${prefix}.capabilities.${capability} must be an ISO calendar date or null`);
+      if (date !== null && !isVerificationDate(v.verifiedAt)) issues.push(`${prefix}.capabilities.${capability} requires a verified contract`);
+    }
+  }
+  return issues;
+}
+
+/** Fail closed for absent or malformed contract evidence, even before registration. */
+export function providerCapabilityVerificationIssue(
+  descriptor: ProviderDescriptor,
+  capability: string,
+): 'capability-unsupported' | 'unverified' | 'owner-blocked' | 'capability-unverified' | null {
+  if (!descriptor.capabilities.includes(capability)) return 'capability-unsupported';
+  const verification = descriptor.verification;
+  if (!verification || providerVerificationIssues(verification, descriptor.capabilities).length || !verification.verifiedAt) return 'unverified';
+  if (verification.blockedOn) return 'owner-blocked';
+  if (!verification.capabilities?.[capability]) return 'capability-unverified';
+  return null;
 }
 
 /** Inbound channels a provider declares (P-003). */
@@ -1104,6 +1168,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
   }
   for (const dup of duplicates(capabilities.filter(isNonEmptyString))) issues.push(`provider.capabilities repeats "${dup}"`);
+  if (d.verification !== undefined) issues.push(...providerVerificationIssues(d.verification, capabilities));
   const egress = Array.isArray(d.egressHosts) ? d.egressHosts : [];
   if (egress.length === 0 && d.oauth?.instance !== true) issues.push('provider.egressHosts must declare at least one host');
   if (d.oauth?.instance === true && egress.length !== 0) issues.push('provider.egressHosts must be empty for an instance-scoped OAuth grant');

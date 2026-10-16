@@ -256,9 +256,9 @@ describe('launchFreshSu — preflights the exact fresh Codex home before spawnin
     );
     const body = source.slice(source.indexOf('async function launchFreshSu('));
     const reconcile = body.indexOf('reconcileCodexSystemAuth()');
-    const bootstrap = body.indexOf('const res = await api("/api/agent-mcp/console/bootstrap-su"');
+    const bootstrap = body.indexOf('const res = await apiImpl("/api/agent-mcp/console/bootstrap-su"');
     const preflight = body.indexOf('codexFreshDefaultAuthPreflight({', bootstrap);
-    const spawn = body.indexOf('runWrapper({', preflight);
+    const spawn = body.indexOf('runWrapperImpl({', preflight);
 
     expect(reconcile).toBeGreaterThan(-1);
     expect(reconcile).toBeLessThan(bootstrap);

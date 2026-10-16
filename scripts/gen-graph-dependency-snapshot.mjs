@@ -58,6 +58,7 @@ import {
 } from "./lib/graph-dependency-suggestions.mjs";
 import { matchTsconfigPath, tsconfigPathEntriesFor } from "./lib/related-tests.mjs";
 import { buildSymbolSnapshot } from "./lib/code-intel-symbol-snapshot.mjs";
+import { describeUnscanned, listTrackedFiles } from "./lib/tracked-files.mjs";
 
 /** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
 export const DIRECT_PAGE_SIZE = 5000;
@@ -732,13 +733,16 @@ export async function main(argv = process.argv.slice(2)) {
   };
   const now = Date.now();
   let result;
+  let coverageNote = "";
   try {
     if (opts.firstParty) {
       const git = (args) => execFileSync("git", args, { cwd: sourceRoot, maxBuffer: 1 << 28 }).toString("utf8");
       let files;
       let headCommit;
       try {
-        files = git(["ls-files", "--recurse-submodules", "-z"]).split("\0").filter(Boolean);
+        const scan = listTrackedFiles(sourceRoot);
+        files = scan.files;
+        coverageNote = describeUnscanned(scan, sourceRoot);
         headCommit = git(["rev-parse", "HEAD"]).trim();
       } catch (e) {
         throw new GraphReadError("backend-unavailable", `git could not list ${sourceRoot}: ${e instanceof Error ? e.message : String(e)}`);
@@ -809,7 +813,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const s = result.stats;
   process.stderr.write(
-    `GRAPH_SNAPSHOT status=written edges=${s.kept} input=${s.input} uncorroborated=${s.skippedUncorroborated} missing=${s.skippedMissing} duplicates=${s.duplicates} rows=${result.rows} pages=${result.pages} bytes=${bytes} index=${result.snapshot.index.lastCommit.slice(0, 10)} out=${out}\n`,
+    `GRAPH_SNAPSHOT status=written edges=${s.kept} input=${s.input} uncorroborated=${s.skippedUncorroborated} missing=${s.skippedMissing} duplicates=${s.duplicates} rows=${result.rows} pages=${result.pages} bytes=${bytes} index=${result.snapshot.index.lastCommit.slice(0, 10)} out=${out}${coverageNote}\n`,
   );
   return 0;
 }

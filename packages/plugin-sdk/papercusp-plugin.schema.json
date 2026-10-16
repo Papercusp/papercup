@@ -123,6 +123,25 @@
         "displayName": { "type": "string" },
         "datatypes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "capabilities": { "type": "array", "items": { "type": "string" } },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verifiedAt", "sources"],
+          "description": "Dated API-contract evidence, not account consent or live acceptance. Capability attestations must name capabilities declared by this descriptor (checked by SDK validation).",
+          "properties": {
+            "verifiedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+            "sources": { "type": "array", "items": { "type": "string", "pattern": "^https://" } },
+            "capabilities": {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+            },
+            "blockedOn": { "type": "string", "minLength": 1 }
+          },
+          "allOf": [{
+            "if": { "properties": { "verifiedAt": { "type": "string" } } },
+            "then": { "properties": { "sources": { "minItems": 1 } } }
+          }]
+        },
         "oauth": {
           "type": "object",
           "additionalProperties": false,

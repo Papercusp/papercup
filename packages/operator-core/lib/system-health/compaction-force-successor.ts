@@ -66,6 +66,11 @@ async function reconcileHostlessSource(
       detail: 'the source has no live PTY host but its local terminal process death is unproven; identity-preserving replacement is refused',
     };
   }
+  // A reconciler/reaper may have already recorded this exact source as ended.
+  // Repeating the terminal UPDATE would lose its `ended_at IS NULL` CAS and
+  // incorrectly block recovery; launch-agent rechecks the immutable binding,
+  // live host, and Codex writer before opening the successor.
+  if (target.endedAt != null) return { ok: true };
   try {
     const ended = await markAdvSessionEnded(target.advSessionId, null, 'reconciler', {
       expectedBinding: target.binding,

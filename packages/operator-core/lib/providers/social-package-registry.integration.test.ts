@@ -9,7 +9,7 @@ import { registerPluginProviders } from '../plugin-host-runtime';
 import { stopDaemonProvider } from '../integrations/daemon-provider';
 import { installPluginFromCupboardCore, InstallPluginError, type InstallPluginManifestReview } from '../cupboard/install-plugin-core';
 import { providerSyncErrorOf } from '@papercusp/plugin-sdk';
-import { createProviderRegistry } from '../integrations/provider-registry';
+import { createProviderRegistry, verifiedProviderForCapability } from '../integrations/provider-registry';
 import { summarizeIntegrationProvider } from '../integrations/ticket-integrations';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -88,6 +88,21 @@ describe('installed social packages use the generic Integrations model', () => {
     expect(entry.runtime).toBe('daemon');
     try {
     expect(entry.descriptor.datatypes).toEqual(['social-post']);
+    // Evidence must survive Cupboard review, installation and the daemon boundary.
+    // Installation and fake calls do not remove the owner's live-account prerequisites.
+    expect(entry.descriptor.verification).toEqual(manifest.provider.verification);
+    expect(entry.descriptor.verification?.verifiedAt).toMatch(/^2026-10-1[56]$/);
+    expect(entry.descriptor.verification?.sources.length).toBeGreaterThan(0);
+    expect(Object.keys(entry.descriptor.verification!.capabilities!).sort()).toEqual([...entry.descriptor.capabilities].sort());
+    for (const capability of entry.descriptor.capabilities) {
+      if (id === 'x') expect(() => verifiedProviderForCapability(registry, providerId, capability)).toThrow(/owner-blocked.*\$25/);
+      else expect(verifiedProviderForCapability(registry, providerId, capability)).toBe(entry);
+    }
+    for (const capability of ['social.post', 'social.reply', 'social.delete']) {
+      if (!entry.descriptor.capabilities.includes(capability)) {
+        expect(() => verifiedProviderForCapability(registry, providerId, capability)).toThrow(/capability-unsupported/);
+      }
+    }
     expect(await entry.adapter!.describe()).toEqual(entry.descriptor);
     const model = summarizeIntegrationProvider(entry, [], id === 'bluesky' ? null : {
       ref: manifest.provider.oauth.clientRegistrationRef, configured: false, clientId: null, hasClientSecret: false,

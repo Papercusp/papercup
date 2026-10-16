@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { validateProviderDeclaration } from '@papercusp/plugin-sdk';
-import { createProviderRegistry, ProviderRegistrationError } from './provider-registry';
+import { createProviderRegistry, ProviderRegistrationError, verifiedProviderForCapability } from './provider-registry';
 import { createHostFetch, HostFetchError } from './host-fetch';
 
 function descriptor(overrides: Partial<ProviderDescriptor> = {}): ProviderDescriptor {
@@ -59,6 +59,31 @@ describe('provider descriptor validation', () => {
 });
 
 describe('provider registry', () => {
+  it('uses the installed manifest evidence, refuses unloads, and re-evaluates a replacement capability set', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor({ id: 'example-social', datatypes: ['social-post'], capabilities: ['social.reply'],
+      verification: { verifiedAt: '2026-10-16', sources: ['https://example.com/api'], capabilities: { 'social.reply': '2026-10-16' } } });
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.reply')).toThrow(/not-installed/);
+    // The adapter's stale metadata cannot replace the installed manifest's evidence.
+    await registry.register({ descriptor: d, adapter: adapter({ ...d, verification: undefined }), pluginName: 'example' });
+    expect(verifiedProviderForCapability(registry, d.id, 'social.reply').descriptor).toBe(d);
+    registry.unregisterPlugin('example');
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.reply')).toThrow(/not-installed/);
+    const replacement = { ...d, capabilities: ['social.post'], verification: undefined };
+    await registry.register({ descriptor: replacement, adapter: adapter(replacement), pluginName: 'replacement' });
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.reply')).toThrow(/capability-unsupported/);
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.post')).toThrow(/unverified/);
+  });
+
+  it('refuses invalid evidence at registration before the package is described', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor({ verification: { verifiedAt: '2026-10-16', sources: [], capabilities: { 'social.post': '2026-10-16' } } });
+    const describe = vi.fn(() => d);
+    await expectCode(registry.register({ descriptor: d, adapter: { ...adapter(d), describe }, pluginName: 'invalid' }), 'invalid-descriptor');
+    expect(describe).not.toHaveBeenCalled();
+    expect(registry.list()).toEqual([]);
+  });
+
   it('registers a provider and finds it by datatype and capability', async () => {
     const registry = createProviderRegistry();
     const d = descriptor();

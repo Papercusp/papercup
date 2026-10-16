@@ -86,6 +86,7 @@ const ROOT = new URL('..', import.meta.url).pathname;
  * justification in review.
  */
 export const ALLOWLIST = new Map([
+  ['scripts/source-preview.mjs', 'detached ONLY for awaited verifier dependency preflights; processGroupLifetime joins every descendant before owned-tree cleanup, with measured-progress watchdog and bounded termination (WI-6554700010016556)'],
   ['libs/test-config/src/admin-test-runs-reporter.ts', 'detached ONLY to lead a process group so the timeout group-kills the bounded git helper; runGitProcessGroup reaps the group and settles the promise on child close'],
   ['packages/operator-core/lib/dao-hr/native-bootstrap-runtime.ts', 'detached ONLY to lead a process group so cancellation or phase timeout group-kills the native verifier tree; runNativeVerifier awaits child close and termination escalation before returning'],
   ['packages/operator-core/test/private-http-workspace-preflight.ts', 'test preflight: detached ONLY to lead a process group so timeout group-kills the retained bundle builder tree; the async builder awaits close and the sync builder waits for spawnSync before returning'],

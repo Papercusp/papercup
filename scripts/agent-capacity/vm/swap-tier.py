@@ -673,6 +673,31 @@ def swap_off():
         sh(["zramctl", "--reset", "/dev/zram0"], check=False)
 
 
+def active_swap(arm, ram_gb):
+    """Validate externally provisioned swap without draining a live Server."""
+    devices = json.loads(sh(["swapon", "--show", "--json", "--bytes",
+                             "--output", "NAME,SIZE,PRIO"]).stdout).get("swapdevices", [])
+    if arm["kind"] == "none":
+        if devices:
+            raise RuntimeError("active none arm requires no configured swap")
+        return {"device": None, "devices": devices}
+    for device in devices:
+        name = device["name"]
+        if arm["kind"] == "device":
+            if os.path.realpath(name) == os.path.realpath(arm["device"]):
+                return {"device": name, "devices": devices}
+        elif re.fullmatch(r"zram\d+", os.path.basename(name)):
+            # swapon's usable size excludes the first page of the device.
+            if int(device["size"]) + 4096 < ram_gb * (1 << 30):
+                continue
+            with open(f"/sys/block/{os.path.basename(name)}/comp_algorithm") as f:
+                algorithm = f"[{arm.get('algorithm', 'zstd')}]"
+                if algorithm not in f.read().split():
+                    continue
+            return {"device": name, "devices": devices}
+    raise RuntimeError("active swap arm must be configured before starting the Server and benchmark")
+
+
 def swap_on(arm, ram_gb):
     if arm["kind"] == "none":
         return None
@@ -977,6 +1002,12 @@ def probe(out_path):
 
 def run(a):
     population = server_population(a.server_cgroup) if getattr(a, "server_cgroup", None) else None
+    arms = [parse_arm(s) for s in a.arm]
+    # Fail before recorder/probe/agent mutation. Active runs share a live Server;
+    # swapoff -a can OOM it even after all benchmark agents have stopped.
+    configured_swap = active_swap(arms[0], a.ram_gb) if a.active else None
+    if configured_swap:
+        arms[0]["device"] = configured_swap["device"]
     global REAL_MODEL, GATEWAY_CHECK, WARM_PREFIX
     REAL_MODEL = a.cli == "codex"
     # Resumed JSONL may replay old rounds; only fresh unpredictable markers can
@@ -985,8 +1016,9 @@ def run(a):
     rec = Recorder(a.out)
     if population:
         rec.rec("server-population-preflight", **population)
+    if configured_swap:
+        rec.rec("active-swap-preflight", **configured_swap)
     GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec, catalog=False)) if REAL_MODEL else None
-    arms = [parse_arm(s) for s in a.arm]
     stub_log = os.path.join(a.out, "stub.jsonl")
     warm_files = sorted(glob.glob("/usr/lib/python3*/*.py"), key=os.path.getsize, reverse=True)[:16]
     procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "probe", "--out", os.path.join(a.out, "probe.csv")])]
@@ -1002,9 +1034,8 @@ def run(a):
                 kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
                 effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
         stop_agents()
-        swap_off()
-        if a.active:
-            arms[0]["device"] = swap_on(arms[0], a.ram_gb)
+        if not a.active:
+            swap_off()
         if REAL_MODEL:
             gateway_preflight(a.gateway_url, a.owner, rec)
             codex_sandbox_preflight(a.user, rec)
@@ -1018,7 +1049,8 @@ def run(a):
         stop_agents()
         for p in procs:
             p.terminate()
-        swap_off()
+        if not a.active:
+            swap_off()
     report(a.out)
 
 

@@ -3852,6 +3852,9 @@ dependency_generation_main() {
     )" || return $?
     live_input="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
     if [ -f "$generation_root/.inputs/$exact_input" ]; then
+      # Match --ensure-ref's existing-selector path exactly: a filename hit alone
+      # is not a valid prewarm when the selector or immutable publication is corrupt.
+      dependency_generation_select_input_fingerprint "$exact_input" "$generation_root" || return $?
       predict_verdict='prewarmed'
     elif [ "$live_input" = "$exact_input" ]; then
       predict_verdict='live-match'
