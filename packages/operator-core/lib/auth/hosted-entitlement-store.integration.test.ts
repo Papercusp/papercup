@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
@@ -124,5 +124,34 @@ describe('hosted entitlement authority (real PG + hosted roles)', () => {
       throw new Error('injected_rollback');
     })).rejects.toThrow('injected_rollback');
     expect(await read(g.organizationId)).toMatchObject({ ok: false, reason: 'authority_missing' });
+  });
+
+  it('samples the default evaluation time after waiting for the organization authority lock', async () => {
+    const g = await grant();
+    await writeHostedEntitlementAuthority({ ...g, authority: authority(g.organizationId) }, service);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    let reader!: ReturnType<typeof read>;
+    try {
+      await db.adminSql.begin(async tx => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`hosted-entitlement:organization:${g.organizationId}`}, 0))`;
+        const [{ pid }] = await tx`SELECT pg_backend_pid() AS pid`;
+        reader = db.appSql.begin(readTx => readHostedEntitlementAuthority(readTx as unknown as Sql, g.organizationId));
+        await expect.poll(async () => {
+          const [row] = await db.adminSql`SELECT EXISTS (
+            SELECT 1 FROM pg_locks waiting JOIN pg_locks held
+              ON held.locktype = waiting.locktype AND held.classid = waiting.classid AND held.objid = waiting.objid
+             WHERE held.pid = ${pid} AND held.granted AND NOT waiting.granted) AS blocked`;
+          return row.blocked;
+        }).toBe(true);
+        vi.setSystemTime(new Date('2026-11-01T00:00:00Z'));
+      });
+      expect(await reader).toEqual({ ok: false, reason: 'no_active_assignment' });
+      // Explicit historical reads retain their requested timestamp.
+      expect(await read(g.organizationId, now)).toMatchObject({ ok: true });
+    } finally {
+      await reader?.catch(() => {});
+      vi.useRealTimers();
+    }
   });
 });

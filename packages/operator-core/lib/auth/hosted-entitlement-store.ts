@@ -75,10 +75,13 @@ export type PersistedHostedEntitlementResolution =
 
 /** Pass the canonical directory's organization, never a browser org claim. */
 export async function readHostedEntitlementAuthority(
-  tx: Sql, rawOrganizationId: string, at = new Date(),
+  tx: Sql, rawOrganizationId: string, at?: Date,
 ): Promise<PersistedHostedEntitlementResolution> {
   const organizationId = organization(rawOrganizationId);
   await lockHostedEntitlementAuthority(tx, organizationId);
+  // Default live reads must not retain a pre-lock timestamp while a writer or
+  // another admission holds the organization. Explicit historical reads keep at.
+  const evaluationAt = at ?? new Date();
   return serviceRole(tx, async () => {
     const rows = await tx<Array<{ user_id: string; kind: string; authority: unknown; authority_revision: string | number }>>`
       SELECT user_id::text, kind, authority, authority_revision
@@ -92,7 +95,7 @@ export async function readHostedEntitlementAuthority(
     let authority: HostedEntitlementAuthorityRecords;
     try { authority = records(row.authority, organizationId); }
     catch { return { ok: false, reason: 'invalid_authority_records' }; }
-    const result = resolveHostedEntitlements({ organizationId, at, ...authority });
+    const result = resolveHostedEntitlements({ organizationId, at: evaluationAt, ...authority });
     if (!result.ok) return { ok: false, reason: result.reason };
     return { ok: true, resolution: result.value, authorityRevision: revision,
       grantUserId: row.user_id, grantKind: row.kind };
