@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 
@@ -46,6 +46,34 @@ describe('shared snapshot-backed push channel', () => {
     const delivered = await codeIntelPushText(changed, 0, d);
     expect(delivered).toContain('signature target');
     expect(d.commit).toHaveBeenCalledWith(changed, snap, [facts[0]], 1500, expect.any(AbortSignal));
+  });
+
+  it('pushes an observed failing-test incident with static hypotheses and explicit unknowns', () => {
+    const snap = snapshot();
+    snap.importers = new Map([
+      ['lib/target.ts', ['app/use.ts']],
+      ['app/use.ts', ['app/use.test.ts']],
+    ]);
+    snap.symbols = new Map([['target', [{
+      id: 'target', name: 'target', path: 'lib/target.ts', line: 7, column: 1,
+      sha256: 'b'.repeat(64), signature: 'function target()', aliases: ['target'], sources: undefined,
+      callers: [],
+    }]]]);
+    const fact = snapshotIncidentLeg({ ...input, calls: [{
+      tool: 'testing:run',
+      toolInput: { files: ['app/use.test.ts'], harness: 'papercusp' },
+      toolResponse: { status: 'failed', byFile: { 'app/use.test.ts': { passed: 0, failed: 1, skipped: 0 } } },
+    }] }, snap)[0];
+    expect(fact).toMatchObject({ leg: 'incident', subject: 'failed-tests:app/use.test.ts',
+      suggestedCall: 'testing:run {"files":["app/use.test.ts"],"harness":"papercusp"}' });
+    expect(fact?.citedPaths).toEqual(expect.arrayContaining(['app/use.test.ts', 'app/use.ts', 'lib/target.ts']));
+    expect(fact?.text).toContain('Observed failing test files: app/use.test.ts');
+    expect(fact?.text).toContain('Recently changed symbols (unverified): target:lib/target.ts:7');
+    expect(fact?.text).toContain('Work items changed/open on these paths: unknown');
+    expect(snapshotIncidentLeg({ ...input, calls: [{
+      tool: 'testing:run',
+      toolResponse: { status: 'passed', byFile: { 'app/use.test.ts': { passed: 1, failed: 0, skipped: 0 } } },
+    }] }, snap)).toEqual([]);
   });
 
   it('keeps absent reach unknown, bounds cycles and rejects untrusted path/base/commands', () => {

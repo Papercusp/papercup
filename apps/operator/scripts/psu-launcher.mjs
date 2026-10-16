@@ -340,6 +340,11 @@ Remote hosts (run psu on another machine; every other option is forwarded to it)
   --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)
   --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer
   --connect-session=<key>            Reattach a specific cloud workspace shell
+  --connect-add-ssh=<name>           Save your desktop/laptop with --connect-host
+                                     (private/VPN address or SSH config alias)
+                                     and optional --connect-user
+  --connect-gui                      Open a saved SSH machine's browser GUI
+                                     through a private local tunnel
   --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with
                                      --connect-project, --connect-zone,
                                      --connect-instance and --connect-user

@@ -1,8 +1,10 @@
 "use client";
 
 import { parseAsString, useQueryStates } from "nuqs";
+import { useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import { Select } from "@/app/harness/Select";
+import { Modal } from "@/app/harness/Modal";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from "./workspace-view-model";
 
@@ -16,7 +18,7 @@ export interface MachineSwitcherProps {
 /** Both shells use the existing host inventory; the hosted SyncProvider applies tenant scope. */
 export default function MachineSwitcher({ localMode = true, workspaceSelected = true, ...props }: MachineSwitcherProps) {
   if (!localMode && !workspaceSelected) {
-    return <span role="status">Choose a workspace to connect a machine</span>;
+    return <span><span role="status">Choose a workspace to connect a machine</span> <MachineConnectionHelp /></span>;
   }
   return <AuthorizedMachineSwitcher {...props} localMode={localMode} />;
 }
@@ -37,14 +39,15 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
     onSelect={(hostId) => {
       // The viewer, pins and filter belong to the old machine. No shared registry
       // default or agent lifecycle is written; each window keeps its own URL.
-      void setTarget({ desktopHost: hostId, host: hostId === LOCAL_DESKTOP_HOST ? null : hostId,
-        desktop: null, desktopPins: null, desktopFilter: null }).then(() => {
-        if (onSelect) onSelect(hostId);
-        else {
+      const updated = setTarget({ desktopHost: hostId, host: hostId === LOCAL_DESKTOP_HOST ? null : hostId,
+        desktop: null, desktopPins: null, desktopFilter: null });
+      // Batch portal navigation with the target so surface-param isolation
+      // never sees a target belonging to a different app.
+      if (onSelect) onSelect(hostId);
+      else void updated.then(() => {
           const url = new URL(window.location.href);
           url.pathname = "/desktops";
           window.location.assign(url.toString());
-        }
       });
     }}
   />;
@@ -76,8 +79,31 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
       onChange={(hostId) => {
         if (options.some((option) => option.value === hostId) && !(missing && hostId === selected)) onSelect(hostId);
       }} />
-    <a href={connectHref}>Connect a machine</a>
+    <MachineConnectionHelp />
+    <a href={connectHref}>Manage machines</a>
     {error ? <span role="alert">Machines unavailable: {error}</span> : null}
     {missing && !error ? <span role="status">Choose another machine</span> : null}
   </span>;
+}
+
+/** Same personal-machine instructions in both shells; credentials stay with OpenSSH. */
+function MachineConnectionHelp() {
+  const [open, setOpen] = useState(false);
+  return <>
+    <button type="button" onClick={() => setOpen(true)}>Connect your computer</button>
+    <Modal open={open} onOpenChange={setOpen} title="Connect your computer"
+      contentStyle={{ maxWidth: 560, padding: 24, background: "var(--surface-1, #151922)" }}>
+      <h2>Connect your computer</h2>
+      <p>Use the psu utility on this computer to reach a desktop or laptop over your private network or VPN.</p>
+      <ol>
+        <li>On the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.</li>
+        <li>Verify its host key and configure an SSH alias such as <code>my-computer</code> with the address, user, port and identity you use to sign in.</li>
+        <li>Save it locally: <code>psu --connect-add-ssh=my-computer --connect-host=my-computer</code></li>
+      </ol>
+      <p>Remote terminal: <code>psu --connect=my-computer</code>. Machine selection happens before the remote launch choices.</p>
+      <p>Browser GUI: <code>psu --connect=my-computer --connect-gui</code>. Keep that terminal open while using the private browser tunnel.</p>
+      <p>An offline computer or refused SSH key cannot connect. Forget a saved entry with <code>psu --connect-remove=my-computer</code>; revoke its SSH key on the remote computer to remove access. Forgetting an entry alone does not revoke that key or stop running agents.</p>
+      <button type="button" onClick={() => setOpen(false)}>Close</button>
+    </Modal>
+  </>;
 }

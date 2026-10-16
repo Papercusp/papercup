@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
+import { parseAsString, useQueryState } from "nuqs";
 import MachineSwitcher, { MachineSwitcherView } from "./MachineSwitcher";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
@@ -46,7 +47,35 @@ describe("persistent machine selection", () => {
     render(<MachineSwitcherView localMode={false} value={null} rows={[]}
       loading={false} error={null} onSelect={vi.fn()} />);
     expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("");
-    expect(screen.getByRole("link", { name: "Connect a machine" }).getAttribute("href")).toBe("/cloud-workspaces?step=connect");
+    expect(screen.getByRole("link", { name: "Manage machines" }).getAttribute("href")).toBe("/cloud-workspaces?step=connect");
+  });
+
+  it("batches portal app navigation with the chosen machine", async () => {
+    query.mockReturnValue({ data: rows, loading: false, error: null });
+    const update = vi.fn();
+    function Portal() {
+      const [, setApp] = useQueryState("app", parseAsString);
+      return <MachineSwitcher onSelect={() => { void setApp("desktops"); }} />;
+    }
+    render(<Portal />, { wrapper: withNuqsTestingAdapter({
+      searchParams: "?app=mail&ws=own&desktopHost=a", onUrlUpdate: update,
+    }) });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "b" } });
+    await vi.waitFor(() => expect(update).toHaveBeenCalled());
+    const transitions = update.mock.calls.map(([event]) => event.searchParams as URLSearchParams);
+    expect(transitions.every((params) => params.get("app") === "desktops" && params.get("desktopHost") === "b")).toBe(true);
+  });
+
+  it("offers personal terminal and GUI connection instructions without a hosted workspace", () => {
+    render(<MachineSwitcher localMode={false} workspaceSelected={false} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect your computer" }));
+    const dialog = screen.getByRole("dialog", { name: "Connect your computer" });
+    expect(dialog.textContent).toContain("--connect-add-ssh=my-computer");
+    expect(dialog.textContent).toContain("--connect-gui");
+    expect(dialog.textContent).toContain("Forgetting an entry alone does not revoke");
+    expect(query).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("clears old machine desktop state only in the selecting window", async () => {
@@ -59,6 +88,7 @@ describe("persistent machine selection", () => {
     }) });
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "b" } });
     await vi.waitFor(() => expect(onSelect).toHaveBeenCalledExactlyOnceWith("b"));
+    await vi.waitFor(() => expect(update).toHaveBeenCalled());
     const params = update.mock.calls.at(-1)?.[0].searchParams as URLSearchParams;
     expect(params.get("desktopHost")).toBe("b");
     expect(params.get("host")).toBe("b");
