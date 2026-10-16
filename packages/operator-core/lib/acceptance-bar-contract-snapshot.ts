@@ -38,6 +38,7 @@ import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from '
 import { parseWorkedByHistory } from './work-item-prior-work';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { requirementSections } from './requirement-contract';
+import { overlayLiveRequirementVerification } from './acceptance-live-requirements';
 import {
   evidenceRecordsAbsent,
   evidenceRuntimeOf,
@@ -49,6 +50,7 @@ import {
   MAX_BAR_PROJECTION_EDGES,
   MAX_REQUIREMENT_BARS,
   acceptanceBarBehaviorClass,
+  parseRequirementBars,
   type AcceptanceBarCohort,
 } from './acceptance-bar-seed';
 import type { AcceptanceEvidencePlane } from './agent-tools/plans/rubric-template';
@@ -171,6 +173,8 @@ export interface AcceptanceBarSubjectPlanSource {
   status: string | null;
   revision: number;
   contentHash: string | null;
+  /** Read with the plan identity; omitted from the public snapshot. */
+  content?: string;
   adoptionEpoch: number | null;
   cohort: AcceptanceBarCohort | null;
   barSetHash: string | null;
@@ -1084,8 +1088,16 @@ export function projectAcceptanceBarContractSnapshot(
   const grading = authoritativeGrading(input, rubric);
   const rubricRevision = rubric?.revision ?? null;
   const rubricCriteriaHash = rubric?.criteriaHash ?? null;
+  // Validate the STORED criterion/set hashes above before overlaying verification HOW.
+  // Those hashes remain the identity of vetting, grading and projected spec clauses;
+  // a test-path-only plan edit must change the proof we read, not that identity.
+  const liveRequirements = plan?.content !== undefined && rubric?.kind === 'acceptance' &&
+    rubric.subjectPlan === plan.planSlug ? parseRequirementBars(plan.content) : null;
+  const verificationCriteria = liveRequirements?.ok
+    ? overlayLiveRequirementVerification(boundedCriteria, liveRequirements.bars).criteria
+    : boundedCriteria;
   const bars: AcceptanceBarTrace[] = [];
-  for (const criterion of boundedCriteria
+  for (const criterion of verificationCriteria
     .slice()
     .sort((a, b) => (a.barKey ?? a.key).localeCompare(b.barKey ?? b.key))) {
     const barKey = criterion.barKey?.trim() || criterion.key.trim();
@@ -1635,7 +1647,7 @@ export function projectAcceptanceBarContractSnapshot(
     schemaVersion: ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
     planSlug: plan?.planSlug ?? '',
     applicable,
-    plan,
+    plan: plan ? (({ content: _content, ...identity }) => identity)(plan) : null,
     rubric: rubric
       ? {
           rubricId: rubric.rubricId,
@@ -1774,6 +1786,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       status: string | null;
       version: number | string;
       content_hash: string | null;
+      content: string;
       acceptance_bar_epoch: number | string | null;
       acceptance_bar_cohort: AcceptanceBarCohort | null;
       acceptance_bar_set_hash: string | null;
@@ -1784,7 +1797,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       acceptance_bar_verified_revision: number | string | null;
     }>
   >`
-    SELECT workspace_id, harness_slug, plan_slug, status, version, content_hash,
+    SELECT workspace_id, harness_slug, plan_slug, status, version, content_hash, content,
            acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_set_hash,
            acceptance_bar_rubric_slug, acceptance_bar_rubric_revision,
            acceptance_bar_seeded_at, acceptance_bar_seeded_by, acceptance_bar_verified_revision
@@ -1802,6 +1815,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       status: row.status,
       revision: Number(row.version),
       contentHash: row.content_hash,
+      content: row.content,
       adoptionEpoch: row.acceptance_bar_epoch == null ? null : Number(row.acceptance_bar_epoch),
       cohort: row.acceptance_bar_cohort,
       barSetHash: row.acceptance_bar_set_hash,

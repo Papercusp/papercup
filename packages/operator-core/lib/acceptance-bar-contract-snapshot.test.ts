@@ -485,7 +485,63 @@ function mechanicallyProvedFixture(): AcceptanceBarContractSnapshotInput {
   return input;
 }
 
+function liveVerificationPlan(check: RubricCriterion['check']): string {
+  return ['## Requirements', '', '**R-1 — Outcome 1.**', '', '```requirement', JSON.stringify({
+    intent: { request: 'Keep the same acceptance promise.' },
+    acceptance: { condition: 'Outcome 1 is true.', falsifier: 'Outcome 1 is absent.',
+      evidencePlane: 'tree', requiredScope: ['tree'] },
+    verification: { method: 'Run the current named check.', check, replication: 'Use the live test path.' },
+  }), '```'].join('\n');
+}
+
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('uses live requirement check paths while preserving stored hash and vetting identities', () => {
+    const input = mechanicallyProvedFixture();
+    const rubric = input.rubrics.rows[0]!;
+    const criterion = rubric.criteria[0]!;
+    // Proof exists only for the new file. The stored copy intentionally names the old file.
+    criterion.check = { kind: 'tests', files: ['src/old-guard.test.ts'] };
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    Object.assign(input.clauses.rows[0]!.sourceBar!, { barHash: criterion.barHash, barSetHash });
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.adequacy?.state).toBe('fail');
+    input.planRows.rows[0]!.content = liveVerificationPlan({ kind: 'tests', files: ['src/guard.test.ts'] });
+    const stored = structuredClone(rubric);
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]).toMatchObject({ barHash: criterion.barHash,
+      check: { kind: 'tests', files: ['src/guard.test.ts'] },
+      method: 'Run the current named check.', replication: 'Use the live test path.',
+      proof: { adequacy: { state: 'pass' } } });
+    expect(snapshot.rubric).toMatchObject({ criteriaHash: rubric.criteriaHash, barSetHash });
+    expect(snapshot.grading.vetting.state).toBe('current');
+    expect(snapshot.readiness.codes).not.toContain('bar_snapshot_bar_hash_mismatch');
+    expect(snapshot.readiness.codes).not.toContain('bar_snapshot_bar_set_hash_mismatch');
+    expect(snapshot.plan).not.toHaveProperty('content');
+    expect(rubric).toEqual(stored);
+  });
+
+  it('still detects corrupt stored hashes before applying live verification', () => {
+    const input = mechanicallyProvedFixture();
+    input.rubrics.rows[0]!.criteria[0]!.barHash = 'corrupt';
+    input.planRows.rows[0]!.content = liveVerificationPlan({ kind: 'tests', files: ['src/guard.test.ts'] });
+    expect(projectAcceptanceBarContractSnapshot(input).readiness.codes).toContain('bar_snapshot_bar_hash_mismatch');
+  });
+
+  it.each(['kind-change', 'malformed', 'legacy'] as const)(
+    'keeps stored verification for a %s live requirement', kind => {
+      const input = mechanicallyProvedFixture();
+      input.planRows.rows[0]!.content = kind === 'kind-change'
+        ? liveVerificationPlan({ kind: 'instrument', instrumentKey: 'none' })
+        : kind === 'malformed' ? '## Requirements\n\n**R-1 — Bad.**\n```requirement\n{broken}\n```'
+          : '## Requirements\n\n**R-1 — Legacy.**\nOutcome 1 is true.';
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.check).toEqual({ kind: 'tests', files: ['src/guard.test.ts'] });
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+    },
+  );
+
   it('grades named passing tests and a calibrated caught mutant mechanically through the ship lifecycle', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(mechanicallyProvedFixture());
     expect(snapshot.bars[0]!.proof.adequacy).toMatchObject({ state: 'pass', checks: [{ verdict: 'pass',
