@@ -4437,7 +4437,16 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
           status: 200,
           clientResolution: "jsonrpc_error_events",
           forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+          upstreamResponseLifecycle: {
+            responseComplete: false,
+            responseAborted: true,
+            responseDestroyed: true,
+            socketDestroyed: true,
+          },
         });
+        const lifecycle = rec?.upstreamResponseLifecycle as Record<string, unknown> | undefined;
+        expect(lifecycle).toHaveProperty("responseErrorCode");
+        expect(lifecycle).toHaveProperty("socketErrorCode");
         expect(rec?.traceId).toBe(events[0].error.data.traceId);
 
         const traceLine = traceInfo.mock.calls
@@ -4454,6 +4463,12 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
           stage: "proxy_response_finished",
           outcome: "rejected",
           httpStatus: 200,
+          upstreamResponseLifecycle: {
+            responseComplete: false,
+            responseAborted: true,
+            responseDestroyed: true,
+            socketDestroyed: true,
+          },
         });
       });
     } finally {
@@ -5408,6 +5423,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 2,
         controlPlaneReserve: 1,
+        // This fixture exercises immediate shedding; the default FIFO has its own cases.
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -5773,6 +5790,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           retryWindowMs: 5_000,
           maxInFlight: 2,
           controlPlaneReserve: 1,
+          maxOrdinaryQueue: 0,
           log: () => {},
         }),
       );
@@ -5840,6 +5858,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           retryWindowMs: 5_000,
           maxInFlight: 2,
           controlPlaneReserve: 1,
+          maxOrdinaryQueue: 0,
           log: () => {},
         }),
       );
@@ -5910,6 +5929,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 4,
         controlPlaneReserve: 2,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -5961,6 +5981,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 5,
         controlPlaneReserve: 3,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -6058,6 +6079,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 4,
         controlPlaneReserve: 2,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -6117,6 +6139,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 6,
         controlPlaneReserve: 2,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -10323,6 +10346,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryBackoffMs: 20,
         maxInFlight: 2,
         controlPlaneReserve: 0,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );

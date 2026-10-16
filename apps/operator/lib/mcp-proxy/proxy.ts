@@ -51,6 +51,7 @@ import {
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
   logMcpRequestTrace,
+  type McpRequestTraceEvent,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
 import {
   isCheapRepeatingBeat,
@@ -5652,6 +5653,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               }
               // This is the proxy's flush boundary, not proof the remote client consumed the body.
               let upstreamDiedMidStream = false;
+              let upstreamResponseLifecycle: McpRequestTraceEvent["upstreamResponseLifecycle"];
               if (fwd.rpcMethods.includes("tools/call")) {
                 res.once("finish", () => {
                   const httpStatus = res.statusCode;
@@ -5667,6 +5669,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                         ? "success"
                         : "rejected",
                     httpStatus,
+                    ...(upstreamResponseLifecycle ? { upstreamResponseLifecycle } : {}),
                   });
                 });
               }
@@ -5688,12 +5691,37 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // event-loop-sentinel SIGKILL, deploy restart) used to leave the client response
               // open forever: the agent hung to its own idle timeout (300s for Claude).
               let forwardedTail = "";
+              let responseAborted = Boolean(ures.aborted);
+              let responseErrorCode: string | null = null;
+              let socketErrorCode: string | null = null;
+              const responseErrorCodeFrom = (error: Error): string | null => {
+                const code = (error as NodeJS.ErrnoException).code;
+                return typeof code === "string" ? code.slice(0, 64) : null;
+              };
+              ures.once("aborted", () => {
+                responseAborted = true;
+              });
+              ures.once("error", (error: Error) => {
+                responseErrorCode = responseErrorCodeFrom(error);
+              });
+              const upstreamSocket = ures.socket;
+              upstreamSocket?.once("error", (error: Error) => {
+                socketErrorCode = responseErrorCodeFrom(error);
+              });
               ures.on("data", (chunk: Buffer) => {
                 forwardedTail = (forwardedTail + chunk.toString("latin1")).slice(-4);
               });
               ures.once("close", () => {
                 if (ures.complete || res.writableEnded || res.destroyed) return;
                 upstreamDiedMidStream = true;
+                upstreamResponseLifecycle = {
+                  responseComplete: Boolean(ures.complete),
+                  responseAborted: Boolean(ures.aborted || responseAborted),
+                  responseDestroyed: Boolean(ures.destroyed),
+                  socketDestroyed: upstreamSocket ? Boolean(upstreamSocket.destroyed) : null,
+                  responseErrorCode,
+                  socketErrorCode,
+                };
                 const isSse = String(ures.headers["content-type"] ?? "")
                   .toLowerCase()
                   .includes("text/event-stream");
@@ -5711,6 +5739,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   elapsedMs: Date.now() - started,
                   clientResolution: errorEvents ? "jsonrpc_error_events" : "destroyed",
                   forwardingResult: forwardingResultForUpstreamFailure(true),
+                  upstreamResponseLifecycle,
                   ...rpcTrace,
                 });
                 log(
