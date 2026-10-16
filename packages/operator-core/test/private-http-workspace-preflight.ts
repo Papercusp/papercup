@@ -21,6 +21,36 @@ import type { CommittedReaderObservationCohort, CommittedReaderObservationIdenti
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
 import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 
+/** Identify a private PG socket without retaining authentication or query bytes.
+ * postgres-js writes the complete startup packet before its first query. Ignore
+ * SSL/cancel requests, incomplete packets and everything after that packet. */
+export function privatePgStartupIdentity(chunk: unknown): { database: string | null; applicationName: string | null } | null {
+  if (!(chunk instanceof Uint8Array)) return null;
+  const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  if (bytes.length < 9) return null;
+  const length = bytes.readUInt32BE(0);
+  if (length < 9 || length > 16_384 || length > bytes.length || bytes.readUInt32BE(4) !== 196608) return null;
+  if (bytes[length - 1] !== 0) return null;
+  let database: string | null = null, applicationName: string | null = null;
+  let offset = 8;
+  while (offset < length - 1) {
+    const keyEnd = bytes.indexOf(0, offset);
+    if (keyEnd < offset || keyEnd >= length - 1) return null;
+    const valueEnd = bytes.indexOf(0, keyEnd + 1);
+    if (valueEnd < keyEnd + 1 || valueEnd >= length - 1) return null;
+    const key = bytes.toString('utf8', offset, keyEnd);
+    if (key === 'database' || key === 'application_name') {
+      const value = bytes.toString('utf8', keyEnd + 1, valueEnd);
+      if (value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value)) {
+        if (key === 'database') database = value;
+        else applicationName = value;
+      }
+    }
+    offset = valueEnd + 1;
+  }
+  return offset === length - 1 ? { database, applicationName } : null;
+}
+
 /** Retain the actual provider refusal before a disposable journey asserts success.
  * Drain a clone, preserving the consumer's original body. Successful model content
  * and request content are never retained; failure details use the gateway scrubber. */
