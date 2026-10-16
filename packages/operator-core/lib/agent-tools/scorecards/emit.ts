@@ -72,7 +72,9 @@ import {
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
 import { revParseAsync } from '../../release/judged-sha-containment';
-import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
+import { scorecardEvaluateArgs, scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema,
+  pendingDeliveryReviewRefusal } from './evaluate';
+import { scorecardRepairArgs } from './repair';
 import {
   CLIPPED_SCORECARD_TEXT_CODE,
   clippedScorecardTextMessage,
@@ -662,6 +664,10 @@ const specTestAdequacyRerunRecipeSchema = z
 
 const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
+    pendingDeliveryBarKeys: scorecardEvaluateArgs.shape.pendingDeliveryBarKeys,
+    gradingLaunch: scorecardRepairArgs.shape.gradingLaunch.describe(
+      'Optional existing audit launch profile: pin the newly emitted card\'s independent auditor to codex/gpt-6.1-sol/xhigh through account auto. Uses the same strict profile as scorecards:repair; does not change the scorecard author or grading authority.',
+    ),
     interactionReviewerHandle: OperationHandleSchema.optional()
       .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
     rubricRevision: z.number().int().positive().optional()
@@ -1899,11 +1905,20 @@ export async function emitScorecard(
   if (rubric.kind === 'acceptance' && rubric.status === 'retired') {
     return { ok: false as const, ...retiredAcceptanceRubricRefusal(rubric) };
   }
+  const pendingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys, args.ratings);
+  if (pendingRefusal || (args.pendingDeliveryBarKeys?.length && args.acceptance?.verdict === 'accept')) {
+    return { ok: false as const, code: 'pending_delivery_review_invalid',
+      error: pendingRefusal ?? 'Pending delivery cannot record final accept; use accept-pending-delivery.' };
+  }
   // acceptance-runtime-plane P-004: an unknown/mismatch/not-deployed rating on a live or
   // deployed BAR must name the runtime AND build sha it measured — refused before any
   // ledger work, so the grader re-measures on the right runtime instead of "wait for main".
   if (rubric.kind === 'acceptance') {
-    const citationRefusal = runtimeCitationRefusal(rubric.criteria, args.ratings);
+    // The explicitly pending manual publication has no serving runtime yet.
+    // Requiring a process SHA here would force the reviewer to invent one.
+    // Every other deployed/live rating still owes its measured runtime citation.
+    const citationRefusal = runtimeCitationRefusal(rubric.criteria.filter((criterion) =>
+      !args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '')), args.ratings);
     if (citationRefusal) return { ok: false as const, ...citationRefusal };
   }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
@@ -2045,6 +2060,7 @@ export async function emitScorecard(
           expectedApplicable: true,
           harnessSlug: rubric.subjectHarnessSlug,
           ...(args.current ? { current: args.current } : {}),
+          ...(args.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: args.pendingDeliveryBarKeys } : {}),
         });
         if (!lifecycle.satisfied) {
           return {
@@ -2422,6 +2438,10 @@ export async function emitScorecard(
       };
     }
     const ratings = normalizeScorecardRatings(suppliedRatings, rubric);
+    // Validate again after acceptanceOf/fromLedger adoption: omitted caller ratings
+    // must never turn a pending-delivery review into an adopted positive claim.
+    const pendingRatingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys, ratings);
+    if (pendingRatingRefusal) return { ok: false as const, code: 'pending_delivery_review_invalid', error: pendingRatingRefusal };
     const observationForValidation = { rubricRef: args.rubricRef, ratings };
     // `validateScorecardCompleteness` intentionally permits an empty ratings map
     // for generic/free-text observations. scorecards:emit is different: it has
@@ -4070,10 +4090,15 @@ export async function emitScorecard(
     // scorecards:emit latency or fail a card that was already written.
     if (result.created && result.issue?.id && input.launchContext && args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF) {
       const dispatchAudits = deps.dispatchPendingGradingAudits ?? dispatchPendingGradingAudits;
+      const auditLaunchContext = args.gradingLaunch
+        ? { ...input.launchContext, gradingLaunch: args.gradingLaunch }
+        : input.launchContext;
       void trackDetached(
         dispatchAudits({
-          targetIds: [],
-          ctx: input.launchContext,
+          // A caller's explicit profile belongs to this card, not the unrelated
+          // backlog. Preserve the ordinary bounded backlog sweep when omitted.
+          targetIds: args.gradingLaunch ? [result.issue.id] : [],
+          ctx: auditLaunchContext,
           harness: input.ctxHarness,
         }).then(() => undefined),
       ).catch(() => {});

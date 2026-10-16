@@ -106,7 +106,7 @@ describe('installed social packages use the generic Integrations model', () => {
     const config = id === 'x' ? { userId: '42', username: 'owner' } : id === 'facebook-pages' ? { pageId: '42' } : { igUserId: '42' };
     const fetched: unknown[] = [];
     const page = await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, {
-      fetch: async (request) => { fetched.push(request); return { status: 200, headers: {}, body: JSON.stringify({ data: [], meta: { result_count: 0 } }) }; },
+      fetch: async (request) => { fetched.push(request); return { status: 200, headers: {}, body: JSON.stringify({ data: [], meta: { result_count: 0 } }), bodyEncoding: 'utf8' as const }; },
     });
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'installed-source' })]));
@@ -114,7 +114,7 @@ describe('installed social packages use the generic Integrations model', () => {
     let failure: unknown;
     try {
       await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, {
-        fetch: async () => ({ status: 429, headers: { 'retry-after': '37' }, body: '{}' }),
+        fetch: async () => ({ status: 429, headers: { 'retry-after': '37' }, body: '{}', bodyEncoding: 'utf8' as const }),
       });
     } catch (error) { failure = error; }
     expect(providerSyncErrorOf(failure)).toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 37 });

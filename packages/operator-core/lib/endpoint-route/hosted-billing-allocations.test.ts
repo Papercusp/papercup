@@ -43,7 +43,7 @@ function finance(input: Input): HostedBillingAllocationFinance {
       allocations: [{ allocationId: c, parentAllocationId: null, level: 'organization', capMicros: 100000,
         maxUnreconciledMicros: 10000, committedMicros: 20003, unreconciledMicros: 0,
         providerFinalMicros: 20003, availableMicros: 79997, openHolds: 0 }],
-    }])) as HostedBillingAllocationFinance['report']['byCostClass'], outcomes: [{
+    }])) as unknown as HostedBillingAllocationFinance['report']['byCostClass'], outcomes: [{
       allocationId: 'model', outcomes: 1, byState: { accepted: 1, rejected: 0, 'rework-requested': 0, unknown: 0 },
       evidenceClasses: ['internal-simulation'], acceptedResultCostMicros: 20003, acceptedWithUnknownCost: 0,
       costPerAcceptedOutcomeMicros: 20003, costPerAcceptedUnknownReason: null,

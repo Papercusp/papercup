@@ -508,7 +508,9 @@ export async function inspectRetentionTrees(root: string, opts: {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
     child.once('error', (error) => finish(`find failed: ${String(error)}`));
-    child.once('close', (code) => finish(timedOut || (sudo && code === 137) ? 'retention native census timed out' :
+    // A process-group SIGKILL also kills timeout itself, so Node reports a
+    // signal with a null exit code rather than the direct-child status 137.
+    child.once('close', (code, signal) => finish(timedOut || (sudo && (code === 137 || (progressSupervised && signal === 'SIGKILL'))) ? 'retention native census timed out' :
       code !== 0 ? `find exited ${code}: ${stderr.trim()}` :
       malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined));
   });

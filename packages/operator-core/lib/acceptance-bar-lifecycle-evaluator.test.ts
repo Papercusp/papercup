@@ -594,6 +594,60 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     expect(verdict.satisfied).toBe(false);
   });
 
+  it('allows a named manual delivery BAR to be reviewed before publication, while ship still requires its proof', async () => {
+    const trace = bar({
+      barKey: 'R-15', method: 'Before publication rate unknown; verify the public install after publication.',
+      check: { kind: 'instrument', instrumentKey: 'none' }, automatedProofRequired: false,
+      evidencePlane: 'deployed', requiredScope: ['deployed'], requiredTestLayers: ['manual-provenance'],
+      proof: { ...bar().proof, state: 'stale', uncertainEvidence: 1,
+        adequacy: { state: 'fail', checks: [] } },
+      readiness: { ...bar().readiness, method: 'declared', codes: [
+        'bar_snapshot_proof_stale', 'bar_snapshot_proof_inadequate',
+        'bar_snapshot_proof_uncertain', 'bar_snapshot_evidence_plane_unmet',
+        'bar_snapshot_evidence_runtime_unmet',
+      ] },
+    });
+    const subject = snapshot({ bars: [trace], grading: { ...snapshot().grading,
+      vetting: { state: 'current', scorecardId: 'SC-V', rubricRevision: 1 } } });
+    const options = { pendingDeliveryBarKeys: ['R-15'] };
+    expect(evaluateAcceptanceBarLifecycle(subject, 'pre-grading').satisfied).toBe(false);
+    expect(evaluateAcceptanceBarLifecycle(subject, 'pre-grading', options)).toMatchObject({
+      satisfied: true, codes: [], pendingDeliveryBarKeys: ['R-15'],
+    });
+    expect(evaluateAcceptanceBarLifecycle(subject, 'ship', options)).toMatchObject({
+      satisfied: false, codes: expect.arrayContaining([
+        'bar_snapshot_proof_stale', 'bar_snapshot_evidence_plane_unmet',
+      ]),
+    });
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(subject);
+    expect(await readAndEvaluateAcceptanceBarLifecycle('plan-a', 'pre-grading', options))
+      .toMatchObject({ satisfied: true, pendingDeliveryBarKeys: ['R-15'] });
+
+    // A review exception never hides another BAR or a malformed/unvetted contract.
+    const tree = bar({ method: 'Run the tests.', check: { kind: 'tests', files: ['x.test.ts'] } });
+    expect(evaluateAcceptanceBarLifecycle({ ...subject, bars: [trace, tree] }, 'pre-grading', options))
+      .toMatchObject({ satisfied: false, blockingBars: expect.arrayContaining([
+        expect.objectContaining({ barKey: 'R-1', codes: expect.arrayContaining(['bar_snapshot_proof_missing']) }),
+      ]) });
+    expect(evaluateAcceptanceBarLifecycle({ ...subject, grading: snapshot().grading }, 'pre-grading', options).codes)
+      .toContain('bar_snapshot_vetting_missing');
+    expect(evaluateAcceptanceBarLifecycle({ ...subject, completeness: { complete: false, truncated: false,
+      problems: [{ code: 'bar_snapshot_projection_stale', severity: 'error', source: 'clauses', detail: 'stale' }] } },
+    'pre-grading', options).codes).toContain('bar_snapshot_projection_stale');
+  });
+
+  it.each(['tree', 'automated', 'absent'])('rejects a pending-delivery selection that is %s', (invalid) => {
+    const trace = bar({ method: 'Run checks.', check: { kind: 'instrument', instrumentKey: 'none' },
+      automatedProofRequired: false, evidencePlane: 'deployed' });
+    if (invalid === 'tree') trace.evidencePlane = 'tree';
+    if (invalid === 'automated') trace.check = { kind: 'tests', files: ['x.test.ts'] };
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot({ bars: [trace] }), 'pre-grading', {
+      pendingDeliveryBarKeys: [invalid === 'absent' ? 'R-missing' : trace.barKey],
+    });
+    expect(verdict.satisfied).toBe(false);
+    expect(verdict.codes).toContain('bar_snapshot_scope_invalid');
+  });
+
   it('P-004: at ship, an unvetted rubric with missing proof is told to VET first, with the full action', () => {
     // The snapshot's own pick (proof) is still in this phase's codes, which used to be
     // enough to reuse it — so the door rendered "bind proof" ahead of the vetting the

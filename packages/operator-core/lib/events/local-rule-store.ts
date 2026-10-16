@@ -83,10 +83,10 @@ export async function deleteLocalRule(scope: LocalRuleScope, id: string, sql: Sq
   const rows = await sql.unsafe('DELETE FROM harness_shared.local_rules WHERE workspace_id=$1 AND pot_slug=$2 AND rule_id=$3 RETURNING rule_id', scopeParams(scope, id));
   return rows.length > 0;
 }
-export async function listLocalRules(scope: LocalRuleScope, opts: { includeWorkspace?: boolean; enabledOnly?: boolean } = {}, sql: Sql = getOrgPg().sql): Promise<LocalAuthoredRule[]> {
+export async function listLocalRules(scope: LocalRuleScope, opts: { includeWorkspace?: boolean; enabledOnly?: boolean; allPots?: boolean } = {}, sql: Sql = getOrgPg().sql): Promise<LocalAuthoredRule[]> {
   if (!scope.workspaceId.trim()) throw new Error('rule_scope_required');
-  const rows = await sql.unsafe<StoredRule[]>('SELECT * FROM harness_shared.local_rules WHERE workspace_id=$1 AND (pot_slug=$2 OR ($3::boolean AND pot_slug=\'\')) AND (NOT $4::boolean OR enabled) ORDER BY pot_slug,rule_id',
-    [scope.workspaceId, scope.potSlug ?? '', opts.includeWorkspace ?? false, opts.enabledOnly ?? false]);
+  const rows = await sql.unsafe<StoredRule[]>('SELECT * FROM harness_shared.local_rules WHERE workspace_id=$1 AND ($5::boolean OR pot_slug=$2 OR ($3::boolean AND pot_slug=\'\')) AND (NOT $4::boolean OR enabled) ORDER BY pot_slug,rule_id',
+    [scope.workspaceId, scope.potSlug ?? '', opts.includeWorkspace ?? false, opts.enabledOnly ?? false, opts.allPots ?? false]);
   return rows.map(decode);
 }
 

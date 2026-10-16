@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { createLspDaemonShutdown } from './lsp-daemon-shutdown';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
@@ -12,6 +15,53 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: resources.d
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 
 describe('LSP daemon resource shutdown', () => {
+  it.each(['hono-host.ts', 'serve.ts'])('wires %s sidecar boot into the bounded resource drain', async (entry) => {
+    // Execute the real divert branch without booting the rest of the host. The
+    // RPC transport is the boundary; the supplied resource drain remains real.
+    const path = new URL(`../bin/${entry}`, import.meta.url);
+    const source = ts.createSourceFile(entry, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    const branches: ts.Statement[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isIfStatement(node)) {
+        const condition = node.expression.getText(source).replace(/\s/g, '').replace(/"/g, "'");
+        if (condition === "sidecarMode==='lsp'" || condition === "process.env.PAPERCUSP_LSP_DAEMON_MODE==='1'") {
+          branches.push(node.thenStatement);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(branches).toHaveLength(1);
+    const compiled = ts.transpileModule(`(async () => ${branches[0]!.getText(source)})()`, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    });
+    vi.useFakeTimers();
+    const order: string[] = [];
+    const closeRpc = vi.fn(async () => { order.push('rpc'); });
+    const exit = vi.fn(() => { order.push('exit'); });
+    let shutdown: ReturnType<typeof createLspDaemonShutdown> | undefined;
+    const runServer = vi.fn((_query?: unknown, _apply?: unknown, drain?: typeof shutdown) => { shutdown = drain; });
+    await runInNewContext(compiled.outputText, {
+      createLspDaemonShutdown: () => createLspDaemonShutdown({
+        closeClients: async () => { order.push('clients'); },
+        closeDatabase: async () => { order.push('database'); },
+        exit,
+      }),
+      require: (name: string) => {
+        expect(name).toBe('@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server');
+        return { runLspDaemonServer: runServer };
+      },
+      console,
+      process: { exit: vi.fn() },
+    });
+    await vi.waitFor(() => expect(runServer).toHaveBeenCalledTimes(1));
+    expect(shutdown).toBeTypeOf('function');
+    shutdown!(closeRpc);
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledExactlyOnceWith(0));
+    expect(order).toEqual(['rpc', 'clients', 'database', 'exit']);
+    expect(closeRpc).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the production adapter and database cleanup when no resource callbacks are supplied', async () => {
     vi.useFakeTimers();
     resources.clients.mockResolvedValue(1);
@@ -92,10 +142,18 @@ describe('LSP daemon resource shutdown', () => {
           closeDatabase: async () => {},
           onForceExit: () => process.stdout.write('DEADLINE\\n'),
         });
+        // The bundled host can install another listener. It must not keep the
+        // daemon alive after the RPC listener hands off its one-shot drain.
+        process.on('SIGTERM', () => {});
         process.once('SIGTERM', () => shutdown(async () => {}));
         remaining.listen(0, '127.0.0.1', () => process.stdout.write('READY\\n'));
       `;
-      const child = spawn(process.execPath, ['--require', 'tsx/cjs', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, ['--require', 'tsx/cjs', '-e', script], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // This fixture loads current TS through tsx. The inherited committed-
+        // source loader rejects its CommonJS transform before the test boots.
+        env: { ...process.env, NODE_OPTIONS: '' },
+      });
       const output = createTextCollector(child.stdout);
       const errors = createTextCollector(child.stderr);
       const terminal = once(child, 'exit');

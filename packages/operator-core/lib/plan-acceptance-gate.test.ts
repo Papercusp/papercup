@@ -692,6 +692,25 @@ describe('evaluatePlanAcceptanceGate', () => {
       },
     );
 
+    it('threads explicit pending delivery only to pre-grading and retains the strict ship refusal', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) => verdict(phase,
+        phase === 'ship' ? ['bar_snapshot_grading_missing', 'bar_snapshot_evidence_plane_unmet']
+          : options?.pendingDeliveryBarKeys?.includes('R-15') ? [] : ['bar_snapshot_evidence_plane_unmet']));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
+        expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
+      });
+      const shipOptions = mockBarLifecycle.mock.calls.find((call) => call[1] === 'ship')?.[2];
+      expect(shipOptions).not.toHaveProperty('pendingDeliveryBarKeys');
+      // Once grading is present, the same missing public proof still blocks shipment.
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, ['bar_snapshot_evidence_plane_unmet']));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'ship' });
+    });
+
     // plan-verification-friction-reduction-2026-10-11 P-002 / R-2 (D-001): a ship call that
     // omits `current` must hand the lifecycle NO caller tuple. listSpecEvidence then
     // re-measures every binding from its recorded recipe, so unchanged proof rates current

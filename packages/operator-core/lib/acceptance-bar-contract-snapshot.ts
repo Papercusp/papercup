@@ -30,6 +30,7 @@ import {
 } from './agent-tools/plans/spec-clauses-store';
 import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
+import { evaluateMechanicalTestAdequacy } from './agent-tools/plans/mechanical-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
 import { lineagePartyKeys } from './acceptance-author-identity';
@@ -1177,6 +1178,18 @@ export function projectAcceptanceBarContractSnapshot(
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
     const adequacyDeclared = requiredTestLayers.length > 0 || hasStructuredTestsCheck;
     const adequacyChecks = !adequacyDeclared ? [] : enforceableClauses.map((clause) => {
+      // Keep plan grading on the same measured proof path as work-item completion.
+      // Structured checks name their tests; passing runs plus a calibrated caught
+      // mutant replace the legacy evaluator's per-clause judgment obligations.
+      const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence, sourceBarTestRequirements });
+      if (mechanical.applicable) {
+        const bindingIds = new Set([
+          ...Object.values(mechanical.passingTestBindingIds), ...mechanical.caughtMutantBindingIds,
+        ]);
+        return { specId: clause.specId, revision: clause.revision, verdict: mechanical.verdict,
+          wouldBlock: mechanical.gaps,
+          evidenceRefs: evidence.filter(row => row.id !== undefined && bindingIds.has(row.id)).map(row => row.evidenceRef) };
+      }
       // A clause may add proof obligations above its BAR's minimum. Keep those
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);

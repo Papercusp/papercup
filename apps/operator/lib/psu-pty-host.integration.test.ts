@@ -15,7 +15,7 @@ import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execPath } from 'node:process';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
@@ -245,7 +245,7 @@ function exactStatusOnlyCodexReady(output: string): boolean {
 }
 
 describe('managed-pty integration evidence isolation', () => {
-  it('waits for fresh Codex native readiness before writing the first kickoff (WI-10007270)', async () => {
+  it('waits for resumed Codex native readiness before writing the first continuation (WI-10007270)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-initial-native-ready-'));
     const inputFile = join(root, 'input.txt');
     const ownerId = `su-initial-native-${process.pid}-${Math.floor(performance.now())}`;
@@ -260,7 +260,7 @@ describe('managed-pty integration evidence isolation', () => {
     const { captured, io } = fakeIo();
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});"],
+      args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});", 'resume'],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', INPUT_FILE: inputFile,
@@ -321,7 +321,9 @@ describe('managed-pty integration evidence isolation', () => {
       : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.stdout.write(process.env.INITIAL_OUTPUT),Number(process.env.INITIAL_OUTPUT_DELAY_MS));"],
+      // Only the binding phase resumes an existing thread. Fresh marked
+      // kickoffs keep their stricter frame gate and bind after submission.
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.stdout.write(process.env.INITIAL_OUTPUT),Number(process.env.INITIAL_OUTPUT_DELAY_MS));", ...(phase === 'native binding' ? ['resume'] : [])],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
@@ -356,8 +358,7 @@ describe('managed-pty integration evidence isolation', () => {
         }
       }, { timeout: 3000 });
       expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '').toBe('');
-      if (gatedKickoff) expect(onRespawn).toHaveBeenCalledOnce();
-      else expect(onRespawn).not.toHaveBeenCalled();
+      expect(onRespawn).not.toHaveBeenCalled();
     } finally {
       signalSource.emit('SIGTERM');
       await done.catch(() => undefined);
@@ -406,6 +407,7 @@ describe('managed-pty integration evidence isolation', () => {
   it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
     const source = {
       PATH: '/fixture/bin', TERM: 'xterm-256color',
+      NODE_OPTIONS: '--import=/fixture/must-not-run.mjs', NODE_PATH: '/fixture/modules',
       PAPERCUSP_PSU_PTY_DIR: PSU_PTY_DIR,
       PAPERCUSP_AGENT: 'codex', PAPERCUSP_SID: 'live-owner',
       PAPERCUSP_ADV_SESSION_ID: '123', PAPERCUSP_PSU_HEADLESS: '1',
@@ -418,6 +420,11 @@ describe('managed-pty integration evidence isolation', () => {
     const env = hermeticEnv({ PAPERCUSP_SID: 'fixture-owner' }, source);
     expect(env.PATH).toBe(source.PATH);
     expect(env.TERM).toBe(source.TERM);
+    expect(env).not.toHaveProperty('NODE_OPTIONS');
+    expect(env).not.toHaveProperty('NODE_PATH');
+    // Prove that the child can boot, rather than only checking a copied map.
+    expect(execFileSync(execPath, ['-e', "process.stdout.write('FIXTURE_READY')"], { env, encoding: 'utf8' }))
+      .toBe('FIXTURE_READY');
     expect(env.PAPERCUSP_PSU_PTY_DIR).toBe(PSU_PTY_DIR);
     expect(env.PAPERCUSP_SID).toBe('fixture-owner');
     expect(env.CODEX_HOME).toBe(join(PSU_PTY_DIR, 'codex-home'));
@@ -428,6 +435,7 @@ describe('managed-pty integration evidence isolation', () => {
     expect(hermeticEnv({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' }, source))
       .toMatchObject({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' });
     expect(source.CODEX_HOME).toBe('/live/codex');
+    expect(source.NODE_OPTIONS).toBe('--import=/fixture/must-not-run.mjs');
   });
 
   it('redirects host lifecycle evidence away from the live operator corpus', () => {
@@ -447,18 +455,27 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
     const ownerId = `su-startup-trace-${process.pid}-${Math.floor(performance.now())}`;
     const logPath = eventLogPathForOwner(ownerId);
     const { io } = fakeIo();
+    const signalSource = new EventEmitter();
+    let done: Promise<number> | undefined;
     try {
-      await hostThroughPty({
+      done = hostThroughPty({
         command: '/bin/bash',
-        args: ['-c', `"${codexRuntime}" 1.5 & wait`],
+        // Keep the process alive until its sample is observed. A fixed 1.5s
+        // lifetime races the sampler and tests scheduling rather than evidence.
+        args: ['-c', `"${codexRuntime}" 60 & wait`],
         cwd: root,
         env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
-        signalSource: new EventEmitter(),
+        signalSource,
         onExit: () => undefined,
       });
+      await vi.waitFor(() => {
+        expect(readFileSync(logPath, 'utf8')).toContain('"kind":"codex-startup-process-sample"');
+      }, { timeout: 3000 });
+      signalSource.emit('SIGTERM');
+      await done;
       const rows = readFileSync(logPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
       const sample = rows.find((row) => row.kind === 'codex-startup-process-sample');
       const selected = rows.find((row) => row.kind === 'codex-startup-process-target-selected');
@@ -472,6 +489,8 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
         rootPid: selected.rootPid, pid: selected.pid, reason: 'host-cleanup', samples: expect.any(Number),
       });
     } finally {
+      signalSource.emit('SIGTERM');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
       rmSync(logPath, { force: true });
     }

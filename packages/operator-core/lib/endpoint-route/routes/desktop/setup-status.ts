@@ -16,6 +16,7 @@ import { activeWorkspaceId, readRegistry } from '../../../workspace-registry';
 import { workspaceBackupFor } from '../../../backup';
 import { anyAgentSignedIn } from '../../../agent-auth-detect';
 import { detectClaude, detectCodex, detectOmp } from '../../../preflight-binaries';
+import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../../managed-update-policy';
 import { defineTool } from '@papercusp/agent-mcp';
 
 type StepStatus = 'ok' | 'needs-attention' | 'unknown';
@@ -96,6 +97,17 @@ async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
 
 function boolToStatus(ok: boolean): StepStatus {
   return ok ? 'ok' : 'needs-attention';
+}
+
+function autoUpdateStatus(savedChannel: string | undefined): StepStatus {
+  try {
+    // The administrator's current policy takes precedence over saved setup
+    // choices. Reuse the update reader so invalid policy cannot appear ready.
+    const channel = readManagedUpdateChannel() ?? savedChannel;
+    return boolToStatus(channel === 'alpha' || channel === 'beta' || channel === 'stable');
+  } catch (error) {
+    return error instanceof ManagedUpdatePolicyError ? 'needs-attention' : 'unknown';
+  }
 }
 
 export interface ModelEgressStatus {
@@ -212,11 +224,7 @@ export async function collectSetupStatus() {
     git: boolToStatus(gitOk),
     'mobile-pairing': boolToStatus(devices.length > 0),
     backups: boolToStatus(Boolean(backupSettings?.enabled)),
-    'auto-update': boolToStatus(
-      wizardState?.update_channel === 'alpha' ||
-        wizardState?.update_channel === 'beta' ||
-        wizardState?.update_channel === 'stable',
-    ),
+    'auto-update': autoUpdateStatus(wizardState?.update_channel),
     telemetry: boolToStatus(
       wizardState?.telemetry_enabled === true ||
         wizardState?.telemetry_enabled === false,

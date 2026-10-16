@@ -36,6 +36,7 @@ import {
   matchKnownExternalToolFailure,
   KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES,
   type ToolErrorClass,
+  type SuspectedToolFailure,
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
 import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
@@ -218,7 +219,7 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
 
     for (const report of reports) {
       expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
-      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true } as SuspectedToolFailure)).toMatchObject({
         class: 'caller',
         direct: false,
       });
@@ -245,7 +246,7 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
 
     for (const report of reports) {
       expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
-      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true } as SuspectedToolFailure)).toMatchObject({
         class: 'caller',
         direct: false,
       });
@@ -437,6 +438,38 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       'error',
       "capability:bash implicit cwd '/tmp/phantom-root' (this context's project dir) does not exist, and no existing PAPERCUSP_INTEGRATION_ROOT was available to recover to — the harness registry likely points at a stale or phantom repo root.",
     )).toBe('structural');
+  });
+
+  it('keeps an nsenter process-namespace permission refusal out of the structural lane, even with direct evidence', () => {
+    const message = 'nsenter: cannot open /proc/1/ns/pid: Permission denied';
+    expect(classifyToolError('child_failed', 'failed', message)).toBe('caller');
+    expect(classifyToolError('child_failed', 'failed', 'cat: cannot open /root/private: Permission denied'))
+      .toBe('structural');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:bash',
+      errorCode: 'child_failed',
+      status: 'failed',
+      message,
+      reproduced: true,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'host namespace process inspection emits owner',
+        actual: 'namespace transition denied before command',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:bash',
+      errorCode: 'child_failed',
+      status: 'failed',
+      message: 'python: SyntaxError: invalid syntax',
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'the documented command executes',
+        actual: 'the child reports a syntax error',
+      },
+    })).toMatchObject({ class: 'structural', direct: true });
   });
 
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {

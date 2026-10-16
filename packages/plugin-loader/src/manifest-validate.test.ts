@@ -289,6 +289,15 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     pkce: true,
     clientRegistrationRef: 'example',
     credentialGroup: 'example-suite',
+    refreshPolicy: 'refresh-token',
+    resourceToken: {
+      url: 'https://example.com/api/resources',
+      hosts: ['example.com'],
+      collectionField: 'data',
+      idField: 'id',
+      tokenField: 'access_token',
+      configKey: 'resourceId',
+    },
     identity,
   };
   const provider: Required<ProviderDescriptor> = {

@@ -61,7 +61,7 @@ const readStoredQualification = vi.hoisted(() =>
   vi.fn(
     async (
       ..._a: unknown[]
-    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string; currentPhysicalRunner?: unknown; outcome?: unknown } }> => ({ status: 'none' }),
+    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string; currentPhysicalRunner?: unknown; outcome?: unknown; requiredAncestorSha?: string | null } }> => ({ status: 'none' }),
   ),
 );
 const beginStoredQualification = vi.hoisted(() => vi.fn());

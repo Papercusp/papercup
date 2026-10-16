@@ -30,8 +30,10 @@ describe('audit-derived citation proposals', () => {
   it('names deleted/unreadable paths without fabricating a blob or a citation', async () => {
     const result = await proposeAuditCitations(input, { readFiles: async () => [row()], blobSha: () => null });
     expect(result.proposals[0]!.citations).toEqual([]);
-    expect(result.unresolved).toEqual([{ itemId: 'P-001', path: 'src/one.ts',
-      reason: 'current file blob could not be measured' }]);
+    expect(result.unresolved).toContainEqual({ itemId: 'P-001', path: 'src/one.ts',
+      reason: 'current file blob could not be measured' });
+    expect(result.unresolved).toContainEqual({ itemId: 'P-002', path: '',
+      reason: 'no attributed edit or commit records for this completed item' });
   });
 
   it('does not cite other items or allow unsafe recorded paths outside the repository', async () => {
@@ -40,7 +42,9 @@ describe('audit-derived citation proposals', () => {
       readFiles: async () => [row({ itemId: 'P-999' }), row({ path: '../secret' })] });
     expect(blobSha).not.toHaveBeenCalled();
     expect(result.proposals.every(p => p.citations.length === 0)).toBe(true);
-    expect(result.unresolved).toHaveLength(1);
+    expect(result.unresolved).toContainEqual({ itemId: 'P-001', path: '../secret', reason: 'unsafe attribution path' });
+    expect(result.unresolved).toContainEqual({ itemId: 'P-002', path: '',
+      reason: 'no attributed edit or commit records for this completed item' });
   });
 
   it('measures a shared attributed file once, preserving each item’s own work-item link', async () => {
@@ -50,5 +54,13 @@ describe('audit-derived citation proposals', () => {
     expect(blobSha).toHaveBeenCalledTimes(1);
     expect(result.proposals[0]!.citations[0]!.workItemIds).toEqual(['WI-1']);
     expect(result.proposals[1]!.citations[0]!.workItemIds).toEqual(['WI-2']);
+  });
+
+  it('reports missing provenance for every done item instead of a successful empty preview', async () => {
+    const blobSha = vi.fn(() => 'blob');
+    const result = await proposeAuditCitations(input, { readFiles: async () => [], blobSha });
+    expect(result.unresolved.map(x => x.itemId)).toEqual(['P-001', 'P-002']);
+    expect(result.unresolved.every(x => x.reason.includes('no attributed'))).toBe(true);
+    expect(blobSha).not.toHaveBeenCalled();
   });
 });

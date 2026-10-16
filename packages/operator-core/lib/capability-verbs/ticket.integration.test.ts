@@ -15,6 +15,8 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import { upsertOwnedExternalTriggerSource, type ExternalTriggerSourceRow } from '../external-triggers/source-store';
 import { fileTicketFromPlanRun, TicketFilingError, TICKET_FILING_OUTCOME_KEY } from './ticket';
+import { armTriggerPack, buildTriggerPackReview } from '../cupboard/trigger-pack-lifecycle';
+import { listProviderOptions } from '../integrations/provider-options';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -268,6 +270,99 @@ describe('ticket:file durable classification', () => {
     expect(await file(run)).toMatchObject({ alreadyCreated: true });
     expect(await classificationOf(run)).toMatchObject({ verdict: 'bug' });
     expect(posts).toBe(1);
+  });
+});
+
+describe('trigger-pack arming validates the configured destination', () => {
+  async function configuredForArm(destination = 'project-eng') {
+    const bindingId = await installPack({ destination });
+    const [bindingRow] = await sql<Array<{ installationId: string }>>`
+      UPDATE harness_shared.trigger_bindings SET armed = FALSE
+       WHERE workspace_id = ${WS} AND id = ${bindingId}::uuid
+       RETURNING pack_installation_id::text AS "installationId"`;
+    const installationId = bindingRow!.installationId;
+    const review = await buildTriggerPackReview(sql, WS, installationId);
+    return { installationId, fingerprint: review!.fingerprint };
+  }
+
+  async function expectUnarmed(installationId: string) {
+    expect(await buildTriggerPackReview(sql, WS, installationId)).toMatchObject({ reviewedFingerprint: null, armedBindingCount: 0 });
+    expect(posts).toBe(0);
+  }
+
+  it.each(['project-eng', 'project-other'])('checks %s before recording a review or arming bindings', async (destination) => {
+    const input = await configuredForArm(destination);
+    const options = { ...deps.options, registry };
+    const offered = await listProviderOptions(sql, {
+      workspaceId: WS, ownerUserId: userId, capability: 'ticket.containers', args: { purpose: 'create' },
+    }, options);
+    expect(offered.groups.flatMap((group) => group.options.map((option) => option.value))).toContain('project-eng');
+    expect(offered.groups.flatMap((group) => group.options.map((option) => option.value))).not.toContain('project-other');
+
+    const arm = () => armTriggerPack(sql, WS, input, { options });
+    if (destination === 'project-eng') {
+      expect(await arm()).toMatchObject({ ok: true });
+    } else {
+      await expect(arm()).rejects.toMatchObject({ code: 'trigger_pack_input_unavailable' });
+      await expectUnarmed(input.installationId);
+    }
+    expect(posts).toBe(0);
+  });
+
+  it.each(['disabled-source', 'missing-owner'])('refuses %s without borrowing another owner', async (mode) => {
+    const input = await configuredForArm();
+    try {
+      if (mode === 'disabled-source') {
+        await sql`UPDATE harness_shared.data_sources SET status = 'disabled' WHERE workspace_id = ${WS} AND id = ${chat.id}`;
+      } else {
+        await sql`UPDATE harness_shared.data_sources SET scope = 'organization', owner_user_id = NULL WHERE workspace_id = ${WS} AND id = ${chat.id}`;
+      }
+      await expect(armTriggerPack(sql, WS, input, { options: { ...deps.options, registry } })).rejects.toMatchObject({
+        code: mode === 'disabled-source' ? 'trigger_pack_source_unavailable' : 'trigger_pack_input_unavailable',
+      });
+      await expectUnarmed(input.installationId);
+    } finally {
+      await sql`UPDATE harness_shared.data_sources SET status = 'connected', scope = 'personal', owner_user_id = ${userId} WHERE workspace_id = ${WS} AND id = ${chat.id}`;
+    }
+  });
+
+  it('refuses an ambiguous ticket destination before arming', async () => {
+    const second = await upsertOwnedExternalTriggerSource(sql, { workspaceId: WS, kind: 'asana', ownerUserId: userId,
+      providerAccountId: 'arm-second-account', credentialRef: 'asana:oauth', status: 'connected',
+      config: { projectGids: ['project-eng'], installSlug: 'papercusp' } });
+    const input = await configuredForArm();
+    try {
+      await expect(armTriggerPack(sql, WS, input, { options: { ...deps.options, registry } })).rejects.toMatchObject({ code: 'trigger_pack_input_unavailable' });
+      await expectUnarmed(input.installationId);
+    } finally {
+      await sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${second.id}`;
+    }
+  });
+
+  it.each(['inputs', 'source-owner'])('fences %s changes during the provider read before arm writes', async (changed) => {
+    const input = await configuredForArm();
+    let mutated = false;
+    const racingFetch: HostFetch = async (request) => {
+      if (!mutated && new URL(request.request.url).pathname.endsWith('/projects')) {
+        mutated = true;
+        if (changed === 'inputs') {
+          await sql`UPDATE harness_shared.trigger_pack_installations SET inputs = '{"destination":"project-other"}'::jsonb
+            WHERE workspace_id = ${WS} AND id = ${input.installationId}::uuid`;
+        } else {
+          await sql`UPDATE harness_shared.data_sources SET scope = 'organization', owner_user_id = NULL WHERE workspace_id = ${WS} AND id = ${chat.id}`;
+        }
+      }
+      return hostFetch(request);
+    };
+    try {
+      expect(await armTriggerPack(sql, WS, input, { options: { registry, hostFetchFor: () => racingFetch } })).toMatchObject({
+        ok: false, error: 'trigger_pack_review_stale',
+      });
+      expect(mutated).toBe(true);
+      await expectUnarmed(input.installationId);
+    } finally {
+      await sql`UPDATE harness_shared.data_sources SET scope = 'personal', owner_user_id = ${userId} WHERE workspace_id = ${WS} AND id = ${chat.id}`;
+    }
   });
 });
 

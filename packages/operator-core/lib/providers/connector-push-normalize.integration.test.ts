@@ -103,8 +103,8 @@ describe('signed push normalization through the existing hook route', () => {
     const body = JSON.stringify({ object: 'instagram', entry: [{ id: IG, changes: [{ field: 'mentions', value: { media_id: '333' } }] }] });
     const signature = `sha256=${createHmac('sha256', 'test-app-secret').update(body).digest('hex')}`;
     const deliver = () => handleConnectorPushDelivery({ sourceId, rawBody: Buffer.from(body), headers: new Headers({ 'x-hub-signature-256': signature }) }, { ...dependencies(), admit: realAdmit });
-    expect((await deliver()).status).toBe(200);
-    expect((await deliver()).status).toBe(200);
+    expect((await deliver())?.status).toBe(200);
+    expect((await deliver())?.status).toBe(200);
     expect(admissions).toEqual(['admitted', 'deduped']);
     expect(emitted).toEqual(['ext:instagram:mention']);
     const rows = await org.adminSql<{ sink_kind: string; n: number }[]>`

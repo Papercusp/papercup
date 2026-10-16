@@ -77,6 +77,29 @@ async function setup() {
 }
 
 describe('retention on a real fixture tree', () => {
+  it('finishes an advancing root beyond its inspection allowance before applying the cap', async () => {
+    const { root, options } = await setup();
+    const old = join(root, 'old'); await writeFile(old, 'old data');
+    const receipt = await runDiskReclaimOnce({ ...options, budgetMs: 20, runBudgetMs: 10_000,
+      policy: options.policy.map((cls) => ({ ...cls, maxBytes: 1 })),
+      inspectTrees: async (path, input) => {
+        if (!input.paths) {
+          // A productive native walk needs longer than the JS inspection
+          // allowance, while remaining well within this run's absolute bound.
+          await new Promise((done) => setTimeout(done, 30));
+          if ((input.timeoutMs ?? 0) <= 30) return { entries: [], retained: [], inspectedNodes: 0,
+            retainedRecentTrees: 0, error: 'retention native census timed out' };
+          expect(input.progressTimeoutMs).toBe(20);
+        }
+        // Native inactivity supervision is covered with real subprocesses in
+        // disk-consumer-census.test.ts; this fixture isolates run-budget routing.
+        return inspectRetentionTrees(path, { ...input, progressTimeoutMs: undefined });
+      } });
+    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.caps?.[0]).toMatchObject({ afterBytes: 0, overByBytes: 0 });
+    await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('reaps an elevated census worker at its native deadline when ordinary-user signalling would fail', async () => {
     const { root } = await setup(); const pidFile = join(root, 'worker-pid');
     let signalAttempts = 0;

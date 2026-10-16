@@ -9,8 +9,8 @@ const definition = (id: string) => ({ schemaVersion: 1, id, title: id, descripti
   version: '1.0.0', delivery: 'async', on: 'tasks:create', fire: 'class:demo.tasks@1.0.0#create', args: { title: 'followup' } });
 beforeAll(async () => {
   db = await createOrgTestDb();
-  // The additive migration stays unarmed while this test verifies its DDL.
-  const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1521-locally-authored-rules.sql.DRAFT', import.meta.url), 'utf8');
+  // Apply the shipped additive migration in an isolated database.
+  const sql = await readFile(new URL('../../../../libs/papercusp/libs/db/sql/1521-locally-authored-rules.sql', import.meta.url), 'utf8');
   await db.adminSql.unsafe(sql);
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });

@@ -122,6 +122,35 @@ describe('set-plan-status handler independent ship guards (PVFR G1/G2)', () => {
     expectReadOnly();
   });
 
+  it.each([true, false])('a pending-delivery review never writes shipped or claims wouldShip (dryRun=%s)', async (dryRun) => {
+    const result = await run({ dryRun, pendingDeliveryBarKeys: ['R-15'] });
+    expect(result).toMatchObject({ ok: false, error: 'acceptance_pending_delivery' });
+    expect(result).not.toHaveProperty('wouldShip', true);
+    expect(preflightMocks.acceptance).toHaveBeenCalledWith('plan-a', expect.objectContaining({
+      pendingDeliveryBarKeys: ['R-15'], gradingRecruitment: true,
+    }));
+    expectReadOnly();
+  });
+
+  it('carries pending-delivery review into the existing independent system recruiter without writing status', async () => {
+    preflightMocks.acceptance.mockResolvedValue({ satisfied: false, code: 'acceptance_ungraded', message: 'Needs review.' });
+    preflightMocks.resolveGrader.mockResolvedValue({ state: 'settled', idempotencyKey: '', label: '' });
+    const result = await run({ dryRun: false, pendingDeliveryBarKeys: ['R-15'] });
+    expect(result).toMatchObject({ ok: false, error: 'acceptance_ungraded' });
+    expect(preflightMocks.resolveGrader).toHaveBeenCalledWith('plan-a', expect.objectContaining({
+      acceptancePendingDeliveryBarKeys: ['R-15'], ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+    }));
+    expect(preflightMocks.write).not.toHaveBeenCalled();
+    expect(preflightMocks.capture).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { status: 'ready' }, { expectedCurrent: 'shipped' }, { force: { reason: 'No review bypass.' } },
+  ])('rejects a pending-delivery request outside review-only routing: %j', (overrides) => {
+    expect(setPlanStatusTool.args.safeParse({ harness: 'papercusp', slug: 'plan-a', status: 'shipped',
+      pendingDeliveryBarKeys: ['R-15'], ...overrides }).success).toBe(false);
+  });
+
   it.each(['admission', 'row'] as const)('an unavailable %s read cannot establish wouldShip', async (read) => {
     preflightMocks[read].mockRejectedValue(new Error('read unavailable'));
     const result = await run();

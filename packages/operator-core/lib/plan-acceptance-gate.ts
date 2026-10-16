@@ -421,6 +421,8 @@ export interface PlanAcceptanceGateOpts {
    * Missing/stale audit evidence fails toward the ordinary unfinished-item refusal.
    */
   gradingRecruitment?: boolean;
+  /** Review-only selection; final ship lifecycle always evaluates the original proof. */
+  pendingDeliveryBarKeys?: string[];
   /**
    * EI-22181490624100467 — resolve the DEPLOYMENT POSITION of the code/test
    * citations this plan's code-truth audit rests on, returned as report-only
@@ -931,6 +933,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           expectedApplicable: true,
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
           ...(opts.current ? { current: opts.current } : {}),
+          ...(opts.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: opts.pendingDeliveryBarKeys } : {}),
         });
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it

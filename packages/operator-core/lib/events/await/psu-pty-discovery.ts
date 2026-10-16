@@ -1788,7 +1788,13 @@ export type BoundShutdownViaPtyResult = ShutdownViaPtyResult | 'refused-stale-ho
  */
 export async function shutdownViaPty(
   ownerId: string,
-  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity; expectedHost?: { startedAt: number; advSessionId: string } } = {},
+  opts: {
+    reason?: string;
+    force?: boolean;
+    // Only ever forwarded to findLiveHostAsync, which accepts an async check.
+    verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync;
+    expectedHost?: { startedAt: number; advSessionId: string };
+  } = {},
 ): Promise<BoundShutdownViaPtyResult> {
   const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!host) return 'no-host';

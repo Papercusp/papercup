@@ -602,7 +602,11 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           // scenario asserts the proof requirement, not scheduler timing.
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: scenario === 'not-ready' ? '600' : '60',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
-          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '650',
+          // Initial launch starts its clock before Node boots; the other
+          // scenarios inject only after OLD-READY. Budget that bootstrap
+          // separately from the 650ms delivery window for this fixture.
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: scenario === 'launch-ready'
+            ? String(CHILD_START_OUTPUT_TIMEOUT_MS + 650) : '650',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '200',
           PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',

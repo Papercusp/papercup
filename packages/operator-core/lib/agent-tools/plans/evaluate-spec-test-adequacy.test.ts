@@ -788,7 +788,6 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       testRunId: 20455199 + index,
       observedAt: '2026-10-01T23:00:00.000Z',
       createdAt: '2026-10-01T23:00:00.000Z',
-      withdrawal: null,
       currentness: {
         overall: 'current',
         provenance: 'server-measured',

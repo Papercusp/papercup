@@ -4382,11 +4382,12 @@ export function launchSessionPort(source: any, target: any, account: any, args: 
  * path and are not judged here. `home` is injectable for tests.
  * @param {any} source
  * @param {any} target
- * @param {{ tracked?: boolean, home?: string }} [options]
+ * @param {{ tracked?: boolean, home?: string, sourceNativeSessionId?: string | null }} [options]
  * @returns {string | null} */
-export function unresumableSourceCause(source: any, target: any, { tracked, home }?: {
+export function unresumableSourceCause(source: any, target: any, { tracked, home, sourceNativeSessionId }?: {
     tracked?: boolean;
     home?: string;
+    sourceNativeSessionId?: string | null;
 }): string | null;
 export function resumeFlow(args?: {}, { apiImpl, launchResolvedResumeImpl }?: {
     apiImpl?: typeof api | undefined;

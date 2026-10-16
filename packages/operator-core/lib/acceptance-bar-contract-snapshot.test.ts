@@ -454,7 +454,62 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
   return input;
 }
 
+function mechanicallyProvedFixture(): AcceptanceBarContractSnapshotInput {
+  const input = fixture(1);
+  const rubric = input.rubrics.rows[0]!;
+  const criterion = rubric.criteria[0]!;
+  const file = 'src/guard.test.ts';
+  const subjectPath = 'src/guard.ts';
+  criterion.check = { kind: 'tests', files: [file] };
+  criterion.barHash = computeAcceptanceBarHash(criterion);
+  const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+  rubric.barSetHash = barSetHash;
+  input.planRows.rows[0]!.barSetHash = barSetHash;
+  Object.assign(input.clauses.rows[0]!.sourceBar!, { barHash: criterion.barHash, barSetHash });
+  const positive = currentRegisteredTestEvidence(input.evidence.rows[0]!, file, 10);
+  positive.currentness.provenance = 'server-measured';
+  positive.details = { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
+    sourcePaths: [subjectPath], testPaths: [file] } };
+  const mutation = { schemaVersion: 1 as const, probeInvocationId: 'snapshot-probe', leg: 'mutant' as const,
+    mode: 'copy-out' as const, subjectPath, mutateExpression: 's/reject/accept/', againstCommit: null,
+    subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+    mutantDiff: '-reject\n+accept', mutantDiffTruncated: false,
+    testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64) };
+  const mutant: AcceptanceBarEvidenceSource = { ...structuredClone(positive), id: 11,
+    evidenceKind: 'mutation', evidenceRef: 'test-run:11:mutant', testRunId: 11,
+    testRunExecution: { ...positive.testRunExecution!, status: 'fail', passed: 0, failed: 1 },
+    testRunProvenance: { ...positive.testRunProvenance!, source: 'mutation-probe', mutationPhase: 'mutant', mutation,
+      mutationBaseline: { testRunId: 12, status: 'pass', passed: 1, failed: 0, skipped: 0,
+        collectionFailed: false, mutation: { ...mutation, leg: 'baseline' } } } };
+  input.evidence.rows = [positive, mutant];
+  return input;
+}
+
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('grades named passing tests and a calibrated caught mutant mechanically through the ship lifecycle', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(mechanicallyProvedFixture());
+    expect(snapshot.bars[0]!.proof.adequacy).toMatchObject({ state: 'pass', checks: [{ verdict: 'pass',
+      wouldBlock: [], evidenceRefs: ['test-run:10:src/guard.test.ts', 'test-run:11:mutant'] }] });
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-grading').codes).not.toContain('bar_snapshot_proof_inadequate');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it.each(['missing-mutant', 'uncalibrated', 'stale-test', 'stale-mutant', 'unmeasured', 'other-test'] as const)(
+    'keeps mechanical snapshot proof blocked for %s', defect => {
+      const input = mechanicallyProvedFixture();
+      const [positive, mutant] = input.evidence.rows;
+      if (defect === 'missing-mutant') input.evidence.rows = [positive!];
+      if (defect === 'uncalibrated') mutant!.testRunProvenance!.mutationBaseline = null;
+      if (defect === 'stale-test') positive!.currentness.overall = 'stale';
+      if (defect === 'stale-mutant') mutant!.currentness.overall = 'stale';
+      if (defect === 'unmeasured') positive!.currentness.provenance = 'replayed-snapshot';
+      if (defect === 'other-test') positive!.testRunProvenance!.filePath = 'src/other.test.ts';
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('fail');
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+    },
+  );
+
   it('evaluates every structured tests check file even when requiredTestLayers is empty', () => {
     const input = fixture(1);
     const rubric = input.rubrics.rows[0]!;
@@ -484,7 +539,10 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     const adequacy = snapshot.bars[0]!.proof.adequacy;
 
-    expect(adequacy).toMatchObject({ checks: [{ verdict: 'unknown' }] });
+    expect(adequacy).toMatchObject({ checks: [{ verdict: 'fail' }] });
+    expect(adequacy!.checks[0]!.wouldBlock).toEqual(expect.arrayContaining([
+      expect.stringContaining('no caught mutation probe'),
+    ]));
     expect(adequacy!.checks[0]!.wouldBlock).not.toContain('correct-layer');
   });
 

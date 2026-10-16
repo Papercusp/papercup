@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
-import { applyTerminalIdentityRepair, terminalIdentityRepairSource, LEGACY_IDENTITY_FUNCTION } from './psu-terminal-repair.mjs';
+import { applyTerminalIdentityRepair, closeLateInspectorWhenAvailable, terminalIdentityRepairSource, LEGACY_IDENTITY_FUNCTION } from './psu-terminal-repair.mjs';
 
 const legacy = LEGACY_IDENTITY_FUNCTION;
 
@@ -31,6 +31,32 @@ describe('terminal identity repair adoption', () => {
     expect(send.mock.calls.filter(([, args]) => args.dryRun === undefined && args.scriptSource)).toHaveLength(0);
     send.mockImplementation(async () => ({ status: 'BlockedByActiveFunction' }));
     await expect(applyTerminalIdentityRepair(client, { scriptId: '1', source: legacy, apply: true })).rejects.toThrow('V8 refused');
+  });
+
+  it('closes a delayed inspector only after exact PID and incarnation verification', async () => {
+    let polls = 0;
+    const discover = vi.fn(async () => (++polls === 2 ? { port: 9229, wsUrl: 'ws://late' } : null));
+    const client = {
+      connect: vi.fn(async () => {}),
+      evaluate: vi.fn(async () => ({ result: { value: { pid: 42, entry: '/launcher.mjs' } } })),
+      close: vi.fn(),
+    };
+    const close = vi.fn(async () => {});
+    await expect(closeLateInspectorWhenAvailable({
+      pid: process.pid,
+      entry: '/launcher.mjs',
+      started: 'not-the-current-incarnation',
+      maxWaitMs: 100,
+      pollIntervalMs: 1,
+      discover,
+      create: vi.fn(() => client),
+      close,
+      sleepImpl: async () => {},
+    })).resolves.toMatchObject({ closed: false });
+    // The incarnation token is wrong, so the helper must fail closed before
+    // invoking the destructive closeInspector operation. The delayed target is
+    // still observed and the transport is released.
+    expect(close).not.toHaveBeenCalled();
   });
 
 });

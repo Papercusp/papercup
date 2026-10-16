@@ -23,6 +23,7 @@ import type { OrgTestDb } from '../../../../test/_org-test-db';
 import { webhookBodyDigest } from '../../../cupboard/webhook-inbox';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { PostgresHostedBillingStore, type HostedBillingReconciliationCheckpoint } from './billing-store';
+import { reconcileHostedBilling, type HostedBillingFailureObservation } from './billing-recovery';
 import { createStripeBillingClient, type StripeBillingEventPageEvidence } from './stripe-billing-client';
 import { parseHostedBillingEvent, type HostedBillingEvent } from './stripe-billing-events';
 
@@ -195,18 +196,22 @@ function shuffled<T>(items: readonly T[], seed: number): T[] {
   return out;
 }
 
+async function applyRecoveryMigration(testDb: OrgTestDb) {
+  const draft = new URL('../../../../../../libs/papercusp/libs/db/sql/1515-hosted-billing-api-recovery.sql.DRAFT', import.meta.url);
+  const armed = new URL('../../../../../../libs/papercusp/libs/db/sql/1515-hosted-billing-api-recovery.sql', import.meta.url);
+  let migration: string;
+  try { migration = readFileSync(draft, 'utf8'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; migration = readFileSync(armed, 'utf8'); }
+  // Additive upgrade and reapplication on the actual migrated schema.
+  await testDb.adminSql.unsafe(migration); await testDb.adminSql.unsafe(migration);
+}
+
 describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
   const store = () => new PostgresHostedBillingStore(runService);
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    const draft = new URL('../../../../../../libs/papercusp/libs/db/sql/1515-hosted-billing-api-recovery.sql.DRAFT', import.meta.url);
-    const armed = new URL('../../../../../../libs/papercusp/libs/db/sql/1515-hosted-billing-api-recovery.sql', import.meta.url);
-    let migration: string;
-    try { migration = readFileSync(draft, 'utf8'); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; migration = readFileSync(armed, 'utf8'); }
-    // Additive upgrade and reapplication on the actual migrated schema.
-    await db.adminSql.unsafe(migration); await db.adminSql.unsafe(migration);
+    await applyRecoveryMigration(db);
   }, 180_000);
 
   afterAll(async () => {
@@ -421,8 +426,13 @@ describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
     await expect(deliver(new PostgresHostedBillingStore(crashing), raw)).rejects.toThrow('simulated crash');
     expect(await eventRow(id)).toBeNull();
     expect(await subscriptionRow(f.subscriptionId)).toBeNull();
+    expect(await db.adminSql`SELECT id FROM papercusp_auth.organization_audit_events
+      WHERE organization_id = ${f.organizationId}::uuid AND action = 'billing.event.applied'`).toHaveLength(0);
     expect(await deliver(store(), raw)).toMatchObject({ outcome: 'applied' });
     expect(await subscriptionRow(f.subscriptionId)).toMatchObject({ status: 'active' });
+    const audit = await db.adminSql`SELECT metadata FROM papercusp_auth.organization_audit_events
+      WHERE organization_id = ${f.organizationId}::uuid AND action = 'billing.event.applied'`;
+    expect(audit).toHaveLength(1); expect(audit[0].metadata).toMatchObject({ providerEventId: id });
   });
 
   it('serializes a concurrent duplicate delivery: exactly one applies, the other sees a duplicate', async () => {
@@ -430,6 +440,11 @@ describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
     const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active' });
     const outcomes = (await Promise.all([deliver(store(), raw), deliver(store(), raw)])).map((r) => r.outcome).sort();
     expect(outcomes).toEqual(['applied', 'duplicate']);
+    expect(await eventRow(parsed(raw).eventId)).toEqual({ outcome: 'applied', rejection_code: null, organization_id: f.organizationId });
+    expect(await subscriptionRow(f.subscriptionId)).toMatchObject({ status: 'active', plan_key: 'team' });
+    const audit = await db.adminSql`SELECT metadata FROM papercusp_auth.organization_audit_events
+      WHERE organization_id = ${f.organizationId}::uuid AND action = 'billing.event.applied'`;
+    expect(audit).toHaveLength(1); expect(audit[0].metadata).toMatchObject({ providerEventId: parsed(raw).eventId });
   });
 
   it('applies the authenticated reader output and later accepts original webhook bytes without inventing a signature or digest', async () => {
@@ -487,6 +502,107 @@ describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
     await expect(store().beginReconciliation({ organizationId: f.organizationId, accountId: pin.accountId,
       expectedLivemode: false, createdFrom: T0 + 201, createdBefore: T0 + 400 })).rejects.toThrow('window_gap');
   });
+
+  it.each(['fetch', 'body'] as const)('resumes the durable cursor after a page %s deadline without losing or duplicating billing state', async phase => {
+    // Separate database: exercise the real target/census queries as well as the
+    // coordinator, authenticated reader and hosted_service transactions.
+    const deadlineDb = await createOrgTestDb();
+    try {
+      await applyRecoveryMigration(deadlineDb);
+      const run: HostedServiceContextRunner = fn => deadlineDb.appSql.begin(async tx => {
+        await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
+        await tx.unsafe('SET LOCAL ROLE hosted_service');
+        return fn(tx as unknown as Sql);
+      }) as ReturnType<typeof fn>;
+      const firstStore = new PostgresHostedBillingStore(run);
+      const f = await fixture(firstStore);
+      const firstId = `evt_${hex()}`; const tailId = `evt_${hex()}`; const invoiceId = `in_${hex()}`;
+      // Stripe pages descend by creation time; the older invoice updates its
+      // own register without rolling back the newer subscription state.
+      const first = JSON.parse(subscriptionJson(f, { id: firstId, created: T0 + 10, status: 'active' }));
+      const tail = JSON.parse(invoiceJson(f, { id: tailId, created: T0, invoiceId, paid: true }));
+      const requests: URL[] = [];
+      let interruptedSignal: AbortSignal | undefined; let pendingIo = false;
+      const client = (interrupt: boolean) => {
+        const built = createStripeBillingClient({ secretKey: 'sk_test_Recovery', liveModeAllowed: false, readTimeoutMs: 1000,
+          fetchImpl: async (url, init) => {
+            const request = new URL(String(url));
+            const response = (body: unknown, requestId: string) => new Response(JSON.stringify(body),
+              { headers: { 'request-id': requestId } });
+            if (request.pathname === '/v1/account') return response({ object: 'account', id: 'acct_Recovery' }, 'req_Account');
+            if (request.pathname === `/v1/customers/${f.customerId}`) return response({ object: 'customer',
+              id: f.customerId, livemode: false, metadata: { organizationId: f.organizationId } }, 'req_Customer');
+            requests.push(request);
+            const isTail = request.searchParams.get('starting_after') === firstId;
+            const page = response({ object: 'list', data: [{ ...(isTail ? tail : first), object: 'event' }],
+              has_more: !isTail }, isTail ? 'req_Tail' : 'req_First');
+            if (!interrupt || !isTail) return page;
+            interruptedSignal = init!.signal as AbortSignal;
+            const stall = () => new Promise<never>((_resolve, reject) => {
+              pendingIo = true;
+              interruptedSignal!.addEventListener('abort', () => {
+                pendingIo = false; reject(new Error('private provider failure'));
+              }, { once: true });
+            });
+            if (phase === 'fetch') return stall();
+            page.json = stall;
+            return page;
+          } });
+        if (!built.ok) throw new Error('fixture client construction');
+        return built.client;
+      };
+      const observations: HostedBillingFailureObservation[] = [];
+      const observe = async (observation: HostedBillingFailureObservation) => { observations.push(observation); };
+      const input = { accountId: 'acct_Recovery', createdFrom: T0 - 1, createdBefore: T0 + 200,
+        overlapSeconds: 5, maxCustomers: 1, maxPages: 10 };
+      const snapshot = async () => ({
+        checkpoint: (await deadlineDb.adminSql<Array<{ checkpoint: HostedBillingReconciliationCheckpoint }>>`
+          SELECT reconciliation_checkpoint AS checkpoint FROM papercusp_auth.hosted_billing_customers
+          WHERE organization_id = ${f.organizationId}::uuid`)[0]!.checkpoint,
+        mirror: (await deadlineDb.adminSql`SELECT status, plan_key, latest_invoice_id, latest_invoice_status
+          FROM papercusp_auth.hosted_subscriptions WHERE stripe_subscription_id = ${f.subscriptionId}`)[0],
+        receipts: await deadlineDb.adminSql`SELECT provider_event_id, body_digest, api_observation
+          FROM papercusp_auth.hosted_billing_webhook_events WHERE organization_id = ${f.organizationId}::uuid ORDER BY provider_event_id`,
+        audit: await deadlineDb.adminSql`SELECT id, target_id, metadata FROM papercusp_auth.organization_audit_events
+          WHERE organization_id = ${f.organizationId}::uuid AND action = 'billing.event.reconciled' ORDER BY id`,
+      });
+      expect(await reconcileHostedBilling(input, { store: firstStore, client: client(true), planKeyForPrice, observe },
+        new AbortController().signal)).toMatchObject({ customers: 1, pages: 2, completed: 0, failed: 1,
+        conflicts: 0, budgetExhausted: false });
+      expect(interruptedSignal?.aborted).toBe(true); expect(pendingIo).toBe(false);
+      expect(observations).toContainEqual({ failureClass: 'provider-unavailable', eventId: null });
+      const interrupted = await snapshot();
+      expect(interrupted.checkpoint).toMatchObject({ createdFrom: T0 - 1, createdBefore: T0 + 200,
+        startingAfter: firstId, revision: 2, complete: false, cursors: [firstId] });
+      expect(interrupted.mirror).toEqual({ status: 'active', plan_key: 'team', latest_invoice_id: null, latest_invoice_status: null });
+      expect(interrupted.receipts).toHaveLength(1);
+      expect(interrupted.receipts[0]).toMatchObject({ provider_event_id: firstId, body_digest: null,
+        api_observation: { source: 'stripe-authenticated-api', requestIds: ['req_Account', 'req_Customer', 'req_First'] } });
+      expect(interrupted.audit).toHaveLength(1); expect(interrupted.audit[0].target_id).toBe(firstId);
+
+      // New instances and a newer requested window must recover the pending
+      // old tail from Postgres, rather than advance past its failed read.
+      const resumed = await reconcileHostedBilling({ ...input, createdFrom: T0 + 201, createdBefore: T0 + 400 },
+        { store: new PostgresHostedBillingStore(run), client: client(false), planKeyForPrice, observe }, new AbortController().signal);
+      expect(resumed).toMatchObject({ customers: 1, pages: 1, completed: 1, failed: 0, conflicts: 0, budgetExhausted: false });
+      expect(requests.map(request => request.searchParams.get('starting_after'))).toEqual([null, firstId, firstId]);
+      for (const request of requests) {
+        expect(request.pathname).toBe('/v1/events');
+        expect(request.searchParams.get('created[gte]')).toBe(String(T0 - 1));
+        expect(request.searchParams.get('created[lt]')).toBe(String(T0 + 200));
+      }
+      const completed = await snapshot();
+      expect(completed.checkpoint).toEqual({ ...interrupted.checkpoint, startingAfter: null, revision: 3, complete: true });
+      expect(completed.mirror).toEqual({ status: 'active', plan_key: 'team', latest_invoice_id: invoiceId, latest_invoice_status: 'paid' });
+      expect(completed.receipts).toHaveLength(2);
+      expect(completed.receipts.find(receipt => receipt.provider_event_id === firstId)).toEqual(interrupted.receipts[0]);
+      expect(completed.receipts.find(receipt => receipt.provider_event_id === tailId)).toMatchObject({ body_digest: null,
+        api_observation: { source: 'stripe-authenticated-api', requestIds: ['req_Account', 'req_Customer', 'req_Tail'] } });
+      expect(completed.audit).toHaveLength(2);
+      expect(completed.audit.map(row => row.target_id).sort()).toEqual([firstId, tailId].sort());
+      expect(completed.audit.find(row => row.target_id === firstId)).toEqual(interrupted.audit[0]);
+    } finally { await deadlineDb.cleanup(); }
+  }, 180_000);
 
   it('rolls back receipt, facts, audit and cursor on a crash before commit, then recovers with the same page', async () => {
     const f = await fixture(); const pin = await startRecovery(f);

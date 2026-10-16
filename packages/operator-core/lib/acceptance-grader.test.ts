@@ -4,6 +4,7 @@ import {
   acceptanceGraderLabelPrefix,
   answeringOwnerAtCursor,
   buildAssignedAcceptanceGraderBrief,
+  carriedAcceptanceReviewBrief,
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderNoFirstTurnStall,
@@ -31,6 +32,19 @@ import {
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
 import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
+
+describe('pre-publication review brief', () => {
+  it('carries the exact unknown-only selection alongside independent verification', () => {
+    const brief = carriedAcceptanceReviewBrief({ acceptancePendingDeliveryBarKeys: ['R-15'],
+      acceptanceIndependentVerificationBrief: 'Re-observe the installed candidate independently.' });
+    expect(brief).toContain('Re-observe the installed candidate independently.');
+    expect(brief).toContain('pendingDeliveryBarKeys:["R-15"]');
+    expect(brief).toContain('must rate unknown');
+    expect(brief).toContain('BOTH scorecards:evaluate and scorecards:emit');
+    expect(brief).toContain('Do not claim delivery');
+    expect(carriedAcceptanceReviewBrief({})).toBe('');
+  });
+});
 
 describe('native terminal API-error provenance', () => {
   const sessionId = 'native-fixture-session';

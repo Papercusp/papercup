@@ -111,6 +111,8 @@ export function normalizePlanStatus(status: string): { status: string; mappedFro
 const argsSchema = z
   .object({
     harness: harnessArg,
+    pendingDeliveryBarKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(50).optional()
+      .describe('Review only: recruit an independent unknown grading for named manual deployed/live BARs before publication. Never changes plan status; final shipment must omit this field and supply delivery proof. dryRun remains read-only.'),
     current: z.union([z.array(evidenceCurrentInputSchema).max(2000), z.boolean()])
       .optional()
       .describe('ship proof: freshly measured evidence fingerprints, as in plans:get-spec-evidence; boolean true/false omit caller fingerprints and use independent server measurement; missing currentness never establishes fulfillment'),
@@ -215,6 +217,11 @@ const argsSchema = z
   ), {
     message: "dryRun is only valid for a shipped target (not restoreShippedRevision, not expectedCurrent:'shipped')",
     path: ['dryRun'],
+  })
+  .refine((a) => !a.pendingDeliveryBarKeys || (normalizePlanStatus(a.status).status === 'shipped'
+    && !a.force && !a.restoreShippedRevision && a.expectedCurrent !== 'shipped'), {
+    message: 'pendingDeliveryBarKeys is a review-only shipped request; force, restore and already-shipped requests are refused',
+    path: ['pendingDeliveryBarKeys'],
   });
 
 type SetPlanStatusValue =
@@ -454,6 +461,7 @@ export async function launchAcceptanceGraderForGate(
   /** WI-6554700010008529: the re-observation step for an `independent_verification_missing` recruit. */
   renderVerification: (slug: string, harnessSlug: string, workspaceId: string) => Promise<string> =
     defaultIndependentVerificationBrief,
+  pendingDeliveryBarKeys?: string[],
 ): Promise<AcceptanceGraderLifecycle | undefined> {
   if (!gate.satisfied && gate.code === 'plan_items_unfinished') {
     // The real ship gate stays strict. Its not-code ceremony tail can still
@@ -465,6 +473,7 @@ export async function launchAcceptanceGraderForGate(
       // Recruitment evaluates the same proof as the strict gate. Keep the exact
       // comparison inputs; dropping opaque dimensions makes current proof unknown.
       ...(Array.isArray(current) ? { current } : {}),
+      ...(pendingDeliveryBarKeys ? { pendingDeliveryBarKeys } : {}),
     });
   }
   if (gate.satisfied || !gate.code || !ACCEPTANCE_GRADER_GATE_CODES.has(gate.code)) return undefined;
@@ -513,6 +522,7 @@ export async function launchAcceptanceGraderForGate(
   return launch(slug, {
     ...scopedCtx,
     acceptanceShipperOwnerId,
+    ...(pendingDeliveryBarKeys ? { acceptancePendingDeliveryBarKeys: pendingDeliveryBarKeys } : {}),
     ...(verificationBrief ? { acceptanceIndependentVerificationBrief: verificationBrief } : {}),
     ...(gate.staleGradingScorecardId ? { acceptanceStaleGradingScorecardId: gate.staleGradingScorecardId } : {}),
     ...(staleIds.length > 0 ? { acceptanceStaleGradingScorecardIds: staleIds } : {}),
@@ -788,6 +798,8 @@ export default defineTool({
             // independent pre-grading blocker in one refusal instead of one per attempt.
             // The primary code/message are unchanged, so grader recruitment is too.
             collectAllBlockers: true,
+            ...(args.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: args.pendingDeliveryBarKeys,
+              gradingRecruitment: true } : {}),
             ...(Array.isArray(args.current) ? { current: args.current } : {}),
             ...(args.force ? { force: args.force } : {}),
             readGradingAuditDispatchSuppression: async (targetOwnerId) => {
@@ -796,6 +808,11 @@ export default defineTool({
             },
           });
           citationDeployment = gate.citationDeployment;
+          if (args.pendingDeliveryBarKeys && gate.satisfied) {
+            return { ok: false as const, slug, error: 'acceptance_pending_delivery',
+              message: 'Pending-delivery review cannot mark a plan shipped. Omit pendingDeliveryBarKeys and satisfy the complete ship gate.',
+              pendingDeliveryBarKeys: args.pendingDeliveryBarKeys };
+          }
           if (gate.forcedPast) {
             const actor = resolveAgentIdentity(ctx);
             forcedPast = {
@@ -852,7 +869,7 @@ export default defineTool({
           }
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(
-              slug, gate, ctx, harnessSlug, undefined, undefined, args.current,
+              slug, gate, ctx, harnessSlug, undefined, undefined, args.current, undefined, args.pendingDeliveryBarKeys,
             );
             // EI-24032136322947460: say whether a stall will be recovered
             // automatically. Read only when a grader is in play and unsettled.
@@ -872,6 +889,12 @@ export default defineTool({
             };
           }
           acceptanceGateSatisfied = true;
+        }
+        // Also guard paths that skipped the ship gate: explicit review requests
+        // never reach the frontmatter writer.
+        if (args.pendingDeliveryBarKeys) {
+          return { ok: false as const, slug, error: 'acceptance_pending_delivery',
+            message: 'Pending-delivery review never changes plan status.' };
         }
         // EI-19403437795858863 — the deprecate counterpart. The acceptance gate above
         // fires only on `shipped`, so until now a supersede could strand every one of

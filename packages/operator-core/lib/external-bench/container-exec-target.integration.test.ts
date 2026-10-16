@@ -229,7 +229,7 @@ describe('container exec target against a live container', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('model = "frozen"');
     // Only this session is visible inside the container; session-8 and its token stay on the host.
-    expect(r.stdout.split('\n').filter(l => l.startsWith('session-'))).toEqual(['session-7']);
+    expect(r.stdout.split('\n').filter((l: string) => l.startsWith('session-'))).toEqual(['session-7']);
     // Host readers (rollout/usage ingest) see the container's write through the symlink.
     expect(readFileSync(join(homes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe('from-container\n');
     } catch (error) { primaryError = error; throw error; }

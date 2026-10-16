@@ -864,9 +864,14 @@ finally {
     });
     const retained = sockets.filter(socket => socket.referenced &&
       (socket.remote as { port?: number } | undefined)?.port === Number(process.env.PAPERCUSP_PG_PORT));
+    const activeResources = process.getActiveResourcesInfo();
     writeFileSync(join(evidence, 'roster-stop-resources.json'), JSON.stringify({
-      activeResources: process.getActiveResourcesInfo(), pgConnections, sockets, retained }, null, 2));
+      activeResources, pgConnections, sockets, retained }, null, 2));
     assert.equal(retained.length, 0, 'private PG sockets remain after roster worker cleanup; see roster-stop-resources.json');
+    // Node reports a referenced fs.watch handle as FSEventWrap, rather than
+    // the public FSWatcher class name. Such a handle alone pins this worker.
+    assert.equal(activeResources.some(type => type === 'FSEventWrap' || type === 'FSWatcher'), false,
+      'file watchers remain referenced after roster worker cleanup; see roster-stop-resources.json');
   });
   net.Socket.prototype.connect = originalConnect;
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });

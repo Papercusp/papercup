@@ -1560,7 +1560,7 @@ describe('public manual selected private runtime preflight', () => {
     });
 
   it('preserves explicit automatic gateway routing without mutating the caller', () => {
-    const selected = { ...environment, PAPERCUSP_TEST_PUBLIC_CHAT: '1',
+    const selected: NodeJS.ProcessEnv = { ...environment, PAPERCUSP_TEST_PUBLIC_CHAT: '1',
       PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: '8788' };
     expect(publicManualHostedRuntimeEnvironment(selected)).toMatchObject({
       PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: '8788' });
@@ -2497,9 +2497,12 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       expect(registered.current).toBe(before.current);
       expect(registered.workspaces.some((entry) => entry.id === workspaceId)).toBe(true);
     }));
-    principalSessionId = `public-chat-manual-${randomUUID()}`;
+    // A const keeps the narrowing inside the phase() callback; the module-level
+    // `let` is still assigned for the afterAll cleanup.
+    const admittedSessionId = `public-chat-manual-${randomUUID()}`;
+    principalSessionId = admittedSessionId;
     const principal = await phase('principal-admission', () => startPiSession({
-      workspaceId, sessionId: principalSessionId, capabilities: ['docs:read'],
+      workspaceId, sessionId: admittedSessionId, capabilities: ['docs:read'],
       allowedTools: ['docs:search', 'docs:get'],
       expiresAt: new Date(Date.now() + 15 * 60_000),
     }));

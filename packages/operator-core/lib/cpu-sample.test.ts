@@ -197,7 +197,7 @@ it.skipIf(process.platform !== 'linux')('starts profiling before releasing an ex
     expect(result.startupResumed).toBe(true);
     await vi.waitFor(() => expect(output()).toContain('CPU_SAMPLE_BUSY_READY'), { timeout: 3000 });
     const sampled = new Set(result.profile.samples);
-    const sampledUrls = [...new Set(result.profile.nodes
+    const sampledUrls = [...new Set<string>(result.profile.nodes
       .filter((node: { id: number }) => sampled.has(node.id))
       .map((node: { callFrame: { url: string } }) => node.callFrame.url))];
     const sampledSourceUrls = sampledUrls.filter(url => url && !url.startsWith('node:'));

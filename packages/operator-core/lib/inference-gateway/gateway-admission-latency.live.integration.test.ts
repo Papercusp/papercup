@@ -84,11 +84,11 @@ describe('live admission latency oracle controls', () => {
     expect(() => expectLiveSampleReady(assess(good(), 1))).toThrow('herd-present');
   });
   it.each(['claude', 'codex'] as const)('rejects a sparse %s lane in the shared live precondition', (sparse) => {
-    const retained = (provider: 'claude' | 'codex') => ({
+    const retained = (provider: 'claude' | 'codex' | 'local') => ({
       count: 400, retained: provider === sparse ? MIN_LANE_SAMPLE - 1 : 256,
       p50: 100, p95: 100, p99: 100,
     });
-    const measured = assess(good(), 0, { claude: retained('claude'), codex: retained('codex') });
+    const measured = assess(good(), 0, { claude: retained('claude'), codex: retained('codex'), local: retained('local') });
     expect(measured.failures).toEqual(['insufficient-sample']);
     expect(() => expectLiveSampleReady(measured)).toThrow('insufficient-sample');
   });

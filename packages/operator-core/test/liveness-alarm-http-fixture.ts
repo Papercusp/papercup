@@ -162,7 +162,8 @@ async function main() {
     // The specific alarm owns this fault; the Infra panel must not double-page it.
     const duplicates = await sql`SELECT body FROM harness_shared.coord_event_log
       WHERE workspace_id = ${workspace} AND surface = 'escalations'
-        AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = 'panel:infra'`;
+        AND body->>'from' = 'system:infra-liveness-alarm' AND body->>'livenessSignature' = 'panel:infra'
+        AND body->>'severity' = 'blocker'`;
     assert.equal(duplicates.length, 0);
   } else {
     assert.equal(observation.wedged, 10);

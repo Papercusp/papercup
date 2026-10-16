@@ -15511,6 +15511,20 @@ export function sessionPortTargetAccount(account) {
   return "default";
 }
 
+function consumeConsultEvidenceSpan(args) {
+  let span = args.consultEvidenceSpan ?? null;
+  if (span == null && process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN) {
+    try {
+      span = JSON.parse(process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN);
+    } catch {
+      throw new Error("PAPERCUSP_CONSULT_EVIDENCE_SPAN is not valid JSON");
+    } finally {
+      delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
+    }
+  }
+  return span;
+}
+
 export function sessionPortRequestBody(source, target, account, args = {}) {
   if (!Number.isSafeInteger(Number(source?.id)) || Number(source.id) <= 0) {
     throw new Error(
@@ -15526,16 +15540,7 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
   if (isolatedOwner && !/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(isolatedOwner)) {
     throw new Error("isolated target owner must be a valid distinct su coordination identity");
   }
-  let consultEvidenceSpan = args.consultEvidenceSpan ?? null;
-  if (consultEvidenceSpan == null && process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN) {
-    try {
-      consultEvidenceSpan = JSON.parse(process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN);
-    } catch {
-      throw new Error("PAPERCUSP_CONSULT_EVIDENCE_SPAN is not valid JSON");
-    } finally {
-      delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
-    }
-  }
+  const consultEvidenceSpan = consumeConsultEvidenceSpan(args);
   // Carry-respawn reuses the adv row for its newest native session. Preserve
   // the incarnation actually selected on disk (or by consult evidence).
   const sourceNativeSessionId = consultEvidenceSpan?.sessionId ??
@@ -16566,12 +16571,12 @@ export async function launchSessionPort(
  * path and are not judged here. `home` is injectable for tests.
  * @param {any} source
  * @param {any} target
- * @param {{ tracked?: boolean, home?: string }} [options]
+ * @param {{ tracked?: boolean, home?: string, sourceNativeSessionId?: string | null }} [options]
  * @returns {string | null} */
 export function unresumableSourceCause(
   source,
   target,
-  { tracked, home = homedir() } = {},
+  { tracked, home = homedir(), sourceNativeSessionId = null } = {},
 ) {
   if (target?.operation !== "port") return null;
   const label = `${source?.agent ?? "unknown"} session ${
@@ -16582,6 +16587,13 @@ export function unresumableSourceCause(
       `cross-backend resume requires a psu-tracked source session; ${label} is a raw native ` +
       "session (no psu row), so it can only resume/fork in place"
     );
+  const currentId = source?.agent === "omp"
+    ? source.ompThreadId ?? source.sessionId : source?.sessionId;
+  // A carry may have rotated this row to an empty/newer native session. Its
+  // transcript and hasArchive flag say nothing about the historical evidence
+  // selected by the consult. The operator inspector authenticates ownership
+  // and reads/restores that exact incarnation before preparing any port.
+  if (sourceNativeSessionId && sourceNativeSessionId !== currentId) return null;
   if (!sessionIsResumable(source, { home }))
     return (
       `${label} has no source transcript to carry onto ${target.targetAgent}: ` +
@@ -16595,7 +16607,15 @@ async function launchResolvedResume(source, args, { tracked }) {
   // prompting before the target is known is how cross-backend resumes get
   // silently pinned to the source provider.
   const target = await chooseResumeTarget(source, args);
-  const unresumable = unresumableSourceCause(source, target, { tracked });
+  if (target.operation === "port") {
+    // Consume the span once, before the local check, and retain the same value
+    // for sessionPortRequestBody. Checking the row first rejects valid older
+    // evidence whenever its newest transcript has already been retired.
+    args = { ...args, consultEvidenceSpan: consumeConsultEvidenceSpan(args) };
+  }
+  const unresumable = unresumableSourceCause(source, target, {
+    tracked, sourceNativeSessionId: args.consultEvidenceSpan?.sessionId,
+  });
   if (unresumable) throw new Error(`psu: refusing to resume — ${unresumable}`);
   if (!(await ensureBackendInstalled(target.targetAgent))) {
     process.exitCode = 1;

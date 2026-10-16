@@ -19,7 +19,7 @@ export async function measureCodexBudgetScenario(o: Options) {
   const results = [];
   for (const entry of cases) {
     const owner = `su-private-budget-${randomUUID()}`;
-    await writePresence({ ownerId: owner, ownerLabel: 'Private budget control', source: 'test', workspaceId: o.workspace });
+    await writePresence({ ownerId: owner, ownerLabel: 'Private budget control', source: 'omp-hook-session', workspaceId: o.workspace, userId: null });
     if (entry.current !== null) await setCompactionLimit(owner, entry.current, { explicit: true });
     const response = await fetch(o.base + '/api/agent-mcp/console/bootstrap-su', {
       method: 'POST', headers: o.headers, signal: AbortSignal.timeout(120_000),
