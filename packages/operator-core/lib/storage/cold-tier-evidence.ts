@@ -133,7 +133,8 @@ export function assessColdMoves(moves: readonly ColdMove[], backup: unknown, mea
   const parsed = z.object({ repositoryPath: z.literal('/mnt/cold-a/Backup/kopia-repo'),
     host: z.string().min(1), snapshotHost: z.string().min(1), snapshotId: z.string().min(1),
     startedAt: z.string().datetime({ offset: true }), finishedAt: z.string().datetime({ offset: true }), complete: z.literal(true) }).safeParse(backup);
-  if (!parsed.success || parsed.data.host !== parsed.data.snapshotHost || Date.parse(parsed.data.startedAt) <= cutover ||
+  // Kopia canonicalizes DNS hostnames to lowercase; native os.hostname() may retain case.
+  if (!parsed.success || parsed.data.host.toLowerCase() !== parsed.data.snapshotHost.toLowerCase() || Date.parse(parsed.data.startedAt) <= cutover ||
       Date.parse(parsed.data.finishedAt) < Date.parse(parsed.data.startedAt) || Date.parse(parsed.data.finishedAt) > Date.parse(measuredAt)) {
     return outcome('unknown', 'A successful same-host Kopia snapshot in the moved repository must start after the entire cutover.');
   }
