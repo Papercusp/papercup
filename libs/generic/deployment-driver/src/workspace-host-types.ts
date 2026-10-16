@@ -568,6 +568,8 @@ export interface WorkspaceHostProviderContext {
   hostBootstrapScript?: string;
   /** Controller-derived hash of the persisted customer workspace, stable across VM replacement. */
   durableTenantIdentity?: string;
+  /** Immutable DB/workspace split from the server admission receipt, never the mutable desired spec. */
+  durableStorageAllocation?: { dbGiB: number; workspaceGiB: number };
   log?: (
     level: WorkspaceHostLogLevel,
     message: string,

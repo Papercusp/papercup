@@ -48,7 +48,7 @@ export function renderDurableDataProbeCore(dataMode = 'fresh', allocation) {
     'elif [[ "$data_mode" == fresh && "$data_probe_status" == 2 && -z "$data_type" ]]; then',
     '  data_signatures=$(wipefs --no-act --noheadings --output TYPE "$data_device") || { echo "durable data signature probe failed" >&2; exit 1; }',
     '  [[ -z "${data_signatures//[[:space:]]/}" ]] || { echo "durable data device has existing signatures" >&2; exit 1; }',
-    allocation ? '  mkfs.ext4 -O quota,project -Q prjquota "$data_device"' : '  mkfs.ext4 "$data_device"',
+    allocation ? '  mkfs.ext4 -O quota,project -E quotatype=prjquota -I 256 "$data_device"' : '  mkfs.ext4 "$data_device"',
     '  data_freshly_formatted=1',
     'else',
     '  echo "durable data filesystem unavailable or unsupported; refusing to format" >&2; exit 1',

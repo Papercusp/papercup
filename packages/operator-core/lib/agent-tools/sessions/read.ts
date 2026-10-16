@@ -236,7 +236,7 @@ export default defineTool({
         { workspaceId },
       );
       const self = resolved.selfSession;
-      liveSelfSession = self;
+      liveSelfSession = self ?? null;
       // `resolveSearchFilters` intentionally fails soft when the live
       // transcript cannot be pinned (for example, during a carry-respawn or
       // resolver timeout). Its owner filter still scopes the read across the

@@ -1387,10 +1387,11 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
     const { provider } = providerAndClient();
     const plan = await provider.plan(
       { action: 'provision', operationId: 'tenant', idempotencyKey: 'tenant', desired: desired() },
-      { ...context(), hostBootstrapScript: HOST_BOOTSTRAP, durableTenantIdentity: 'a'.repeat(64) },
+      { ...context(), hostBootstrapScript: HOST_BOOTSTRAP, durableTenantIdentity: 'a'.repeat(64),
+        durableStorageAllocation: { dbGiB: 256, workspaceGiB: 32 } },
     );
     expect(plan.steps.find(({ id }) => id === 'start-host-bootstrap')!.input).toMatchObject({
-      dataMode: 'fresh', tenantIdentity: 'a'.repeat(64),
+      dataMode: 'fresh', tenantIdentity: 'a'.repeat(64), allocation: { dbGiB: 256, workspaceGiB: 32 },
     });
   });
 

@@ -906,12 +906,16 @@ describe('GCP workspace-host provider planning', () => {
     const { provider } = providerAndClient();
     const plan = await provider.plan(
       { action: 'provision', operationId: 'tenant', idempotencyKey: 'tenant', desired: desired() },
-      { ...context({}, '#!/usr/bin/env bash\necho TENANT_BOOTSTRAP'), durableTenantIdentity: 'a'.repeat(64) },
+      { ...context({}, '#!/usr/bin/env bash\necho TENANT_BOOTSTRAP'), durableTenantIdentity: 'a'.repeat(64),
+        durableStorageAllocation: { dbGiB: 256, workspaceGiB: 32 } },
     );
     const instance = plan.steps.find(({ id }) => id === 'create-instance')!.input.request as unknown as GcpInstanceInsertInput;
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')!.value;
     expect(script).toContain(`data_expected_tenant='${'a'.repeat(64)}'`);
     expect(script.indexOf('durable tenant identity mismatch')).toBeLessThan(script.indexOf('echo TENANT_BOOTSTRAP'));
+    expect(script).toContain('setquota -P 1001 0 268435456 0 0 "$data_mount"');
+    expect(script).toContain('setquota -P 1002 0 33554432 0 0 "$data_mount"');
+    expect(script.indexOf('# End admitted durable storage quotas.')).toBeLessThan(script.indexOf('echo TENANT_BOOTSTRAP'));
   });
 
   it('binds workspace and agent homes onto the DURABLE disk before the bootstrap runs', async () => {
