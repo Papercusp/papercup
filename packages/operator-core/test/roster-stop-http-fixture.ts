@@ -60,15 +60,23 @@ assert.ok(Buffer.byteLength(join(discovery, 'su-rs-123456789-neighbor.sock')) < 
 writeFileSync(join(evidence, 'discovery.json'), JSON.stringify({ discovery }));
 process.env.PAPERCUSP_PSU_PTY_DIR = discovery;
 process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(evidence, 'turn-provenance');
-const { socketPathFor, metaPathFor, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
+const { socketPathFor, metaPathFor, eventLogPathForOwner, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
 const { shutdownViaPty } = await import('../lib/events/await/psu-pty-discovery');
 const { sql } = getOrgPg();
-const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string }> = [];
+const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string;
+  pid?: number; exitedAt?: string; closedAt?: string; exitCode?: number | null; exitSignal?: NodeJS.Signals | null }> = [];
 let api: ChildProcess | undefined;
 let cupboardCatalog: Awaited<ReturnType<typeof startPrivateCupboardCatalog>> | undefined;
 const endings: Promise<unknown>[] = [];
 const inboxInvalidations: Array<Record<string, unknown>> = [];
 let inboxInvalidationListener: { unlisten: () => Promise<void> } | undefined;
+
+function retainNativeState(stage: string) {
+  appendFileSync(join(evidence, 'roster-stop-native.jsonl'), JSON.stringify({ at: new Date().toISOString(), stage,
+    sessions: sessions.map(({ done: _done, output, ...session }) => ({ ...session, output: output(),
+      hostEvents: existsSync(eventLogPathForOwner(session.owner))
+        ? readFileSync(eventLogPathForOwner(session.owner), 'utf8') : null })) }) + '\n');
+}
 
 async function until(check: () => boolean | Promise<boolean>, label: string, timeout = 10_000) {
   const deadline = Date.now() + timeout;
@@ -86,7 +94,8 @@ async function child(label: string) {
   const row = await getAdvSessionInWorkspace(id, workspace);
   assert.ok(row);
   let output = '';
-  const session = { owner, id, startedAt: row.startedAt, closed: false, output: () => output, done: Promise.resolve(0) };
+  const session: typeof sessions[number] = { owner, id, startedAt: row.startedAt, closed: false,
+    output: () => output, done: Promise.resolve(0) };
   const host = spawn(process.execPath, [join(root, 'packages/operator-core/test/psu-pty-host-canary.mjs'), owner, String(id)], {
     cwd: evidence, stdio: ['ignore', 'pipe', 'pipe'],
     env: { PATH: process.env.PATH, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_DIR: discovery,
@@ -95,10 +104,18 @@ async function child(label: string) {
   });
   host.stdout!.on('data', chunk => { output += String(chunk); });
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
+  session.pid = host.pid;
+  host.once('exit', (code, signal) => {
+    session.exitedAt = new Date().toISOString();
+    session.exitCode = code; session.exitSignal = signal;
+    retainNativeState('host-exit');
+  });
   session.done = new Promise((done, reject) => {
     host.once('error', reject);
     host.once('close', (code, osSignal) => {
       session.closed = true;
+      session.closedAt = new Date().toISOString();
+      retainNativeState('host-close');
       const line = output.split('\n').find(value => value.startsWith('ROSTER_CANARY_EXIT '));
       const signal = line ? JSON.parse(line.slice('ROSTER_CANARY_EXIT '.length)).signal : osSignal;
       endings.push(markAdvSessionEnded(id, code, signal ? 'signal' : 'self', { signal, throwOnError: true }));
@@ -813,6 +830,7 @@ finally {
         ...(error ? { error: String(error) } : {}) };
       appendFileSync(join(evidence, 'roster-stop-cleanup.jsonl'), JSON.stringify(row) + '\n');
       console.log('ROSTER_STOP_HTTP_CLEANUP_PHASE ' + JSON.stringify(row));
+      if (stage === 'native-shutdown' || stage === 'native-exit') retainNativeState(`${stage}:${status}`);
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     record('start');
@@ -874,6 +892,7 @@ finally {
       'file watchers remain referenced after roster worker cleanup; see roster-stop-resources.json');
   });
   net.Socket.prototype.connect = originalConnect;
+  retainNativeState('before-discovery-removal');
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
   if (failures.length) throw new AggregateError(failures, 'Private roster cleanup failed');
