@@ -624,7 +624,7 @@ if (isolatedRuntime) {
   const evidenceKeys = new Set([
     // Optional receipts from the existing committed-source loader are evidence,
     // not an operator identity or endpoint. Retain them in the profile child.
-    'PAPERCUSP_COMMITTED_SOURCE_AUDIT',
+    'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',
