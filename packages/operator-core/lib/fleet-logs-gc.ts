@@ -44,7 +44,7 @@
  * rather than raised. Logical bytes unlinked and the last-link allocation
  * estimate are reported separately; neither proves filesystem space reclaimed.
  */
-import { readdirSync, readFileSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, type Dirent, type Stats } from 'node:fs';
+import { readdirSync, readFileSync, rmSync, statSync, lstatSync, realpathSync, unlinkSync, writeFileSync, type Dirent, type Stats } from 'node:fs';
 import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dirname, isAbsolute, join, relative as relativePath, resolve, sep } from 'node:path';
@@ -69,28 +69,46 @@ const execFileAsync = ((...args: unknown[]) =>
  * never for removal. Missing privilege/runtime or partial evidence defers GC. */
 async function scanGcPathHolders(paths: string[]): Promise<OpenWriterScan> {
   const options = { descendants: true, includeCwd: true, failClosed: true,
-    deadlineMs: 3 * NATIVE_BG_SCAN_DEADLINE_MS };
+    // Fleet-log directories can contain thousands of candidates. Keep the
+    // privileged census within the existing wall budget by using the wider
+    // worker pool; the default 32-way scan can miss the 15s deadline on a
+    // live workspace even after the ARG_MAX fix below.
+    concurrency: 128, deadlineMs: 3 * NATIVE_BG_SCAN_DEADLINE_MS };
   if (process.getuid?.() === 0) return openWriterPidsMany(paths, options);
   const appRoot = resolveOperatorAppRootFromModuleDir(dirname(fileURLToPath(import.meta.url)));
   const repoRoot = resolve(appRoot, '../..');
   const moduleUrl = pathToFileURL(join(repoRoot, 'packages/operator-core/lib/native-bg-task-ledger.ts')).href;
-  const script = `import { openWriterPidsMany } from ${JSON.stringify(moduleUrl)};
-const result = await openWriterPidsMany(${JSON.stringify(paths)}, ${JSON.stringify(options)});
-console.log(JSON.stringify({ complete: result.complete, byPath: [...result.byPath] }));`;
-  const { stdout } = await execFileAsync('sudo', ['-n', '--', process.execPath,
-    '--import', join(repoRoot, 'node_modules/tsx/dist/loader.mjs'), '--input-type=module', '-e', script],
-  { timeout: options.deadlineMs + 10_000, maxBuffer: 1024 * 1024 });
-  const result = JSON.parse(stdout) as { complete: unknown; byPath: unknown };
-  if (typeof result.complete !== 'boolean' || !Array.isArray(result.byPath)) throw new Error('invalid process census');
-  const byPath = new Map<string, string[]>();
-  for (const entry of result.byPath) {
-    if (!Array.isArray(entry) || entry.length !== 2 || !paths.includes(entry[0])
-      || !Array.isArray(entry[1]) || !entry[1].every((pid: unknown) => typeof pid === 'string' && /^\d+$/.test(pid))) {
-      throw new Error('invalid process census holder');
+  // Passing thousands of paths in the `node -e` argument eventually exceeds the
+  // host's ARG_MAX (spawn E2BIG), which made this fail-closed census permanently
+  // disable fleet-log GC on busy workspaces. Keep the command line small by
+  // handing the path/options payload through a short-lived mode-600 file.
+  const inputPath = join(tmpdir(), `.papercusp-open-writer-scan-${randomUUID()}.json`);
+  writeFileSync(inputPath, JSON.stringify({ paths, options }), { mode: 0o600 });
+  try {
+    const script = `import { readFileSync } from 'node:fs';
+import { openWriterPidsMany } from ${JSON.stringify(moduleUrl)};
+const input = JSON.parse(readFileSync(process.argv[1], 'utf8'));
+const result = await openWriterPidsMany(input.paths, input.options);
+// Empty holder lists are equivalent to absent entries and dominate the output
+// for a healthy census; omit them so a large path set stays below maxBuffer.
+console.log(JSON.stringify({ complete: result.complete, byPath: [...result.byPath].filter(([, holders]) => holders.length) }));`;
+    const { stdout } = await execFileAsync('sudo', ['-n', '--', process.execPath,
+      '--import', join(repoRoot, 'node_modules/tsx/dist/loader.mjs'), '--input-type=module', '-e', script, inputPath],
+    { timeout: options.deadlineMs + 10_000, maxBuffer: 16 * 1024 * 1024 });
+    const result = JSON.parse(stdout) as { complete: unknown; byPath: unknown };
+    if (typeof result.complete !== 'boolean' || !Array.isArray(result.byPath)) throw new Error('invalid process census');
+    const byPath = new Map<string, string[]>();
+    for (const entry of result.byPath) {
+      if (!Array.isArray(entry) || entry.length !== 2 || !paths.includes(entry[0])
+        || !Array.isArray(entry[1]) || !entry[1].every((pid: unknown) => typeof pid === 'string' && /^\d+$/.test(pid))) {
+        throw new Error('invalid process census holder');
+      }
+      byPath.set(entry[0], entry[1]);
     }
-    byPath.set(entry[0], entry[1]);
+    return { complete: result.complete, byPath };
+  } finally {
+    try { unlinkSync(inputPath); } catch { /* best-effort cleanup */ }
   }
-  return { complete: result.complete, byPath };
 }
 
 export interface LintWorkRootGcOptions {
