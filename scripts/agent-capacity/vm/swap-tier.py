@@ -30,12 +30,18 @@ throughout, as the "is the desktop still responsive" signal.
 
 Every measurement is one JSON line in DIR/results.jsonl; `report` reduces them to DIR/summary.json
 and a markdown table. Lines to grep: SWAPTIER <kind>.
+Codex runs also save native-evidence.tar.gz INSIDE DIR after stopping agents, including
+raw histories, dummy data and a population/hash manifest. Copy that file locally and run
+`swap-tier.py verify-archive --archive FILE --results DIR/results.jsonl` BEFORE deleting a guest. An incomplete
+receipt is evidence loss, never capacity acceptance; the fixed deletion deadline still wins.
 Run as root (cgroup writes, swapon); the agents run as --user (claude refuses bypass mode as root).
 """
 import argparse
+import datetime
 import errno
 import glob
 import hashlib
+import io
 import json
 import os
 import re
@@ -43,6 +49,7 @@ import shlex
 import statistics
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -394,6 +401,118 @@ def saved_codex_session(config, expected_sha256):
     return {"id": session_id, "path": path, "verifiedWarmMarkers": verified}
 
 
+def native_archive_problems(manifest, files):
+    """Recheck archived bytes and CURRENT-run native completions, without the guest."""
+    problems = []
+    if manifest.get("schemaVersion") != "swap-tier-native-archive-v1":
+        return ["unsupported native archive manifest"]
+    results = files.get("results.jsonl", b"")
+    if hashlib.sha256(results).hexdigest() != manifest.get("resultsSha256"):
+        return ["results hash mismatch"]
+    rows = [json.loads(line) for line in results.splitlines() if line.strip()]
+    starts = [r for r in rows if r.get("kind") == "run-start"]
+    if len(starts) != 1 or starts[0].get("cli") != "codex":
+        return ["archive requires exactly one Codex run-start"]
+    start = starts[0]
+    ends = [r["t"] for r in rows if r.get("kind") == "run-end" and r["t"] >= start["t"]]
+    if not ends:
+        problems.append("run did not complete")
+    end = max(ends) if ends else max(r["t"] for r in rows)
+    names = [f"a{k}" for k in range(1, start["agents"] + 1)]
+    entries = manifest.get("agents", [])
+    if sorted(e.get("agent", "") for e in entries) != sorted(names):
+        problems.append("assigned native population mismatch")
+    for entry in entries:
+        name = entry["agent"]
+        history = files.get(entry["historyPath"], b"")
+        data = files.get(entry["dataPath"], b"")
+        if not history or hashlib.sha256(history).hexdigest() != entry["historySha256"]:
+            problems.append(f"{name}: missing or changed raw history")
+            continue
+        if not data or hashlib.sha256(data).hexdigest() != entry["dataSha256"]:
+            problems.append(f"{name}: missing or changed task data")
+            continue
+        state = {"expected_sha256": entry["dataSha256"]}
+        for line in history.splitlines():
+            row = json.loads(line)
+            stamp = row.get("timestamp")
+            if stamp and start["t"] <= datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() <= end:
+                codex_record(state, row)
+        outcomes = state.get("outcomes", {})
+        warm = sum(k.startswith("WARM-") and v is None for k, v in outcomes.items())
+        wake = sum(k.startswith("WAKE-") and v is None for k, v in outcomes.items())
+        tasks = [r for r in rows if r.get("kind") == "wake" and r.get("agent") == name]
+        expected_warm = start["warm"] + sum(bool(r.get("nativeToolVerified")) for r in tasks)
+        expected_wake = sum(not r.get("nativeToolVerified") for r in tasks)
+        if (warm < expected_warm or wake < expected_wake or not tasks or
+                any(not r.get("tDone") or r.get("error") for r in tasks)):
+            problems.append(f"{name}: current-run native task coverage incomplete")
+    return problems
+
+
+def verify_native_archive(path, results_path):
+    # Read members only: never extract paths supplied by an archive.
+    with tarfile.open(path, "r:gz") as archive:
+        members = archive.getmembers()
+        if any(not m.isfile() for m in members) or len({m.name for m in members}) != len(members):
+            raise RuntimeError("native archive has non-file or duplicate members")
+        files = {m.name: archive.extractfile(m).read() for m in members}
+    if "native-manifest.json" not in files:
+        raise RuntimeError("native archive missing required population manifest")
+    with open(results_path, "rb") as f:
+        if files.get("results.jsonl") != f.read():
+            raise RuntimeError("native archive belongs to different run results")
+    manifest = json.loads(files["native-manifest.json"])
+    problems = native_archive_problems(manifest, files)
+    if problems:
+        raise RuntimeError("native archive incomplete: " + "; ".join(problems))
+    with open(path, "rb") as f:
+        digest = hashlib.file_digest(f, "sha256").hexdigest()
+    return {"verified": True, "archiveSha256": digest, "assignedAgents": len(manifest["agents"]),
+            "resultsSha256": manifest["resultsSha256"]}
+
+
+def archive_native_evidence(out, sessions=None):
+    """Make the run output self-contained before a caller can discard the VM."""
+    sessions = CODEX_SESSIONS if sessions is None else sessions
+    with open(os.path.join(out, "results.jsonl"), "rb") as f:
+        files = {"results.jsonl": f.read()}
+    manifest = {"schemaVersion": "swap-tier-native-archive-v1", "agents": [],
+                "resultsSha256": hashlib.sha256(files["results.jsonl"]).hexdigest()}
+    for name, session in sorted(sessions.items()):
+        if not re.fullmatch(r"a[1-9][0-9]*", name):
+            raise ValueError("invalid native archive agent name")
+        history = session.get("file")
+        if not history:
+            candidates = [p for p in glob.glob(session["root"] + "/**/*.jsonl", recursive=True)
+                          if os.path.getmtime(p) >= session["started"]]
+            history = max(candidates, key=os.path.getmtime) if candidates else None
+        if not history or not os.path.isfile(history):
+            continue
+        data_path = session["data"]
+        if not os.path.isfile(data_path):
+            continue
+        entry = {"agent": name, "historyPath": f"native/{name}/session.jsonl",
+                 "dataPath": f"native/{name}/dummy-data.txt"}
+        for key, path in [("history", history), ("data", data_path)]:
+            with open(path, "rb") as f:
+                content = f.read()
+            files[entry[key + "Path"]] = content
+            entry[key + "Sha256"] = hashlib.sha256(content).hexdigest()
+        manifest["agents"].append(entry)
+    manifest["problems"] = native_archive_problems(manifest, files)
+    files["native-manifest.json"] = json.dumps(manifest, indent=2).encode()
+    path = os.path.join(out, "native-evidence.tar.gz")
+    with tarfile.open(path + ".partial", "w:gz") as archive:
+        for name, content in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            member.mode = 0o600
+            archive.addfile(member, io.BytesIO(content))
+    os.replace(path + ".partial", path)
+    return verify_native_archive(path, os.path.join(out, "results.jsonl"))
+
+
 def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=False):
     home = f"/home/{user}"
     names = [f"a{k}" for k in range(1, n + 1)]
@@ -413,6 +532,7 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=F
         if saved:
             rec.rec("native-resume", agent=name, **saved)
         CODEX_SESSIONS[name] = {"root": config + "/sessions", "started": time.time(),
+                                "data": work + "/dummy-data.txt",
                                 "expected_sha256": expected_sha256}
         sh(["chown", "-R", f"{user}:{user}", work, config])
         env = f"env -i HOME={home} USER={user} LOGNAME={user} CODEX_HOME={config} PATH=/usr/local/bin:/usr/bin:/bin TERM=tmux-256color LANG=C.UTF-8"
@@ -1027,6 +1147,7 @@ def run(a):
         arms[0]["device"] = configured_swap["device"]
     global REAL_MODEL, WARM_PREFIX
     REAL_MODEL = a.cli == "codex"
+    CODEX_SESSIONS.clear()
     # Resumed JSONL may replay old rounds; only fresh unpredictable markers can
     # admit this run's new verification turn.
     WARM_PREFIX = os.urandom(6).hex() if a.resume_native else ""
@@ -1067,6 +1188,17 @@ def run(a):
             p.terminate()
         if not a.active:
             swap_off()
+        if REAL_MODEL:
+            # Preserve partial evidence on failure too. Never mask the original
+            # native error, and never delay mandatory provider deadline deletion.
+            failing = sys.exc_info()[0] is not None
+            try:
+                receipt = archive_native_evidence(a.out)
+                print("SWAPTIER native-archive " + json.dumps(receipt), flush=True)
+            except Exception as error:
+                print("SWAPTIER native-archive-incomplete " + str(error), file=sys.stderr, flush=True)
+                if not failing:
+                    raise
     report(a.out)
 
 
@@ -1100,6 +1232,9 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     q = sub.add_parser("probe")
     q.add_argument("--out", required=True)
+    v = sub.add_parser("verify-archive")
+    v.add_argument("--archive", required=True, help="locally copied native-evidence.tar.gz; required before teardown")
+    v.add_argument("--results", required=True, help="locally copied results.jsonl from the exact run being torn down")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         if a.active and (a.cli != "codex" or a.warm < 1 or a.single != 0 or len(a.arm) != 1 or
@@ -1122,6 +1257,8 @@ def main(argv=None):
         report(a.out)
     elif a.cmd == "probe":
         probe(a.out)
+    elif a.cmd == "verify-archive":
+        print(json.dumps(verify_native_archive(a.archive, a.results)))
     return 0
 
 

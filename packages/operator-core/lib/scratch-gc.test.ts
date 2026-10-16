@@ -41,7 +41,7 @@ import {
 } from 'node:fs';
 import { mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import {
   runScratchGc,
@@ -288,6 +288,62 @@ describe('runScratchGc — retention', () => {
     const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
     expect(r.retentionEvictions).toBeGreaterThanOrEqual(1);
     expect(existsSync(before)).toBe(false);
+  });
+
+  it('does not hold the workspace mutex while sizing retention candidates', async () => {
+    const workspaceId = 'ws-retention-admission';
+    const staleRun = makeRunDir(workspaceId, 'demo:tool', UUID(20), 100, RETENTION_MS + 1000);
+    await refreshScratchUsage(workspaceId);
+    const writerPath = join(
+      ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(21) }),
+      'spill.bin',
+    );
+
+    const originalStat = vi.mocked(statAsync).getMockImplementation();
+    if (!originalStat) throw new Error('async stat mock has no original implementation');
+    let releaseSizing!: () => void;
+    let reachedSizing!: () => void;
+    const sizingGate = new Promise<void>((resolve) => { releaseSizing = resolve; });
+    const sizingStarted = new Promise<void>((resolve) => { reachedSizing = resolve; });
+    vi.mocked(statAsync).mockImplementation((async (path, options) => {
+      const result = await originalStat(path, options);
+      if (String(path) === join(staleRun, 'data.bin')) {
+        reachedSizing();
+        await sizingGate;
+      }
+      return result;
+    }) as typeof statAsync);
+
+    let sweep: Promise<Awaited<ReturnType<typeof runScratchGc>>> | undefined;
+    let writer: Promise<void> | undefined;
+    try {
+      sweep = runScratchGc({ workspaceRegistry: [workspaceId], enforceQuota: false });
+      await sizingStarted;
+
+      let writeFinished!: () => void;
+      const writeDone = new Promise<void>((resolve) => { writeFinished = resolve; });
+      writer = writeWithScratchQuota({ workspaceId, filePath: writerPath, bytes: 1 }, async () => {
+        await writeFile(writerPath, Buffer.alloc(1));
+        writeFinished();
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const enteredDuringSizing = await Promise.race([
+        writeDone.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), 1_000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      expect(enteredDuringSizing).toBe(true);
+      await writer;
+    } finally {
+      releaseSizing();
+      vi.mocked(statAsync).mockImplementation(originalStat);
+      await Promise.allSettled([...(sweep ? [sweep] : []), ...(writer ? [writer] : [])]);
+    }
+
+    expect((await sweep!).retentionEvictions).toBe(1);
+    expect(existsSync(staleRun)).toBe(false);
   });
 
   it('honors an extended requested retention window without relaxing the safe default', async () => {
@@ -1642,6 +1698,60 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
     expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 8 * 6709);
     expect(scratchRmCallCount()).toBe(0);
+  });
+
+  it('lets a spill finish while stale shared quota reconciliation is still scanning', async () => {
+    const workspaceId = 'ws-Q';
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const firstPath = join(workspaceRoot, 'quota', UUID(1), 'first.spill');
+    await writeWithScratchQuota({ workspaceId, filePath: firstPath, bytes: 16 }, async () => {
+      await mkdir(dirname(firstPath), { recursive: true });
+      await writeFile(firstPath, Buffer.alloc(16));
+    });
+
+    // Make the already valid cross-process ledger stale. The next reservation can safely
+    // advance it; a full tree reconciliation should run after that spill settles.
+    const statePath = join(
+      dirname(dirname(workspaceRoot)),
+      'scratch-quota-state',
+      createHash('sha256').update(resolve(workspaceRoot)).digest('hex') + '.json',
+    );
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as { updatedAt: number };
+    writeFileSync(statePath, JSON.stringify({ ...state, updatedAt: Date.now() - USAGE_REFRESH_MS - 1 }));
+
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const scanStarted = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let gated = false;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (!gated && String(path) === workspaceRoot) {
+        gated = true;
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const spillPath = join(workspaceRoot, 'quota', UUID(2), 'after-stale.spill');
+    let spillSettled = false;
+    const spill = writeWithScratchQuota({ workspaceId, filePath: spillPath, bytes: 16 }, async () => {
+      await mkdir(dirname(spillPath), { recursive: true });
+      await writeFile(spillPath, Buffer.alloc(16));
+    }).then(() => { spillSettled = true; });
+    try {
+      await scanStarted;
+      expect(spillSettled).toBe(true);
+      expect(existsSync(spillPath)).toBe(true);
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      await Promise.allSettled([spill, refreshScratchUsage(workspaceId)]);
+    }
   });
 
   it('coalesces pressure recovery while preserving concurrent reservations without synchronous scans', async () => {

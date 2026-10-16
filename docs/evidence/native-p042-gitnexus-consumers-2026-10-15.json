@@ -634,6 +634,48 @@
     },
     "limits": "This supersedes only the unresolved current-build identity diagnosis in the earlier documentation batch. Release remains on its old behavior; final shipment is still separate. The new instruction finding and broader persona/corpus census, registered P012 outcome measures and deployed P01848h acceptance remain open."
   },
+  "canonicalInstructionRepair20261016": {
+    "workItem": "EI-26178649957036371",
+    "scope": "Correction of the one current canonical topology routing row and its historical query-status warning; no optional-engine retirement or final plan acceptance claim.",
+    "canonicalPart": "storage-policy-postgres-by-d-you-want-use-not",
+    "writer": "node --import tsx scripts/set-doc-part.ts --part-key storage-policy-postgres-by-d-you-want-use-not --body-stdin --write",
+    "sourceBefore": { "chars": 3277, "sha256": "42f1ca763a519a0a223974ea7e4e6ccb075c843cc8f34027a24ea49b831f344d" },
+    "sourceAfter": { "chars": 3640, "sha256": "cb42e3b183fcf18319af46c66799d9225867e8b9815df2f1a4a8ab4c90e6877d", "exactReadback": true },
+    "change": "Native topology now routes to graph:query context/impact/trace with bounded paths, first-party JS/TS evidence and explicit coverage/runtime limits. Raw query is fail-closed before dispatch; D021 noise is labelled historical. D005 optional internal authority and D004 distribution exclusion are explicit and preserved. The separate callers lower-bound caveat is unchanged.",
+    "projection": {
+      "command": "node scripts/project-doc-parts.mjs --write",
+      "files": ["CLAUDE.md", "AGENTS.md", "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md"],
+      "claudeChars": 90037,
+      "agentsChars": 90046,
+      "corpusChars": 286688,
+      "otherPartsEvicted": 0,
+      "clientMetadataRecorded": true,
+      "cachedCompositionUpdated": true,
+      "terminalExitCode": 1,
+      "fullGuardResult": "4 files failed / 108 passed; 6 assertions failed / 1078 passed. The routing suite passed; failed files were lifecycle-judge-pid-namespace-claims, mcp-route-ports, same-listener-websocket-sites and selection-policy-prose. These failures require separate diagnosis and are not a live release-gate verdict.",
+      "ownedResidue": "EI-26179606670734857"
+    },
+    "recurrenceGuard": "Extended maintained judgeCodeIntelRouting to reject an unqualified current unranked-noise result claim, including the not cell and multiline prose; preserve dated history and fenced reproduction controls.",
+    "focusedVerification": {
+      "testFile": "packages/operator-core/lib/doc-claims/code-intel-routing-authority.test.ts",
+      "passed": 43,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "unhandledErrors": 0,
+      "terminalExitCode": 0,
+      "log": "/tmp/native-p042-routing-tests-20261016.log",
+      "capture": "/tmp/native-p042-routing-source-20261016.json",
+      "captureSha256": "486b43dba8b44b56d258fd6465ff69deb63efdd755e9835d614a8bbadf861d01",
+      "sourceScope": "36 captured repository-worker Vite pre-transform originals matched current files; source status stable. This is not a full execution-closure claim.",
+      "sourceHashes": {
+        "packages/operator-core/lib/doc-claims/code-intel-routing-authority.test.ts": "9410fcaf0c9f1f6a2d2d9da640ead1208d11889affd9590e78b73623b3f1a51d",
+        "packages/operator-core/lib/doc-claims/code-intel-routing-authority.ts": "6c8dcd0c97e589247ccc14525290202bec603f0aafe912100bd42e209bbb0a1d"
+      },
+      "typecheck": "Two-file lint:tsc completed with LINT_TSC_RESULT scope=files exit=0 status=clean; exec41012 drained exit0. /tmp/native-p042-routing-types-20261016.log. Compiler service failed to answer within240000ms, so the runner used its maintained full-compile fallback; the named files were clean. The service timeout is correlated as non-claimable tool-failure probation EI-26180042045058939, not a diagnosed root cause."
+    },
+    "remainingInstructionRepair": "EI-26180015557625718 is assigned self: qualify actual installer/role render consumers, then narrow remaining optional raw recommendations while retaining D005/D004. This is outside the one canonical part correction above.",
+    "limits": "Current canonical source and local projections only. Broader persona/corpus census, original P012 outcomes, deployed P01848h freshness and final distribution/shipment remain open; P040/P041 owner scope wall is unchanged."
+  },
   "schemaReconciliation": {
     "decision": "D-019",
     "correction": "The carried unapplied-1519 premise was stale. No backup or migration retry is needed for schema readiness.",

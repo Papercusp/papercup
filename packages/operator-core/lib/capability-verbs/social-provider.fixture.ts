@@ -23,7 +23,7 @@ import {
   type ProviderDescriptor,
   type ProviderInvokeRequest,
 } from '@papercusp/plugin-sdk';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createProviderRegistry, providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import type { OutboundDispatchDeps } from './provider-dispatch';
 
@@ -40,6 +40,7 @@ export interface SocialPackageSpec {
   /** Declared capabilities. Defaults to all three social write capabilities. */
   capabilities?: readonly string[];
   verification?: ProviderDescriptor['verification'];
+  rateBudget?: ProviderDescriptor['rateBudget'];
   /** The package's answer. Defaults to a well-formed result for the capability. */
   respond?: (request: ProviderInvokeRequest) => Record<string, unknown>;
 }
@@ -85,6 +86,7 @@ export async function installSocialPackages(
       datatypes: ['social-post'],
       capabilities: [...(spec.capabilities ?? ALL_SOCIAL_CAPABILITIES)],
       egressHosts: [`${spec.platform}.example.test`],
+      ...(spec.rateBudget ? { rateBudget: spec.rateBudget } : {}),
       verification: spec.verification ?? {
         verifiedAt: '2026-10-16', sources: ['https://example.test/contract'],
         capabilities: Object.fromEntries((spec.capabilities ?? ALL_SOCIAL_CAPABILITIES).map((capability) => [capability, '2026-10-16'])),
@@ -108,9 +110,8 @@ export async function installSocialPackages(
 export async function installDefaultSocialPackages(): Promise<void> {
   const registry = providerRegistry();
   registry.clear();
-  for (const name of ['bluesky', 'mastodon', 'reddit', 'youtube', 'facebook-pages', 'instagram', 'threads', 'linkedin', 'tiktok', 'x']) {
-    const manifest = JSON.parse(readFileSync(new URL(`../../../../libs/papercusp/plugins/${name}/papercusp.json`, import.meta.url), 'utf8'));
-    const descriptor = manifest.provider as ProviderDescriptor;
+  for (const descriptor of bundledSocialProviderDescriptors()) {
+    const name = descriptor.id;
     await registry.register({ descriptor, adapter: {
       describe: () => descriptor,
       syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }),
@@ -123,4 +124,19 @@ export async function installDefaultSocialPackages(): Promise<void> {
 /** The request arguments each invoke carried, typed as the verb's request shape. */
 export function invokedArgs<T>(installed: InstalledSocialPackages): T[] {
   return installed.invokes.map(({ request }) => request.args as unknown as T);
+}
+
+/** Current package descriptors are the acceptance inputs, including unload/additions. */
+export function bundledSocialProviderDescriptors(): ProviderDescriptor[] {
+  const directory = new URL('../../../../libs/papercusp/plugins/', import.meta.url);
+  return readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const path = new URL(entry.name + '/papercusp.json', directory);
+      if (!existsSync(path)) return [];
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const descriptor = manifest.provider as ProviderDescriptor | undefined;
+      return descriptor?.datatypes.includes('social-post') ? [descriptor] : [];
+    });
 }

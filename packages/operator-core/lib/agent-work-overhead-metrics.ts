@@ -5,7 +5,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
-export const WORK_OVERHEAD_VERSION = 2;
+export const WORK_OVERHEAD_VERSION = 3;
 export const WORK_OVERHEAD_INSTRUMENT_KEYS = Object.freeze({
   acceptanceShare: 'agents:acceptance-machinery-share',
   sessionMinutes: 'agents:native-session-minutes',
@@ -64,10 +64,31 @@ WITH membership AS MATERIALIZED (
        OR (EXISTS (SELECT 1 FROM membership m WHERE m.owner = p.owner
          AND p.ts >= m.started_at AND (m.ended_at IS NULL OR p.ts <= m.ended_at))
          AND NOT EXISTS (SELECT 1 FROM intent_history i WHERE i.owner = p.owner AND i.started_at <= p.ts)))
+), identity_history AS MATERIALIZED (
+  SELECT e.id, e.owner_id AS owner, e.adv_session_id, e.native_session_id,
+    e.source, e.transition_id, e.recorded_at
+    FROM harness_shared.session_identity_activation_events e
+   WHERE e.workspace_id = $1 AND e.phase = 'applied'
+     AND e.native_session_id IS NOT NULL AND e.recorded_at <= $4::timestamptz
+     AND e.owner_id IN (SELECT owner FROM candidates)
+), native_closures AS MATERIALIZED (
+  -- recordSessionIdentityReanchor links the superseded event in :after:<id>.
+  -- An arbitrary identity-span end (e.g. a mode change) is not native closure.
+  SELECT p.owner, p.native_session_id, r.recorded_at AS closed_at
+    FROM identity_history p JOIN identity_history r
+      ON p.id::text = substring(r.transition_id FROM ':after:([0-9]+)$')
+     AND r.owner = p.owner AND r.adv_session_id = p.adv_session_id
+     AND r.source = 'reanchor' AND r.native_session_id <> p.native_session_id
+     AND (r.recorded_at, r.id) > (p.recorded_at, p.id)
+   WHERE NOT EXISTS (SELECT 1 FROM identity_history reopened
+     WHERE reopened.owner = p.owner AND reopened.native_session_id = p.native_session_id
+       AND (reopened.recorded_at, reopened.id) > (r.recorded_at, r.id))
 ), spans AS MATERIALIZED (
   SELECT c.*, v.first_at, v.last_at, v.missing_timestamps,
-    EXISTS (SELECT 1 FROM membership m WHERE m.owner = c.owner
-      AND m.session_id = c.session_id AND m.ended_at <= $4::timestamptz) AS closed
+    (EXISTS (SELECT 1 FROM membership m WHERE m.owner = c.owner
+      AND m.session_id = c.session_id AND m.ended_at <= $4::timestamptz)
+     OR EXISTS (SELECT 1 FROM native_closures n WHERE n.owner = c.owner
+       AND n.native_session_id = c.session_id AND n.closed_at >= v.last_at)) AS closed
     FROM candidates c
     CROSS JOIN LATERAL (
       SELECT min(p.ts) AS first_at,

@@ -984,6 +984,62 @@ describe('exact spec evidence bindings', () => {
     });
   });
 
+  it('advises when changed binding details create a second live row for one test run', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const binding = {
+      workItemId: 'WI-101',
+      specId: 'SPEC-003-01',
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      actorId: 'su-test',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.test.ts#duplicate-live',
+      testRunId,
+      sourceFingerprint: 'source',
+      testFingerprint: 'test',
+    };
+    const first = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      details: { evidencePlane: 'live', adequacy: { fixtureFree: false } },
+    });
+    expect(first).toMatchObject({ status: 'created' });
+    const firstId = (first as { id: number }).id;
+    expect(first).not.toHaveProperty('advisory');
+
+    const rebound = await evidenceStore.bindSpecEvidence({
+      ...binding,
+      details: { evidencePlane: 'live', adequacy: { fixtureFree: true } },
+    });
+    expect(rebound).toMatchObject({
+      status: 'created',
+      advisory: {
+        code: 'duplicate_live_test_run_bindings',
+        testRunId,
+        bindingIds: [firstId],
+      },
+    });
+    const advisory = (rebound as { advisory: { message: string } }).advisory;
+    expect(advisory.message).toContain('supersedeAtRevision:true');
+    expect(advisory.message).toContain('plans:bind-spec-evidence retract');
+
+    const rows = await db.sql<{ id: number }[]>`
+      SELECT id
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE}
+         AND harness_slug = ${HARNESS}
+         AND work_item_id = 'WI-101'
+         AND plan_slug = 'reconnect-plan'
+         AND spec_id = 'SPEC-003-01'
+         AND spec_revision = 1
+         AND evidence_kind = 'test'
+         AND evidence_ref = 'test/reconnect.test.ts#duplicate-live'
+         AND test_run_id = ${testRunId}
+         AND retracted_at IS NULL
+       ORDER BY id`;
+    expect(rows.map((row) => Number(row.id))).toEqual([firstId, (rebound as { id: number }).id]);
+  });
+
   it('refuses a same-run rebind when its measurement recipe changes', async () => {
     await specs.setSpecClause(clause({ mutationRequired: false }));
     const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');

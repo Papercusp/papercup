@@ -877,6 +877,19 @@ describe('installPapercuspFiles', () => {
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
+  it.each(['engineer', 'power', 'generic'])('renders native topology guidance from the real %s source', async (profile) => {
+    const operatorAppRoot = fileURLToPath(new URL('../../../../../apps/operator/', import.meta.url));
+    const rendered = await renderSuPlaybook({ agent: 'claude', profile, operatorAppRoot });
+    expect(rendered.baseSource).toBe(path.join(operatorAppRoot, 'prompts',
+      `papercusp-su-${profile === 'generic' ? 'engineer' : profile}.tools.md`));
+    const row = rendered.text.split('\n').find(line => line.startsWith('  | call chains,'));
+    expect(row).toContain('`graph:query`');
+    expect(row).toContain('bounded `paths`');
+    expect(row).not.toContain('gitnexus');
+    expect(rendered.text).toContain('Optional internal `gitnexus.context` / `gitnexus.impact`');
+    expect(rendered.text).toContain('D-004 excludes GitNexus from public/installer distribution');
+  });
+
   const MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
 
   beforeEach(async () => {

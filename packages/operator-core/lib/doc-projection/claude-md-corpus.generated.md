@@ -1961,8 +1961,10 @@ The duplicate-number race is EI-6843 — it cost a rename plus every in-code ref
 | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
 | prose / full-text | exact phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
 | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
-| call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
+| call chains, impact radius, topology | `graph:query` with `op:'context'`, `op:'impact'` or `op:'trace'` and bounded `paths`; first-party JS/TS syntax/compiler evidence, with coverage limits and no runtime-execution claim | `gitnexus.query` fails closed before dispatch (D-065); unranked noise was a historical result (D-021) |
 | who CALLS this symbol | `graph:query { op:'callers', name }` — `line1` call sites, no definition; index may be stale. **Empty is not proof of no callers**: measured needs-widening, held at observe, deferred to WI-10006543. | `gitnexus.impact { direction:'callers' }` — unsupported (only `upstream`/`downstream`/`both`); returns callees as `epistemic:"exact"`. |
+
+Optional internal `gitnexus.context` / `gitnexus.impact` remain under `gitnexus-deterministic-integration-2026-10-05#D-005`; they are not the native default. D-004 still excludes GitNexus from shipped dependencies and installers.
 
 ⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable, the ONLY query that answers it is scoped to one population — and the blob check is half the answer:**
 

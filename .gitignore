@@ -13,6 +13,10 @@ node_modules.old*/
 **/__pycache__/
 *.pyc
 
+# Hook edits use atomic temporary siblings before rename.  Git-sync must never
+# sweep those transient files into the source tree while a rename is in flight.
+apps/operator/scripts/hooks/cc/*.tmp*
+
 .next/
 .next-prod/
 .next-build-cache/

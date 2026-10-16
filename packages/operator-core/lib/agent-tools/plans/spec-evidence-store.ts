@@ -1133,6 +1133,13 @@ export interface EvidenceFingerprints {
   environmentFingerprint?: string | null;
 }
 
+export interface DuplicateLiveTestRunBindingAdvisory {
+  code: 'duplicate_live_test_run_bindings';
+  testRunId: number;
+  bindingIds: number[];
+  message: string;
+}
+
 export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   harnessSlug?: string;
   /**
@@ -1188,6 +1195,7 @@ export type BindSpecEvidenceResult =
       specRevision: number;
       specFingerprint: string;
       bindingFingerprint: string;
+      advisory?: DuplicateLiveTestRunBindingAdvisory;
     }
   | { status: 'work_item_not_found'; workItemId: string }
   | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
@@ -1849,6 +1857,40 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     // If it does not, throwing is correct: a loud failure beats a wrong id.
     if (!existing) throw new Error(`spec_evidence_binding_insert_failed:${bindingFingerprint}`);
 
+    const duplicateLiveTestRunBindingIds = inserted[0] && canonical.testRunId != null
+      ? (
+          await tx<{ id: number }[]>`
+        SELECT id
+          FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND work_item_id = ${input.workItemId}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${identity.spec_id}
+           AND spec_revision = ${specRevision}
+           AND evidence_kind = ${input.evidenceKind}
+           AND evidence_ref = ${evidenceRef}
+           AND coverage_evidence_ref IS NOT DISTINCT FROM ${input.coverageEvidenceRef ?? null}
+           AND test_run_id = ${canonical.testRunId}
+           AND retracted_at IS NULL
+           AND id <> ${existing.id}
+         ORDER BY id ASC`
+        ).map((row) => Number(row.id))
+      : [];
+    const duplicateLiveTestRunAdvisory = duplicateLiveTestRunBindingIds.length > 0
+      ? {
+          code: 'duplicate_live_test_run_bindings' as const,
+          testRunId: canonical.testRunId!,
+          bindingIds: duplicateLiveTestRunBindingIds,
+          message:
+            `Test run ${canonical.testRunId} is already live in binding(s) ${duplicateLiveTestRunBindingIds.join(', ')} ` +
+            `for ${input.evidenceKind} evidence '${evidenceRef}' on ${identity.spec_id}@${specRevision}. ` +
+            'This new binding remains live as well. If it replaces the earlier proof, re-bind with ' +
+            'supersedeAtRevision:true; otherwise retract the stale binding(s) with ' +
+            'plans:bind-spec-evidence retract.',
+        }
+      : undefined;
+
     return {
       status: inserted[0] ? 'created' : 'unchanged',
       id: Number(existing.id),
@@ -1859,6 +1901,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       specRevision,
       specFingerprint: revision.content_hash,
       bindingFingerprint,
+      ...(duplicateLiveTestRunAdvisory ? { advisory: duplicateLiveTestRunAdvisory } : {}),
     };
   });
 }

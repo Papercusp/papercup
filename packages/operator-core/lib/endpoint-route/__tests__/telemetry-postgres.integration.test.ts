@@ -100,7 +100,7 @@ describe('mounted route telemetry PostgreSQL failure confidentiality', () => {
           expect(rows).toHaveLength(index + 1);
           expect(rows[index].metadata_json).toEqual(attempt.metadata);
           const persisted = JSON.stringify(await db.sql`SELECT * FROM harness_shared.route_invocations`);
-          for (const marker of ['private-correlation-query-marker', 'private-correlation-body-marker',
+          for (const marker of ['private-correlation-query-marker', NEVER_EMIT_MARKER,
             'private-correlation-response-marker', 'private-correlation-header-marker', 'private-invalid-correlation-marker']) {
             expect(persisted).not.toContain(marker);
           }

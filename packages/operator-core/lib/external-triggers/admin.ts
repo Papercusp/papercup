@@ -17,8 +17,7 @@ import {
 } from './binding-engine';
 import { keyMatchesPattern, payloadMatchesFilter } from '../events/await/pattern';
 import { getDatatype } from '../datatype-registry-store';
-import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor, FALLBACK_MAX_RUNS, SOCIAL_STORM_WINDOW_SECONDS } from './social/storm-policy';
-import { getSocialPlatform } from './social/platform-registry';
+import { defaultProviderStormPolicyForSourceKind, providerStormPolicyFor } from './provider-storm-policy';
 import { readyProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
@@ -1066,7 +1065,7 @@ export async function createExternalTriggerBinding(
   const statesRate =
     stated !== undefined &&
     Object.keys(stated).some((key) => key !== 'maxAgeSeconds' && key !== 'max_age_seconds');
-  const socialDefault = statesRate ? null : defaultSocialStormPolicyForSourceKind(sources[0].kind);
+  const socialDefault = statesRate ? null : defaultProviderStormPolicyForSourceKind(await readyProviderRegistry(), sources[0].kind);
   const stormPolicy = socialDefault
     ? {
         ...socialDefault,
@@ -1317,9 +1316,6 @@ export function socialAdminFacts(
 ): ExternalTriggerSocialAdminFacts | null {
   const descriptor = installedRegistry.get(kind)?.descriptor;
   if (!descriptor?.datatypes.includes('social-post')) return null;
-  const row = getSocialPlatform(kind);
-  // Only the conservative storm cap still uses the legacy registry. Read
-  // support follows the current package, including a same-id replacement.
   const readable = descriptor.sync !== false;
   const packageWriteVerbs = descriptor.capabilities
     .filter((capability) => /^(?:social)\.(?:post|reply|delete)$/.test(capability))
@@ -1342,10 +1338,7 @@ export function socialAdminFacts(
     });
   // `read` for the cap: the poll loop is what spends budget continuously, and
   // it is the spend an owner watching this pane is deciding about.
-  const policy = row ? socialStormPolicyFor(row, 'read') : {
-    maxRuns: FALLBACK_MAX_RUNS, windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
-    basis: { kind: 'conservative-default' }, hold: undefined,
-  };
+  const policy = providerStormPolicyFor(descriptor, 'read');
   return {
     platformId: descriptor.id,
     label: descriptor.displayName || descriptor.id,

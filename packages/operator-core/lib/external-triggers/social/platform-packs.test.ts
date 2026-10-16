@@ -9,7 +9,7 @@
  * here. A per-platform pack's scope is exactly one platform, so its default IS
  * that platform's derivation with nothing to take a minimum over, and the set of
  * packs is not a curated list at all — it is every registry row that passes
- * `isSocialPlatformVerified`. Reusing that table would have forced a hand-kept
+ * `isProviderVerified`. Reusing that table would have forced a hand-kept
  * list of platforms, which is the drift this file is built to prevent.
  *
  * THE THREE PROPERTIES THIS FILE EXISTS FOR — each a second copy of a truth
@@ -20,7 +20,7 @@
  *    until its pack exists; an unverified one reds it if a pack appears early.
  *
  * 2. THE STORM POLICY NUMBERS. A manifest is static JSON: it cannot import
- *    `socialStormPolicyFor`, so every maxRuns/windowSeconds in it is a copy of a
+ *    `providerStormPolicyFor`, so every maxRuns/windowSeconds in it is a copy of a
  *    number the registry derivation owns. Recomputed here and compared.
  *
  * 3. WHETHER A PACK DECLARES OAUTH. D-045 ruled that no social pack declares an
@@ -55,16 +55,10 @@ import {
   type ProviderAdapter,
   type HostFetch,
 } from '@papercusp/plugin-sdk';
-import {
-  isSocialPlatformVerified,
-  listSocialPlatforms,
-  type SocialPlatformRow,
-} from './platform-registry';
-import { socialStormPolicyFor } from './storm-policy';
-import {
-  FACEBOOK_ALLOWED_OAUTH_SCOPES,
-  GOOGLE_WORKSPACE_ALLOWED_SCOPES,
-} from '../../oauth/providers';
+import { providerCapabilityVerificationIssue, type ProviderDescriptor } from '@papercusp/plugin-sdk';
+import { bundledSocialProviderDescriptors } from '../../capability-verbs/social-provider.fixture';
+import { providerStormPolicyFor } from '../provider-storm-policy';
+const isProviderVerified = (descriptor: ProviderDescriptor) => !providerCapabilityVerificationIssue(descriptor);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -93,29 +87,10 @@ const readManifest = (id: string) =>
   JSON.parse(readFileSync(resolve(packDir(id), 'papercusp.json'), 'utf8')) as Manifest;
 const readPlan = (id: string) => readFileSync(resolve(packDir(id), 'plan.md'), 'utf8');
 
-/** Registered OAuth providers, and the scopes each will actually consent to. */
-const PROVIDER_ALLOWED: ReadonlyArray<{ provider: string; allowed: ReadonlySet<string> }> = [
-  { provider: 'google', allowed: new Set<string>(GOOGLE_WORKSPACE_ALLOWED_SCOPES as readonly string[]) },
-  { provider: 'facebook', allowed: new Set<string>(FACEBOOK_ALLOWED_OAUTH_SCOPES as readonly string[]) },
-];
-
-/** The containment rule — the whole of property 3 above, as one function. */
-function providerFor(row: SocialPlatformRow): { provider: string; scopes: string[] } | null {
-  if (row.auth.scopes.length === 0) return null;
-  // Migrated provider packages supply their own OAuth descriptor. The old
-  // built-in registry cannot establish that a newly installed provider is absent.
-  const path = resolve(REPO_ROOT, `libs/papercusp/plugins/${row.id}/papercusp.json`);
-  if (existsSync(path)) {
-    const descriptor = JSON.parse(readFileSync(path, 'utf8')).provider;
-    if (descriptor?.id === row.id && descriptor.oauth &&
-      row.auth.scopes.every((scope) => descriptor.oauth.scopes.includes(scope))) {
-      return { provider: descriptor.oauth.clientRegistrationRef, scopes: descriptor.oauth.scopes };
-    }
-  }
-  for (const { provider, allowed } of PROVIDER_ALLOWED) {
-    if (row.auth.scopes.every((scope) => allowed.has(scope))) return { provider, scopes: [...row.auth.scopes] };
-  }
-  return null;
+/** Consent requirements follow the installed package descriptor. */
+function providerFor(descriptor: ProviderDescriptor): { provider: string; scopes: string[] } | null {
+  const oauth = descriptor.oauth;
+  return oauth && oauth.scopes.length > 0 ? { provider: oauth.clientRegistrationRef ?? descriptor.id, scopes: oauth.scopes } : null;
 }
 
 /**
@@ -284,8 +259,8 @@ beforeAll(async () => {
  * only new thing is that LinkedIn reaches the condition by a restricted read
  * scope instead of by price.
  */
-const verifiedRows = listSocialPlatforms().filter(isSocialPlatformVerified);
-const packRows = verifiedRows.filter((row) => row.read !== null);
+const verifiedRows = bundledSocialProviderDescriptors().filter(isProviderVerified);
+const packRows = verifiedRows.filter((row) => row.sync !== false);
 const verifiedIds = packRows.map((row) => row.id);
 
 describe('P-025 per-platform social trigger packs', () => {
@@ -296,12 +271,12 @@ describe('P-025 per-platform social trigger packs', () => {
   });
 
   it('a pack exists for exactly the VERIFIED, READABLE platforms — the list is derived, never enumerated', () => {
-    for (const row of listSocialPlatforms()) {
+    for (const row of bundledSocialProviderDescriptors()) {
       const hasPack = existsSync(resolve(packDir(row.id), 'papercusp.json'));
-      const shouldHavePack = isSocialPlatformVerified(row) && row.read !== null;
-      const why = !isSocialPlatformVerified(row)
+      const shouldHavePack = isProviderVerified(row) && row.sync !== false;
+      const why = !isProviderVerified(row)
         ? `platform ${row.id} is NOT verified (verifiedAt is null) — D-005 forbids shipping a pack that would assert facts nobody read`
-        : row.read === null
+        : row.sync === false
           ? `platform ${row.id} is verified but WRITE-ONLY — a trigger pack turns inbound events into plan runs and this platform emits none, so a pack would be a hollow shell that reads as support (D-002's reasoning)`
           : `platform ${row.id} is verified and readable but has no pack at social-${row.id}`;
       expect(hasPack, why).toBe(shouldHavePack);
@@ -312,7 +287,7 @@ describe('P-025 per-platform social trigger packs', () => {
     // Without this, narrowing the derivation to "readable" would look identical
     // to leaving it at "verified" — and a future row that quietly became
     // write-only would drop out of every per-platform assertion below unnoticed.
-    const writeOnlyVerified = verifiedRows.filter((row) => row.read === null).map((row) => row.id);
+    const writeOnlyVerified = verifiedRows.filter((row) => row.sync === false).map((row) => row.id);
     expect(writeOnlyVerified).toEqual(['linkedin']);
     expect(verifiedIds).not.toContain('linkedin');
   });
@@ -325,7 +300,7 @@ describe('P-025 per-platform social trigger packs', () => {
     });
 
     it('pins its storm policy to the registry read derivation', () => {
-      const derived = socialStormPolicyFor(row, 'read');
+      const derived = providerStormPolicyFor(row, 'read');
       expect(readManifest(id).triggerPack?.defaultStormPolicy).toEqual({
         maxRuns: derived.maxRuns,
         windowSeconds: derived.windowSeconds,
@@ -341,7 +316,7 @@ describe('P-025 per-platform social trigger packs', () => {
       if (provider === null) {
         expect(
           manifest.oauth ?? [],
-          `${id} has no provider whose allowedScopes contain ${JSON.stringify(row.auth.scopes)} — declaring one would fail at consent time, not build time`,
+          `${id} has no provider whose allowedScopes contain ${JSON.stringify(row.oauth?.scopes ?? [])} — declaring one would fail at consent time, not build time`,
         ).toEqual([]);
         // …and no binding may name an oauthField it cannot honour.
         for (const binding of manifest.triggerPack?.bindings ?? []) {
@@ -455,6 +430,14 @@ describe('P-025 per-platform social trigger packs', () => {
           `social-${id}'s STEPS invoke ${verb}; this pack records and stops`,
         ).not.toContain(verb);
       }
+    });
+
+    it('processes the complete delivered batch with per-entry routing', () => {
+      const plan = readPlan(id);
+      expect(plan).toContain('response.events');
+      expect(plan).toContain('process every entry');
+      expect(plan).toContain('top-level fields describe only the first event');
+      expect(plan).toContain('each entry independently');
     });
 
     it('its plan names no capability the agent cannot reach', () => {

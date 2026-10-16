@@ -1,40 +1,9 @@
-/**
- * P-023 — per-platform storm policy defaults for social sources.
- *
- * WHY SOCIAL NEEDS ITS OWN DEFAULT. Mail storms are bounded by how fast humans
- * write. Social is not: one viral post can produce thousands of inbound
- * comments in minutes, all of them genuinely new events with distinct dedupe
- * keys. The landed binding-engine storm policy caps runs per window and SKIPS
- * the overflow (`skippedForStorm`), which is the right answer for mail and the
- * wrong one here — skipping means the comments are never seen at all. The
- * social default is therefore COALESCE-with-cap: the cap still bounds how many
- * plan runs may launch, but overflow folds into the run rather than being
- * dropped. Nothing inbound is lost; it is batched.
- *
- * WHERE THE CAP COMES FROM, and the trap in deriving it. P-023 says the cap is
- * derived from the platform's rate budget in the P-002 registry. Only ONE of the
- * three Wave A platforms actually states a numeric budget: Reddit documents 60
- * requests/minute. Bluesky publishes only a `Retry-After` header contract, and
- * Mastodon's limits are explicitly per-instance and unstated on the streaming
- * page. So a naive `cap = f(requestsPerMinute)` yields `undefined` for two of
- * three platforms — and if `undefined` degraded to "unbounded", the storm policy
- * would be VACUOUS for precisely the two platforms whose transport is a live
- * stream, which is where a storm actually arrives. A cap that silently means
- * "no cap" is indistinguishable from a working one.
- *
- * So an absent budget falls back to a deliberately conservative cap, and the
- * policy RECORDS WHICH PATH IT TOOK in `basis`. A caller (and the admin surface)
- * can tell a derived cap from a fallback one instead of having to trust that a
- * number came from somewhere real. This mirrors how the P-003 conformance kit
- * handles a check it cannot run: skip, and say so, rather than quietly pass.
- */
+/** Provider-declared budgets feed host-owned trigger admission. Reuses the existing
+ * quota math; durable batching executes in binding-engine, never in a second coalescer. */
+import type { ProviderDescriptor, ProviderQuotaBucket, ProviderRateBudget } from '@papercusp/plugin-sdk';
+import type { ProviderRegistry } from '../integrations/provider-registry';
 
-import {
-  getSocialPlatform,
-  type SocialPlatformRow,
-  type SocialQuotaBucket,
-  type SocialQuotaVerb,
-} from './platform-registry';
+export type ProviderQuotaVerb = string;
 
 /**
  * The coalescing window. Longer than the binding engine's 60s default because
@@ -43,7 +12,7 @@ import {
  * batched run rather than five, and short enough that a reply still feels
  * responsive.
  */
-export const SOCIAL_STORM_WINDOW_SECONDS = 300;
+export const PROVIDER_STORM_WINDOW_SECONDS = 300;
 
 /**
  * Requests one launched run is assumed to spend against the platform (fetch
@@ -64,7 +33,7 @@ export const MAX_RUNS_CEILING = 60;
  * How the cap was arrived at. Carried on the policy so a fallback cap is
  * visible rather than passing for a measured one.
  */
-export type SocialStormCapBasis =
+export type ProviderStormCapBasis =
   | {
       kind: 'rate-budget';
       /** The registry figure the cap was derived from. */
@@ -76,7 +45,7 @@ export type SocialStormCapBasis =
       /** WHICH non-fungible bucket this cap was derived from (D-020). */
       bucket: string;
       /** The verb the bucket was selected for. */
-      verb: SocialQuotaVerb;
+      verb: ProviderQuotaVerb;
       perDay: number;
       unit: 'calls' | 'units';
       /** What one run is assumed to spend against that bucket, in its unit. */
@@ -92,7 +61,7 @@ export type SocialStormCapBasis =
        * True when the daily budget could not fund even ONE run inside the
        * standard window, so the WINDOW was widened instead of the cap being
        * floored to 1. Without this the policy would silently overspend — see
-       * `socialStormPolicyFor`.
+       * `providerStormPolicyFor`.
        */
       windowWidened?: boolean;
     }
@@ -141,7 +110,7 @@ export type SocialStormCapBasis =
  * peculiarity — any platform whose allowance scales with usage produces the same
  * two facts, and both are things only a response can tell you.
  */
-export interface SocialQuotaObservation {
+export interface ProviderQuotaObservation {
   /**
    * Peak percentage of the current allowance already consumed, 0–100+.
    * Null/undefined means NOT OBSERVED, which is treated as full headroom
@@ -160,7 +129,7 @@ export interface SocialQuotaObservation {
   throttleHoldMs?: number | null;
 }
 
-export interface SocialStormPolicy {
+export interface ProviderStormPolicy {
   /**
    * Always `coalesce-with-cap` for social. Named rather than implied so a
    * reader of a stored policy can tell it apart from the binding engine's
@@ -169,15 +138,15 @@ export interface SocialStormPolicy {
   mode: 'coalesce-with-cap';
   maxRuns: number;
   windowSeconds: number;
-  basis: SocialStormCapBasis;
+  basis: ProviderStormCapBasis;
   /**
    * Present when NOTHING may launch right now.
    *
    * WHY THIS IS NOT JUST `maxRuns: 0`. A zero cap and a hold produce the same
    * run count and mean opposite things to a reader: zero-as-cap says "this
    * source is rationed to nothing", a hold says "the provider has told us to
-   * stop, and it expires". `planCoalesceWithCap` also has to account for the
-   * events differently — see `CoalesceOutcome.held` — because calling them
+   * stop, and it expires". The executing binding engine must account for the
+   * events differently because calling them
    * "coalesced" would claim they were folded into a run that never launched.
    */
   hold?: {
@@ -225,7 +194,7 @@ export const ASSUMED_WRITE_UNITS = 50;
  * one write when the verb writes. Every term traces to a figure the registry or
  * a vendor page states, rather than being a new magic number.
  */
-export function assumedSpendPerRun(bucket: SocialQuotaBucket, verb: SocialQuotaVerb): number {
+export function assumedSpendPerRun(bucket: ProviderQuotaBucket, verb: ProviderQuotaVerb): number {
   if (bucket.unit === 'calls') return 1;
   return ASSUMED_REQUESTS_PER_RUN + (verb === 'read' ? 0 : ASSUMED_WRITE_UNITS);
 }
@@ -240,9 +209,9 @@ export function assumedSpendPerRun(bucket: SocialQuotaBucket, verb: SocialQuotaV
  * is told which happened via `fallbackToTightest`.
  */
 export function selectQuotaBucket(
-  buckets: Record<string, SocialQuotaBucket>,
-  verb: SocialQuotaVerb,
-): { name: string; bucket: SocialQuotaBucket; fallbackToTightest: boolean } | null {
+  buckets: Record<string, ProviderQuotaBucket>,
+  verb: ProviderQuotaVerb,
+): { name: string; bucket: ProviderQuotaBucket; fallbackToTightest: boolean } | null {
   const entries = Object.entries(buckets).filter(([, b]) => Number.isFinite(b.perDay) && b.perDay > 0);
   if (entries.length === 0) return null;
 
@@ -283,9 +252,9 @@ export function selectQuotaBucket(
  * to conflate because both present as "we are near the limit".
  */
 function dynamicQuotaPolicy(
-  dq: NonNullable<SocialPlatformRow['limits']['dynamicQuota']>,
-  observation: SocialQuotaObservation | undefined,
-): SocialStormPolicy {
+  dq: NonNullable<ProviderRateBudget['dynamicQuota']>,
+  observation: ProviderQuotaObservation | undefined,
+): ProviderStormPolicy {
   const retryForbidden = dq.retryExtendsBlock === true;
   const spendPerRun = ASSUMED_REQUESTS_PER_RUN;
   // Threads has a dynamic quota and NO usage header (D-037), so this prose may
@@ -299,12 +268,12 @@ function dynamicQuotaPolicy(
       ? observation.peakUsagePct
       : null;
 
-  const held = (reason: string, headroomPct: number): SocialStormPolicy => ({
+  const held = (reason: string, headroomPct: number): ProviderStormPolicy => ({
     mode: 'coalesce-with-cap',
     // Zero is the honest cap for a hold, and `toBindingStormPolicy` refuses to
     // persist it rather than rounding it up to something runnable.
     maxRuns: 0,
-    windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+    windowSeconds: PROVIDER_STORM_WINDOW_SECONDS,
     basis: {
       kind: 'dynamic-quota',
       formula: dq.formula,
@@ -346,7 +315,7 @@ function dynamicQuotaPolicy(
   const remainingPerDay = dq.assumedDailyFloor * (headroomPct / 100);
   const runsPerDay = Math.floor(remainingPerDay / spendPerRun);
 
-  const basis = (extra: { windowWidened?: true }): SocialStormCapBasis => ({
+  const basis = (extra: { windowWidened?: true }): ProviderStormCapBasis => ({
     kind: 'dynamic-quota',
     formula: dq.formula,
     usageHeader: dq.usageHeader ?? null,
@@ -368,7 +337,7 @@ function dynamicQuotaPolicy(
     );
   }
 
-  const windowsPerDay = SECONDS_PER_DAY / SOCIAL_STORM_WINDOW_SECONDS;
+  const windowsPerDay = SECONDS_PER_DAY / PROVIDER_STORM_WINDOW_SECONDS;
   const perWindow = Math.floor(runsPerDay / windowsPerDay);
 
   if (perWindow < 1) {
@@ -383,7 +352,7 @@ function dynamicQuotaPolicy(
   return {
     mode: 'coalesce-with-cap',
     maxRuns: Math.min(perWindow, MAX_RUNS_CEILING),
-    windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+    windowSeconds: PROVIDER_STORM_WINDOW_SECONDS,
     basis: basis({}),
   };
 }
@@ -410,11 +379,12 @@ function dynamicQuotaPolicy(
  * The cap stays honest, nothing is dropped (`coalesce-with-cap` still folds the
  * overflow in), and `basis.windowWidened` records that it happened.
  */
-export function socialStormPolicyFor(
-  row: SocialPlatformRow,
-  verb: SocialQuotaVerb = 'read',
-  observation?: SocialQuotaObservation,
-): SocialStormPolicy {
+export function providerStormPolicyFor(
+  descriptor: Pick<ProviderDescriptor, 'id'> & { rateBudget?: Partial<ProviderRateBudget> },
+  verb: ProviderQuotaVerb = 'read',
+  observation?: ProviderQuotaObservation,
+): ProviderStormPolicy {
+  const budget = descriptor.rateBudget ?? {};
   // ORDERING, AND THE ONE CASE THAT LOOKS LIKE A CONFLICT AND IS NOT (D-030).
   //
   // A declared `dynamicQuota` outranks a compiled-in FIGURE — that is what the
@@ -430,8 +400,8 @@ export function socialStormPolicyFor(
   // because it is a hard cap on exactly this operation. Every verb no bucket
   // declares falls to the dynamic quota — never to the tightest-bucket fallback,
   // which would cap a read against a publishing limit it does not draw on.
-  const buckets = row.limits.buckets;
-  const dynamicQuota = row.limits.dynamicQuota;
+  const buckets = budget.buckets;
+  const dynamicQuota = budget.dynamicQuota;
   if (buckets) {
     const picked = selectQuotaBucket(buckets, verb);
     // D-020: a verb's own non-fungible bucket outranks any aggregate figure. A cap
@@ -462,7 +432,7 @@ export function socialStormPolicyFor(
         };
       }
 
-      const windowsPerDay = SECONDS_PER_DAY / SOCIAL_STORM_WINDOW_SECONDS;
+      const windowsPerDay = SECONDS_PER_DAY / PROVIDER_STORM_WINDOW_SECONDS;
       const perWindow = Math.floor(runsPerDay / windowsPerDay);
 
       if (perWindow < 1) {
@@ -486,7 +456,7 @@ export function socialStormPolicyFor(
       return {
         mode: 'coalesce-with-cap',
         maxRuns: Math.min(perWindow, MAX_RUNS_CEILING),
-        windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+        windowSeconds: PROVIDER_STORM_WINDOW_SECONDS,
         basis: {
           kind: 'quota-bucket',
           bucket: name,
@@ -503,10 +473,10 @@ export function socialStormPolicyFor(
   // D-028: the allowance is not a constant, so it outranks anything compiled in.
   if (dynamicQuota) return dynamicQuotaPolicy(dynamicQuota, observation);
 
-  const rpm = row.limits.requestsPerMinute;
+  const rpm = budget.requestsPerMinute;
 
   if (typeof rpm === 'number' && Number.isFinite(rpm) && rpm > 0) {
-    const windowMinutes = SOCIAL_STORM_WINDOW_SECONDS / 60;
+    const windowMinutes = PROVIDER_STORM_WINDOW_SECONDS / 60;
     const sustainable = Math.floor((rpm * windowMinutes) / ASSUMED_REQUESTS_PER_RUN);
     // Never below 1: a platform with a tiny budget still gets to act once per
     // window. A cap of 0 would be an outage wearing a policy's clothes.
@@ -515,7 +485,7 @@ export function socialStormPolicyFor(
     return {
       mode: 'coalesce-with-cap',
       maxRuns,
-      windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+      windowSeconds: PROVIDER_STORM_WINDOW_SECONDS,
       basis: { kind: 'rate-budget', requestsPerMinute: rpm, requestsPerRun: ASSUMED_REQUESTS_PER_RUN },
     };
   }
@@ -523,12 +493,12 @@ export function socialStormPolicyFor(
   return {
     mode: 'coalesce-with-cap',
     maxRuns: FALLBACK_MAX_RUNS,
-    windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+    windowSeconds: PROVIDER_STORM_WINDOW_SECONDS,
     basis: {
       kind: 'conservative-default',
       why:
-        row.limits.notes?.trim() ||
-        `the ${row.id} registry row states no requestsPerMinute, so no cap could be derived from a budget`,
+        budget.notes?.trim() ||
+        `the ${descriptor.id} installed provider declares no requestsPerMinute, so no cap could be derived from a budget`,
     },
   };
 }
@@ -538,11 +508,11 @@ export function socialStormPolicyFor(
  * which is what `storm_policy` jsonb actually stores.
  *
  * The extra social fields ride along rather than being dropped: `parseStormPolicy`
- * reads only `maxRuns`/`windowSeconds` and ignores the rest, so persisting the
+ * reads the cap and coalescing mode while retaining the declared basis, so persisting the
  * basis costs nothing and keeps a stored policy self-describing — otherwise the
  * only record of whether a cap was measured or guessed would be this source file.
  */
-export function toBindingStormPolicy(policy: SocialStormPolicy): Record<string, unknown> {
+export function toBindingStormPolicy(policy: ProviderStormPolicy): Record<string, unknown> {
   // A HOLD HAS NO FAITHFUL STORED FORM, and both ways of forcing one are wrong.
   // The binding parser requires a POSITIVE integer, so `maxRuns: 0` is rejected
   // there — and the tempting repair, rounding it up to 1, would persist a
@@ -552,7 +522,7 @@ export function toBindingStormPolicy(policy: SocialStormPolicy): Record<string, 
   // a caller acts on now, never something it writes down.
   if (policy.hold) {
     throw new Error(
-      `social_storm_policy_held_not_persistable: ${policy.hold.reason}` +
+      `provider_storm_policy_held_not_persistable: ${policy.hold.reason}` +
         (policy.hold.retryForbidden ? ' (retry forbidden)' : ''),
     );
   }
@@ -564,82 +534,11 @@ export function toBindingStormPolicy(policy: SocialStormPolicy): Record<string, 
   };
 }
 
-/**
- * The default storm policy for a trigger source of this kind, or null when the
- * kind is not a social platform.
- *
- * A social source's `kind` IS its platform id (the canonical event pattern is
- * `ext:<kind>:*`, and each adapter's `platformId` is that same string), so the
- * registry lookup is the whole mapping.
- *
- * Returning null rather than a neutral default is deliberate: it lets the
- * caller leave non-social sources on the landed behaviour untouched, instead of
- * this module quietly becoming the default for every trigger source in the
- * system.
- */
-export function defaultSocialStormPolicyForSourceKind(kind: string): Record<string, unknown> | null {
-  const row = getSocialPlatform(kind);
-  return row ? toBindingStormPolicy(socialStormPolicyFor(row)) : null;
+
+/** Resolve the installed descriptor on every call; unload/replacement cannot keep stale quotas. */
+export function defaultProviderStormPolicyForSourceKind(registry: ProviderRegistry, kind: string): Record<string, unknown> | null {
+  const descriptor = registry.get(kind)?.descriptor;
+  if (!descriptor || (!descriptor.rateBudget && !descriptor.datatypes.includes('social-post'))) return null;
+  return toBindingStormPolicy(providerStormPolicyFor(descriptor));
 }
 
-export interface CoalesceOutcome {
-  /** Dedupe keys that launch a run, in arrival order. */
-  launched: string[];
-  /** Dedupe keys folded into an already-launched run within the window. */
-  coalesced: string[];
-  /**
-   * Dedupe keys held back because the policy holds — retained, not folded.
-   *
-   * Distinct from `coalesced` for a reason that only shows up when reading a
-   * result later: "coalesced" asserts the event WAS handled, by a run that
-   * merged it. Under a hold no run launched at all, so reporting these as
-   * coalesced would describe a batch that does not exist and make a suspended
-   * integration read as a working one.
-   */
-  held: string[];
-  /**
-   * Dedupe keys seen more than once in the burst. Deduped before the cap
-   * applies, so a redelivery cannot consume cap headroom.
-   */
-  duplicates: string[];
-}
-
-/**
- * Decide what a burst does under a coalesce-with-cap policy, for one source
- * inside one window.
- *
- * The invariant this exists to make testable: every distinct inbound event is
- * accounted for as either launched or coalesced. NOTHING IS DROPPED — that is
- * the whole difference from the binding engine's skip behaviour, and it is the
- * property a burst test should assert, because a cap that silently discarded
- * the overflow would look identical from a run count alone.
- */
-export function planCoalesceWithCap(
-  events: readonly { dedupeKey: string }[],
-  policy: SocialStormPolicy,
-): CoalesceOutcome {
-  const launched: string[] = [];
-  const coalesced: string[] = [];
-  const held: string[] = [];
-  const duplicates: string[] = [];
-  const seen = new Set<string>();
-  const holding = policy.hold !== undefined;
-
-  for (const event of events) {
-    const key = event.dedupeKey;
-    if (seen.has(key)) {
-      duplicates.push(key);
-      continue;
-    }
-    seen.add(key);
-
-    // A hold retains everything. The accounting invariant is unchanged — every
-    // distinct key still lands in exactly one bucket — which is what keeps a
-    // suspended source auditable rather than silently empty.
-    if (holding) held.push(key);
-    else if (launched.length < policy.maxRuns) launched.push(key);
-    else coalesced.push(key);
-  }
-
-  return { launched, coalesced, held, duplicates };
-}

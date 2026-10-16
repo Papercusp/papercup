@@ -17,6 +17,10 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.coord_event_log (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL, surface text NOT NULL,
       writer_key text NOT NULL, ts timestamptz NOT NULL, body jsonb NOT NULL);
+    CREATE TABLE harness_shared.session_identity_activation_events (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, owner_id text NOT NULL,
+      adv_session_id bigint, native_session_id text, phase text NOT NULL,
+      source text NOT NULL, transition_id text NOT NULL, recorded_at timestamptz NOT NULL);
     CREATE TABLE harness_shared.session_turn_parts (
       workspace_id text NOT NULL, source_kind text NOT NULL, session_id text NOT NULL,
       owner text, part_idx int NOT NULL, ts timestamptz, speaker text NOT NULL,
@@ -27,7 +31,8 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.adv_sessions,
-    harness_shared.harness_plans, harness_shared.coord_event_log`;
+    harness_shared.harness_plans, harness_shared.coord_event_log,
+    harness_shared.session_identity_activation_events RESTART IDENTITY`;
   await db.sql`
     INSERT INTO harness_shared.harness_plans VALUES
       ('ws','papercusp','plan'), ('foreign-ws','papercusp','plan'), ('ws','other-harness','other-plan')`;
@@ -60,6 +65,88 @@ describe('work-overhead query against real Postgres', () => {
         ${db.sql.json({ from: opts.sender ?? 'stable-owner', lifecycle: 'intent',
           plan_slug: plan, harness_slug: opts.harness ?? 'papercusp' })})`;
   }
+
+  async function identity(native: string, at: string, opts: {
+    workspace?: string; owner?: string; advId?: number; source?: string;
+    phase?: string; after?: number;
+  } = {}) {
+    const [row] = await db.sql`INSERT INTO harness_shared.session_identity_activation_events
+      (workspace_id, owner_id, adv_session_id, native_session_id, phase, source, transition_id, recorded_at)
+      VALUES (${opts.workspace ?? 'ws'}, ${opts.owner ?? 'stable-owner'}, ${opts.advId ?? 1},
+        ${native}, ${opts.phase ?? 'applied'}, ${opts.source ?? 'reanchor'},
+        ${`session-activation:fixture:reanchor:${native}:after:${opts.after ?? 0}`}, ${at})
+      RETURNING id`;
+    return Number(row!.id);
+  }
+
+  it('recovers closed predecessors after the launcher overwrites its native id and terminal stamp', async () => {
+    await declare('plan', '2026-10-15T09:00:00Z');
+    await db.sql`UPDATE harness_shared.adv_sessions SET session_id = 'native-c',
+      started_at = '2026-10-15T12:20:00Z', ended_at = NULL WHERE coord_owner_id = 'stable-owner'`;
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    const b = await identity('native-b', '2026-10-15T10:55:00Z', { after: a });
+    await identity('native-c', '2026-10-15T12:20:00Z', { after: b });
+    const metrics = await measureWorkOverheadWindow(window, db.sql);
+    expect(metrics.population).toMatchObject({ sessions: 2, toolCalls: 4, censoredSessions: 0 });
+    expect(metrics.medianObservedSessionMinutes).toBe(60);
+  });
+
+  it('rates short closed contexts as failed while the same ongoing population remains unknown', async () => {
+    await db.sql`UPDATE harness_shared.session_turn_parts SET ts =
+      CASE session_id WHEN 'native-a' THEN '2026-10-15T10:20:00Z'::timestamptz
+        ELSE '2026-10-15T11:30:00Z'::timestamptz END
+      WHERE session_id IN ('native-a', 'native-b') AND part_idx = 2`;
+    expect(rateWorkOverhead(await measureWorkOverheadWindow(window, db.sql)).sessionMinutes.verdict).toBe('unknown');
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    const b = await identity('native-b', '2026-10-15T10:55:00Z', { after: a });
+    await identity('native-c', '2026-10-15T12:20:00Z', { after: b });
+    const closed = await measureWorkOverheadWindow(window, db.sql);
+    expect(closed.medianObservedSessionMinutes).toBe(25);
+    expect(rateWorkOverhead(closed).sessionMinutes.verdict).toBe('fail');
+  });
+
+  it.each([
+    ['foreign workspace', { workspace: 'foreign-ws' }, '2026-10-15T12:20:00Z'],
+    ['foreign owner', { owner: 'foreign-owner' }, '2026-10-15T12:20:00Z'],
+    ['different launcher', { advId: 2 }, '2026-10-15T12:20:00Z'],
+    ['control change', { source: 'control' }, '2026-10-15T12:20:00Z'],
+    ['pending reanchor', { phase: 'prepared' }, '2026-10-15T12:20:00Z'],
+    ['after cutoff', {}, '2026-10-15T13:00:01Z'],
+    ['unlinked reanchor', { after: 999 }, '2026-10-15T12:20:00Z'],
+  ] as const)('keeps contexts censored for %s', async (_name, opts, at) => {
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    await identity('native-c', at, { after: a, ...opts });
+    const metrics = await measureWorkOverheadWindow(window, db.sql);
+    expect(metrics.population.censoredSessions).toBe(2);
+  });
+
+  it('does not interpret a same-native reanchor as closure', async () => {
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    await identity('native-a', '2026-10-15T12:20:00Z', { after: a });
+    expect((await measureWorkOverheadWindow(window, db.sql)).population.censoredSessions).toBe(2);
+  });
+
+  it('ignores a post-cutoff return when resolving closure at the original cutoff', async () => {
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    const b = await identity('native-b', '2026-10-15T10:55:00Z', { after: a });
+    await identity('native-a', '2026-10-15T13:00:01Z', { after: b });
+    expect((await measureWorkOverheadWindow(window, db.sql)).population.censoredSessions).toBe(1);
+  });
+
+  it('keeps a returned-to native context censored and retains its original first event', async () => {
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    const b = await identity('native-b', '2026-10-15T10:55:00Z', { after: a });
+    await identity('native-a', '2026-10-15T12:20:00Z', { after: b });
+    const metrics = await measureWorkOverheadWindow(window, db.sql);
+    expect(metrics.population.censoredSessions).toBe(1);
+    expect(metrics.medianObservedSessionMinutes).toBe(60);
+  });
+
+  it('keeps a predecessor censored when its transcript continues after the reanchor', async () => {
+    const a = await identity('native-a', '2026-10-15T09:50:00Z', { source: 'launch' });
+    await identity('native-c', '2026-10-15T10:30:00Z', { after: a });
+    expect((await measureWorkOverheadWindow(window, db.sql)).population.censoredSessions).toBe(2);
+  });
 
   it('retains historical plan work after a planless launcher resumes beyond the window', async () => {
     await db.sql`UPDATE harness_shared.adv_sessions SET plan_slug = NULL,

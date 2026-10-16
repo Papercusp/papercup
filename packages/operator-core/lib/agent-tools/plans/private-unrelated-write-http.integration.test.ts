@@ -39,6 +39,8 @@ it('proves an unrelated checkpoint stays responsive while another item waits on 
       const receipt = JSON.parse(line!.slice('PRIVATE_UNRELATED_WRITE_HTTP_RECEIPT '.length));
       expect(receipt.observation).toMatchObject({ checkpoint: expect.stringContaining('private unrelated checkpoint'),
         response: { status: 200 }, readback: { checkpoint: expect.stringContaining('private unrelated checkpoint') } });
+      expect(receipt.correlation.selectedPid).not.toBe(receipt.correlation.decoyPid);
+      expect(Date.parse(receipt.correlation.decoyQueryStart)).toBeLessThanOrEqual(Date.parse(receipt.correlation.selectedQueryStart));
       console.info('PRIVATE_UNRELATED_WRITE_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },
   });

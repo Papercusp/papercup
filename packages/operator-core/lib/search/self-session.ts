@@ -259,21 +259,41 @@ export async function resolveSelfSession(
     /* no live pty record — fall through to the claude isolation-dir path */
   }
 
-  // A fresh psu Codex launch has an adv-session row before it has a native
-  // session id or discovery record. The row still identifies its client and
-  // isolated CODEX_HOME; defaulting such a launch to Claude made self-recall
-  // impossible by construction.
-  if (!command) command = activeSessions.find((r) => r.agent)?.agent ?? null;
-  if (!uuid) {
-    const native = activeSessions.find((r) => r.session_id && UUID_RE.test(r.session_id))?.session_id;
-    if (native) uuid = native;
+  // The active adv-session row is the current session's durable client
+  // identity. A psu-pty record can survive a client handoff and still name the
+  // predecessor executable/UUID; letting that stale record win routes a live
+  // Codex caller through the old Claude resolver (and makes `session:'self'`
+  // return the predecessor or null). Keep the discovery record as a fallback
+  // when no recognized active row exists, and retain its UUID only when it is
+  // for the same client.
+  const active = activeSessions.find(
+    (row): row is ActiveSessionRow & { agent: SelfSession['sourceKind'] } =>
+      row.agent === 'claude' || row.agent === 'omp' || row.agent === 'codex',
+  );
+  const discoveredKind: SelfSession['sourceKind'] | null = command
+    ? basename(command) === 'omp'
+      ? 'omp'
+      : basename(command) === 'codex'
+        ? 'codex'
+        : 'claude'
+    : null;
+  const activeKind = active?.agent ?? null;
+  const native = active?.session_id && UUID_RE.test(active.session_id) ? active.session_id : null;
+  if (activeKind) {
+    command = activeKind;
+    uuid = native ?? (activeKind === discoveredKind ? uuid : null);
+  } else {
+    // A fresh psu Codex launch has an adv-session row before it has a native
+    // session id or discovery record. If there is no recognized row, retain
+    // the original discovery fallback and use any valid active native id.
+    if (!command) command = activeSessions.find((r) => r.agent)?.agent ?? null;
+    if (!uuid) {
+      const fallbackNative = activeSessions.find((r) => r.session_id && UUID_RE.test(r.session_id))?.session_id;
+      if (fallbackNative) uuid = fallbackNative;
+    }
   }
 
-  // Discovery may name an absolute executable path. Comparing that path to
-  // the bare CLI name incorrectly sends managed Codex/OMP sessions to Claude.
-  const clientCommand = command ? basename(command) : null;
-  const kind: SelfSession['sourceKind'] =
-    clientCommand === 'omp' ? 'omp' : clientCommand === 'codex' ? 'codex' : 'claude';
+  const kind: SelfSession['sourceKind'] = activeKind ?? discoveredKind ?? 'claude';
 
   if (kind === 'claude') {
     // The per-owner isolation dir holds ONLY this owner's sessions, so the

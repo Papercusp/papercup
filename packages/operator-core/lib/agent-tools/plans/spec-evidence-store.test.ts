@@ -1491,7 +1491,7 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(h.workspaceScopes).toEqual(['workspace-historical']);
   });
 
-  it('projects structured failed identities even without a human tail, fenced to a failed mutation run (EI-25248905256718690)', async () => {
+  it('projects every structured failed identity over a one-line human tail, fenced to a failed mutation run (EI-25248905256718690)', async () => {
     h.rows = [{
       id: 1, work_item_id: 'WI-1', plan_slug: 'plan-one', spec_id: 'SPEC-1',
       spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
@@ -1499,20 +1499,26 @@ describe('listSpecEvidence timestamp normalization', () => {
       source_fingerprint: null, test_fingerprint: null, fixture_fingerprint: null,
       rubric_fingerprint: null, environment_fingerprint: null, coverage_evidence_ref: null,
       test_run_id: 43, test_run_present: true, test_run_file_path: 'test/a.test.ts',
-      test_run_commit_sha: 'abc', test_run_worktree_dirty: false, mutation_failure_tail: null,
+      test_run_commit_sha: 'abc', test_run_worktree_dirty: false,
+      mutation_failure_tail: 'suite > failed with a long DOM error: expected false to be true',
       mutation_execution_details: {
         schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
         workspaceId: 'ws', harnessSlug: 'papercusp', testNamePattern: null,
-        passed: 1, failed: 1, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
-        commitSha: 'abc', worktreeDirty: false, failedCaseTitles: ['suite > failed with a long DOM error'],
+        passed: 1, failed: 2, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
+        commitSha: 'abc', worktreeDirty: false,
+        failedCaseTitles: ['suite > failed with a long DOM error', 'suite > second failed case'],
       },
       observed_at: '2026-10-06T16:35:00.000Z', created_at: '2026-10-06T16:36:00.000Z',
     }];
     const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
     expect(row.testRunProvenance?.mutationFailureLines).toEqual([
       'suite > failed with a long DOM error: (recorded failed assertion)',
+      'suite > second failed case: (recorded failed assertion)',
     ]);
-    expect(row.testRunProvenance?.mutationFailedCaseTitles).toEqual(['suite > failed with a long DOM error']);
+    expect(row.testRunProvenance?.mutationFailedCaseTitles).toEqual([
+      'suite > failed with a long DOM error',
+      'suite > second failed case',
+    ]);
     const query = h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql ?? '';
     expect(query).toContain("WHEN b.evidence_kind IN ('mutation', 'counterexample')");
     expect(query).toContain("AND tr.execution_details->>'mutationPhase' = 'mutant'");

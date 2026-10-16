@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { decodeNativeBridgeJson } from './_native-bridge-json';
 import type { SupportWorkflowNativeFixture, SupportWorkflowReviewerAccess, SupportWorkflowAccessSelection } from './_support-workflow-native-fixture';
 
-// P-012c, D-028/D-031. Run through verify-tauri-headless.sh with
+// P-012c, D-028/D-031/D-050. Run through verify-tauri-headless.sh with
 // VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready. This spec uses
 // the owned native webview, never a Playwright browser or mocked API responses.
 // The shared P-012b fixture supplies input and distinct cookie-authenticated
@@ -46,10 +46,10 @@ async function check(expression: string) {
 }
 async function navigate(params: Record<string, string> = {}) {
   const url = new URL('/adv', process.env.VERIFY_TAURI_DEV_URL!);
-  url.search = new URLSearchParams({ tab: 'workflows', welcome: '0',
+  url.search = new URLSearchParams({ tab: 'enterprise', welcome: '0',
     ws: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE!, ...params }).toString();
   await native('navigate', url.toString(), '--json');
-  await check('!!document.querySelector(".pc-wf") && document.body.innerText.includes("Workflows")');
+  await check('new URL(location.href).searchParams.get("tab")==="enterprise" && !!document.querySelector("section[aria-label=\"Enterprise workspace\"]") && document.querySelector(".pc-wf__title")?.textContent==="Enterprise"');
 }
 
 async function fixtureProcess(seed: boolean, permissions?: {
@@ -205,11 +205,11 @@ test.describe('P-012 current-build native acceptance', () => {
     }
   });
 
-  test('owned Workflows frame and falsifiable missing-control guard', async ({}, info) => {
+  test('owned Enterprise workspace and falsifiable missing-control guard', async ({}, info) => {
     test.setTimeout(180_000);
     try {
       await navigate();
-      await check('!!document.querySelector("[aria-label=\"Workflow inspector\"]") && Array.from(document.querySelectorAll("button")).some(b => b.textContent?.includes("New workflow"))');
+      await check('(() => { const s=document.querySelector("section[aria-label=\"Enterprise workspace\"]"); return !!s?.querySelector("[aria-label=\"Enterprise journey\"]") && !!s.querySelector("[aria-label=\"Departmental workflow\"]") && s.querySelectorAll("nav[aria-label=\"Supporting workspace evidence\"] button").length===6 && Array.from(s.querySelectorAll("button")).some(b=>b.textContent?.includes("Manage workflows")); })()');
       // The check command must reject a missing subject. eval/probe success
       // alone cannot establish either a positive or a negative UI assertion.
       const negative = await native('check', '--selector', '#p012-deliberately-absent-control', '--json')

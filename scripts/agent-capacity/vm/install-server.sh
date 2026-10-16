@@ -172,7 +172,8 @@ candidate_ports() {
 }
 for _ in $(seq 1 180); do
   for port in $(candidate_ports | sort -u); do
-    if body=$(curl -fsS -m 3 "http://127.0.0.1:$port/api/health" 2>/dev/null); then
+    if body=$(curl -fsS -m 3 "http://127.0.0.1:$port/api/health" 2>/dev/null) &&
+      python3 -c 'import json,sys; h=json.load(sys.stdin); sys.exit(0 if isinstance(h,dict) and h.get("ok") is True and h.get("service")=="papercusp-operator" else 1)' <<<"$body" 2>/dev/null; then
       echo "SERVER_PORT=$port"
       echo "SERVER_HEALTH=$body"
       echo "T_BOOT_TO_HEALTH=$(( $(date +%s) - t3 ))"

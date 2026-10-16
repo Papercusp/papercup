@@ -2051,6 +2051,26 @@ describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
     expect(detectSelfOutputRedirect('a > /tmp/first.log; b >> /tmp/second.log')?.target).toBe('/tmp/second.log');
   });
 
+  it('ignores arithmetic comparisons before a later heredoc command', () => {
+    const command = [
+      'if (( SECONDS >= recovery_deadline )); then',
+      '  echo timeout;',
+      'fi;',
+      "ptool tools:invoke --json - <<'JSON'",
+      '{}',
+      'JSON',
+    ].join('\n');
+    expect(detectSelfOutputRedirect(command)).toBeNull();
+  });
+
+  it('still detects redirects adjacent to assignment operators', () => {
+    expect(detectSelfOutputRedirect('main-command target=>/tmp/out.log')).toEqual({
+      target: '/tmp/out.log',
+      op: '>',
+      literalPath: true,
+    });
+  });
+
   it('ignores a command-local curl redirect when the main command has no redirect', () => {
     expect(detectSelfOutputRedirect('main-command; curl -fsS https://example.test >/dev/null 2>&1')).toBeNull();
   });

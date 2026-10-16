@@ -78,12 +78,22 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
     stub('journalctl', 'echo "operator_hint=1"');
     stub('find', 'exit 0');
     stub('ss', 'exit 0');
-    stub('curl', `echo '{"ok":true}'`);
+    stub('curl', `echo '{"ok":true,"service":"papercusp-operator"}'`);
     stub('sleep', 'exit 0');
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const env = () => ({ ...process.env, PATH: `${bin()}:${process.env.PATH}`, SVC_HOME: home(), SUDO_USER: 'sshlogin' });
+
+  it.each(['<html>SPA</html>', '{"ok":false,"service":"papercusp-operator"}', '{"ok":true}', '{"ok":true,"service":"other"}', '[]', '{"ok":"true","service":"papercusp-operator"}'])('does not announce readiness for an HTTP 200 with invalid body: %s', (invalid) => {
+    writeFileSync(path.join(dir, 'invalid-health'), invalid);
+    stub('curl', `echo "$@" >> "${dir}/curl.args"\nn=$(cat "${dir}/curl.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${dir}/curl.n"\nif [ $n -eq 1 ]; then cat "${dir}/invalid-health"; else echo '{"ok":true,"service":"papercusp-operator"}'; fi`);
+    const r = run();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readFileSync(path.join(dir, 'curl.n'), 'utf8').trim()).toBe('2');
+    expect(readFileSync(path.join(dir, 'curl.args'), 'utf8').trim().split('\n').every((line) => line.includes('/api/health'))).toBe(true);
+    expect(r.stdout).toContain('SERVER_HEALTH={"ok":true,"service":"papercusp-operator"}');
+  });
 
   it('masks the SSH account before starting a tenant, so the global package enable cannot add a server', () => {
     const r = run();

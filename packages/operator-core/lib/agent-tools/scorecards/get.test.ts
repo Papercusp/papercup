@@ -140,6 +140,10 @@ describe('scorecards:get evidence-first projection', () => {
     resetResultDoorAggregatesForTests();
   });
 
+  it('does not retain an ambient workspace transaction while awaiting the bounded read', () => {
+    expect((getTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('distinguishes live adequacy freshness checks from creation-time grading audits', () => {
     const prompt = getTool as unknown as {
       description: string;

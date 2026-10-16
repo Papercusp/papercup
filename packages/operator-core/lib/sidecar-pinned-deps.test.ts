@@ -390,6 +390,26 @@ process.exit(result.status ?? 1);`);
       expect(existsSync(join(snapshot, 'node_modules/.vite-temp'))).toBe(false);
     });
 
+    it.each(['hardlink', 'copy'])('reports completed small trees for %s publication and verified reuse', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const trees = ['node_modules', 'apps/web/node_modules'];
+      for (const tree of trees) write(join(donor, tree, 'dep/index.js'), tree);
+      const check = (result: ReturnType<typeof runLib>) => {
+        expect(result.code, result.err).toBe(0);
+        const rows = result.out.split('\n').filter(line => line.startsWith('snapshot progress:'));
+        expect(rows.map(line => Number(/completed=(\d+)/.exec(line)?.[1]))).toEqual([1, 2]);
+        expect(rows.map(line => line.split(' tree=')[1]).sort()).toEqual([...trees].sort());
+        for (const tree of trees)
+          expect(readFileSync(join(snapshot, tree, 'dep/index.js'), 'utf8')).toBe(tree);
+      };
+      check(runLib(['snapshot', donor, snapshot, mode]));
+      if (mode === 'copy') {
+        const reused = runLib(['snapshot', donor, snapshot, mode]);
+        check(reused);
+        for (const tree of trees) expect(reused.out).toContain('reused verified completed snapshot ' + tree);
+      }
+    });
+
     it('preserves the failed copy diagnostic and refuses both fresh and stale success receipts', () => {
       const t = fixture();
       const donor = join(t, 'donor');
@@ -403,6 +423,7 @@ process.exit(result.status ?? 1);`);
       expect(result.code).toBe(1);
       expect(result.err).toContain('rsync: fixture hardlink path: Permission denied');
       expect(result.err).toContain('FAILED to snapshot node_modules (exit=17)');
+      expect(result.out).not.toContain('snapshot progress:');
       expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
       expect(existsSync(join(snapshot, 'node_modules'))).toBe(false);
     });

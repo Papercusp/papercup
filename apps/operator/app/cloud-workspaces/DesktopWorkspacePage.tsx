@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { Monitor, RefreshCw } from "lucide-react";
 import { parseAsString, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
+import { useOperatorWorkspaceLocation } from "@papercusp/operator-ui/seam";
 import { Button } from "@/app/harness/Button";
 import { Select } from "@/app/harness/Select";
 import { HostedDesktopConnection } from "./HostedDesktopConnection";
@@ -18,6 +19,7 @@ import styles from "./hosted-workspace-session.module.css";
 
 /** D-062 option B: Desktops is a workspace, not a selected cloud-management tab. */
 export default function DesktopWorkspacePage() {
+  const localMode = useOperatorWorkspaceLocation() === "local";
   const control = useSyncQuery<CloudWorkspacesControlRow>({
     queryName: "workspaceHosts.control",
   });
@@ -37,11 +39,12 @@ export default function DesktopWorkspacePage() {
       ),
     [control.data],
   );
-  // P-007: "This computer" sits beside the cloud workspaces. It is the default only
-  // when there is no cloud workspace to open, so an existing cloud default is kept.
+  // "This computer" is available only on a local host. An empty hosted inventory
+  // (including a session with no selected workspace) grants no local machine.
   const showLocal =
-    requestedHost === LOCAL_DESKTOP_HOST ||
-    (!requestedHost && !control.loading && !control.error && workspaces.length === 0);
+    localMode &&
+    (requestedHost === LOCAL_DESKTOP_HOST ||
+      (!requestedHost && !control.loading && !control.error && workspaces.length === 0));
   // Preserve explicit deep links; a missing subject must not silently select another machine.
   const selected = showLocal
     ? undefined
@@ -66,7 +69,9 @@ export default function DesktopWorkspacePage() {
             value={showLocal ? LOCAL_DESKTOP_HOST : (selected?.id ?? "")}
             placeholder="Choose a workspace"
             options={[
-              { value: LOCAL_DESKTOP_HOST, label: "This computer" },
+              ...(localMode
+                ? [{ value: LOCAL_DESKTOP_HOST, label: "This computer" }]
+                : []),
               ...workspaces.map((row) => ({
                 value: row.id,
                 label: row.name,

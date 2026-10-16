@@ -19,6 +19,25 @@ afterEach(() => registry.clear());
 
 const NOW = Date.parse('2026-08-23T12:00:00.000Z');
 
+describe('installed package rate budgets', () => {
+  it('uses the current descriptor after unload and same-id replacement', async () => {
+    expect(socialAdminFacts('reddit', {}, NOW)?.rateBudget).toMatchObject({ maxRuns: 30, basis: 'rate-budget' });
+    registry.unregister('reddit');
+    expect(socialAdminFacts('reddit', {}, NOW)).toBeNull();
+    await installSocialPackages([{ platform: 'reddit', rateBudget: {
+      verifiedAt: '2026-08-23', sources: ['https://example.test/limits'], requestsPerMinute: 2,
+    } }], registry);
+    expect(socialAdminFacts('reddit', {}, NOW)?.rateBudget).toMatchObject({ maxRuns: 1, basis: 'rate-budget' });
+  });
+
+  it('derives budgets for a newly installed provider without adding an app-side row', async () => {
+    await installSocialPackages([{ platform: 'new-social-provider', rateBudget: {
+      verifiedAt: '2026-08-23', sources: ['https://example.test/limits'], requestsPerMinute: 100,
+    } }], registry);
+    expect(socialAdminFacts('new-social-provider', {}, NOW)?.rateBudget).toMatchObject({ maxRuns: 50, basis: 'rate-budget' });
+  });
+});
+
 describe('socialAdminFacts', () => {
   it('returns null for a kind the registry does not know', () => {
     // The pane's correctness rests on this: a gmail or slack source must never

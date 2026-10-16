@@ -598,6 +598,14 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // This handler performs its own bounded, read-only database transaction and
+  // can wait on pool/lock contention. Do not retain the projected ambient
+  // workspace transaction while that await is in flight: an idle outer
+  // transaction can consume the 55s MCP deadline (and the 60s Postgres
+  // idle-in-transaction timeout) even when the scorecard query itself is fast.
+  // This is especially important through tools:invoke, whose nested dispatch
+  // otherwise recreates the ambient transaction around this handler.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES, 'judge'],
   // This tool's projection is intentionally bounded at the source. It still
   // opts out of ambient tier shaping so a trimmed audit session cannot replace

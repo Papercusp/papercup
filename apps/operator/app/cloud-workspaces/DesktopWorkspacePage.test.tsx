@@ -2,6 +2,7 @@
 import { Suspense } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { OperatorWorkspaceLocationProvider } from "@papercusp/operator-ui/seam";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 
 const H = vi.hoisted(() => ({
@@ -12,18 +13,21 @@ const H = vi.hoisted(() => ({
   loading: false,
   error: null as Error | null,
   invalidate: vi.fn(),
+  queries: [] as string[],
 }));
 
 vi.mock("@papercusp/sync", () => ({
-  useSyncQuery: ({ queryName }: { queryName: string }) =>
-    queryName === "desktops.local"
+  useSyncQuery: ({ queryName }: { queryName: string }) => {
+    H.queries.push(queryName);
+    return queryName === "desktops.local"
       ? { data: H.localRows, loading: false, error: null, invalidate: H.invalidate }
       : {
           data: H.rows,
           loading: H.loading,
           error: H.error,
           invalidate: H.invalidate,
-        },
+        };
+  },
   useSyncMutate: () => vi.fn(),
 }));
 vi.mock("nuqs", async (importOriginal) => {
@@ -107,11 +111,13 @@ function workspace(
   };
 }
 
-function openDesktops() {
+function openDesktops(location: "local" | "cloud" = "local") {
   const Desktops = OPERATOR_SURFACES.desktops;
   return render(
     <Suspense fallback={<p>Loading surface</p>}>
-      <Desktops />
+      <OperatorWorkspaceLocationProvider location={location}>
+        <Desktops />
+      </OperatorWorkspaceLocationProvider>
     </Suspense>,
   );
 }
@@ -127,9 +133,33 @@ beforeEach(() => {
   H.updates = [];
   H.loading = false;
   H.error = null;
+  H.queries = [];
 });
 
 describe("portal Desktops entry — approved option B", () => {
+  it("keeps a hosted session with no workspace empty without reading this computer", async () => {
+    H.rows = [];
+    openDesktops("cloud");
+    expect(await screen.findByText("No desktop workspaces yet")).toBeTruthy();
+    expect(screen.queryByText("This computer")).toBeNull();
+    expect(H.queries).not.toContain("desktops.local");
+  });
+
+  it("refuses a hosted local deep link without opening local desktops", async () => {
+    H.params.desktopHost = "local";
+    openDesktops("cloud");
+    expect(await screen.findByText("Workspace unavailable")).toBeTruthy();
+    expect(screen.queryByText("This computer")).toBeNull();
+    expect(H.queries).not.toContain("desktops.local");
+  });
+
+  it("offers only authorized cloud machines in a hosted workspace", async () => {
+    openDesktops("cloud");
+    expect(await screen.findByRole("region", { name: "Desktops for Research workspace" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "This computer" })).toBeNull();
+    expect(H.queries).not.toContain("desktops.local");
+  });
+
   it("opens the desktop composition without expanding a cloud-host row", async () => {
     openDesktops();
     expect(

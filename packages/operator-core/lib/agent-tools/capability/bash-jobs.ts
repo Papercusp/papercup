@@ -1752,6 +1752,7 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
   const commandNames = new Map<number, string | null>();
   const candidates: RedirectCandidate[] = [];
   const pendingHeredocs: HeredocDeclaration[] = [];
+  let arithmeticParenDepth = 0;
 
   const commandBasename = (value: string): string => {
     const slash = value.lastIndexOf('/');
@@ -1859,6 +1860,32 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
     // A backslash-newline is continuation whitespace, not a command boundary.
     if (ch === '\\' && command[i + 1] === '\n') {
       i += 1;
+      continue;
+    }
+
+    // Bash arithmetic commands and expansions use the same `>` character for
+    // comparison and shift operators. Keep their expression body out of the
+    // shell redirect scanner so `SECONDS >= deadline` cannot become a false
+    // `> =` stdout redirect when a later command has a real heredoc/redirect.
+    if (ch === '(' && command[i + 1] === '(') {
+      arithmeticParenDepth = 1;
+      i += 1;
+      continue;
+    }
+    if (arithmeticParenDepth > 0) {
+      if (ch === '(') {
+        arithmeticParenDepth += 1;
+        continue;
+      }
+      if (ch === ')') {
+        if (arithmeticParenDepth === 1 && command[i + 1] === ')') {
+          arithmeticParenDepth = 0;
+          i += 1;
+        } else {
+          arithmeticParenDepth -= 1;
+        }
+        continue;
+      }
       continue;
     }
 

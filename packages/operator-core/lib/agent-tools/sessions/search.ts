@@ -62,6 +62,10 @@ const SESSION_SEARCH_WINDOW_TURN_CHARS = 280;
 const SEARCH_TRUNCATION_MARKER = '…[truncated]';
 const SEARCH_PHASE_LOG_THRESHOLD_MS = 100;
 const SEARCH_PHASE_WARN_AFTER_MS = 1_000;
+// WI-6554700010010580: this is a best-effort caveat probe on the 8.6GB
+// session_turn_parts table. Keep the database bound tighter than the route
+// watchdog so lock contention degrades the caveat instead of wedging a worker.
+const ZERO_HIT_TOOL_PART_STATEMENT_TIMEOUT_MS = 2_000;
 
 function logSearchPhase(
   ctx: PapercuspUnifiedToolContext,
@@ -564,12 +568,12 @@ export default defineTool({
             // owner-scoped tool part just to report an exact occurrence total.
             // Keep the partial-index predicates explicit as an OR so the
             // planner can BitmapOr the tool_use and tool_result owner indexes.
-            const [toolParts] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', () => tx<Array<{ found: boolean }>>`
+            const probe = async (probeTx: typeof tx) => probeTx<Array<{ found: boolean }>>`
               SELECT EXISTS (
                 SELECT 1
                   FROM harness_shared.session_turn_parts p
                  WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
-                   AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
+                   AND NOT ${restrictedTurnSql(probeTx, 'p', selfOwnerIds)}
                    AND p.owner = ANY(${pOwners}::text[])
                    AND (${pf.sessionId ?? null}::text IS NULL OR p.session_id = ${pf.sessionId ?? null})
                    AND (${pf.sourceKind ?? null}::text IS NULL OR p.source_kind = ${pf.sourceKind ?? null})
@@ -581,7 +585,21 @@ export default defineTool({
                      (p.part_kind = 'tool_use' AND p.text ILIKE '%' || ${args.query} || '%')
                    )
               ) AS found
-            `, requestCorrelationId);
+            `;
+            const [toolParts] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', async () => {
+              // `sessions:search` is cross-workspace and normally receives a bare
+              // admin-pool handle. SET LOCAL must therefore live in a transaction;
+              // setting it on the pool handle would leak to an unrelated checkout.
+              if (typeof tx.begin === 'function') {
+                return tx.begin(async (probeTx) => {
+                  await probeTx.unsafe(`SET LOCAL statement_timeout = ${ZERO_HIT_TOOL_PART_STATEMENT_TIMEOUT_MS}`);
+                  return probe(probeTx as unknown as typeof tx);
+                });
+              }
+              // Keep lightweight test doubles and partial host contexts working;
+              // production Sql handles always take the bounded transaction path.
+              return probe(tx);
+            }, requestCorrelationId);
 
             if (toolParts?.found) {
               toolPartCaveat =

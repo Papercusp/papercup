@@ -26,6 +26,115 @@ function py(module: string, expr: string, input: unknown): any {
 
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
+describe('native evidence survives guest teardown', () => {
+  function archiveScenario(change: string, afterArchive = 'pass') {
+    const code = [
+      'import importlib.util,json,pathlib,tempfile,tarfile,io,subprocess,sys,hashlib,shutil',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'root=pathlib.Path(tempfile.mkdtemp()); out=root/"run"; out.mkdir()',
+      'start=1792190000; stamp="2026-10-16T22:33:25Z"',
+      'rows=[{"kind":"run-start","t":start,"cli":"codex","agents":2,"warm":1}]',
+      'sessions={}',
+      'def record(payload, type="response_item"): return {"timestamp":stamp,"type":type,"payload":payload}',
+      'for name in ["a1","a2"]:',
+      ' data=root/(name+".txt"); data.write_bytes((name+" dummy").encode()); digest=hashlib.sha256(data.read_bytes()).hexdigest()',
+      ' history=[]',
+      ' for marker in ["WARM-"+name+"-0", "WAKE-test"+name]:',
+      '  history.extend([record({"role":"user","content":[{"text":marker}]}),record({"type":"function_call_output","output":digest}),record({"role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"DONE-"+marker}]}),record({"type":"task_complete"},"event_msg")])',
+      ' path=root/(name+".jsonl"); path.write_text("".join(json.dumps(r)+"\\n" for r in history))',
+      ' sessions[name]={"file":str(path),"data":str(data)}',
+      ' rows.append({"kind":"wake","t":start+10,"agent":name,"tDone":start+9,"error":None,"nativeToolVerified":False})',
+      'rows.append({"kind":"run-end","t":start+20})',
+      change,
+      '(out/"results.jsonl").write_text("".join(json.dumps(r)+"\\n" for r in rows))',
+      'error=None; receipt=None; cli=None',
+      'try: receipt=m.archive_native_evidence(str(out),sessions)',
+      'except (RuntimeError,ValueError) as e: error=str(e)',
+      'archive=out/"native-evidence.tar.gz"',
+      afterArchive,
+      'if archive.exists():',
+      ' copied=root/"local-copy.tar.gz"; shutil.copyfile(archive,copied)',
+      ' for entry in sessions.values():',
+      '  for key in ["file","data"]:',
+      '   p=pathlib.Path(entry[key]); p.unlink(missing_ok=True)',
+      ` r=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"verify-archive","--archive",str(copied),"--results",str(out/"results.jsonl")],capture_output=True,text=True)`,
+      ' cli={"exit":r.returncode,"stdout":r.stdout,"stderr":r.stderr}',
+      ' with tarfile.open(copied) as t: manifest=json.load(t.extractfile("native-manifest.json"))',
+      'else: manifest=None',
+      'print(json.dumps({"receipt":receipt,"error":error,"cli":cli,"manifest":manifest}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    return JSON.parse(result.stdout);
+  }
+
+  it('verifies a locally copied complete population after original histories are deleted', () => {
+    const result = archiveScenario('pass');
+    expect(result.error).toBeNull();
+    expect(result.receipt).toMatchObject({ verified: true, assignedAgents: 2 });
+    expect(result.receipt.archiveSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.cli.exit).toBe(0);
+    expect(JSON.parse(result.cli.stdout)).toEqual(result.receipt);
+    expect(result.manifest.agents.map((a: any) => a.agent)).toEqual(['a1', 'a2']);
+    expect(result.manifest.problems).toEqual([]);
+  });
+
+  it.each([
+    ['sessions.pop("a2")', 'population mismatch'],
+    ['pathlib.Path(sessions["a2"]["file"]).unlink()', 'population mismatch'],
+    ['rows.pop()', 'run did not complete'],
+    ['rows[1]["error"]="task failed"', 'task coverage incomplete'],
+    ['pathlib.Path(sessions["a2"]["file"]).write_text(pathlib.Path(sessions["a2"]["file"]).read_text().replace("2026-10-16T22:33:25Z","2026-10-16T22:00:00Z"))', 'task coverage incomplete'],
+    ['pathlib.Path(sessions["a2"]["file"]).write_text(pathlib.Path(sessions["a2"]["file"]).read_text().replace("2026-10-16T22:33:25Z","2026-10-16T23:00:00Z"))', 'task coverage incomplete'],
+    ['p=pathlib.Path(sessions["a2"]["file"]); p.write_text("".join(line+"\\n" for line in p.read_text().splitlines() if json.loads(line).get("type")!="event_msg"))', 'task coverage incomplete'],
+    ['pathlib.Path(sessions["a2"]["data"]).write_text("changed task data")', 'task coverage incomplete'],
+  ])('preserves a rejected partial archive for %s', (change, message) => {
+    const result = archiveScenario(change);
+    expect(result.receipt).toBeNull();
+    expect(result.error).toContain(message);
+    expect(result.manifest.problems.join(';')).toContain(message);
+    expect(result.cli.exit).not.toBe(0);
+  });
+
+  it('rejects the original results-only archive shape and changed raw bytes', () => {
+    const code = [
+      'import importlib.util,tempfile,pathlib,tarfile,io,json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'path=pathlib.Path(tempfile.mkdtemp())/"results-only.tgz"',
+      'with tarfile.open(path,"w:gz") as t:',
+      ' member=tarfile.TarInfo("results.jsonl"); member.size=3; t.addfile(member,io.BytesIO(b"{}\\n"))',
+      'error=None',
+      'try: m.verify_native_archive(str(path),str(path.parent/"results.jsonl"))',
+      'except RuntimeError as e:error=str(e)',
+      'print(json.dumps({"error":error,"changed":m.native_archive_problems({"schemaVersion":"swap-tier-native-archive-v1","resultsSha256":"wrong"},{"results.jsonl":b"changed"})}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ error: 'native archive missing required population manifest', changed: ['results hash mismatch'] });
+  });
+
+  it('rejects an older complete archive when the caller supplies newer run results', () => {
+    const result = archiveScenario('pass', '(out/"results.jsonl").write_text((out/"results.jsonl").read_text()+"{}\\n")');
+    expect(result.receipt.verified).toBe(true);
+    expect(result.cli.exit).not.toBe(0);
+    expect(result.cli.stderr).toContain('belongs to different run results');
+  });
+
+  it.each(['session.jsonl', 'dummy-data.txt'])('rejects changed archived %s bytes', (suffix) => {
+    const result = archiveScenario('pass', [
+      'with tarfile.open(archive) as t: files={m.name:t.extractfile(m).read() for m in t.getmembers()}',
+      `files["native/a1/${suffix}"]+=b"changed"`,
+      'with tarfile.open(archive,"w:gz") as t:',
+      ' for name,content in files.items():',
+      '  member=tarfile.TarInfo(name); member.size=len(content); t.addfile(member,io.BytesIO(content))',
+    ].join('\n'));
+    expect(result.cli.exit).not.toBe(0);
+    expect(result.cli.stderr).toContain('missing or changed');
+  });
+});
+
 describe('capacity Server population preflight', () => {
   it('requests a bounded full-file digest with enough native output for any poll', () => {
     const prompt = py(DRIVER, 'm.native_hash_prompt(inp)', 'WARM-a17-3');
@@ -507,6 +616,7 @@ describe('minimum-resource active cohorts', () => {
       'm.subprocess.Popen=lambda *a, **kw: types.SimpleNamespace(terminate=lambda:None)',
       'm.time.sleep=lambda *a:None; m.host_stats=lambda:{}; m.report=lambda *a:None',
       'm.stop_agents=lambda:events.append("stop"); m.swap_off=lambda:events.append("swapoff")',
+      'm.archive_native_evidence=lambda *a: events.append("archive") or {"verified":True}',
       'm.swap_on=lambda *a:events.append("swapon")',
       'm.active_swap=lambda *a:events.append("validate-swap") or {"device":"/dev/zram0","devices":[]}',
       'm.gateway_preflight=lambda *a, **kw:None; m.codex_sandbox_preflight=lambda *a:None',
@@ -515,14 +625,14 @@ describe('minimum-resource active cohorts', () => {
       'm.run_arm=lambda *a, **kw:events.append({"arm":kw})',
       'try: m.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
       'except RuntimeError: pass',
-      'print(json.dumps(events))',
+      'print("EVENTS="+json.dumps(events))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
-    const events = JSON.parse(result.stdout);
-    expect(events).toEqual(fail ? ['validate-swap', 'stop', 'start', 'stop'] : ['validate-swap', 'stop', 'start', 'warm', {
+    const events = JSON.parse(result.stdout.split('EVENTS=')[1]);
+    expect(events).toEqual(fail ? ['validate-swap', 'stop', 'start', 'stop', 'archive'] : ['validate-swap', 'stop', 'start', 'warm', {
       arm: { active: [1], active_rounds: 3, swap_ready: true, keep_swap: true },
-    }, 'stop']);
+    }, 'stop', 'archive']);
   });
 
   it.each([

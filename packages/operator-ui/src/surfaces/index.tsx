@@ -83,6 +83,7 @@ export type OperatorSurfaceKind =
   | 'plans'
   | 'inbox'
   | 'overview'
+  | 'enterprise'
   | 'hud'
   | 'work'
   | 'learning'
@@ -194,6 +195,7 @@ export const OPERATOR_SURFACES: Record<
   // tab → kind map and is typed over the full AdvTabId union, so a NEW desktop
   // tab fails to compile until it is registered for the portal too.
   overview: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvOverviewTab')),
+  enterprise: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvEnterpriseTab')),
   hud: lazy(() => import('../../../../apps/operator/app/adv/hud/HudView')),
   work: lazy(() => import('../../../../apps/operator/app/adv/harnesses/HarnessesWorkspace')),
   learning: lazy(() => import('../../../../apps/operator-vite/src/components/adv/LearningTab')),

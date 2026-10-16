@@ -967,7 +967,13 @@ async function ownHostedOperatorConnector(portalRoot: string, user: { workspaceI
   const fixture = { ...loaded.default, ...loaded };
   const controlWorkspace = fixture.isolatedHostedWorkspaceContext(process.env);
   const relayModule = await phase('connector-relay-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href), 10_000);
-  const config = ({ ...relayModule.default, ...relayModule }).relayConfig(process.env);
+  // The Portal relay defaults to the installed hosted control plane (:3880).
+  // This fixture owns a disposable operator and database, so let the relay
+  // use that same runtime authority instead of authenticating against the
+  // shared hosted service with a session created in the private database.
+  const config = ({ ...relayModule.default, ...relayModule }).relayConfig({
+    ...process.env, PORTAL_HOSTED_CONTROL_PLANE_ORIGIN: operatorOrigin,
+  });
   if (!config) throw new Error('hosted_fixture_relay_configuration_missing');
   const workspace = user.workspaceId!;
   const [host] = await phase('connector-host-binding-read', () => withWorkspace(controlWorkspace, (sql) => sql`

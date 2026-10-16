@@ -1949,7 +1949,7 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
  *
  * `claudeExecutable` is the resolved claude binary, or undefined when none was
  * found. Undefined still writes the shim, which then exits 127 with a pointer to
- * grep/gitnexus — a stated "ripgrep is unavailable here" beats `command not found`,
+ * grep/lsp — a stated "ripgrep is unavailable here" beats `command not found`,
  * which reads as a PATH bug and sent four agents down the wrong path already.
  */
 export async function writeRipgrepShim(
@@ -1985,7 +1985,7 @@ export async function writeRipgrepShim(
     'if [[ ! -x ${_cc} ]]; then\n' +
     '  echo "rg: ripgrep is unavailable — no standalone ripgrep binary is installed on this host," >&2\n' +
     '  echo "rg: and the claude executable that embeds it was not found at \'${_cc}\'." >&2\n' +
-    '  echo "rg: use grep -rn (exhaustive text search) or gitnexus.context { name } (symbol lookup)." >&2\n' +
+    '  echo "rg: use grep -rn (exhaustive text search) or lsp:query (compiler symbol lookup)." >&2\n' +
     '  exit 127\n' +
     'fi\n' +
     '\n' +

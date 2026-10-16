@@ -152,8 +152,8 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
     };
 }>;
 /** Run a bounded dependency preflight without abandoning writers in its owned tree.
- * The maintained copy helper emits measured byte counters; only increases extend
- * the watchdog. Its process group must exit before callers can remove the tree.
+ * The maintained helpers emit measured byte, lock and completed-tree counters;
+ * only increases extend the watchdog. Join its process group before cleanup.
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,

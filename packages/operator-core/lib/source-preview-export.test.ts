@@ -607,7 +607,22 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(output).toContain('copy-complete');
   });
 
-  it.each(['copy', 'copy-lock'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
+  it('treats completed small-tree snapshots as progress after byte counters go quiet', async () => {
+    const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
+      let completed = 0;
+      const timer = setInterval(() => {
+        console.log('snapshot progress: completed=' + (++completed));
+        if (completed === 12) {
+          clearInterval(timer);
+          console.log('copy-complete');
+        }
+      }, 150);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 });
+    expect(output).toContain('copy-complete');
+  });
+
+  it.each(['copy', 'copy-lock', 'snapshot'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
     const destination = join(tmp, 'dependency-copy-writer');
     const pidPath = join(tmp, 'dependency-copy-writer.pid');
     await fsPromises.mkdir(destination);
@@ -622,7 +637,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       spawn(process.execPath, ['-e', ${JSON.stringify(writer)}, ${JSON.stringify(pidPath)}, ${JSON.stringify(destination)}],
         { stdio: 'ignore' });
       setInterval(() => console.log(${JSON.stringify(kind === 'copy'
-        ? 'copy progress: fixture written=1MiB' : 'copy lock progress: fixture advances=1')}), 100);
+        ? 'copy progress: fixture written=1MiB' : kind === 'copy-lock'
+          ? 'copy lock progress: fixture advances=1' : 'snapshot progress: completed=1 tree=fixture')}), 100);
     `], { cwd: tmp, env: childEnv(), timeoutMs: 1500, maxMs: 5000,
       stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
     expect(existsSync(pidPath)).toBe(true);
@@ -634,6 +650,16 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     const pid = readFileSync(pidPath, 'utf8');
     if (existsSync(`/proc/${pid}/stat`))
       expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+  });
+
+  it.each(['absolute', 'task'])('keeps advancing snapshot progress inside the %s deadline', async boundary => {
+    const env = childEnv();
+    if (boundary === 'task') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + 11_000);
+    await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
+      let completed = 0;
+      setInterval(() => console.log('snapshot progress: completed=' + (++completed)), 100);
+    `], { cwd: tmp, env, timeoutMs: 500, maxMs: boundary === 'task' ? 5000 : 1000,
+      stallWindowMs: 400, extensionMs: 300 })).rejects.toThrow('absolute-ceiling');
   });
 
   it.each([false, true])('freezes materialized committed source without cloning on root (root donor=%s)', async rootDonor => {

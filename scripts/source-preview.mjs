@@ -702,8 +702,8 @@ function verifierPhaseRunner(path, env) {
 }
 
 /** Run a bounded dependency preflight without abandoning writers in its owned tree.
- * The maintained copy helper emits measured byte counters; only increases extend
- * the watchdog. Its process group must exit before callers can remove the tree.
+ * The maintained helpers emit measured byte, lock and completed-tree counters;
+ * only increases extend the watchdog. Join its process group before cleanup.
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
@@ -734,7 +734,7 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
   };
   const watchdog = createProgressAwareWatchdog({ timeoutMs: Math.min(timeoutMs, maxMs), maxMs,
     stallWindowMs, extensionMs,
-    onExtend: () => process.stderr.write('VERIFIER_DEPENDENCY_PROGRESS watchdog extended on measured copy bytes\n'),
+    onExtend: () => process.stderr.write('VERIFIER_DEPENDENCY_PROGRESS watchdog extended on advancing dependency counters\n'),
     onKill: decision => terminate(`verifier dependency preflight timed out: ${decision.reason}`) });
   const collect = (stream, chunk) => {
     const text = chunk.toString();
@@ -746,7 +746,8 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
     pending = lines.pop().slice(-4096);
     for (const line of lines) {
       const counter = /((?:checksum read|copy) progress:.*?) (?:written|read)=(\d+)MiB/.exec(line)
-        ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line);
+        ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line)
+        ?? /^(snapshot progress:) completed=(\d+)(?: |$)/.exec(line);
       if (counter && Number(counter[2]) > (counters.get(counter[1]) ?? 0)) {
         counters.set(counter[1], Number(counter[2]));
         watchdog.noteProgress();

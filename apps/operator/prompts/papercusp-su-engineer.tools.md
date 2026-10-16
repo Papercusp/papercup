@@ -173,7 +173,7 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   |---|---|
   | exact text, a literal, a config key, a filename | `rg` (working-tree bytes) |
   | definition, references, implementations, type truth, diagnostics, refactor preview | `lsp:query` (compiler semantics) |
-  | call chains, impact radius, subsystem/route topology | `gitnexus.context` / `gitnexus.impact` (indexed graph; freshness always explicit) |
+  | call chains, impact radius, subsystem/route topology | `graph:query` (`context` / `impact` / `trace`, bounded `paths`; first-party JS/TS compiler or syntax evidence, with explicit coverage and runtime limits) |
   | a syntax pattern or a mechanical codemod | `code:structural` (ast-grep shape, never type truth) |
   | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
 
@@ -188,8 +188,11 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   ⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`
   is UNAVAILABLE: historical builds returned empty or unranked noise, and
   current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065),
-  so the bridge refuses it. Use `gitnexus.context` for a known symbol,
-  `graph:query` for topology, or `rg` for keywords. Raw `repomix.pack` skips
+  so the bridge refuses it. Use `graph:query` for topology or `rg` for keywords.
+  Optional internal `gitnexus.context` / `gitnexus.impact` comparisons remain
+  authorized by gitnexus-deterministic-integration D-005, with index freshness
+  explicit; D-004 excludes GitNexus from public/installer distribution and
+  shipped dependencies. Raw `repomix.pack` skips
   the pinned version and the secret-scanning rails `code:pack` enforces
   (D-040/D-041). ⚠ A gitnexus call answering `Unknown namespace(s): gitnexus`
   means fall back to `rg` + `lsp:query` — never "no call chains exist". 📖

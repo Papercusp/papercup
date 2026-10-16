@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveScorecardInstrumentSnapshots, evaluateScorecardInstrumentContract } from './scorecards';
 import { getRegisteredInstrument } from './rubric-instrument-registry';
-import { WORK_OVERHEAD_INSTRUMENT_KEYS, summarizeWorkOverhead, type WorkOverheadEvent } from './agent-work-overhead-metrics';
+import { WORK_OVERHEAD_INSTRUMENT_KEYS, WORK_OVERHEAD_VERSION, summarizeWorkOverhead, type WorkOverheadEvent } from './agent-work-overhead-metrics';
 import * as workOverheadModule from './agent-work-overhead-metrics';
 import type { Rubric } from './rubrics';
 
@@ -44,7 +44,7 @@ describe('ledger-owned work overhead instruments', () => {
     const snapshots = await resolveScorecardInstrumentSnapshots({ rubric, subject }, { now, workOverhead });
     expect(workOverhead).toHaveBeenCalledExactlyOnceWith(window);
     for (const key of Object.values(keys)) expect(snapshots?.[key]).toMatchObject({ verdict: 'pass', provenance: 'platform-computed',
-      value: { resolverVersion: 1, metrics: { population: { sessions: 1 }, medianObservedSessionMinutes: 60 } } });
+      value: { resolverVersion: WORK_OVERHEAD_VERSION, metrics: { population: { sessions: 1 }, medianObservedSessionMinutes: 60 } } });
   });
   it('replaces supplied passes with an actual unknown and rejects claimed passing ratings', async () => {
     const supplied = Object.fromEntries(Object.values(keys).map(key => [key,
