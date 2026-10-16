@@ -160,6 +160,46 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
   });
 
+  it('recovers original quota receipt across replacement and mutable desired edits, scoped to the control workspace', async () => {
+    const ws = fresh();
+    await customer(ws, 'quota-origin');
+    const capacity = { dbGiB: 192, workspaceGiB: 64 };
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{data}',
+      ${JSON.stringify({ volumeGiB: 256, allocation: capacity, encrypted: true })}::jsonb)
+      WHERE workspace_id = ${ws} AND id = 'quota-origin-placeholder'`;
+    const receipt = await admitHostedLifecycleJob({ ...input(ws, 'quota-origin'), action: 'provision' });
+    // The receipt remains readable before the first provider call/resource checkpoint.
+    expect(await readWorkspaceHostDestroyTarget(ws, receipt.hostId)).toMatchObject({
+      durableStorageAdmission: { operationId: receipt.operationId, customerWorkspaceId: 'quota-origin', allocation: capacity },
+    });
+    await host(ws, 'quota-replacement', { placeholder: true });
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET workspace_host_id = 'quota-replacement'
+      WHERE workspace_id = ${ws} AND id = 'quota-origin'`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_operations
+      (workspace_id, id, host_id, action, status) VALUES (${ws}, 'later-repair', 'quota-replacement', 'repair', 'succeeded')`;
+    for (const [hostId, operationId, logicalKey] of [
+      [receipt.hostId, receipt.operationId, 'original-disk'], ['quota-replacement', 'later-repair', 'attached-disk'],
+    ]) {
+      await db.adminSql`INSERT INTO harness_shared.workspace_host_resources
+        (workspace_id, host_id, operation_id, logical_key, state, target, kind, provider_id, parent_provider_id, zone)
+        VALUES (${ws}, ${hostId}, ${operationId}, ${logicalKey}, 'applied', 'gcp', 'disk', 'quota-retained-volume',
+          'pool-project', 'us-central1-a')`;
+    }
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{data}',
+      ${JSON.stringify({ volumeGiB: 2000, allocation: { dbGiB: 1000, workspaceGiB: 1000 } })}::jsonb)
+      WHERE workspace_id = ${ws}`;
+    expect(await readWorkspaceHostDestroyTarget(ws, 'quota-replacement')).toMatchObject({
+      durableStorageAdmission: { operationId: receipt.operationId, customerWorkspaceId: 'quota-origin', allocation: capacity },
+    });
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{scope}',
+      ${JSON.stringify({ kind: 'project', id: 'foreign-project' })}::jsonb)
+      WHERE workspace_id = ${ws} AND id = 'quota-replacement'`;
+    expect(await readWorkspaceHostDestroyTarget(ws, 'quota-replacement')).toMatchObject({
+      durableStorageAdmission: { operationId: receipt.operationId, allocation: null },
+    });
+    expect(await readWorkspaceHostDestroyTarget(fresh(), 'quota-replacement')).toBeNull();
+  });
+
   it.each([
     { volumeGiB: 256 },
     { volumeGiB: 256, allocation: { dbGiB: 256, workspaceGiB: 256 } },
