@@ -18,7 +18,7 @@ import {
   type HostFetchResponse,
   type ProviderOAuthResourceToken,
 } from '@papercusp/plugin-sdk';
-import type { ProviderRegistry } from './provider-registry';
+import { assertProviderOwnerUnblocked, type ProviderRegistry } from './provider-registry';
 import { serviceCredentialForHost, serviceCredentialResolver } from './service-credentials';
 import { normalizeOAuthUserAgent } from './oauth-client-registration';
 
@@ -194,6 +194,16 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     }
     const registered = deps.registry.get(providerId);
     if (!registered) throw new HostFetchError('unknown-source', `host.fetch: provider "${providerId}" is not registered`);
+    assertProviderOwnerUnblocked(registered.descriptor, 'host.fetch');
+    // Credential refresh and resource-token selection await host work. Recheck at
+    // each transport boundary so an unload or newly blocked replacement cannot
+    // inherit the request authorized by this captured descriptor.
+    const guardedFetch: typeof fetch = (...args) => {
+      const current = deps.registry.get(providerId);
+      if (current) assertProviderOwnerUnblocked(current.descriptor, 'host.fetch');
+      if (current !== registered) throw new HostFetchError('unknown-source', `host.fetch: provider "${providerId}" changed before dispatch`);
+      return doFetch(...args);
+    };
 
     let url: URL;
     try {
@@ -307,7 +317,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     const accountAuthorization = headers.get('authorization');
     if (accountAuthorization?.startsWith('Bearer ')) secretValues.push(accountAuthorization.slice(7));
     if (resourceToken?.hosts.includes(url.hostname)) {
-      const token = await resourceAccessToken(resourceToken, resolved, accountAuthorization, doFetch, userAgent);
+      const token = await resourceAccessToken(resourceToken, resolved, accountAuthorization, guardedFetch, userAgent);
       secretValues.push(token);
       headers.set('authorization', `Bearer ${token}`);
     }
@@ -318,7 +328,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
         : request.bodyEncoding === 'base64'
           ? Buffer.from(request.body, 'base64')
           : request.body;
-    const response = await doFetch(url, {
+    const response = await guardedFetch(url, {
       method: request.method ?? 'GET',
       headers,
       body,

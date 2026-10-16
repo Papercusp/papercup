@@ -98,8 +98,8 @@ const argsSchema = refineEvenWithShapeIssues(
       .min(1)
       .optional()
       .describe(
-        'Plan slug owning every supplied clause. Omit for ad-hoc work-items that belong to no plan; ' +
-          'their clauses are authored into the harness-wide ad-hoc spec scope instead.',
+        'Plan slug owning every supplied clause. Omit only for a single ad-hoc work-item clause; ' +
+          'bulk `items` calls must name their plan so they cannot fall back to the harness-wide ad-hoc scope.',
       ),
     spec: specWriteSchema.optional().describe('Single-clause shorthand (n=1 of the bulk call).'),
     // P-007's dual-arity seam, spelled the way every sibling bulk verb spells it
@@ -118,8 +118,17 @@ const argsSchema = refineEvenWithShapeIssues(
       .describe('Append several clause revisions at once — each a full spec write.'),
   }),
   (args, ctx) => {
-    if (Boolean(args.spec) !== Boolean(args.items)) return;
-    ctx.addIssue({ code: 'custom', path: [], message: 'pass exactly one of `spec` or `items`' });
+    if (Boolean(args.spec) === Boolean(args.items)) {
+      ctx.addIssue({ code: 'custom', path: [], message: 'pass exactly one of `spec` or `items`' });
+      return;
+    }
+    if (args.items && !args.slug) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['slug'],
+        message: 'bulk `items` requires `slug`; omit `slug` only for a single ad-hoc `spec`',
+      });
+    }
   },
 );
 

@@ -73,6 +73,16 @@ export class ProviderVerificationError extends Error {
   }
 }
 
+/** An explicit owner wall applies to every host request, including OAuth and identity.
+ * Providers without contract attestations retain their existing connection behavior. */
+export function assertProviderOwnerUnblocked(
+  descriptor: Pick<ProviderDescriptor, 'verification'> & Partial<Pick<ProviderDescriptor, 'id'>>,
+  operation: string,
+): void {
+  const blockedOn = descriptor.verification?.blockedOn;
+  if (blockedOn) throw new ProviderVerificationError(descriptor.id ?? operation, operation, 'owner-blocked', blockedOn);
+}
+
 /** Resolve evidence from the installed descriptor on EVERY call. Unload/reinstall cannot
  * leave a built-in row or cached attestation authorizing a capability the package lacks. */
 export function verifiedProviderForCapability(registry: ProviderRegistry, providerId: string, capability?: string): RegisteredProvider {

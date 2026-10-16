@@ -38,7 +38,7 @@ import {
   upsertOwnedExternalTriggerSource,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
-import { providerRegistry, readyProviderRegistry, type RegisteredProvider } from './provider-registry';
+import { assertProviderOwnerUnblocked, ProviderVerificationError, providerRegistry, readyProviderRegistry, type RegisteredProvider } from './provider-registry';
 import { fetchProviderIdentity } from './provider-identity';
 
 export interface ConnectionOwner {
@@ -422,6 +422,7 @@ async function resolveDescriptorAccount(
   accessToken: string,
   instanceOrigin: string | null = null,
 ): Promise<ConnectionAccount> {
+  for (const member of members) assertProviderOwnerUnblocked(member.descriptor, 'oauth.identity');
   const holder = members.find((entry) => entry.descriptor.oauth?.identity);
   if (!holder) throw new Error(`${errorPrefix}_identity_endpoint_missing`);
   const userAgent = await providerOAuthUserAgent(holder.descriptor, members.map((entry) => entry.descriptor), instanceOrigin);
@@ -460,7 +461,7 @@ export function descriptorConnectionAdapter(plugin: string): ConnectionAdapter |
       if (!credentialRef?.startsWith(prefix)) throw new Error(`${errorPrefix}_credential_ref_invalid`);
       return credentialRef.slice(prefix.length);
     },
-    resolveAccount: (accessToken) => resolveDescriptorAccount(members, errorPrefix, accessToken, instanceOrigin),
+    resolveAccount: (accessToken) => resolveDescriptorAccount(descriptorGroupMembers(plugin), errorPrefix, accessToken, instanceOrigin),
     previousFields: (sql, owner, account) => defaultPreviousFields(sql, adapter, owner, account),
     async provision(sql, input) {
       // One credential per group: every provider in the group gets its own
@@ -588,10 +589,43 @@ export function makeDescriptorOAuthProvider(
  * one built from the group's descriptor plus the host-held client registration
  * in oauth-apps.json under `clientRegistrationRef` (default: the group id).
  */
+function guardedDescriptorOAuthProvider(providerId: string, provider: OAuthProvider): OAuthProvider {
+  const assertUsable = () => {
+    const members = descriptorGroupMembers(providerId);
+    if (!members.length) throw new ProviderVerificationError(providerId, 'oauth', 'not-installed');
+    for (const member of members) assertProviderOwnerUnblocked(member.descriptor, 'oauth');
+  };
+  assertUsable();
+  return {
+    ...provider,
+    buildAuthorizeUrl(scopes, stateToken, privateContext) {
+      assertUsable();
+      return provider.buildAuthorizeUrl(scopes, stateToken, privateContext);
+    },
+    async exchangeCode(code, privateContext) {
+      assertUsable();
+      return provider.exchangeCode(code, privateContext);
+    },
+    async refresh(refreshToken) {
+      assertUsable();
+      return provider.refresh(refreshToken);
+    },
+    ...(provider.introspect ? { introspect: async (token: string) => {
+      assertUsable();
+      return provider.introspect!(token);
+    } } : {}),
+  };
+}
+
 export async function resolveOAuthProvider(providerId: string): Promise<OAuthProvider | null> {
+  const descriptorProvider = providerId.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX);
+  if (descriptorProvider) {
+    await awaitDescriptorProviders(providerId);
+    for (const member of descriptorGroupMembers(providerId)) assertProviderOwnerUnblocked(member.descriptor, 'oauth');
+  }
   const registered = getProvider(providerId);
-  if (registered) return registered;
-  if (!providerId.startsWith(DESCRIPTOR_OAUTH_PLUGIN_PREFIX)) {
+  if (registered) return descriptorProvider ? guardedDescriptorOAuthProvider(providerId, registered) : registered;
+  if (!descriptorProvider) {
     // Code-registered providers (google, facebook, github) come from host-held
     // client files. Load them here instead of relying on an OAuth route having
     // run first in this process: the connector sync driver refreshes tokens in
@@ -599,7 +633,6 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
     await loadAndRegisterProvidersFromDisk();
     return getProvider(providerId);
   }
-  await awaitDescriptorProviders(providerId);
   const members = descriptorGroupMembers(providerId);
   const lead = members[0]?.descriptor;
   if (!lead?.oauth) return null;
@@ -618,7 +651,7 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
   // needs another redirect declares it in its client registration.
   const redirectUri = client.redirectUri ?? defaultOAuthRedirectUri();
   if (members.some((entry) => entry.descriptor.oauth?.userAgentRequired) && !normalizeOAuthUserAgent(client.userAgent)) return null;
-  return makeDescriptorOAuthProvider(providerId, { ...lead.oauth, scopes }, { clientId: client.clientId, clientSecret, redirectUri, userAgent: client.userAgent });
+  return guardedDescriptorOAuthProvider(providerId, makeDescriptorOAuthProvider(providerId, { ...lead.oauth, scopes }, { clientId: client.clientId, clientSecret, redirectUri, userAgent: client.userAgent }));
 }
 
 /** Scopes to request for a managed connection, per the adapter's policy. */

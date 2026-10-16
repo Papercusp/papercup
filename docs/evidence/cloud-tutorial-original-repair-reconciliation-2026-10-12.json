@@ -972,6 +972,41 @@
       "ownedResidue": "Follow-up WI-6554700010016573 is now DONE with completionAuthority=committed and finish.complete=true. It fixes the measured condition-census deletion read and documents three proven-safe detector exemptions. Complete canonical working-tree proof LOCAL21290977/21290978 passed47tests0FAIL0SKIP, with terminal exit0 and childSubstituted0, at dirty ecc6ef4ac900c25bdb8551baa0570e8ef7600981; ledger root/runGroupId remain null. Commit28f698820ec65c9ef301d257a34f7974a797f1eb contains the exact tested condition-census SHA25693d5c7191f07d0d948ba72a56f676806ae37024be3831e75cde09e456cad6c51 and tracked-helper SHA25619d02a283bf5b52c0e3b20bca3b714e7be1157ffd9409218d8bec45ff37762fe. This source-identity settlement does not turn the retained working proof into immutable qualification. LOCAL21290177 stays failed; the producer is absent from that four-path offender list. The original second offender has not been identified from retained evidence, so this follow-up does not expand the original-receipt mapping beyond its demonstrated producer defect.",
       "verification": "On2026-10-16, exact-id original/before/failed/after ledger reads, canonical real-CLI regression, committed source/test hash equality, terminal log and authoritative completion established this scoped producer repair. Scoped diff checking passed. No broad affected or live-gate run was launched.",
       "proofBoundary": "Partial original-receipt reconciliation only: the demonstrated producer defect is repaired and its complete conventional producer suite passes45. Original21116235 remains failed and its second failure remains unresolved. Dirty working-tree evidence is not relabeled clean or immutable. No full tracked-files guard PASS, full affected PASS, current gate verdict, parent acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116758,
+      "testFile": "packages/operator-core/lib/native-session-id-roundtrip.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116758 records5PASS1FAIL0SKIP. The Codex native-id round-trip returned500 because the whole-module role-codex-home mock omitted writeSuCodexHomeAsync after bootstrap switched to the awaited writer.",
+      "repairId": "WI-6554700010016588",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "fa395f735cf940363aa5326140870b03c07de5b2",
+      "rootConnection": "Production async conversion0f3e571b38f736f8fcb0b72f0fd5c3bc0e92efd7 changed the bootstrap seam while the native fixture retained its original84eeed96 synchronous-only mock. The repair reuses the maintained main bootstrap suite's partial mock and explicit async writer stub, and repairs the sibling bearer fixture's same seam. Current baseline21293705/06 reaches an earlier forbidden PG-backed presence read added by f41b8b66815e, so that failure is kept distinct from the historical missing-export error. Hermetic presence/mode leaves and returned CODEX_HOME/live-owner-probe assertions restore the real route/launcher and bearer behavior checks. Existing DONE WI-10005138 predates the async conversion and is not attributed this repair.",
+      "retainedProof": {
+        "beforeTestRunIds": [
+          21293705,
+          21293706
+        ],
+        "testRunIds": [
+          21293717,
+          21293716
+        ],
+        "recordedCommit": "28f698820ec65c9ef301d257a34f7974a797f1eb",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": null,
+        "runGroupId": null,
+        "nativeTestSha256": "8297cddd75a55438fefbb187cbe4bad1c96b389aa5a2cf57d178c007081a11fd",
+        "bearerTestSha256": "df3a545b5d57840bda6a3dc126eee21541b5688c04e71c6801cb5246325bcea3",
+        "command": "npm run test:file -- packages/operator-core/lib/native-session-id-roundtrip.test.ts packages/operator-core/lib/bootstrap-su-bearer-non-transit.test.ts",
+        "beforeLogPath": "/tmp/tutorial-21116758-16588-before-20261016.log",
+        "logPath": "/tmp/tutorial-21116758-16588-after-20261016.log",
+        "testResult": "Complete canonical before run exited1 with7PASS3FAIL0SKIP. Complete repaired run exited0 and was drained: native21293717 passed6 and bearer21293716 passed4, total10PASS0FAIL0SKIP; requested2/executed2/matched2/childSubstituted0/uncommittedPaths2/2. The after receipts remain dirty working-tree evidence at28f, with no immutable full-import-graph qualification.",
+        "sourceSettlement": "Both saved tested SHA256s match working files and committed fa395f735cf940363aa5326140870b03c07de5b2 blobs. The authoritative repair completion returned completionAuthority=committed, countsTowardBurnDown=true and finish.complete=true. This settles source identity without replaying the suites or relabeling the retained dirty proof."
+      },
+      "verification": "On2026-10-16, exact original/before/after evidence, source-changing bootstrap history, unchanged pre-repair fixture identity, full terminal logs, committed source hashes and authoritative completion established this scoped fixture repair. No historical repair was reclaimed or reclosed; no broad affected or live-gate run was launched.",
+      "proofBoundary": "Original21116758 and current baseline21293705/06 remain failed. The two repaired complete suites passed10 with retained dirty working-tree provenance; matching committed fixture bytes do not establish an immutable executed import graph. No full affected PASS, current gate verdict, native/attended/novice/screen-reader/voice/exact-production acceptance or tutorial shipment is established."
     }
   ],
   "sourceReconciliations": [

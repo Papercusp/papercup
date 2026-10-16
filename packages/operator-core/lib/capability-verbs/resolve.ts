@@ -42,7 +42,6 @@ const TRIGGER_KIND_BY_VAULT_SOURCE: Record<string, string> = {
   calendar: 'gcal',
   contacts: 'contacts',
   slack: 'slack',
-  facebook: 'facebook',
 };
 
 export interface CanonicalDocument {
@@ -193,7 +192,8 @@ export async function resolveOutboundContext(
 ): Promise<OutboundContext> {
   const vaultSource = string(params.vaultSource);
   const legacyKind = TRIGGER_KIND_BY_VAULT_SOURCE[vaultSource];
-  const installed = legacyKind ? undefined : (await readyProviderRegistry()).get(vaultSource);
+  const registry = legacyKind ? undefined : await readyProviderRegistry();
+  const installed = registry?.get(vaultSource);
   const kind = legacyKind ?? (installed?.descriptor.datatypes.includes('social-post') ? vaultSource : undefined);
   if (!kind) throw new Error(`outbound_source_unsupported:${params.vaultSource}`);
   const owned = await listOwnedExternalTriggerSources(sql, params.workspaceId, params.userId);
@@ -231,6 +231,9 @@ export async function resolveOutboundContext(
     // Defence in depth: the query already scopes by owner, so reaching here
     // means the ownership contract itself is broken.
     throw new Error(`outbound_source_owner_mismatch:${kind}`);
+  }
+  if (installed && registry?.get(vaultSource) !== installed) {
+    throw new Error(`outbound_source_unsupported:${params.vaultSource}`);
   }
   return {
     source,

@@ -52,6 +52,8 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { resolveResumedSessionOperatorBaseUrl } from '../../mcp-base-url';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { concreteWorkspaceIdOrNull } from '../../workspace-registry';
 import { redactSensitiveText } from '../../sensitive-text';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
@@ -72,6 +74,7 @@ import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   latestAdvSessionByCoordOwner,
+  workspaceForCoordOwner,
   claimAdvSessionResume,
   setAdvSessionPid,
 } from '../../adv-sessions';
@@ -2130,6 +2133,8 @@ export async function rehydrateLoopWakeText(
      * (nothing when none moved). Injectable for tests; the default is carry-ref-delivery.ts.
      */
     carryRefBlockFn?: typeof defaultCarryRefBlock;
+    /** The subscriber's tenant; delivery rows themselves live in the coordination namespace. */
+    workspaceForCoordOwnerFn?: typeof workspaceForCoordOwner;
   } = {},
 ): Promise<string> {
   try {
@@ -2207,26 +2212,46 @@ export async function rehydrateLoopWakeText(
     // carried check's claim and probe; RUN the probes too, so a stale claim is reported as changed
     // at delivery instead of being trusted. Only the note already read here is probed — no extra
     // store read on the wake path — and the runner refuses any non-read-only probe undispatched.
-    const probesNow = checks.some((check) => check.probe !== undefined)
-      ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
+    const hasProbes = checks.some((check) => check.probe !== undefined);
+    const hasRefs = readableNote
+      ? (await import('../../carry-ref-stamps')).extractCarryRefDeps(readableNote, { max: 1 }).length > 0
+      : false;
+    // The loop note and delivery row are pinned to DEFAULT_COORD_WORKSPACE.
+    // Their probes/references read tenant data, just as the checkpoint writer
+    // stamps references in the caller's workspace. Never substitute the host's
+    // ambient workspace when the subscriber's persisted scope is unavailable.
+    let recheckWorkspaceId = concreteWorkspaceIdOrNull(d.workspaceId);
+    if (d.workspaceId === DEFAULT_COORD_WORKSPACE && (hasProbes || hasRefs)) {
+      const scope = await withBoundedTimeout(
+        () => (deps.workspaceForCoordOwnerFn ?? workspaceForCoordOwner)(d.subscriberId),
+        { fallback: null, timeoutMs: 1_000, label: 'wake-carry-subscriber-workspace' },
+      );
+      recheckWorkspaceId = concreteWorkspaceIdOrNull(scope.value);
+    }
+    const probesNow = hasProbes
+      ? recheckWorkspaceId
+        ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
           ownerId: d.subscriberId,
           checks,
           harness: marker.harness,
-          workspaceId: d.workspaceId,
+          workspaceId: recheckWorkspaceId,
           readAtIso: deliveryReadAtIso,
         })
+        : '🧪 CARRIED PROBES — COULD NOT RUN: subscriber workspace is unavailable; do not infer the checks hold.'
       : null;
     // P-002 (carry-recheck-and-governed-memory-2026-10-14): one line per reference the delivered
     // note cites whose stamped version moved or no longer resolves; null (prints nothing) when none
     // did. A note citing no reference never reads the stamp row.
-    const refsNow = readableNote
-      ? await (deps.carryRefBlockFn ?? defaultCarryRefBlock)({
+    const refsNow = readableNote && (recheckWorkspaceId || hasRefs)
+      ? recheckWorkspaceId
+        ? await (deps.carryRefBlockFn ?? defaultCarryRefBlock)({
           ownerId: d.subscriberId,
           harness: marker.harness,
-          workspaceId: d.workspaceId,
+          workspaceId: recheckWorkspaceId,
           deliveredNote: readableNote,
           readAtIso: deliveryReadAtIso,
         })
+        : '🔗 CARRIED REFERENCES — COULD NOT RE-CHECK: subscriber workspace is unavailable; do not infer references are unchanged.'
       : null;
     const carriedChangesBlock =
       (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
@@ -3194,6 +3219,8 @@ export interface ExecuteWakeDeps {
    * additional read and retain whichever valid version is newer.
    */
   refreshLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+  /** Resolve tenant data for coordination-namespace carry checks; never use the host's workspace. */
+  workspaceForCoordOwnerFn?: typeof workspaceForCoordOwner;
   /** WI-6860: read the subscriber's loop status (for `lastTurnAt`) — used ONLY by
    *  the EI-19294445744419497 un-checkpointed-work staleness hint to compare a
    *  cold carry-note's write instant against the subscriber's actual last turn.

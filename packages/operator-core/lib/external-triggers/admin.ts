@@ -17,9 +17,9 @@ import {
 } from './binding-engine';
 import { keyMatchesPattern, payloadMatchesFilter } from '../events/await/pattern';
 import { getDatatype } from '../datatype-registry-store';
-import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor } from './social/storm-policy';
-import { getSocialPlatform, isSocialPlatformVerified } from './social/platform-registry';
-import { socialCursorFreshness, type SocialCursorFreshness } from './social/cursor-freshness';
+import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor, FALLBACK_MAX_RUNS, SOCIAL_STORM_WINDOW_SECONDS } from './social/storm-policy';
+import { getSocialPlatform } from './social/platform-registry';
+import { readyProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
 import { redactSensitiveValue } from '../sensitive-text';
@@ -123,7 +123,7 @@ export interface CreatedExternalTriggerBinding {
 export interface ExternalTriggerSocialAdminFacts {
   platformId: string;
   label: string;
-  wave: 'A' | 'B' | 'C';
+  wave: 'A' | 'B' | 'C' | null;
   /** Registry row verified against its cited sources. */
   verified: boolean;
   /**
@@ -140,8 +140,10 @@ export interface ExternalTriggerSocialAdminFacts {
    * verified that no readable stream exists.
    */
   readTransport: string | null;
-  /** Cursor freshness; see cursor-freshness.ts for why not a nullable date. */
-  cursor: SocialCursorFreshness | ProviderCursorFreshness;
+  /** Host sync progress; the provider's cursor contents stay opaque. */
+  cursor: Omit<ProviderCursorFreshness, 'state'> & {
+    state: ProviderCursorFreshness['state'] | 'not-readable';
+  };
   /**
    * The storm cap this platform's rate budget funds, and whether a provider
    * throttle currently HOLDS all launches. `hold` is not `maxRuns: 0`: a cap of
@@ -1315,26 +1317,59 @@ export function disabledExternalTriggerAdminSnapshot(): ExternalTriggerAdminSnap
  * null for every kind the registry does not know, so that a gmail or slack
  * source can never pick up a social platform's rate budget by accident.
  */
-export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): ExternalTriggerSocialAdminFacts | null {
+export function socialAdminFacts(
+  kind: string,
+  cursor: unknown,
+  nowMs: number,
+  installedRegistry: ProviderRegistry,
+): ExternalTriggerSocialAdminFacts | null {
+  const descriptor = installedRegistry.get(kind)?.descriptor;
+  if (!descriptor?.datatypes.includes('social-post')) return null;
   const row = getSocialPlatform(kind);
-  if (!row) return null;
+  // Operational metadata (wave and the conservative storm cap) remains
+  // in the legacy registry until its vendor-contract migration lands. Identity,
+  // verification and write capabilities already belong to installed packages;
+  // when discovery has completed, those package declarations override the
+  // legacy projection so the pane cannot advertise a stale or uninstalled row.
+  const packageWriteVerbs = descriptor.capabilities
+    .filter((capability) => /^(?:social)\.(?:post|reply|delete)$/.test(capability))
+    .map((capability) => capability.slice('social.'.length));
+  const packageVerified = Boolean(descriptor.verification?.verifiedAt && descriptor.verification.sources.length > 0);
+  const packageWriteVerified = packageVerified && packageWriteVerbs.length > 0 &&
+    packageWriteVerbs.every((verb) => Boolean(descriptor.verification?.capabilities?.[`social.${verb}`]));
+  // New source rows persist an empty object before their first provider page.
+  // A nonempty legacy/unknown shape is not proof of a committed provider sync:
+  // only the SDK's host-owned metadata may supply freshness or a position.
+  const coldCursor = cursor == null || (typeof cursor === 'object' && !Array.isArray(cursor)
+    && Object.keys(cursor).length === 0);
+  const freshness = providerCursorFreshness(cursor, nowMs)
+    ?? (coldCursor ? providerCursorFreshness({ provider: null }, nowMs)! : {
+      state: 'unrecognized' as const,
+      at: null,
+      ageMs: null,
+      position: null,
+      detail: 'stored cursor has no host provider sync metadata; freshness is unknown until a provider page commits',
+    });
   // `read` for the cap: the poll loop is what spends budget continuously, and
   // it is the spend an owner watching this pane is deciding about.
-  const policy = socialStormPolicyFor(row, 'read');
+  const policy = row ? socialStormPolicyFor(row, 'read') : {
+    maxRuns: FALLBACK_MAX_RUNS, windowSeconds: SOCIAL_STORM_WINDOW_SECONDS,
+    basis: { kind: 'conservative-default' }, hold: undefined,
+  };
   return {
-    platformId: row.id,
-    label: row.label,
-    wave: row.wave,
-    verified: isSocialPlatformVerified(row),
-    blockedOn: row.blockedOn ?? null,
-    authMode: row.auth.mode,
-    readTransport: row.read?.transport ?? null,
+    platformId: descriptor.id,
+    label: descriptor.displayName || descriptor.id,
+    wave: row?.wave ?? null,
+    verified: packageVerified,
+    blockedOn: descriptor.verification?.blockedOn ?? null,
+    authMode: descriptor.oauth ? descriptor.oauth.instance ? 'instance-oauth' : 'oauth'
+      : descriptor.setup?.session ? 'app-password' : descriptor.setup?.credentials?.length ? 'credentials' : 'none',
+    readTransport: row?.read?.transport ?? null,
     // A write-only platform has no cursor to classify, and letting it fall
-    // through would render `never-synced` — permanently true, permanently
-    // alarming, and not actionable by anyone. See the `not-readable` note in
-    // cursor-freshness.ts: only a caller holding the row can tell these apart.
+    // through would render `never-synced` permanently, even though there is
+    // no readable stream to run. Only the read contract can distinguish this.
     cursor:
-      row.read === null
+      row?.read === null
         ? {
             state: 'not-readable' as const,
             at: null,
@@ -1343,7 +1378,7 @@ export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): 
             detail:
               'this platform has no readable content stream at any grant tier we hold — it is write-only, so there is nothing to sync',
           }
-        : providerCursorFreshness(cursor, nowMs) ?? socialCursorFreshness(cursor, nowMs),
+        : freshness,
     rateBudget: {
       maxRuns: policy.maxRuns,
       windowSeconds: policy.windowSeconds,
@@ -1356,8 +1391,8 @@ export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): 
           }
         : null,
     },
-    writeVerified: typeof row.write.verifiedAt === 'string' && row.write.verifiedAt.length > 0,
-    writeVerbs: [...row.write.verbs],
+    writeVerified: packageWriteVerified,
+    writeVerbs: packageWriteVerbs,
   };
 }
 
@@ -1366,6 +1401,7 @@ export async function loadExternalTriggerAdminSnapshot(
   sql: postgres.Sql,
   workspaceId: string,
 ): Promise<ExternalTriggerAdminSnapshot> {
+  const installedRegistry = await readyProviderRegistry();
   const [sourceRows, bindingRows, recentRuns, failureRows] = await Promise.all([
     sql<SourceDbRow[]>`
       SELECT s.id::text,
@@ -1468,7 +1504,7 @@ export async function loadExternalTriggerAdminSnapshot(
     lastSyncAt: iso(row.lastSyncAt),
     nextAttemptAt: iso(row.nextAttemptAt),
     lastConnectedAt: iso(row.lastConnectedAt),
-    social: socialAdminFacts(row.kind, row.cursor, nowMs),
+    social: socialAdminFacts(row.kind, row.cursor, nowMs, installedRegistry),
   }));
   const bindings = bindingRows.map(
     (row): ExternalTriggerBindingAdminRow => ({
