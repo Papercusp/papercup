@@ -15,10 +15,12 @@ vi.mock('@papercusp/db-org', async (original) => ({
       return run(tx);
     }),
 }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation } =
   await import('./hosted-lifecycle-store');
+const { beginWorkspaceHostOperation } = await import('./observability-store');
 
 const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1522-workspace-host-pool-admission.sql', import.meta.url));
 const migrationSql = readFileSync(existsSync(migration) ? migration : `${migration}.DRAFT`, 'utf8');
@@ -105,6 +107,18 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(bound.workspace_host_id).toBe('warm');
   });
 
+  it('reserves a fresh provision on its placeholder and replays before quota checks', async () => {
+    const ws = fresh();
+    const hostId = await customer(ws, 'new');
+    const request = { ...input(ws, 'new'), action: 'provision' as const };
+    const receipt = await admitHostedLifecycleJob(request);
+    expect(receipt).toMatchObject({ created: true, hostId, placement: { kind: 'provision' } });
+    expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
+    expect(await operations(ws)).toHaveLength(1);
+    await expect(admitHostedLifecycleJob({ ...request, operationId: 'second-provision' }))
+      .rejects.toThrow('tenant concurrency limit reached');
+  });
+
   it('lets exactly one of two customers reserve the last warm VM', async () => {
     const ws = fresh();
     await customer(ws, 'a');
@@ -116,6 +130,49 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(refused.reason).toBeInstanceOf(HostedLifecyclePlacementError);
     expect(refused.reason.placement.kind).toBe('queue');
     expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('hands the same admission row to its fenced controller without losing the receipt or charging twice', async () => {
+    const ws = fresh();
+    await customer(ws, 'handoff');
+    await host(ws, 'warm');
+    const request = { ...input(ws, 'handoff'), action: 'provision' as const,
+      request: { hostId: 'warm', action: 'start' } };
+    const receipt = await admitHostedLifecycleJob(request);
+    expect(receipt).toMatchObject({ action: 'start', hostId: 'warm' });
+    const controller = {
+      workspaceId: ws, operationId: receipt.operationId, hostId: receipt.hostId,
+      action: 'start' as const, status: 'running' as const, desiredRevision: 2,
+      request: { sourceHostId: 'warm', plan: { id: 'controller-resolved-plan' } },
+      controllerAuthority: { controllerId: 'controller-a', fence: 7 },
+      hostedAdmission: { customerWorkspaceId: 'handoff', actorId: request.actorId, request: request.request },
+    };
+    await expect(beginWorkspaceHostOperation({ ...controller,
+      hostedAdmission: { ...controller.hostedAdmission, actorId: 'other-user' } })).rejects.toThrow('different');
+    await beginWorkspaceHostOperation(controller);
+    await beginWorkspaceHostOperation(controller);
+    const [row] = await db.adminSql`SELECT status, controller_id, admission_receipt, estimated_cost_cents FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws} AND id = ${receipt.operationId}`;
+    expect(row).toMatchObject({ status: 'running', controller_id: 'controller-a', estimated_cost_cents: 100 });
+    expect(row.admission_receipt.result).toEqual(receipt);
+    expect(await operations(ws)).toHaveLength(1);
+    expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
+  });
+
+  it('refuses controller handoff after the reserved host generation changes', async () => {
+    const ws = fresh();
+    await customer(ws, 'stale');
+    await host(ws, 'warm');
+    const request = { ...input(ws, 'stale'), request: { hostId: 'warm', action: 'start' } };
+    const receipt = await admitHostedLifecycleJob(request);
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET host_generation = 2 WHERE workspace_id = ${ws} AND id = 'warm'`;
+    await expect(beginWorkspaceHostOperation({
+      workspaceId: ws, operationId: receipt.operationId, hostId: receipt.hostId,
+      action: 'start', status: 'running', desiredRevision: 2, request: { plan: 'resolved' },
+      controllerAuthority: { controllerId: 'controller-a', fence: 7 },
+      hostedAdmission: { customerWorkspaceId: 'stale', actorId: request.actorId, request: request.request },
+    })).rejects.toThrow('stale');
+    const [row] = await db.adminSql`SELECT status, controller_id FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws} AND id = ${receipt.operationId}`;
+    expect(row).toEqual({ status: 'queued', controller_id: null });
   });
 
   it('rejects a changed input reusing an operation id without charging or rebinding', async () => {
