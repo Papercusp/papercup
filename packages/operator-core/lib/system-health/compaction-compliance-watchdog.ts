@@ -2621,23 +2621,48 @@ export async function checkCompactionCompliance(
         fleet_slug: string | null;
         fleet_role: string | null;
         last_turn_at: string | Date | null;
+        last_turn_session_id: string | null;
+        active_session_id: string | null;
+        active_session_started_at: string | Date | null;
       }[]
     >`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.compaction_limit, cp.compaction_limit_explicit,
-             cp.fleet_slug, cp.fleet_role, turn_evidence.last_turn_at
+             cp.fleet_slug, cp.fleet_role, turn_evidence.last_turn_at, turn_evidence.last_turn_session_id,
+             active_session.session_id AS active_session_id, active_session.started_at AS active_session_started_at
         FROM harness_shared.coord_presence cp
         LEFT JOIN LATERAL (
+          -- Match resolveSessionRef's current-row predicate/order so evidence is bound to
+          -- the same native session whose null estimate the streak will evaluate.
+          SELECT s.session_id, s.started_at
+            FROM harness_shared.adv_sessions s
+           WHERE s.coord_owner_id = cp.owner_id
+             AND s.workspace_id = cp.workspace_id
+             AND (s.session_id IS NOT NULL OR s.agent = 'codex')
+             AND s.ended_at IS NULL
+             AND s.ended_by IS NULL
+           ORDER BY s.started_at DESC, s.id DESC
+           LIMIT 1
+        ) active_session ON TRUE
+        LEFT JOIN LATERAL (
           -- Top-one probe rides tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC).
-          SELECT ti.invoked_at AS last_turn_at
+          SELECT ti.invoked_at AS last_turn_at,
+                 CASE
+                   WHEN ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
+                   THEN NULLIF(ti.args_json->>'session_id', '')
+                   ELSE NULL
+                 END AS last_turn_session_id
             FROM harness_shared.tool_invocations ti
            WHERE ti.coord_owner_id = cp.owner_id
              AND ti.workspace_id = cp.workspace_id
              AND ti.invoked_at > now() - interval '15 minutes'
+             AND active_session.started_at IS NOT NULL
+             AND ti.invoked_at >= active_session.started_at
              AND (
                (ti.call_origin = 'agent' AND NOT (ti.tool_name = ANY(${excludedAgentTools})))
                OR (ti.call_origin = 'hook' AND ti.tool_name = ANY(${hookTools}))
                OR (ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
-                   AND ti.args_json->>'phase' = ANY(${hookPhases}))
+                   AND ti.args_json->>'phase' = ANY(${hookPhases})
+                   AND ti.args_json->>'session_id' = active_session.session_id)
              )
            ORDER BY ti.invoked_at DESC
            LIMIT 1
@@ -2807,7 +2832,27 @@ export async function checkCompactionCompliance(
         // stalled before its first token_count) is not consuming context and cannot overflow.
         // Idle sweeps neither advance nor reset the streak: the hazard is turns-while-blind,
         // and three of those over ANY span is the signal, however much idle time sits between.
-        if (!activeWithin(r.last_turn_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
+        const lastTurnAtMs = r.last_turn_at instanceof Date
+          ? r.last_turn_at.getTime()
+          : r.last_turn_at == null ? null : Date.parse(r.last_turn_at);
+        const activeSessionStartedAtMs = r.active_session_started_at instanceof Date
+          ? r.active_session_started_at.getTime()
+          : r.active_session_started_at == null ? null : Date.parse(r.active_session_started_at);
+        const sessionStartCandidates = [activeSessionStartedAtMs, estimateRef?.startedAtMs]
+          .filter((at): at is number => at != null && Number.isFinite(at));
+        const sessionStartedAtMs = sessionStartCandidates.length
+          ? Math.max(...sessionStartCandidates)
+          : null;
+        const evidenceSessionId = r.active_session_id ?? estimateRef?.sessionId ?? null;
+        const sameSessionEvidence =
+          (r.active_session_id == null || estimateRef?.sessionId == null ||
+            r.active_session_id === estimateRef.sessionId) &&
+          (r.last_turn_session_id == null || r.last_turn_session_id === evidenceSessionId);
+        if (
+          !activeWithin(r.last_turn_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS) ||
+          !sameSessionEvidence ||
+          (sessionStartedAtMs != null && lastTurnAtMs != null && lastTurnAtMs < sessionStartedAtMs)
+        ) continue;
         const sessionId = estimateRef?.sessionId ?? null;
         const previous = nullEstimateStreak.get(r.owner_id);
         const streak = previous?.sessionId === sessionId ? previous.count + 1 : 1;
