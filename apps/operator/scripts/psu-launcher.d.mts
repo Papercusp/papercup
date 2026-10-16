@@ -2539,7 +2539,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
  */
 export function assertLaunchContextSize({ contextSize }: {
     contextSize: any;
-}): "trimmed" | "steward";
+}): "steward" | "trimmed";
 /** Run both preflight guards before a launch; exits/throws per policy. */
 export function runLaunchPreflight({ promptFile, contextSize, model, agent, budget, force, }: {
     promptFile: any;

@@ -73,6 +73,13 @@ import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/
 import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
+// psu-launcher marks inherited operator URLs as managed handoffs rather than
+// caller pins. Their original Hono port is intentionally removed from child
+// environments; recover the same-host route from the paired proxy target when
+// ptool starts in that child.
+export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
+export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+
 /**
  * @typedef {{
  *   name: string,
@@ -93,9 +100,17 @@ export function resolvePtoolOperatorBase(env = process.env) {
   const resolvedBase = typeof env.PAPERCUSP_OPERATOR_BASE === 'string'
     ? env.PAPERCUSP_OPERATOR_BASE.trim()
     : '';
+  const managedTargetPort = !resolvedBase &&
+      !validLocalPort(env.PAPERCUSP_HONO_PORT) &&
+      env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
+    ? validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT)
+    : null;
+  const resolutionEnv = managedTargetPort
+    ? { ...env, PAPERCUSP_HONO_PORT: managedTargetPort }
+    : env;
   const base = resolvedBase
     ? resolveOperatorBase({ operatorUrl: resolvedBase }, env)
-    : resolveOperatorBase({}, env, { preferSelfPort: true });
+    : resolveOperatorBase({}, resolutionEnv, { preferSelfPort: true });
   return routeStagingOperatorThroughProxy(base, env);
 }
 
@@ -199,9 +214,6 @@ const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
 // caller pin: a wake-respawn must be allowed to rediscover operator.json when
 // the desktop operator has moved to a new port. The launcher stamps this value
 // only on managed exports; a bare PAPERCUSP_OPERATOR_URL remains authoritative.
-export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
-export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
-
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env

@@ -504,6 +504,25 @@ describe('ptool operator routing', () => {
     })).toBe('http://127.0.0.1:9071');
   });
 
+  it('uses the configured same-host proxy for a launcher-managed URL whose host-port hint was stripped', () => {
+    const managed = {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+    };
+    expect(resolvePtoolOperatorBase(managed)).toBe('http://127.0.0.1:9271');
+    expect(resolvePtoolOperatorCandidates(managed)).toEqual(['http://127.0.0.1:9271']);
+  });
+
+  it('keeps a bare operator URL pinned when another host proxy is configured', () => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+    })).toBe('http://127.0.0.1:9071');
+  });
+
   it('falls back from a stale self port to the canonical operator', () => {
     expect(resolvePtoolOperatorCandidates({
       PAPERCUSP_HONO_PORT: '3271',
