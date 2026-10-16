@@ -39,7 +39,8 @@ import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
 import { defineHostedAllocation, readHostedAllocationReport, readHostedAllocationAccountingExport } from '../auth/hosted/billing/allocation-store';
 import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
 import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
-import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
+import { createConfiguredHostedSubscriptionEntitlementProvider, parseHostedPaidEntitlementBundle,
+  type HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
 import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { customerPaymentReceipts } from '../cupboard/payment-receipt-store';
@@ -133,17 +134,20 @@ export function parseHostedBillingPlans(raw: string | undefined): HostedBillingP
   }
   if (!Array.isArray(parsed)) throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS');
   const seen = new Set<string>();
+  const prices = new Set<string>();
   return parsed.map((entry, index) => {
     const e = (entry ?? {}) as Record<string, unknown>;
     const planKey = typeof e.planKey === 'string' ? e.planKey.trim() : '';
     const priceId = typeof e.priceId === 'string' ? e.priceId.trim() : '';
     const label = typeof e.label === 'string' ? e.label.trim() : '';
-    if (!PLAN_KEY.test(planKey) || !PRICE_ID.test(priceId) || !label || label.length > 80 || seen.has(planKey)) {
+    if (!PLAN_KEY.test(planKey) || !PRICE_ID.test(priceId) || !label || label.length > 80 || seen.has(planKey) || prices.has(priceId)) {
       throw new TypeError(`hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS[${index}]`);
     }
     seen.add(planKey);
+    prices.add(priceId);
     const description = typeof e.description === 'string' && e.description.trim() ? e.description.trim().slice(0, 280) : null;
-    return { planKey, priceId, label, description };
+    return { planKey, priceId, label, description,
+      ...(e.entitlementBundle === undefined ? {} : { entitlementBundle: parseHostedPaidEntitlementBundle(e.entitlementBundle) }) };
   });
 }
 
@@ -408,7 +412,10 @@ export async function createHostedBillingRuntime(
   dependencies: HostedBillingRuntimeDependencies,
 ): Promise<HostedBillingRuntime> {
   const { stripe, reason } = await resolveHostedBillingStripe(configuration, dependencies);
-  const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext);
+  const entitlementProvider = dependencies.entitlementProvider ??
+    (configuration.plans.some(plan => plan.entitlementBundle)
+      ? createConfiguredHostedSubscriptionEntitlementProvider(configuration.plans) : undefined);
+  const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext, entitlementProvider);
   const usageStore = dependencies.usageStore ?? new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext);
   const routes = createHostedBillingRoutes({
     publicOrigin: configuration.publicOrigin,
@@ -417,7 +424,7 @@ export async function createHostedBillingRuntime(
     stripe,
     observeFailure: dependencies.observeFailure,
     unavailableReason: reason,
-    entitlementProvider: dependencies.entitlementProvider,
+    entitlementProvider,
     receipts: dependencies.receipts
       ?? (configuration.receiptsWorkspaceId
         ? workspaceReceiptSource(configuration.receiptsWorkspaceId, dependencies.runWorkspace)

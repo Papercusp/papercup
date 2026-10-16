@@ -680,6 +680,26 @@ describe('hosted billing configuration parsing', () => {
     expect(() => parseHostedBillingPlans(
       '[{"planKey":"team","priceId":"price_1","label":"T"},{"planKey":"team","priceId":"price_2","label":"U"}]',
     )).toThrow('[1]');
+    expect(() => parseHostedBillingPlans(
+      '[{"planKey":"team","priceId":"price_1","label":"T"},{"planKey":"pro","priceId":"price_1","label":"U"}]',
+    )).toThrow('[1]');
+    expect(() => parseHostedBillingPlans(JSON.stringify([{ planKey: 'team', priceId: 'price_1', label: 'T',
+      entitlementBundle: { bundleId: 'label-only' } }]))).toThrow('hosted_paid_policy_invalid');
+  });
+
+  it('loads an explicit versioned resource policy without exposing it in the public plan list', async () => {
+    const bundle = { schemaVersion: 1, bundleId: 'paid-team', bundleVersion: 1,
+      record: { source: 'billing', actor: { kind: 'service', principalId: 'service:billing' },
+        auditReceiptId: 'policy:team:1', effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil: null },
+      entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 5 }, browserAccess: { pty: true, files: true },
+        supportTier: 'paid', quotas: { 'pool.agents': 20, 'pool.hosts': 2, 'pool.cpu-millicores': 8000, 'pool.memory-mib': 16384,
+          'pool.db-gib': 256, 'pool.workspace-gib': 32 }, budgets: { 'pool.cost.usd.minor': 10000 }, rolloutFlags: {} } };
+    const plans = parseHostedBillingPlans(JSON.stringify([{ planKey: 'team', priceId: 'price_1', label: 'T', entitlementBundle: bundle }]));
+    expect(plans[0]!.entitlementBundle).toMatchObject({ bundleId: 'paid-team', bundleVersion: 1 });
+    const runtime = await createHostedBillingRuntime({ publicOrigin: ORIGIN, stripeSecretKeyRef: null, stripeWebhookSecretRef: null, plans },
+      { resolvePrincipal: async () => ({ ok: false, reason: 'session_cookie_missing' }), store: new MemoryBillingStore() });
+    const response = await runtime.mounted.find(route => route.path === '/hosted/billing/plans')!.handler(new Request(`${ORIGIN}/api/hosted/billing/plans`), { principal: null });
+    expect((await response.json()).plans).toEqual([{ planKey: 'team', label: 'T', description: null }]);
   });
 
   it('reads the runtime configuration from the environment and requires the public origin', () => {
