@@ -569,27 +569,39 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   const before = await snapshots();
   try {
     await options.record?.('started', receipt);
-    await withFsMutex('papercusp-disk-retention', async (mutex) => {
-      // Pins and native cleanup share this writer lock. Yield only between
-      // operations; an admitted holder check/removal must finish before release.
-      const yieldToWaiter = async () => {
-        if (!await mutex?.hasWaiters()) return false;
-        receipt.errors.push('retention yielded to queued writer');
-        return true;
-      };
+    let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
+    let protectedPaths: string[] = [];
+    const refreshProtection = async () => {
       const protection = await options.readProtection?.();
       policy.pins = protection?.pins ?? [];
+      protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
+    };
+    // Keep the census/effect cursor across FIFO handoffs. Ending the whole pass
+    // here made a queued writer discard minutes of inspection on every tick.
+    const yieldToWaiter = async function* (): AsyncGenerator<void, number, void> {
+      if (!await mutex?.hasWaiters()) return 0;
+      const pausedAt = Date.now();
+      await options.record?.('progress', { phase: 'yield-to-queued-writer' });
+      yield;
+      // A pin or lease writer may have changed eligibility while we released
+      // the mutex. Never reuse that protection snapshot after reacquisition.
+      await refreshProtection();
+      return Math.max(0, Date.now() - pausedAt);
+    };
+    const reclaim = async function* (): AsyncGenerator<void, void, void> {
+      // Pins and native cleanup share this writer lock. Yield only between
+      // operations; an admitted holder check/removal must finish before release.
+      await refreshProtection();
       const censusPolicy = { ...policy, pins: [] };
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
       receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
-      const protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
         if (Date.now() >= runDeadline) { receipt.errors.push('retention run budget exhausted'); break; }
-        if (await yieldToWaiter()) return;
-        const rootProtectedPaths = protectedPaths.flatMap((path) => root.aliases.map((alias) =>
+        yield* yieldToWaiter();
+        const rootProtectedPaths = () => protectedPaths.flatMap((path) => root.aliases.map((alias) =>
           path === alias || path.startsWith(alias + '/') ? root.path + path.slice(alias.length) : path));
         const scanRoot = (paths: readonly string[]) => scanRetentionRootHolders(root, paths, scan);
         const budget = { left: options.maxEntries ?? 100_000, deadline: Math.min(runDeadline, Date.now() + (options.budgetMs ?? 60_000)), progress };
@@ -618,7 +630,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           const names = await readdir(root.path);
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
             (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
-            (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) ||
+            (!capped && rootProtectedPaths().some((protectedPath) => overlap(path, protectedPath))) ||
             !deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy));
           if (options.inspectTrees && (retainAfterMs !== undefined || capped)) {
             // An advancing whole-root census must not restart at the ordinary
@@ -650,7 +662,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               receipt.entries.push({ path, classId: root.classId, status, bytes: 0, reason });
             };
             if (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
-            if (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
+            if (!capped && rootProtectedPaths().some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
             if (!deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
@@ -678,7 +690,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             entry.protectedReason = 'registered workspace scratch owner';
             receipt.entries.push({ path: entry.path, classId: entry.classId, status: 'protected', bytes: entry.bytes, reason: entry.protectedReason });
           }
-          if (rootProtectedPaths.some((path) => overlap(entry.path, path))) entry.protectedReason = 'live retention lease';
+          if (rootProtectedPaths().some((path) => overlap(entry.path, path))) entry.protectedReason = 'live retention lease';
         }
         const rootCaps: RetentionCapReceipt[] = [];
         const selected = selectRetentionEntries(entries, policy, started, rootCaps);
@@ -699,7 +711,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           continue;
         }
         const effectStarted = Date.now();
-        const effectDeadline = Math.min(runDeadline, effectStarted + (options.effectBudgetMs ?? 60_000));
+        let effectDeadline = Math.min(runDeadline, effectStarted + (options.effectBudgetMs ?? 60_000));
+        const yieldEffects = async function* () {
+          const pausedMs = yield* yieldToWaiter();
+          budget.deadline += pausedMs;
+          effectDeadline = Math.min(runDeadline, effectDeadline + pausedMs);
+        };
         const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 };
         const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
           nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false, timings };
@@ -725,14 +742,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
-        if (await yieldToWaiter()) { effect.stopped = true; await recordProgress(); return; }
+        yield* yieldEffects();
         const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path))));
         if (!holders.complete) {
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
         }
         for (const entry of selected) {
-          if (await yieldToWaiter()) { effect.stopped = true; await recordProgress(); return; }
+          yield* yieldEffects();
           if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) { effect.processed++; continue; }
           if (budgetExpired()) { stopAtBudget(root.path); break; }
           if (stopEffects()) break;
@@ -740,6 +757,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           receipt.entries.push(outcome);
           let deferred = false;
           try {
+            if (!deletionClassFor(entry.path, policy, started) || rootProtectedPaths().some((path) => overlap(entry.path, path))) {
+              outcome.reason = 'live retention lease or pin'; continue;
+            }
             if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
             // Write the intent before the last identity/holder checks, so a
             // slow database round trip cannot widen the check-to-effect window.
@@ -795,13 +815,16 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         }
         await recordProgress();
         if (cap) {
+          cap.pinnedPaths = entries.filter((entry) => !deletionClassFor(entry.path, policy, started)).map((entry) => entry.path);
+          cap.pinnedBytes = entries.filter((entry) => cap.pinnedPaths.includes(entry.path)).reduce((sum, entry) => sum + entry.bytes, 0);
+          cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - cap.maxBytes);
           cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
           if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
         }
       }
       for (const delegate of options.delegates ?? []) {
         if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
-        if (await yieldToWaiter()) return;
+        yield* yieldToWaiter();
         try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
         catch (err) { receipt.delegates.push({ classId: delegate.classId, ok: false, detail: message(err) }); }
       }
@@ -809,7 +832,21 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         if (cls.enforcers.some((e) => e.kind === 'standing-reclaim' && (e.via || cls.keep.kind === 'lease')) &&
             !receipt.delegates.some((e) => e.classId === cls.id)) receipt.errors.push(`missing delegate:${cls.id}`);
       }
-    }, { timeoutMs: 1_000 });
+    };
+    const cursor = reclaim();
+    let firstLease = true;
+    try {
+      while (true) {
+        if (!firstLease && Date.now() >= runDeadline) throw new Error('retention run budget exhausted while yielding to queued writer');
+        let done = false;
+        await withFsMutex('papercusp-disk-retention', async (held) => {
+          mutex = held;
+          done = (await cursor.next()).done === true;
+        }, { timeoutMs: firstLease ? 1_000 : Math.max(1, runDeadline - Date.now()) });
+        if (done) break;
+        firstLease = false;
+      }
+    } finally { await cursor.return(); }
   } catch (err) { receipt.errors.push(message(err)); }
   // A queued writer can end the callback between effects, before the root's
   // normal epilogue. Report retained usage after successful effects on every
