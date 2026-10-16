@@ -21,6 +21,16 @@ export function renderDurableDataProbeCore(dataMode = 'fresh') {
   if (!['fresh', 'existing'].includes(dataMode)) throw new Error('durable data mode must be fresh or existing');
   return [
     `data_mode='${dataMode}'`,
+    // This is on the boot disk, outside the durable mount. A provision script
+    // persists across GCP reboots; its fresh-format permission must not persist.
+    'data_probe_state_dir=/var/lib/papercusp-host-bootstrap/data-identity',
+    '[[ ! -L "$data_probe_state_dir" ]] || { echo "durable identity directory is a symlink" >&2; exit 1; }',
+    'install -d -m 0700 "$data_probe_state_dir"',
+    'data_probe_marker="$data_probe_state_dir/$(basename "$data_device").uuid"',
+    'exec 9>"${data_probe_marker}.lock"',
+    'flock -n 9 || { echo "durable data initialization is already running" >&2; exit 1; }',
+    '[[ ! -L "$data_probe_marker" ]] || { echo "durable identity marker is a symlink" >&2; exit 1; }',
+    'if [[ -e "$data_probe_marker" ]]; then data_mode=existing; fi',
     'data_probe_status=0',
     'data_type=$(blkid -p -s TYPE -o value "$data_device") || data_probe_status=$?',
     'if [[ "$data_probe_status" == 0 && "$data_type" == ext4 ]]; then',
@@ -32,6 +42,16 @@ export function renderDurableDataProbeCore(dataMode = 'fresh') {
     'else',
     '  echo "durable data filesystem unavailable or unsupported; refusing to format" >&2; exit 1',
     'fi',
+    'data_uuid=$(blkid -p -s UUID -o value "$data_device")',
+    '[[ "$data_uuid" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "durable data UUID unavailable" >&2; exit 1; }',
+    'if [[ -e "$data_probe_marker" ]]; then',
+    '  [[ "$(cat "$data_probe_marker")" == "$data_uuid" ]] || { echo "durable data UUID changed" >&2; exit 1; }',
+    'else',
+    '  (set -o noclobber; printf "%s\\n" "$data_uuid" > "$data_probe_marker")',
+    'fi',
+    // Do not let agents/services launched by the later bootstrap inherit the lock.
+    'flock -u 9',
+    'exec 9>&-',
   ];
 }
 
@@ -55,7 +75,6 @@ export function renderDurableFilesystemScriptCore(input) {
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,
     'test -b "$data_device"',
     ...renderDurableDataProbeCore(input.dataMode),
-    'data_uuid=$(blkid -s UUID -o value "$data_device")',
     'install -d -m 0750 "$data_mount"',
     'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
     'mountpoint -q "$data_mount" || mount "$data_mount"',

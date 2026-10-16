@@ -12,6 +12,11 @@ import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFai
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const filePath = 'packages/operator-core/lib/storage/disk-reclaim-background-runtime.integration.test.ts';
 const assertion = 'packages/operator-core/lib/storage/disk-reclaim.integration.test.ts';
+const censusAssertion = 'packages/operator-core/lib/storage/disk-consumer-census.test.ts';
+const censusSelected = [
+  'accepts the real native directory-descent disappearance',
+  'refuses unproven or incomplete disappearance evidence',
+];
 const selected = [
   'finishes an advancing root beyond its inspection allowance',
   'reaps an elevated census worker at its native deadline',
@@ -27,7 +32,7 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
-    sourcePaths: [assertion, 'packages/operator-core/lib/storage/disk-reclaim.ts',
+    sourcePaths: [assertion, censusAssertion, 'packages/operator-core/lib/storage/disk-reclaim.ts',
       'packages/operator-core/lib/storage/disk-consumer-census.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
@@ -40,7 +45,7 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
       const receipts = join(evidenceDir, 'reclaim-test-receipts.ndjson');
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime', '--', process.execPath, join(root, 'scripts/test-files.mjs'),
-        assertion, '--', '-t', selected.join('|')], {
+        assertion, censusAssertion, '--', '-t', [...selected, ...censusSelected].join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
           PAPERCUSP_TEST_RUNS_DB_URL: resolveExecutedMapPgUrl().url,
@@ -79,6 +84,12 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
           passed: selected.length, failed: 0, collectionFailed: false,
         } } });
         for (const title of selected) expect(row.row.executionDetails.passedCaseTitles.some(
+          (passed: string) => passed.includes(title))).toBe(true);
+        const census = rows.find(value => value.filePath === censusAssertion);
+        expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
+          passed: 6, failed: 0, collectionFailed: false,
+        } } });
+        for (const title of censusSelected) expect(census.row.executionDetails.passedCaseTitles.some(
           (passed: string) => passed.includes(title))).toBe(true);
         expect(result.output).toMatch(/TEST_FILE_RESULT[^\n]*status=passed[^\n]*childSubstituted=0/);
       } finally {

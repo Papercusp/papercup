@@ -395,6 +395,69 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('attaches the pending spill cursor to a durable reference-envelope fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durableUri = scratchReference.DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'b'.repeat(64);
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockImplementation(async (uri, caller) => ({
+      uri: durableUri,
+      manifest: readVolatileScratchReference(uri, caller).manifest,
+    }));
+    const original: DoorableResult = {
+      content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(BUDGET_CHARS * 3) }],
+    };
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(original, { ...OPTS, ownerId: 'su-1' });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const meta = result._meta?.resultDoor as {
+        durableFallbackUri?: string;
+        pendingSpill?: { cursor?: Record<string, unknown> };
+        recoveryCursor?: Record<string, unknown>;
+        spillFailed?: boolean;
+        spillPending?: boolean;
+      };
+      const envelope = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text);
+
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      expect(meta).toMatchObject({
+        durableFallbackUri: durableUri,
+        spillFailed: false,
+        spillPending: true,
+        recoveryCursor: {
+          kind: 'durable-scratch-page',
+          tool: 'capability:read',
+          uri: durableUri,
+          args: { uri: durableUri, byte_offset: 0, byte_limit: 3_072 },
+        },
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(envelope.content).toContainEqual(expect.objectContaining({ kind: 'reference', uri: durableUri }));
+      expect(JSON.stringify(envelope)).not.toContain('papercusp://scratch-memory/');
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('keeps volatile recovery when durable timeout persistence exceeds its separate bound', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();

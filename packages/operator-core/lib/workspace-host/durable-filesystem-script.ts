@@ -48,7 +48,6 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,
     'test -b "$data_device"',
     ...renderDurableDataProbeCore(input.dataMode),
-    'data_uuid=$(blkid -s UUID -o value "$data_device")',
     'install -d -m 0750 "$data_mount"',
     'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
     'mountpoint -q "$data_mount" || mount "$data_mount"',

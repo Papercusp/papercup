@@ -18,6 +18,21 @@ import {
 
 const AWS_DEVICE = '/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0123456789abcdef0';
 
+function executeProbe(input: { dataMode: 'fresh' | 'existing'; probeStatus: number; type: string;
+  wipeStatus: number; signatures: string; stateDir: string; uuid?: string }) {
+  const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30, dataMode: input.dataMode });
+  const probe = script.slice(script.indexOf('data_mode='), script.indexOf('install -d -m 0750 "$data_mount"'))
+    .replace('data_probe_state_dir=/var/lib/papercusp-host-bootstrap/data-identity', `data_probe_state_dir='${input.stateDir}'`);
+  return spawnSync('bash', ['-c', [
+    'set -euo pipefail', 'data_device=/dev/fixture',
+    `blkid() { if [[ "$*" == *TYPE* ]]; then printf '%s' '${input.type}'; return ${input.probeStatus}; fi; printf '%s' '${input.uuid ?? '01234567-89ab-cdef-0123-456789abcdef'}'; }`,
+    `wipefs() { printf '%s' '${input.signatures}'; return ${input.wipeStatus}; }`,
+    'mkfs.ext4() { echo FORMATTED; }', probe,
+    // A new bootstrap child must be able to acquire this lock independently.
+    'flock -n "${data_probe_marker}.lock" true',
+  ].join('\n')], { encoding: 'utf8', timeout: 5000 });
+}
+
 describe('renderDurableFilesystemScript', () => {
   it('renders valid bash that waits for, formats-if-blank, and mounts the named device', () => {
     const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 180 });
@@ -47,17 +62,32 @@ describe('renderDurableFilesystemScript', () => {
     ['existing', 0, 'xfs', 0, '', false, 1],
   ] as const)('executes safe %s probe (blkid=%s,type=%s,wipefs=%s,signatures=%s)',
     (dataMode, probeStatus, type, wipeStatus, signatures, formatted, exitStatus) => {
-      const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30, dataMode });
-      const probe = script.slice(script.indexOf('data_mode='), script.indexOf('data_uuid='));
-      const run = spawnSync('bash', ['-c', [
-        'set -euo pipefail', 'data_device=/dev/fixture',
-        `blkid() { printf '%s' '${type}'; return ${probeStatus}; }`,
-        `wipefs() { printf '%s' '${signatures}'; return ${wipeStatus}; }`,
-        'mkfs.ext4() { echo FORMATTED; }', probe,
-      ].join('\n')], { encoding: 'utf8', timeout: 5000 });
-      expect(run.status, run.stderr).toBe(exitStatus);
-      expect(run.stdout.includes('FORMATTED')).toBe(formatted);
+      const stateDir = mkdtempSync(join(tmpdir(), 'durable-probe-'));
+      try {
+        const run = executeProbe({ dataMode, probeStatus, type, wipeStatus, signatures, stateDir });
+        expect(run.status, run.stderr).toBe(exitStatus);
+        expect(run.stdout.includes('FORMATTED')).toBe(formatted);
+      } finally { rmSync(stateDir, { recursive: true, force: true }); }
     });
+
+  it('never restores fresh-format permission on reboot and refuses a changed filesystem identity', () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'durable-reboot-'));
+    const input = { dataMode: 'fresh' as const, probeStatus: 2, type: '', wipeStatus: 0, signatures: '', stateDir };
+    try {
+      const first = executeProbe(input);
+      expect(first.status, first.stderr).toBe(0);
+      expect(first.stdout).toContain('FORMATTED');
+      const lostSignature = executeProbe(input);
+      expect(lostSignature.status).toBe(1);
+      expect(lostSignature.stdout).not.toContain('FORMATTED');
+      const foreign = executeProbe({ ...input, probeStatus: 0, type: 'ext4', uuid: 'ffffffff-ffff-ffff-ffff-ffffffffffff' });
+      expect(foreign.status).toBe(1);
+      expect(foreign.stderr).toContain('UUID changed');
+      const resumed = executeProbe({ ...input, probeStatus: 0, type: 'ext4' });
+      expect(resumed.status, resumed.stderr).toBe(0);
+      expect(resumed.stdout).not.toContain('FORMATTED');
+    } finally { rmSync(stateDir, { recursive: true, force: true }); }
+  });
 
   it('binds the canonical home on a bootc image, where /home is a symlink to var/home (WI-10006838)', () => {
     // Measured 2026-10-06 on AMI A-r62b (CentOS Stream 10 bootc): /home -> var/home. The script
