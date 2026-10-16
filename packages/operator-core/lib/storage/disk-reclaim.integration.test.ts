@@ -569,9 +569,14 @@ describe('retention on a real fixture tree', () => {
     const finishCensus = new Promise<void>((resolve) => { finish = resolve; });
     const waiting = new Promise<void>((resolve) => { queued = resolve; });
     let protectedByPeer = false;
+    let censusCompleted = false;
     const inspectTrees = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
-      if (!input.paths) { entered(); await finishCensus; }
-      return inspectRetentionTrees(path, input);
+      const result = await inspectRetentionTrees(path, input);
+      // Queue the writer after native IO has completed. This fixture exercises
+      // FIFO handoff and fresh protection, not a race between find's deadline
+      // and the writer's shorter acquisition deadline.
+      if (!input.paths) { censusCompleted = true; entered(); await finishCensus; }
+      return result;
     });
     const reclaim = runDiskReclaimOnce({ ...options, inspectTrees,
       readProtection: async () => ({ paths: protectedByPeer && kind === 'lease' ? [paths[1]!] : [],
@@ -579,6 +584,7 @@ describe('retention on a real fixture tree', () => {
       removeEntry: async (entry) => { expect(protectedByPeer).toBe(true); await rm(entry.path); },
     });
     await inspecting;
+    expect(censusCompleted).toBe(true);
     const peer = withFsMutex('papercusp-disk-retention', async () => { protectedByPeer = true; },
       { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
     try { await waiting; } finally { finish(); }
