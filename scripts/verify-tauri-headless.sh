@@ -1182,6 +1182,11 @@ vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
 # .papercusp is excluded from both source and dependency snapshots.
 select_verifier_snapshot_root() {
   local work_root="${TMPDIR:-/tmp}" donor_device work_device
+  # A nested invocation may itself run from a frozen archive. Generated source
+  # belongs beside that archive, never inside its attested file population.
+  if [ -f "$REPO_DIR/.verifier-source.json" ] && [[ "$work_root/" == "$REPO_DIR/"* ]]; then
+    work_root="$(dirname "$REPO_DIR")"
+  fi
   case "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" in
     hardlink) ;;
     copy) [ -d "$work_root" ] || return 1; printf '%s\n' "$work_root"; return 0 ;;
@@ -1190,7 +1195,11 @@ select_verifier_snapshot_root() {
   donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
   work_device="$(stat -c %d -- "$work_root")" || return 1
   if [ "$donor_device" != "$work_device" ]; then
-    work_root="$REPO_DIR/.papercusp/scratch"
+    if [ -f "$REPO_DIR/.verifier-source.json" ]; then
+      work_root="$(dirname "$REPO_DIR")"
+    else
+      work_root="$REPO_DIR/.papercusp/scratch"
+    fi
     mkdir -p -- "$work_root" || return 1
     work_device="$(stat -c %d -- "$work_root")" || return 1
   fi
