@@ -3,8 +3,9 @@
  * A mount observed twice in one boot is never reboot proof. */
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir, realpath, lstat } from 'node:fs/promises';
-import { hostname } from 'node:os';
+import { readFile, readdir, realpath } from 'node:fs/promises';
+import { basename, dirname } from 'node:path';
+import { homedir, hostname } from 'node:os';
 import { z } from 'zod';
 
 export const COLD_MOUNTS_INSTRUMENT_KEY = 'storage:cold-mounts-reboot';
@@ -91,6 +92,13 @@ export async function measureColdMounts(sql: Sql, workspaceId: string,
 }
 
 export interface ColdMove { name: string; source: string; destination: string; log: string; repointed: boolean; asideAbsent: boolean }
+/** Both move protocols retain originals until backup proof: cold-b uses a
+ * root-level hidden name, while cold-a uses a suffix beside the source. */
+export function hasColdMoveAside(sourceName: string, name: string, siblings: readonly string[], dataEntries: readonly string[]): boolean {
+  return siblings.some(entry => entry.startsWith(`${sourceName}.moving-to-cold-`)) ||
+    ['a', 'b'].some(tier => dataEntries.some(entry => entry === `.moving-to-cold-${tier}-${name}` ||
+      entry.startsWith(`.moving-to-cold-${tier}-${name}-`)));
+}
 /** Strictly assess the actual move script's VERIFY1/VERIFY2/DONE protocol. A new
  * COPY starts a new attempt; a stale successful attempt cannot mask a failed retry. */
 export function assessColdMoves(moves: readonly ColdMove[], backup: unknown, measuredAt: string): ColdEvidence {
@@ -132,8 +140,18 @@ export function assessColdMoves(moves: readonly ColdMove[], backup: unknown, mea
   return outcome('pass', `${moves.length} verified cutovers and post-cutover Kopia snapshot ${parsed.data.snapshotId}.`);
 }
 
-function kopiaJson(args: string[]): Promise<unknown> {
-  return new Promise((resolve, reject) => execFile('kopia', args, { timeout: 15_000, maxBuffer: 2 * 1024 * 1024, shell: false }, (error, stdout) => {
+type KopiaEvidenceExec = (file: string, args: string[], options: { timeout: number; maxBuffer: number; shell: false },
+  callback: (error: Error | null, stdout: string) => void) => unknown;
+/** Reuse the installed backup helper: the repository is intentionally root-only.
+ * Arguments remain argv, and this adapter permits only its two native reads. */
+export function kopiaJson(args: string[], execute: KopiaEvidenceExec = execFile): Promise<unknown> {
+  if (![['repository', 'status', '--json'], ['snapshot', 'list', '--all', '--max-results=1', '--json']]
+    .some(allowed => JSON.stringify(allowed) === JSON.stringify(args))) return Promise.reject(new Error('Kopia evidence command is not read-only.'));
+  const config = `${homedir()}/.config/kopia`;
+  return new Promise((resolve, reject) => execute('/usr/bin/bash', ['-c',
+    'source "$1" && kopia_as_root /usr/bin/sudo /usr/bin/kopia "--config-file=$2" "${@:3}"',
+    'cold-tier-evidence', `${config}/kopia-cache-bootstrap.sh`, `${config}/repository.config`, ...args],
+  { timeout: 15_000, maxBuffer: 2 * 1024 * 1024, shell: false }, (error, stdout) => {
     if (error) return reject(new Error('Native Kopia evidence is unavailable.'));
     try { resolve(JSON.parse(stdout)); } catch { reject(new Error('Native Kopia JSON is malformed.')); }
   }));
@@ -158,14 +176,18 @@ export async function measureColdMoves(runKopia: (args: string[]) => Promise<unk
     // A parent (for example Backup/) may be the symlink. Resolve the consumer's
     // whole path instead of requiring the leaf itself to be a symlink.
     repointed: await realpath(m.source).then(path => path === m.destination).catch(() => false),
-    asideAbsent: await lstat(`/mnt/data/.moving-to-cold-b-${m.name}`).then(() => false, (e: NodeJS.ErrnoException) => e.code === 'ENOENT'),
+    // Enumerate names, without traversing originals (Kopia's aside is root-only).
+    // An unreadable parent rejects observation instead of certifying absence.
+    asideAbsent: !hasColdMoveAside(basename(m.source), m.name, await readdir(dirname(m.source)), sources),
   })));
   // Missing cutover evidence can be decided without launching a potentially large snapshot listing.
   const preliminary = assessColdMoves(moves, null, new Date().toISOString());
   if (!preliminary.detail.startsWith('A successful same-host')) return preliminary;
   const status = await runKopia(['repository', 'status', '--json']) as { storage?: { config?: { path?: string } } };
   if (status?.storage?.config?.path !== '/mnt/cold-a/Backup/kopia-repo') return outcome('unknown', 'Native Kopia repository status does not select the moved repository.');
-  const snapshots = await runKopia(['snapshot', 'list', '--all', '--json']);
+  // One latest manifest per source suffices: any valid latest manifest newer
+  // than cutover proves a real post-cutover backup without listing all history.
+  const snapshots = await runKopia(['snapshot', 'list', '--all', '--max-results=1', '--json']);
   if (!Array.isArray(snapshots) || snapshots.length > 20_000) return outcome('unknown', 'Native Kopia snapshot inventory is missing or capped.');
   for (const s of snapshots) {
     const assessment = assessColdMoves(moves, { repositoryPath: status.storage.config.path, host: hostname(),

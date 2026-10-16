@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assessColdMounts, assessColdMoves, measureColdMounts, parseColdMounts,
+import { assessColdMounts, assessColdMoves, hasColdMoveAside, kopiaJson, measureColdMounts, parseColdMounts,
   COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, type ColdMountObservation } from './cold-tier-evidence';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './retention-interval-evidence';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
@@ -52,6 +52,33 @@ const moves = () => ['kopia-repo', 'papercusp-backups', 'Debug'].map(name => {
 const backup = () => ({ repositoryPath: '/mnt/cold-a/Backup/kopia-repo', host: 'host', snapshotHost: 'host',
   snapshotId: 'native-snapshot', startedAt: at(5), finishedAt: at(6), complete: true });
 describe('verified cold bulk cutover', () => {
+  it('reads the root-only repository through the installed backup helper with argv and a bounded inventory', async () => {
+    const execute = vi.fn((_file, _args, _options, callback) => callback(null, '{"native":true}'));
+    const args = ['snapshot', 'list', '--all', '--max-results=1', '--json'];
+    expect(await kopiaJson(args, execute)).toEqual({ native: true });
+    expect(execute.mock.calls[0]).toEqual(['/usr/bin/bash', ['-c',
+      'source "$1" && kopia_as_root /usr/bin/sudo /usr/bin/kopia "--config-file=$2" "${@:3}"',
+      'cold-tier-evidence', expect.stringContaining('/.config/kopia/kopia-cache-bootstrap.sh'),
+      expect.stringContaining('/.config/kopia/repository.config'), ...args],
+    { timeout: 15_000, maxBuffer: 2 * 1024 * 1024, shell: false }, expect.any(Function)]);
+    await expect(kopiaJson(['snapshot', 'delete', 'x'], execute)).rejects.toThrow('not read-only');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+  it('refuses native read failures and malformed JSON', async () => {
+    await expect(kopiaJson(['repository', 'status', '--json'], (_f, _a, _o, callback) => callback(new Error('denied'), '')))
+      .rejects.toThrow('unavailable');
+    await expect(kopiaJson(['repository', 'status', '--json'], (_f, _a, _o, callback) => callback(null, 'bad')))
+      .rejects.toThrow('malformed');
+  });
+  it('detects retained originals from both cold-tier move protocols before certifying source removal', () => {
+    expect(hasColdMoveAside('kopia-repo', 'kopia-repo', ['kopia-repo', 'kopia-repo.moving-to-cold-a-e9919'], [])).toBe(true);
+    expect(hasColdMoveAside('papercusp-backups', 'papercusp-backups', ['papercusp-backups.moving-to-cold-a-next'], [])).toBe(true);
+    expect(hasColdMoveAside('Debug', 'Debug', [], ['.moving-to-cold-b-Debug'])).toBe(true);
+    expect(hasColdMoveAside('Debug', 'Debug', [], ['.moving-to-cold-b-Debug-retry'])).toBe(true);
+    expect(hasColdMoveAside('back', 'back', [], ['.moving-to-cold-a-back-retry'])).toBe(true);
+    expect(hasColdMoveAside('Debug', 'Debug', ['Debug'], ['.moving-to-cold-b-Debug_JAMES'])).toBe(false);
+    expect(hasColdMoveAside('kopia-repo', 'kopia-repo', ['kopia-repo'], [])).toBe(false);
+  });
   it('requires each move and an actual post-cutover backup from the moved repository', () => {
     expect(assessColdMoves(moves(), backup(), at(8)).verdict).toBe('pass');
     expect(assessColdMoves(moves().slice(0, 2), backup(), at(8)).verdict).toBe('unknown');
