@@ -26,6 +26,8 @@ import { PostgresHostedBillingStore, type HostedBillingReconciliationCheckpoint 
 import { reconcileHostedBilling, type HostedBillingFailureObservation } from './billing-recovery';
 import { createStripeBillingClient, type StripeBillingEventPageEvidence } from './stripe-billing-client';
 import { parseHostedBillingEvent, type HostedBillingEvent } from './stripe-billing-events';
+import { createConfiguredHostedSubscriptionEntitlementProvider, parseHostedPaidEntitlementBundle } from './entitlement-seam';
+import { readHostedEntitlementAuthority, lockHostedEntitlementAuthority } from '../../hosted-entitlement-store';
 
 const { createOrgTestDb } = await import('../../../../test/_org-test-db');
 
@@ -212,10 +214,98 @@ describe('PostgresHostedBillingStore (real Postgres, real roles)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     await applyRecoveryMigration(db);
+    await db.adminSql.unsafe(readFileSync(new URL('../../../../../../libs/papercusp/libs/db/sql/1524-hosted-entitlement-authority.sql', import.meta.url), 'utf8'));
   }, 180_000);
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  const resourceBundle = (plan = 'team', agents = 20) => parseHostedPaidEntitlementBundle({ schemaVersion: 1,
+    bundleId: `paid-${plan}`, bundleVersion: 1,
+    record: { source: 'billing', actor: { kind: 'service', principalId: 'service:billing' },
+      auditReceiptId: `policy:${plan}:1`, effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil: null },
+    entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 5 },
+      browserAccess: { pty: true, files: true }, supportTier: 'paid',
+      quotas: { 'pool.agents': agents, 'pool.hosts': 2, 'pool.cpu-millicores': 8000, 'pool.memory-mib': 16384,
+        'pool.db-gib': 256, 'pool.workspace-gib': 32, 'pool.reserved-hosts': 1 },
+      budgets: { 'pool.cost.usd.minor': 10000 }, rolloutFlags: {} } });
+  const resourceStore = (teamAgents = 20) => new PostgresHostedBillingStore(runService,
+    createConfiguredHostedSubscriptionEntitlementProvider(['team', 'pro'].map(planKey => ({ planKey, priceId: `price_${planKey}`,
+      entitlementBundle: resourceBundle(planKey, planKey === 'team' ? teamAgents : 50) }))));
+  const resourceRead = (org: string, at?: Date) => runService(sql => readHostedEntitlementAuthority(sql, org, at));
+  const authorityRow = async (org: string) => (await db.adminSql<Array<{ authority_revision: string; authority: unknown }>>`
+    SELECT authority_revision, authority FROM papercusp_auth.hosted_entitlements WHERE organization_id = ${org}::uuid`)[0]!;
+  const resourceGrant = async (f: Fixture) => {
+    const userId = randomUUID();
+    await runService(async sql => { await sql`INSERT INTO papercusp_auth.hosted_entitlements (organization_id, user_id, kind, source)
+      VALUES (${f.organizationId}::uuid, ${userId}::uuid, 'hosted-free', 'self_signup')`; });
+    return userId;
+  };
+  const periodEnd = () => Math.floor(Date.now() / 1000) + 3600;
+
+  it('projects upgrades/downgrades from winning facts, ignores stale/replayed facts, and revokes cancellation without deleting grants', async () => {
+    const s = resourceStore(); const f = await fixture(s); await resourceGrant(f); const end = periodEnd();
+    const first = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active', periodEnd: end });
+    await deliver(s, first);
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: true, authorityRevision: 1,
+      resolution: { bundleId: 'paid-team', quotas: { 'pool.agents': 20, 'pool.reserved-hosts': 1 } } });
+    const before = await authorityRow(f.organizationId);
+    expect((await deliver(s, first)).outcome).toBe('duplicate');
+    await deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0 - 1, status: 'active', priceId: 'price_pro', periodEnd: end }));
+    expect(await authorityRow(f.organizationId)).toEqual(before);
+    await deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0 + 1, status: 'active', priceId: 'price_pro', periodEnd: end }));
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: true, resolution: { quotas: { 'pool.agents': 50 } } });
+    await deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0 + 2, status: 'active', periodEnd: end, cancelAtPeriodEnd: true }));
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: true, resolution: { quotas: { 'pool.agents': 20 } } });
+    expect(await resourceRead(f.organizationId, new Date(end * 1000))).toMatchObject({ ok: false, reason: 'no_active_assignment' });
+    await deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0 + 3, status: 'canceled', periodEnd: end }));
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: false, reason: 'no_active_assignment' });
+    expect((await authorityRow(f.organizationId)).authority).toMatchObject({ bundles: expect.arrayContaining([
+      expect.objectContaining({ bundleId: 'paid-team' }), expect.objectContaining({ bundleId: 'paid-pro' })]) });
+  });
+
+  it('rolls back billing facts and receipt if no canonical grant exists, then accepts the authenticated retry', async () => {
+    const s = resourceStore(); const f = await fixture(s);
+    const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active', periodEnd: periodEnd() });
+    await expect(deliver(s, raw)).rejects.toThrow('hosted_billing_entitlement_grant_ambiguous_or_missing');
+    expect(await eventRow(parsed(raw).eventId)).toBeNull(); expect(await subscriptionRow(f.subscriptionId)).toBeNull();
+    await resourceGrant(f); expect((await deliver(s, raw)).outcome).toBe('applied');
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: true });
+  });
+
+  it('rejects policy content changes under an existing version pin atomically', async () => {
+    const s = resourceStore(); const f = await fixture(s); await resourceGrant(f); const end = periodEnd();
+    await deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active', periodEnd: end }));
+    const before = await authorityRow(f.organizationId);
+    const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0 + 1, status: 'past_due', periodEnd: end });
+    await expect(deliver(resourceStore(999), raw)).rejects.toThrow('hosted_billing_bundle_version_reused');
+    expect(await eventRow(parsed(raw).eventId)).toBeNull(); expect(await authorityRow(f.organizationId)).toEqual(before);
+    expect((await subscriptionRow(f.subscriptionId))!.status).toBe('active');
+  });
+
+  it('uses the same authority projection for authenticated recovery and concurrent webhook delivery', async () => {
+    const s = resourceStore(); const f = await fixture(s); await resourceGrant(f); const end = periodEnd();
+    const pin = await startRecovery(f, s);
+    const raw = subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active', periodEnd: end });
+    await Promise.all([applyPage(pin, recoveryPage(pin, [raw]), s), deliver(s, raw)]);
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: true, authorityRevision: 1,
+      resolution: { quotas: { 'pool.agents': 20 } } });
+    expect((await recoveryCheckpoint(f))?.complete).toBe(true);
+  });
+
+  it('serializes a billing downgrade behind an in-flight authority/admission transaction', async () => {
+    const s = resourceStore(); const f = await fixture(s); await resourceGrant(f); const end = periodEnd();
+    await deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0, status: 'active', priceId: 'price_pro', periodEnd: end }));
+    let writer!: Promise<unknown>;
+    await runService(async sql => {
+      await lockHostedEntitlementAuthority(sql, f.organizationId);
+      writer = deliver(s, subscriptionJson(f, { id: `evt_${hex()}`, created: T0 + 1, status: 'active', periodEnd: end }));
+      expect(await readHostedEntitlementAuthority(sql, f.organizationId)).toMatchObject({ ok: true,
+        resolution: { quotas: { 'pool.agents': 50 } } });
+    });
+    await writer;
+    expect(await resourceRead(f.organizationId)).toMatchObject({ ok: true, resolution: { quotas: { 'pool.agents': 20 } } });
   });
 
   it('independently detects API-only deliveries and permanent refusals in the real hosted-service role', async () => {
