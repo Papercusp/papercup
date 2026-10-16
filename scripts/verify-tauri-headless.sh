@@ -1768,6 +1768,40 @@ smoke_verifier_operator_host() {
   esac
   log "frozen plain-node operator host import smoke passed"
 }
+prepare_verifier_spa() {
+  VERIFIER_SPA_DIST=""
+  [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] || return 0
+  # A committed archive has no ignored dist/. Never borrow the donor's bundle
+  # for a pinned source verdict: it can contain different UI bytes entirely.
+  if [ -n "${PAPERCUSP_SHARED_SPA_DIST:-}" ]; then
+    echo 'VERIFY_TAURI_SPA_UNBOUND: a pinned run must build its frozen source, not select an external SPA' >&2
+    return 3
+  fi
+  local app="$OPERATOR_SOURCE_ROOT/apps/operator-vite"
+  [ -x "$app/bin/vite-build-singleflight" ] || {
+    echo "VERIFY_TAURI_SPA_BUILD_MISSING: frozen source has no maintained Vite builder: $app" >&2
+    return 3
+  }
+  log "building frozen operator SPA through the maintained workspace prebuild and singleflight builder"
+  # Keep npm's asset prebuild and the existing admission/atomic-output contract.
+  # Reset inherited build seams so neither commands nor output escape this tree.
+  (
+    cd "$OPERATOR_SOURCE_ROOT" || exit 1
+    env -u VITE_BUILD_CMD -u VITE_BUILD_LOCK -u VITE_BUILD_SNAPSHOT_DIR \
+      VITE_BUILD_OUT_ROOT="$app" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
+      PAPERCUSP_RETAIN_DIST_CHUNKS=0 \
+      PAPERCUSP_VITE_OUT_DIR="$app/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$app/dist" \
+      bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run build
+  ) || return $?
+  if [ ! -s "$app/dist/index.html" ] || [ ! -d "$app/dist/assets" ] \
+    || [ -z "$(find "$app/dist/assets" -type f -size +0c -print -quit)" ]; then
+    echo "VERIFY_TAURI_SPA_BUILD_INCOMPLETE: frozen build needs non-empty index.html and assets: $app/dist" >&2
+    return 3
+  fi
+  VERIFIER_SPA_DIST="$app/dist"
+  log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
+}
+vh_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
 vh_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 vh_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
@@ -3089,7 +3123,9 @@ fi
 #   PAPERCUSP_SHARED_SPA_DIST="$WORK/spa-dev" bash scripts/verify-tauri-headless.sh
 # Still frozen into $WORK/spa exactly as below, so the isolation property holds
 # whichever source it came from.
-SHARED_SPA_DIST="${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}"
+SHARED_SPA_DIST="${VERIFIER_SPA_DIST:-${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}}"
+SPA_SOURCE_ROOT="$REPO_DIR"
+[ -z "${VERIFIER_SPA_DIST:-}" ] || SPA_SOURCE_ROOT="$OPERATOR_SOURCE_ROOT"
 SPA_DIST=""
 if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # WI-10004972: quiescence (below) proves the dist stopped CHANGING, not that it
@@ -3105,10 +3141,10 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # after a full boot, and it needs no source string that survives
   # minification. Every run logs how many sources are newer than the bundle.
   if [ -n "${VERIFY_TAURI_REQUIRE_BUILT:-}" ] \
-    && ! spa_require_built_gate "$SHARED_SPA_DIST" "$REPO_DIR" "$VERIFY_TAURI_REQUIRE_BUILT"; then
+    && ! spa_require_built_gate "$SHARED_SPA_DIST" "$SPA_SOURCE_ROOT" "$VERIFY_TAURI_REQUIRE_BUILT"; then
     exit 3
   fi
-  spa_require_built_note "$SHARED_SPA_DIST" "$REPO_DIR"
+  spa_require_built_note "$SHARED_SPA_DIST" "$SPA_SOURCE_ROOT"
   # EI-19382195051346372: wait for QUIESCENCE before freezing. The shared
   # dist's builder rewrites $SHARED_SPA_DIST/assets on every rebuild and
   # RETAINS old hashed chunks (emptyOutDir:false), so a freeze racing a
