@@ -47,6 +47,7 @@ import {
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { createWorkItem } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { shapeWorkItemsGet } from './get-shape';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -423,6 +424,57 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
     expect(missRes.ok).toBe(false);
     expect(missRes.error).toMatch(/not found/);
+  });
+
+  it.each([
+    { setting: 'lock_timeout', pgCode: '55P03' },
+    { setting: 'statement_timeout', pgCode: '57014' },
+  ])('R003: real PG $setting stays unavailable through shaping and recovers after contention', async ({ setting, pgCode }) => {
+    const created = await createOne({ kind: 'feature', title: 'R003 contention fixture', harness: 'papercup' });
+    expect(created.ok).toBe(true);
+    const id = (created.workItem as { id: string }).id;
+    const ids = [id, 'WI-999'];
+    const projection = { pick: ['results[].id', 'results[].workItem.id', 'results[].workItem.state',
+      'results[].availability', 'results[].error', 'results[].retryable', 'results[].pgCode', 'counts', 'read'] };
+    const context = { ...(CTX as Record<string, unknown>), sourceProjection: projection };
+    const reader = await db.sql.reserve();
+    const originalSql = h.sql;
+    try {
+      // Both clients belong to this file's disposable database. Holding its base
+      // table blocks the actual reader behind both work-item views, with no mock
+      // of getWorkItem/getWorkItemsByIds and no lock on the operator database.
+      await reader`SELECT set_config(${setting}, '150ms', false)`;
+      h.sql = reader as unknown as postgres.Sql;
+      await db.sql.begin(async (blocker) => {
+        await blocker`LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE`;
+        const unavailable = await call(getTool, { ids, harness: 'papercup', threadLimit: 0 }, context);
+        for (const tier of ['standard', 'trimmed'] as const) {
+          expect(shapeWorkItemsGet(unavailable, tier)).toMatchObject({
+            ok: false,
+            counts: { ok: 0, failed: 2 },
+            results: ids.map((requestedId) => ({ id: requestedId, ok: false,
+              availability: 'unavailable', error: 'timeout', retryable: true, pgCode })),
+            read: { schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: 2,
+              available: 0, absent: 0, unavailable: 2, outerStageAttribution: expect.any(String) },
+          });
+        }
+      });
+    } finally {
+      h.sql = originalSql;
+      try {
+        await reader`RESET lock_timeout`;
+        await reader`RESET statement_timeout`;
+      } finally {
+        reader.release();
+      }
+    }
+    // Unknown storage during contention must not be cached as "missing". Once
+    // the blocker is gone, distinguish the real item from the genuinely absent id.
+    const recovered = await call(getTool, { ids, harness: 'papercup', threadLimit: 0 }, context);
+    expect(recovered).toMatchObject({ counts: { ok: 1, failed: 1 }, results: [
+      { id, ok: true, availability: 'available', workItem: { id, state: 'open' } },
+      { id: 'WI-999', ok: false, availability: 'absent' },
+    ], read: { requested: 2, available: 1, absent: 1, unavailable: 0 } });
   });
 
   it('list hides historical chunks by default and exposes them through compatibility filters', async () => {
