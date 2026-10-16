@@ -920,7 +920,7 @@ describe('sync-staging-checkout.sh immutable staging generations (WI-10003262)',
 });
 
 describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)', () => {
-  const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'prune_staging_generations'];
+  const PRUNE_FNS = ['collect_staging_generation_refs', 'staging_generation_in_use', 'staging_generation_holder_evidence', 'prune_staging_generations'];
 
   it('removes superseded generations but keeps the current one and any a process still runs from', async () => {
     const root = mkdtempSync(join(tmpdir(), 'staging-prune-'));
@@ -981,9 +981,106 @@ describe('sync-staging-checkout.sh superseded generation pruning (WI-10005310)',
       expect(result.stdout).toContain(
         `retaining prior staging generation still referenced by a process: ${realpathSync(cwdPinned)}`,
       );
+      expect(result.stdout).toContain(`holder_pid=${holder.pid} holder_ppid=${process.pid} `);
+      expect(result.stdout).toContain('reference=cwd');
       expect(realpathSync(cwdPinned)).toBeTruthy();
     } finally {
       holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['live', 'missing'] as const)('reports a retained sidecar with its exact PID and %s declared parent (WI5508)', async (parentState) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-parent-'));
+    const generationRoot = join(root, 'papercusp-staging.generations');
+    const alias = join(root, 'papercusp-staging.current');
+    const current = join(generationRoot, '.candidate-aaaaaaaaaaaa.cur', 'checkout');
+    const pinned = join(generationRoot, '.candidate-bbbbbbbbbbbb.pin', 'checkout');
+    mkdirSync(current, { recursive: true });
+    mkdirSync(pinned, { recursive: true });
+    symlinkSync(current, alias);
+    // pid_max + 1 cannot name a real Linux process; the live case names this
+    // fixture's actual parent. Neither case signals any non-fixture process.
+    const declaredParent = parentState === 'live' ? process.pid
+      : Number(readFileSync('/proc/sys/kernel/pid_max', 'utf8').trim()) + 1;
+    const holder = spawn('sleep', ['60'], {
+      env: { ...process.env, PAPERCUSP_INTEGRATION_ROOT: pinned, PAPERCUSP_DESKTOP_PARENT_PID: String(declaredParent) },
+      stdio: 'ignore',
+    });
+    try {
+      await new Promise((resolve) => holder.once('spawn', resolve));
+      const result = runFn(PRUNE_FNS, 'log() { echo "$*"; }; prune_staging_generations', {
+        env: { STAGING_ROOT: alias, STAGING_GENERATIONS_ROOT: generationRoot, INTEGRATION_ROOT: root },
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain(`generation=${pinned} holder_pid=${holder.pid} `);
+      expect(result.stdout).toContain(`declared_parent_pid=${declaredParent} declared_parent_state=${parentState}`);
+      expect(result.stdout).toContain(`holder_ppid=${process.pid} `);
+      if (parentState === 'missing') {
+        expect(result.stdout).toContain('ALARM: staging generation pinned by sidecar without its declared parent');
+        expect(result.stdout).toContain('action=inspect-sidecar-parent-watch');
+      } else {
+        expect(result.stdout).not.toContain('ALARM:');
+      }
+      expect(existsSync(pinned)).toBe(true);
+      expect(holder.exitCode).toBeNull();
+    } finally {
+      holder.kill();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['recycled', 'unreadable', 'invalid'] as const)('keeps %s parent evidence distinct without exposing environment values (WI5508)', (parentState) => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-proc-'));
+    const proc = join(root, 'proc');
+    const pinned = join(root, 'checkout');
+    const childPid = 100;
+    const parentPid = 200;
+    const procStat = (pid: number, ppid: number, start: number) =>
+      `${pid} (sidecar (worker)) ${['S', String(ppid), ...Array<string>(17).fill('0'), String(start)].join(' ')}\n`;
+    mkdirSync(join(proc, String(childPid)), { recursive: true });
+    writeFileSync(join(proc, String(childPid), 'stat'), procStat(childPid, 1, 100));
+    if (parentState !== 'unreadable') {
+      writeFileSync(join(proc, String(childPid), 'environ'),
+        `PRIVATE_TOKEN=never-log-this\0PAPERCUSP_DESKTOP_PARENT_PID=${parentState === 'invalid' ? 'not-a-pid' : parentPid}\0`);
+    }
+    if (parentState === 'recycled') {
+      mkdirSync(join(proc, String(parentPid)), { recursive: true });
+      writeFileSync(join(proc, String(parentPid), 'stat'), procStat(parentPid, 1, 200));
+    }
+    try {
+      const result = runFn(['staging_generation_holder_evidence'],
+        'set -euo pipefail; log() { echo "$*"; }; staging_generation_holder_evidence "$PINNED" "$PROC"', {
+          env: { PINNED: pinned, PROC: proc, STAGING_GENERATION_PROCESS_REFS: `${childPid}\tintegration-root\t${pinned}` },
+        });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('holder_ppid=1 holder_comm=sidecar__worker_');
+      expect(result.stdout).toContain(`declared_parent_state=${parentState === 'recycled' ? 'recycled' : 'unknown'}`);
+      expect(result.stdout.includes('ALARM:')).toBe(parentState === 'recycled');
+      expect(result.stdout).not.toContain('never-log-this');
+      expect(result.stdout).not.toContain('not-a-pid');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds holder metadata, deduplicates PID references and excludes sibling path prefixes (WI5508)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'staging-prune-bounded-'));
+    const pinned = join(root, 'checkout');
+    const refs = Array.from({ length: 7 }, (_, i) => `${100 + i}\tcwd\t${pinned}/apps/operator`);
+    refs.push(`100\tintegration-root\t${pinned}`, `999\tcwd\t${pinned}-other`);
+    try {
+      const result = runFn(['staging_generation_holder_evidence'],
+        'set -euo pipefail; log() { echo "$*"; }; staging_generation_holder_evidence "$PINNED" "$PROC"', {
+          env: { PINNED: pinned, PROC: join(root, 'vanished-proc'), STAGING_GENERATION_PROCESS_REFS: refs.join('\n') },
+        });
+      expect(result.status).toBe(0);
+      expect(result.stdout.match(/staging-generation-holder /g)).toHaveLength(5);
+      expect(result.stdout).toContain('holders=7 shown=5 omitted=2');
+      expect(result.stdout).toContain('declared_parent_state=unknown');
+      expect(result.stdout).not.toContain('holder_pid=999');
+      expect(result.stdout).not.toContain('ALARM:');
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

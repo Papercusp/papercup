@@ -219,16 +219,19 @@ publish_staging_generation() {
 # The old check forked tr|grep|readlink for every process, once per candidate:
 # with ~7,000 processes and 13 candidates a single prune took minutes. Here one
 # grep reads every environ and one find reads every cwd, about 0.5s in total.
-# Each line of STAGING_GENERATION_REFS is a PAPERCUSP_INTEGRATION_ROOT value or
-# a process cwd. Unreadable or vanished processes are skipped.
+# Keep pid/source/path records from the same batched scan for retention evidence
+# (WI5508). STAGING_GENERATION_REFS remains the path-only pruning safety input.
+# Unreadable or vanished processes are skipped, as before.
 collect_staging_generation_refs() {
-  STAGING_GENERATION_REFS="$(
+  STAGING_GENERATION_PROCESS_REFS="$(
     {
-      grep -sazho '^PAPERCUSP_INTEGRATION_ROOT=.*' /proc/[0-9]*/environ 2>/dev/null |
-        tr '\0' '\n' | sed 's/^PAPERCUSP_INTEGRATION_ROOT=//' || true
-      find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%l\n' 2>/dev/null || true
+      grep -sazHo '^PAPERCUSP_INTEGRATION_ROOT=.*' /proc/[0-9]*/environ 2>/dev/null |
+        tr '\0' '\n' | sed -n 's#^/proc/\([0-9]*\)/environ:PAPERCUSP_INTEGRATION_ROOT=#\1\tintegration-root\t#p' || true
+      find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%p\t%l\n' 2>/dev/null |
+        sed -n 's#^/proc/\([0-9]*\)/cwd\t#\1\tcwd\t#p' || true
     } | sort -u || true
   )"
+  STAGING_GENERATION_REFS="$(printf '%s\n' "$STAGING_GENERATION_PROCESS_REFS" | cut -f3- | sort -u)"
 }
 
 staging_generation_in_use() {
@@ -239,6 +242,71 @@ staging_generation_in_use() {
     fi
   done <<< "${STAGING_GENERATION_REFS:-}"
   return 1
+}
+
+# Diagnostics never authorize deletion or process termination. Read metadata for
+# at most five distinct holders per retained generation, never another host-wide
+# scan. Parent state follows the existing sidecar-orphan-probe/reaper contract:
+# a missing declared PID, or one started after its child, cannot be its parent.
+# The optional proc root is only a parser/race test seam.
+staging_generation_holder_evidence() {
+  local root="$1" proc_root="${2:-/proc}" pid source ref entry stat_line rest comm
+  local parent parent_state ppid child_start parent_start shown=0 total=0
+  local -a fields
+  local -A seen=()
+  while IFS=$'\t' read -r pid source ref; do
+    [[ "$pid" =~ ^[0-9]+$ && -n "$ref" && ( "$ref" == "$root" || "$ref" == "$root/"* ) ]] || continue
+    [[ -z "${seen[$pid]:-}" ]] || continue
+    seen[$pid]=1
+    total=$((total + 1))
+    [[ "$shown" -lt 5 ]] || continue
+    shown=$((shown + 1))
+    parent=unknown parent_state=unknown ppid=unknown comm=unknown child_start=unknown
+    stat_line="$(cat "$proc_root/$pid/stat" 2>/dev/null || true)"
+    if [[ "$stat_line" == *') '* ]]; then
+      rest="${stat_line##*) }"
+      read -r -a fields <<< "$rest"
+      ppid="${fields[1]:-unknown}"
+      child_start="${fields[19]:-unknown}"
+      comm="${stat_line#*(}"
+      comm="${comm%)*}"
+      comm="${comm//[^[:alnum:]_.-]/_}"
+      comm="${comm:0:64}"
+    fi
+    if [[ -r "$proc_root/$pid/environ" ]]; then
+      parent=undeclared parent_state=undeclared
+      while IFS= read -r -d '' entry; do
+        if [[ "$entry" == PAPERCUSP_DESKTOP_PARENT_PID=* ]]; then
+          parent="${entry#*=}"
+          parent_state=unknown
+          break
+        fi
+      done < "$proc_root/$pid/environ" 2>/dev/null || true
+      if [[ "$parent" =~ ^[1-9][0-9]*$ ]]; then
+        if [[ -d "$proc_root/$parent" ]]; then
+          parent_state=live
+          stat_line="$(cat "$proc_root/$parent/stat" 2>/dev/null || true)"
+          rest="${stat_line##*) }"
+          read -r -a fields <<< "$rest"
+          parent_start="${fields[19]:-unknown}"
+          if [[ "$child_start" =~ ^[0-9]+$ && "$parent_start" =~ ^[0-9]+$ ]] &&
+             ((parent_start > child_start)); then
+            parent_state=recycled
+          fi
+        else
+          parent_state=missing
+        fi
+      elif [[ "$parent" != undeclared ]]; then
+        parent=unknown
+      fi
+    fi
+    log "staging-generation-holder generation=$root holder_pid=$pid holder_ppid=$ppid holder_comm=$comm reference=$source declared_parent_pid=$parent declared_parent_state=$parent_state"
+    if [[ "$parent_state" == missing || "$parent_state" == recycled ]]; then
+      log "ALARM: staging generation pinned by sidecar without its declared parent generation=$root holder_pid=$pid declared_parent_pid=$parent declared_parent_state=$parent_state action=inspect-sidecar-parent-watch retained=true"
+    fi
+  done <<< "${STAGING_GENERATION_PROCESS_REFS:-}"
+  log "staging-generation-retention generation=$root holders=$total shown=$shown omitted=$((total - shown)) action=inspect-holders-before-reclaim retained=true"
+  return 0
 }
 
 prune_staging_generations() {
@@ -256,6 +324,7 @@ prune_staging_generations() {
     fi
     if staging_generation_in_use "$resolved_root"; then
       log "retaining prior staging generation still referenced by a process: $resolved_root"
+      staging_generation_holder_evidence "$resolved_root" || log "retention holder evidence unavailable: $resolved_root (generation retained)"
       continue
     fi
     candidate_home="$(dirname "$resolved_root")"
