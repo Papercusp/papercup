@@ -65,7 +65,7 @@ export interface AutobindLedgerRun {
   worktreeDirty: boolean | null;
 }
 
-/** A live (un-retracted) `test` binding on the target's clause revision and work-item. */
+/** A live (un-retracted) `test` binding on the target's logical clause revision. */
 export interface AutobindLiveBinding {
   id: number;
   evidenceRef: string;
@@ -137,8 +137,11 @@ export interface AutobindDeps {
 }
 
 export const runKey = (harnessSlug: string, file: string) => `${harnessSlug}\u0000${normalizeTestRef(file)}`;
-export const clauseKey = (t: Pick<AutobindTarget, 'harnessSlug' | 'planSlug' | 'specId' | 'specRevision' | 'workItemId'>) =>
-  [t.harnessSlug, t.planSlug, t.specId, t.specRevision, t.workItemId].join('\u0000');
+// Match adequacy's logical evidence identity: the work-item is the binding's
+// origin, not a separate proof. A same-receipt bind on another item can otherwise
+// append weaker metadata over richer manual proof, and repeat after retraction.
+export const clauseKey = (t: Pick<AutobindTarget, 'harnessSlug' | 'planSlug' | 'specId' | 'specRevision'>) =>
+  [t.harnessSlug, t.planSlug, t.specId, t.specRevision].join('\u0000');
 
 export interface AutobindRunResult {
   targets: number;
@@ -346,7 +349,6 @@ export function defaultAutobindDeps(git: GitRunner = defaultGitRunner): Autobind
           planSlug: row.plan_slug,
           specId: row.spec_id,
           specRevision: Number(row.spec_revision),
-          workItemId: row.work_item_id,
         });
         const list = byClause.get(key) ?? [];
         list.push({
