@@ -227,6 +227,13 @@ export interface TriggerDispatchDeps {
   ) => Promise<BlueprintOperationHandle>;
   batchSize?: number;
   staleAfterSeconds?: number;
+  /**
+   * Hold only binding actions that can launch model work. This is the
+   * selective spend pause configured on the dispatcher routine; it is
+   * deliberately separate from a routine row's `active:false` whole-
+   * dispatcher disarm.
+   */
+  spendPaused?: boolean;
 }
 
 type AgenticDispatchResult = NonNullable<ScheduledPlanFireStartedResult['dispatch']>;
@@ -406,6 +413,21 @@ function triggerArgs(event: CanonicalExternalEvent): TriggerRunArgs {
 function actionType(action: Record<string, unknown>): string {
   const type = typeof action.type === 'string' ? action.type.trim() : '';
   return type || 'launch-plan';
+}
+
+/**
+ * Binding-level spend classification. The dispatcher routine contains both
+ * model-spending and deterministic actions, so its routine-level `llm`
+ * classification cannot decide whether an individual receipt may run.
+ */
+const SPENDING_TRIGGER_ACTIONS: ReadonlySet<string> = new Set([
+  'launch-plan',
+  'start-goal',
+  'blueprint-operation',
+]);
+
+export function triggerActionSpends(action: Record<string, unknown>): boolean {
+  return SPENDING_TRIGGER_ACTIONS.has(actionType(action));
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -729,6 +751,7 @@ async function claimPendingTriggerRuns(
   sql: postgres.Sql,
   batchSize: number,
   staleAfterSeconds: number,
+  spendPaused: boolean,
 ): Promise<ClaimedTriggerRun[]> {
   return sql.begin(async (tx) => {
     // WI-10004920: a never-attempted run older than its binding's validity window.
@@ -736,6 +759,13 @@ async function claimPendingTriggerRuns(
     // disjoint, because two data-modifying CTEs touching the same row in one statement
     // is undefined in Postgres. A malformed stored value falls back to the default
     // rather than aborting the whole claim transaction on a bad cast.
+    // A spend pause holds spending receipts in the outbox, including old
+    // never-attempted rows. Otherwise the max-age sweep would turn a deliberate
+    // hold into a skipped receipt before the owner resumes spend. Deterministic
+    // actions retain the ordinary stale policy and continue draining.
+    const spendAllowed = spendPaused
+      ? tx`AND COALESCE(NULLIF(binding.action->>'type', ''), 'launch-plan') NOT IN ('launch-plan', 'start-goal', 'blueprint-operation')`
+      : tx``;
     const stale = tx`(
       tr.status = 'pending'
       AND tr.attempts = 0
@@ -743,7 +773,8 @@ async function claimPendingTriggerRuns(
         CASE WHEN binding.storm_policy->>'maxAgeSeconds' ~ '^[0-9]{1,9}$'
              THEN GREATEST(1, LEAST((binding.storm_policy->>'maxAgeSeconds')::int, ${MAX_RUN_AGE_CEILING_SECONDS}))
              ELSE ${DEFAULT_MAX_RUN_AGE_SECONDS}
-        END * interval '1 second'))`;
+        END * interval '1 second')
+      ${spendAllowed})`;
     return tx<ClaimedTriggerRun[]>`
     WITH expired_stale AS (
       UPDATE harness_shared.trigger_runs tr
@@ -786,6 +817,7 @@ async function claimPendingTriggerRuns(
          AND binding.armed = TRUE
        WHERE tr.next_attempt_at <= now()
          AND NOT ${stale}
+         ${spendAllowed}
          AND (
            (tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
             AND (
@@ -993,7 +1025,8 @@ export async function dispatchPendingTriggerRuns(
     deps.staleAfterSeconds ?? DEFAULT_STALE_AFTER_SECONDS,
     'stale_after_seconds',
   );
-  const rows = await claimPendingTriggerRuns(sql, batchSize, staleAfterSeconds);
+  const spendPaused = deps.spendPaused === true;
+  const rows = await claimPendingTriggerRuns(sql, batchSize, staleAfterSeconds, spendPaused);
   const runPlan = deps.runPlan ?? runScheduledPlanFire;
   const startGoal = deps.startGoal ?? startGoalById;
   const announce = deps.announceRunWork ?? announceRunWork;

@@ -55,7 +55,12 @@ describe('native P018 private operator CLI incident claim and resume', () => {
       'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
       'packages/operator-core/lib/edit-attribution.ts',
       'apps/operator/scripts/hooks/inject/core.mjs',
+      'apps/operator/scripts/hooks/inject/index.mjs',
+      'apps/operator/scripts/hooks/inject/ports.mjs',
+      'apps/operator/scripts/hooks/inject/adapters/codex.mjs',
       'apps/operator/scripts/hooks/inject/delivery-ledger.mjs',
+      'packages/operator-core/lib/desktop-install/papercusp-files.ts',
+      'packages/operator-core/lib/desktop-install/install-provenance.ts',
       'apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs',
       'scripts/check-required-field-strands.mjs',
       'scripts/check-behavioural-strands.mjs',
@@ -114,7 +119,11 @@ describe('native P018 private operator CLI incident claim and resume', () => {
       push: { duplicateSuppressed: true, attribution: { status: 'measured',
         recentEdits: [expect.objectContaining({ path: 'a-target.ts', symbols: [{ name: 'incidentTarget', line: 1 }] })] },
         handlerHash, observationProducer: 'maintained collector and delivery ledger with controlled before image',
-        scope: expect.stringContaining('private current-source endpoint replay') },
+        deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
+        installed: { nodeOptions: '', processes: expect.any(Number),
+          envelope: { hookSpecificOutput: { hookEventName: 'PostToolUse',
+            additionalContext: expect.stringContaining('Code intelligence (incident)') } } },
+        scope: expect.stringContaining('private current-source installed dispatcher replay') },
     });
     const afterHashes = sourceHashes();
     expect(afterHashes).toEqual(beforeHashes);

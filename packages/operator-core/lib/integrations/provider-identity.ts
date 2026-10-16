@@ -12,6 +12,7 @@
  * (`<errorPrefix>_identity_<status>`), never the secret or the response body.
  */
 import { providerEgressAllows, type ProviderDescriptor } from '@papercusp/plugin-sdk';
+import { normalizeOAuthUserAgent } from './oauth-client-registration';
 
 export interface ProviderAccountIdentity {
   providerAccountId: string;
@@ -33,7 +34,10 @@ export async function fetchProviderIdentity(
   secret: string,
   errorPrefix: string,
   fetchImpl: typeof fetch = fetch,
+  userAgent?: string | null,
 ): Promise<ProviderAccountIdentity> {
+  const identification = normalizeOAuthUserAgent(userAgent);
+  if (descriptor.oauth?.userAgentRequired && !identification) throw new Error(`${errorPrefix}_user_agent_required`);
   const identity = descriptor.oauth?.identity;
   if (!identity) throw new Error(`${errorPrefix}_identity_endpoint_missing`);
   const url = new URL(identity.url);
@@ -48,6 +52,7 @@ export async function fetchProviderIdentity(
     headers: {
       authorization: `Bearer ${secret}`,
       accept: 'application/json',
+      ...(identification ? { 'user-agent': identification } : {}),
       ...(post ? { 'content-type': 'application/json' } : {}),
     },
     ...(post && identity.body !== undefined ? { body: identity.body } : {}),

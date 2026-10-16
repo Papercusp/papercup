@@ -20,6 +20,7 @@ import {
 } from '@papercusp/plugin-sdk';
 import type { ProviderRegistry } from './provider-registry';
 import { serviceCredentialForHost, serviceCredentialResolver } from './service-credentials';
+import { normalizeOAuthUserAgent } from './oauth-client-registration';
 
 export type HostFetchErrorCode =
   | 'unknown-source'
@@ -27,6 +28,7 @@ export type HostFetchErrorCode =
   | 'egress-denied'
   | 'insecure-url'
   | 'caller-authorization-header'
+  | 'user-agent-required'
   | 'token-unavailable'
   | 'service-credential-unavailable'
   | 'credential-unavailable'
@@ -63,6 +65,8 @@ export interface HostFetchDeps {
   resolveSource(sourceId: string): Promise<HostFetchSource | null>;
   /** Returns a fresh access token for exactly this source's account; null when the source needs none. */
   accessToken(source: HostFetchSource): Promise<string | null>;
+  /** Public application identification from this source's host-held OAuth registration. */
+  userAgent?(source: HostFetchSource): Promise<string | null>;
   /**
    * Mints the host-held service credential registered under `ref` (D-018.1).
    * Defaults to the service-credentials registry.
@@ -101,7 +105,7 @@ function field(value: unknown, path: string): unknown {
 
 /** This response contains credentials, so it stays entirely inside the host. No cache or retry. */
 async function resourceAccessToken(
-  exchange: ProviderOAuthResourceToken, source: HostFetchSource, accountAuthorization: string | null, doFetch: typeof fetch,
+  exchange: ProviderOAuthResourceToken, source: HostFetchSource, accountAuthorization: string | null, doFetch: typeof fetch, userAgent: string | null,
 ): Promise<string> {
   const id = source.config?.[exchange.configKey];
   const unavailable = (reason: string) => new HostFetchError('resource-token-unavailable', `host.fetch: resource credential ${reason}`);
@@ -116,7 +120,7 @@ async function resourceAccessToken(
     }
     seen.add(url.href);
     let response: Response;
-    try { response = await doFetch(url, { headers: { authorization: accountAuthorization }, redirect: 'manual' }); }
+    try { response = await doFetch(url, { headers: { authorization: accountAuthorization, ...(userAgent ? { 'user-agent': userAgent } : {}) }, redirect: 'manual' }); }
     catch { throw Object.assign(unavailable('exchange network request failed'), { kind: 'transient' }); }
     if (!response.ok) {
       // Never echo the body, URL query or account/resource token into an error.
@@ -226,6 +230,11 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
       }
       if (!HOP_BY_HOP.has(lower)) headers.set(name, value);
     }
+    const userAgent = normalizeOAuthUserAgent(await deps.userAgent?.(resolved));
+    if (registered.descriptor.oauth?.userAgentRequired && !userAgent) {
+      throw new HostFetchError('user-agent-required', 'host.fetch: add your app’s User-Agent to its OAuth registration');
+    }
+    if (userAgent) headers.set('user-agent', userAgent);
     // On a call made for one person, a host a per-person field claims carries that person's own
     // value, so the vendor answers with exactly what they may see (D-026).
     const principal = deps.principalCredential
@@ -284,7 +293,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     const accountAuthorization = headers.get('authorization');
     if (accountAuthorization?.startsWith('Bearer ')) secretValues.push(accountAuthorization.slice(7));
     if (resourceToken?.hosts.includes(url.hostname)) {
-      const token = await resourceAccessToken(resourceToken, resolved, accountAuthorization, doFetch);
+      const token = await resourceAccessToken(resourceToken, resolved, accountAuthorization, doFetch, userAgent);
       secretValues.push(token);
       headers.set('authorization', `Bearer ${token}`);
     }

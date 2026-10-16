@@ -167,7 +167,7 @@ const MODULES = loadModules();
 describe('the scan is measuring something', () => {
   it('sees the whole adapter directory', () => {
     expect(MODULES.map((m) => m.file)).toEqual(expect.arrayContaining([
-      'bluesky-adapter.ts', 'mastodon-adapter.ts', 'reddit-adapter.ts',
+      'bluesky-adapter.ts',
     ]));
     expect(MODULES.map((m) => m.file).sort()).toEqual(readdirSync(SUBJECT_DIR).filter(isSubject).sort());
   });

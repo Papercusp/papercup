@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
   broadcastSevereEventResolved: vi.fn(async () => true) }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  readLatestConditionEnvelope: async () => null,
   computeConditionStates: () => [] }));
 import {
   detectBreaches,
@@ -11,7 +12,10 @@ import {
   formatGrowthEscalation,
   formatUndeclaredToast,
   formatUndeclaredDiskToast,
-  runStorageGrowthAlarmOnce,
+  runStorageGrowthAlarmOnce as runStorageGrowthAlarmWithDefaults,
+  runDiskHeadroomAlarmOnce,
+  detectDiskHeadroom,
+  detectDiskGrowthWarnings,
   categoryCeilingBytes,
   RETENTION_COVERED_ELSEWHERE,
   detectExemptSubsetGrowth,
@@ -33,8 +37,78 @@ import {
 } from './storage-growth-alarm';
 import type { DiskEntry, DiskRootChildScan } from './disk';
 import type { StorageUsageRow } from './usage';
+import type { CensusDeviceView } from './disk-consumer-census';
 
 const GIB = 1024 ** 3;
+
+// Other alarm legs must not read the live host's census during unit tests.
+function runStorageGrowthAlarmOnce(deps: Parameters<typeof runStorageGrowthAlarmWithDefaults>[0] = {}) {
+  return runStorageGrowthAlarmWithDefaults({ readDiskCensus: async () => [], ...deps });
+}
+
+describe('disk durable headroom (P-011 / R-9)', () => {
+  const census = (over: Partial<CensusDeviceView> = {}): CensusDeviceView => ({
+    device: '/', complete: true, stale: false, sizeBytes: 2e12, availBytes: 600e9,
+    sampledAt: '2026-10-16T12:00:00Z', baselineAt: '2026-10-15T12:00:00Z',
+    baselineSizeBytes: 2e12, baselineAvailBytes: 700e9,
+    consumers: [
+      { consumer: '/parent', kind: 'dir', depth: 1, bytes: 400e9, baselineBytes: 300e9, growth24hBytes: 100e9 },
+      { consumer: '/parent/child', kind: 'dir', depth: 2, bytes: 400e9, baselineBytes: 300e9, growth24hBytes: 100e9 },
+    ], ...over,
+  });
+
+  it('alarms at the decimal root/data floors and both real cold-tier mount names; equality passes', () => {
+    const bad = [census({ availBytes: 250e9 - 1 }), census({ device: '/mnt/data', availBytes: 1e12 - 1 }),
+      census({ device: '/mnt/cold-a', availBytes: 400e9 - 1 }), census({ device: '/mnt/cold-b', availBytes: 400e9 - 1 })];
+    expect(detectDiskHeadroom(bad).map(b => b.device)).toEqual(['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b']);
+    expect(detectDiskHeadroom([census({ availBytes: 250e9 }), census({ device: '/mnt/data', availBytes: 1e12 }),
+      census({ device: '/mnt/cold-a', availBytes: 400e9 })])).toEqual([]);
+  });
+
+  it('projects total free-space consumption and names top growers without summing nested paths', () => {
+    const warning = detectDiskGrowthWarnings([census()]);
+    expect(warning).toHaveLength(1);
+    expect(warning[0]).toMatchObject({ device: '/', daysToFull: 6, growthBytesPerDay: 100e9,
+      topGrowers: [{ consumer: '/parent', growthBytes: 100e9 }, { consumer: '/parent/child', growthBytes: 100e9 }] });
+    // No alarm at 7 days; counting the nested directories twice would produce 3.5d.
+    expect(detectDiskGrowthWarnings([census({ availBytes: 700e9, baselineAvailBytes: 800e9 })])).toEqual([]);
+    expect(detectDiskGrowthWarnings([census({ availBytes: 600e9, baselineAvailBytes: 600e9 })])).toEqual([]);
+    expect(detectDiskGrowthWarnings([census({ baselineAvailBytes: 500e9 })])).toEqual([]);
+  });
+
+  it('uses actual elapsed time and detects a full filesystem independently of consumer availability', () => {
+    expect(detectDiskGrowthWarnings([census({ baselineAt: '2026-10-15T18:00:00Z', consumers: [] })])[0]!.daysToFull).toBe(4.5);
+    expect(detectDiskGrowthWarnings([census({ availBytes: 0 })])[0]!.daysToFull).toBe(0);
+  });
+
+  it('keeps unmeasured, stale, resized and non-comparable histories unknown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const change of [{ missing: true }, { stale: true }, { complete: false }, { complete: undefined },
+      { baselineAvailBytes: null }, { baselineAt: null }, { baselineSizeBytes: 3e12 },
+      { baselineAt: '2026-10-16T13:00:00Z' }, { baselineAt: '2026-10-10T12:00:00Z' }]) {
+      expect(detectDiskGrowthWarnings([census(change as Partial<CensusDeviceView>)])).toEqual([]);
+    }
+    const emitToast = vi.fn(async () => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [census({ missing: true })], emitToast });
+    expect(result.diskProjectionUnknown).toEqual(['/']); expect(emitToast).not.toHaveBeenCalled();
+    expect((await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => { throw new Error('read failed'); }, emitToast })).diskProjectionUnknown)
+      .toEqual(['census read failed']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('disk headroom projection skipped (UNKNOWN'));
+  });
+
+  it('emits the new warning even when the independent category scan fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emitToast = vi.fn(async (_toast: { level: string; message: string; description: string }) => {});
+    const result = await runStorageGrowthAlarmOnce({ computeUsage: async () => { throw new Error('category unavailable'); },
+      listTableSizes: async () => [], listDiskRootChildren: emptyDiskScan, countExemptSubsets: async () => [],
+      readRetentionAges: healthyRetentionAges, readDiskCensus: async () => [census({ availBytes: 200e9, baselineAvailBytes: 300e9 })], emitToast });
+    expect(result.diskHeadroom).toHaveLength(1); expect(result.diskGrowth).toHaveLength(1);
+    expect(emitToast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Disk headroom alarm'),
+      description: expect.stringContaining('full in 2.0d') }));
+    expect(emitToast.mock.calls.some(([t]) => t.description.includes('/parent/child'))).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('usage scan skipped'));
+  });
+});
 
 /** Keep legacy alarm-leg tests independent from the host filesystem. */
 const emptyDiskScan = async (_registeredPaths: readonly string[]): Promise<DiskRootChildScan> => ({

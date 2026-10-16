@@ -9,6 +9,7 @@ import {
   fuseByPosition,
   bm25LegIfAvailable,
   mergeExactAndBm25,
+  measureWarmBm25QueryLatencies,
   resetBm25Availability,
   usesWebsearchOperators,
 } from './rank';
@@ -16,6 +17,26 @@ import type { AvailabilityEntry } from './rank';
 import type { Sql } from 'postgres';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+
+describe('measureWarmBm25QueryLatencies', () => {
+  it('warms every canary before collecting the measured samples', async () => {
+    const queries = ['search ranking', 'test failure', 'plan item'];
+    const calls: string[] = [];
+    let clock = 0;
+
+    const samples = await measureWarmBm25QueryLatencies(
+      queries,
+      async (query) => {
+        calls.push(query);
+        clock += 10;
+      },
+      () => clock,
+    );
+
+    expect(calls).toEqual([...queries, ...queries]);
+    expect(samples).toEqual([10, 10, 10]);
+  });
+});
 
 function catalogSql(indexes: string[] = []) {
   const queries: string[] = [];

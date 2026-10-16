@@ -110,6 +110,23 @@ describe('parseGuardOffenders', () => {
     ]);
   });
 
+  it('uses owner-name-tag diagnostic headers, not paths in the explanation or source excerpts', () => {
+    const bracketTag = ['[owner', ':Person …]'].join('');
+    const parentheticalTag = 'OWNER … (Person, …)';
+    const out = [
+      '✗ 2 named provenance tags in shipped source (bin/audit-release-bundle.py)',
+      '  docs/evidence/owner-name-tag-output.md:79  ' + bracketTag,
+      '      **Source turn:** ' + bracketTag + ' appears in this excerpt',
+      '  docs/evidence/other-owner-name-tag-output.md:1991  ' + parentheticalTag,
+      '      another excerpt mentioning docs/evidence/unrelated.md',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT, 'lint:no-owner-name-tags')).toEqual([
+      'docs/evidence/owner-name-tag-output.md',
+      'docs/evidence/other-owner-name-tag-output.md',
+    ]);
+  });
+
   it('uses box-identity diagnostic headers, not paths inside matched source excerpts', () => {
     const out = [
       '✗ 1 hardcoded home path(s) in tracked source.',

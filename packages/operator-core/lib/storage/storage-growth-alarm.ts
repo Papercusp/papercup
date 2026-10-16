@@ -59,7 +59,7 @@ import { computeStorageUsage, type StorageUsageRow } from './usage';
 import { bareTableName, CHUNK_STORES } from '../search/chunks/registry';
 import { FALLBACK_RETENTION_MS } from '../degradation/fallback-observations';
 import { SESSION_TURN_PART_RETENTION_DAYS, SESSION_TURN_RETENTION_DAYS } from '../search/session-retention';
-import { CENSUS_RETENTION_DAYS } from './disk-consumer-census';
+import { CENSUS_RETENTION_DAYS, type CensusDeviceView } from './disk-consumer-census';
 import { samplePgTableSizes, recordPgTableSizeSample } from './pg-table-growth';
 
 const GIB = 1024 ** 3;
@@ -120,6 +120,8 @@ export interface GrowthAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 
   escalate?: (t: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
   recentlyEscalated?: () => Promise<boolean>;
+  /** Existing six-hourly disk census, injected for deterministic tests. */
+  readDiskCensus?: () => Promise<readonly CensusDeviceView[]>;
 }
 
 /** One physical table's size, straight from the catalog — NOT category-derived. */
@@ -142,6 +144,95 @@ export interface UndeclaredDiskGrowth {
   path: string;
   bytes: number;
   floorBytes: number;
+}
+
+/** Target headroom floors for the physical volumes that carry Papercusp state. */
+export const DISK_HEADROOM_FLOORS = {
+  rootBytes: 250e9,
+  dataBytes: 1e12,
+  coldFreePct: 0.2,
+} as const;
+const DISK_GROWTH_HORIZON_DAYS = 7;
+
+export interface DiskHeadroomBreach {
+  device: string;
+  kind: 'root-floor' | 'data-floor' | 'cold-floor';
+  availableBytes: number;
+  floorBytes?: number;
+  freePct?: number;
+}
+
+export interface DiskGrowthWarning {
+  device: string;
+  growthBytesPerDay: number;
+  daysToFull: number;
+  topGrowers: Array<{ consumer: string; growthBytes: number }>;
+}
+
+/** Pure detector over the persisted census view. Missing/stale views remain UNKNOWN. */
+export function detectDiskHeadroom(devices: readonly CensusDeviceView[]): DiskHeadroomBreach[] {
+  const out: DiskHeadroomBreach[] = [];
+  for (const d of devices) {
+    // statfs capacity is measured even when du could not attribute every directory.
+    if (d.missing || d.stale || !Number.isFinite(d.availBytes) || d.availBytes! < 0) continue;
+    const availableBytes = d.availBytes!;
+    if (d.device === '/' && availableBytes < DISK_HEADROOM_FLOORS.rootBytes) {
+      out.push({ device: d.device, kind: 'root-floor', availableBytes, floorBytes: DISK_HEADROOM_FLOORS.rootBytes });
+    } else if (d.device === '/mnt/data' && availableBytes < DISK_HEADROOM_FLOORS.dataBytes) {
+      out.push({ device: d.device, kind: 'data-floor', availableBytes, floorBytes: DISK_HEADROOM_FLOORS.dataBytes });
+    } else if (/^\/mnt\/cold(?:[-/]|$)/.test(d.device) && Number.isFinite(d.sizeBytes) && d.sizeBytes! > 0) {
+      const freePct = availableBytes / d.sizeBytes!;
+      if (freePct < DISK_HEADROOM_FLOORS.coldFreePct) out.push({ device: d.device, kind: 'cold-floor', availableBytes, freePct });
+    }
+  }
+  return out;
+}
+
+/** Project from whole-filesystem available-byte deltas, never overlapping directory sums. */
+function diskGrowthRate(d: CensusDeviceView): number | null {
+  if (d.missing || d.stale || d.complete !== true || !Number.isFinite(d.availBytes) || d.availBytes! < 0 ||
+      !Number.isFinite(d.baselineAvailBytes) || d.baselineAvailBytes! < 0 ||
+      !Number.isFinite(d.sizeBytes) || d.sizeBytes! <= 0 || d.baselineSizeBytes !== d.sizeBytes) return null;
+  const elapsedDays = (Date.parse(d.sampledAt ?? '') - Date.parse(d.baselineAt ?? '')) / 86400_000;
+  if (!(elapsedDays >= 0.75 && elapsedDays <= 1.25)) return null;
+  return (d.baselineAvailBytes! - d.availBytes!) / elapsedDays;
+}
+
+export function detectDiskGrowthWarnings(
+  devices: readonly CensusDeviceView[],
+  horizonDays = DISK_GROWTH_HORIZON_DAYS,
+): DiskGrowthWarning[] {
+  const out: DiskGrowthWarning[] = [];
+  for (const d of devices) {
+    const growthBytesPerDay = diskGrowthRate(d);
+    if (growthBytesPerDay === null || !(growthBytesPerDay > 0)) continue;
+    const daysToFull = d.availBytes! / growthBytesPerDay;
+    if (daysToFull < horizonDays) out.push({ device: d.device, growthBytesPerDay, daysToFull,
+      topGrowers: (d.consumers ?? []).filter(c => Number.isFinite(c.growth24hBytes) && c.growth24hBytes! > 0)
+        .sort((a, b) => b.growth24hBytes! - a.growth24hBytes!).slice(0, 5)
+        .map(c => ({ consumer: c.consumer, growthBytes: c.growth24hBytes! })) });
+  }
+  return out.sort((a, b) => a.daysToFull - b.daysToFull || a.device.localeCompare(b.device));
+}
+
+export function formatDiskHeadroomToast(
+  breaches: readonly DiskHeadroomBreach[],
+  growth: readonly DiskGrowthWarning[],
+): { level: string; message: string; description: string } {
+  const floors = breaches.map((b) => b.kind === 'cold-floor'
+    ? `• ${b.device}: ${fmtSize(b.availableBytes)} free (${((b.freePct ?? 0) * 100).toFixed(1)}%, below 20% cold-tier floor)`
+    : `• ${b.device}: ${fmtSize(b.availableBytes)} free (below ${b.kind === 'root-floor' ? '250 GB root' : '1 TB /mnt/data'} floor)`);
+  const growers = growth.slice(0, 10).map((g) => `• ${g.device}: ${fmtSize(g.growthBytesPerDay)} per day; full in ${g.daysToFull.toFixed(1)}d` +
+    (g.topGrowers.length ? `\n  Top growers: ${g.topGrowers.map(c => `${c.consumer} (+${fmtSize(c.growthBytes)})`).join('; ')}` : '\n  Consumer growth attribution unavailable.'));
+  return {
+    level: 'warning',
+    message: `Disk headroom alarm — ${breaches.length} floor breach(es), ${growth.length} fast grower(s)`,
+    description: [
+      floors.length ? `Physical-volume floors:\n${floors.join('\n')}` : '',
+      growers.length ? `Consumers projected full in <7 days (from the existing 24h census):\n${growers.join('\n')}` : '',
+      'Census data is read-only and stale/missing runs remain UNKNOWN; reclaim only after checking the owning retention policy.',
+    ].filter(Boolean).join('\n\n'),
+  };
 }
 
 /**
@@ -787,6 +878,30 @@ async function defaultListTableSizes(): Promise<TableSizeRow[]> {
   return sample.tables.map(t => ({ table: t.name, totalBytes: t.totalBytes, rows: t.rows ?? 0 }));
 }
 
+async function defaultReadDiskCensus(): Promise<readonly CensusDeviceView[]> {
+  const { readDiskConsumerCensus, resolveCensusDevices } = await import('./disk-consumer-census');
+  const { sql } = getOrgPg();
+  const expectedDevices = (await resolveCensusDevices()).map(d => d.device);
+  const result = await readDiskConsumerCensus(sql as never, { orderBy: 'growth', limit: 20, expectedDevices });
+  return result.devices;
+}
+
+/** Cheap persisted-history leg, also used by the existing 30-minute disk alarm. */
+export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'readDiskCensus' | 'emitToast'> = {}): Promise<{
+  diskHeadroom: DiskHeadroomBreach[]; diskGrowth: DiskGrowthWarning[]; diskProjectionUnknown: string[];
+}> {
+  try {
+    const devices = await (deps.readDiskCensus ?? defaultReadDiskCensus)();
+    const diskHeadroom = detectDiskHeadroom(devices), diskGrowth = detectDiskGrowthWarnings(devices);
+    const diskProjectionUnknown = devices.filter(d => diskGrowthRate(d) === null).map(d => d.device);
+    if (diskHeadroom.length || diskGrowth.length) await (deps.emitToast ?? defaultEmitToast)(formatDiskHeadroomToast(diskHeadroom, diskGrowth));
+    return { diskHeadroom, diskGrowth, diskProjectionUnknown: devices.length ? diskProjectionUnknown : ['census unavailable'] };
+  } catch (err) {
+    console.warn(`[storage-growth-alarm] disk headroom projection skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`);
+    return { diskHeadroom: [], diskGrowth: [], diskProjectionUnknown: ['census read failed'] };
+  }
+}
+
 /** One read-only pass: size every storage category, toast on any breach. Never
  *  throws — observability is best-effort, mirroring the other periodic monitors. */
 export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Promise<{
@@ -799,6 +914,9 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
   exemptUnknown: string[];
   retentionLag: RetentionLag[];
   retentionUnknown: string[];
+  diskHeadroom: DiskHeadroomBreach[];
+  diskGrowth: DiskGrowthWarning[];
+  diskProjectionUnknown: string[];
 }> {
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
@@ -937,6 +1055,10 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
     );
   }
 
+  // ── Physical-volume floors and seven-day growth projection (P-011) ────────
+  // Reuse the existing persisted census; this pass never starts another du walk.
+  const disk = await runDiskHeadroomAlarmOnce({ readDiskCensus: deps.readDiskCensus, emitToast });
+
   return {
     checked: rows.length,
     breaches,
@@ -947,5 +1069,6 @@ export async function runStorageGrowthAlarmOnce(deps: GrowthAlarmDeps = {}): Pro
     exemptUnknown,
     retentionLag,
     retentionUnknown,
+    ...disk,
   };
 }

@@ -390,7 +390,7 @@ export type SocialReplyTarget =
        *
        * A future reader adding LinkedIn reply support needs more than this
        * field: LinkedIn's self-serve grant does not include the Comments API's
-       * `w_member_social_feed` scope at all. See linkedin-common.ts.
+       * `w_member_social_feed` scope at all. See the LinkedIn provider package README.
        */
       platform: 'linkedin';
       /**

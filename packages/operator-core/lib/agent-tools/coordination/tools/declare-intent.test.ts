@@ -681,7 +681,7 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
   const LONG_A = 'investigate the release gate promotion push failure on the frozen candidate lineage';
   const LONG_B = 'refactor the desktop webview bridge to stream tauri agent tool captures over ipc';
 
-  async function runWith(cheap: boolean, embedImpl: (t: string) => Promise<number[]>) {
+  async function runWith(cheap: boolean, embedImpl: (t: string) => Promise<number[]>, nextIntent = LONG_B) {
     vi.resetModules();
     const embed = vi.fn(embedImpl);
     vi.doMock('../../../memory/embed-sidecar-wiring', () => ({ isLocalEmbedAcquisitionCheap: () => cheap }));
@@ -700,10 +700,10 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     writePresence.mockResolvedValue(LONG_A);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const first = parse(await t.handler({ intent: LONG_B }, ctx));
+      const first = parse(await t.handler({ intent: nextIntent }, ctx));
       // Let the background warm-up settle before the second call.
       await new Promise((r) => setTimeout(r, 0));
-      const second = parse(await t.handler({ intent: LONG_B }, ctx));
+      const second = parse(await t.handler({ intent: nextIntent }, ctx));
       return { first, second, embed, detect, warnings: warnSpy.mock.calls.map((c) => String(c[0])) };
     } finally {
       warnSpy.mockRestore();
@@ -712,6 +712,12 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
       vi.doUnmock('../../../intent-pivot');
     }
   }
+
+  it.each(['portal plan', LONG_A])('does not warm a model for an ineligible intent: %s', async intent => {
+    const r = await runWith(true, async () => [1, 0], intent);
+    expect(r.first.ok).toBe(true); expect(r.second.ok).toBe(true);
+    expect(r.embed).not.toHaveBeenCalled(); expect(r.warnings).toEqual([]);
+  });
 
   it('NOT cheap (cold sidecar): every call is lexical, the embedder is never resolved, no deadline warning', async () => {
     const r = await runWith(false, async () => [1, 0]);
@@ -727,7 +733,7 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     const r = await runWith(true, async () => [1, 0]);
     expect(r.detect.mock.calls[0]?.[2]).toEqual({}); // first: lexical, no race
     expect(r.embed).toHaveBeenCalled(); // background warm-up ran
-    expect(r.detect.mock.calls[1]?.[2]).toHaveProperty('embed'); // second: embedding race offered
+    expect(r.detect.mock.calls.at(-1)?.[2]).toHaveProperty('embed'); // final comparison: embedding race offered
     expect(r.warnings.filter((w) => w.includes('intent-pivot-embed'))).toEqual([]);
   });
 

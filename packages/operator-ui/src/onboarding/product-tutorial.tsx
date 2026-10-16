@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialLesson } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
+import { PRODUCT_TUTORIAL_CHAPTERS, PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialChapter, type ProductTutorialLesson, type ProductTutorialVideoMedia } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-progress';
 import { captureBrowserTelemetry } from '../browser-telemetry';
 import { useOperatorWorkspaceLocation } from '../seam';
@@ -209,6 +209,54 @@ export function createProductTutorialAnalytics(capture: GuideCapture = captureBr
 
 const endpoint = '/api/hosted/browser/onboarding/tutorial-progress?scope=account&version=3';
 export interface ProductTutorialAccount { tenantId: string; userId: string; sessionId: string; workspaceId: string | null }
+/** A player has no progress endpoint or product mutator. Try it is a separate
+ * gesture routed through the guide's acknowledged pause/navigation operation. */
+export function ProductTutorialVideo({ media, lessonId, workspaceId, busy = false, onTry }: {
+  media: ProductTutorialVideoMedia; lessonId: string; workspaceId: string | null; busy?: boolean;
+  onTry(chapter: ProductTutorialChapter): void;
+}) {
+  const video = useRef<HTMLVideoElement>(null);
+  const [chapterId, setChapterId] = useState(() => PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.lessonId === lessonId)?.id ?? PRODUCT_TUTORIAL_CHAPTERS[0].id);
+  const [unavailable, setUnavailable] = useState(false);
+  const chapters = PRODUCT_TUTORIAL_CHAPTERS.flatMap(chapter => {
+    const timing = media.chapters.find(entry => entry.id === chapter.id);
+    return timing && Number.isFinite(timing.startSeconds) && timing.startSeconds >= 0 ? [{ ...chapter, ...timing }] : [];
+  }).sort((a, b) => a.startSeconds - b.startSeconds);
+  const current = chapters.find(chapter => chapter.id === chapterId) ?? chapters[0];
+  const seek = (id: string) => {
+    const chapter = chapters.find(entry => entry.id === id);
+    if (!chapter) return;
+    setChapterId(id);
+    if (video.current) video.current.currentTime = chapter.startSeconds;
+  };
+  const availability = current && current.id !== 'meet-papercup' && !workspaceId ? 'Choose an authorized workspace before trying this chapter.' : null;
+  return <section className="product-guide-video" aria-label="Watch and try the project tutorial">
+    <h2>Build a project with PaperCup</h2>
+    <p>Watch the example, then try each step in your own project. Watching records no completed product tasks.</p>
+    <video ref={video} controls preload="metadata" playsInline aria-label="PaperCup cloud project tutorial"
+      onLoadedMetadata={() => { if (current && video.current) video.current.currentTime = current.startSeconds; }}
+      onTimeUpdate={() => {
+        const time = video.current?.currentTime ?? 0;
+        const playing = [...chapters].reverse().find(chapter => chapter.startSeconds <= time);
+        if (playing) setChapterId(playing.id);
+      }} onError={() => setUnavailable(true)}>
+      <source src={media.src} type="video/mp4" />
+      <track kind="captions" src={media.captionsSrc} srcLang="en" label="English" default />
+      <p><a href={media.src}>Open the tutorial video</a></p>
+    </video>
+    {unavailable && <p role="status">The video could not be loaded. You can read the transcript and continue with the guide.</p>}
+    <p><a href={media.transcriptHref}>Read the full transcript</a>{' · '}<a href={media.src}>Open video</a></p>
+    <nav aria-label="Video chapters"><ol>{chapters.map(chapter => <li key={chapter.id}>
+      <button type="button" aria-current={current?.id === chapter.id ? 'true' : undefined} onClick={() => seek(chapter.id)}>{chapter.title}</button>
+    </li>)}</ol></nav>
+    {current && <section aria-label="Try this chapter">
+      <h3>{current.title}</h3><p>{current.transcript}</p>
+      {current.prompt && <details><summary>Use this prompt in your project</summary><p className="product-guide-prompt">{current.prompt}</p></details>}
+      {availability ? <p>{availability}</p> : <button type="button" disabled={busy} onClick={() => { video.current?.pause(); onTry(current); }}>Try it — {current.title}</button>}
+      <p>Your current workspace stays selected. Review the proposed work and costs before starting an agent.</p>
+    </section>}
+  </section>;
+}
 /** Explicit guide navigation may enter the existing shell before workspace
  * selection. Panel/search URLs otherwise return to the first-workspace card. */
 export function productTutorialDestination(route: string, workspaceId: string | null): string {
@@ -229,7 +277,7 @@ export function validProductTutorialRecord(value: unknown, account: ProductTutor
 
 /** Account entry wraps the host's existing first-run/shell choice. It never
  * mounts that workspace UI while an enrolled guide is active. */
-export function AccountProductTutorial({ account, sessionSignal = 'valid', children, openVoice }: { account: ProductTutorialAccount; sessionSignal?: string; children: ReactNode | ((guideControls: ReactNode) => ReactNode); openVoice?: ProductTutorialVoiceLauncher }) {
+export function AccountProductTutorial({ account, sessionSignal = 'valid', children, openVoice, videoMedia }: { account: ProductTutorialAccount; sessionSignal?: string; children: ReactNode | ((guideControls: ReactNode) => ReactNode); openVoice?: ProductTutorialVoiceLauncher; videoMedia?: ProductTutorialVideoMedia }) {
   const [record, setRecord] = useState<AccountTutorialProgressRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -354,6 +402,10 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
       pending.current = null;
       void save({ disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [] }, undefined, true);
     }}>{record ? 'Restart tutorial' : 'Start tutorial'}</button>
+    {videoMedia && <button type="button" disabled={busy} onClick={() => {
+      pending.current = null;
+      void save({ disposition: 'active', currentLessonId: record?.currentLessonId ?? 'welcome', reviewedLessonIds: record?.reviewedLessonIds ?? [] }, undefined, !record);
+    }}>Watch the project tutorial</button>}
     {currentLesson && <details onToggle={event => { if (event.currentTarget.open) analytics.current?.observer.help(currentLesson.id); }}><summary>Help with {currentLesson.title}</summary><p>{currentLesson.help}</p><a href="/docs">Read public Docs</a><ProductTutorialAssistance key={identity + currentLesson.id} account={account} lesson={currentLesson} onQuestion={() => analytics.current?.observer.help(currentLesson.id)} /></details>}
     {error && <p role="alert">{error}</p>}</aside>;
     return typeof children === 'function' ? children(guideControls) : <>{guideControls}{children}</>;
@@ -369,6 +421,8 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     <p>Product guide · Lesson {position + 1} of {PRODUCT_TUTORIAL_LESSONS.length}</p>
     <h1 id="product-guide-title" ref={heading} tabIndex={-1}>{lesson.title}</h1>
     <p>{lesson.introduction}</p>
+    {videoMedia && <ProductTutorialVideo key={`${identity}:${account.workspaceId ?? ''}`} media={videoMedia} lessonId={lesson.id} workspaceId={account.workspaceId} busy={busy}
+      onTry={chapter => void save({ ...record, currentLessonId: chapter.lessonId, disposition: 'paused' }, productTutorialDestination(chapter.destination, account.workspaceId))} />}
     <nav aria-label="Product guide lessons"><ol>{PRODUCT_TUTORIAL_LESSONS.map((entry, index) => <li key={entry.id}>
       <button disabled={busy} aria-current={entry.id === lesson.id ? 'step' : undefined} onClick={() => move(index)}>{entry.title}{record.reviewedLessonIds.includes(entry.id) ? ' · Reviewed' : ''}</button>
     </li>)}</ol></nav>
@@ -392,4 +446,4 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     </div>
   </main>;
 }
-const PRODUCT_GUIDE_CSS = `.product-guide{max-width:72rem;margin:0 auto;padding:clamp(1rem,4vw,3rem);overflow-wrap:anywhere;color:var(--foreground,inherit)}.product-guide p{max-width:75ch;line-height:1.6}.product-guide nav ol{display:flex;flex-wrap:wrap;gap:.5rem;padding:0;list-style:none}.product-guide nav button[aria-current]{outline:2px solid currentColor;outline-offset:2px}.product-guide ul{padding-left:1.4rem}.product-guide li{margin:.5rem 0}.product-guide-actions{display:flex;flex-wrap:wrap;gap:.75rem}.product-guide button,.product-guide summary,.product-guide a{min-height:2.75rem}.product-guide :focus-visible{outline:2px solid currentColor;outline-offset:3px}.product-guide h1:focus{outline:none}.product-guide-return{padding:.75rem}`;
+const PRODUCT_GUIDE_CSS = `.product-guide{max-width:72rem;margin:0 auto;padding:clamp(1rem,4vw,3rem);overflow-wrap:anywhere;color:var(--foreground,inherit)}.product-guide p{max-width:75ch;line-height:1.6}.product-guide nav ol{display:flex;flex-wrap:wrap;gap:.5rem;padding:0;list-style:none}.product-guide nav button[aria-current]{outline:2px solid currentColor;outline-offset:2px}.product-guide ul{padding-left:1.4rem}.product-guide li{margin:.5rem 0}.product-guide-actions{display:flex;flex-wrap:wrap;gap:.75rem}.product-guide button,.product-guide summary,.product-guide a{min-height:2.75rem}.product-guide :focus-visible{outline:2px solid currentColor;outline-offset:3px}.product-guide h1:focus{outline:none}.product-guide-return{padding:.75rem}.product-guide-video{border:1px solid currentColor;border-radius:1rem;padding:clamp(.75rem,2vw,1.5rem);margin:1.5rem 0}.product-guide-video video{display:block;width:100%;aspect-ratio:16/9;background:#15120f;border-radius:.5rem}.product-guide-prompt{white-space:pre-wrap;border-inline-start:3px solid currentColor;padding-inline-start:1rem}`;

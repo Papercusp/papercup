@@ -3,6 +3,30 @@ export const PRODUCT_TUTORIAL_VERSION = 3 as const;
 export type ProductTutorialPolicy = 'navigation' | 'workspace' | 'connected' | 'help' | 'voice';
 export interface ProductTutorialLesson { id: string; title: string; introduction: string; help: string }
 export interface ProductTutorialTarget { id: string; module: string; route: string; teaches: string; policy: ProductTutorialPolicy }
+/** Video chapters reuse the account guide's destinations and learning scope.
+ * Playback is advisory; only the domain lesson can verify completed work. */
+export interface ProductTutorialChapter {
+  id: string; title: string; lessonId: string; destination: string; prompt: string | null;
+}
+export const PRODUCT_TUTORIAL_CHAPTERS: readonly ProductTutorialChapter[] = [
+  { id: 'meet-papercup', title: 'Meet PaperCup', lessonId: 'welcome', destination: '/?app=workspaces', prompt: null },
+  { id: 'create-project', title: 'Create one useful project', lessonId: 'cloud-first-agent', destination: '/?app=home&chatPane=true', prompt: 'Create a Workshop Planner: a browser app for planning a small workshop. Let me add sessions with a title, speaker and duration, reorder them, see the total time, and save the plan in this browser. Start from a maintained Papercusp app template. Show me the plan and ask before you build.' },
+  { id: 'follow-work', title: 'Follow Plans, HUD and Work', lessonId: 'work', destination: '/?app=plans', prompt: null },
+  { id: 'inspect-preview', title: 'Inspect the first version', lessonId: 'work', destination: '/?app=work', prompt: null },
+  { id: 'grade-project', title: 'Create a rubric and grade', lessonId: 'operations', destination: '/?app=home&chatPane=true', prompt: 'Create a rubric for this Workshop Planner covering adding and reordering sessions, accurate total duration, saving and restoring the plan, keyboard access, and a readable layout. Enter grade mode, test the actual app, and show me the resulting scorecard with evidence.' },
+  { id: 'read-scorecard', title: 'Read the scorecard', lessonId: 'operations', destination: '/?app=evals', prompt: null },
+  { id: 'git-sync', title: 'Follow a change into Git', lessonId: 'operations', destination: '/?app=git', prompt: null },
+  { id: 'project-knowledge', title: 'Inspect project knowledge', lessonId: 'knowledge', destination: '/?app=docs', prompt: 'Show me the source-linked memories and procedural documentation relevant to this project. Explain what each source contributes and flag anything stale or uncertain.' },
+  { id: 'connect-psu', title: 'Connect psu to the same cloud', lessonId: 'cloud-first-agent', destination: '/?app=cloud', prompt: null },
+  { id: 'visible-fleet', title: 'Continue with a visible fleet', lessonId: 'work', destination: '/?app=desktops', prompt: 'Continue this same Workshop Planner on this same cloud instance. Plan a session notes field and a printable agenda as independent tasks. Use a visible desktop fleet so I can watch the agents work, preserve the existing project, and verify both changes.' },
+  { id: 'automatic-context', title: 'See context arrive during work', lessonId: 'knowledge', destination: '/?app=hud', prompt: null },
+  { id: 'verify-return', title: 'Verify and return later', lessonId: 'operations', destination: '/?app=evals', prompt: 'Grade the updated Workshop Planner against the same rubric. Compare the new scorecard with the previous one, show the evidence for the changes, and tell me what still needs work.' },
+];
+export interface ProductTutorialVideoMedia {
+  src: string; captionsSrc: string; transcriptHref: string;
+  /** Measured offsets from the delivered artifact, never script estimates. */
+  chapters: readonly { id: string; startSeconds: number; transcript: string }[];
+}
 export const PRODUCT_TUTORIAL_LESSONS: readonly ProductTutorialLesson[] = [
   {
     "id": "welcome",

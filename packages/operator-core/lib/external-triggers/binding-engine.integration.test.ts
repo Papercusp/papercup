@@ -1164,6 +1164,50 @@ describe('create-work-item direct Email dispatch (P-018)', () => {
     });
   });
 
+  it('holds model-spending bindings while deterministic bindings drain during a spend pause', async () => {
+    await installEmailDraftDatatype();
+    const directBindingId = await seedDirectBinding();
+    const direct = await seedDirectRun(directBindingId, {}, 'mixed-free');
+    const spendingRun = await seedTriggerRun({
+      args: {
+        trigger: {
+          key: 'ext:gmail:message.received',
+          source: 'gmail',
+          event: 'message.received',
+          sourceId,
+          externalId: 'message-mixed-spend',
+          occurredAt: '2026-08-28T14:00:00.000Z',
+          datatypeId: 'email-message',
+          dedupeKey: 'gmail:mixed-spend',
+          payload: { messageId: 'message-mixed-spend', subject: 'Plan work' },
+        },
+      },
+    });
+    const runPlan = vi.fn();
+    const createWorkItem = vi.fn(async (input: CreateWorkItemInput) =>
+      returnedWorkItem(input, 'WI-mixed-free'),
+    );
+
+    await expect(dispatchPendingTriggerRuns(sql, { spendPaused: true, runPlan, createWorkItem })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(runPlan).not.toHaveBeenCalled();
+
+    const receipts = await sql<Array<{ id: string; status: string; attempts: number }>>`
+      SELECT id, status, attempts
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS}
+         AND id IN (${direct.triggerRunId}, ${spendingRun})
+       ORDER BY id`;
+    const byId = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+    expect(byId.get(direct.triggerRunId)).toEqual({ id: direct.triggerRunId, status: 'succeeded', attempts: 1 });
+    expect(byId.get(spendingRun)).toEqual({ id: spendingRun, status: 'pending', attempts: 0 });
+  });
+
   it('adopts the existing triggerRef on retry without minting a duplicate item', async () => {
     await installEmailDraftDatatype();
     const directBindingId = await seedDirectBinding();

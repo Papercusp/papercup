@@ -33,7 +33,7 @@ import { hostname } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
-import { watchedPaths } from './disk-space-alarm';
+import { alarmWatchedPaths } from './disk-space-alarm';
 import {
   attributeOwnFiles,
   CENSUS_COVERAGE_GAP_BYTES,
@@ -102,7 +102,7 @@ async function walkUpMountPoint(path: string, dev: number): Promise<string> {
 }
 
 /** The watched devices (one per st_dev) with their whole-filesystem mount root and statfs numbers. */
-export async function resolveCensusDevices(paths: readonly string[] = watchedPaths()): Promise<CensusDevice[]> {
+export async function resolveCensusDevices(paths: readonly string[] = alarmWatchedPaths()): Promise<CensusDevice[]> {
   const mounts = parseMountInfo(await readMountInfo());
   const out: CensusDevice[] = [];
   const seen = new Set<string>();
@@ -1037,6 +1037,9 @@ export interface CensusDeviceView {
   coverageGap?: boolean;
   /** The run the 24h growth is measured against (18–30h before the latest); null when none. */
   baselineAt?: string | null;
+  /** Same visible filesystem, from the comparable baseline run (not a sum of directories). */
+  baselineAvailBytes?: number | null;
+  baselineSizeBytes?: number | null;
   consumers?: CensusGrowthRow[];
   consumersTotal?: number;
   truncatedByLimit?: boolean;
@@ -1095,8 +1098,8 @@ export async function readDiskConsumerCensus(
   for (const run of latest) {
     const finishedAt = new Date(run.finished_at);
     const target = new Date(finishedAt.getTime() - 24 * 3600_000);
-    const candidates = await sql<{ run_id: string; finished_at: Date; note: string | null }>`
-      SELECT run_id, finished_at, note FROM harness_shared.disk_census_runs
+    const candidates = await sql<{ run_id: string; finished_at: Date; note: string | null; avail_bytes: string | number; size_bytes: string | number }>`
+      SELECT run_id, finished_at, note, avail_bytes, size_bytes FROM harness_shared.disk_census_runs
        WHERE host = ${host} AND device = ${run.device} AND complete
          AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
        ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz)))
@@ -1124,6 +1127,8 @@ export async function readDiskConsumerCensus(
       unattributedBytes: unattributed,
       coverageGap: unattributed >= CENSUS_COVERAGE_GAP_BYTES,
       baselineAt: base ? new Date(base.finished_at).toISOString() : null,
+      baselineAvailBytes: base ? Number(base.avail_bytes) : null,
+      baselineSizeBytes: base ? Number(base.size_bytes) : null,
       consumers: sorted.slice(0, limit),
       consumersTotal: sorted.length,
       truncatedByLimit: sorted.length > limit,

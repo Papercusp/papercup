@@ -111,6 +111,24 @@ describe('provider registry', () => {
 });
 
 describe('host.fetch', () => {
+  it('uses host-held source identification over caller headers and refuses missing required identification before credentials or network', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor(); d.oauth!.userAgentRequired = true;
+    await registry.register({ descriptor: d, adapter: adapter(d), pluginName: 'test' });
+    const accessToken = vi.fn(async () => 'host-token');
+    const fetchImpl = vi.fn(async (_url: URL | RequestInfo, _init?: RequestInit) => Response.json({}));
+    const host = createHostFetch(d.id, { registry, accessToken, fetchImpl,
+      resolveSource: async (sourceId) => ({ sourceId, providerId: d.id }),
+      userAgent: async (source) => source.sourceId === 'missing' ? null : `desktop:${source.sourceId}:1.0`,
+    });
+    await expect(host({ source: 'missing', request: { url: 'https://graph.microsoft.com/me', headers: { 'user-agent': 'forged' } } }))
+      .rejects.toMatchObject({ code: 'user-agent-required' });
+    expect(accessToken).not.toHaveBeenCalled(); expect(fetchImpl).not.toHaveBeenCalled();
+    for (const source of ['first-app', 'second-app']) {
+      await host({ source, request: { url: 'https://graph.microsoft.com/me', headers: { 'User-Agent': 'forged' } } });
+      expect(new Headers(fetchImpl.mock.calls.at(-1)![1]?.headers).get('user-agent')).toBe(`desktop:${source}:1.0`);
+    }
+  });
   it('binds instance requests to persisted source config before reading credentials or fetching', async () => {
     const registry = createProviderRegistry();
     const d = descriptor({ egressHosts: [], oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'] } });

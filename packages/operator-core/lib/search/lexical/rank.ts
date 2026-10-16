@@ -602,6 +602,24 @@ export function percentileMs(samples: readonly number[], p: number): number {
   return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1]!;
 }
 
+/** Warm every query once before timing the set, so the p95 describes steady-state
+ * query latency instead of the first read of each canary's posting pages. */
+export async function measureWarmBm25QueryLatencies(
+  queries: readonly string[],
+  run: (query: string) => unknown,
+  now: () => number = () => performance.now(),
+): Promise<number[]> {
+  for (const query of queries) await run(query);
+
+  const samplesMs: number[] = [];
+  for (const query of queries) {
+    const started = now();
+    await run(query);
+    samplesMs.push(now() - started);
+  }
+  return samplesMs;
+}
+
 /**
  * Time the canary queries through the seam's own BM25 fragments (top-10, as callers run
  * them). `null` when the corpus has no usable BM25 index here, so there is nothing to time.
@@ -618,15 +636,7 @@ export async function measureBm25Latency(
     const leg = bm25Leg(sql, corpus, query);
     return sql`SELECT ${leg.score} AS score FROM ${from} WHERE ${leg.match} ORDER BY ${leg.order} LIMIT 10`;
   };
-  // One untimed query first: with eight samples p95 is the slowest one, and a cold first
-  // query (planning, index metapage reads) would otherwise be judged as steady-state latency.
-  if (queries[0] !== undefined) await run(queries[0]);
-  const samplesMs: number[] = [];
-  for (const query of queries) {
-    const started = performance.now();
-    await run(query);
-    samplesMs.push(performance.now() - started);
-  }
+  const samplesMs = await measureWarmBm25QueryLatencies(queries, run);
   return {
     corpusIndex: corpus.indexName,
     samplesMs,

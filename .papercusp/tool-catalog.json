@@ -7182,7 +7182,7 @@
           "POST"
         ]
       },
-      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false with a typed reason when the session is headless, unrecorded, missing its window, or the desktop refuses activation.",
+      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux supports workspace current (bring here, default) or window (switch there); Windows brings here; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
       "capabilities": [
         "coord:mark-terminal"
       ],
@@ -29011,7 +29011,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.",
+      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.",
       "capabilities": [
         "reports:read"
       ],
@@ -29159,7 +29159,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
+      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` (or pass the receipt value as `report_id`) and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
       "capabilities": [
         "reports:write"
       ],
@@ -29798,7 +29798,7 @@
           "POST"
         ]
       },
-      "description": "Poll a rubrics:amend receipt: running, committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.",
+      "description": "Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.",
       "capabilities": [
         "coord:read"
       ],
@@ -35167,7 +35167,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.",
-        "notWhen": "`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person's job.",
+        "notWhen": "`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person's job.",
         "chaining": "work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772)."
       }
     },
@@ -35403,7 +35403,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Pass `completion`, terminal `state`, required `assumptions`. For plan-linked terminal closes, declare mapped keys from `completionContract.requirements[key=spec-conformance-closure].details.mappedRequirements` in `completion.discharges` or `completion.contributesTo`; `validateOnly:true` reports the mapping, supplied declarations, and any other unmet completion requirements together. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:\"full\"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `[\"none\"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.",
+        "when": "Pass `completion`, terminal `state`, required `assumptions`. Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (auto-hoisted); read `results[].workItem.payload.out` from `work_items:get` (`payloadTier:\"full\"`). Universal claims require `completion.verification.coverage`: partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `[\"none\"]` means zero). Keep deferred/coordNotes at completion level, not inside verification. Put `testsRun`, `testResult`, `verifiedHow`, and `filesChanged` at the root of `completion`; the single-item call also accepts those fields at the argument root as legacy aliases. Keep `verification.tests`, `verification.typecheck`, `verification.diff` out of `completion.verification`. Removals: `filesDeleted`; dupes: `completion.duplicateOf`.",
         "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize; never non-work/human-audience rows.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }
