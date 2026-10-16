@@ -4,6 +4,16 @@ import { createHiringOffer, looksLikeEmployment, offerPreview, runHiringAction, 
 const pay = { amount: '5000', currency: 'USD', cadence: 'monthly' as const };
 const signals = { engagementType: 'contractor' as const, pay, managerPersonId: 'PER-manager', exclusive: true };
 describe('SPEC-P-005-B — required pay fields before side effects', () => {
+  it('calibrates the storage sentinel with a complete valid-pay control', async () => {
+    const storageReached = new Error('calibration: valid pay reached storage');
+    const query = vi.fn(() => { throw storageReached; });
+    await expect(createHiringOffer({ workspaceId: 'ws-hiring-unit', daoSlug: 'hiring-dao',
+      roleId: 'role', personId: 'PER-candidate', actorPersonId: 'PER-author',
+      engagementType: 'contractor', jurisdiction: 'US', pay }, { sql: query as unknown as Sql }))
+      .rejects.toBe(storageReached);
+    expect(query).toHaveBeenCalled();
+  });
+
   it.each(['amount', 'currency', 'cadence'] as const)('%s-missing is rejected before identity or database access', async field => {
     const missing: Record<string, unknown> = { ...pay };
     delete missing[field];
