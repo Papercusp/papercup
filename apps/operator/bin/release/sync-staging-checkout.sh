@@ -1235,13 +1235,23 @@ fi
 # above), so inspect the result rather than treating process status as the verdict. A verified coalesce is a
 # success: another recent restart already cycled the same service and the
 # cooldown prevents a redundant outage.
+restart_failure_detail="$restart_result $restart_diagnostics"
+if [ "${#restart_failure_detail}" -gt 3000 ]; then
+  restart_failure_detail="${restart_failure_detail: -3000}"
+fi
 if [ "$restart_verified" -eq 1 ]; then
   log "coordinated dev:restart independently verified: MainPID $observed_main_pid serves exact source $observed_health_sha"
 elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result $restart_diagnostics"; then
   log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:250} ${restart_diagnostics:0:250}"
   exit 1
+elif [ "$restart_tool_status" -ne 0 ] && printf '%s' "$restart_result $restart_diagnostics" | grep -Eq '"reason"[[:space:]]*:[[:space:]]*"resource_drain_timeout"'; then
+  # MCP error results are printed to stderr by ptool (exit 1), including a
+  # delivered drain refusal. No restart was scheduled; waiting for health here
+  # hides the blocking lease and can never make the target source appear.
+  log "FATAL: coordinated dev:restart resource drain was refused; no restart scheduled: $restart_failure_detail"
+  exit 1
 elif [ "$restart_tool_status" -ne 0 ]; then
-  log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding"
+  log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding; diagnostics: $restart_failure_detail"
 elif printf '%s' "$restart_result" | restart_result_is_pending; then
   restart_pending=1
   log "coordinated dev:restart is scheduled but not yet observed; waiting for a new MainPID and exact target health"

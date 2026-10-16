@@ -1571,6 +1571,30 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     expect(verify('101', 'abcdef1234', JSON.stringify({ ok: false, reason: 'restart_withheld' })).status).toBe(1);
   });
 
+  it('reports a delivered stderr drain refusal without waiting for target health', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const tail = script.slice(script.indexOf('# ptool exits successfully for a business-level refusal'));
+    const result = runFn(
+      ['restart_result_is_accepted', 'restart_result_is_pending', 'restart_result_is_pre_dispatch_refusal',
+        'restart_refusal_is_transient_git_sync', 'health_sha_matches_target', 'staging_restart_is_observed'],
+      [
+        'log() { printf "%s\\n" "$*"; }',
+        'staging_health_source_sha() { echo UNEXPECTED_HEALTH_PROBE; }',
+        tail,
+      ].join('\n'),
+      { env: { restart_verified: '0', restart_tool_status: '1', restart_pending: '0', restart_result: '',
+        restart_diagnostics: 'ptool launcher\n✗ tool returned an error:\n' + JSON.stringify({
+          ok: false, reason: 'resource_drain_timeout', resource: 'staging-server',
+          holders: [{ owner: 'fixture-holder', mode: 'shared' }],
+        }, null, 2) } },
+    );
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stdout).toContain('resource drain was refused; no restart scheduled');
+    expect(result.stdout).toContain('fixture-holder');
+    expect(result.stdout).not.toContain('UNEXPECTED_HEALTH_PROBE');
+    expect(result.stdout).not.toContain('no terminal receipt');
+  });
+
   const accepted = (result: unknown) => runFn(
     ['restart_result_is_accepted'],
     'restart_result_is_accepted',
