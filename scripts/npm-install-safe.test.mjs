@@ -1119,6 +1119,44 @@ test("verifyDepsExtracted passes the selected npm environment to bounded repairs
   }
 });
 
+for (const inlinePrefix of [false, true]) {
+  for (const installed of [false, true]) {
+    test(`explicit-prefix verification keeps the full-root audit without a root repair (${inlinePrefix}, ${installed})`, async () => {
+      const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-prefix-"));
+      const prefix = join(repoRoot, "kits/template");
+      const put = (path, value) => {
+        const target = join(repoRoot, path);
+        mkdirSync(join(target, ".."), { recursive: true });
+        writeFileSync(target, JSON.stringify(value));
+      };
+      put("package.json", { name: "fixture", workspaces: [] });
+      put("kits/template/package.json", { name: "template", devDependencies: { types: "22.20.5" } });
+      put("package-lock.json", {
+        lockfileVersion: 3,
+        packages: { "": {}, "kits/template/node_modules/types": { version: "22.20.5" } },
+      });
+      mkdirSync(join(repoRoot, "node_modules"));
+      if (installed) put("kits/template/node_modules/types/package.json", { name: "types", version: "22.20.5" });
+      const before = readFileSync(join(repoRoot, "package-lock.json"), "utf8");
+      const calls = [];
+      try {
+        const result = await verifyDepsExtracted({
+          repoRoot,
+          npmArgs: ["install", ...(inlinePrefix ? [`--prefix=${prefix}`] : ["--prefix", prefix])],
+          probeSpecifiers: [],
+          deps: { sleep: async () => {} },
+          runNpm: (args) => { calls.push(args); return 0; },
+        });
+        assert.equal(result, installed ? 0 : 1);
+        assert.deepEqual(calls, [], "a prefixed install must not fall back to root npm install");
+        assert.equal(readFileSync(join(repoRoot, "package-lock.json"), "utf8"), before);
+      } finally {
+        rmSync(repoRoot, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
 test("publishDependencyGeneration invokes the shared atomic publisher after install verification", async () => {
   const repoRoot = mkdtempSync(
     join(tmpdir(), "install-safe-generation-publish-"),
