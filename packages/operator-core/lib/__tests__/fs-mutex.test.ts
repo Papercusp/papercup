@@ -1,49 +1,7 @@
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, opendir, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir, hostname } from 'node:os';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const osState = vi.hoisted(() => ({ userHome: null as string | null }));
-const fileWrites = vi.hoisted(() => ({
-  beforeWrite: null as null | ((path: string) => Promise<void>),
-  beforeSymlink: null as null | ((path: string) => Promise<void>),
-  beforeReadFile: null as null | ((path: string) => void),
-  beforeOpendir: null as null | ((path: string) => void),
-}));
-
-vi.mock('node:os', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:os')>();
-  return {
-    ...actual,
-    userInfo: (...args: Parameters<typeof actual.userInfo>) => {
-      const info = actual.userInfo(...args);
-      return osState.userHome === null ? info : { ...info, homedir: osState.userHome };
-    },
-  };
-});
-
-vi.mock('node:fs/promises', async importOriginal => {
-  const actual = await importOriginal<typeof import('node:fs/promises')>();
-  return {
-    ...actual,
-    readFile: async (...args: Parameters<typeof actual.readFile>) => {
-      fileWrites.beforeReadFile?.(String(args[0]));
-      return actual.readFile(...args);
-    },
-    opendir: async (...args: Parameters<typeof actual.opendir>) => {
-      fileWrites.beforeOpendir?.(String(args[0]));
-      return actual.opendir(...args);
-    },
-    symlink: async (...args: Parameters<typeof actual.symlink>) => {
-      await fileWrites.beforeSymlink?.(String(args[1]));
-      return actual.symlink(...args);
-    },
-    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
-      await fileWrites.beforeWrite?.(String(args[0]));
-      return actual.writeFile(...args);
-    },
-  };
-});
+import { afterEach, describe, expect, it } from 'vitest';
 // The production entrypoint deliberately stays executable by plain Node (no build step —
 // consumed directly by `node scripts/npm-install-safe.mjs`). Mirrors the suppression-comment
 // convention test-file-router.test.ts already uses for the sibling .mjs CLI import.
@@ -59,11 +17,6 @@ import {
 const originalDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
 
 afterEach(async () => {
-  fileWrites.beforeWrite = null;
-  fileWrites.beforeSymlink = null;
-  fileWrites.beforeReadFile = null;
-  fileWrites.beforeOpendir = null;
-  osState.userHome = null;
   if (originalDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalDir;
   delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
@@ -105,10 +58,10 @@ describe('resolveFsMutexLockRoot', () => {
     await symlink(accountRoot, legacyRoot);
     process.env.HOME = privateHome;
     delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
-    osState.userHome = accountHome;
-
     try {
-      await expect(ensureFsMutexLockRoot(undefined, { platform: 'linux', legacyRoot, phaseTimingsMs }))
+      await expect(ensureFsMutexLockRoot(undefined, {
+        platform: 'linux', homeDir: accountHome, legacyRoot, phaseTimingsMs,
+      }))
         .resolves.toBe(accountRoot);
       expect(phaseTimingsMs).toEqual(expect.objectContaining({
         'lock-root.legacy-lstat': expect.any(Number),
@@ -116,7 +69,6 @@ describe('resolveFsMutexLockRoot', () => {
         'lock-root.mkdir': expect.any(Number),
       }));
     } finally {
-      osState.userHome = null;
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
       await rm(temp, { recursive: true, force: true });
@@ -161,9 +113,6 @@ describe('censusLegacyFsMutexRoot read-only inspection', () => {
     const old = new Date(Date.now() - 120_000);
     await utimes(queued, old, old);
     const entries = (await readdir(root)).sort();
-    fileWrites.beforeWrite = async () => { throw new Error('census must not write'); };
-    fileWrites.beforeSymlink = async () => { throw new Error('census must not alias'); };
-
     try {
       expect(await censusLegacyFsMutexRoot(root, 60_000)).toMatchObject({
         complete: true,
@@ -197,11 +146,17 @@ describe('censusLegacyFsMutexRoot read-only inspection', () => {
   it('reports an unreadable root without touching its evidence', async () => {
     const root = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-census-unreadable-'));
     await writeFile(join(root, 'evidence'), 'keep');
-    fileWrites.beforeOpendir = path => {
-      if (path === root) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    // Vitest externalizes Node builtins through its native import path; inject
+    // the operation so this failure remains deterministic across that boundary.
+    const io = {
+      opendir: async (...args: Parameters<typeof opendir>) => {
+        const path = String(args[0]);
+        if (path === root) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+        return opendir(...args);
+      },
     };
     try {
-      expect(await censusLegacyFsMutexRoot(root)).toMatchObject({ complete: false, otherUnknown: 1 });
+      expect(await censusLegacyFsMutexRoot(root, undefined, io)).toMatchObject({ complete: false, otherUnknown: 1 });
       expect(await readFile(join(root, 'evidence'), 'utf8')).toBe('keep');
       expect((await lstat(root)).isDirectory()).toBe(true);
     } finally {
@@ -286,12 +241,16 @@ describe('ensureFsMutexLockRoot migration', () => {
     const homeDir = join(temp, 'home');
     const legacyRoot = join(temp, 'legacy-locks');
     await mkdir(legacyRoot, { recursive: true });
-    fileWrites.beforeSymlink = async path => {
-      if (path === legacyRoot) await mkdir(legacyRoot);
+    const io = {
+      symlink: async (...args: Parameters<typeof symlink>) => {
+        const path = String(args[1]);
+        if (path === legacyRoot) await mkdir(legacyRoot);
+        return symlink(...args);
+      },
     };
 
     try {
-      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot, io }))
         .resolves.toBe(legacyRoot);
       await expect(readdir(legacyRoot)).resolves.toEqual([]);
     } finally {
@@ -307,18 +266,21 @@ describe('ensureFsMutexLockRoot migration', () => {
     const bytes = '{"pid":42,"host":"unverified-host"}\n';
     await mkdir(join(legacyRoot, 'install.lock'), { recursive: true });
     await writeFile(marker, bytes);
-    fileWrites.beforeOpendir = path => {
-      if (path === legacyRoot) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const io = {
+      opendir: async (...args: Parameters<typeof opendir>) => {
+        const path = String(args[0]);
+        if (path === legacyRoot) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        return opendir(...args);
+      },
     };
     try {
-      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot, io }))
         .rejects.toMatchObject({ code: 'ELEGACYFSLOCKBUSY', census: { complete: false } });
       expect((await lstat(legacyRoot)).isDirectory()).toBe(true);
       expect(await readFile(marker, 'utf8')).toBe(bytes);
       await expect(lstat(join(homeDir, '.papercusp', 'fs-mutex-locks')))
         .rejects.toHaveProperty('code', 'ENOENT');
     } finally {
-      fileWrites.beforeOpendir = null;
       await rm(temp, { recursive: true, force: true });
     }
   });
@@ -373,16 +335,19 @@ describe('ensureFsMutexLockRoot migration', () => {
     await mkdir(staleLock, { recursive: true });
     await writeFile(join(staleLock, 'owner.json'), bytes);
     await utimes(staleLock, new Date(0), new Date(0));
-    fileWrites.beforeSymlink = async path => {
-      if (path === legacyRoot) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    const io = {
+      symlink: async (...args: Parameters<typeof symlink>) => {
+        const path = String(args[1]);
+        if (path === legacyRoot) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+        return symlink(...args);
+      },
     };
     try {
-      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot }))
+      await expect(ensureFsMutexLockRoot({}, { platform: 'linux', homeDir, legacyRoot, io }))
         .rejects.toHaveProperty('code', 'ELEGACYFSALIASFAILED');
       expect((await lstat(legacyRoot)).isDirectory()).toBe(true);
       expect(await readFile(join(staleLock, 'owner.json'), 'utf8')).toBe(bytes);
     } finally {
-      fileWrites.beforeSymlink = null;
       await rm(temp, { recursive: true, force: true });
     }
   });
@@ -539,9 +504,10 @@ describe('withFsMutex', () => {
       await holder;
       expect(await waiter).toBe('done');
       expect(admission.waitedMs).toBeGreaterThan(0);
+      // The canonical root can already be cached by the holder. In that case
+      // ensure is measured, but no root mkdir is needed on this waiter.
       expect(admission.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
         'lock-root.ensure': expect.any(Number),
-        'lock-root.mkdir': expect.any(Number),
         'queue-root-mkdir': expect.any(Number),
         'ticket-mkdir': expect.any(Number),
         'ticket-owner-write': expect.any(Number),
@@ -579,16 +545,8 @@ describe('withFsMutex', () => {
     }));
     let observeAttempt!: () => void;
     const attempted = new Promise<void>(resolve => { observeAttempt = resolve; });
-    let finishPublication!: () => void;
-    const publicationAllowed = new Promise<void>(resolve => { finishPublication = resolve; });
-    // Pause any tentative publication so the assertion observes the race directly,
-    // without relying on how many polling readers happen to arrive at once.
-    fileWrites.beforeWrite = async path => {
-      if (path.startsWith(readersDir)) {
-        observeAttempt();
-        await publicationAllowed;
-      }
-    };
+    // This reservation exists before the reader's preflight, so it must not
+    // publish a marker that the writer would then drain.
     let readerEntered = false;
     const reader = withFsMutexRead('npm-install', async () => { readerEntered = true; }, {
       timeoutMs: 2_000, retryMs: 5, onWaiting: observeAttempt,
@@ -599,8 +557,6 @@ describe('withFsMutex', () => {
       expect(await readdir(readersDir)).toEqual([]);
       expect(peekFsMutexSync('npm-install').owner).toMatchObject({ phase: 'draining-readers' });
     } finally {
-      fileWrites.beforeWrite = null;
-      finishPublication();
       await rm(writerDir, { recursive: true, force: true });
       await reader;
       await rm(dir, { recursive: true, force: true });
@@ -652,14 +608,17 @@ describe('withFsMutex', () => {
     const writerDir = join(dir, 'npm-install.lock');
     const readersDir = join(dir, 'npm-install.readers');
     let reserved = false;
-    fileWrites.beforeWrite = async path => {
-      if (path.startsWith(readersDir) && !reserved) {
+    const io = {
+      writeFile: async (...args: Parameters<typeof writeFile>) => {
+        if (String(args[0]).startsWith(readersDir) && !reserved) {
         reserved = true;
         await mkdir(writerDir);
         await writeFile(join(writerDir, 'owner.json'), JSON.stringify({
           pid: process.pid, host: hostname(), phase: 'draining-readers',
         }));
-      }
+        }
+        return writeFile(...args);
+      },
     };
     let observeAttempt!: () => void;
     const attempted = new Promise<void>(resolve => { observeAttempt = resolve; });
@@ -667,7 +626,7 @@ describe('withFsMutex', () => {
     const reader = withFsMutexRead('npm-install', async () => {
       readerEntered = true;
       observeAttempt();
-    }, { timeoutMs: 2_000, retryMs: 5, onWaiting: observeAttempt });
+    }, { timeoutMs: 2_000, retryMs: 5, onWaiting: observeAttempt, io });
     try {
       await attempted;
       expect(reserved).toBe(true);
@@ -675,7 +634,6 @@ describe('withFsMutex', () => {
       expect(await readdir(readersDir)).toEqual([]);
       expect(peekFsMutexSync('npm-install').held).toBe(true);
     } finally {
-      fileWrites.beforeWrite = null;
       await rm(writerDir, { recursive: true, force: true });
       await reader;
       await rm(dir, { recursive: true, force: true });
@@ -1131,18 +1089,22 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
     }
 
     let ticketOwnerReads = 0;
-    fileWrites.beforeReadFile = path => {
-      if (path.startsWith(`${queueDir}/`) && path.endsWith('/owner.json')) ticketOwnerReads += 1;
+    const io = {
+      readFile: async (...args: Parameters<typeof readFile>) => {
+        const path = String(args[0]);
+        if (path.startsWith(`${queueDir}/`) && path.endsWith('/owner.json')) ticketOwnerReads += 1;
+        return readFile(...args);
+      },
     };
     try {
       await expect(withFsMutex(name, async () => 'unreachable', {
         timeoutMs: 0,
         retryMs: 5,
         staleMs: 10_000,
+        io,
       })).rejects.toThrow(/Timed out after 0ms waiting for fs-mutex/);
       expect(ticketOwnerReads).toBe(1);
     } finally {
-      fileWrites.beforeReadFile = null;
       await rm(dir, { recursive: true, force: true });
     }
   });

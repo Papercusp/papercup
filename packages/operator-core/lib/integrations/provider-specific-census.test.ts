@@ -135,7 +135,6 @@ export const CENSUS: readonly CensusEntry[] = [
   p('packages/operator-core/lib/capability-verbs/social.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/cursor-freshness.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/platform-registry.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/social-egress.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/social-watermark.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/storm-policy.ts', 'social'),
 
@@ -149,7 +148,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 17;
+export const CENSUS_HIGH_WATERMARK = 16;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.

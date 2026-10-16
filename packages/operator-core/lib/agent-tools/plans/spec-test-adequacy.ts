@@ -725,10 +725,12 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   // Qualified test nouns (test/fixture, test\\fixture, test.ts) in an input
   // inventory are not testing verbs. Real coverage statements beside them
   // still match, and explicit disclosedGap fields bypass this heuristic.
+  // A durable test-run reference (for example, test-run20987792) is likewise
+  // evidence bookkeeping, even when a scope note says it resolved an old gap.
   // Technical modifiers such as read-only and ledger-only describe the mechanism,
   // not an outstanding proof limitation. Separate scope claims in the same prose
   // and explicit gap fields must still be enforced (EI-25719594988320201).
-  /(?<!\b(?:read|write|append|ledger)-)\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?(?![/\\]|\.[A-Za-z])|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
+  /(?<!\b(?:read|write|append|ledger)-)\b(?:only|just|partially)\b[^.;]{0,100}\b(?:cover(?:s|ed)?|test(?:s|ed|ing)?(?![/\\]|\.[A-Za-z]|-run)|exercise(?:s|d)?|verify|validate|address(?:es|ed)?|include(?:s|d)?|coverage(?!\s+(?:result|field|flag|value|record|metadata)\b))\b/i,
   /\b(?:does not|doesn't|did not|didn't|has not|hasn't|is not|isn't|are not|aren't)\b[^.;]{0,60}\b(?:cover|test|exercise|verify|validate|address|include)\b/i,
   /\b(?:outside|out of)\s+(?:the\s+)?(?:scope|coverage)\b|\bnot\s+(?:covered|tested|exercised|verified|validated|addressed)\b/i,
   /\b(?:remains?|is|are)\s+(?:a\s+)?separate\s+(?:requirement|integration|validation|work|proof)\b/i,
@@ -2439,8 +2441,9 @@ function appendRatingRerunProbes(
  *  30 — shared mutation metadata stays target-scoped; unambiguous explicit measured-case associations need no title convention.
  *  31 — a requiredEvidence:'tree' declaration requires a current tree-plane binding; binder-authored targeting cannot substitute for it.
  *  33 — nested adequacy planes participate in required-plane checks, attempt identity, traceability and runtime freshness.
+ *  34 — durable test-run references in resolved-gap notes do not imply a live limitation.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 33;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 34;
 
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.

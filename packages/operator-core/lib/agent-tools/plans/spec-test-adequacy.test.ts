@@ -3708,7 +3708,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(33);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(34);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {
@@ -5329,6 +5329,29 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     });
     expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
     expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it('does not treat a resolved proof reference as an open gap, while preserving an adjacent live limitation', () => {
+    const base = evidence();
+    const resolved =
+      'The exact live dossier gap was resolved by separate CURRENT live binding34743; only test-run20987792 is cited as its durable proof reference.';
+    const stillOpen = `${resolved} The cancellation retry is not covered.`;
+    const resolvedResult = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, scopeNote: resolved } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    const openResult = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, scopeNote: stillOpen } })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(resolvedResult.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(resolvedResult.wouldBlock).not.toContain('disclosed-gap');
+    expect(openResult.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(openResult.ratings['disclosed-gap'].evidence).toContain(stillOpen);
+    expect(openResult.wouldBlock).toContain('disclosed-gap');
   });
 
   it.each([

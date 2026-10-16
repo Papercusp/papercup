@@ -53,6 +53,7 @@ import {
   type RubricKind,
   type RubricCriterionWindow,
   type RubricCriterionCheck,
+  type RubricTemplateData,
   type AcceptanceEvidencePlane as TemplateAcceptanceEvidencePlane,
   type AcceptanceBarContract as TemplateAcceptanceBarContract,
 } from './agent-tools/plans/rubric-template';
@@ -68,6 +69,7 @@ import {
   subjectPlanAllowsPlannedPaths,
   type CriterionCheckPathValidation,
 } from './rubrics-criterion-checks';
+import { LIVE_SCHEMA_REVISION, continuityProbeSchema } from './continuity-probes';
 import {
   assertAcceptanceRubricCitationPathsResolve,
   type AcceptanceRubricCitationValidation,
@@ -2457,6 +2459,43 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
  * requires a concrete falsifier; the replacement is deliberately conservative and tells
  * the grader to record unknown until a native marker is authored.
  */
+function migrateLegacyProbeRevision(probe: unknown): unknown {
+  if (probe === null || typeof probe !== 'object' || Array.isArray(probe)) return probe;
+  const record = probe as Record<string, unknown>;
+  if (typeof record.schemaRevision !== 'string' || record.schemaRevision === LIVE_SCHEMA_REVISION) return probe;
+
+  // Re-validate through the writer-only `live` sentinel. A successful parse both
+  // proves the old probe still matches the current target contract and returns the
+  // concrete current revision. If it no longer matches, preserve the stale value so
+  // the normal validation path reports the actionable contract error.
+  const migrated = continuityProbeSchema.safeParse({ ...record, schemaRevision: LIVE_SCHEMA_REVISION });
+  return migrated.success ? migrated.data : probe;
+}
+
+/**
+ * Upgrade stale persisted probe revisions while rebuilding a rubric. This is deliberately
+ * shape-preserving: only a probe that still validates against the current target contract
+ * is rewritten, while malformed or incompatible legacy probes remain fail-closed.
+ */
+export function migrateLegacyCriterionProbeRevisions<T extends { check?: RubricCriterionCheck }>(
+  criteria: readonly T[],
+): T[] {
+  return criteria.map((criterion) => {
+    const check = criterion.check;
+    if (!check || check.kind !== 'probe') return criterion;
+    if (check.probe !== undefined) {
+      const probe = migrateLegacyProbeRevision(check.probe);
+      return probe === check.probe ? criterion : { ...criterion, check: { ...check, probe } };
+    }
+    if (check.all !== undefined) {
+      const all = check.all.map(migrateLegacyProbeRevision);
+      if (all.every((probe, index) => probe === check.all?.[index])) return criterion;
+      return { ...criterion, check: { ...check, all } };
+    }
+    return criterion;
+  });
+}
+
 export function normalizeAcceptanceRubricProposal(
   criteria: ProposeRubricCriterion[],
   kind: RubricKind | undefined,
@@ -2466,6 +2505,7 @@ export function normalizeAcceptanceRubricProposal(
   ratingScale: string[];
   compatibility?: RubricCompatibilityAudit;
 } {
+  criteria = migrateLegacyCriterionProbeRevisions(criteria);
   criteria = normalizeCriterionProbeChecks(criteria);
   if ((kind ?? 'standard') !== 'acceptance') {
     return { criteria, ratingScale: [...ratingScale] };
@@ -2522,7 +2562,7 @@ export function normalizeAcceptanceRubricProposal(
 }
 
 interface BuiltRubricTemplateData {
-  data: unknown;
+  data: RubricTemplateData;
   compatibility?: RubricCompatibilityAudit;
 }
 
@@ -3567,7 +3607,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   const kind = input.kind ?? 'standard';
   input = {
     ...input,
-    criteria: input.criteria.map((criterion) =>
+    criteria: migrateLegacyCriterionProbeRevisions(input.criteria).map((criterion) =>
       kind === 'acceptance'
         ? normalizeAcceptanceBarCriterion(criterion)
         : normalizeRequirementSections(criterion),
@@ -3995,6 +4035,8 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
       };
     });
   }
+
+  criteria = migrateLegacyCriterionProbeRevisions(criteria);
 
   return {
     rubricId: stored.rubricId,
@@ -4782,7 +4824,7 @@ async function amendAcceptanceBarRubric(
       }
 
       const amended = applyRubricAmendment(stored, input);
-      amended.criteria = amended.criteria.map(normalizeAcceptanceBarCriterion);
+      amended.criteria = migrateLegacyCriterionProbeRevisions(amended.criteria).map(normalizeAcceptanceBarCriterion);
       assertChangedAcceptanceBarProjectionsAtomic(
         amended.criteria,
         stored.criteria.map(normalizeAcceptanceBarCriterion),
@@ -4981,7 +5023,11 @@ async function amendAcceptanceBarRubric(
       }
       const sourceMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!sourceMappings.ok) {
-        throw new Error(`acceptance_bar_amendment_mapping_invalid:${sourceMappings.problems.map((problem) => problem.code).join(',')}`);
+        throw new Error(
+          `acceptance_bar_amendment_mapping_invalid:${sourceMappings.problems.map((problem) =>
+            [problem.code, problem.barKey, problem.planItemId, problem.detail].filter(Boolean).join(': '),
+          ).join('; ')}`,
+        );
       }
       // Rendering follows every represented field, while proof invalidation follows BAR meaning.
       // A method-only edit needs both plan locks whenever an explicit requirement block changes.

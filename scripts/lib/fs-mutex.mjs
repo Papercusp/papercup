@@ -35,6 +35,8 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
+/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: typeof readFile, writeFile?: typeof writeFile }} FsMutexIo */
+
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;
 const DEFAULT_RETRY_MS = 250;
@@ -186,10 +188,10 @@ async function legacyLeaseState(markerDir, staleMs) {
   return "active";
 }
 
-async function censusLegacyContainer(containerPath, type, suffix, census, staleMs) {
+async function censusLegacyContainer(containerPath, type, suffix, census, staleMs, openDirectory) {
   let directory;
   try {
-    directory = await opendir(containerPath);
+    directory = await openDirectory(containerPath);
   } catch {
     census.otherUnknown++;
     census.complete = false;
@@ -216,12 +218,19 @@ async function censusLegacyContainer(containerPath, type, suffix, census, staleM
   }
 }
 
-/** Inspect legacy leases without creating, removing, or migrating any marker. */
-export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromEnv(process.env)) {
+/**
+ * Inspect legacy leases without creating, removing, or migrating any marker.
+ *
+ * @param {string} legacyRoot
+ * @param {number} [staleMs]
+ * @param {FsMutexIo} [io]
+ */
+export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromEnv(process.env), io = {}) {
+  const openDirectory = io.opendir ?? opendir;
   const census = emptyLegacyCensus();
   let directory;
   try {
-    directory = await opendir(legacyRoot);
+    directory = await openDirectory(legacyRoot);
   } catch {
     census.otherUnknown++;
     census.complete = false;
@@ -238,9 +247,9 @@ export async function censusLegacyFsMutexRoot(legacyRoot, staleMs = staleMsFromE
       census.scanned++;
       const entryPath = join(legacyRoot, entry.name);
       if (entry.name.endsWith(".readers") && entry.isDirectory()) {
-        await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs);
+        await censusLegacyContainer(entryPath, "reader", ".lock", census, staleMs, openDirectory);
       } else if (entry.name.endsWith(".queue") && entry.isDirectory()) {
-        await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs);
+        await censusLegacyContainer(entryPath, "queue", ".ticket", census, staleMs, openDirectory);
       } else if (entry.name.endsWith(".lock")) {
         census.writer[await legacyLeaseState(entryPath, staleMs)]++;
       } else {
@@ -301,9 +310,10 @@ function measureFsMutexOperation(phaseTimingsMs, phase, operation) {
  * production callers use the platform defaults.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
  */
 async function ensureFsMutexLockRootUncached(env = process.env, options = {}) {
+  const io = options.io ?? {};
   const measure = (phase, operation) => measureFsMutexOperation(
     options.phaseTimingsMs,
     `lock-root.${phase}`,
@@ -366,7 +376,7 @@ async function ensureFsMutexLockRootUncached(env = process.env, options = {}) {
     }
     census = await measure(
       "legacy-census",
-      () => censusLegacyFsMutexRoot(legacyRoot, staleMsFromEnv(env)),
+      () => censusLegacyFsMutexRoot(legacyRoot, staleMsFromEnv(env), io),
     );
     const active = totalLegacyCensus(census, "active");
     const unknown = totalLegacyCensus(census, "unknown");
@@ -405,7 +415,7 @@ async function ensureFsMutexLockRootUncached(env = process.env, options = {}) {
 
   try {
     await measure("legacy-parent-mkdir", () => mkdir(dirname(legacyRoot), { recursive: true }));
-    await measure("legacy-symlink", () => symlink(root, legacyRoot, "dir"));
+    await measure("legacy-symlink", () => (io.symlink ?? symlink)(root, legacyRoot, "dir"));
   } catch (error) {
     if (await measure("legacy-alias-check", () => legacyAliasPointsTo(legacyRoot, root))) return root;
     try {
@@ -438,7 +448,8 @@ const canonicalFsMutexRootResolutions = new Map();
 function canCacheFsMutexRoot(options) {
   return options?.platform === undefined &&
     options?.homeDir === undefined &&
-    options?.legacyRoot === undefined;
+    options?.legacyRoot === undefined &&
+    options?.io === undefined;
 }
 
 function fsMutexRootCacheKey(env, options) {
@@ -454,6 +465,9 @@ function fsMutexRootCacheKey(env, options) {
  * one in-flight migration across concurrent callers. A call that remains on
  * the legacy root is deliberately not retained: once that lease drains, the
  * next caller must be allowed to complete the migration.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
  */
 export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
   if (!canCacheFsMutexRoot(options)) {
@@ -490,9 +504,9 @@ function readerRoot(lockRootDir, name) {
   return join(lockRootDir, `${safeName(name)}.readers`);
 }
 
-async function readOwner(lockDir) {
+async function readOwner(lockDir, io = {}) {
   try {
-    return await readFile(join(lockDir, "owner.json"), "utf8");
+    return await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8");
   } catch {
     return "(owner unknown)";
   }
@@ -596,10 +610,10 @@ function processIdentity(pid) {
   } catch { return null; } // Non-Linux/access failures retain the kill(0) policy.
 }
 
-async function reclaimAbandonedLock(lockDir, staleMs) {
+async function reclaimAbandonedLock(lockDir, staleMs, io = {}) {
   let owner;
   try {
-    owner = JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8"));
+    owner = JSON.parse(await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8"));
   } catch {
     // The age fallback below handles unreadable and unparseable records.
   }
@@ -641,7 +655,7 @@ async function reclaimAbandonedLock(lockDir, staleMs) {
  * Fail-open: no ordering information ⇒ the caller falls back to racing for the
  * lock directly, so a broken/unreadable queue can never deadlock acquisition.
  */
-async function oldestTicketDir(ticketsDir, staleMs) {
+async function oldestTicketDir(ticketsDir, staleMs, io = {}) {
   let entries;
   try {
     entries = await readdir(ticketsDir, { withFileTypes: true });
@@ -654,7 +668,7 @@ async function oldestTicketDir(ticketsDir, staleMs) {
     .sort();
   for (const ticketName of ticketNames) {
     const ticketDir = join(ticketsDir, ticketName);
-    if (await reclaimAbandonedLock(ticketDir, staleMs)) continue;
+    if (await reclaimAbandonedLock(ticketDir, staleMs, io)) continue;
     try {
       // Another waiter may have cleaned this candidate after our directory
       // snapshot. Skip that vanished entry and continue through the ordered
@@ -669,14 +683,14 @@ async function oldestTicketDir(ticketsDir, staleMs) {
   return null;
 }
 
-async function writerLockIsHeld(lockDir, staleMs) {
+async function writerLockIsHeld(lockDir, staleMs, io = {}) {
   try {
     await stat(lockDir);
   } catch (error) {
     if (error.code === "ENOENT") return false;
     throw error;
   }
-  return !(await reclaimAbandonedLock(lockDir, staleMs));
+  return !(await reclaimAbandonedLock(lockDir, staleMs, io));
 }
 
 async function listReaderLocks(readersDir) {
@@ -700,6 +714,7 @@ async function waitForReaders(
     startedAt,
     onWaiting,
     waitingNoticeIntervalMs = 0,
+    io = {},
   },
 ) {
   let announcedWaiting = false;
@@ -709,7 +724,7 @@ async function waitForReaders(
   let lastWaitingNoticeMs = 0;
   for (;;) {
     const readers = await listReaderLocks(readersDir);
-    for (const reader of readers) await reclaimAbandonedLock(reader, staleMs);
+    for (const reader of readers) await reclaimAbandonedLock(reader, staleMs, io);
     const activeReaders = await listReaderLocks(readersDir);
     if (activeReaders.length === 0) return;
 
@@ -722,12 +737,12 @@ async function waitForReaders(
       announcedWaiting = true;
       lastWaitingNoticeMs = elapsed;
       onWaiting({
-        owner: await readOwner(activeReaders[0]),
+        owner: await readOwner(activeReaders[0], io),
         elapsedMs: elapsed,
       });
     }
     if (elapsed > timeoutMs) {
-      const currentOwner = await readOwner(activeReaders[0]);
+      const currentOwner = await readOwner(activeReaders[0], io);
       throw new Error(
         `Timed out after ${timeoutMs}ms waiting for fs-mutex readers (${readersDir}); holder: ${currentOwner}`,
       );
@@ -749,7 +764,7 @@ async function waitForReaders(
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean> }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -759,6 +774,8 @@ export async function withFsMutex(name, fn, opts = {}) {
     return fn();
   }
 
+  const io = opts.io ?? {};
+  const writeFileIo = io.writeFile ?? writeFile;
   const admissionSubphaseTimingsMs = typeof opts.onAcquired === "function" ? {} : undefined;
   const measureAdmissionSubphase = admissionSubphaseTimingsMs
     ? async (name, operation) => {
@@ -774,11 +791,13 @@ export async function withFsMutex(name, fn, opts = {}) {
   // Root resolution is outside the mutex's timeout budget, but remains visible in
   // caller timing maps. The nested `lock-root.*` phases intentionally overlap
   // `lock-root.ensure`; they identify which root-resolution operation consumed time.
+  /** @type {{ phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} */
+  const rootOptions = {};
+  if (admissionSubphaseTimingsMs) rootOptions.phaseTimingsMs = admissionSubphaseTimingsMs;
+  if (opts.io) rootOptions.io = opts.io;
   const root = await measureAdmissionSubphase(
     "lock-root.ensure",
-    () => ensureFsMutexLockRoot(undefined, admissionSubphaseTimingsMs
-      ? { phaseTimingsMs: admissionSubphaseTimingsMs }
-      : undefined),
+    () => ensureFsMutexLockRoot(undefined, Object.keys(rootOptions).length > 0 ? rootOptions : undefined),
   );
   const lockDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
@@ -815,7 +834,7 @@ export async function withFsMutex(name, fn, opts = {}) {
   try {
     await measureAdmissionSubphase("queue-root-mkdir", () => mkdir(ticketsDir, { recursive: true }));
     await measureAdmissionSubphase("ticket-mkdir", () => mkdir(myTicketDir));
-    await measureAdmissionSubphase("ticket-owner-write", () => writeFile(
+    await measureAdmissionSubphase("ticket-owner-write", () => writeFileIo(
       join(myTicketDir, "owner.json"),
       JSON.stringify(owner, null, 2) + "\n",
     ));
@@ -846,14 +865,14 @@ export async function withFsMutex(name, fn, opts = {}) {
     if (!due) return;
     announcedWaiting = true;
     lastWaitingNoticeMs = elapsedMs;
-    opts.onWaiting({ owner: await readOwner(lockDir), elapsedMs });
+    opts.onWaiting({ owner: await readOwner(lockDir, io), elapsedMs });
   };
   try {
     for (;;) {
       if (ticketRegistered) {
         const oldest = await measureAdmissionSubphase(
           "ticket-scan",
-          () => oldestTicketDir(ticketsDir, staleMs),
+          () => oldestTicketDir(ticketsDir, staleMs, io),
         );
         if (oldest != null && oldest !== myTicketDir) {
           // Someone else registered first — don't even attempt the mkdir race this
@@ -861,7 +880,7 @@ export async function withFsMutex(name, fn, opts = {}) {
           const elapsed = Date.now() - startedAt;
           await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
           if (elapsed > timeoutMs) {
-            const currentOwner = await readOwner(lockDir);
+            const currentOwner = await readOwner(lockDir, io);
             throw new Error(
               `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
             );
@@ -879,7 +898,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         // The mkdir above IS the grant, so stamp the grant instant here and make it
         // answerable instead of inviting the same misreading again.
         writerOwner = { ...owner, acquiredAt: new Date().toISOString(), phase: "draining-readers" };
-        await measureAdmissionSubphase("writer-owner-write", () => writeFile(
+        await measureAdmissionSubphase("writer-owner-write", () => writeFileIo(
           join(lockDir, "owner.json"),
           JSON.stringify(writerOwner, null, 2) + "\n",
         ));
@@ -891,10 +910,10 @@ export async function withFsMutex(name, fn, opts = {}) {
         await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
         if (await measureAdmissionSubphase(
           "abandoned-lock-reclaim",
-          () => reclaimAbandonedLock(lockDir, staleMs),
+          () => reclaimAbandonedLock(lockDir, staleMs, io),
         )) continue;
         if (elapsed > timeoutMs) {
-          const currentOwner = await readOwner(lockDir);
+          const currentOwner = await readOwner(lockDir, io);
           throw new Error(
             `Timed out after ${timeoutMs}ms waiting for fs-mutex "${name}" (${lockDir}); holder: ${currentOwner}`,
           );
@@ -923,6 +942,7 @@ export async function withFsMutex(name, fn, opts = {}) {
       startedAt,
       onWaiting: opts.onWaiting,
       waitingNoticeIntervalMs,
+      io,
     }));
     // WI-1490656: report how long admission actually QUEUED. A caller that re-acquires
     // the same lock across many short sub-invocations (one affected-tests shard after
@@ -940,10 +960,10 @@ export async function withFsMutex(name, fn, opts = {}) {
     // cannot mistake a partially rewritten owner record for an absent lock.
     const runningOwner = { ...writerOwner, phase: "running", runningAt: new Date().toISOString() };
     const nextOwnerPath = join(lockDir, "owner.next.json");
-    await writeFile(nextOwnerPath, `${JSON.stringify(runningOwner, null, 2)}\n`);
+    await writeFileIo(nextOwnerPath, `${JSON.stringify(runningOwner, null, 2)}\n`);
     await rename(nextOwnerPath, join(lockDir, "owner.json"));
     return await fn({
-      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs)) != null,
+      hasWaiters: async () => (await oldestTicketDir(ticketsDir, staleMs, io)) != null,
     });
   } finally {
     await rm(lockDir, { recursive: true, force: true });
@@ -960,13 +980,15 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX === "1") return fn();
 
-  const root = await ensureFsMutexLockRoot();
+  const io = opts.io ?? {};
+  const writeFileIo = io.writeFile ?? writeFile;
+  const root = await ensureFsMutexLockRoot(undefined, opts.io ? { io: opts.io } : undefined);
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
   const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
@@ -1006,17 +1028,17 @@ export async function withFsMutexRead(name, fn, opts = {}) {
       // A reserved writer already prevents admission. Publishing markers on
       // every retry in that state makes its drain observe readers that will
       // never enter, and a stream of newcomers can keep that drain occupied.
-      if (!(await writerLockIsHeld(writerDir, staleMs))) {
+      if (!(await writerLockIsHeld(writerDir, staleMs, io))) {
         await mkdir(readerDir);
         markerCreated = true;
-        await writeFile(
+        await writeFileIo(
           join(readerDir, "owner.json"),
           `${JSON.stringify(owner, null, 2)}\n`,
         );
         // Keep this second check: a writer can reserve after the preflight
         // but before publication. Its drain must see our marker until we
         // notice that reservation and remove it.
-        ready = !(await writerLockIsHeld(writerDir, staleMs));
+        ready = !(await writerLockIsHeld(writerDir, staleMs, io));
       }
     } catch (error) {
       if (error.code !== "EEXIST") {
@@ -1038,10 +1060,10 @@ export async function withFsMutexRead(name, fn, opts = {}) {
     ) {
       announcedWaiting = true;
       lastWaitingNoticeMs = elapsed;
-      opts.onWaiting({ owner: await readOwner(writerDir), elapsedMs: elapsed });
+      opts.onWaiting({ owner: await readOwner(writerDir, io), elapsedMs: elapsed });
     }
     if (elapsed > timeoutMs) {
-      const currentOwner = await readOwner(writerDir);
+      const currentOwner = await readOwner(writerDir, io);
       throw new Error(
         `Timed out after ${timeoutMs}ms waiting for fs-mutex writer ("${name}"); holder: ${currentOwner}`,
       );

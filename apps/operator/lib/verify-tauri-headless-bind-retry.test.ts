@@ -224,7 +224,8 @@ describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-
     // the operator service cgroup while non-systemd hosts retain the setsid
     // process-group fallback. The returned client pid is the teardown handle.
     expect(fn).toContain('TAURI_SCOPE_UNIT="${VERIFY_SCOPE_BASE}-tauri-${BOOT_ATTEMPTS}"');
-    expect(fn).toContain('TAURI_PID="$(start_verify_process "$TAURI_SCOPE_UNIT" "$LOG" "$WORK/launch.sh")"');
+    expect(fn).toContain('start_verify_process "$TAURI_SCOPE_UNIT" "$LOG" "$WORK/launch.sh"');
+    expect(fn).toContain('TAURI_PID="$VERIFY_STARTED_PROCESS_PID"');
     // Uses the CURRENT DEV_PORT/PTY_PORT at call time (not a value baked in once),
     // so a re-pick before the retry call actually changes what gets launched.
     expect(fn).toMatch(/OPERATOR_DEV_PORT="\$DEV_PORT" OPERATOR_DEV_PTY_PORT="\$PTY_PORT"/);
@@ -394,11 +395,13 @@ describe('EI-21467292301306028 — a bind retry re-embeds the re-picked devUrl',
 set -euo pipefail
 ${launchFn}
 ${portLostFn}
-start_verify_process() { printf '%s\\n' "$$"; }
+start_verify_process() { VERIFY_STARTED_PROCESS_PID="$$"; }
+verify_tauri_dev_url() { printf 'http://127.0.0.1:%s' "$1"; }
 WORK="$1"
 DESKTOP_DIR="$1"
 ISOLATED_DB=0
 NATIVE_TERMINAL=0
+VERIFY_TAURI_TRACE_SESSION_CHAT_CSS=0
 DISPLAY_NUM=90
 TAURI_OWNER_SID=probe-owner
 TAURI_LAUNCH_PROVENANCE=agent:probe-owner
