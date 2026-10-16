@@ -109,7 +109,9 @@ export interface StartWorkspaceHostDestroyInput {
 export type StartWorkspaceHostLifecycleInput = Omit<
   RunWorkspaceHostLifecycleInput,
   'provider' | 'store' | 'signal'
->;
+> & { /** Server-only: initialize a newly assigned clean warm VM after lifecycle convergence. */
+  bringUp?: WorkspaceHostBringUp;
+};
 
 type WorkspaceHostProvisioningWorkflowInput = StartWorkspaceHostProvisioningInput & {
   action: 'provision';
@@ -255,6 +257,12 @@ async function workspaceHostProvisioningWorkflowImpl(
   const result = await runWorkspaceHostOperation(input);
   if (input.action === 'provision' && input.bringUp && result.status === 'succeeded') {
     await bringUpWorkspaceHost(input, input.bringUp);
+  }
+  if (isExistingHostLifecycle(input) && input.bringUp && result.status === 'succeeded') {
+    const target = await DBOS.runStep(() => readWorkspaceHostDestroyTarget(input.workspaceId, input.hostId),
+      { name: 'workspace-host-warm-bring-up-target' });
+    if (!target) throw new Error('hosted_pool_reserved_host_missing');
+    await bringUpWorkspaceHost({ workspaceId: input.workspaceId, operationId: input.operationId, desired: target.desired }, input.bringUp);
   }
   // The lifecycle runner marks successful upgrades, repairs, restores, and completed upgrade
   // rollbacks with this explicit host-readiness signal. A rollback is still a failed upgrade

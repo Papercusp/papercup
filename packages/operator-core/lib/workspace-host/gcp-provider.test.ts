@@ -1289,6 +1289,23 @@ describe('GCP workspace-host provider planning', () => {
 });
 
 describe('GCP workspace-host provider contract and lifecycle', () => {
+  it('reuses an already-running warm VM and replays stop without sending duplicate provider mutations', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    for (const action of ['start', 'stop'] as const) {
+      const plan = await provider.plan({ action, host, operationId: `pool-${action}`, idempotencyKey: `pool-${action}` }, context());
+      for (const step of plan.steps) {
+        const request = { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources };
+        const first = await provider.apply(request, context());
+        expect(first.state).toBe(action === 'start' ? 'unchanged' : 'applied');
+        expect((await provider.apply(request, context())).state).toBe('unchanged');
+      }
+    }
+    expect(client.startCalls).toBe(0);
+    expect(client.stopCalls).toBe(1);
+    expect(client.resetCalls).toBe(0);
+  });
+
   it('passes the shared fake contract with reconciliation, observation, IAP transport, and confirmed deletion', async () => {
     const { provider } = providerAndClient();
     const report = await runFakeWorkspaceHostProviderContractSuite(provider, {

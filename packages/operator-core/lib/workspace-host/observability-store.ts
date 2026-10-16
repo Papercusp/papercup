@@ -1126,6 +1126,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
     let admittedPending = false;
     let reservedGeneration: number | null = null;
     let reservedFence: number | null = null;
+    let reservedRevision: number | null = null;
     if (input.hostedAdmission && !input.controllerAuthority) {
       throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted admission requires controller authority');
     }
@@ -1142,6 +1143,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
           pending_admission_matches: boolean;
           reserved_generation: number | null;
           reserved_fence: number | null;
+          reserved_revision: number | null;
         }>
       >`
         SELECT host_id, action, desired_revision, controller_id, controller_fence,
@@ -1160,6 +1162,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
                ) AS pending_admission_matches,
                (admission_receipt->'result'->'placement'->>'generation')::bigint AS reserved_generation,
                (admission_receipt->'result'->'placement'->>'controllerFence')::bigint AS reserved_fence,
+               (admission_receipt->'result'->>'hostDesiredRevision')::bigint AS reserved_revision,
                request IS NOT DISTINCT FROM ${input.request === undefined ? null : tx.json(json(input.request) as never)}::jsonb AS request_matches
         FROM harness_shared.workspace_host_operations
         WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
@@ -1169,6 +1172,10 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
         admittedPending = existing[0].pending_admission_matches === true;
         reservedGeneration = existing[0].reserved_generation;
         reservedFence = existing[0].reserved_fence;
+        reservedRevision = existing[0].reserved_revision;
+        if (admittedPending && reservedGeneration != null && reservedRevision == null) {
+          throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted reservation revision is missing');
+        }
         const differs = [
           existing[0].host_id !== input.hostId ? 'host' : null,
           existing[0].action !== input.action ? 'action' : null,
@@ -1215,6 +1222,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
           AND id = ${input.hostId}
           AND (${reservedGeneration}::bigint IS NULL OR host_generation = ${reservedGeneration})
           AND (${reservedFence}::bigint IS NULL OR controller_fence = ${reservedFence})
+          AND (${reservedRevision}::bigint IS NULL OR desired_revision = ${reservedRevision})
           AND (
             ${desiredRevision}::bigint IS NULL
             OR ${desiredRevision}::bigint > desired_revision

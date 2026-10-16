@@ -2799,6 +2799,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     mutation: () => Promise<GcpOperationRef>,
     signal?: AbortSignal,
   ): Promise<WorkspaceHostApplyResult> {
+    // Pool assignment may select an already-running VM. Stop/start also replay after
+    // ambiguous outcomes; observe convergence before asking GCP to mutate it again.
+    // Reset and repair must still execute even when the VM is running.
+    if (input.op === 'start-instance' || input.op === 'stop-instance') {
+      const before = await this.client.getInstance(input.projectId, input.zone, input.instanceName);
+      if (before?.status === expected) {
+        assertManagedHostResource(before, input.hostId, 'instance');
+        return this.unchanged(request, vmResource(before, input.projectId, input.zone));
+      }
+    }
     const operation = await mutation();
     if (!(await this.settled(operation, signal))) return this.inProgress(request, operation.name);
     const found = await this.client.getInstance(input.projectId, input.zone, input.instanceName);
