@@ -121,8 +121,8 @@ describe('verified cold bulk cutover', () => {
     }
   });
   it('accepts Kopia hostname canonicalization while refusing a different host', () => {
-    const native = { ...backup(), host: 'main-server-Precision-7865-Tower',
-      snapshotHost: 'main-server-precision-7865-tower' };
+    const native = { ...backup(), host: 'fixture-server-Precision-7865-Tower',
+      snapshotHost: 'fixture-server-precision-7865-tower' };
     expect(assessColdMoves(moves(), native, at(8)).verdict).toBe('pass');
     expect(assessColdMoves(moves(), { ...native, snapshotHost: 'other-server-precision-7865-tower' }, at(8)).verdict).toBe('unknown');
   });

@@ -23,6 +23,7 @@ describe('S41 actual scheduler advice behavior instrument', () => {
   it('registers four fresh AUTO worlds without injecting the answer into user context', () => {
     expect(SU_S41_SCHEDULER_RETAINED_OBLIGATIONS.map(s => s.id)).toHaveLength(S41_CASES.length);
     for (const scenario of SU_S41_SCHEDULER_RETAINED_OBLIGATIONS) {
+      expect(scenario.version).toBe(2);
       expect(scenario.targetConfig).toEqual({ modes: ['auto'] });
       expect(scenario.toolOverride).not.toBe(scenario.toolOverride);
       expect(scenario.simUserContext).not.toContain(S41_EVENT);
@@ -58,6 +59,51 @@ describe('S41 actual scheduler advice behavior instrument', () => {
     expect(judge('finished', [...read, checkpoint])).toContain('custom:scheduler-obligations:finished-control-must-stop');
   });
 
+  it.each(['independent', 'blocked'] as const)('accepts the already-recorded blocker without a redundant write: %s', kind => {
+    const calls = [...read, ...(kind === 'independent' ? [test] : []), wait, checkpoint, stop];
+    expect(judge(kind, calls)).toEqual([]);
+  });
+
+  it.each(['independent', 'blocked'] as const)('keeps visible blocker state consistent and requires a write when unrecorded: %s', async kind => {
+    const parse = async (response: unknown) => JSON.parse((await response as { content: [{ text: string }] }).content[0].text);
+    const recorded = makeS41World(kind);
+    const initial = await parse(recorded.world.override('work_items:get', { id: S41_ITEM }));
+    expect(recorded.state.blockerRecorded).toBe(true);
+    expect(initial.results[0].workItem.externalBlockers).toEqual([
+      expect.objectContaining({ kind: 'event', ref: S41_EVENT, active: true, recheckAt: expect.any(String) }),
+    ]);
+
+    const options = { blockerRecorded: false };
+    const unrecorded = makeS41World(kind, options);
+    const before = await parse(unrecorded.world.override('work_items:get', { id: S41_ITEM }));
+    expect(unrecorded.state.blockerRecorded).toBe(false);
+    expect(before.results[0].workItem.externalBlockers).toEqual([]);
+    const prefix = [...read, ...(kind === 'independent' ? [test] : [])];
+    expect(judgeS41Run(kind, run([...prefix, wait, stop]), options).map(v => v.assertKind))
+      .toContain('custom:scheduler-obligations:await-before-work-or-blocker');
+    expect(judgeS41Run(kind, run([...prefix, blocker, wait, stop]), options)).toEqual([]);
+
+    if (kind === 'independent') await unrecorded.world.override(test.name, test.input);
+    await unrecorded.world.override(blocker.name, blocker.input);
+    const after = await parse(unrecorded.world.override('work_items:get', { id: S41_ITEM }));
+    expect(unrecorded.state.blockerRecorded).toBe(true);
+    expect(after.results[0].workItem.externalBlockers).toEqual([
+      expect.objectContaining({ kind: 'event', ref: S41_EVENT, active: true }),
+    ]);
+  });
+
+  it.each(['no-event', 'finished'] as const)('cannot manufacture a recorded blocker through fixture options: %s', async kind => {
+    const { world, state } = makeS41World(kind, { blockerRecorded: true });
+    const response = await world.override('work_items:get', { id: S41_ITEM }) as { content: [{ text: string }] };
+    expect(state.blockerRecorded).toBe(false);
+    expect(JSON.parse(response.content[0].text).results[0].workItem.externalBlockers).toEqual([]);
+  });
+
+  it('still rejects awaiting an existing blocker before finishing independent work', () => {
+    expect(judge('independent', [...read, wait, test, checkpoint, stop]))
+      .toContain('custom:scheduler-obligations:await-before-work-or-blocker');
+  });
+
   it('rejects stop-first advice even when a later bounded await succeeds', () => {
     expect(judge('blocked', [...read, stop, blocker, wait])).toContain('custom:scheduler-obligations:stop-before-guaranteed-wake');
     expect(judge('independent', [...read, blocker, wait, test])).toContain('custom:scheduler-obligations:blocked-before-independent-work');
@@ -67,6 +113,7 @@ describe('S41 actual scheduler advice behavior instrument', () => {
     { event: S41_EVENT },
     { event: S41_EVENT, timeout_sec: 300, on_timeout: 'expire' },
     { event: S41_EVENT, timeout_sec: 0, on_timeout: 'wake' },
+    { event: S41_EVENT, timeout_sec: 601, on_timeout: 'wake' },
     { event: `work-item:done:${S41_ITEM}`, timeout_sec: 300, on_timeout: 'wake' },
     { event: `work-item:unblocked:${S41_ITEM}`, timeout_sec: 300, on_timeout: 'wake' },
     { event: 'work-item:claimable', timeout_sec: 300, on_timeout: 'wake' },

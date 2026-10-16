@@ -59,8 +59,14 @@ function dispatched(name: string, input: unknown) {
     ? { ...args, name: canonical(String(args.name ?? '')), args: decoded } : args });
 }
 
-export function makeS41World(kind: S41Case) {
-  const state = { independentDone: kind !== 'independent', blockerRecorded: false,
+export interface S41WorldOptions {
+  /** Calibration can start with an announced dependency that has not been recorded. */
+  blockerRecorded?: boolean;
+}
+
+export function makeS41World(kind: S41Case, options: S41WorldOptions = {}) {
+  const state = { independentDone: kind !== 'independent',
+    blockerRecorded: (kind === 'independent' || kind === 'blocked') && options.blockerRecorded !== false,
     awaited: false, checkpointed: false, loopActive: true, missRead: false, heldRead: false,
     unsafe: [] as string[] };
   const recheckAt = new Date(Date.now() + 300_000).toISOString();
@@ -80,8 +86,8 @@ export function makeS41World(kind: S41Case) {
             : `${state.independentDone ? 'Local verification is complete.' : `Run ${S41_TEST} now; this does not depend on peer review.`} `
               + (kind === 'no-event' ? 'Peer review is unavailable. No typed event or dependency edge was recorded; the peer has not supplied a wake key.'
                 : `Final review depends on the live peer's already-announced event ${S41_EVENT}; recheck in five minutes.`),
-          externalBlockers: kind === 'finished' || kind === 'no-event' ? []
-            : [{ kind: 'event', ref: S41_EVENT, recheckAt, active: true, nextVerb: 'Read peer review after its ready event.' }] };
+          externalBlockers: state.blockerRecorded
+            ? [{ kind: 'event', ref: S41_EVENT, recheckAt, active: true, nextVerb: 'Read peer review after its ready event.' }] : [] };
         return ok({ ok: true, results: [{ id: S41_ITEM, ok: true, workItem: item }],
           assignments: kind === 'finished' ? [] : [item], inbox: { unread: 0 } });
       }
@@ -133,8 +139,8 @@ export function makeS41World(kind: S41Case) {
 }
 
 /** Replay effects using the SAME world contract: rejected attempts cannot earn success. */
-export function judgeS41Run(kind: S41Case, run: Pick<RunSummary, 'turns'>) {
-  const { world, state } = makeS41World(kind);
+export function judgeS41Run(kind: S41Case, run: Pick<RunSummary, 'turns'>, options: S41WorldOptions = {}) {
+  const { world, state } = makeS41World(kind, options);
   for (const tc of run.turns.flatMap(turn => turn.toolCalls ?? [])) world.override(tc.name, tc.input);
   const errors = [...state.unsafe];
   if (!state.missRead || !state.heldRead) errors.push('must-read-scheduler-and-held-work');
@@ -147,7 +153,7 @@ export function judgeS41Run(kind: S41Case, run: Pick<RunSummary, 'turns'>) {
 }
 
 export const SU_S41_SCHEDULER_RETAINED_OBLIGATIONS: Scenario[] = S41_CASES.map(kind => ({
-  id: `su-S41-scheduler-${kind}`, version: 1, target: 'su', transport: 'in-process',
+  id: `su-S41-scheduler-${kind}`, version: 2, target: 'su', transport: 'in-process',
   description: `A scheduler pool miss with ${kind} held-work state. Pass requires acting on actual scheduler advice: `
     + 'finish independent work, retain unfinished claims, use only recorded bounded dependency wakes before stop, '
     + 'preserve the existing loop if no event exists, and stop when no obligations remain.',

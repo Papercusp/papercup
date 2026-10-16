@@ -81,6 +81,30 @@ describe('unresolvedRefsInBody', () => {
     expect(probe).toHaveBeenCalledWith(shorthand);
   });
 
+  it('suppresses a unique shorthand for the caller-known item when its full id is absent from the body', async () => {
+    const full = 'EI-25936638201757906';
+    const shorthand = 'EI-259366';
+    const probe = probeWith();
+    const out = await unresolvedRefsInBody(`checkpoint refers to ${shorthand}`, {
+      probe,
+      known: [full],
+    });
+    expect(out).toBeUndefined();
+    expect(probe).toHaveBeenCalledWith(shorthand);
+  });
+
+  it('keeps a shorthand warning when multiple caller-known refs share its prefix', async () => {
+    const first = 'EI-21159658753576313';
+    const second = 'EI-21159658753576314';
+    const shorthand = 'EI-211596';
+    const probe = probeWith();
+    const out = await unresolvedRefsInBody(`checkpoint refers to ${shorthand}`, {
+      probe,
+      known: [first, second],
+    });
+    expect(out?.missing).toEqual([shorthand]);
+  });
+
   it('keeps a shorthand warning when multiple resolved refs share its prefix', async () => {
     const first = 'EI-21159658753576313';
     const second = 'EI-21159658753576314';

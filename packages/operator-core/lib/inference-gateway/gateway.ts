@@ -4785,9 +4785,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       done = true;
       detach();
     };
-    const onData = (chunk: Buffer) => {
+    stream.setEncoding('utf8');
+    const onData = (chunk: string) => {
       if (done) return;
-      carry += chunk.toString('utf8');
+      carry += chunk;
       const lines = carry.split(/\r?\n/);
       carry = lines.pop() ?? '';
       for (const line of lines) {
