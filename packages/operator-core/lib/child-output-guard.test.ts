@@ -117,7 +117,7 @@ const BASELINE: Record<string, number> = {
   'packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts': 2,
   'packages/operator-core/lib/harness/routines/p2p-perf-actions.ts': 2,
   'packages/operator-core/lib/harness/routines/release-actions.ts': 4,
-  'packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts': 2,
+  'packages/operator-core/lib/inference-gateway/codex-cli-bridge.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/drill.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/network-egress.ts': 1,
   'packages/operator-core/lib/p2p/sandbox/os-user-isolation.ts': 1,
