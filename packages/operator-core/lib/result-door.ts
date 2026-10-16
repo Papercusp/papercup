@@ -842,6 +842,87 @@ function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: st
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
 }
 
+function isWorkItemsGetReceiptEntry(value: unknown): value is Record<string, unknown> & { id: string; delivered: boolean } {
+  const row = recordAt(value);
+  return typeof row?.id === 'string' && typeof row.delivered === 'boolean';
+}
+
+/** Reconcile the source manifest against the rows that survived this door. */
+function reconcileWorkItemsGetReceipt(sourceValue: unknown, outputValue: unknown): unknown {
+  const source = recordAt(sourceValue);
+  const output = recordAt(outputValue);
+  if (!source || !output || !Array.isArray(source.receipt)) return outputValue;
+
+  const sourceRead = recordAt(source.read);
+  const outputRead = recordAt(output.read);
+  const requested = typeof sourceRead?.requested === 'number'
+    ? sourceRead.requested
+    : source.receipt.filter(isWorkItemsGetReceiptEntry).length;
+  const sourceEntries = source.receipt.filter(isWorkItemsGetReceiptEntry);
+  const outputReceipt = Array.isArray(output.receipt) ? output.receipt : [];
+  const resultCounts = new Map<string, number>();
+  for (const value of Array.isArray(output.results) ? output.results : []) {
+    const row = recordAt(value);
+    if (typeof row?.id !== 'string') continue;
+    resultCounts.set(row.id, (resultCounts.get(row.id) ?? 0) + 1);
+  }
+  const sourceById = new Map<string, Array<Record<string, unknown>>>();
+  for (const entry of sourceEntries) {
+    const queue = sourceById.get(entry.id) ?? [];
+    queue.push(entry);
+    sourceById.set(entry.id, queue);
+  }
+  const receipt = outputReceipt.flatMap((value) => {
+    if (!isWorkItemsGetReceiptEntry(value)) return [];
+    const sourceEntry = sourceById.get(value.id)?.shift() ?? value;
+    if (sourceEntry.delivered !== true) {
+      return [{
+        id: value.id,
+        delivered: false,
+        ...(typeof sourceEntry.reason === 'string' ? { reason: sourceEntry.reason } : {}),
+      }];
+    }
+    const remainingRows = resultCounts.get(value.id) ?? 0;
+    if (remainingRows > 0) {
+      resultCounts.set(value.id, remainingRows - 1);
+      return [{ id: value.id, delivered: true }];
+    }
+    return [{ id: value.id, delivered: false, reason: 'projection' }];
+  });
+  const receiptComplete = sourceEntries.length === requested && receipt.length === requested;
+  const read: Record<string, unknown> = { ...(outputRead ?? {}) };
+  if (typeof read.requested !== 'number') read.requested = requested;
+  read.receiptComplete = receiptComplete;
+  if (receiptComplete) delete read.receiptOmitted;
+  else read.receiptOmitted = Math.max(0, requested - receipt.length);
+  return { ...output, receipt, read };
+}
+
+function reconcileWorkItemsGetReceiptResult<T extends DoorableResult>(
+  result: T,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): T {
+  if (!isWorkItemsGetCall(opts)) return result;
+  const textItems = result.content.filter(isTextItem);
+  const bodyShape = classifyProjectionBody(textItems);
+  const json = bodyShape.json;
+  if (!json || !isJsonObject(json.parsed)) return result;
+  const body = reconcileWorkItemsGetReceipt(json.parsed, json.parsed);
+  const serialized = JSON.stringify(body);
+  const original = textItems[json.itemIndex];
+  if (!original || serialized === original.text) return result;
+  const slice = findJsonPrefixSlice(original.text);
+  if (!slice) return result;
+  const contentIndex = result.content.indexOf(original);
+  if (contentIndex < 0) return result;
+  const content = [...result.content];
+  content[contentIndex] = {
+    ...original,
+    text: original.text.slice(0, slice.start) + serialized + original.text.slice(slice.end),
+  };
+  return { ...result, content } as T;
+}
+
 function isScorecardsEmitCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'scorecards:emit' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'scorecards:emit');
@@ -3068,7 +3149,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         opts.nestedTargetToolName,
       );
       if (!upstreamProjection?.truncated &&
-        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) return result;
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) {
+        return reconcileWorkItemsGetReceiptResult(result, opts);
+      }
       return spillResultAsReferenceEnvelope({
         result,
         opts,
@@ -3606,6 +3689,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // this door could not render.
       ...(isWorkItemsGetCall(opts)
         ? [
+            'read.schemaVersion',
+            'read.requested',
+            'read.receiptComplete',
+            'read.receiptOmitted',
+            'receipt[].id',
+            'receipt[].delivered',
+            'receipt[].reason',
             'results[].id',
             'results[].ok',
             'results[].availability',
@@ -3635,7 +3725,6 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'results[].checkpointBody',
             'results[].checkpointReadFailed',
             'results[]._stub',
-            'read.requested',
             'read.available',
             'read.absent',
             'read.unavailable',
@@ -3714,7 +3803,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     } : null;
     const leaderBriefFits = leaderBriefPreview !== null &&
       Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
-    const projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
+    let projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
       evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
@@ -3767,6 +3856,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     if (parsedJsonBody && (opts.toolName === 'tools:find' ||
       (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'tools:find'))) {
       repairDiscoverySchemaProjection(bodyShape.json!.parsed, projected, structuralTargetChars);
+    }
+    if (isWorkItemsGetCall(opts)) {
+      projected = reconcileWorkItemsGetReceipt(bodyShape.json?.parsed, projected);
     }
     const structuralText = JSON.stringify(projected);
     let inserted = false;

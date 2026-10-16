@@ -25,7 +25,10 @@ const healthPublicationProof = process.argv.includes('--health-publication-proof
 const socketOrigins = new Map<number, { socket: net.Socket; stack: string; createdAt: number; connectedAt: number }>();
 const originalConnect = net.Socket.prototype.connect;
 const originalWrite = net.Socket.prototype.write;
+const originalEnd = net.Socket.prototype.end;
+const originalDestroy = net.Socket.prototype.destroy;
 const socketStartups = new WeakMap<net.Socket, NonNullable<ReturnType<typeof privatePgStartupIdentity>>>();
+const socketClosures = new WeakMap<net.Socket, { endAt?: number; endStack?: string; destroyAt?: number; destroyStack?: string }>();
 // Use the same creation-stack/census evidence as the native current-build
 // fixture. A completed cleanup await alone cannot prove the worker will exit.
 net.Socket.prototype.connect = function(this: net.Socket, ...args: unknown[]) {
@@ -44,6 +47,16 @@ net.Socket.prototype.write = function(this: net.Socket, ...args: unknown[]) {
   }
   return Reflect.apply(originalWrite, this, args);
 } as typeof originalWrite;
+net.Socket.prototype.end = function(this: net.Socket, ...args: unknown[]) {
+  if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT)) socketClosures.set(this, {
+    ...socketClosures.get(this), endAt: Date.now(), endStack: new Error('Private PG socket end').stack });
+  return Reflect.apply(originalEnd, this, args);
+} as typeof originalEnd;
+net.Socket.prototype.destroy = function(this: net.Socket, ...args: unknown[]) {
+  if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT)) socketClosures.set(this, {
+    ...socketClosures.get(this), destroyAt: Date.now(), destroyStack: new Error('Private PG socket destroy').stack });
+  return Reflect.apply(originalDestroy, this, args);
+} as typeof originalDestroy;
 const requestedBrowserProof = process.argv.find(value => value.startsWith('--browser-proof='))?.slice('--browser-proof='.length);
 if (requestedBrowserProof) {
   assert.ok(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'].includes(requestedBrowserProof));
@@ -948,6 +961,8 @@ finally {
           bytesRead: socket.bytesRead, bytesWritten: socket.bytesWritten,
           createdAt: origin!.createdAt, connectedAt: origin!.connectedAt } : null,
         startupIdentity: socket ? socketStartups.get(socket) ?? null : null,
+        socketClass: socket?.constructor.name ?? null,
+        closureCalls: socket ? socketClosures.get(socket) ?? null : null,
         pgConnection: pgConnections.find(row => row.client_port === local?.port) ?? null };
     });
     const retained = sockets.filter(socket => socket.referenced &&
@@ -963,6 +978,8 @@ finally {
   });
   net.Socket.prototype.connect = originalConnect;
   net.Socket.prototype.write = originalWrite;
+  net.Socket.prototype.end = originalEnd;
+  net.Socket.prototype.destroy = originalDestroy;
   retainNativeState('before-discovery-removal');
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));

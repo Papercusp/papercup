@@ -360,11 +360,17 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     const out = (await get.handler(
       { ids: ['WI-one', 'WI-twin', 'WI-missing'], detail: true, threadLimit: 0 } as never,
       { ...ctx, sourceProjection: { pick: ['results[].id', 'read'] } } as never,
-    )) as Out;
+    )) as Out & { data: { receipt: Array<Record<string, unknown>>; read: Record<string, unknown> } };
     const byId = new Map(out.data.results.map((r) => [r.id, r]));
     expect(byId.get('WI-one')).toMatchObject({ ok: true, availability: 'available' });
     expect(byId.get('WI-twin')).toMatchObject({ ok: false, availability: 'ambiguous', candidates: ['a', 'b'] });
     expect(byId.get('WI-missing')).toMatchObject({ ok: false, availability: 'absent' });
+    expect(out.data.receipt).toEqual([
+      { id: 'WI-one', delivered: true },
+      { id: 'WI-twin', delivered: true },
+      { id: 'WI-missing', delivered: true },
+    ]);
+    expect(out.data.read.receiptComplete).toBe(true);
   });
 
   it('uses one set-based read for projected multi-id completion evidence', async () => {

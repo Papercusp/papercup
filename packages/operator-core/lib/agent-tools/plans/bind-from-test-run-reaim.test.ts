@@ -179,7 +179,12 @@ describe('expandTestRunBinding re-aim check (the plans:bind-spec-evidence fromTe
     workspace_id: 'ws-1',
     commit_sha: 'abcdef0123456789',
     worktree_dirty: false,
-    execution_details: { collectionFailed: false, mutationPhase: 'mutant', mutation: descriptor() },
+    execution_details: {
+      collectionFailed: false,
+      mutationPhase: 'mutant',
+      runStartedAt: '2026-10-11T14:59:59.000Z',
+      mutation: descriptor(),
+    },
     finished_at: '2026-10-11T15:00:00Z',
     ...over,
   });

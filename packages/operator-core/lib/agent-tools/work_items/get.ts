@@ -799,6 +799,16 @@ const workItemsGetReadSchema = z.object({
   outerStageAttribution: z.literal('tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time'),
   detailRows: z.number().int().nonnegative().optional(),
   stubbedRows: z.number().int().nonnegative().optional(),
+  /** True when the per-requested-ID manifest still accounts for the requested set. */
+  receiptComplete: z.boolean().optional(),
+  /** Requested IDs absent from the bounded manifest. */
+  receiptOmitted: z.number().int().nonnegative().optional(),
+});
+
+const workItemsGetReceiptEntrySchema = z.object({
+  id: z.string(),
+  delivered: z.boolean(),
+  reason: z.string().optional(),
 });
 
 export default defineTool({
@@ -810,10 +820,11 @@ export default defineTool({
   // to 1774 chars and breached the 1600 HARD CAP, reddening the fleet gate. It
   // is documentation of the RESPONSE, so `returns` is also where it belongs.
   description:
-    'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.',
+    'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Batch reads also include a per-requested-ID receipt. Read `returns` for conditional warnings.',
   guidance: {
     when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact full checkpoint text, use the standalone `checkpointOnly:true` page mode. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
+      "For a batch, `receipt` has one `{ id, delivered, reason? }` entry per requested ID before shaping. `delivered:false` means that ID's result row is absent from `results`; `read.receiptComplete` says whether the manifest itself still covers every requested ID. An absent or unavailable item can still have `delivered:true` when its status row is present.\\n\\n" +
       "When `checkpointTruncated:true`, recover exact text with `work_items:get { id, checkpointOnly:true, offset:0, limit:512 }`; continue at `checkpointPage.nextOffset`, and restart at offset 0 if `checkpointContentHash` changes between pages. Offsets count Unicode code points. A null page means no checkpoint unless `checkpointReadFailed:true`. Each page is capped at 768 code points.\\n\\n" +
       "When present, read.baseReadDiagnostics reports per-ID base-read status and elapsed time for unavailable calls, pending/rejected reads, or reads taking at least 1000ms; baseReadDiagnosticsOmitted counts entries beyond the 32-row cap. These diagnostics carry no arguments or result bodies.\\n\\n" +
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
@@ -968,7 +979,10 @@ export default defineTool({
   // single-item read carries its body out of the slack the checkpoint case leaves
   // behind, while a 100-id bulk read still spends nothing on it.
   result: bulkEnvelopeSchema(workItemsGetResultRowSchema)
-    .extend({ read: workItemsGetReadSchema })
+    .extend({
+      read: workItemsGetReadSchema,
+      receipt: z.array(workItemsGetReceiptEntrySchema).max(100).optional(),
+    })
     .passthrough(),
   shape: {
     contract: { rows: 'results', fields: ['id'], preserve: ['ok', 'counts', 'read'] },
@@ -1797,6 +1811,23 @@ export default defineTool({
       return measured.length ? Math.max(...measured) : null;
     };
     const availability = env.results.map((result) => (result as { availability?: string }).availability);
+    // Build the manifest from the original request before payload-tier, source
+    // projection, or the later result door can reduce the result rows. Match by
+    // ID instead of relying on the worker pool's output position.
+    const sourceResultCounts = new Map<string, number>();
+    for (const result of env.results as Array<Record<string, unknown>>) {
+      if (typeof result.id !== 'string') continue;
+      sourceResultCounts.set(result.id, (sourceResultCounts.get(result.id) ?? 0) + 1);
+    }
+    const receipt = ids.map((id) => {
+      const remaining = sourceResultCounts.get(id) ?? 0;
+      if (remaining === 0) return { id, delivered: false, reason: 'source-result-missing' };
+      sourceResultCounts.set(id, remaining - 1);
+      return { id, delivered: true };
+    });
+    if (process.env.NODE_ENV !== 'production' && receipt.length !== ids.length) {
+      throw new Error(`work_items:get receipt covered ${receipt.length} of ${ids.length} requested IDs`);
+    }
     const baseReadDiagnostics = stageSamples.flatMap((sample, index) => {
       const status = canBatchProjectedBaseRead ? projectedBatchStatus : sample?.baseReadStatus;
       if (!sample || !status) return [];
@@ -1833,6 +1864,7 @@ export default defineTool({
       available: availability.filter((value) => value === 'available').length,
       absent: availability.filter((value) => value === 'absent').length,
       unavailable: availability.filter((value) => value === 'unavailable').length,
+      receiptComplete: receipt.length === ids.length,
       ...(availability.includes('ambiguous')
         ? { ambiguous: availability.filter((value) => value === 'ambiguous').length }
         : {}),
@@ -1890,6 +1922,7 @@ export default defineTool({
     return bulkContent({
       ...env,
       read,
+      receipt,
       ...(args.resume ? { __resumeOnly: true } : {}),
       ...(args.checksOnly ? { __checksOnly: true } : {}),
       ...(args.checkpointOnly ? { __checkpointOnly: true } : {}),
