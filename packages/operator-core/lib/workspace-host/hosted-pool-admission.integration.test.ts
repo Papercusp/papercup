@@ -18,7 +18,7 @@ vi.mock('@papercusp/db-org', async (original) => ({
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
-const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation } =
+const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation, completeHostedPoolReuse } =
   await import('./hosted-lifecycle-store');
 const { beginWorkspaceHostOperation } = await import('./observability-store');
 
@@ -158,13 +158,66 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
   });
 
-  it('refuses controller handoff after the reserved host generation changes', async () => {
+  it.each(['succeeded', 'failed'])('never reassigns a previously admitted VM after its binding moves (%s)', async status => {
+    const ws = fresh();
+    await customer(ws, 'previous');
+    await customer(ws, 'next');
+    await host(ws, 'warm');
+    await admitHostedLifecycleJob(input(ws, 'previous'));
+    await db.adminSql`
+      UPDATE harness_shared.workspace_host_operations SET status = ${status}
+       WHERE workspace_id = ${ws} AND id = 'op-previous'`;
+    // Replacement moves the directory pointer; the old VM may still carry the
+    // previous tenant's IAM/credentials/routes even with no registered data disk.
+    await db.adminSql`
+      UPDATE harness_shared.customer_workspaces SET workspace_host_id = 'previous-placeholder'
+       WHERE workspace_id = ${ws} AND id = 'previous'`;
+    await expect(admitHostedLifecycleJob(input(ws, 'next'))).rejects.toMatchObject({
+      placement: { kind: 'queue', rejected: expect.arrayContaining([
+        expect.objectContaining({ hostId: 'warm', reasons: expect.arrayContaining(['unclean']) }),
+      ]) },
+    });
+    expect(await operations(ws)).toHaveLength(1);
+    const [next] = await db.adminSql`
+      SELECT workspace_host_id FROM harness_shared.customer_workspaces WHERE workspace_id = ${ws} AND id = 'next'`;
+    expect(next.workspace_host_id).toBe('next-placeholder');
+  });
+
+  it.each(['initialize', 'restore', 'upgrade', 'repair'])('does not treat an unbound %s guest as clean warm capacity', async action => {
+    const ws = fresh();
+    await customer(ws, 'next');
+    await host(ws, 'used');
+    await db.adminSql`
+      INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status)
+      VALUES (${ws}, 'old-guest-operation', 'used', ${action}, 'failed')`;
+    await expect(admitHostedLifecycleJob(input(ws, 'next'))).rejects.toMatchObject({
+      placement: { kind: 'queue', rejected: expect.arrayContaining([
+        expect.objectContaining({ hostId: 'used', reasons: expect.arrayContaining(['unclean']) }),
+      ]) },
+    });
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('still assigns a clean never-assigned VM with only its fresh provision operation', async () => {
+    const ws = fresh();
+    await customer(ws, 'next');
+    await host(ws, 'fresh-warm');
+    await db.adminSql`
+      INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status)
+      VALUES (${ws}, 'fresh-provision', 'fresh-warm', 'provision', 'succeeded')`;
+    await expect(admitHostedLifecycleJob(input(ws, 'next'))).resolves.toMatchObject({
+      placement: { kind: 'assign-warm', hostId: 'fresh-warm' },
+    });
+  });
+
+  it.each(['generation', 'desired-revision'])('refuses controller handoff after the reserved host %s changes', async kind => {
     const ws = fresh();
     await customer(ws, 'stale');
     await host(ws, 'warm');
     const request = { ...input(ws, 'stale'), request: { hostId: 'warm', action: 'start' } };
     const receipt = await admitHostedLifecycleJob(request);
-    await db.adminSql`UPDATE harness_shared.workspace_hosts SET host_generation = 2 WHERE workspace_id = ${ws} AND id = 'warm'`;
+    if (kind === 'generation') await db.adminSql`UPDATE harness_shared.workspace_hosts SET host_generation = 2 WHERE workspace_id = ${ws} AND id = 'warm'`;
+    else await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_revision = 2 WHERE workspace_id = ${ws} AND id = 'warm'`;
     await expect(beginWorkspaceHostOperation({
       workspaceId: ws, operationId: receipt.operationId, hostId: receipt.hostId,
       action: 'start', status: 'running', desiredRevision: 2, request: { plan: 'resolved' },
@@ -173,6 +226,22 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     })).rejects.toThrow('stale');
     const [row] = await db.adminSql`SELECT status, controller_id FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws} AND id = ${receipt.operationId}`;
     expect(row).toEqual({ status: 'queued', controller_id: null });
+  });
+
+  it('completes a running customer VM reuse without acquiring a provider controller, and refuses stale replay', async () => {
+    const ws = fresh();
+    await customer(ws, 'reuse', 'owned');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'running', pool_observation = ${JSON.stringify(observation())}::jsonb, health_status = 'healthy', health_attested_at = now() WHERE workspace_id = ${ws} AND id = 'owned'`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status) VALUES (${ws}, 'prior', 'owned', 'provision', 'succeeded')`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_resources (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id) VALUES (${ws}, 'owned', 'create-data-disk', 'prior', 'applied', 'disk', 'volume-reuse')`;
+    const receipt = await admitHostedLifecycleJob(input(ws, 'reuse', 'owned'));
+    expect(receipt).toMatchObject({ placement: { kind: 'reuse' }, hostDesiredRevision: 1 });
+    await completeHostedPoolReuse(ws, receipt);
+    await completeHostedPoolReuse(ws, receipt);
+    const [row] = await db.adminSql`SELECT status, controller_id FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws} AND id = ${receipt.operationId}`;
+    expect(row).toEqual({ status: 'succeeded', controller_id: null });
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_revision = 2, observed_revision = 2 WHERE workspace_id = ${ws} AND id = 'owned'`;
+    await expect(completeHostedPoolReuse(ws, receipt)).rejects.toThrow('fenced_or_stale');
   });
 
   it('rejects a changed input reusing an operation id without charging or rebinding', async () => {

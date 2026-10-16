@@ -158,6 +158,7 @@ export interface HostedLifecycleAdmissionReceipt {
   customerWorkspaceId: string;
   providerTarget: string;
   hostId: string;
+  hostDesiredRevision?: number;
   placement?: WorkspaceHostPoolPlacement;
 }
 
@@ -189,7 +190,8 @@ export async function readHostedLifecycleAdmission(input: {
 
 /** A running, customer-owned VM needs no provider start/provision. Recheck its fence before releasing the reservation. */
 export async function completeHostedPoolReuse(workspaceId: string, receipt: HostedLifecycleAdmissionReceipt): Promise<void> {
-  if (receipt.placement?.kind !== 'reuse') throw new Error('hosted_pool_reuse_required');
+  const placement = receipt.placement;
+  if (placement?.kind !== 'reuse') throw new Error('hosted_pool_reuse_required');
   await transaction(workspaceId, async tx => {
     const rows = await tx<Array<{ id: string }>>`
       UPDATE harness_shared.workspace_host_operations operation
@@ -198,13 +200,14 @@ export async function completeHostedPoolReuse(workspaceId: string, receipt: Host
       WHERE operation.workspace_id = ${workspaceId} AND operation.id = ${receipt.operationId}
         AND operation.host_id = ${receipt.hostId} AND operation.status IN ('queued', 'succeeded')
         AND operation.controller_id IS NULL
-        AND operation.admission_receipt->'result'->'placement' = ${JSON.stringify(receipt.placement)}::jsonb
+        AND operation.admission_receipt->'result'->'placement' = ${JSON.stringify(placement)}::jsonb
         AND EXISTS (SELECT 1 FROM harness_shared.workspace_hosts host
           JOIN harness_shared.customer_workspaces customer
             ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
           WHERE host.workspace_id = operation.workspace_id AND host.id = operation.host_id
             AND customer.id = ${receipt.customerWorkspaceId} AND customer.state NOT IN ('deleted', 'offboarding')
-            AND host.host_generation = ${receipt.placement.generation} AND host.controller_fence = ${receipt.placement.controllerFence}
+            AND host.host_generation = ${placement.generation} AND host.controller_fence = ${placement.controllerFence}
+            AND host.desired_revision = ${receipt.hostDesiredRevision ?? null}::bigint
             AND host.desired_revision = host.observed_revision AND host.observed_state = 'running'
             AND host.health_status = 'healthy'
             AND extract(epoch FROM (now() - host.health_attested_at)) * 1000 <=
@@ -321,6 +324,7 @@ interface PoolHostRow {
   desired_spec: { scope?: WorkspaceHostPoolRequest['scope']; zone?: string } | null;
   pool_observation: HostedPoolObservation | null;
   customer_workspace_id: string | null;
+  previously_tenant_used: boolean;
 }
 
 async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput): Promise<WorkspaceHostPoolPlacement> {
@@ -330,7 +334,13 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
     SELECT host.id, host.target, host.region, host.host_generation, host.controller_fence,
            host.desired_revision, host.observed_revision,
            host.observed_state, host.health_status, host.health_attested_at, host.runtime_release,
-           host.desired_spec, host.pool_observation, customer.id AS customer_workspace_id
+           host.desired_spec, host.pool_observation, customer.id AS customer_workspace_id,
+           EXISTS (
+             SELECT 1 FROM harness_shared.workspace_host_operations prior
+              WHERE prior.workspace_id = host.workspace_id AND prior.host_id = host.id
+                AND (prior.customer_workspace_id IS NOT NULL OR prior.admission_receipt IS NOT NULL
+                  OR prior.action IN ('initialize', 'restore', 'upgrade', 'repair'))
+           ) AS previously_tenant_used
       FROM harness_shared.workspace_hosts host
       LEFT JOIN harness_shared.customer_workspaces customer
         ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
@@ -374,7 +384,12 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
       customerWorkspaceId: host.customer_workspace_id,
       dataVolumeId: disks.length > 1 ? 'ambiguous-multiple-data-volumes' : disks[0]?.provider_id ?? reservedVolume ?? null,
       reservationId: pending[0]?.id ?? null,
-      cleanAttestationRef: current && !host.customer_workspace_id && disks.length === 0 ? o!.cleanAttestationRef : null,
+      // D-066: moving a workspace binding must not erase tenancy. Even a failed
+      // initialization may have installed credentials or written guest state.
+      // Until a reimage/revocation path is qualified, previously used VMs retire;
+      // a health refresh or a clean reference cannot make them new warm capacity.
+      cleanAttestationRef: current && !host.customer_workspace_id && !host.previously_tenant_used && disks.length === 0
+        ? o!.cleanAttestationRef : null,
     });
   }
   return selectWorkspaceHostPoolPlacement({
@@ -526,6 +541,7 @@ export async function admitHostedLifecycleJob(
     if (!decision.allowed) throw new HostedLifecycleAdmissionError(decision);
 
     let placement: WorkspaceHostPoolPlacement | undefined;
+    let hostDesiredRevision: number | undefined;
     if (input.pool) {
       if (input.action !== 'start' && input.action !== 'provision') throw new Error('hosted_pool_action_invalid');
       placement = await placeHostedPoolJob(tx, input);
@@ -533,12 +549,13 @@ export async function admitHostedLifecycleJob(
       // A new provision reserves the already-locked, customer-bound FK placeholder.
       // Existing VMs instead compare the exact observed generation and controller fence.
       if ('hostId' in placement) {
-        const reserved = await tx<Array<{ id: string }>>`
+        const reserved = await tx<Array<{ id: string; desired_revision: number }>>`
         UPDATE harness_shared.workspace_hosts SET updated_at = now()
          WHERE workspace_id = ${input.workspaceId} AND id = ${placement.hostId}
            AND host_generation = ${placement.generation} AND controller_fence = ${placement.controllerFence}
-         RETURNING id`;
+         RETURNING id, desired_revision`;
         if (reserved.length !== 1) throw new Error('hosted_pool_reservation_fenced');
+        hostDesiredRevision = reserved[0]!.desired_revision;
       }
       if (placement.kind === 'assign-warm') {
         const bound = await tx<Array<{ id: string }>>`
@@ -556,6 +573,7 @@ export async function admitHostedLifecycleJob(
       operationId: input.operationId, created: true, action, decision,
       organizationId: row.organization_id, customerWorkspaceId: input.customerWorkspaceId,
       providerTarget: input.providerTarget, hostId: input.hostId,
+      ...(hostDesiredRevision !== undefined ? { hostDesiredRevision } : {}),
       ...(placement ? { placement } : {}),
     };
 
