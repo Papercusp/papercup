@@ -20,6 +20,7 @@ import {
   supersedeEligibilityGaps,
 } from './spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
+import getSpecEvidenceTool from './get-spec-evidence';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
@@ -72,6 +73,52 @@ describe('shared adequacy-card binding evidence', () => {
         `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`,
       );
     }
+  });
+
+  it.each([true, false])('makes every criterion evidence probe executable with exact selectors (binding ids: %s)', (withIds) => {
+    const rows = [evidence({ ...(withIds ? { id: 41001 } : {}) })];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: rows,
+      harness: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+    });
+
+    for (const criterion of ADEQUACY_CRITERIA) {
+      const text = result.scorecardDraft.ratings[criterion].evidence;
+      const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+      expect(match, criterion).not.toBeNull();
+      const args = getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+      expect(args).toMatchObject({
+        harness: 'papercusp',
+        slug: 'reconnect-plan',
+        specIds: ['SPEC-003-01'],
+        detail: 'full',
+      });
+      if (withIds) {
+        expect(args.bindingIds).toEqual([41001]);
+        expect(args.includeRetracted).toBe(true);
+      } else {
+        expect(args.evidenceRefs).toEqual(['surface:reconnect']);
+        expect(args).not.toHaveProperty('bindingIds');
+      }
+      expect(text).toContain('specRevision=1');
+      expect(text).toContain('specFingerprint="sha256:spec-v1"');
+      expect(text).toContain('bounded.truncatedByLimit=false');
+      expect(text).toContain(`rows[0].ratings[${JSON.stringify(criterion)}]`);
+    }
+  });
+
+  it('keeps the empty evidence probe empty after later bindings are added', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [], harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    const text = result.scorecardDraft.ratings.traceability.evidence;
+    const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+    expect(match).not.toBeNull();
+    const args = getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+    expect(args.bindingIds).toEqual([]);
+    expect(args).not.toHaveProperty('includeRetracted');
   });
 
   it('keeps a large multi-binding proof valid for the actual emit schema without losing binding details', () => {
@@ -805,6 +852,18 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     expect(activeSpecEvidence([...old, ...fresh])).toEqual([old[1], fresh[1]]);
     const matching = attempt(3, { plane: 'tree' });
     expect(activeSpecEvidence([...fresh, ...matching])).toEqual([matching[1]]);
+  });
+
+  it('keeps attempts on different nested evidence planes distinct', () => {
+    const nestedAttempt = (n: number, plane: string) => attempt(n).map((row) => ({
+      ...row,
+      details: { ...row.details, adequacy: { ...(row.details.adequacy as object), evidencePlane: plane } },
+    }));
+    const live = nestedAttempt(1, 'live');
+    const tree = nestedAttempt(2, 'tree');
+    expect(activeSpecEvidence([...live, ...tree])).toEqual([live[1], tree[1]]);
+    const matching = nestedAttempt(3, 'tree');
+    expect(activeSpecEvidence([...tree, ...matching])).toEqual([matching[1]]);
   });
 
   it('fails closed without original registration and for altered registered obligations', () => {
@@ -2595,6 +2654,41 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).not.toBe('pass');
   });
 
+  it.each(['evidencePlane', 'evidence_plane', 'plane'].flatMap((key) =>
+    ['tree', 'live', 'deployed'].map((plane) => ({ key, plane })),
+  ))('reads nested adequacy.$key=$plane for required planes and traceability', ({ key, plane }) => {
+    const base = evidence();
+    const proof = evidence({
+      details: { adequacy: { ...(base.details.adequacy as object), [key]: plane } },
+    });
+    const target = clause({ requiredEvidence: [plane], requiredTestLayers: [] });
+    const grade = (row: SpecEvidenceForAdequacy) => evaluateSpecTestAdequacy({
+      clause: target, evidence: [row], classRef: 'plan-class-feature-ship',
+    });
+    const covered = grade(proof);
+    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings.traceability.evidence).toContain(`evidencePlane="${plane}"`);
+
+    const stale = grade({ ...proof, currentness: { ...proof.currentness, overall: 'stale' } });
+    expect(stale.ratings['correct-layer'].rating).toBe('fail');
+    expect(stale.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(grade(base).ratings['correct-layer'].rating).toBe('fail');
+    const mismatched = grade(evidence({
+      details: { adequacy: { ...(base.details.adequacy as object), [key]: plane === 'tree' ? 'live' : 'tree' } },
+    }));
+    expect(mismatched.ratings['correct-layer'].rating).toBe('fail');
+  });
+
+  it('preserves an explicit root plane over conflicting nested adequacy metadata', () => {
+    const proof = evidence({ details: { evidencePlane: 'tree', adequacy: { evidencePlane: 'live' } } });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['live'], requiredTestLayers: [] }), evidence: [proof],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['correct-layer'].rating).toBe('fail');
+    expect(result.ratings.traceability.evidence).toContain('evidencePlane="tree"');
+  });
+
   it('requires live evidence for a standalone clause that declares requiredEvidence live', () => {
     const liveClause = clause({ requiredEvidence: ['live'], requiredTestLayers: [] });
     const treeProof = evidence();
@@ -3614,7 +3708,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(32);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(33);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {

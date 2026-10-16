@@ -10,6 +10,7 @@ const SOURCE = readFileSync(new URL('../../work-items.ts', import.meta.url), 'ut
 const issueStart = SOURCE.indexOf('function issueSearchSource(');
 const featureStart = SOURCE.indexOf('function featureSearchSource(');
 const featureHydrationStart = SOURCE.indexOf('/** Batch-hydrate feature-family rows by id', featureStart);
+const topKStart = SOURCE.indexOf('async function runWorkItemBm25TopK(');
 const fusionStart = SOURCE.indexOf('async function mergeExactWorkItemBm25(');
 
 describe('direct work-item D-016 exact-list fusion guard', () => {
@@ -19,8 +20,17 @@ describe('direct work-item D-016 exact-list fusion guard', () => {
   ])('%s lexical family fuses bounded exact rows only on plain BM25 queries', (_family, familySource, table) => {
     expect(familySource).toContain("querySyntax: 'websearch'");
     expect(familySource).toContain("leg.engine === 'bm25' && !usesWebsearchOperators(query)");
+    expect(familySource).toContain('plainBm25 && leg.distance');
+    expect(familySource).toContain('runWorkItemBm25TopK');
     expect(familySource).toContain('mergeExactWorkItemBm25');
     expect(familySource).toContain(`table: '${table}'`);
+  });
+
+  it('uses the guarded scan-score top-k query for plain BM25 candidate rows', () => {
+    const topKSource = SOURCE.slice(topKStart, fusionStart);
+    expect(topKStart).toBeGreaterThanOrEqual(0);
+    expect(topKSource).toContain('runBm25TopK(');
+    expect(topKSource).toContain('scanScore: opts.leg.scanScore ?? null');
   });
 
   it('uses the D-016 exact-list cap and the shared interleaving merger', () => {

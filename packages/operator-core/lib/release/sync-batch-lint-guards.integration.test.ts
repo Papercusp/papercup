@@ -6,10 +6,12 @@ import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import type { SyncLintPrivateReceipt } from '../../test/_sync-batch-lint-guards-child';
+import { preflightSyncLintPrivateCompiler } from '../../test/sync-lint-private-compiler';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const filePath = 'packages/operator-core/lib/release/sync-batch-lint-guards.integration.test.ts';
 const sourcePaths = [filePath, 'packages/operator-core/test/_sync-batch-lint-guards-child.ts',
+  'packages/operator-core/test/sync-lint-private-compiler.ts',
   'packages/operator-core/lib/release/sync-batch-lint-guards.ts',
   'packages/operator-core/lib/release/sync-batch-lint-guards-deps.ts',
   'packages/operator-core/lib/release/sync-batch-delta-check-deps.ts',
@@ -30,6 +32,7 @@ const workerOptions = isolatedWorkerOptions(180_000);
 it('runs the shared guard/typecheck proof and drains a real in-flight sweep after its body fails in private PG', async context => {
   const sourceHashes = Object.fromEntries(sourcePaths.map(path => [path,
     createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
+  console.info('SYNC_LINT_COMPILER_PREFLIGHT ' + JSON.stringify(await preflightSyncLintPrivateCompiler(root)));
   const runId = await recordIsolatedIntegrationProof({ root, filePath, sourcePaths,
     execute: async (observe, evidenceDir) => {
       // The nested isolated child is not a test reporter, so the outer runner's
@@ -38,6 +41,7 @@ it('runs the shared guard/typecheck proof and drains a real in-flight sweep afte
       // --isolated-runtime refuses a receipt sink without a ledger URL. That
       // failed every mutation-probe baseline (WI-6554700010010481).
       const childEnv = { ...process.env };
+      childEnv.SYNC_LINT_EVIDENCE_DIR = evidenceDir;
       delete childEnv.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       delete childEnv.PC_EXECUTED_SOURCE_MAP_RESULT;
       // This proof exercises filing and wakes without embedding. Historical

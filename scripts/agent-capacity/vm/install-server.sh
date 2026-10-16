@@ -27,6 +27,23 @@ SVC_USER="${SVC_USER:-pcsrv}"
 DEB=/var/tmp/papercusp-server.deb
 t0=$(date +%s)
 
+# The package enables its user unit globally. On an SSH test VM that also starts a
+# second Server in the login user's already-running manager, outside the tenant
+# cgroup we measure. Mask that account BEFORE apt can activate the package; leave
+# explicitly installed capacity tenants alone (tenant-density.sh reuses this VM).
+login_user="${SUDO_USER:-$(id -un)}"
+if [ "$login_user" != root ] && [ "$login_user" != "$SVC_USER" ]; then
+  login_uid=$(id -u "$login_user")
+  sudo -u "$login_user" XDG_RUNTIME_DIR="/run/user/$login_uid" \
+    systemctl --user mask --now papercusp-server.service \
+    || { echo "LOGIN_SERVER_MASK_FAILED user=$login_user"; exit 8; }
+  login_state=$(sudo -u "$login_user" XDG_RUNTIME_DIR="/run/user/$login_uid" \
+    systemctl --user is-enabled papercusp-server.service 2>/dev/null || true)
+  [ "$login_state" = masked ] \
+    || { echo "LOGIN_SERVER_NOT_MASKED user=$login_user state=$login_state"; exit 8; }
+  echo "LOGIN_SERVER_EXCLUDED=$login_user"
+fi
+
 # A re-run on a VM that already holds this exact package skips the ~5 min fetch + install.
 # The marker records the sha of the .deb that was installed, so a different artifact reinstalls.
 MARKER=/var/lib/papercusp-capacity-installed.sha256

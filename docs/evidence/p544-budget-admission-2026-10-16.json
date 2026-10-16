@@ -81,9 +81,29 @@
     "remainingProgrammeHeadroomAfterReservationUsd": 39,
     "conditions": ["Extra disks use the maintained 10 GiB minimum; the first 8 GiB request was rejected before provider creation.", "Refresh provider census immediately before create.", "Use maintained gcp-rails admission plus provider-enforced DELETE deadline.", "Verify teardown census, including orphan disks and snapshots.", "No minimum-resource, capacity, customer-price or shipped claim follows from this admission estimate."]
   },
+  "fallbackAdmission": {
+    "refreshedAtUtc": "2026-10-16T19:54:00Z",
+    "machineType": "e2-custom-2-8192",
+    "existingVm": "cap-p544-min-1016",
+    "providerCensusSource": "/tmp/p544-resize-admission-census.json",
+    "snapshotSource": "/tmp/p544-resize-admission-snapshots.json",
+    "priceSource": "/tmp/p544-resize-admission-price.json",
+    "observedResources": "Only the existing candidate VM; no orphan disks, static addresses or snapshots.",
+    "twoFullHoursComputeAndAllDisksUsd": 0.14826941534246577,
+    "paddedIpv4Usd": 0.02,
+    "additionalReservationUsd": 0.5,
+    "remainingProgrammeHeadroomAfterBothReservationsUsd": 38.5,
+    "conditions": [
+      "Run only after the 4 GiB profile fails its predeclared acceptance thresholds.",
+      "Resize the same stopped VM; retain its 32+10+10 GB disks and original DELETE deadline of 2026-10-16T21:19:07Z.",
+      "Set absolute termination-time while stopped and verify it before restart; do not reset the two-hour lifetime.",
+      "This additional reservation is conservative double accounting for a full two hours at the larger shape, not measured billed spend.",
+      "Preserve the first run before mutation and verify final teardown census. No further profile is admitted by this edition."
+    ]
+  },
   "limitations": [
     "No BigQuery billing export exists in the dedicated project; exact actual spend and credit balance remain unknown.",
     "The 25 USD uncertainty reserve and rounding are explicit risk allowances, not measured charges or a mathematical guarantee against unobserved usage.",
-    "This permits only the stated bounded candidate. Refresh admission before subsequent runs. P-537 deployed journey and shipment remain open."
+    "This permits the stated bounded candidate and conditional same-VM 8 GiB fallback only. Refresh admission before any further profile. P-537 deployed journey and shipment remain open."
   ]
 }

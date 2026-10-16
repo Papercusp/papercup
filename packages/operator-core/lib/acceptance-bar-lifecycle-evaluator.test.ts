@@ -315,6 +315,20 @@ describe('operational realization from the canonical BAR snapshot', () => {
     ]);
   });
 
+  it.each(['live', 'deployed'] as const)('realizes nested %s plane proof and rejects a mismatched plane', (plane) => {
+    const s = proven();
+    const bar = s.bars[0]!;
+    bar.evidencePlane = plane;
+    bar.mappings[0]!.evidencePlane = plane;
+    const row = bar.proof.history![0]!;
+    row.details = { adequacy: { evidencePlane: plane } };
+    expect(deriveNonCodeItemProofs(s)).toEqual([
+      { planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] },
+    ]);
+    row.details = { adequacy: { evidencePlane: 'tree' } };
+    expect(deriveNonCodeItemProofs(s)).toEqual([]);
+  });
+
   const gaps: Array<[string, (s: AcceptanceBarContractSnapshot) => void]> = [
     ['incomplete snapshot', s => { s.completeness.complete = false; }],
     ['truncated snapshot', s => { s.completeness.truncated = true; }],

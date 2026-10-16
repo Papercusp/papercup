@@ -42,6 +42,7 @@ const {
   listScorecards,
   isCurrentSourceAuditResponder,
 } = await import('../../scorecards');
+const { getLongLivedAdminPool } = await import('../../long-lived-admin-pool');
 const { createIssue } = await import('../../issues-engineer');
 const { closeTask, registerTask } = await import('../../task-manager/store');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
@@ -241,6 +242,36 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
         .toBeInstanceOf(ScorecardEmitMutexWaitTimeoutError);
     } finally {
       await releaseFirst();
+    }
+    const retryRelease = await acquireGradingAuditSubjectMutex(subject, undefined, 150);
+    await retryRelease();
+  }, 120_000);
+
+  it('bounds grading-audit mutex pool acquisition and releases a late reservation', async () => {
+    await _closeGradingAuditSubjectMutexForTests();
+    const pool = getLongLivedAdminPool('grading-audit-subject', { max: 8 });
+    const holders = await Promise.all(Array.from({ length: 8 }, () => pool.reserve()));
+    const phases = createPhaseTracker();
+    const subject = { workspaceId: activeWorkspaceId(), subjectIssueId: 'EI-MUTEX-POOL-TIMEOUT-SUBJECT' };
+    try {
+      const startedAt = Date.now();
+      await expect(acquireGradingAuditSubjectMutex(subject, phases, 150)).rejects.toMatchObject({
+        name: 'ScorecardEmitMutexWaitTimeoutError',
+        code: 'scorecard_emit_mutex_timeout',
+        phase: 'pool-reservation',
+      });
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(phases.intervals()).toContainEqual(expect.objectContaining({
+        phase: 'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
+        durationMs: expect.any(Number),
+      }));
+    } finally {
+      holders.forEach((holder) => holder.release());
+      // The timed-out reserve may resolve after the holders are released. Give
+      // its expired() branch time to release the late connection before the
+      // pool is closed and re-used by the next case.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await _closeGradingAuditSubjectMutexForTests();
     }
     const retryRelease = await acquireGradingAuditSubjectMutex(subject, undefined, 150);
     await retryRelease();

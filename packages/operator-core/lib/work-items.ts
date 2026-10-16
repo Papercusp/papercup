@@ -253,7 +253,9 @@ import {
   EXACT_LIST_MAX_AND_ROWS,
   lexicalLeg,
   mergeExactAndBm25,
+  runBm25TopK,
   usesWebsearchOperators,
+  type LexicalLeg,
 } from './search/lexical/rank';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
@@ -2116,6 +2118,39 @@ async function workItemChunkLeg(
 }
 
 type WorkItemLexicalRow = { id: string; title: string; body: string | null; score: number };
+type WorkItemBm25Row = WorkItemLexicalRow & { bm25_d: number };
+
+/** Run the common direct-search top-k query without re-scoring each selected document. */
+async function runWorkItemBm25TopK(
+  sql: OrgSql,
+  opts: {
+    table: 'harness_shared.work_items' | 'harness_shared.harness_features_consolidated';
+    scope: (sql: OrgSql) => Fragment;
+    limit: number;
+    leg: LexicalLeg;
+  },
+): Promise<WorkItemLexicalRow[]> {
+  if (!opts.leg.distance) throw new Error('BM25 top-k requires a distance fragment.');
+  const dbSql = sql as unknown as Sql;
+  const rows = await runBm25TopK(
+    dbSql,
+    dbSql,
+    {
+      distance: opts.leg.distance,
+      scanScore: opts.leg.scanScore ?? null,
+      columns: sql`feature_id AS id, title, summary AS body`,
+      from: sql.unsafe(opts.table),
+      where: opts.scope(sql),
+      limit: opts.limit,
+    },
+    async (topK) => await sql<WorkItemBm25Row[]>`
+      SELECT id, title, body, (-bm25_d)::float8 AS score, bm25_d
+        FROM (${topK}) bm25
+    ORDER BY bm25_d`,
+    (row) => Number(row.bm25_d),
+  );
+  return rows.map(({ id, title, body, score }) => ({ id, title, body, score }));
+}
 
 /**
  * D-016: preserve the exact AND list beside BM25 for the direct work-item search families.
@@ -2208,14 +2243,17 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
           match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
         },
       });
-      const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
-          FROM harness_shared.work_items
-         WHERE ${scoped(sql)}
-           AND ${leg.match}
-      ORDER BY ${leg.order}
-         LIMIT ${limit}`;
-      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+      const plainBm25 = leg.engine === 'bm25' && !usesWebsearchOperators(query);
+      const rows = plainBm25 && leg.distance
+        ? await runWorkItemBm25TopK(sql, { table: 'harness_shared.work_items', scope: scoped, limit, leg })
+        : await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+            SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
+              FROM harness_shared.work_items
+             WHERE ${scoped(sql)}
+               AND ${leg.match}
+          ORDER BY ${leg.order}
+             LIMIT ${limit}`;
+      const rankedRows = plainBm25
         ? await mergeExactWorkItemBm25(sql, {
             table: 'harness_shared.work_items', scope: scoped, query, limit, bm25Rows: rows,
           })
@@ -2283,14 +2321,19 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
           match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
         },
       });
-      const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
-          FROM harness_shared.harness_features_consolidated
-         WHERE ${scoped(sql)}
-           AND ${leg.match}
-      ORDER BY ${leg.order}
-         LIMIT ${limit}`;
-      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+      const plainBm25 = leg.engine === 'bm25' && !usesWebsearchOperators(query);
+      const rows = plainBm25 && leg.distance
+        ? await runWorkItemBm25TopK(sql, {
+            table: 'harness_shared.harness_features_consolidated', scope: scoped, limit, leg,
+          })
+        : await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+            SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
+              FROM harness_shared.harness_features_consolidated
+             WHERE ${scoped(sql)}
+               AND ${leg.match}
+          ORDER BY ${leg.order}
+             LIMIT ${limit}`;
+      const rankedRows = plainBm25
         ? await mergeExactWorkItemBm25(sql, {
             table: 'harness_shared.harness_features_consolidated', scope: scoped, query, limit, bm25Rows: rows,
           })

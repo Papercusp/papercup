@@ -3,6 +3,7 @@ import { getBuildInfo } from '../../build-info';
 import {
   hasMatchingDeclaredCaseTitle,
   hasSameCaseTitleIdentity,
+  readSpecEvidencePlane,
   repoFilesEvidenceMeasurementSchema,
   SPEC_EVIDENCE_KINDS,
 } from './spec-evidence-store';
@@ -361,7 +362,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     ]);
     // Plane review and the executed filter are recorded at finish/review, not at
     // prepare. They distinguish attempts, but cannot change registration order.
-    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane ?? null;
+    const plane = readSpecEvidencePlane(row.details) ?? null;
     const key = JSON.stringify([registrationKey, execution.testNamePattern ?? null]);
     return { key, registrationKey, plane, sources, execution };
   };
@@ -1088,7 +1089,7 @@ function renderedTestRunExecution(row: SpecEvidenceForAdequacy, details: Pick<Ad
 
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
-  const evidencePlane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+  const evidencePlane = readSpecEvidencePlane(row.details);
   const lineage = classifySpecEvidenceLineage(row);
   // An authored reference can outlive the run it described. A dirty run cannot
   // substantiate a claim about the committed HEAD, so omit that stale clause.
@@ -2437,8 +2438,9 @@ function appendRatingRerunProbes(
  *  29 — outside-lineage re-observations can establish fixture absence for the same measured executable proof and selected cases.
  *  30 — shared mutation metadata stays target-scoped; unambiguous explicit measured-case associations need no title convention.
  *  31 — a requiredEvidence:'tree' declaration requires a current tree-plane binding; binder-authored targeting cannot substitute for it.
+ *  33 — nested adequacy planes participate in required-plane checks, attempt identity, traceability and runtime freshness.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 32;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 33;
 
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
@@ -3347,16 +3349,16 @@ export function evaluateSpecTestAdequacy(input: {
     .map((entry) => entry.trim().toLowerCase())
     .filter((entry) => entry === 'tree' || entry === 'live' || entry === 'deployed'))];
   const planeBindings = currentEvidence.filter((row) => {
-    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    const plane = readSpecEvidencePlane(row.details);
     return typeof plane === 'string' && requiredPlanes.some((requiredPlane) => requiredPlane === plane.trim().toLowerCase());
   });
   const presentPlanes = new Set(planeBindings.flatMap((row) => {
-    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    const plane = readSpecEvidencePlane(row.details);
     return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
   }));
   const missingPlanes = requiredPlanes.filter((plane) => !presentPlanes.has(plane));
   const planeBlockerRows = missingPlanes.length === 0 ? [] : exactEvidence.filter((row) => {
-    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    const plane = readSpecEvidencePlane(row.details);
     const normalizedPlane = typeof plane === 'string' ? plane.trim().toLowerCase() : null;
     const recognizedPlane = normalizedPlane === 'live' || normalizedPlane === 'deployed' ? normalizedPlane : null;
     const planeMatchesMissingRequirement = recognizedPlane !== null && missingPlanes.includes(recognizedPlane);

@@ -28,7 +28,7 @@ import {
   type SpecClauseRevision,
   type SpecLifecycleStatus,
 } from './agent-tools/plans/spec-clauses-store';
-import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
+import { listSpecEvidence, readSpecEvidencePlane, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
 import { evaluateMechanicalTestAdequacy } from './agent-tools/plans/mechanical-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
@@ -1359,7 +1359,7 @@ export function projectAcceptanceBarContractSnapshot(
         const details = row.details && typeof row.details === 'object'
           ? row.details as Record<string, unknown>
           : {};
-        const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
+        const plane = readSpecEvidencePlane(details);
         return typeof plane === 'string' ? [plane] : [];
       }),
     );

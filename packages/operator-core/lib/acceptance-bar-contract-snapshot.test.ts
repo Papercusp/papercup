@@ -1285,7 +1285,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
   });
 
-  it('uses current evidence across planes for mixed-layer adequacy on a live BAR', () => {
+  it.each([false, true])('uses current evidence across planes for mixed-layer adequacy on a live BAR (nested=%s)', (nested) => {
     const input = provedFixture(1);
     const criterion = input.rubrics.rows[0]!.criteria[0]!;
     const clause = input.clauses.rows[0]!;
@@ -1302,8 +1302,8 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     const treeUnit = input.evidence.rows[0]!;
     treeUnit.details = {
-      evidencePlane: 'tree',
-      adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit' },
+      ...(!nested ? { evidencePlane: 'tree' } : {}),
+      adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit', ...(nested ? { evidencePlane: 'tree' } : {}) },
     };
     treeUnit.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'unit' };
     const liveE2e = {
@@ -1313,8 +1313,8 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       evidenceRef: 'test:e2e',
       bindingFingerprint: 'binding-e2e',
       details: {
-        evidencePlane: 'live',
-        adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e' },
+        ...(!nested ? { evidencePlane: 'live' } : {}),
+        adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e', ...(nested ? { evidencePlane: 'live' } : {}) },
       },
     };
     liveE2e.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'e2e' };

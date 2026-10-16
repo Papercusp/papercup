@@ -1974,6 +1974,97 @@ export function acceptanceBarMeaningUnchanged(
 }
 
 /**
+ * Compare the parts of an acceptance rubric that determine its canonical
+ * contract while deliberately ignoring the structured check projection.
+ *
+ * Older acceptance rows can contain checks written against a retired tool
+ * schema. Rebuilding that stored check through the current authoring schema is
+ * unsafe, but a BAR-set hash alone is too coarse: METHOD, criterion-class,
+ * runtime, and other non-BAR projection edits must still create a revision.
+ * The amendment path separately detects check changes as BAR meaning changes,
+ * so excluding `check` here only permits a stale-check projection repair.
+ */
+export function acceptanceCanonicalUnchangedIgnoringLegacyChecks(
+  storedTemplateData: unknown,
+  nextTemplateData: unknown,
+): boolean {
+  const topLevelFields = [
+    'kind',
+    'subjectPlan',
+    'subjectHarnessSlug',
+    'subjectGoal',
+    'classRef',
+    'composes',
+    'characteristic',
+    'ratingScale',
+    'methodRef',
+    'releaseGating',
+    'stalenessWatched',
+    'gradingAuthority',
+    'historyResetAt',
+    'description',
+    'barSetHash',
+  ] as const;
+  const criterionFields = [
+    'key',
+    'title',
+    'intent',
+    'model',
+    'barKey',
+    'driftMarkers',
+    'role',
+    'mandatory',
+    'requiredScope',
+    'evidencePlane',
+    'evidenceRuntime',
+    'requiredTestLayers',
+    'passRatings',
+    'coversBarKeys',
+    'barProvenance',
+    'method',
+    'ratingScale',
+    'replication',
+    'productionConfiguration',
+    'instrumentKey',
+    'window',
+    'criterionClass',
+  ] as const;
+
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([, nested]) => nested !== undefined)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, nested]) => [key, canonical(nested)]),
+      );
+    }
+    return value;
+  };
+  const comparable = (value: unknown): unknown => {
+    const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const field of topLevelFields) {
+      if (record[field] !== undefined) result[field] = record[field];
+    }
+    const criteria = Array.isArray(record.criteria) ? record.criteria : [];
+    result.criteria = criteria
+      .map((criterion) => {
+        const source = (criterion && typeof criterion === 'object' ? criterion : {}) as Record<string, unknown>;
+        const projected: Record<string, unknown> = {};
+        for (const field of criterionFields) {
+          if (source[field] !== undefined) projected[field] = source[field];
+        }
+        return projected;
+      })
+      .sort((a, b) => String(a.key ?? '').localeCompare(String(b.key ?? '')));
+    return canonical(result);
+  };
+  return isDeepStrictEqual(comparable(storedTemplateData), comparable(nextTemplateData));
+}
+
+/**
  * Canonicalize one acceptance BAR at the central writer. `bar` is only an alias:
  * it is removed before persistence, and a mismatching model+bar pair is refused.
  * Caller-supplied barHash is discarded and recomputed from normalized meaning.
@@ -4706,10 +4797,13 @@ async function amendAcceptanceBarRubric(
       // stale legacy snapshot. Standard/non-BAR amendments retain the deep
       // canonical comparison used before the acceptance transaction exists.
       const barMeaningUnchanged = acceptanceBarMeaningUnchanged(stored.barSetHash, built.data.barSetHash);
-      const canonicalUnchanged = barMeaningUnchanged ?? isDeepStrictEqual(built.data, buildRubricTemplateData({
-        ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
-        criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
-      }).data);
+      const canonicalUnchanged =
+        barMeaningUnchanged === true
+          ? acceptanceCanonicalUnchangedIgnoringLegacyChecks(rubricRow.template_data, built.data)
+          : barMeaningUnchanged ?? isDeepStrictEqual(built.data, buildRubricTemplateData({
+              ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
+              criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
+            }).data);
       await assertRubricCompositionLinksResolve(amended);
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
       // files the plan's own items will write. Those are accepted as planned (and named on

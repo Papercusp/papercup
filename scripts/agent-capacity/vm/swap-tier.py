@@ -130,6 +130,40 @@ def sh(cmd, check=True):
     return r
 
 
+def server_population(expected, root="/sys/fs/cgroup"):
+    """Reject a sizing run with missing or additional live Server services.
+
+    Package-wide user-unit activation can start an SSH user's Server outside the
+    measured tenant. Count live cgroups, including descendants, rather than
+    assuming that the measured cgroup is the whole machine's workload.
+    """
+    active = []
+    for service in glob.glob(os.path.join(root, "user.slice", "user-*.slice", "user@*.service",
+                                         "app.slice", "papercusp-server.service")):
+        for directory, _dirs, _files in os.walk(service):
+            try:
+                with open(os.path.join(directory, "cgroup.procs")) as f:
+                    live = any(line.strip() for line in f)
+            except FileNotFoundError:  # a child cgroup may disappear during enumeration
+                continue
+            if live:
+                active.append(os.path.normpath(service))
+                break
+    active.sort()
+    expected = os.path.normpath(expected)
+    if active != [expected]:
+        raise RuntimeError(f"server population mismatch: expected {[expected]}, active {active}")
+    return {"expected": expected, "active": active, "count": len(active)}
+
+
+def native_hash_prompt(marker):
+    # Hashing still reads the whole file. Printing it first floods native output;
+    # a short write_stdin poll can then truncate the only digest we can verify.
+    return (f"Dummy benchmark {marker}. Run exactly this shell command: `sha256sum dummy-data.txt`. "
+            "Use max_output_tokens=512 for execution and any polling so the full digest remains visible. "
+            f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker} with no other text.")
+
+
 def write(path, value):
     with open(path, "w") as f:
         f.write(value)
@@ -579,8 +613,7 @@ def warm(names, rounds, rec, concurrency=None):
             state = {}
             for start in range(0, len(missing), width):
                 state.update(prompt_all(missing[start:start + width], marker, lambda n: (
-                    f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
-                    f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
+                    native_hash_prompt(marker(n))
                     if REAL_MODEL else f"Please do step {marker(n)} now"), 300))
             missing = [n for n, s in state.items() if s["tDone"] is None]
             if not missing:
@@ -711,8 +744,7 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log, active=None, active_round
         if emit_phase:
             rec.rec("phase", arm=arm["name"], phase=phase, edge="start")
         state = prompt_all(group, marker, lambda n: (
-            f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
-            f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
+            native_hash_prompt(marker(n))
             if task_round is not None else (
                 f"Dummy wake task {marker(n)}. Compute 17+25 mentally. Reply exactly DONE-{marker(n)} with no other text."
                 if REAL_MODEL else f"Wake up {marker(n)} please")), WAKE_TIMEOUT)
@@ -944,12 +976,15 @@ def probe(out_path):
 # ---------------------------------------------------------------- main
 
 def run(a):
+    population = server_population(a.server_cgroup) if getattr(a, "server_cgroup", None) else None
     global REAL_MODEL, GATEWAY_CHECK, WARM_PREFIX
     REAL_MODEL = a.cli == "codex"
     # Resumed JSONL may replay old rounds; only fresh unpredictable markers can
     # admit this run's new verification turn.
     WARM_PREFIX = os.urandom(6).hex() if a.resume_native else ""
     rec = Recorder(a.out)
+    if population:
+        rec.rec("server-population-preflight", **population)
     GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec, catalog=False)) if REAL_MODEL else None
     arms = [parse_arm(s) for s in a.arm]
     stub_log = os.path.join(a.out, "stub.jsonl")
@@ -992,6 +1027,7 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--out", required=True)
+    r.add_argument("--server-cgroup", help="require exactly this one live Server service before launching agents")
     r.add_argument("--agents", type=int, default=24)
     r.add_argument("--warm", type=int, default=8)
     r.add_argument("--warm-concurrency", type=int, help="limit warm-up requests; wake storm still uses all agents")

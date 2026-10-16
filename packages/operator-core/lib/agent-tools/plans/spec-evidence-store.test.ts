@@ -1259,9 +1259,9 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
     { plane: 'deployed', expectedEnvironment: 'unknown', expectedOverall: 'unknown' },
     { plane: 'local', expectedEnvironment: 'not-applicable', expectedOverall: 'current' },
     { plane: undefined, expectedEnvironment: 'not-applicable', expectedOverall: 'current' },
-  ])(
-    'requires a recorded environment fingerprint for $plane evidence and preserves other planes',
-    ({ plane, expectedEnvironment, expectedOverall }) => {
+  ].flatMap((entry) => [false, true].map((nested) => ({ ...entry, nested }))))(
+    'requires a recorded environment fingerprint for $plane evidence (nested=$nested) and preserves other planes',
+    ({ plane, nested, expectedEnvironment, expectedOverall }) => {
       const currentness = classifySpecEvidenceCurrentness(
         {
           spec_is_current: true,
@@ -1276,8 +1276,8 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
           test_run_present: false,
           evidence_kind: 'test',
           details: {
-            ...(plane === undefined ? {} : { evidencePlane: plane }),
-            adequacy: { testLayer: 'e2e' },
+            ...(plane === undefined || nested ? {} : { evidencePlane: plane }),
+            adequacy: { testLayer: 'e2e', ...(nested && plane !== undefined ? { evidencePlane: plane } : {}) },
           },
         },
         {

@@ -2071,6 +2071,16 @@ function compareFingerprint(stored: string | null, current: string | null | unde
   return stored === current ? 'current' : 'stale';
 }
 
+/** Read both supported metadata locations, preserving explicit root-plane precedence. */
+export function readSpecEvidencePlane(details?: Record<string, unknown>): unknown {
+  const nested = details?.adequacy;
+  const adequacy = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : undefined;
+  return details?.evidencePlane ?? details?.evidence_plane ?? details?.plane ??
+    adequacy?.evidencePlane ?? adequacy?.evidence_plane ?? adequacy?.plane;
+}
+
 /** Pure, four-state currentness classifier; no drifting boolean is persisted. */
 export function classifySpecEvidenceCurrentness(
   row: CurrentnessRow,
@@ -2082,7 +2092,7 @@ export function classifySpecEvidenceCurrentness(
     adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy) &&
     (adequacy as Record<string, unknown>).fixtureCalibrated === true;
   const fixtureExpected = row.evidence_kind === 'fixture' || fixtureCalibrationAttested;
-  const evidencePlane = row.details?.evidencePlane ?? row.details?.evidence_plane ?? row.details?.plane;
+  const evidencePlane = readSpecEvidencePlane(row.details);
   const ledgerMeasurement = workItemsEvidenceMeasurementSchema.safeParse(row.details?.currentMeasurement);
   // A live ledger-state observation measures dispositions, not a serving process.
   // Only a valid ledger-only recipe can omit runtime identity; runtime-dependent

@@ -8,7 +8,7 @@
   "originalCensus": "/tmp/tutorial-f419-original-root-ledger-census-20261012T1634.json",
   "priorCandidateMap": "/tmp/tutorial-original-receipt-repair-map-20261012T1822.json",
   "repairInventory": "/tmp/tutorial-original-current-repairs-20261012T1819.json",
-  "scope": "Original receipts matched to existing completed repairs. Two additional failures have committed-source qualification while their repair attribution remains unresolved. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
+  "scope": "Original receipts matched to existing completed repairs. Additional source reconciliations retain their individual attribution and qualification limits. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
   "mappings": [
     {
       "originalTestRunId": 21103368,
@@ -917,6 +917,33 @@
       },
       "verification": "On2026-10-16, exact original and retained receipt reads, the existing DONE/committed completion, source-changing history, source/test blob comparisons and repair-to-HEAD ancestry established this mapping. The registry and guard remain identical between the repair commit and HEAD. No test was replayed and no terminal repair was claimed or reclosed.",
       "proofBoundary": "This attributes the original missing-classification failure to an existing committed repair. Both retained passing runs are dirty and lack full qualification metadata; no clean immutable complete-suite proof is asserted. The original receipt stays failed; no full affected PASS, current gate verdict, runtime acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116630,
+      "testFile": "packages/operator-core/lib/sync-resolver/learning-frontier-read.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116630 fails the completeness guard because the registered su-ideate learning singleton has no FRONTIER_LANE_FLAGS entry. The same failure was reproduced on current source in LOCAL21288404:1FAIL16PASS0SKIP.",
+      "repairId": "WI-6554700010016552",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "f26e9adcba21d880a40aff394559ef5a11e4d489",
+      "rootConnection": "Commit95a2bc900cf815653248fe9f15ddce80b119612f enrolled the real su-ideate singleton without its companion Frontier map entry. Current source still contained that gap. Both the scheduler and its typed blueprint step document routine pause as the kill switch and no feature flag. The focused repair therefore adds only su-ideate:null to the existing flag map. The existing completeness, real-flag and orphan-lane tests remain unchanged and guard the enrollment contract.",
+      "retainedProof": {
+        "sourceBlob": "ae7e002a49f8af9162779d74da7ef13a68a006f5",
+        "sourceSha256": "7525fd85f5e84b5f995e54c293f9fa323c80e503004c73b68f3888aef33e0542",
+        "testBlob": "7df16d9c09b99c02881f09a633f3fe711550dbf9",
+        "testSha256": "c5d0ad2ff68665e62ccc12cd3b845c3188b901ed9014aa1ffc061fe49009f53f",
+        "beforeTestRunId": 21288404,
+        "testRunId": 21288406,
+        "recordedCommit": "5440bbaaf89276476b90432db8188469215d241d",
+        "testResult": "The complete unchanged conventional suite failed only the missing entry before the edit, then passed17tests0FAIL0SKIP with terminal exit0 after it. Both exact LOCAL rows are worktreeDirty=true and isScratchConfig=false; the fixed row has harnessSlug=papercusp. Released-reader root is null and executionDetails are omitted. The named test file itself was clean, while its changed imported production module made this working-tree proof; no immutable full-import-graph qualification is inferred.",
+        "commands": [
+          "npm run test:file -- packages/operator-core/lib/sync-resolver/learning-frontier-read.test.ts",
+          "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/sync-resolver/learning-frontier-read.test.ts"
+        ],
+        "sourceSettlement": "The managed git-sync routine committed the exact tested production source as f26e9adcba. Its source hash matches the saved working snapshot and it is an ancestor of HEAD. The child's initial completion was proposed while uncommitted. After source-identity verification, retrying that same unsettled completion through the sanctioned CLI with the transport's original idempotency key returned completionAuthority=committed, countsTowardBurnDown=true and finish.complete=true. No normally settled historical repair was reclaimed or reclosed."
+      },
+      "verification": "On2026-10-16, exact original and current before/after receipt reads, production singleton and scheduler source, the unchanged full conventional suite, the committed source hash and authoritative completion receipt established this repair. Scoped diff checking passed. No broad affected or live-gate run was launched.",
+      "proofBoundary": "This is a committed source repair with observed working-tree17PASS proof. The dirty receipt is not relabeled clean or immutable; the original21116630 remains failed. No full affected PASS, current gate verdict, UI/runtime acceptance or tutorial shipment is established."
     }
   ],
   "sourceReconciliations": [
@@ -963,6 +990,33 @@
         "verification": "On2026-10-16, exact-id testing:runs reads confirmed the original failing offender and the later historical passing row. The af19dc542c source diff and ancestry toHEAD and09b were checked. Current-build3170 exact-receipt reads timed out through direct and staging-proxy routes; this absence of richer readback was not treated as absent stored provenance. No test was replayed and no repair item was claimed or reclosed."
       },
       "proofBoundary": "This is a source reconciliation with unresolved repair attribution and incomplete historical qualification metadata, not an additional completed-repair mapping. The original receipt stays failed; no full affected PASS, current gate verdict, runtime or tutorial shipment acceptance is established."
+    },
+    {
+      "originalTestRunId": 21116573,
+      "testFile": "packages/operator-core/lib/__tests__/main-thread-sync-spawn.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116573 failed only the shrink-only BASELINE assertion: lib/release/checkpoint-qualification-transaction.ts recorded1 synchronous child-process reference but measured0. The retained original-root census records6PASS1FAIL0SKIP.",
+      "sourceRepairCommit": "aea2b321ddc6132871a0ccb079e717613d5fbb6e",
+      "rootConnection": "Commit6c867a23d88790c4307138111e791793b6e80352 replaced systemdRunnerLiveness execFileSync with awaited execFile before the original f419 run, but left the guard's one-reference baseline entry. Commitaea2b321dd removes that stale entry, restoring the shrink-only contract. The entry remains absent at HEAD, and the production source contains no synchronous child-process primitive names at either f419 or HEAD. Both relevant ancestry checks pass. The existing staleEntries assertion remains the recurrence guard.",
+      "relatedProducerRepair": {
+        "id": "EI-25451977985920863",
+        "state": "done",
+        "completionAuthority": "committed",
+        "scope": "Authoritative completion covers the earlier async systemd runner-liveness conversion and row-lock ordering, with retained five-file336-test working-tree proof. This production repair predates original21116573 and is not attributed as the later baseline correction. It was read without reclaiming or reclosing it."
+      },
+      "repairAttribution": "Unresolved for the baseline correction in aea2b321dd. WI-10005242 created the original ratchet; EI-25451977985920863 owns the earlier production conversion. Neither completion is asserted to own this later baseline edit. WI-10005128 retains source-reconciliation custody.",
+      "retainedProof": {
+        "commit": "4aa8de3e49fbb1f596581380d67f0a05fbe9c924",
+        "testRunId": 21245071,
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "repairTestBlob": "41af5861376ac651fca358e5d79786aaf1317448",
+        "repairTestSha256": "c7fa6b26a172a607e8625788cf79d548f5cd76d45787037e7b032f7d755b8c07",
+        "originalTestSha256": "d9d8d67f076197fe86b484c17f101f73541a40e37a13959b28df604962519bb1",
+        "testResult": "Existing exact historical receipt21245071 is pass. Its recorded commit contains the baseline correction and the same committed test blob as aea2b321dd. The receipt is explicitly dirty; matching committed blobs do not establish the executed dirty bytes or imported source graph. The released reader returns root=null and omits executionDetails, measured counts, collection status and selector. No immutable or complete-suite qualification is inferred.",
+        "verification": "On2026-10-16, exact-id original and passing ledger reads, the retained original-root census, both source-changing diffs, producer completion and git ancestry/blob/hash checks established this reconciliation. No test was replayed, no terminal repair was claimed or reclosed, and no live-gate operation was performed."
+      },
+      "proofBoundary": "This is a committed baseline source correction with unresolved repair attribution and retained dirty historical PASS evidence. It adds no completed-repair mapping. Original21116573 remains failed; no immutable full affected PASS, current gate verdict, runtime, parent acceptance or tutorial shipment is established."
     }
   ],
   "currentCommittedQualification": {

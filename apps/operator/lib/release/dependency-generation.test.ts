@@ -1779,6 +1779,50 @@ exec /bin/cp "$@"
     expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each([
+    ['malformed selector', 'invalid prewarmed dependency selector'],
+    ['dangling generation', 'has an invalid publication token'],
+    ['changed publication token', 'has an invalid publication token'],
+  ])('WI-6554700010016558: prediction and ensure both reject a %s', (defect, diagnostic) => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'installed exact-ref candidate');
+    const published = ensureRef(integration, candidate);
+    expect(published.status, published.stderr).toBe(0);
+    const input = publishedInputFingerprint(published.stdout);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const selector = join(generationRoot, '.inputs', input);
+    const healthySelector = readFileSync(selector, 'utf8');
+    const healthyPrediction = predictRef(integration, candidate);
+    expect(healthyPrediction.status, healthyPrediction.stderr).toBe(0);
+    expect(predictionOf(healthyPrediction.stdout)).toMatchObject({ verdict: 'prewarmed', input });
+
+    if (defect === 'malformed selector') {
+      writeFileSync(selector, healthySelector.replace('schema=1\n', 'schema=99\n'));
+    } else if (defect === 'dangling generation') {
+      writeFileSync(selector, healthySelector.replace(publishedIdentity(published.stdout), `v1-${'f'.repeat(64)}`));
+    } else {
+      const marker = join(publishedPath(published.stdout), '.papercusp-dependency-generation');
+      chmodSync(marker, 0o644);
+      appendFileSync(marker, 'tampered=1\n');
+    }
+    const damagedSelector = readFileSync(selector, 'utf8');
+    const generationsBefore = readdirSync(generationRoot).sort();
+
+    // Equal input keys and an existing selector are insufficient: the builder
+    // validates the referenced immutable publication before trusting the hit.
+    const ensured = ensureRef(integration, candidate);
+    expect(ensured.status, ensured.stderr).toBe(74);
+    expect(ensured.stderr).toContain(diagnostic);
+    expect(ensured.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stdout).toBe(ensured.status);
+    expect(prediction.stderr).toContain(diagnostic);
+    expect(prediction.stdout).not.toContain('DEPENDENCY_GENERATION_PREDICTION ');
+    expect(readFileSync(selector, 'utf8')).toBe(damagedSelector);
+    expect(readdirSync(generationRoot).sort()).toEqual(generationsBefore);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-10004151: --predict-ref reports refused with each reason, exits 0, and leaves no scratch', () => {
     const integration = makeIntegration();
     writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));

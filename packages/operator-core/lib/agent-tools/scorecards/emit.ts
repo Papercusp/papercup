@@ -1,7 +1,6 @@
 /** scorecards:emit — the typed write facade over the canonical observation ledger. */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import postgres from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
 import {
@@ -15,6 +14,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from '../../long-lived-admin-pool';
 import { deriveAgentRunEvidenceRecordSafe, type EvidenceRecordSql } from './agent-run-evidence-record';
 import {
   classifyRubricEvidenceCurrentness,
@@ -69,6 +69,9 @@ import {
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
   validateRubricRatingContracts,
+  reserveScorecardMutexConnection,
+  isScorecardMutexPoolAcquisitionError,
+  scorecardMutexPoolAcquireTimeoutMs,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
@@ -403,35 +406,25 @@ export async function runRecoverableScorecardChecks(
  * helper is doing its work.
  */
 const SCORECARD_EMIT_MUTEX_NAMESPACE = 'scorecards:emit:dedup';
-let _scorecardEmitMutexSql: postgres.Sql | null = null;
+const SCORECARD_EMIT_MUTEX_POOL = 'scorecard-emit-mutex';
 
 export function scorecardEmitMutexUrl(): string {
   return getHarnessAdminUrl();
 }
 
-function scorecardEmitMutexSql(): postgres.Sql {
-  if (!_scorecardEmitMutexSql) {
-    _scorecardEmitMutexSql = postgres(scorecardEmitMutexUrl(), {
-      onnotice: () => {},
-      // The database advisory lock serializes emitters for the same dedup key.
-      // Keep a bounded set of sessions available so distinct keys can proceed
-      // independently instead of queueing behind one process-wide reservation.
-      max: 8,
-      idle_timeout: 0,
-      connection: {
-        application_name: `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63),
-      },
-    });
-  }
-  return _scorecardEmitMutexSql;
+function scorecardEmitMutexSql() {
+  // The accessor re-resolves the endpoint and drains a pool that was built
+  // against an old discovery target. A module-scoped postgres client otherwise
+  // survives an embedded-PG restart and strands every later reserve() call.
+  return getLongLivedAdminPool(SCORECARD_EMIT_MUTEX_POOL, {
+    max: 8,
+    idle_timeout: 0,
+  });
 }
 
 /** Test-only — close + drop the dedicated scorecard emit mutex connection. */
 export async function _closeScorecardEmitMutexForTests(): Promise<void> {
-  if (_scorecardEmitMutexSql) {
-    await _scorecardEmitMutexSql.end({ timeout: 1 }).catch(() => {});
-    _scorecardEmitMutexSql = null;
-  }
+  await _endLongLivedAdminPoolForTests(SCORECARD_EMIT_MUTEX_POOL);
 }
 
 export function scorecardEmitMutexKey(input: {
@@ -460,20 +453,25 @@ async function acquireScorecardEmitMutex(
   phases?: PhaseTracker,
   waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS,
 ): Promise<() => Promise<void>> {
-  const reserved: ScorecardEmitMutexReservation = await trackPhase(
-    phases,
-    'scorecards:emit:mutex:dedup:pool-reservation',
-    () => scorecardEmitMutexSql().reserve(),
-  );
+  const poolPhase = 'scorecards:emit:mutex:dedup:pool-reservation';
+  const reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitTimeoutMs);
+  let reserved: ScorecardEmitMutexReservation | undefined;
   let acquired = false;
   try {
+    const connection = await reserveScorecardMutexConnection(
+      () => scorecardEmitMutexSql().reserve(),
+      phases,
+      poolPhase,
+      waitTimeoutMs,
+    );
+    reserved = connection;
     // Allow valid serialization waits beyond the role's inherited timeout, but
     // stay below the 300s MCP caller deadline so a stuck holder becomes a
     // retryable refusal. This client is dedicated to the mutex.
-    await reserved`SELECT set_config('lock_timeout', ${`${waitTimeoutMs}ms`}, false)`;
-    await reserved`SET statement_timeout = 0`;
+    await connection`SELECT set_config('lock_timeout', ${`${waitTimeoutMs}ms`}, false)`;
+    await connection`SET statement_timeout = 0`;
     await trackPhase(phases, 'scorecards:emit:mutex:dedup:advisory-lock', () =>
-      reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
+      connection`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
     );
     acquired = true;
     return async () => {
@@ -482,13 +480,16 @@ async function acquireScorecardEmitMutex(
       try {
         // If the backend has died, PostgreSQL already released the session lock;
         // still drop the reserved client so a future emit can reconnect cleanly.
-        await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
+        await connection`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
       } finally {
-        reserved.release();
+        connection.release();
       }
     };
   } catch (error) {
-    reserved.release();
+    reserved?.release();
+    if (isScorecardMutexPoolAcquisitionError(error)) {
+      throw new ScorecardEmitMutexWaitTimeoutError('dedup', reservationTimeoutMs, 'pool-reservation');
+    }
     if ((error as { code?: string } | null)?.code === '55P03') {
       throw new ScorecardEmitMutexWaitTimeoutError('dedup', waitTimeoutMs);
     }

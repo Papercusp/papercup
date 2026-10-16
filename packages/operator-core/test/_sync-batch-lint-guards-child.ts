@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -22,8 +23,30 @@ import { drainDetached, pendingDetachedCount } from '../lib/detached-imports';
 import { fallbackObservationCounters, flushFallbackObservations } from '../lib/degradation/fallback-observations';
 import { INTEREST_SWEEP_TICK_MS, registerInterestWatch, startInterestWatchSweeper, stopInterestWatchSweeper } from '../lib/events/await/interest-watch';
 import { resolveProseProfileSelection } from '../lib/search/prose-vector-dims';
+import { prepareSyncLintPrivateCompiler, SYNC_LINT_TYPE_ERROR_FILE } from './sync-lint-private-compiler';
 
 export const SYNC_LINT_EXPECTED_BODY_FAILURE = 'EI260629 deliberate body assertion while interest sweep is blocked';
+
+const progressFile = process.env.SYNC_LINT_EVIDENCE_DIR
+  ? join(process.env.SYNC_LINT_EVIDENCE_DIR, 'worker-progress.ndjson') : null;
+function progress(stage: string, evidence: Record<string, unknown> = {}) {
+  if (!progressFile) return;
+  mkdirSync(dirname(progressFile), { recursive: true });
+  appendFileSync(progressFile, JSON.stringify({ stage, observedAt: new Date().toISOString(), ...evidence }) + '\n');
+}
+
+async function step<T>(stage: string, action: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  progress(stage + '-start');
+  try {
+    const value = await action();
+    progress(stage + '-complete', { elapsedMs: Date.now() - started });
+    return value;
+  } catch (error) {
+    progress(stage + '-failed', { elapsedMs: Date.now() - started, error: String(error) });
+    throw error;
+  }
+}
 
 export interface SyncLintPrivateReceipt {
   build: { sourceHashes: Record<string, string> };
@@ -57,6 +80,7 @@ async function until(check: () => Promise<boolean>, label: string) {
 }
 
 async function main() {
+  progress('worker-start', { phase: 'execute' });
   const root = resolve(import.meta.dirname, '../../..');
   const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID!;
   const dsn = process.env.HARNESS_ADMIN_DATABASE_URL!;
@@ -77,7 +101,7 @@ async function main() {
     sourceHashes[path] = actual;
   }
 
-  const deltaFile = 'src/type-error.ts';
+  const deltaFile = SYNC_LINT_TYPE_ERROR_FILE;
   // The affected pass is controlled, but its probe must select an actual task:
   // a workspace name alone intentionally means nothing-selected in production.
   const deltaProbe = { workspaces: ['private-typecheck'], guards: [],
@@ -163,6 +187,7 @@ async function main() {
     const [condition] = await sql`SELECT condition_key FROM harness_shared.work_items
       WHERE feature_id = ${id} AND workspace_id = ${workspaceId}`;
     assert.equal(condition!.condition_key, 'sync-delta-guard:lint:no-raw-setinterval:src/timer.ts');
+    await until(async () => (await listRecentDeliveries(author)).length > 0, 'guard wake persisted');
     const deliveries = await listRecentDeliveries(author);
     assert.equal(deliveries.length, 1);
     const delivery = deliveries[0]!;
@@ -183,16 +208,7 @@ async function main() {
     let deltaHead = 'c'.repeat(40);
     let tscRuns = 0;
     let affectedRuns = 0;
-    await mkdir(join(deltaRoot, 'src'), { recursive: true });
-    await mkdir(join(deltaRoot, 'scripts'), { recursive: true });
-    await writeFile(join(deltaRoot, deltaFile), 'export const value: number = "wrong";\n');
-    await writeFile(join(deltaRoot, 'tsconfig.json'), JSON.stringify({
-      compilerOptions: { strict: true, noEmit: true, types: [], skipLibCheck: true }, include: [deltaFile],
-    }));
-    const compiler = join(root, 'node_modules/typescript/lib/tsc.js');
-    await writeFile(join(deltaRoot, 'scripts/lint-tsc.mjs'),
-      `process.argv = [process.execPath, ${JSON.stringify(compiler)}, '--project', 'tsconfig.json', '--pretty', 'false'];\n` +
-      `await import(${JSON.stringify(pathToFileURL(compiler).href)});\n`);
+    await prepareSyncLintPrivateCompiler(root, deltaRoot);
     await sql`INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role, concurrency, catchup, active, metadata)
       VALUES ('rt_p037_private', ${harness}, ${workspaceId}, ${SYNC_DELTA_ROUTINE_NAME},
@@ -206,7 +222,12 @@ async function main() {
         exec: async (cmd, args, opts) => {
           assert.ok(args.includes(join(deltaRoot, 'scripts/lint-tsc.mjs')), 'only the real tsc leg may execute');
           tscRuns += 1;
-          return runBoundedArgv(cmd, args, opts);
+          return step('compiler-process', async () => {
+            const result = await runBoundedArgv(cmd, args, opts);
+            progress('compiler-result', { status: result?.status ?? null, durationMs: result?.durationMs ?? null,
+              failureKind: result?.failureKind ?? null, output: `${result?.stdout ?? ''}${result?.stderr ?? ''}`.slice(-2000) });
+            return result;
+          });
         },
       });
       delta.hostLoad = () => ({ load1: 1, cores: 4 });
@@ -216,13 +237,25 @@ async function main() {
       delta.probeRadius = async () => deltaProbe;
       delta.runAffected = async () => { affectedRuns += 1; return { ok: true, failing: [] }; };
       delta.confirmOne = async () => { throw new Error('typecheck retry must never invoke a test confirmation'); };
+      // Persist semantic boundaries outside disposable private state. A timeout
+      // must distinguish compilation, attribution, cursor IO and filing/wake.
+      const { readCursor, writeCursor, lookupEditors, fileRed, runTsc } = delta;
+      delta.readCursor = () => step('cursor-read', readCursor);
+      delta.writeCursor = cursor => step('cursor-write', () => writeCursor(cursor));
+      delta.lookupEditors = (files, since) => step('editor-lookup', () => lookupEditors!(files, since));
+      delta.fileRed = finding => step('filing-and-wake', () => fileRed(finding));
+      delta.runTsc = files => step('typecheck-leg', () => runTsc(files));
       return delta;
     };
     const initialDelta = makeDeltaDeps();
+    progress('delta-bootstrap-start');
     assert.equal((await runSyncBatchDeltaCheck(initialDelta)).status, 'bootstrapped');
+    progress('delta-bootstrap-complete');
     deltaHead = 'd'.repeat(40);
     // No wake await exists yet: filing and the stable message must survive this miss.
+    progress('delta-red-start');
     const firstDelta = await runSyncBatchDeltaCheck(initialDelta);
+    progress('delta-red-complete', { status: firstDelta.status });
     assert.equal(firstDelta.status, 'red', JSON.stringify(firstDelta));
     assert.equal(firstDelta.filed.length, 1, JSON.stringify(firstDelta));
     const firstFiling = firstDelta.filed[0]!;
@@ -242,7 +275,9 @@ async function main() {
       [[deltaFile, 'lint-tsc', deltaAuthor]]);
     await upsertInboxWakeAwait({ subscriberId: deltaAuthor, eventKey: inboxWakeKey(deltaAuthor), minSleepSec: 0,
       note: 'P037 private same-HEAD retry proof' });
+    progress('delta-retry-start');
     const secondDelta = await runSyncBatchDeltaCheck(reloadedDelta);
+    progress('delta-retry-complete', { status: secondDelta.status });
     assert.equal(secondDelta.status, 'up-to-date', JSON.stringify(secondDelta));
     assert.equal(secondDelta.filed.length, 1);
     assert.equal(secondDelta.filed[0]!.id, firstFiling.id);
@@ -252,6 +287,7 @@ async function main() {
     const [deltaItem] = await sql`SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id = ${firstFiling.id}`;
     assert.equal(deltaItem!.assignee, deltaAuthor);
     assert.deepEqual(await getMessageById(deltaMessageId), originalMessage, 'retry must reuse the persisted message');
+    await until(async () => (await listRecentDeliveries(deltaAuthor)).length > 0, 'typecheck wake persisted');
     const deltaDeliveries = await listRecentDeliveries(deltaAuthor);
     assert.equal(deltaDeliveries.length, 1);
     assert.equal(Reflect.get(deltaDeliveries[0]!.payload as object, 'workItemId'), firstFiling.id);
@@ -274,6 +310,7 @@ async function main() {
     // Keep ONE P028/P037 baseline, then fail its body with the actual host
     // sweep in flight. Only time is controlled: the managed callback, sweep,
     // HNSW probe and persistence all use their production private-PG bindings.
+    progress('lifecycle-start');
     await stopInterestWatchSweeper();
     watchId = randomUUID();
     await upsertInboxWakeAwait({ subscriberId: author, eventKey: `interest:${watchId}`, minSleepSec: 0 });
@@ -375,6 +412,7 @@ async function main() {
       finally { await getOrgPg().sql.end({ timeout: 5 }); }
       order.push('pools-closed');
       if (receipt && lifecycle) console.log('SYNC_LINT_PRIVATE_RECEIPT ' + JSON.stringify({ ...receipt, lifecycle }));
+      progress('lifecycle-complete');
     }
   }
   assert.ok(receipt && lifecycle);

@@ -62,6 +62,7 @@ import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './accept
 import { barRequiresAutomatedProof } from './acceptance-bar-contract-snapshot';
 import { isEnforceableSpecLifecycle, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import { validExplicitExemption } from './agent-tools/plans/spec-quality';
+import { readSpecEvidencePlane } from './agent-tools/plans/spec-evidence-store';
 
 /** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
 export interface NonCodeItemProof {
@@ -162,7 +163,7 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
         contract.current && contract.specId === mapping.specId && contract.specRevision === mapping.specRevision &&
         contract.specFingerprint === mapping.specContentHash)) return false;
       const evidence = (bar.proof.history ?? []).filter((row) => {
-        const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+        const plane = readSpecEvidencePlane(row.details);
         const instrument = row.details.instrument as { none?: unknown; reason?: unknown } | undefined;
         // Manual content inspection is a supported proof kind. Keep bare claims out:
         // the contract must explicitly require manual proof, the binding must declare

@@ -19,7 +19,10 @@ import {
 } from './acceptance-bar-amendment';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
-import { normalizeAcceptanceBarCriterion } from './rubrics';
+import {
+  acceptanceCanonicalUnchangedIgnoringLegacyChecks,
+  normalizeAcceptanceBarCriterion,
+} from './rubrics';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import {
   ACCEPTANCE_BAR_MEANING_FIELDS,
@@ -101,6 +104,41 @@ describe('acceptance BAR amendment transaction contract', () => {
     expect(acceptanceBarMeaningField('check')).toBe(true);
     expect(acceptanceBarMeaningField('method')).toBe(false);
     expect(acceptanceBarMeaningField('replication')).toBe(false);
+  });
+
+  it('ignores stale check projections but detects METHOD and class edits', () => {
+    const stored = {
+      kind: 'acceptance',
+      subjectPlan: 'plan',
+      characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'unknown'],
+      barSetHash: 'set-hash',
+      criteria: [{
+        key: 'r-1',
+        title: 'Outcome',
+        model: 'The outcome is true.',
+        barKey: 'R-1',
+        barHash: 'bar-hash',
+        driftMarkers: 'The outcome is false.',
+        method: 'Read the old method.',
+        replication: 'Repeat the old method.',
+        criterionClass: 'settle-once',
+        check: { kind: 'tool', tool: 'retired-tool', schemaRevision: 'd084' },
+      }],
+    };
+    const checkMigrated = {
+      ...stored,
+      criteria: [{ ...stored.criteria[0], check: { kind: 'tool', tool: 'current-tool', schemaRevision: 'live' } }],
+    };
+    expect(acceptanceCanonicalUnchangedIgnoringLegacyChecks(stored, checkMigrated)).toBe(true);
+    expect(acceptanceCanonicalUnchangedIgnoringLegacyChecks(stored, {
+      ...checkMigrated,
+      criteria: [{ ...checkMigrated.criteria[0], method: 'Read the complete method.' }],
+    })).toBe(false);
+    expect(acceptanceCanonicalUnchangedIgnoringLegacyChecks(stored, {
+      ...checkMigrated,
+      criteria: [{ ...checkMigrated.criteria[0], criterionClass: 'violatable' }],
+    })).toBe(false);
   });
 
   it('represents BAR additions and removals explicitly in approval receipts', () => {

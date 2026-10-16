@@ -3496,6 +3496,42 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
   }
 
+  it('EI-261580: persists a provenance-only amendment with its authenticated authority', async () => {
+    const seeded = await explicitAmendmentSubject('provenance-only-amendment-subject');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(before.criteria.map((criterion) => criterion.barProvenance?.lifecycle)).toEqual([
+      'pre-implementation', 'pre-implementation',
+    ]);
+    const criteria = before.criteria.map((criterion) => ({
+      ...criterion,
+      barProvenance: { ...criterion.barProvenance!, lifecycle: 'legacy-backfilled' as const },
+    }));
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'provenance-correction-author',
+      reason: 'Correct the post-implementation declaration without changing the acceptance promise.',
+      expectedRubricRevision: before.revision,
+      expectedSubjectPlanRevision: seeded.subjectRevision,
+      idempotencyKey: 'provenance-only-amendment',
+      criteria,
+    };
+    expect(await rubrics.previewAcceptanceBarAmendment(amendment)).toMatchObject({
+      changedBars: [], approvalRequired: false, nextBarSetHash: before.barSetHash,
+    });
+    await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.criteria).toEqual(before.criteria);
+
+    const amended = (await rubrics.amendRubric(amendment))!;
+    const reread = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(amended.criteria.map((criterion) => criterion.barProvenance)).toEqual(
+      before.criteria.map((criterion) => ({ ...criterion.barProvenance!, lifecycle: 'legacy-backfilled' })),
+    );
+    expect(reread.criteria).toEqual(amended.criteria);
+    expect(reread.barSetHash).toBe(before.barSetHash);
+    expect(reread.barContract!.meaningRevision).toBe(before.barContract!.meaningRevision);
+    expect((await rubrics.amendRubric(amendment))!.revision).toBe(reread.revision);
+  });
+
   it('repairs a stale canonical map without amending the rubric or disturbing proof projections', async () => {
     const seeded = await explicitAmendmentSubject('stale-map-repair-subject', 'live');
     const { validateAcceptanceBarSource } = await import('./acceptance-bar-seed');

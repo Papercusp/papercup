@@ -26,6 +26,66 @@ function py(module: string, expr: string, input: unknown): any {
 
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
+describe('capacity Server population preflight', () => {
+  it('requests a bounded full-file digest with enough native output for any poll', () => {
+    const prompt = py(DRIVER, 'm.native_hash_prompt(inp)', 'WARM-a17-3');
+    expect(prompt).toContain('`sha256sum dummy-data.txt`');
+    expect(prompt).toContain('max_output_tokens=512 for execution and any polling');
+    expect(prompt).not.toContain('cat dummy-data.txt');
+    expect(prompt).toContain('DONE-WARM-a17-3');
+  });
+
+  function population(users: number[], expected = 1003, nested = false) {
+    const code = [
+      'import importlib.util,json,pathlib,tempfile,types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'root=pathlib.Path(tempfile.mkdtemp())',
+      'def service(uid): return root / f"user.slice/user-{uid}.slice/user@{uid}.service/app.slice/papercusp-server.service"',
+      `for uid in ${JSON.stringify(users)}:`,
+      ` p=service(uid)${nested ? ' / "child"' : ''}; p.mkdir(parents=True); (p/"cgroup.procs").write_text("123\\n")`,
+      'result=None; error=None',
+      `try: result=m.server_population(str(service(${expected})), str(root))`,
+      'except RuntimeError as e: error=str(e)',
+      'print(json.dumps({"result":result,"error":error}))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    return JSON.parse(r.stdout);
+  }
+
+  it('accepts exactly the intended live service, including a child-only process', () => {
+    for (const nested of [false, true]) {
+      expect(population([1003], 1003, nested)).toMatchObject({ result: { count: 1 }, error: null });
+    }
+  });
+
+  it.each([{ users: [] }, { users: [1001] }, { users: [1001, 1003] }])('rejects missing, wrong or extra services: %j', ({ users }) => {
+    const result = population(users);
+    expect(result.result).toBeNull();
+    expect(result.error).toContain('server population mismatch');
+  });
+
+  it('runs the population check before creating probes or launching native agents', () => {
+    const code = [
+      'import importlib.util,json,tempfile,types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'calls=[]',
+      'm.Recorder=lambda *args: calls.append("recorder")',
+      'm.subprocess.Popen=lambda *args, **kw: calls.append("probe")',
+      'm.stop_agents=lambda: calls.append("stop")',
+      'error=None',
+      'try: m.run(types.SimpleNamespace(server_cgroup="/missing"))',
+      'except RuntimeError as e: error=str(e)',
+      'print(json.dumps({"calls":calls,"error":error}))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ calls: [], error: expect.stringContaining('server population mismatch') });
+  });
+});
+
 describe('real Luna load and swap tuning', () => {
   it.each([[200, true], [429, true], [503, false]])('checks HTTP %s with catalog=%s', (status, catalog) => {
     const code = [
