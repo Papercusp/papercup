@@ -214,7 +214,7 @@ import {
 import { findCodexRolloutPath } from './codex-rollout-overflow';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
-import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
+import { isAcceptedPsuHostDelivery, type DeliveryWork, type WakeChannel, type WakeOutcome, type WakeHandle } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
@@ -3232,11 +3232,6 @@ type PsuInjectHostView = {
   launchedBy?: string | null;
 };
 
-function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
-  return delivery.lastError?.startsWith('psu-host accepted:') === true ||
-    delivery.lastError?.startsWith('psu-host pending-delivery-id:') === true;
-}
-
 function hasCurrentHostEndingDrop(
   events: readonly PtyHostEvent[],
   deliveryId: string,
@@ -3387,21 +3382,21 @@ async function injectPsuHostWake(
       if (cancellation.ok && cancellation.reason === 'cancel-requested') {
         return {
           kind: 'park',
-          reason: 'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+          reason: 'psu-host accepted: cancellation request accepted; waiting for its exact pre-write receipt',
           hostCommitPending: true,
         };
       }
       if (cancellation.ok && cancellation.reason === 'pending-delivery-id') {
         return {
           kind: 'park',
-          reason: 'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+          reason: 'psu-host accepted: cancellation is unsupported; the accepted delivery remains host-owned and retryable',
           hostCommitPending: true,
         };
       }
       if (cancellation.ok && cancellation.reason === 'accepted') {
         return {
           kind: 'park',
-          reason: 'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+          reason: 'psu-host accepted: fail-open wake retry; waiting for its delivery outcome',
           hostCommitPending: true,
         };
       }
