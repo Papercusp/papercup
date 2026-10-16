@@ -119,6 +119,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       budgetMs: WORK_ITEMS_GET_BUDGET_MS,
     });
     expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
+      schemaVersion: 'work-items-get-read-v1', requested: 1, available: 0, absent: 0, unavailable: 1,
+      outerStageAttribution: expect.any(String),
+    } });
     expect(out.data.read.baseReadDiagnostics).toEqual([
       expect.objectContaining({
         id: 'WI-timeout',
@@ -145,6 +149,12 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     const out = await pending;
     expect(out.data.results).toHaveLength(ids.length);
     expect(out.data.results.every((row) => row.availability === 'unavailable')).toBe(true);
+    expect(out.data.results.map((row) => row.id)).toEqual(ids);
+    expect(out.data.results.every((row) => row.ok === false && row.retryable === true && row.error === 'timeout')).toBe(true);
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: ids.length }, read: {
+      schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: ids.length,
+      available: 0, absent: 0, unavailable: ids.length, outerStageAttribution: expect.any(String),
+    } });
     expect(out.data.read.baseReadDiagnostics).toEqual(expect.arrayContaining(
       ids.map((id) => expect.objectContaining({
         id,
@@ -612,6 +622,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       retryable: true,
       phase: 'read',
     });
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
+      schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: 1,
+      available: 0, absent: 0, unavailable: 1, outerStageAttribution: expect.any(String),
+    } });
 
     rejectRead(new Error('late storage failure'));
     await Promise.resolve();
@@ -634,6 +648,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       pgCode,
     });
     expect(out.data.results[0].message).toContain('retry shortly');
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
+      schemaVersion: 'work-items-get-read-v1', requested: 1, available: 0, absent: 0, unavailable: 1,
+      outerStageAttribution: expect.any(String),
+    } });
   });
 
   it('maps a pool acquisition deadline to the same retryable unavailable contract without inventing a PG code', async () => {

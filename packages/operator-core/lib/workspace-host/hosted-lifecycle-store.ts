@@ -3,7 +3,11 @@ import { withWorkspace } from '@papercusp/db-org';
 import {
   appendWorkspaceHostSpendObservation,
   evaluateWorkspaceHostSpendFinality,
+  selectWorkspaceHostPoolPlacement,
   workspaceHostWorkflowKeys,
+  type WorkspaceHostPoolCandidate,
+  type WorkspaceHostPoolPlacement,
+  type WorkspaceHostPoolRequest,
   type WorkspaceHostSpendFinality,
   type WorkspaceHostSpendObservation,
 } from '@papercusp/deployment-driver';
@@ -138,6 +142,8 @@ export interface AdmitHostedLifecycleJobInput {
   operationId?: string;
   request?: unknown;
   policy?: Partial<HostedLifecyclePolicy>;
+  /** Server-resolved requirements. Candidate inventory is read inside admission, never supplied by a customer. */
+  pool?: Omit<WorkspaceHostPoolRequest, 'workspaceId' | 'customerWorkspaceId' | 'target' | 'nowMs' | 'mayProvision'>;
 }
 
 export interface HostedLifecycleAdmissionReceipt {
@@ -147,6 +153,145 @@ export interface HostedLifecycleAdmissionReceipt {
   organizationId: string;
   customerWorkspaceId: string;
   providerTarget: string;
+  hostId: string;
+  placement?: WorkspaceHostPoolPlacement;
+}
+
+/** Queue/provision outcomes have no reservation and must not launch a provider workflow. */
+export class HostedLifecyclePlacementError extends Error {
+  constructor(readonly placement: WorkspaceHostPoolPlacement) {
+    super(`hosted lifecycle placement: ${placement.kind}`);
+    this.name = 'HostedLifecyclePlacementError';
+  }
+}
+
+/** Controller observation; tenant, volume and reservation ownership come from canonical rows. */
+export interface HostedPoolObservation {
+  generation: number;
+  desiredRevision: number;
+  controllerFence: number;
+  scope: WorkspaceHostPoolRequest['scope'];
+  zone: string;
+  architecture: string;
+  runtimeBundleSha256: string;
+  size: WorkspaceHostPoolCandidate['size'];
+  observedAtMs: number;
+  cleanAttestationRef: string | null;
+}
+
+/** Internal controller seam; deliberately absent from customer request contracts. */
+export async function recordHostedPoolObservation(input: {
+  workspaceId: string;
+  hostId: string;
+  controllerId: string;
+  observation: HostedPoolObservation;
+}): Promise<void> {
+  const o = input.observation;
+  selectWorkspaceHostPoolPlacement({
+    ...o, workspaceId: input.workspaceId, customerWorkspaceId: 'observation-validation',
+    dataVolumeId: 'observation-validation', target: 'observation-validation', region: 'observation-validation',
+    minimum: o.size, nowMs: o.observedAtMs, maxObservationAgeMs: 1, mayProvision: false,
+  }, []);
+  if (!Number.isSafeInteger(o.generation) || o.generation < 1 ||
+      !Number.isSafeInteger(o.desiredRevision) || o.desiredRevision < 1 ||
+      !Number.isSafeInteger(o.controllerFence) || o.controllerFence < 1 || o.observedAtMs > Date.now() ||
+      (o.cleanAttestationRef !== null && !o.cleanAttestationRef.trim())) {
+    throw new Error('hosted_pool_observation_invalid');
+  }
+  await transaction(required(input.workspaceId, 'workspace_id'), async (tx) => {
+    const rows = await tx<Array<{ id: string }>>`
+      UPDATE harness_shared.workspace_hosts
+      SET pool_observation = ${JSON.stringify(o)}::jsonb, updated_at = now()
+      WHERE workspace_id = ${input.workspaceId} AND id = ${required(input.hostId, 'host_id')}
+        AND host_generation = ${o.generation} AND controller_fence = ${o.controllerFence}
+        AND desired_revision = ${o.desiredRevision} AND observed_revision = desired_revision
+        AND controller_id = ${required(input.controllerId, 'controller_id')}
+        AND desired_spec->'scope' = ${JSON.stringify(o.scope)}::jsonb
+        AND desired_spec->>'zone' = ${o.zone}
+        AND runtime_release->>'bundleSha256' = ${o.runtimeBundleSha256}
+        AND (pool_observation IS NULL OR
+          (pool_observation->>'generation')::bigint <> host_generation OR
+          (pool_observation->>'controllerFence')::bigint <> controller_fence OR
+          (pool_observation->>'observedAtMs')::bigint < ${o.observedAtMs})
+      RETURNING id`;
+    if (rows.length !== 1) throw new Error('hosted_pool_observation_fenced_or_stale');
+  });
+}
+
+interface PoolHostRow {
+  id: string;
+  target: string;
+  region: string;
+  host_generation: number;
+  desired_revision: number;
+  observed_revision: number;
+  controller_fence: number;
+  observed_state: string;
+  health_status: string | null;
+  health_attested_at: Date | string | null;
+  runtime_release: { bundleSha256?: string } | null;
+  desired_spec: { scope?: WorkspaceHostPoolRequest['scope']; zone?: string } | null;
+  pool_observation: HostedPoolObservation | null;
+  customer_workspace_id: string | null;
+}
+
+async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput): Promise<WorkspaceHostPoolPlacement> {
+  // Stable row order also serializes against ordinary controller writers, which do not
+  // take our provider/tenant advisory locks. Keep these locks until the operation insert.
+  const hosts = await tx<PoolHostRow[]>`
+    SELECT host.id, host.target, host.region, host.host_generation, host.controller_fence,
+           host.desired_revision, host.observed_revision,
+           host.observed_state, host.health_status, host.health_attested_at, host.runtime_release,
+           host.desired_spec, host.pool_observation, customer.id AS customer_workspace_id
+      FROM harness_shared.workspace_hosts host
+      LEFT JOIN harness_shared.customer_workspaces customer
+        ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+     WHERE host.workspace_id = ${input.workspaceId}
+     ORDER BY host.id FOR UPDATE OF host`;
+  const resources = await tx<Array<{ host_id: string; provider_id: string | null }>>`
+    SELECT host_id, provider_id FROM harness_shared.workspace_host_resources
+     WHERE workspace_id = ${input.workspaceId} AND kind = 'disk'
+       AND state NOT IN ('absent', 'compensated')`;
+  const reservations = await tx<Array<{ id: string; host_id: string; data_volume_id: string | null }>>`
+    SELECT id, host_id, admission_receipt->'input'->'pool'->>'dataVolumeId' AS data_volume_id
+      FROM harness_shared.workspace_host_operations
+     WHERE workspace_id = ${input.workspaceId} AND status IN ('queued', 'running')`;
+  if (reservations.some((operation) => operation.data_volume_id === input.pool!.dataVolumeId)) {
+    return { kind: 'queue', reason: 'existing-tenant-needs-reconciliation', rejected: [] };
+  }
+  const candidates: WorkspaceHostPoolCandidate[] = [];
+  for (const host of hosts) {
+    const o = host.pool_observation;
+    const disks = resources.filter((resource) => resource.host_id === host.id);
+    const pending = reservations.filter((operation) => operation.host_id === host.id);
+    // Initial admission owns an FK placeholder, not yet a VM or data writer.
+    if (host.id === input.hostId && !o && disks.length === 0 && pending.length === 0 &&
+        ['absent', 'provisioning'].includes(host.observed_state)) continue;
+    const current = o?.generation === host.host_generation && o?.controllerFence === host.controller_fence &&
+      o?.desiredRevision === host.desired_revision && host.observed_revision === host.desired_revision &&
+      o?.runtimeBundleSha256 === host.runtime_release?.bundleSha256 &&
+      o?.scope?.kind === host.desired_spec?.scope?.kind && o?.scope?.id === host.desired_spec?.scope?.id &&
+      o?.zone === host.desired_spec?.zone;
+    const reservedVolume = pending.find((operation) => operation.data_volume_id)?.data_volume_id;
+    candidates.push({
+      workspaceId: input.workspaceId, hostId: host.id, target: host.target, region: host.region,
+      scope: host.desired_spec?.scope ?? { kind: '', id: '' }, zone: host.desired_spec?.zone ?? '',
+      generation: host.host_generation, controllerFence: current ? host.controller_fence : 0,
+      architecture: o?.architecture ?? '', runtimeBundleSha256: current ? o!.runtimeBundleSha256 : '',
+      size: o?.size ?? { cpuCount: 0, memoryMiB: 0 },
+      state: host.observed_state === 'running' || host.observed_state === 'stopped' ? host.observed_state : 'failed',
+      health: host.health_status === 'healthy' ? 'healthy' : 'unknown',
+      observedAtMs: Math.min(o?.observedAtMs ?? NaN, host.health_attested_at ? new Date(host.health_attested_at).getTime() : NaN),
+      customerWorkspaceId: host.customer_workspace_id,
+      dataVolumeId: disks.length > 1 ? 'ambiguous-multiple-data-volumes' : disks[0]?.provider_id ?? reservedVolume ?? null,
+      reservationId: pending[0]?.id ?? null,
+      cleanAttestationRef: current && !host.customer_workspace_id && disks.length === 0 ? o!.cleanAttestationRef : null,
+    });
+  }
+  return selectWorkspaceHostPoolPlacement({
+    ...input.pool!, workspaceId: input.workspaceId, customerWorkspaceId: input.customerWorkspaceId,
+    target: input.providerTarget, nowMs: Date.now(), mayProvision: input.action === 'provision',
+  }, candidates);
 }
 
 export class HostedLifecycleAdmissionError extends Error {
@@ -191,10 +336,25 @@ export async function admitHostedLifecycleJob(
   safeInt(input.estimate.cents, 'estimate_cents');
 
   return transaction(input.workspaceId, async (tx) => {
+    // Operation identity is workspace-global, including collisions across provider/tenant.
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`hosted-lifecycle:operation:${input.workspaceId}:${input.operationId}`}, 0))`;
     const providerLock = `hosted-lifecycle:provider:${input.workspaceId}:${input.providerTarget}`;
     const tenantLock = `hosted-lifecycle:tenant:${input.workspaceId}:${input.customerWorkspaceId}`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${providerLock}, 0))`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${tenantLock}, 0))`;
+
+    const admissionInput = JSON.stringify({ ...input, operationId: undefined });
+    const replay = await tx<Array<{ admission_receipt: { result: HostedLifecycleAdmissionReceipt } | null; input_matches: boolean }>>`
+      SELECT admission_receipt,
+             admission_receipt->'input' IS NOT DISTINCT FROM ${admissionInput}::jsonb AS input_matches
+        FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}`;
+    if (replay[0]) {
+      if (!replay[0].input_matches || !replay[0].admission_receipt?.result) {
+        throw new Error('hosted_lifecycle_operation_conflict');
+      }
+      return { ...replay[0].admission_receipt.result, created: false };
+    }
 
     const directory = await tx<DirectoryRow[]>`
       SELECT
@@ -217,7 +377,7 @@ export async function admitHostedLifecycleJob(
       WHERE customer.workspace_id = ${input.workspaceId}
         AND customer.id = ${input.customerWorkspaceId}
         AND customer.workspace_host_id = ${input.hostId}
-      LIMIT 1`;
+      LIMIT 1 FOR UPDATE OF customer`;
     const row = directory[0];
     if (!row) throw new Error('hosted_lifecycle_customer_workspace_not_found');
     if (row.state === 'deleted' || row.state === 'offboarding') {
@@ -276,6 +436,35 @@ export async function admitHostedLifecycleJob(
     );
     if (!decision.allowed) throw new HostedLifecycleAdmissionError(decision);
 
+    let placement: WorkspaceHostPoolPlacement | undefined;
+    if (input.pool) {
+      if (input.action !== 'start' && input.action !== 'provision') throw new Error('hosted_pool_action_invalid');
+      placement = await placeHostedPoolJob(tx, input);
+      if (!('hostId' in placement)) throw new HostedLifecyclePlacementError(placement);
+      const reserved = await tx<Array<{ id: string }>>`
+        UPDATE harness_shared.workspace_hosts SET updated_at = now()
+         WHERE workspace_id = ${input.workspaceId} AND id = ${placement.hostId}
+           AND host_generation = ${placement.generation} AND controller_fence = ${placement.controllerFence}
+         RETURNING id`;
+      if (reserved.length !== 1) throw new Error('hosted_pool_reservation_fenced');
+      if (placement.kind === 'assign-warm') {
+        const bound = await tx<Array<{ id: string }>>`
+          UPDATE harness_shared.customer_workspaces
+             SET workspace_host_id = ${placement.hostId}, updated_at = now()
+           WHERE workspace_id = ${input.workspaceId} AND id = ${input.customerWorkspaceId}
+             AND workspace_host_id = ${input.hostId}
+          RETURNING id`;
+        if (bound.length !== 1) throw new Error('hosted_pool_binding_changed');
+      }
+      input.hostId = placement.hostId;
+    }
+    const receipt: HostedLifecycleAdmissionReceipt = {
+      operationId: input.operationId, created: true, decision,
+      organizationId: row.organization_id, customerWorkspaceId: input.customerWorkspaceId,
+      providerTarget: input.providerTarget, hostId: input.hostId,
+      ...(placement ? { placement } : {}),
+    };
+
     const approvedBy =
       input.approvalStatus === 'approved' ? required(input.approvedByPrincipalId ?? '', 'approved_by') : null;
     const approvedAt = input.approvalStatus === 'approved' ? required(input.approvedAt ?? '', 'approved_at') : null;
@@ -287,7 +476,7 @@ export async function admitHostedLifecycleJob(
         cost_estimate_ref, cost_estimated_at,
         billing_owner_kind, billing_owner_id,
         risk_tier, approval_status, approved_by_principal_id, approved_at,
-        heartbeat_at, emergency_teardown, teardown_reason, updated_at
+        heartbeat_at, emergency_teardown, teardown_reason, admission_receipt, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.operationId}, ${input.hostId}, ${input.action},
         'queued', 0, 'Hosted lifecycle job admitted',
@@ -297,18 +486,13 @@ export async function admitHostedLifecycleJob(
         ${input.estimate.evidenceRef}, ${input.estimate.estimatedAt},
         ${billingOwner.kind}, ${billingOwner.id},
         ${input.riskTier}, ${input.approvalStatus}, ${approvedBy}, ${approvedAt},
-        now(), ${input.emergencyTeardown ?? false}, ${input.teardownReason ?? null}, now()
+        now(), ${input.emergencyTeardown ?? false}, ${input.teardownReason ?? null},
+        ${JSON.stringify({ schemaVersion: 1, input: JSON.parse(admissionInput), result: receipt })}::jsonb, now()
       )
       ON CONFLICT (workspace_id, id) DO NOTHING
       RETURNING id`;
-    return {
-      operationId: input.operationId,
-      created: inserted.length === 1,
-      decision,
-      organizationId: row.organization_id,
-      customerWorkspaceId: input.customerWorkspaceId,
-      providerTarget: input.providerTarget,
-    };
+    if (inserted.length !== 1) throw new Error('hosted_lifecycle_operation_conflict');
+    return receipt;
   });
 }
 
