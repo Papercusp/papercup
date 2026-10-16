@@ -122,6 +122,7 @@
         "contractVersion": { "type": "integer", "minimum": 1 },
         "displayName": { "type": "string" },
         "datatypes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "sync": { "type": "boolean", "description": "Whether inbound sync is supported. Omitted means true; false declares a write-only provider that the host does not poll." },
         "capabilities": { "type": "array", "items": { "type": "string" } },
         "verification": {
           "type": "object",

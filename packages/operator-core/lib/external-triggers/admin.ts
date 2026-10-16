@@ -108,23 +108,15 @@ export interface CreatedExternalTriggerBinding {
 }
 
 /**
- * Platform facts a social trigger source carries beyond the generic row (P-027).
- *
- * Present only when the source's `kind` resolves to a registry platform — a
- * social source's kind IS its platform id, so `getSocialPlatform(kind)` is the
- * whole mapping. Non-social sources (gmail, gcal, slack, …) keep `social: null`
- * and render exactly as they did before.
- *
- * These are all DERIVED at read time from the registry and the persisted cursor.
- * Nothing here is a second copy of state: recording, say, a platform's rate
- * budget on the source row would be a value describing code that drifts the
- * moment the registry is corrected.
+ * Installed social-provider facts beyond the generic source row (P-027).
+ * Identity, read support, auth and contract evidence follow the current package
+ * descriptor; the host cursor carries sync progress. The legacy rate-policy
+ * derivation remains until the shared policy migration is complete.
  */
 export interface ExternalTriggerSocialAdminFacts {
   platformId: string;
   label: string;
-  wave: 'A' | 'B' | 'C' | null;
-  /** Registry row verified against its cited sources. */
+  /** Package API contract verified against its cited sources. */
   verified: boolean;
   /**
    * The owner-side wall, when the platform declares one (Meta app review, a
@@ -135,9 +127,8 @@ export interface ExternalTriggerSocialAdminFacts {
   blockedOn: string | null;
   authMode: string;
   /**
-   * Null when the platform cannot be read at any grant tier we hold — a
-   * write-only row (`read: null`). Distinct from an unknown: the registry has
-   * verified that no readable stream exists.
+   * Host delivery path from the installed descriptor. Null when the package
+   * explicitly declares sync:false (write-only).
    */
   readTransport: string | null;
   /** Host sync progress; the provider's cursor contents stay opaque. */
@@ -1326,11 +1317,9 @@ export function socialAdminFacts(
   const descriptor = installedRegistry.get(kind)?.descriptor;
   if (!descriptor?.datatypes.includes('social-post')) return null;
   const row = getSocialPlatform(kind);
-  // Operational metadata (wave and the conservative storm cap) remains
-  // in the legacy registry until its vendor-contract migration lands. Identity,
-  // verification and write capabilities already belong to installed packages;
-  // when discovery has completed, those package declarations override the
-  // legacy projection so the pane cannot advertise a stale or uninstalled row.
+  // Only the conservative storm cap still uses the legacy registry. Read
+  // support follows the current package, including a same-id replacement.
+  const readable = descriptor.sync !== false;
   const packageWriteVerbs = descriptor.capabilities
     .filter((capability) => /^(?:social)\.(?:post|reply|delete)$/.test(capability))
     .map((capability) => capability.slice('social.'.length));
@@ -1359,24 +1348,23 @@ export function socialAdminFacts(
   return {
     platformId: descriptor.id,
     label: descriptor.displayName || descriptor.id,
-    wave: row?.wave ?? null,
     verified: packageVerified,
     blockedOn: descriptor.verification?.blockedOn ?? null,
     authMode: descriptor.oauth ? descriptor.oauth.instance ? 'instance-oauth' : 'oauth'
       : descriptor.setup?.session ? 'app-password' : descriptor.setup?.credentials?.length ? 'credentials' : 'none',
-    readTransport: row?.read?.transport ?? null,
+    readTransport: !readable ? null : descriptor.ingress ? 'socket' : descriptor.push ? 'push+poll' : 'poll',
     // A write-only platform has no cursor to classify, and letting it fall
     // through would render `never-synced` permanently, even though there is
     // no readable stream to run. Only the read contract can distinguish this.
     cursor:
-      row?.read === null
+      !readable
         ? {
             state: 'not-readable' as const,
             at: null,
             ageMs: null,
             position: null,
             detail:
-              'this platform has no readable content stream at any grant tier we hold — it is write-only, so there is nothing to sync',
+              'the installed provider declares write-only support; it has no inbound stream to sync',
           }
         : freshness,
     rateBudget: {

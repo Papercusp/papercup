@@ -15,6 +15,7 @@ function fake() {
 describe('LinkedIn personal-profile provider package (P-001)', () => {
   it('declares ordinary profile publishing and reauthorization without partner privileges', async () => {
     const d = await adapter.describe(); expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(d.sync).toBe(false);
     expect(d.capabilities).toEqual(['social.post', 'social.delete']);
     expect(d.oauth).toMatchObject({ scopes: ['openid', 'profile', 'w_member_social'], refreshPolicy: 'reauthorize', identity: { idField: 'sub' } });
     const fetch = vi.fn();

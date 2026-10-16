@@ -222,6 +222,25 @@ describe('retention holder evidence', () => {
     expect(result).toEqual({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['999']]]) });
   });
 
+  it('isolates release holder scans even for a root host and requests every process link', async () => {
+    const scan = vi.fn();
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
+      expect(command).toBe('/usr/bin/sudo');
+      expect(args.join(' ')).toContain('includeProcessLinks: true');
+      expect(args.join(' ')).toContain('readdirSync');
+      options.onSpawn(child as unknown as ChildProcess, 'release-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[process.cwd(), [String(process.pid)]], ['/cut', ['999']]] }));
+      child.emit('close', 0, null); return { child, taskId: 'release-holder-task' };
+    });
+    const result = await scanRetentionHolders(['/cut'], {
+      uid: () => 0, readStatus: async () => 'NSpid:\t1\n', scan, isolate: true, includeProcessLinks: true,
+    });
+    expect(scan).not.toHaveBeenCalled();
+    expect(result.complete).toBe(true);
+    expect(result.byPath.get('/cut')).toEqual(['999']);
+  });
+
   it('preserves full JSON stdout separately from scope diagnostics and refuses truncated evidence', async () => {
     const holderPids = Array.from({ length: 1000 }, (_, i) => String(i + 1));
     const byPath = [[process.cwd(), [String(process.pid)]], ['/scratch', holderPids]];

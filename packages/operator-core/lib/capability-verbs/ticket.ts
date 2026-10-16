@@ -15,7 +15,9 @@
  * inside the caller's own workspace.
  *
  * Idempotency is the in-app filer's, unchanged: an `attempted` record commits on the trigger run
- * BEFORE any provider HTTP, keyed by a correlation id derived from (workspace, trigger run). A replay
+ * BEFORE any provider HTTP. When the canonical trigger envelope has `sourceId` and `externalId`,
+ * the correlation is stable across runs and scoped to (workspace, pack installation, sourceId,
+ * externalId); legacy envelopes fall back to the trigger-run scope. A replay or a matching run
  * reads that record instead of filing twice, and a provider that already holds the correlation id
  * answers it (`recoveryOnly`) without creating a second ticket. No provider id is checked anywhere:
  * any installed provider serving `ticket.create` + an option capability works.

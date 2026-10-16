@@ -1232,6 +1232,15 @@ export type BindSpecEvidenceResult =
       specRevision: number;
       message: string;
     }
+  // An isolated integration run's retained source receipt is the execution-time
+  // witness for the repo-files source set. Refuse a hand-built recipe that names
+  // source paths the run never recorded, instead of persisting proof whose later
+  // environment re-measurement can only return unknown.
+  | {
+      status: 'completed_runtime_source_not_in_receipt';
+      gaps: Array<{ runId: string; missingSourcePaths: string[] }>;
+      message: string;
+    }
   // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
   // different (or NULL) harness_slug is indistinguishable from a fabricated id
   // — both surface as a bare `test_run_not_found`, which reads as "you invented
@@ -1562,6 +1571,23 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
             .map(receipt => `isolated-integration:${receipt.runId}`).sort())) {
           executionRuntimeFingerprint = isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
         }
+      }
+    }
+
+    if (input.testRunId != null && runtimeRecipe?.completedRuntime?.kind === 'isolated-integration') {
+      const gaps = await isolatedIntegrationSourceReceiptGaps(runtimeRecipe);
+      if (gaps.length > 0) {
+        const rendered = gaps
+          .map(({ runId, missingSourcePaths }) => `${runId}: ${missingSourcePaths.join(', ')}`)
+          .join('; ');
+        return {
+          status: 'completed_runtime_source_not_in_receipt',
+          gaps,
+          message:
+            'Cannot bind isolated-integration evidence because its retained source receipt does not cover ' +
+            `every declared source path (${rendered}). Re-run the integration with a complete source receipt ` +
+            'or correct the measurement.sourcePaths before binding.',
+        };
       }
     }
 
@@ -2915,6 +2941,48 @@ function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMea
       [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'] as const,
     ]),
   ] as const : [];
+}
+
+/**
+ * Bind-time coverage fence for isolated integration source receipts. A missing artifact
+ * remains a legacy unknown (the read-side certifier will fail closed); once a receipt is
+ * available, however, every explicit source path must be represented in that receipt before
+ * a binding can claim the completed runtime. This catches hand-built recipes that otherwise
+ * pin a null environment fingerprint and only surface the gap during a later read.
+ */
+async function isolatedIntegrationSourceReceiptGaps(
+  recipe: RepoFilesEvidenceMeasurement,
+): Promise<Array<{ runId: string; missingSourcePaths: string[] }>> {
+  const selector = recipe.completedRuntime;
+  if (selector?.kind !== 'isolated-integration') return [];
+  const gaps: Array<{ runId: string; missingSourcePaths: string[] }> = [];
+  await Promise.all(selector.runIds.map(async (runId) => {
+    let receipt: unknown;
+    try {
+      receipt = (await readCompletedRuntimeArtifact(
+        'isolated-integration', runId, 'phases/prepare/source.json',
+      )).data;
+    } catch {
+      // Preserve the pre-existing read-side behavior for missing/expired artifacts. A
+      // receipt that is present is still checked below; the certifier keeps absent
+      // artifacts fail-closed as unknown.
+      return;
+    }
+    const files = receipt && typeof receipt === 'object' && !Array.isArray(receipt)
+      ? (receipt as Record<string, unknown>).files
+      : undefined;
+    if (!Array.isArray(files)) return;
+    const recordedPaths = new Set(
+      files.flatMap((file) => {
+        if (!file || typeof file !== 'object' || Array.isArray(file)) return [];
+        const path = (file as Record<string, unknown>).path;
+        return typeof path === 'string' ? [path] : [];
+      }),
+    );
+    const missingSourcePaths = recipe.sourcePaths.filter((path) => !recordedPaths.has(path));
+    if (missingSourcePaths.length > 0) gaps.push({ runId, missingSourcePaths });
+  }));
+  return gaps.sort((a, b) => a.runId.localeCompare(b.runId));
 }
 
 async function readCompletedRuntimeArtifact(harness: string, runId: string, file: string) {

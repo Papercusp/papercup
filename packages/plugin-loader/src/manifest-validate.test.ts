@@ -113,6 +113,23 @@ describe('plugin dependency + config fields', () => {
   });
 });
 
+describe('provider sync declaration', () => {
+  const provider = { id: 'write-only-example', contractVersion: 1, datatypes: ['social-post'],
+    capabilities: ['social.post'], egressHosts: ['api.example.com'] };
+  const manifest = { name: 'write-only-example', version: '0.1.0', provider };
+
+  it('accepts existing providers and both explicit sync declarations through the install schema', () => {
+    expect(validateManifest(manifest).ok).toBe(true);
+    for (const sync of [true, false]) expect(validateManifest({ ...manifest, provider: { ...provider, sync } }).ok).toBe(true);
+  });
+
+  it.each([null, 'false', 0, {}, []])('rejects malformed sync support %j at installation', (sync) => {
+    const result = validateManifest({ ...manifest, provider: { ...provider, sync } });
+    expect(result.ok).toBe(false);
+    expect(result.issues.some((issue) => issue.path.includes('sync'))).toBe(true);
+  });
+});
+
 describe('triggerPack manifest shape (external-triggers P-012)', () => {
   const triggerPack = {
     inputs: { type: 'object', properties: {} },

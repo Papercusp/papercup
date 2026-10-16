@@ -207,6 +207,9 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   uid?: () => number;
   scan?: typeof openWriterPidsMany;
   privileged?: (paths: readonly string[], control: string) => Promise<OpenWriterScan>;
+  /** Reuse the isolated worker even when the host itself runs as root. */
+  isolate?: boolean;
+  includeProcessLinks?: boolean;
 } = {}): Promise<OpenWriterScan> {
   const status = await (deps.readStatus ?? (() => readFile('/proc/self/status', 'utf8')))().catch(() => '');
   const ids = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
@@ -214,11 +217,12 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   if (!ids || ids.length !== 1) return incompleteHolders('host PID namespace control unavailable');
   const control = process.cwd();
   const wanted = [...new Set([...paths, control])];
-  const scan = (deps.uid ?? (() => process.getuid?.() ?? -1))() === 0
+  const scan = (deps.uid ?? (() => process.getuid?.() ?? -1))() === 0 && !deps.isolate
     ? await (deps.scan ?? openWriterPidsMany)(wanted, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: RETENTION_HOLDER_SCAN_MS,
+      ...(deps.includeProcessLinks ? { includeProcessLinks: true } : {}),
     })
-    : await (deps.privileged ?? scanPrivilegedRetentionHolders)(wanted, control)
+    : await (deps.privileged ?? ((paths, control) => scanPrivilegedRetentionHolders(paths, control, deps.includeProcessLinks)))(wanted, control)
       .catch((err) => incompleteHolders(`privileged holder scan failed: ${message(err)}`));
   if (!scan.byPath.get(control)?.includes(String(process.pid))) {
     scan.complete = false;
@@ -227,7 +231,7 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   return scan;
 }
 
-async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string): Promise<OpenWriterScan> {
+async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string, includeProcessLinks = false): Promise<OpenWriterScan> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
   const require = createRequire(join(repoRoot, 'package.json'));
   // Reuse the scanner from canonical source; the elevated child only reads /proc.
@@ -244,6 +248,7 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
     const { openWriterPidsMany } = await import(process.argv[1]);
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
+      includeProcessLinks: ${includeProcessLinks},
       // This process is an enrolled, isolated worker, never the operator loop.
       procIo: { readdir: (path) => readdirSync(path), readlink: (path) => readlinkSync(path) },
     });

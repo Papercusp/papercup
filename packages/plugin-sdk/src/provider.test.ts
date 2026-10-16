@@ -81,6 +81,20 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
 
+describe('package-owned sync support', () => {
+  it('accepts existing, readable and write-only providers', () => {
+    const d = descriptor({ url: 'https://api.example.com/me', idField: 'id' });
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(validateProviderDescriptor({ ...d, sync: true })).toEqual([]);
+    expect(validateProviderDescriptor({ ...d, sync: false })).toEqual([]);
+  });
+
+  it.each([null, 'false', 0, {}, []])('refuses malformed sync support %j', (sync) => {
+    expect(validateProviderDescriptor({ ...descriptor({ url: 'https://api.example.com/me', idField: 'id' }), sync }))
+      .toContain('provider.sync must be a boolean');
+  });
+});
+
 describe('package-owned API contract evidence', () => {
   const verified = (): ProviderDescriptor => ({
     id: 'example-social', contractVersion: 1, datatypes: ['social-post'],

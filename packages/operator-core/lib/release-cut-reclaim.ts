@@ -54,6 +54,7 @@ export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 import { RETENTION_POLICY } from './storage/retention-policy';
 import type { RetentionCapReceipt } from './storage/disk-reclaim';
+import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
@@ -211,6 +212,7 @@ export interface HolderScan {
   reason?: string;
   /** keyed by registered worktree path */
   holders: Map<string, string[]>;
+  diagnostics?: OpenWriterScan['diagnostics'];
 }
 
 export type AuthoredWork =
@@ -712,58 +714,44 @@ export interface HolderTarget {
  * root PID namespace (a nested namespace sees only its own processes — a confident false
  * idle, the trap measured on this box, memory 41104d77).
  */
-export async function scanProcHolders(targets: HolderTarget[], procRoot = '/proc'): Promise<HolderScan> {
-  // Async on purpose: this walks every fd of every process (tens of thousands of readlinks
-  // on this box). A synchronous /proc walk on the operator main thread measured ~600ms per
-  // pass (WI-10005283); awaiting per process lets the event loop run between them.
+export async function scanProcHolders(targets: HolderTarget[], procRoot = '/proc', deps: {
+  scan?: typeof import('./storage/disk-reclaim').scanRetentionHolders;
+} = {}): Promise<HolderScan> {
+  // A full host walk ran for 604s in a standing pass, versus 5.2s in an isolated
+  // child. Reuse the enrolled privileged worker and its existing deadline,
+  // original-caller control and fail-closed reads. The operator never walks FDs.
   const holders = new Map<string, string[]>();
-  let nsNote = '';
   try {
     const status = await fs.promises.readFile(path.join(procRoot, 'self', 'status'), 'utf8');
     const nspid = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/) ?? [];
-    if (nspid.length > 1) nsNote = `nested-pid-namespace(${nspid.join('/')})`;
+    if (nspid.length !== 1) return { verified: false, reason: `nested-pid-namespace-or-missing(${nspid.join('/')})`, holders };
   } catch (e) {
-    nsNote = `self-status-unreadable:${errText(e)}`;
+    return { verified: false, reason: `self-status-unreadable:${errText(e)}`, holders };
   }
-  const control = realpathOrNull(process.cwd()) ?? process.cwd();
-  const all: HolderTarget[] = [...targets, { key: '\0control', prefixes: [control] }];
-  let pids: string[] = [];
+  const control = process.cwd();
+  const prefixes = [...new Set(targets.flatMap((target) => target.prefixes))];
+  let scan: OpenWriterScan;
   try {
-    pids = (await fs.promises.readdir(procRoot)).filter((n) => /^\d+$/.test(n));
-  } catch (e) {
-    return { verified: false, reason: `proc-unreadable:${errText(e)}`, holders };
+    scan = procRoot === '/proc'
+      ? await (deps.scan ?? (await import('./storage/disk-reclaim')).scanRetentionHolders)(prefixes, {
+        isolate: true, includeProcessLinks: true,
+      })
+      : await openWriterPidsMany([...prefixes, control], {
+        procRoot, descendants: true, includeProcessLinks: true, failClosed: true, deadlineMs: 30_000,
+      });
+  } catch (e) { return { verified: false, reason: `holder-worker:${errText(e)}`, holders }; }
+  for (const target of targets) {
+    const pids = [...new Set(target.prefixes.flatMap((prefix) => scan.byPath.get(prefix) ?? []))]
+      .sort((a, b) => Number(a) - Number(b));
+    if (pids.length) holders.set(target.key, pids.slice(0, 3).map((pid) => `pid ${pid} reference`));
   }
-  let controlSeen = false;
-  for (const pid of pids) {
-    const base = path.join(procRoot, pid);
-    const links = ['cwd', 'root', 'exe'].map((l) => path.join(base, l));
-    try {
-      for (const fd of await fs.promises.readdir(path.join(base, 'fd'))) links.push(path.join(base, 'fd', fd));
-    } catch {
-      // another user's process or one that just exited — its cwd/root/exe are still tried
-    }
-    const targetsOfLinks = await Promise.all(links.map((l) => fs.promises.readlink(l).catch(() => null)));
-    for (let i = 0; i < links.length; i++) {
-      const link = links[i] as string;
-      const target = targetsOfLinks[i];
-      if (target == null) continue;
-      for (const t of all) {
-        if (!t.prefixes.some((p) => target === p || target.startsWith(`${p}/`))) continue;
-        if (t.key === '\0control') {
-          if (pid === String(process.pid) && link.endsWith('/cwd')) controlSeen = true;
-          continue;
-        }
-        const list = holders.get(t.key) ?? [];
-        if (list.length < 3 && !list.some((h) => h.startsWith(`pid ${pid} `))) {
-          list.push(`pid ${pid} ${path.basename(link) === 'cwd' ? 'cwd' : path.basename(path.dirname(link)) === 'fd' ? 'fd' : path.basename(link)}`);
-          holders.set(t.key, list);
-        }
-      }
-    }
+  const diagnostics = scan.diagnostics;
+  if (!scan.complete) return { verified: false,
+    reason: `holder-scan-incomplete:${diagnostics?.reason ?? JSON.stringify(diagnostics ?? {})}`, holders, diagnostics };
+  if (!scan.byPath.get(control)?.includes(String(process.pid))) {
+    return { verified: false, reason: 'positive-control-failed(own cwd not seen)', holders, diagnostics };
   }
-  if (nsNote) return { verified: false, reason: nsNote, holders };
-  if (!controlSeen) return { verified: false, reason: 'positive-control-failed(own cwd not seen)', holders };
-  return { verified: true, holders };
+  return { verified: true, holders, diagnostics };
 }
 
 /**
@@ -870,6 +858,7 @@ export interface ReclaimPhaseTiming {
   stage: 'start' | 'finish';
   elapsedMs?: number;
   outcome?: 'fulfilled' | 'rejected';
+  diagnostics?: OpenWriterScan['diagnostics'];
 }
 
 function emitReclaimPhase(onPhase: GatherOptions['onPhase'], event: ReclaimPhaseTiming): void {
@@ -977,6 +966,9 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
   const holders = await measureReclaimPhaseAsync(opts.onPhase, 'holder-scan', () =>
     Promise.resolve((opts.scanHolders ?? scanProcHolders)(holderTargets)),
   );
+  if (holders.diagnostics) emitReclaimPhase(opts.onPhase, {
+    phase: 'holder-scan-evidence', stage: 'finish', diagnostics: holders.diagnostics,
+  });
   const base = {
     nowMs,
     minIdleHours: opts.minIdleHours ?? DEFAULT_MIN_IDLE_HOURS,

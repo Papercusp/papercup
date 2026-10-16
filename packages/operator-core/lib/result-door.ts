@@ -3714,7 +3714,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           ]
         : []),
       ...(isScorecardsEmitCall(opts) ? scorecardsEmitPreservePaths(bodyShape.json?.parsed) : []),
-      ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
+      ...(opts.toolName === 'plans:get' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:get')
+        ? ['results[].shipReadiness', 'results[].items[].text']
+        : []),
       ...(opts.toolName === 'plans:bind-spec-evidence' ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:bind-spec-evidence')
         ? PLANS_BIND_SPEC_EVIDENCE_REFUSAL_PRESERVE_PATHS

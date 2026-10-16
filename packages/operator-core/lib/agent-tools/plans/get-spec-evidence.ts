@@ -147,6 +147,13 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
+  // This is a correctness read when detail:'full' is requested: the binding
+  // details (including details.adequacy) are the evidence an auditor must
+  // inspect. Preserve that body through both the ambient trimmed tier and the
+  // model-facing result door, just as rubrics:get does for full rubric bodies.
+  // The explicit limit remains the caller's bound on the evidence population.
+  skipResultDoor: 'oversize-by-design',
+  ignoreSessionPayloadTier: true,
   // EI-21841626363210048: the judge role's grading-integrity audit is mandated to
   // "execute each evidence probe exactly as written" for a spec-test-adequacy card —
   // this read-only tool IS that probe (named by spec-test-adequacy's own method text

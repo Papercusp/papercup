@@ -1044,7 +1044,7 @@ describe('scanProcHolders (async /proc walk) against a fabricated proc root', ()
     expect(pending).toBeInstanceOf(Promise);
     const scan = await pending;
     expect(scan.verified).toBe(true);
-    expect(scan.holders.get(held)).toEqual([`pid ${process.pid} fd`]);
+    expect(scan.holders.get(held)).toEqual([`pid ${process.pid} reference`]);
   });
 
   it('refuses verification in a nested PID namespace (a confident false idle otherwise)', async () => {
@@ -1052,6 +1052,28 @@ describe('scanProcHolders (async /proc walk) against a fabricated proc root', ()
     const scan = await scanProcHolders([{ key: held, prefixes: [held] }], proc);
     expect(scan.verified).toBe(false);
     expect(scan.verified === false && scan.reason).toMatch(/nested-pid-namespace/);
+  });
+
+  it('refuses missing namespace evidence and incomplete worker reads', async () => {
+    fs.writeFileSync(path.join(proc, 'self', 'status'), 'Name:\tnode\n');
+    expect((await scanProcHolders([], proc)).verified).toBe(false);
+    const scan = vi.fn().mockResolvedValue({ complete: false,
+      byPath: new Map([[process.cwd(), [String(process.pid)]]]), diagnostics: { readFailures: 1 } });
+    const result = await scanProcHolders([{ key: held, prefixes: [held] }], '/proc', { scan });
+    expect(result.verified).toBe(false);
+    expect(result.reason).toContain('holder-scan-incomplete');
+  });
+
+  it('reuses the isolated privileged scanner and preserves alias holders with bounded diagnostics', async () => {
+    const diagnostics = { elapsedMs: 5, processesTotal: 10, processesScanned: 10, descriptorsScanned: 50, readFailures: 0 };
+    const scan = vi.fn().mockResolvedValue({ complete: true, diagnostics,
+      byPath: new Map([[process.cwd(), [String(process.pid)]], [held, ['42']], ['/real-cut', ['42', '7']]]) });
+    const result = await scanProcHolders([{ key: held, prefixes: [held, '/real-cut'] }], '/proc', { scan });
+    expect(scan).toHaveBeenCalledWith([held, '/real-cut'], { isolate: true, includeProcessLinks: true });
+    expect(result).toEqual({ verified: true, diagnostics,
+      holders: new Map([[held, ['pid 7 reference', 'pid 42 reference']]]) });
+    scan.mockResolvedValueOnce({ complete: true, byPath: new Map() });
+    expect((await scanProcHolders([], '/proc', { scan })).verified).toBe(false);
   });
 });
 

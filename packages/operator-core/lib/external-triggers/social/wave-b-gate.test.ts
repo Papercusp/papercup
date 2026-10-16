@@ -36,8 +36,8 @@ import { dirname, join, resolve } from 'node:path';
 import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { stripComments } from './comment-stripper.fixture';
-import { listSocialPlatformsByWave } from './platform-registry';
 import {
   GOOGLE_WORKSPACE_ALLOWED_SCOPES,
   GOOGLE_WORKSPACE_SCOPES,
@@ -65,8 +65,22 @@ const KIT_FILES = ['provider-conformance.ts', 'provider.ts'] as const;
 
 const read = (file: string): string => readFileSync(join(SUBJECT_DIR, file), 'utf8');
 
-/** Wave B, taken from the registry rather than hardcoded — see the D-019 test. */
-const waveBPlatforms = listSocialPlatformsByWave('B');
+/** The approved Wave B cohort extends the shared Google/Facebook registrations.
+ * Its scopes come from delivered packages, never from the retired vendor table. */
+function extendsSharedSocialConsent(provider: ProviderDescriptor | undefined): provider is ProviderDescriptor {
+  return Boolean(provider?.datatypes.includes('social-post') &&
+    ['google', 'facebook'].includes(provider.oauth?.clientRegistrationRef ?? ''));
+}
+const PLUGINS = join(REPO, 'libs/papercusp/plugins');
+const waveBPlatforms = readdirSync(PLUGINS, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
+  try {
+    const manifest = JSON.parse(readFileSync(join(PLUGINS, entry.name, 'papercusp.json'), 'utf8'));
+    return extendsSharedSocialConsent(manifest.provider) ? [manifest.provider as ProviderDescriptor] : [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+});
 /** Widened to string on purpose: it is membership-tested against ids SCRAPED from source. */
 const waveBIds = new Set<string>(waveBPlatforms.map((row) => row.id));
 
@@ -128,10 +142,8 @@ describe('P-019 Wave B gate — the Google-scope consent upgrade is non-destruct
     // This single parameter is what makes the shared-source upgrade safe. Google's
     // incremental authorization returns a token carrying the UNION of the old and
     // new grants when it is set, and a token carrying ONLY the newly requested
-    // scopes when it is not. platform-registry.ts's youtube row states the
-    // dependency in prose — "`include_granted_scopes=true` is already set on
-    // buildAuthorizeUrl, so the upgraded token retains the landed Gmail and
-    // Calendar grants (D-019)" — and until P-019 nothing executable held it.
+    // scopes when it is not. The delivered YouTube OAuth descriptor requires
+    // this same union-preserving parameter (D-019).
     expect(
       retainsPriorGrants(url),
       'dropping include_granted_scopes makes the first YouTube consent silently ' +
@@ -205,19 +217,21 @@ describe('P-019 Wave B gate — the Google-scope consent upgrade is non-destruct
     expect(stillGranted, 'a de-scoped upgrade must be detectable as having lost the landed grants').toEqual([]);
   });
 
-  it('D-019, derived from the registry: no Wave B scope is ever presumed-granted', () => {
+  it('D-019: no package content scope extending shared consent is presumed-granted', () => {
     // providers.test.ts already asserts this over a HAND-MAINTAINED list of three
-    // escalating scopes. This is the same property taken from the registry
-    // instead, which is what makes it a WAVE gate: a Wave B platform added later
-    // is covered the day it is added, not the day someone remembers to extend a
-    // literal list.
+    // escalating scopes. This check discovers every delivered social package
+    // extending shared consent, including the existing Personal Vault provider.
     //
     // Why it matters: GOOGLE_WORKSPACE_SCOPES is the PRESUMED-GRANTED fallback for
     // any legacy connection that stored no scope metadata. A scope placed there is
     // reported as granted for owners who never consented to it, so the capability
     // reads connected:true / missingScopes:[] and fails later with a 403 at call
     // time, far from the cause.
-    const waveBScopes = waveBPlatforms.flatMap((row) => row.auth.scopes);
+    // Identity scopes are shared with existing grants; content scopes are the
+    // escalation. Keep this exemption independent of the fallback under test,
+    // or adding a content scope to that fallback would hide its own regression.
+    const identityScopes = new Set(['openid', 'profile', 'email']);
+    const waveBScopes = waveBPlatforms.flatMap((row) => row.oauth!.scopes).filter((scope) => !identityScopes.has(scope));
 
     // POSITIVE CONTROLS. Without these the loop below can pass by iterating
     // nothing — the classic vacuous absence claim.
@@ -240,7 +254,7 @@ describe('P-019 Wave B gate — the Google-scope consent upgrade is non-destruct
 });
 
 describe('P-019 Wave B gate — the kit was not bent to fit a Wave B platform', () => {
-  // The registry id plus, for a hyphenated id, its module prefix: the codebase
+  // The provider id plus, for a hyphenated id, its module prefix: the codebase
   // names Facebook Pages modules `facebook-*`, so a special-case could spell it
   // either way.
   const waveBNames = [...new Set(waveBPlatforms.flatMap((row) => [row.id, row.id.split('-')[0]!]))];
@@ -296,8 +310,20 @@ describe('P-019 Wave B gate — delivered provider suites use the shared SDK kit
   });
 
   it('finds one delivered provider for every Wave B platform', () => {
-    expect(waveBIds.size).toBeGreaterThan(0);
+    // The owner-approved cohort is an independent completeness control. If a
+    // manifest loses its descriptor or registration, discovery must fail here.
+    expect([...waveBIds]).toEqual(expect.arrayContaining(['facebook-pages', 'instagram', 'youtube']));
+    expect(waveBPlatforms).toHaveLength(waveBIds.size);
     expect(delivered.sort()).toEqual([...waveBIds].sort());
+  });
+
+  it('CONTROL: shared consent is determined by the package declaration, not its name', () => {
+    const shared = { id: 'arbitrary-social', contractVersion: 1, datatypes: ['social-post'], capabilities: [], egressHosts: [],
+      oauth: { authorizeUrl: 'https://example.test/oauth', tokenUrl: 'https://example.test/token', scopes: ['new-content'], clientRegistrationRef: 'google' } };
+    expect(extendsSharedSocialConsent(shared)).toBe(true);
+    expect(extendsSharedSocialConsent({ ...shared, id: 'youtube', oauth: { ...shared.oauth, clientRegistrationRef: 'standalone' } })).toBe(false);
+    expect(extendsSharedSocialConsent({ ...shared, datatypes: ['email-message'] })).toBe(false);
+    expect(extendsSharedSocialConsent(undefined)).toBe(false);
   });
 
   it.each([...waveBIds])('%s has a real package unit suite calling the SDK kit', (id) => {

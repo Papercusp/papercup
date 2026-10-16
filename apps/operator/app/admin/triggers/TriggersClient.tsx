@@ -91,11 +91,10 @@ function SocialSourceFacts({ social }: { social: ExternalTriggerSocialAdminFacts
     <div className="tr-social" data-platform={social.platformId}>
       <div className="tr-meta">
         <span className="tr-badge tr-social-platform">{social.label}</span>
-        {social.wave && <span className="tr-social-tag">wave {social.wave}</span>}
         <span className="tr-social-tag">{social.authMode}</span>
-        <span className="tr-social-tag">{social.readTransport}</span>
+        <span className="tr-social-tag">{social.readTransport ?? "write-only"}</span>
         {!social.verified && (
-          <span className="tr-badge status-error" title="Registry row is not verified against its cited sources">
+          <span className="tr-badge status-error" title="Provider API contract is not verified against its cited sources">
             unverified
           </span>
         )}

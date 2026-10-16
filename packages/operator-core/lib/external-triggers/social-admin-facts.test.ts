@@ -91,7 +91,7 @@ describe('socialAdminFacts', () => {
       const facts = socialAdminFacts('reddit', {}, NOW);
       expect(facts).not.toBeNull();
       expect(facts!.cursor.state).toBe('never-synced');
-      expect(facts!.readTransport).toBe('poll-cursor');
+      expect(facts!.readTransport).toBe('poll');
     });
 
     it('reports position-only without interpreting an opaque provider cursor', () => {
@@ -170,12 +170,40 @@ describe('socialAdminFacts', () => {
   it('discovers arbitrary installed social providers and removes their facts on unload', async () => {
     await installSocialPackages([{ platform: 'new-social', capabilities: ['social.post'] }], registry);
     expect(socialAdminFacts('new-social', { provider: 'opaque' }, NOW)).toMatchObject({
-      platformId: 'new-social', wave: null, writeVerbs: ['post'], verified: true,
+      platformId: 'new-social', writeVerbs: ['post'], verified: true,
       cursor: { state: 'position-only' }, rateBudget: { maxRuns: 12, windowSeconds: 300, basis: 'conservative-default' },
     });
     registry.unregister('new-social');
     registry.unregister('reddit');
     expect(socialAdminFacts('new-social', {}, NOW)).toBeNull();
     expect(socialAdminFacts('reddit', {}, NOW)).toBeNull();
+  });
+
+  it('reports the installed Mastodon HTTP sync instead of the retired streaming contract', () => {
+    expect(socialAdminFacts('mastodon', {}, NOW)).toMatchObject({
+      readTransport: 'poll', cursor: { state: 'never-synced' },
+    });
+    expect(socialAdminFacts('mastodon', {}, NOW)).not.toHaveProperty('wave');
+  });
+
+  it('reads sync support again after same-id replacement without a vendor branch', async () => {
+    const original = registry.get('linkedin')!;
+    const replace = async (sync: boolean) => {
+      registry.unregister('linkedin');
+      const descriptor = { ...original.descriptor, sync };
+      await registry.register({ ...original, descriptor, adapter: { ...original.adapter, describe: () => descriptor } });
+    };
+    await replace(true);
+    expect(socialAdminFacts('linkedin', {}, NOW)).toMatchObject({ readTransport: 'poll', cursor: { state: 'never-synced' } });
+    await replace(false);
+    expect(socialAdminFacts('linkedin', {}, NOW)).toMatchObject({ readTransport: null, cursor: { state: 'not-readable' } });
+
+    await installSocialPackages([{ platform: 'arbitrary-write-only' }], registry);
+    const entry = registry.get('arbitrary-write-only')!;
+    registry.unregister('arbitrary-write-only');
+    const descriptor = { ...entry.descriptor, sync: false };
+    await registry.register({ ...entry, descriptor, adapter: { ...entry.adapter, describe: () => descriptor } });
+    expect(socialAdminFacts('arbitrary-write-only', { provider: 'opaque' }, NOW))
+      .toMatchObject({ readTransport: null, cursor: { state: 'not-readable' } });
   });
 });

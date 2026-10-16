@@ -766,6 +766,58 @@ describe('exact spec evidence bindings', () => {
       expect(stored.environment_fingerprint).toBe(expected);
     });
 
+  it('refuses isolated source paths absent from a retained source receipt at bind time', async () => {
+    await specs.setSpecClause(clause({ mutationRequired: false }));
+    const { testRunId } = await seedExternalEvidence('test/reconnect.test.ts');
+    const runId = '20261016T000000Z-900';
+    const receipts = [{ runId, resultSha256: 'a'.repeat(64), sourceSha256: 'b'.repeat(64),
+      lifecycleSha256: 'c'.repeat(64) }];
+    const execution = { schemaVersion: 1, root: h.repoRoot, filePath: 'test/reconnect.test.ts',
+      runGroupId: null, workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
+      testLayer: 'integration', passed: 1, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
+      commitSha: null, worktreeDirty: true, isolatedRuntimeReceipts: receipts };
+    await db.sql`UPDATE harness_shared.test_runs SET execution_details = ${JSON.stringify(execution)}::text::jsonb
+      WHERE id = ${testRunId}`;
+
+    const evidenceRootBase = await mkdtemp(path.join(tmpdir(), 'isolated-source-receipt-'));
+    const previousEvidenceRoot = process.env.VH_EVIDENCE_ROOT_BASE;
+    process.env.VH_EVIDENCE_ROOT_BASE = evidenceRootBase;
+    try {
+      const receiptDir = path.join(evidenceRootBase, 'isolated-integration', runId, 'phases', 'prepare');
+      await mkdir(receiptDir, { recursive: true });
+      await writeFile(path.join(receiptDir, 'source.json'), JSON.stringify({
+        schemaVersion: 1,
+        runId,
+        sourceCommit: 'fixture-commit',
+        repoRoot: h.repoRoot,
+        filePath: 'test/reconnect.test.ts',
+        files: [{ path: 'test/reconnect.test.ts', sha256: 'a'.repeat(64) }],
+      }));
+
+      const result = await evidenceStore.bindSpecEvidence({
+        workItemId: 'WI-101', specId: 'SPEC-003-01', harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan', actorId: 'su-test', evidenceKind: 'test',
+        evidenceRef: 'test/reconnect.test.ts#receipt-gap', testRunId, sourceFingerprint: 'source',
+        environmentFingerprint: 'caller-cannot-create-a-receipt', details: { evidencePlane: 'live', currentMeasurement: {
+          schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'],
+          runtimeUnits: [`isolated-integration:${runId}`],
+          completedRuntime: { kind: 'isolated-integration', runIds: [runId] },
+        } },
+      });
+      expect(result).toMatchObject({
+        status: 'completed_runtime_source_not_in_receipt',
+        gaps: [{ runId, missingSourcePaths: ['src/reconnect.ts'] }],
+      });
+      expect((result as { message: string }).message).toContain('src/reconnect.ts');
+      const rows = await db.sql`SELECT id FROM harness_shared.spec_evidence_bindings`;
+      expect(rows, 'a receipt-coverage refusal must not write a binding').toHaveLength(0);
+    } finally {
+      if (previousEvidenceRoot === undefined) delete process.env.VH_EVIDENCE_ROOT_BASE;
+      else process.env.VH_EVIDENCE_ROOT_BASE = previousEvidenceRoot;
+      await rm(evidenceRootBase, { recursive: true, force: true });
+    }
+  });
+
   // EI-25847620673275477: a judge following the brief re-observes an isolated-integration
   // proof with the cited measurement and no testRunId. Before the fix the store pinned the
   // caller's environment (no run → no receipts), refused independent_fingerprint_mismatch,

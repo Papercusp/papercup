@@ -1092,6 +1092,67 @@ describe('applyResultDoor', () => {
     expect(projected._projection.truncated).toBe(true);
   });
 
+  it('plans:get preserves selected item status and default item text through nested tools:invoke', () => {
+    const noise = (prefix: string) => Object.fromEntries(
+      Array.from({ length: 128 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
+    );
+    const itemText = 'Read this selected plan item before acting.';
+    const source = {
+      ok: true,
+      results: [{
+        ...noise('result-noise'),
+        ok: true,
+        slug: 'detail-plan',
+        items: [{
+          ...noise('item-noise'),
+          id: 'P-001',
+          text: itemText,
+          storedStatus: 'todo',
+          effectiveStatus: 'todo',
+        }],
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = JSON.stringify(source);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'plans:get',
+        // Simulate the host forwarding the caller's explicit status pick. Item
+        // text is also a plans:get detail field and must survive by tool policy.
+        preservePaths: ['results[].items[].storedStatus'],
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    );
+    const projected = boundedBody(doored) as unknown as {
+      results: Array<{ items?: Array<Record<string, unknown>> }>;
+      _projection: { truncated: true };
+    };
+    const item = projected.results[0]?.items?.[0];
+
+    expect(item).toMatchObject({ id: 'P-001', text: itemText, storedStatus: 'todo' });
+    expect(projected._projection.truncated).toBe(true);
+
+    // Falsifiability control: the same bytes and caller-selected status through
+    // an unrelated nested target do not inherit plans:get's semantic text rule.
+    const control = boundedBody(applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'plans:list',
+        preservePaths: ['results[].items[].storedStatus'],
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    )) as unknown as { results: Array<{ items?: Array<Record<string, unknown>> }> };
+    expect(control.results[0]?.items?.[0]).toMatchObject({ id: 'P-001', storedStatus: 'todo' });
+    expect(control.results[0]?.items?.[0]).not.toHaveProperty('text');
+  });
+
   it('EI-20435986111760474: oversized code:tools TypeScript stays valid JSON for direct and nested calls', () => {
     const signatures = Array.from(
       { length: 80 },

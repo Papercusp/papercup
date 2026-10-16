@@ -49,11 +49,10 @@ const payload = {
       social: {
         platformId: "reddit",
         label: "Reddit",
-        wave: "A" as const,
         verified: true,
         blockedOn: null,
         authMode: "self-serve-oauth",
-        readTransport: "poll-cursor",
+        readTransport: "poll",
         cursor: {
           state: "position-only" as const,
           at: null,
@@ -166,6 +165,8 @@ describe("/admin/triggers client", () => {
     expect(await screen.findByText(/credential:\s*configured/)).toBeTruthy();
     expect(screen.queryByText("google-oauth:fixture")).toBeNull();
     expect(screen.getByText("1 binding · 0 armed")).toBeTruthy();
+    expect(screen.getByText("poll")).toBeTruthy();
+    expect(screen.queryByText(/wave [ABC]/)).toBeNull();
   });
 
   it("renders an opaque provider position without inventing a vendor timestamp contract", async () => {

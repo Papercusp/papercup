@@ -952,7 +952,8 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
 
     expect(row.social).not.toBeNull();
     expect(row.social?.platformId).toBe('reddit');
-    expect(row.social?.wave).toBe('A');
+    expect(row.social?.readTransport).toBe('poll');
+    expect(row.social).not.toHaveProperty('wave');
     // A cap the budget actually funds — never unbounded.
     expect(row.social?.rateBudget.maxRuns).toBeGreaterThan(0);
     expect(row.social?.rateBudget.windowSeconds).toBeGreaterThan(0);

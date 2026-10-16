@@ -115,6 +115,9 @@ export interface ProviderDescriptor {
   displayName?: string;
   /** Canonical datatypes this provider's `syncPage` produces. */
   datatypes: string[];
+  /** Whether inbound sync is supported. Omitted means true for existing
+   * providers; false declares a write-only package that the host does not poll. */
+  sync?: boolean;
   /** Capability subset `invoke` accepts. */
   capabilities: string[];
   /** Dated API-contract evidence shipped with this package. This is neither account consent
@@ -1161,6 +1164,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
   }
   for (const dup of duplicates(datatypes.filter(isNonEmptyString))) issues.push(`provider.datatypes repeats "${dup}"`);
+  if (d.sync !== undefined && typeof d.sync !== 'boolean') issues.push('provider.sync must be a boolean');
   const capabilities = Array.isArray(d.capabilities) ? d.capabilities : [];
   for (const capability of capabilities) {
     if (!isNonEmptyString(capability) || !PROVIDER_CAPABILITY_PATTERN.test(capability)) {

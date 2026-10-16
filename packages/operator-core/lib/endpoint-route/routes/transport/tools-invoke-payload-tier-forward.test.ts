@@ -161,6 +161,39 @@ describe('resultDoorPreservePathsForDispatch', () => {
     expect(projectedPosts.every(post => typeof post.body === 'string')).toBe(true);
   });
 
+  it('forwards selected plans:get item fields to the outer result-door projection', () => {
+    const picks = ['results[].items[].id', 'results[].items[].text', 'results[].items[].storedStatus'];
+    const paths = resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'plans:get',
+      args: { slug: 'plan-1', projection: { pick: picks } },
+    }, undefined);
+    const items = Array.from({ length: 3 }, (_, index) => ({
+      id: `P-00${index + 1}`,
+      text: `selected item ${index + 1} ${'x'.repeat(120)}`,
+      storedStatus: 'todo',
+    }));
+    const projected = projectBoundedPayload({
+      results: [{ items }],
+      padding: 'P'.repeat(20_000),
+    }, {
+      toolName: 'tools:invoke',
+      tier: 'trimmed',
+      forced: true,
+      targetChars: 5_000,
+      preservePaths: paths,
+    }) as {
+      results?: Array<{ items?: Array<Record<string, unknown>> }>;
+      _projection?: { forced?: boolean };
+    };
+
+    expect(paths).toEqual(picks);
+    expect(projected._projection?.forced).toBe(true);
+    expect(projected.results?.[0]?.items).toHaveLength(3);
+    expect(projected.results?.[0]?.items?.map(item => [item.id, item.text, item.storedStatus])).toEqual(
+      items.map(item => [item.id, item.text, item.storedStatus]),
+    );
+  });
+
   it('combines direct and nested picks while keeping other dispatches inert', () => {
     const direct = 'results[].id';
     expect(resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
