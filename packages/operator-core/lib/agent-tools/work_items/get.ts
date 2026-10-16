@@ -398,7 +398,7 @@ const SOURCE_ROW_ROOTS = new Set([
   'deploymentPosition', 'citedFacts', 'assumptionFlags', 'planItemBlocked', 'planItemClaimCollision',
   'planItemTextDrift', 'threadWindow', 'threadWindowReadFailed', 'threadLimitClamped',
   'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'mechanics', 'error', 'retryable', 'phase',
-  'budgetMs', 'message', '_stub', 'corroboration',
+  'budgetMs', 'pgCode', 'message', '_stub', 'corroboration',
 ]);
 
 /** A malformed or unknown pick fails open to the complete historical read. */
