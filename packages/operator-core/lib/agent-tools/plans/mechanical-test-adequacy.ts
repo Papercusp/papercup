@@ -24,7 +24,10 @@
  * applicable here and keeps the evaluator + scorecard path.
  */
 import { hasLinkedMutationBaseline, latestLogicalEvidence, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
+import { hasMatchingDeclaredCaseTitle } from './spec-evidence-store';
 import type { SourceBarTestRequirements } from './source-bar-test-requirements';
+import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
+import { isRecordedCaseTitle, MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
 
 export interface MechanicalAdequacyClause {
   planSlug: string;
@@ -68,14 +71,34 @@ function staleDetail(row: SpecEvidenceForAdequacy): string {
 
 function isPassingLedgerRun(row: SpecEvidenceForAdequacy): boolean {
   const execution = row.testRunExecution;
+  const rawCases = (row.details.adequacy as { testCases?: unknown } | undefined)?.testCases;
+  if (rawCases !== undefined && (!Array.isArray(rawCases) ||
+    rawCases.length > MAX_RECORDED_PASSED_CASES || !rawCases.every(isRecordedCaseTitle) ||
+    new Set(rawCases).size !== rawCases.length)) return false;
+  const declaredCases = rawCases as string[] | undefined;
+  // Focused runners count outside-filter cases as skipped. A declaration only
+  // narrows the claim when the canonical ledger confirms every named case.
+  const declaredCasesPassed = declaredCases !== undefined && declaredCases.length > 0 &&
+    declaredCases.every(title => hasMatchingDeclaredCaseTitle(title, execution?.passedCaseTitles ?? []));
+  if (declaredCases?.length && !declaredCasesPassed) return false;
   return (
     execution != null &&
     execution.status === 'pass' &&
     execution.passed > 0 &&
     execution.failed === 0 &&
-    execution.skipped === 0 &&
+    (execution.skipped === 0 || declaredCasesPassed) &&
     execution.collectionFailed === false
   );
+}
+
+function isOriginalTestRun(row: SpecEvidenceForAdequacy): boolean {
+  const provenance = row.testRunProvenance;
+  if (provenance?.source !== 'mutation-probe') return true;
+  // Calibration runs execute the original source. A mutant, historical or
+  // unidentifiable probe leg can never stand in for that passing control.
+  return provenance.mutation !== undefined &&
+    provenance.mutationPhase === provenance.mutation.leg &&
+    CALIBRATION_LEGS.includes(provenance.mutation.leg);
 }
 
 function isCurrent(row: SpecEvidenceForAdequacy): boolean {
@@ -122,7 +145,7 @@ export function evaluateMechanicalTestAdequacy(input: {
     (row) =>
       row.evidenceKind === 'test' &&
       row.testRunId !== null &&
-      row.testRunProvenance?.source !== 'mutation-probe',
+      isOriginalTestRun(row),
   );
   for (const file of requiredFiles) {
     const bound = testRows.filter((row) => rowTestFile(row) === file);

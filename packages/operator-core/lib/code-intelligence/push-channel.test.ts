@@ -99,6 +99,20 @@ describe('shared snapshot-backed push channel', () => {
     expect(unknown[0].text).not.toContain('"testRunIds":[]');
   });
 
+  it('renders only explicitly measured recent-change and work-item attribution', () => {
+    const snap = snapshot();
+    snap.importers = new Map([['lib/target.ts', ['app/use.test.ts']]]);
+    const fact = snapshotIncidentLeg({ ...input, incidentAttribution: {
+      status: 'measured', changedSymbols: ['target:lib/target.ts:7'],
+      workItems: [{ id: 'WI-42', state: 'open', title: 'repair target', paths: ['lib/target.ts'] }],
+    }, calls: [{ tool: 'testing:run', toolResponse: {
+      status: 'failed', byFile: { 'app/use.test.ts': { failed: 1, runId: 9 } },
+    } }] }, snap)[0];
+    expect(fact?.text).toContain('Recently changed symbols (measured ledger attribution): target:lib/target.ts:7.');
+    expect(fact?.text).toContain('Work items changed/open on these paths: WI-42 [open] repair target.');
+    expect(fact?.text).toContain('Graph paths are hypotheses only');
+  });
+
   it('keeps absent reach unknown, bounds cycles and rejects untrusted path/base/commands', () => {
     const changed = { ...input, calls: [editCall()] };
     const snap = snapshot(); snap.importers = new Map();

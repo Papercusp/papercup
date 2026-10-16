@@ -1042,6 +1042,12 @@ const midTurnContext = defineTool({
       client?: string;
       /** Native hook response wall, shared with both retrieval legs. */
       wallMs?: number;
+      /** Bounded, caller-measured P-018 attribution; never inferred here. */
+      incidentAttribution?: {
+        status: 'measured' | 'unknown';
+        changedSymbols?: string[];
+        workItems?: { id: string; state: string; title?: string; paths: string[] }[];
+      };
     };
     try {
       body = (await req.json()) as typeof body;
@@ -1090,6 +1096,7 @@ const midTurnContext = defineTool({
       const { codeIntelPushText } = await import('../../../code-intelligence/push-channel');
       const codeIntel = await codeIntelPushText({ owner, workspace: await workspaceIdResolved,
         harness: body.harness, client: body.client,
+        incidentAttribution: body.incidentAttribution,
         calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
       }, clampToBudget(memoryBlock).length).catch(() => '');
       return Response.json({

@@ -963,6 +963,12 @@ handle_signal() {
 # on stderr. It starts AFTER the dependency preflights above, which must fail in seconds
 # without creating anything (the contract's tsx step writes a cache under TMPDIR).
 # VH_FAIL_OPEN: instrumentation that cannot start never blocks a verify.
+# The enclosing native controller also consumes these lifecycle markers. Keep
+# that required signal independent of optional evidence capture and retention.
+verifier_begin_phase() {
+  printf 'VH_BEGIN phase=%s\n' "$1" >&2
+  vh_begin "$1"
+}
 VH_SH="$REPO_DIR/libs/generic/verification-harness/bin/vh.sh"
 if [ -f "$VH_SH" ]; then
   # shellcheck source=libs/generic/verification-harness/bin/vh.sh
@@ -978,7 +984,7 @@ if [ -f "$VH_SH" ]; then
   fi
   vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}" \
     ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
-  vh_begin prepare
+  verifier_begin_phase prepare
   trap 'vh_capture_phase_stop' EXIT
   vh_capture_phase_start
   vh_step prepare-start
@@ -988,6 +994,7 @@ else
   vh_begin() { :; }; vh_step() { :; }; vh_end() { :; }; vh_skip_rest() { :; }; vh_exit() { :; }
   vh_capture_phase_start() { :; }; vh_capture_phase_stop() { :; }
   vh_run_step() { shift; "$@"; }
+  verifier_begin_phase prepare
 fi
 trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
@@ -3895,7 +3902,7 @@ desktop_binary_started() {
   strip_ansi < "$LOG" 2>/dev/null | grep -qE "Running[[:space:]]+.*papercusp-desktop"
 }
 vh_capture_phase_stop
-vh_begin boot
+verifier_begin_phase boot
 while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
   vh_step "launch-attempt-$BOOT_ATTEMPTS"
@@ -4999,7 +5006,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_VERIFY_TAURI_ISOLATED=1
 fi
 
-vh_begin assert
+verifier_begin_phase assert
 # Assertions write diagnostics outside the disposable operator source. Export
 # after vh_begin so children receive the current phase, not the boot directory.
 # When the retention preflight fails, the verification-harness shim is

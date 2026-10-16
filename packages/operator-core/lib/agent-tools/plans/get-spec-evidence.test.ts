@@ -140,6 +140,12 @@ describe('plans:get-spec-evidence detail levels', () => {
     }).success).toBe(false);
   });
 
+  it('publishes the cross-field audit selector contract in the input schema', () => {
+    expect(tool.args.shape.bindingIds.description).toMatch(/required as a non-empty selector when includeRetracted:true/i);
+    expect(tool.args.shape.includeRetracted.description).toMatch(/requires bindingIds with at least one exact row id/i);
+    expect(tool.description).toMatch(/includeRetracted:true.*non-empty exact bindingIds selector/i);
+  });
+
   it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve scope, currentness and tier', async (booleanDetail, stringDetail) => {
     const base = { harness: 'papercusp', slug: 'plan-a' };
     const aliased = await call({ ...base, detail: booleanDetail });

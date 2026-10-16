@@ -26,6 +26,8 @@ export interface PushInput {
   /** Populated only from the registered harness root, never request cwd. */
   root?: string;
   firstTouchContext?: FirstTouchContext;
+  /** Optional bounded ledger attribution for the incident leg. */
+  incidentAttribution?: IncidentAttribution;
   calls: readonly PushCall[];
 }
 export interface FirstTouchContext {
@@ -42,6 +44,14 @@ export interface PushFact {
   citedPaths: readonly string[];
   suggestedCall?: string;
   sourceHashes?: readonly { path: string; sha256: string }[];
+}
+/** Measured attribution supplied by the incident caller. Static reach alone is
+ * never upgraded to a change or work-item claim; callers must provide these
+ * rows from a bounded, current ledger read. */
+export interface IncidentAttribution {
+  status: 'measured' | 'unknown';
+  changedSymbols?: readonly string[];
+  workItems?: readonly { id: string; state: string; title?: string; paths: readonly string[] }[];
 }
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
@@ -249,6 +259,13 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
   const dependencies = [...reached].filter(path => !failed.includes(path)).slice(0, 8);
   const symbolText = symbols.length ? symbols.map(symbol => symbol.name + ':' + symbol.path + ':' + symbol.line).join(', ') : 'unknown';
   const changedText = edits.length ? edits.join('; ') : 'unknown';
+  const attribution = input.incidentAttribution;
+  const changedSymbols = attribution?.status === 'measured' && attribution.changedSymbols?.length
+    ? attribution.changedSymbols.slice(0, 4).join(', ') : 'unknown';
+  const workItems = attribution?.status === 'measured' && attribution.workItems?.length
+    ? attribution.workItems.filter(item => item.paths.some(path => reached.has(path))).slice(0, 4)
+      .map(item => `${item.id} [${item.state}]${item.title ? ` ${item.title}` : ''}`).join('; ') || 'none measured on static reach'
+    : 'unknown';
   const suggestedCall = 'testing:run ' + JSON.stringify({ files: failed.slice(0, 2), harness: input.harness });
   const subject = ('failed-tests:' + failed.join('|')).slice(0, 1000);
   const citedPaths = [...new Set([...failed, ...dependencies, ...symbols.map(symbol => symbol.path)])].slice(0, 12);
@@ -272,7 +289,8 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
     text: 'Observed failing test files: ' + failed.join(', ') + '. The observed failure is authoritative.\n'
       + 'Static reach candidates (unverified): ' + (dependencies.join(', ') || 'unknown') + '.\n'
       + 'Symbols on static reach (change status unknown): ' + symbolText + '; observed turn edit strands: ' + changedText + '.\n'
-      + 'Work items changed/open on these paths: unknown from this bounded turn. '
+      + 'Recently changed symbols (measured ledger attribution): ' + changedSymbols + '.\n'
+      + 'Work items changed/open on these paths: ' + workItems + '. '
       + 'Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. '
       + recovery,
   }];

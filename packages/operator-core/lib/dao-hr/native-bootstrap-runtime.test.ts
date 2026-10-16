@@ -100,6 +100,43 @@ describe('native bootstrap admission and lifecycle', () => {
       }
     } finally { controller.abort(); closeSync(fd); rmSync(dir, { recursive: true, force: true }); }
   }, 15_000);
+
+  it.each(['disabled', 'retention-failed', 'missing'] as const)(
+    'advances verifier deadlines when optional instrumentation is %s', async mode => {
+      const dir = mkdtempSync(join(tmpdir(), 'daohr-verifier-uninstrumented-'));
+      const log = join(dir, 'output.log'), fd = openSync(log, 'w');
+      const controller = new AbortController();
+      const shell = readFileSync(join(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
+      // Execute the real initialization and section boundaries, including vh.sh's
+      // fail-open path. A synthetic marker producer would miss this coupling.
+      const start = shell.indexOf('# ── Verification-harness contract');
+      const end = shell.indexOf("\ntrap 'handle_signal INT' INT", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const section = (phase: string) => {
+        const call = shell.match(new RegExp(`^(?:verifier_begin_phase|vh_begin) ${phase}$`, 'm'));
+        expect(call, `real ${phase} section boundary`).not.toBeNull();
+        return call![0];
+      };
+      const program = ['set -eu', shell.slice(start, end),
+        'printf "OPTIONAL_DISABLED=%s\\n" "${VH_DISABLED:-missing}"',
+        'sleep 2', section('boot'), 'sleep 2', section('assert'), 'sleep 2'].join('\n');
+      try {
+        await expect(runNativeVerifier('bash', ['-c', program], {
+          signal: controller.signal, timeoutMs: 15_000, killGraceMs: 25, logFd: fd,
+          phaseBudgetsMs: { prepare: 3000, boot: 3000, assert: 3000 },
+          env: { ...process.env, REPO_DIR: mode === 'missing' ? dir : repo,
+            VH_DISABLE: mode === 'disabled' ? '1' : '0', VH_FAIL_OPEN: '1',
+            VH_TSX: '/bin/false', VERIFY_TAURI_EVIDENCE_ROOT: join(dir, 'evidence'),
+            VERIFY_TAURI_SOURCE_REF: '' },
+        })).resolves.toBe(0);
+        const output = readFileSync(log, 'utf8');
+        for (const phase of ['prepare', 'boot', 'assert']) expect(output).toContain(`VH_BEGIN phase=${phase}`);
+        expect(output).toContain(`OPTIONAL_DISABLED=${mode === 'missing' ? 'missing' : '1'}`);
+        expect(output).not.toMatch(/^HARNESS_RESULT(?:\s|$)/m);
+        if (mode === 'retention-failed') expect(output).toContain('reason=retention-command-failed');
+      } finally { controller.abort(); closeSync(fd); rmSync(dir, { recursive: true, force: true }); }
+    }, 20_000);
 });
 
 describe('nested frozen verifier scratch boundary', () => {

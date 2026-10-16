@@ -5,6 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import type { AdmitHostedLifecycleJobInput, HostedPoolObservation } from './hosted-lifecycle-store';
+import { Governor } from '../resource-governor/admission';
+import { PgAdmissionLedgerQueueStore } from '../resource-governor/admission-ledger-store';
+import { WorkItemAdmissionQueueDriver } from '../resource-governor/queue';
+import { allSessionsLiveResolver } from '../../test/_admission-ledger-fixture';
+import { hostedPoolAgentAdmissionGuard, createHostedPoolAgentReservations } from './hosted-agent-admission';
+import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 
 const h = vi.hoisted(() => ({ sql: null as any }));
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -107,7 +113,7 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
         ${JSON.stringify(release)}::jsonb, ${o ? JSON.stringify(o) : null}::jsonb,
         ${options.placeholder ? null : 'healthy'}, now(), 1, 1)`;
   }
-  async function customer(ws: string, id: string, hostId = `${id}-placeholder`, organizationId = randomUUID()) {
+  async function customer(ws: string, id: string, hostId = `${id}-placeholder`, organizationId: string = randomUUID()) {
     organizations.set(`${ws}:${id}`, organizationId);
     if (!grants.has(organizationId)) await allowance(organizationId);
     await host(ws, hostId, { placeholder: true });
@@ -141,6 +147,119 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
       SET admission_receipt = ${JSON.stringify({ result: { resourceAdmission: { storage: { capacity } } } })}::jsonb
       WHERE workspace_id = ${ws} AND id = ${operationId}`;
   }
+
+  async function agentBinding(ws: string, id: string, org?: string): Promise<HostedConnectorBinding> {
+    const hostId = await customer(ws, id, `${id}-placeholder`, org);
+    const organizationId = organization(ws, id);
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_workspace_connectors
+      (control_workspace_id, organization_id, customer_workspace_id, host_id, route_label, generation, state, transport,
+       credential_hash, registered_at)
+      VALUES (${ws}, ${organizationId}::uuid, ${id}, ${hostId}, ${id}, 1, 'active', 'websocket',
+        ${randomUUID().replaceAll('-', '').repeat(2)}, now())`;
+    return { controlPlaneWorkspaceId: ws, organizationId, customerWorkspaceId: id, hostId,
+      routeLabel: id, generation: 1, state: 'active', transport: 'websocket' };
+  }
+  function agents(binding: HostedConnectorBinding) {
+    const store = new PgAdmissionLedgerQueueStore({ sql: db.adminSql as any,
+      workspaceId: binding.controlPlaneWorkspaceId, resolveSessionStatesFn: allSessionsLiveResolver,
+      admitNewRecord: hostedPoolAgentAdmissionGuard(binding) });
+    const driver = new WorkItemAdmissionQueueDriver(store, { namespace: 'hosted-agent' });
+    const governor = new Governor(driver);
+    const admit = (key: string = randomUUID(), metadata: Record<string, string | number> = {}) => governor.admit({
+      idempotencyKey: key, admissionClass: 'agent', metadata: {
+        hostedOrganizationId: binding.organizationId, hostedCustomerWorkspaceId: binding.customerWorkspaceId,
+        hostedHostId: binding.hostId, hostedConnectorGeneration: binding.generation, ...metadata } });
+    return { store, driver, governor, admit };
+  }
+
+  it('connector process reservations retain running quota across independent handlers and release exactly their own key', async () => {
+    const binding = await agentBinding(fresh(), 'remote-process');
+    await allowance(binding.organizationId, { 'pool.agents': 1, 'pool.pending-agents': 1 });
+    const call = () => createHostedPoolAgentReservations(binding, db.adminSql as any);
+    const reserved = await call()('reserve', 'first');
+    expect(reserved.state).toBe('queued');
+    expect((await call()('reserve', 'first')).receiptId).toBe(reserved.receiptId);
+    expect((await call()('start', 'first')).state).toBe('running');
+    expect((await call()('start', 'first')).state).toBe('running');
+    await expect(call()('reserve', 'second')).rejects.toThrow('quota_exceeded');
+    await expect(createHostedPoolAgentReservations({ ...binding, customerWorkspaceId: 'foreign' }, db.adminSql as any)('finish', 'first'))
+      .rejects.toThrow('reservation_missing');
+    expect((await call()('finish', 'first')).state).toBe('cancelled');
+    await expect(call()('reserve', 'first')).rejects.toThrow('process_key_terminal');
+    expect((await call()('reserve', 'second')).state).toBe('queued');
+  });
+
+  it('agent reservations atomically include pending demand across independent writers', async () => {
+    const ws = fresh();
+    const left = await agentBinding(ws, 'agent-left');
+    await allowance(left.organizationId, { 'pool.agents': 1 });
+    const outcomes = await Promise.allSettled([agents(left).admit(), agents(left).admit()]);
+    expect(outcomes.filter(outcome => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter(outcome => outcome.status === 'rejected')).toMatchObject([
+      { reason: { message: expect.stringContaining('hosted_pool_agent_quota_exceeded') } }]);
+    const [count] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.resource_governor_admissions
+      WHERE workspace_id = ${ws}`;
+    expect(count.n).toBe(1);
+  });
+
+  it('agent reservations enforce the boot queue cap, count running once, and release on cancellation', async () => {
+    const binding = await agentBinding(fresh(), 'agent-pending');
+    await allowance(binding.organizationId, { 'pool.agents': 2, 'pool.pending-agents': 1 });
+    const runtime = agents(binding);
+    const first = await runtime.admit('agent-first');
+    if (first.kind !== 'queued') throw new Error('durable queue required');
+    await expect(runtime.admit('agent-second')).rejects.toThrow('hosted_pool_agent_pending_quota_exceeded');
+    const lease = await runtime.driver.leaseReceipt({ receiptId: first.receipt.receiptId, owner: 'agent-owner', ttlMs: 60000 });
+    if (!lease) throw new Error('lease required');
+    await runtime.driver.markRunning(lease.receiptId, lease.lease.leaseId);
+    const second = await runtime.admit('agent-second');
+    expect(second.kind).toBe('queued');
+    await expect(runtime.admit('agent-third')).rejects.toThrow('hosted_pool_agent_quota_exceeded');
+    await runtime.governor.cancel('agent-first', 'process exited');
+    await runtime.governor.cancel('agent-second', 'spawn failed');
+    expect((await runtime.admit('agent-third')).kind).toBe('queued');
+  });
+
+  it('agent reservation replay consumes no second slot and records canonical authority evidence', async () => {
+    const binding = await agentBinding(fresh(), 'agent-replay');
+    await allowance(binding.organizationId, { 'pool.agents': 1 });
+    const runtime = agents(binding);
+    const first = await runtime.admit('same-agent');
+    const replay = await runtime.admit('same-agent');
+    expect(replay.kind === 'queued' && first.kind === 'queued' && replay.receipt.receiptId).toBe(
+      first.kind === 'queued' && first.receipt.receiptId);
+    const saved = await runtime.store.find('hosted-agent', 'same-agent');
+    expect(saved?.record.decision.evidence).toMatchObject({ hostedPoolAgentAuthorityRevision: grants.get(binding.organizationId)!.revision,
+      hostedPoolAgentAllocated: 0, hostedPoolAgentPending: 0 });
+  });
+
+  it('agent reservations isolate organizations and refuse foreign or rotated connector bindings', async () => {
+    const ws = fresh();
+    const left = await agentBinding(ws, 'agent-own');
+    const right = await agentBinding(ws, 'agent-foreign');
+    await allowance(left.organizationId, { 'pool.agents': 1 });
+    await allowance(right.organizationId, { 'pool.agents': 1 });
+    expect((await agents(left).admit()).kind).toBe('queued');
+    expect((await agents(right).admit()).kind).toBe('queued');
+    await expect(agents(left).admit('forged', { hostedOrganizationId: right.organizationId }))
+      .rejects.toThrow('hosted_pool_agent_binding_mismatch');
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors SET generation = 2
+      WHERE control_workspace_id = ${ws} AND customer_workspace_id = ${right.customerWorkspaceId}`;
+    await expect(agents(right).admit()).rejects.toThrow('hosted_pool_agent_binding_inactive');
+  });
+
+  it('agent reservations refuse missing or expired authority and apply downgrades without deleting receipts', async () => {
+    const binding = await agentBinding(fresh(), 'agent-downgrade');
+    const runtime = agents(binding);
+    await expect(runtime.admit()).rejects.toThrow('hosted_pool_agent_quota_exceeded');
+    await allowance(binding.organizationId, { 'pool.agents': 2 });
+    await runtime.admit('retained-agent');
+    await allowance(binding.organizationId, { 'pool.agents': 0 });
+    await expect(runtime.admit()).rejects.toThrow('hosted_pool_agent_quota_exceeded');
+    expect((await runtime.store.find('hosted-agent', 'retained-agent'))?.record.state).toBe('queued');
+    await allowance(binding.organizationId, { 'pool.agents': 2 }, 1000000, '2026-01-02T00:00:00Z');
+    await expect(runtime.admit()).rejects.toThrow('hosted_pool_agent_entitlement_');
+  });
 
   it('charges an explicit split once and pins storage in the immutable replay receipt', async () => {
     const ws = fresh();

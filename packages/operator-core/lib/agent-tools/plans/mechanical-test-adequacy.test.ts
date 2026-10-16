@@ -74,6 +74,74 @@ describe('mechanical test adequacy', () => {
     expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
   });
 
+  it('accepts filtered runs only when every declared case actually passed', () => {
+    const row = proof('test');
+    row.testRunExecution!.skipped = 93;
+    row.testRunExecution!.passedCaseTitles = ['composer > sends the exact draft'];
+    row.details.adequacy = { testCases: ['composer > sends the exact draft'] };
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'pass',
+      passingTestBindingIds: { [file]: 1 } });
+  });
+
+  it.each(['missing', 'different', 'partial', 'malformed'] as const)(
+    'rejects filtered runs with %s declared-case proof', defect => {
+      const row = proof('test');
+      row.testRunExecution!.skipped = 93;
+      row.testRunExecution!.passedCaseTitles = ['composer > sends the exact draft'];
+      if (defect === 'different') row.details.adequacy = { testCases: ['composer > asks approval'] };
+      if (defect === 'partial') row.details.adequacy = {
+        testCases: ['composer > sends the exact draft', 'composer > asks approval'],
+      };
+      if (defect === 'malformed') row.details.adequacy = { testCases: 'composer > sends the exact draft' };
+      expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
+    },
+  );
+
+  it('does not let binder-written passed titles replace the ledger case list', () => {
+    const row = proof('test');
+    row.testRunExecution!.skipped = 1;
+    row.details.adequacy = { testCases: ['required case'], passedCaseTitles: ['required case'] };
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
+  });
+
+  it('does not credit a missing declared case even in a zero-skip run', () => {
+    const row = proof('test');
+    row.testRunExecution!.passedCaseTitles = ['some other case'];
+    row.details.adequacy = { testCases: ['required case'] };
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
+  });
+
+  it.each(['baseline', 'copy-baseline'])('accepts an unmutated %s as passing test evidence', leg => {
+    const row = proof('test');
+    row.testRunProvenance = { ...row.testRunProvenance!, source: 'mutation-probe', mutationPhase: leg,
+      mutation: { ...mutation, leg } };
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'pass',
+      passingTestBindingIds: { [file]: 1 } });
+  });
+
+  it.each(['mutant', 'historical', 'missing-descriptor', 'phase-mismatch'])(
+    'rejects %s probe evidence as a passing original test', defect => {
+      const row = proof('test');
+      row.testRunProvenance = { ...row.testRunProvenance!, source: 'mutation-probe',
+        mutationPhase: defect === 'phase-mismatch' ? 'baseline' : defect,
+        ...(defect === 'missing-descriptor' ? {} : {
+          mutation: { ...mutation, leg: defect === 'phase-mismatch' ? 'mutant' : defect },
+        }) };
+      expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
+    },
+  );
+
+  it('still rejects stale filtered calibration proof', () => {
+    const row = proof('test');
+    row.testRunExecution!.skipped = 93;
+    row.testRunExecution!.passedCaseTitles = ['required case'];
+    row.details.adequacy = { testCases: ['required case'] };
+    row.testRunProvenance = { ...row.testRunProvenance!, source: 'mutation-probe', mutationPhase: 'baseline',
+      mutation: { ...mutation, leg: 'baseline' } };
+    row.currentness.overall = 'stale';
+    expect(grade([row, proof('mutation')])).toMatchObject({ verdict: 'fail' });
+  });
+
   it.each(['unlinked', 'outside-source', 'uncaught', 'other-file'] as const)('rejects an %s mutant', defect => {
     const row = proof('mutation');
     if (defect === 'unlinked') row.testRunProvenance!.mutationBaseline = null;

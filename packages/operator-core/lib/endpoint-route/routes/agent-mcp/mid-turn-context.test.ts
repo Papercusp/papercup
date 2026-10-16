@@ -138,6 +138,16 @@ it('delivers code intelligence even when the memory query has no signal', async 
   expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }), 0);
 });
 
+it('forwards bounded measured incident attribution without deriving it in the endpoint', async () => {
+  codeIntelPushTextMock.mockResolvedValue('INCIDENT BRIEF');
+  const who = owner();
+  const incidentAttribution = { status: 'measured', changedSymbols: ['target:target.ts:4'],
+    workItems: [{ id: 'WI-42', state: 'open', title: 'target repair', paths: ['target.ts'] }] };
+  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,
+    tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });
+  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }), 0);
+});
+
 it('a code-intelligence failure preserves memory, identity rules and failure hints', async () => {
   codeIntelPushTextMock.mockRejectedValue(new Error('snapshot store down'));
   takePendingFailureLoopHintMock.mockReturnValue({ key: 'pending' });

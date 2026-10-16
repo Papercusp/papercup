@@ -1,6 +1,7 @@
 /** Current-build reclaim acceptance through the maintained private background
  * runtime. Fixture effects and receipt writes never use the shared host state. */
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,11 +14,14 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const filePath = 'packages/operator-core/lib/storage/disk-reclaim-background-runtime.integration.test.ts';
 const assertion = 'packages/operator-core/lib/storage/disk-reclaim.integration.test.ts';
 const censusAssertion = 'packages/operator-core/lib/storage/disk-consumer-census.test.ts';
+const reclaimSource = 'packages/operator-core/lib/storage/disk-reclaim.ts';
+const censusSource = 'packages/operator-core/lib/storage/disk-consumer-census.ts';
 const censusSelected = [
   'accepts the real native directory-descent disappearance',
   'refuses unproven or incomplete disappearance evidence',
 ];
 const selected = [
+  'runs the native cargo delegate repeatedly with captured receipts and no missed completion',
   'starts effects without an all-candidate holder census',
   'runs independent owners when a whole-root census exhausts the run deadline',
   'finishes an advancing root beyond its inspection allowance',
@@ -37,8 +41,7 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
-    sourcePaths: [assertion, censusAssertion, 'packages/operator-core/lib/storage/disk-reclaim.ts',
-      'packages/operator-core/lib/storage/disk-consumer-census.ts',
+    sourcePaths: [assertion, censusAssertion, reclaimSource, censusSource,
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
       'scripts/lib/retention-pins.mjs', 'scripts/lib/fs-mutex.mjs',
@@ -46,7 +49,8 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
       'packages/operator-core/test/isolated-integration-proof.ts',
       'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/worker-result.json',
-      'phases/execute/reclaim-test-receipts.ndjson'],
+      'phases/execute/reclaim-test-receipts.ndjson',
+      'phases/execute/executed-source-map.json', 'phases/execute/executed-source-map.1.json'],
     execute: async (observe, evidenceDir) => {
       const receipts = join(evidenceDir, 'reclaim-test-receipts.ndjson');
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
@@ -54,6 +58,10 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
         assertion, censusAssertion, '--', '-t', [...selected, ...censusSelected].join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          // Each runner owns its map. Inheriting the outer path loses the
+          // native worker's original sources when the outer reporter finishes.
+          PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'papercusp-workspace',
+          PC_EXECUTED_SOURCE_MAP_OUT: join(evidenceDir, 'executed-source-map.json'),
           PAPERCUSP_TEST_RUNS_DB_URL: resolveExecutedMapPgUrl().url,
           PAPERCUSP_TEST_RUN_HARNESS: 'papercusp', PAPERCUSP_TEST_RUN_WORKSPACE: 'papercusp-workspace',
           PAPERCUSP_TEST_RUN_RECEIPT_FILE: receipts,
@@ -84,6 +92,17 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
           timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
         expect(environmentError).toBeUndefined();
         expect(environmentObserved).toBe(true);
+        for (const [mapFile, testFile, sourceFile] of [
+          ['executed-source-map.json', assertion, reclaimSource],
+          ['executed-source-map.1.json', censusAssertion, censusSource],
+        ]) {
+          const map = JSON.parse(readFileSync(join(evidenceDir, mapFile), 'utf8'));
+          const original = map.rows.find((value: any) => value.testFile === testFile)?.sourceEvidence;
+          expect(original?.status, mapFile).toBe('stable');
+          expect(original.sources.find((value: any) => value.path === sourceFile), mapFile)
+            .toMatchObject({ basis: 'vite-pre-transform',
+              sha256: createHash('sha256').update(readFileSync(join(root, sourceFile))).digest('hex') });
+        }
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const row = rows.find(value => value.filePath === assertion);
         expect(row).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {

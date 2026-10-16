@@ -367,7 +367,7 @@ apps/operator/public/internal/docs/llms-small.txt
 # WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
 apps/operator/dist-host/
 # Private proof hosts use named siblings of the default generated bundle.
-apps/operator/dist-host-*/
+**/apps/operator/dist-host-*/
 apps/operator/dist-hosted-control-plane/
 # Per-run bundle written by scripts/verify-tauri-headless.sh. Swept into 79e67ad983 (228 files,
 # ~2M lines) because it was missing here, which reds the VAL census on bundled code.
