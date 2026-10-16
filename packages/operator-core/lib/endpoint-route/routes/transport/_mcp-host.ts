@@ -3684,6 +3684,8 @@ interface NativeMcpTargetRequest {
   toolName: string;
   args: Record<string, unknown> | undefined;
   spawn: BuiltSpawnContext;
+  /** The serving generation observed before a request crosses the owner RPC. */
+  servingGeneration?: string;
   requestedFormat?: string;
   requestedStructured?: boolean;
   requestedDelta?: string;
@@ -3693,6 +3695,29 @@ interface NativeMcpTargetRequest {
   structuredSource: boolean;
   sourceProjection?: ProjectionSpec | null;
   indirect: boolean;
+}
+
+async function currentNativeOwnerServingGeneration(): Promise<string> {
+  const generation = await readServingGeneration();
+  if (generation.state !== 'known') {
+    throw new Error(
+      `serving_generation_unknown: ${generation.reason}; native owner dispatch is blocked before target execution`,
+    );
+  }
+  return generation.revision;
+}
+
+async function assertNativeOwnerServingGeneration(declared: unknown): Promise<void> {
+  if (typeof declared !== 'string' || !declared.trim()) {
+    throw new Error('native_tool_owner_missing_generation');
+  }
+  const current = await currentNativeOwnerServingGeneration();
+  if (declared !== current) {
+    throw new Error(
+      `stale_tool_contract: native owner request declares serving generation ${declared}, but the owner now serves ${current}; ` +
+      'refresh tools/list before retrying tools/call',
+    );
+  }
 }
 
 function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | null {
@@ -3734,7 +3759,15 @@ export async function runNativeMcpTargetOnOwner(
   // schema-checked credential digest, not a saved grant; keep its current-key
   // validation in admissionReplayContext on the owner. Normalize lazily so an
   // owner-local call can keep its principal in-process without serializing it.
-  const ownerRequest = () => ({ ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) });
+  // Keep this read lazy: owner-local requests remain on the fast path and do
+  // not need to materialize a cross-process compatibility proof. A forwarded
+  // request carries the caller's current generation, which the owner checks
+  // again against its own process and migration frontier before dispatch.
+  const ownerRequest = async () => ({
+    ...request,
+    servingGeneration: await currentNativeOwnerServingGeneration(),
+    spawn: normalizeNativeMcpOwnerSpawn(request.spawn),
+  });
   return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs, onProgress);
 }
 
@@ -3791,6 +3824,7 @@ export async function dispatchNativeMcpTargetOnOwner(
   if (!derived || derived.workspaceId !== address.workspaceId || derived.advSessionId !== address.advSessionId ||
       derived.ownerId !== address.ownerId || derived.nativeSessionIdFingerprint !== address.nativeSessionIdFingerprint)
     throw new Error('native_tool_owner_request_address_mismatch');
+  await assertNativeOwnerServingGeneration(request.servingGeneration);
   const projection = ownerRequest.sourceProjection ? parseProjection(ownerRequest.sourceProjection) : null;
   if (projection && !projection.ok) throw new Error('native_tool_owner_invalid_projection');
   const target = isPluginNamespacedToolName(ownerRequest.toolName)
