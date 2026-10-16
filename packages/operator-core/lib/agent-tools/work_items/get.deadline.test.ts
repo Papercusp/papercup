@@ -637,7 +637,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
   ])('maps %s to a retryable unavailable result instead of a generic bulk error', async (_label, makeError, pgCode) => {
     getWorkItem.mockRejectedValueOnce(makeError());
 
-    const out = (await get.handler({ id: 'WI-contention' } as never, ctx as never)) as Out;
+    const out = (await get.handler({ id: 'WI-contention' } as never, {
+      ...ctx, sourceProjection: { pick: ['results[].id', 'results[].workItem.state',
+        'results[].availability', 'results[].error', 'results[].retryable', 'results[].pgCode', 'counts', 'read'] },
+    } as never)) as Out;
     expect(out.data.results[0]).toMatchObject({
       ok: false,
       id: 'WI-contention',
@@ -649,7 +652,7 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     });
     expect(out.data.results[0].message).toContain('retry shortly');
     expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
-      schemaVersion: 'work-items-get-read-v1', requested: 1, available: 0, absent: 0, unavailable: 1,
+      schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: 1, available: 0, absent: 0, unavailable: 1,
       outerStageAttribution: expect.any(String),
     } });
   });
