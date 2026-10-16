@@ -62,7 +62,14 @@ async function scenario() {
   expect(stamps.map(s => s.dep)).toEqual([...current.keys()]);
   const readLoopRefStamps = async () => ({ note, stamps });
   const loopSources = carriedProbeSources({ loop: { ownerId: OWNER, checks } });
-  const probes = (readAtIso: string) => carriedProbeBlockForDelivery(loopSources, { dispatchTool, readAtIso });
+  const blocks = { probes: [] as Array<string | null>, references: [] as Array<string | null> };
+  const recordBlock = async (kind: keyof typeof blocks, render: () => Promise<string | null>) => {
+    const block = await render();
+    blocks[kind].push(block);
+    return block;
+  };
+  const probes = (readAtIso: string) => recordBlock('probes', () =>
+    carriedProbeBlockForDelivery(loopSources, { dispatchTool, readAtIso }));
   const delivery: DeliveryWork = {
     id: 1, workspaceId: WORKSPACE, awaitId: 1, subscriberId: OWNER,
     eventKey: 'scenario:loop', payload: { harness: HARNESS, wakeCount: 2 },
@@ -78,25 +85,27 @@ async function scenario() {
       current.set('fact:guard-rail:scenario', 'retracted:7');
       state = 'red';
     },
+    blocks,
     dispatchTool,
     async wake() {
       return rehydrateLoopWakeText(delivery, FIRE_TEXT, {
         getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() - 1000 }),
         getLoopStatusFn: async () => null,
         carriedProbeBlockFn: input => probes(input.readAtIso),
-        carryRefBlockFn: input => carryRefChangesForWake({ ...input, readLoopRefStamps, resolve }),
+        carryRefBlockFn: input => recordBlock('references', () =>
+          carryRefChangesForWake({ ...input, readLoopRefStamps, resolve })),
       });
     },
     async recovery() {
       const result = await buildAutomaticCompactionRecovery(OWNER, WORKSPACE, {
         sessionHarness: HARNESS, heldItems: [],
         carriedProbesFn: async () => probes(new Date().toISOString()),
-        carriedRefChangesFn: async () => carryRefChangesForRecovery({
+        carriedRefChangesFn: async () => recordBlock('references', () => carryRefChangesForRecovery({
           ownerId: OWNER, workspaceId: WORKSPACE, sessionHarness: HARNESS, heldItems: [],
           readAtIso: new Date().toISOString(),
           getLoopStatus: async () => ({ active: true, harnessSlug: HARNESS }),
           readLoopRefStamps, resolve,
-        }),
+        })),
       });
       return renderAutomaticCompactionRecovery(result);
     },
@@ -120,6 +129,9 @@ describe('P-009 deterministic return-path scenario', () => {
       const s = await scenario();
       // Negative control uses the SAME stored checkpoint and real entry point.
       expect(changeLines(await s[path]())).toEqual([]);
+      // Silence covers the complete rendered blocks, including text that lacks
+      // the CHANGED/GONE prefix recognized by changeLines.
+      expect(s.blocks).toEqual({ probes: [null], references: [null] });
       s.change();
       const text = await s[path]();
       const lines = changeLines(text);
