@@ -294,9 +294,8 @@ function err(text: string) {
  * task. `ownerId` is only the coordination identity; it is not a resumable
  * transcript target once a role session has ended.
  *
- * The current fresh-launch probe exposes Claude's native id directly. It does
- * not yet expose Codex rollout or OMP thread metadata, so those sessions stay
- * explicitly unresolved instead of manufacturing a second id vocabulary. The
+ * The fresh-launch probe exposes Claude and Codex native ids directly. OMP
+ * thread metadata stays unresolved when absent. The
  * structural `nativeSession` seam also lets a richer verifier result pass its
  * canonical handle through unchanged.
  */
@@ -308,7 +307,7 @@ function nativeSessionHandleFromFreshProbe(
     nativeSession?: NativeSessionHandle | null;
   }).nativeSession;
   if (projected !== undefined) return projected;
-  if (agent !== 'claude' || !session.ownerId || !session.sessionId) return null;
+  if ((agent !== 'claude' && agent !== 'codex') || !session.ownerId || !session.sessionId) return null;
 
   // Reuse the canonical adv_sessions resolver so the public shape remains the
   // same backend-neutral NativeSessionHandle used by roster/session consumers.
@@ -317,11 +316,12 @@ function nativeSessionHandleFromFreshProbe(
   return nativeSessionHandleForAdvSession(
     {
       id: session.advSessionId,
-      agent: 'claude',
+      agent,
       coordOwnerId: session.ownerId,
       sessionId: session.sessionId,
     } as Parameters<typeof nativeSessionHandleForAdvSession>[0],
     {
+      findCodexRolloutId: () => session.sessionId,
       resolveConfigDir: () => ({
         dir: null,
         source: null,
