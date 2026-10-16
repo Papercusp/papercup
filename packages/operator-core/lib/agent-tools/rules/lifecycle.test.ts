@@ -20,7 +20,7 @@ import * as lifecycle from './lifecycle';
 import { putLocalRule, getLocalRule, listLocalRules, setLocalRuleEnabled, recordLocalRuleTest, type LocalAuthoredRule } from '../../events/local-rule-store';
 import { readRuleReplaySamples, replayRule } from '../../events/authored-rule-test';
 import { validateClassFireTarget } from '../../events/class-fire-target';
-const definition: LocalAuthoredRule['definition'] = { schemaVersion: 1, id: 'demo', title: 'Demo', description: 'Fixture', version: '1.0.0',
+const definition: LocalAuthoredRule['definition'] = { id: 'demo', title: 'Demo', description: 'Fixture', version: '1.0.0',
   delivery: 'async', on: 'demo:done', fire: 'class:demo.notify@1.0.0#send' };
 function authoredRule(overrides: Partial<LocalAuthoredRule> = {}): LocalAuthoredRule {
   return { workspaceId: 'ws', potSlug: 'pot', id: 'demo', authorId: 'author', revision: 7,
