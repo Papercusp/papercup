@@ -66,6 +66,44 @@ describe('D-063 owner rebuild of native MCP targets', () => {
     expect(fn).toHaveBeenCalledExactlyOnceWith({ value: 7 }, expect.any(Object));
   });
 
+  it('re-emits owner progress notifications with the caller progress token', async () => {
+    const notifications: unknown[] = [];
+    const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {
+      ctx.progress(34, 'applying migration');
+      ctx.emit('migration-heartbeat', { phase: 'apply', elapsedSec: 30 });
+      return { content: [{ type: 'text' as const, text: 'complete' }] };
+    });
+    target(fn);
+    const r = { ...request(), progressToken: 'migrate-call-1' };
+
+    await dispatchNativeMcpTargetOnOwner(r, address, { progress: value => notifications.push(value) });
+
+    expect(notifications).toEqual([
+      { method: 'notifications/papercusp/event', params: {
+        progressToken: 'migrate-call-1', event: 'progress',
+        data: { progress: 34, total: 100, message: 'applying migration' },
+      } },
+      { method: 'notifications/progress', params: {
+        progressToken: 'migrate-call-1', progress: 34, total: 100, message: 'applying migration',
+      } },
+      { method: 'notifications/papercusp/event', params: {
+        progressToken: 'migrate-call-1', event: 'migration-heartbeat', data: { phase: 'apply', elapsedSec: 30 },
+      } },
+    ]);
+  });
+
+  it('passes a caller-selected progress receiver into the native-owner relay', async () => {
+    const receive = vi.fn();
+    const r = request();
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'local' }] }));
+    nativeOwnerRouting.run.mockImplementation(async (_address, _remoteRequest, runLocal) => runLocal());
+
+    await runNativeMcpTargetOnOwner(r, local, 1_000, receive);
+
+    expect(nativeOwnerRouting.run).toHaveBeenCalledOnce();
+    expect(nativeOwnerRouting.run.mock.calls[0][4]).toBe(receive);
+  });
+
   it.each(['workspace', 'adv', 'owner', 'thread', 'carrier', 'unbound'] as const)(
     'refuses a mismatched %s before handler execution', async kind => {
       const fn = vi.fn(); target(fn); const r = request();

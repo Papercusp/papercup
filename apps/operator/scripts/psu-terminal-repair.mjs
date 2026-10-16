@@ -88,6 +88,59 @@ export async function applyTerminalIdentityRepair(client, { scriptId, source, ap
   return { ...receipt, applied: true };
 }
 
+/**
+ * SIGUSR1 activation can be delayed behind a blocked Node main thread. Keep the
+ * activation attempt owned after the caller's short foreground budget expires,
+ * and close only a target that proves it is the same PID/incarnation and
+ * launcher entry. A late target belonging to another process is never closed.
+ * @param {{pid:number,entry:string,started:string,maxWaitMs?:number,pollIntervalMs?:number,
+ *   discover?:typeof discoverInspector,create?:typeof createCdpClient,close?:typeof closeInspector,
+ *   sleepImpl?:(ms:number)=>Promise<unknown>}} options
+ */
+export async function closeLateInspectorWhenAvailable({
+  pid,
+  entry,
+  started,
+  maxWaitMs = 30_000,
+  pollIntervalMs = 100,
+  discover = discoverInspector,
+  create = createCdpClient,
+  close = closeInspector,
+  sleepImpl = sleep,
+}) {
+  const deadline = Date.now() + maxWaitMs;
+  try {
+    while (Date.now() < deadline) {
+      const target = await discover({ portCount: 1, requestTimeoutMs: 250 });
+      if (!target) {
+        await sleepImpl(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+        continue;
+      }
+      const client = create(target.wsUrl, { requestTimeoutMs: 5_000 });
+      let exact = false;
+      try {
+        await client.connect();
+        const identity = (await client.evaluate(
+          '({pid:process.pid,entry:process.argv[1]})',
+          { returnByValue: true },
+        )).result.value;
+        exact = identity?.pid === pid && identity.entry === entry && startTicks(pid) === started;
+        if (exact) {
+          await close(client, target.port);
+          return { closed: true, port: target.port };
+        }
+      } finally {
+        if (!exact) client.close();
+      }
+      return { closed: false, reason: 'identity-mismatch' };
+    }
+    return { closed: false, reason: 'activation-timeout' };
+  } catch {
+    // Cleanup is best effort and must never change the original repair verdict.
+    return { closed: false, reason: 'cleanup-error' };
+  }
+}
+
 function startTicks(pid) {
   const text = readFileSync('/proc/' + pid + '/stat', 'utf8');
   return text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[19];
@@ -121,7 +174,13 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
     if (target) break;
     await sleep(100);
   }
-  if (!target) throw new Error('Terminal inspector did not open on loopback');
+  if (!target) {
+    // The signal may have been accepted while the main thread was blocked. Keep
+    // polling after the foreground budget so a late inspector cannot remain
+    // listening indefinitely; exact PID/incarnation checks protect other tools.
+    void closeLateInspectorWhenAvailable({ pid, entry, started });
+    throw new Error('Terminal inspector did not open on loopback');
+  }
   const client = createCdpClient(target.wsUrl, { requestTimeoutMs: 5000 });
   let verified = false;
   let receipt;

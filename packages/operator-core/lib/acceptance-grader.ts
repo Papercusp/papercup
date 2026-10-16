@@ -1671,12 +1671,24 @@ export interface AcceptanceShipperCarrier {
   /** WI-6554700010008529: set when the gate refused `independent_verification_missing`.
    * The rendered re-observation step every grader brief carries ahead of grading. */
   acceptanceIndependentVerificationBrief?: string | null;
+  /** Validated pre-grading selection, never a final-ship exemption. */
+  acceptancePendingDeliveryBarKeys?: readonly string[];
 }
 
 /** The carried re-observation section, or '' (WI-6554700010008529). */
 export function carriedIndependentVerificationBrief(ctx: unknown): string {
   const raw = ((ctx ?? {}) as AcceptanceShipperCarrier).acceptanceIndependentVerificationBrief;
   return typeof raw === 'string' ? raw.trim() : '';
+}
+
+export function carriedAcceptanceReviewBrief(ctx: unknown): string {
+  const keys = ((ctx ?? {}) as AcceptanceShipperCarrier).acceptancePendingDeliveryBarKeys;
+  const pending = Array.isArray(keys) && keys.length > 0
+    ? `PRE-PUBLICATION REVIEW ONLY: delivery BARs ${JSON.stringify(keys)} must rate unknown. `
+      + `Pass pendingDeliveryBarKeys:${JSON.stringify(keys)} to BOTH scorecards:evaluate and scorecards:emit. `
+      + 'Do not claim delivery, invent runtime proof, publish, or mark the plan shipped. All other BARs and independence rules remain in force.'
+    : '';
+  return [carriedIndependentVerificationBrief(ctx), pending].filter(Boolean).join('\n\n');
 }
 
 /** Author of the re-observation comment carried onto a deduped grading request. */
@@ -2449,7 +2461,7 @@ async function prodOpenGradingCascade(
   }
 
   const head = params.graders[0]!;
-  const verify = carriedIndependentVerificationBrief(ctx);
+  const verify = carriedAcceptanceReviewBrief(ctx);
   const brief = (verify ? `${verify}\n\n` : '') + (
     head.via === 'minimum'
       ? briefs.buildMinimumFillAcceptanceGraderBrief(
@@ -2889,7 +2901,7 @@ export async function resolveAcceptanceGrader(
         // takes it grades the rubric and binds nothing — and the next retry refuses
         // again. A fresh launch carries the section in its brief; carry it onto the
         // request we deduped onto. Fail open: the dedupe itself still stands.
-        const verificationBrief = carriedIndependentVerificationBrief(ctx);
+        const verificationBrief = carriedAcceptanceReviewBrief(ctx);
         const verificationBriefOnRequest = verificationBrief
           ? await (deps.appendVerificationBrief ?? appendIndependentVerificationBriefToRequest)(
               existingGradingRequest.id,
@@ -3142,7 +3154,7 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
-    ...(carriedIndependentVerificationBrief(ctx) ? [carriedIndependentVerificationBrief(ctx)] : []),
+    ...(carriedAcceptanceReviewBrief(ctx) ? [carriedAcceptanceReviewBrief(ctx)] : []),
     'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
     ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
     ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,

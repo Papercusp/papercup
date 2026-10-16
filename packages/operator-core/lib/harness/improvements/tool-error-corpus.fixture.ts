@@ -29,6 +29,8 @@
  * EI-25389944836048866; tools:invoke preserves the 42703 payload for correction.
  * The explicit capability:bash cwd refusal was added 2026-10-09 from
  * EI-25541385148400614; it is a caller path error, not a structural spawn failure.
+ * The capability:bash nsenter namespace refusal was added 2026-10-16 from
+ * EI-26011423316141422; OS permission denial is not a capability implementation bug.
  * The missing-UI-client rows were added 2026-10-07 from EI-24710297442793828;
  * they are expected caller context refusals, not structural UI defects.
  * The native-owner transport capability refusal was added 2026-10-09 from
@@ -173,6 +175,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: "capability:bash cwd '" + missingHomeCwdFixture + "' does not exist — the child process cannot start. (Node would report this as a misleading \"spawn /usr/bin/bash ENOENT\".) Pass an existing directory as cwd.",
     expectedClass: 'caller',
     note: 'capability:bash explicitly preflights cwd before spawning; the supplied missing path is invalid caller input, not a structural tool defect (EI-25541385148400614)',
+  },
+  {
+    n: 2, errorCode: 'child_failed', status: 'failed',
+    message: 'nsenter: cannot open /proc/1/ns/pid: Permission denied',
+    expectedClass: 'caller',
+    note: 'the OS refused an nsenter request to open a process namespace; this caller-side boundary is not a capability:bash defect (EI-26011423316141422)',
   },
   {
     n: 1, errorCode: 'aborted', status: 'error',

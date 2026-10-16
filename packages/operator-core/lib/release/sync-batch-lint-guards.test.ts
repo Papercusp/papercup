@@ -54,6 +54,16 @@ describe('classifyGuardRun', () => {
     expect(classifyGuardRun({ exitCode: 1, output: actualLintFailure }, 'lint:design-primitives')).toBe('fail');
     expect(parseGuardOffenders(actualLintFailure, ROOT, 'lint:design-primitives')).toEqual(['apps/operator/app/example.tsx']);
   });
+  it('treats a JSON-escaped runner stack in a design-lint assertion as undetermined', () => {
+    const testFile = `${ROOT}/apps/operator/app/_lints/design-primitives.test.ts`;
+    const stack = `Error: STACK_TRACE_ERROR\n    at task (${testFile}:100:1)`;
+    const output = `TEST_FILE_ASSERTION_FAILURE file=${JSON.stringify(testFile)} ` +
+      `name=${JSON.stringify('blocks new native <select> controls in app UI')} message=${JSON.stringify(stack)}`;
+
+    expect(output).not.toContain('\n    at task (');
+    expect(classifyGuardRun({ exitCode: 1, output }, 'lint:design-primitives')).toBe('undetermined');
+    expect(parseGuardOffenders(output, ROOT, 'lint:design-primitives')).toEqual([]);
+  });
   it('timeouts, spawn failures, crashes and environment faults are undetermined', () => {
     expect(classifyGuardRun({ exitCode: null, output: '' })).toBe('undetermined');
     expect(

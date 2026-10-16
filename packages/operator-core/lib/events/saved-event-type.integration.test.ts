@@ -35,6 +35,7 @@ describe('locally authored event type (real Postgres)', () => {
   it('declares without firing, reloads from durable storage, then validates and queues exactly one wake', async () => {
     const invoke = async (args: Record<string, unknown>) => {
       const result = await emit.handler(args as never, { workspaceId: h.ws, role: 'operator' } as never);
+      if (!('content' in result)) throw new Error('expected an MCP tool result');
       return JSON.parse((result.content[0] as { text: string }).text);
     };
     const declared = await invoke({ event: 'local:smoke-ready', announce: true, announceScope: 'global', save: true,

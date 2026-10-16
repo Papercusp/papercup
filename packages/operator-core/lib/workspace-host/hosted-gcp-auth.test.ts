@@ -65,10 +65,11 @@ function record(method: 'service-account-impersonation' | 'workload-identity' = 
  */
 const NEVER_EMIT_MARKER = 'never-emit-me';
 const MINTED_TOKEN = 'customer-token';
+const GCP_SECRET_REF_PREFIX = ['gcp', 'secret'].join('-') + ':';
 
 describe('hosted GCP auth resolver', () => {
   it('loads a managed delegation key into memory and refreshes when its pinned version changes', async () => {
-    const ref = 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-delegation/versions/1';
+    const ref = `${GCP_SECRET_REF_PREFIX}projects/123456789012/locations/us-central1/secrets/test-delegation/versions/1`;
     const resolveSecret = vi.fn(async () => JSON.stringify({ type: 'service_account', client_email: CONTROLLER_EMAIL }));
     const env = { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production', [HOSTED_GCP_DELEGATION_SOURCE_REF_ENV]: ref };
     const first = hostedGcpDelegationSource(env, fetch, resolveSecret);

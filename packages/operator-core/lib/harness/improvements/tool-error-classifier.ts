@@ -145,6 +145,13 @@ export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
   'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+';
 
+/** An explicit nsenter refusal to open a process namespace is the operating
+ * system enforcing the caller's namespace boundary, not a capability:bash
+ * implementation failure. Keep this narrow so unrelated child permission
+ * errors still use the structural fallback. */
+export const PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN =
+  '(^|[^A-Za-z0-9_])nsenter: cannot open /proc/[0-9]+/ns/[A-Za-z_]+: (permission denied|operation not permitted)';
+
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
  * Keep the specific structured_result_shape code ahead of generic transient
@@ -212,6 +219,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'caller',
     messagePattern: "capability:bash cwd '[^']+' (does not exist|exists but is not a directory)",
     why: 'capability:bash preflights an explicit cwd before spawning; a missing path or file passed as cwd is caller input, not a structural tool failure',
+  },
+  {
+    class: 'caller',
+    messagePattern: PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN,
+    why: 'nsenter was refused while opening a process namespace; this is an OS permission boundary on the requested command, not a capability:bash defect',
   },
   {
     class: 'caller',
@@ -773,8 +785,14 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
       input.status?.trim() === 'structured_result_shape' ||
       (klass === 'caller' && /structured_result_shape.*typed root/.test(input.message))
     ));
+  const processNamespacePermissionRefusal = new RegExp(
+    PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN,
+    'i',
+  ).test(input.message);
   // Keep other caller-class overrides available for genuine contract defects.
-  const structuredAttested = input.directEvidence !== undefined && !structuredResultShapeCallerDiagnostic;
+  const structuredAttested = input.directEvidence !== undefined &&
+    !structuredResultShapeCallerDiagnostic &&
+    !processNamespacePermissionRefusal;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   const deferredWrapperUnavailable = [input.errorCode, input.status]
     .some((value) => [
@@ -799,7 +817,8 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     // A missing client wrapper is affirmative evidence that dispatch never
     // reached the named handler. Non-empty expected/actual prose cannot turn
     // that discovery report into a claimable server defect.
-    direct: attested && !knownExternal && !deferredWrapperUnavailable && !expectedSelfAwaitRefusal,
+    direct: attested && !knownExternal && !deferredWrapperUnavailable &&
+      !expectedSelfAwaitRefusal && !processNamespacePermissionRefusal,
     knownExternal,
   };
 }

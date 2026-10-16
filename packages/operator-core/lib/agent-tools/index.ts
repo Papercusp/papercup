@@ -1589,6 +1589,7 @@ import './cupboard/install-event';
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
 import './cupboard/search';
+import './cupboard/my-listings';
 import './cupboard/unpublish';
 // shared-pot-dao-cupboard-v1-2026-09-04 D-045 §3d — the four P-011 commerce doors.
 // Before these, commerce-accounts.ts and commerce-dashboards.ts had ZERO production

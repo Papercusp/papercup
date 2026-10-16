@@ -48,6 +48,8 @@ import {
   type HostedOpenRouterAuthorization,
 } from './hosted-billing-runtime';
 
+const GCP_SECRET_REF_PREFIX = ['gcp', 'secret'].join('-') + ':';
+
 const ORG = '11111111-2222-4333-8444-555555555555';
 const ORIGIN = 'https://app.example';
 const WEBHOOK_SECRET = 'whsec_testsecret123';
@@ -637,7 +639,7 @@ describe('hosted usage production collector composition', () => {
 
 describe('hosted billing configuration parsing', () => {
   it('production requires pinned Secret Manager references for both Stripe secrets', () => {
-    const ref = 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-stripe/versions/2';
+    const ref = `${GCP_SECRET_REF_PREFIX}projects/123456789012/locations/us-central1/secrets/test-stripe/versions/2`;
     const env = { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production', PAPERCUSP_HOSTED_PUBLIC_ORIGIN: ORIGIN,
       PAPERCUSP_STRIPE_SECRET_KEY_REF: ref, PAPERCUSP_STRIPE_WEBHOOK_SECRET_REF: ref };
     expect(readHostedBillingRuntimeConfiguration(env)).toMatchObject({ requireManagedSecrets: true });

@@ -4139,14 +4139,16 @@ export function resumeFirstStepChoices(session: {
  * @param {any} session
  * @param {any} args
  * @param {{prompts?: any, readLastActiveModel?: Function, fetchPortCapabilities?: Function,
- *   readCodexModels?: Function, readOmpModels?: Function}} [dependencies]
+ *   readCodexModels?: Function, readOmpModels?: Function,
+ *   readOperatorTarget?: Function}} [dependencies]
  */
-export function chooseResumeTarget(session: any, args: any, { prompts, readLastActiveModel, fetchPortCapabilities, readCodexModels, readOmpModels, }?: {
+export function chooseResumeTarget(session: any, args: any, { prompts, readLastActiveModel, fetchPortCapabilities, readCodexModels, readOmpModels, readOperatorTarget, }?: {
     prompts?: any;
     readLastActiveModel?: Function;
     fetchPortCapabilities?: Function;
     readCodexModels?: Function;
     readOmpModels?: Function;
+    readOperatorTarget?: Function;
 }): Promise<{
     modelSource?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     operation: string;
@@ -4434,6 +4436,14 @@ export function ensureBackendInstalled(agent: any, { interactive, detect }?: {
     interactive?: boolean | undefined;
     detect?: typeof detectBackendBin | undefined;
 }): Promise<boolean>;
+/** @param {{ readHandoff?: typeof readHostHandoffForParentPid,
+ * launchHandoff?: typeof launchHostHandoff,
+ * connectionFrontController?: typeof runPsuConnectionFrontController }} [dependencies] */
+export function main({ readHandoff, launchHandoff, connectionFrontController, }?: {
+    readHandoff?: typeof readHostHandoffForParentPid;
+    launchHandoff?: typeof launchHostHandoff;
+    connectionFrontController?: typeof runPsuConnectionFrontController;
+}): Promise<void>;
 /**
  * The pre-TUI "your setup isn't finished" nudge (owner batch #5). PURE: given the
  * concierge setup STAGE name, return the reminder lines to print, or null when there
@@ -5215,6 +5225,16 @@ declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchResolvedResume(source: any, args: any, { tracked }: {
     tracked: any;
 }): Promise<void>;
+import { readHostHandoffForParentPid } from "./psu-pty-host.mjs";
+/**
+ * Continue a host-code handoff without running bootstrap-su a second time.
+ * The shim re-executes this launcher with its original argv, but the original
+ * bootstrap result (adv row, Codex home, and route identity) was only held in
+ * the predecessor process. Consuming the handoff before the normal launch
+ * flow keeps the successor on that exact row/home instead of minting a sibling.
+ */
+declare function launchHostHandoff(handoff: any): Promise<void>;
+import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import { nativeSessionIdFromLaunchArgs } from "./psu-pty-host.mjs";
 export { readClaudeLaunchSettings, nativeSessionIdFromLaunchArgs };

@@ -25,6 +25,34 @@ export function applyTerminalIdentityRepair(client: Pick<ReturnType<typeof creat
     beforeHash: string;
     afterHash: string;
 }>;
+/**
+ * SIGUSR1 activation can be delayed behind a blocked Node main thread. Keep the
+ * activation attempt owned after the caller's short foreground budget expires,
+ * and close only a target that proves it is the same PID/incarnation and
+ * launcher entry. A late target belonging to another process is never closed.
+ * @param {{pid:number,entry:string,started:string,maxWaitMs?:number,pollIntervalMs?:number,
+ *   discover?:typeof discoverInspector,create?:typeof createCdpClient,close?:typeof closeInspector,
+ *   sleepImpl?:(ms:number)=>Promise<unknown>}} options
+ */
+export function closeLateInspectorWhenAvailable({ pid, entry, started, maxWaitMs, pollIntervalMs, discover, create, close, sleepImpl, }: {
+    pid: number;
+    entry: string;
+    started: string;
+    maxWaitMs?: number;
+    pollIntervalMs?: number;
+    discover?: typeof discoverInspector;
+    create?: typeof createCdpClient;
+    close?: typeof closeInspector;
+    sleepImpl?: (ms: number) => Promise<unknown>;
+}): Promise<{
+    closed: boolean;
+    port: number;
+    reason?: undefined;
+} | {
+    closed: boolean;
+    reason: string;
+    port?: undefined;
+}>;
 /** Explicit exact-host operation; caller supplies its discovery owner identity.
  * The inspector is temporarily loopback-only and verified closed afterwards.
  * The loaded-source hash proves this repair, not a whole-host code upgrade.
@@ -47,3 +75,5 @@ export function repairTerminalHost({ pid, ownerId, apply }: {
 }>;
 export const LEGACY_IDENTITY_FUNCTION: "export function codexNativeIdForPty(codexHome, ptyPid, {\n  readHolder = codexThreadWriterHolder,\n  readStartupPid = resolveLinuxCodexStartupPid,\n} = {}) {\n  if (!Number.isSafeInteger(ptyPid) || ptyPid <= 0) return null;\n  try {\n    const nativePid = readStartupPid(ptyPid);\n    if (!nativePid) return null;\n    const holder = readHolder(codexHome, null, { holderPid: nativePid });\n    if (!holder.held || !holder.sessionId || !holder.pid) return null;\n    if (holder.pid !== nativePid) return null;\n    return holder.sessionId;\n  } catch {\n    return null;\n  }\n}";
 import { createCdpClient } from '../../../scripts/cdp-inspector.mjs';
+import { discoverInspector } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector } from '../../../scripts/cdp-inspector.mjs';

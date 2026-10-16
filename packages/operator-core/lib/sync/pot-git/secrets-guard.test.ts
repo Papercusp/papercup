@@ -102,6 +102,30 @@ describe('secrets-guard rules', () => {
         path: 'packages/operator-core/lib/dao-hr/contracts-esign.test.ts',
         relative: '../../dao-hr/contracts-esign.test.ts',
       },
+      {
+        path: 'apps/operator/bin/hosted-check-refs.test.ts',
+        relative: '../../../../../apps/operator/bin/hosted-check-refs.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/auth/hosted/secret-ref.test.ts',
+        relative: '../../auth/hosted/secret-ref.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/isolated-integration-proof.test.ts',
+        relative: '../../isolated-integration-proof.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/auth/hosted/database-access.integration.test.ts',
+        relative: '../../auth/hosted/database-access.integration.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/endpoint-route/hosted-billing-runtime.test.ts',
+        relative: '../../endpoint-route/hosted-billing-runtime.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/workspace-host/hosted-gcp-auth.test.ts',
+        relative: '../../workspace-host/hosted-gcp-auth.test.ts',
+      },
     ];
     for (const file of files) {
       const content = readFileSync(join(__dirname, file.relative), 'utf8');

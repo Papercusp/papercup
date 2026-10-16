@@ -2692,6 +2692,31 @@ export async function resolveMcpTargetAfterPluginHostWarm(
   return resolve(toolName);
 }
 
+type McpProgressNotification = { method: string; params: Record<string, unknown> };
+
+function nativeMcpProgressBridge(
+  progressToken: string | number | undefined,
+  sendNotification: ((notification: McpProgressNotification) => Promise<void>) | undefined,
+): { progressToken?: string | number; onProgress?: (value: unknown) => void } {
+  if (progressToken === undefined || !sendNotification) return {};
+  return {
+    progressToken,
+    onProgress: (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const notification = value as Partial<McpProgressNotification>;
+      if (typeof notification.method !== 'string' || !notification.params || typeof notification.params !== 'object' ||
+          Array.isArray(notification.params)) return;
+      try {
+        void sendNotification(notification as McpProgressNotification).catch((error) => {
+          console.warn(`[mcp-tool] relayed sendNotification(${notification.method}) failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      } catch (error) {
+        console.warn(`[mcp-tool] relayed sendNotification(${notification.method}) failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  };
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
@@ -2954,14 +2979,16 @@ async function buildMcpToolContext(
         );
         return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
       })) as McpCallResult;
+    const progressBridge = nativeMcpProgressBridge(progressToken, sendNotification);
     const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, () =>
       nativeOwnerAddress ? runLocalTarget() : runNativeMcpTargetOnOwner({
         toolName: canonicalName, args: dispatchToolArgs, spawn: spawnCtx,
         requestedFormat: baseCtx.requestedFormat, requestedStructured: baseCtx.requestedStructured,
         requestedDelta: baseCtx.requestedDelta, idempotencyKey: baseCtx.idempotencyKey,
+        ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
         fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
         sourceProjection: projectionSpec, indirect: true,
-      }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec)),
+      }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec), progressBridge.onProgress),
     );
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
@@ -3661,6 +3688,7 @@ interface NativeMcpTargetRequest {
   requestedStructured?: boolean;
   requestedDelta?: string;
   idempotencyKey?: string;
+  progressToken?: string | number;
   fullSource: boolean;
   structuredSource: boolean;
   sourceProjection?: ProjectionSpec | null;
@@ -3698,6 +3726,7 @@ export async function runNativeMcpTargetOnOwner(
   request: NativeMcpTargetRequest,
   local: () => Promise<McpCallResult>,
   timeoutMs: number,
+  onProgress?: (value: unknown) => void,
 ): Promise<McpCallResult> {
   const address = nativeMcpToolAddress(request.spawn);
   if (!address) return local();
@@ -3706,7 +3735,7 @@ export async function runNativeMcpTargetOnOwner(
   // validation in admissionReplayContext on the owner. Normalize lazily so an
   // owner-local call can keep its principal in-process without serializing it.
   const ownerRequest = () => ({ ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) });
-  return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs);
+  return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs, onProgress);
 }
 
 export async function recordMcpPreflightFailure(
@@ -3742,6 +3771,7 @@ export async function recordMcpPreflightFailure(
 export async function dispatchNativeMcpTargetOnOwner(
   body: unknown,
   address: SuNativeToolAddress,
+  source: { progress?: (value: unknown) => void } = {},
 ): Promise<McpCallResult> {
   const request = body as NativeMcpTargetRequest | null;
   if (!request || typeof request.toolName !== 'string' || !request.spawn ||
@@ -3752,6 +3782,8 @@ export async function dispatchNativeMcpTargetOnOwner(
       (request.requestedFormat !== undefined && typeof request.requestedFormat !== 'string') ||
       (request.requestedDelta !== undefined && typeof request.requestedDelta !== 'string') ||
       (request.requestedStructured !== undefined && typeof request.requestedStructured !== 'boolean') ||
+      (request.progressToken !== undefined && typeof request.progressToken !== 'string' &&
+        (typeof request.progressToken !== 'number' || !Number.isFinite(request.progressToken))) ||
       (request.idempotencyKey !== undefined && validIdempotencyKey(request.idempotencyKey) !== request.idempotencyKey))
     throw new Error('native_tool_owner_invalid_request');
   const ownerRequest = { ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) };
@@ -3765,7 +3797,10 @@ export async function dispatchNativeMcpTargetOnOwner(
     ? await resolveMcpTargetAfterPluginHostWarm(ownerRequest.toolName) : resolveMcpName(ownerRequest.toolName);
   if (!target?.expose?.mcp || target.expose.mcp.name !== ownerRequest.toolName)
     throw new Error('native_tool_owner_target_unavailable');
-  const base = await buildMcpToolContext(ownerRequest.spawn, undefined, undefined, target.pluginName,
+  const sendNotification = source.progress
+    ? async (notification: McpProgressNotification) => { source.progress!(notification); }
+    : undefined;
+  const base = await buildMcpToolContext(ownerRequest.spawn, ownerRequest.progressToken, sendNotification, target.pluginName,
     ownerRequest.requestedFormat, ownerRequest.requestedStructured, ownerRequest.requestedDelta, ownerRequest.idempotencyKey,
     undefined, address);
   const startedAt = Date.now();
@@ -5050,6 +5085,7 @@ export function registerMcpHost(server: McpServer): void {
                 explicitDelta,
                 itemKeyField: projected.delta?.itemKeyField,
                 runRaw: async (autoRequestedDelta, overrideDelta = true) => {
+                  const progressBridge = nativeMcpProgressBridge(progressToken, sendNotification);
                   const deltaCtx = overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx;
                   const materializationCtx = projectionMaterializationContext(
                     deltaCtx,
@@ -5073,6 +5109,7 @@ export function registerMcpHost(server: McpServer): void {
                       idempotencyKey: idempotencyKey ?? undefined, fullSource: projectionNeedsFullSource,
                       structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
                       indirect: false,
+                      ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
                     }, () => dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, materializationCtx, async localCtx => {
                       if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
                         if (!raced.deadlineFired) {
@@ -5089,7 +5126,7 @@ export function registerMcpHost(server: McpServer): void {
                       dispatchStarted = true;
                       markInnerDispatchStarted(deadlineMs);
                       return dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, localCtx, PROJECTED_DEPS) as Promise<McpCallResult>;
-                    }), deadlineMs);
+                    }), deadlineMs, progressBridge.onProgress);
                   }
                   return runLocalTarget();
                 },

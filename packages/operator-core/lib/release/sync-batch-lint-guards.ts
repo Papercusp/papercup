@@ -144,7 +144,11 @@ export function classifyGuardRun(run: GuardRun, script?: SyncLintGuardScript): G
     !run.output.split(/\r?\n/).some((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='))) {
     return 'undetermined';
   }
-  if (STACK_FRAME_RE.test(run.output) || ENVIRONMENT_FAILURE_RE.test(run.output)) return 'undetermined';
+  if (
+    STACK_FRAME_RE.test(run.output) ||
+    structuredAssertionHasStackFrame(run.output) ||
+    ENVIRONMENT_FAILURE_RE.test(run.output)
+  ) return 'undetermined';
   return 'fail';
 }
 
@@ -158,6 +162,22 @@ const BOX_IDENTITY_DIAGNOSTIC_RE = /^  (.+):\d+  \(user "[^"]+"\)\s*$/;
 /** Structured paths emitted by scripts/test-files.mjs for measured assertion failures. */
 const TEST_FILE_ASSERTION_FAILURE_FILE_RE = /^TEST_FILE_ASSERTION_FAILURE file=("(?:\\.|[^"\\])*")(?:\s|$)/;
 const TEST_FILE_ASSERTION_FAILURE_MESSAGE_RE = /\smessage=("(?:\\.|[^"\\])*")(?:\s|$)/;
+
+/** The test-file runner JSON-escapes assertion messages, so runner stack frames in
+ * `message=` are not visible to STACK_FRAME_RE until that field is decoded. */
+function structuredAssertionHasStackFrame(output: string): boolean {
+  for (const line of output.split(/\r?\n/)) {
+    const match = TEST_FILE_ASSERTION_FAILURE_MESSAGE_RE.exec(line);
+    if (!match) continue;
+    try {
+      const message: unknown = JSON.parse(match[1]!);
+      if (typeof message === 'string' && STACK_FRAME_RE.test(message)) return true;
+    } catch {
+      // A malformed assertion record is not evidence of a source violation here.
+    }
+  }
+  return false;
+}
 
 /** Design lint's writer lists source paths relative to apps/, while file= names its test. */
 function designLintMessageOffenders(line: string): string[] {

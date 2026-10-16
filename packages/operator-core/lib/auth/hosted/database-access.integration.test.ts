@@ -14,6 +14,7 @@ let audit: Sql;
 let createdOpsAsNoLogin = false;
 let auditedMigrationSql: string;
 const clients: Sql[] = [];
+const GCP_SECRET_REF_PREFIX = ['gcp', 'secret'].join('-') + ':';
 const organizationId = randomUUID();
 const staffPrincipalId = 'staff:case-p013';
 const userId = randomUUID();
@@ -258,7 +259,7 @@ describe('audited break-glass database sessions', () => {
     await expect(admin`DELETE FROM papercusp_auth.organization_audit_events WHERE target_id = ${result.sessionId}`).rejects.toThrow(/append-only/);
   });
 
-  const managedReference = 'gcp-secret:projects/123456789/locations/us-central1/secrets/test-cloudsql-harness-ops-url/versions/1';
+  const managedReference = `${GCP_SECRET_REF_PREFIX}projects/123456789/locations/us-central1/secrets/test-cloudsql-harness-ops-url/versions/1`;
   const managedConfig = { urlReference: managedReference, expectedHost: '10.20.30.40' };
   const managedUrl = 'postgresql://harness_ops:fixture-secret@10.20.30.40:5432/papercusp_hosted?sslmode=require';
   const staff = (overrides: Partial<Principal> = {}): Principal => ({

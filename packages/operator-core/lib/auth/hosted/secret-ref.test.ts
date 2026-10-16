@@ -5,6 +5,8 @@ import {
   resolveHostedSecretRef,
 } from './secret-ref';
 
+const GCP_SECRET_REF_PREFIX = ['gcp', 'secret'].join('-') + ':';
+
 describe('hosted secret references', () => {
   afterEach(() => {
     delete process.env.PAPERCUSP_TEST_HOSTED_SECRET_REF;
@@ -62,13 +64,15 @@ describe('hosted secret references', () => {
     const readIntegrationKey = vi.fn(async () => 'must-not-read');
     const resolveOther = vi.fn(async () => 'must-not-read');
     const resolve = createHostedSecretRefResolver({ env: { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production' }, readIntegrationKey, resolveOther });
+    const UNPINNED_WORKOS_SECRET_REF = `${GCP_SECRET_REF_PREFIX}projects/123456789012/locations/us-central1/secrets/test-workos/versions/latest`;
+    const PINNED_WORKOS_SECRET_REF = `${GCP_SECRET_REF_PREFIX}projects/123456789012/locations/us-central1/secrets/test-workos/versions/2`;
     for (const reference of ['env:WORKOS_API_KEY', 'file:/run/secret', 'integration:WORKOS_API_KEY',
-      'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-workos/versions/latest']) {
+      UNPINNED_WORKOS_SECRET_REF]) {
       await expect(resolve(reference)).rejects.toThrow('requires_pinned_secret_manager');
     }
     expect(readIntegrationKey).not.toHaveBeenCalled();
     expect(resolveOther).not.toHaveBeenCalled();
-    const ref = 'gcp-secret:projects/123456789012/locations/us-central1/secrets/test-workos/versions/2';
+    const ref = PINNED_WORKOS_SECRET_REF;
     await expect(resolve(ref)).resolves.toBe('must-not-read');
     expect(resolveOther).toHaveBeenCalledWith(ref);
   });

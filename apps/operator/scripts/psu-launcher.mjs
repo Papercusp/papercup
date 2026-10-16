@@ -15633,7 +15633,8 @@ export function resumeFirstStepChoices(session, last) {
  * @param {any} session
  * @param {any} args
  * @param {{prompts?: any, readLastActiveModel?: Function, fetchPortCapabilities?: Function,
- *   readCodexModels?: Function, readOmpModels?: Function}} [dependencies]
+ *   readCodexModels?: Function, readOmpModels?: Function,
+ *   readOperatorTarget?: Function}} [dependencies]
  */
 export async function chooseResumeTarget(session, args, {
   prompts = null,
@@ -15641,6 +15642,7 @@ export async function chooseResumeTarget(session, args, {
   fetchPortCapabilities = fetchSessionPortCapabilities,
   readCodexModels = listCodexInstalledModels,
   readOmpModels = fetchOmpModelCatalog,
+  readOperatorTarget = launcherOperatorTarget,
 } = {}) {
   let last = null;
   try {
@@ -15674,7 +15676,7 @@ export async function chooseResumeTarget(session, args, {
   const hiddenTargetsNotice = unsupportedSessionPortTargetsNotice(
     session,
     portCapabilities,
-    launcherOperatorTarget().url,
+    portCapabilities?.known ? readOperatorTarget().url : null,
   );
   if (hiddenTargetsNotice) console.error(hiddenTargetsNotice);
   const allowedBackends = resumePickerBackendsFor(session, portCapabilities);
@@ -17632,7 +17634,14 @@ async function reconcileRecoveryAuditSoft() {
   }
 }
 
-async function main() {
+/** @param {{ readHandoff?: typeof readHostHandoffForParentPid,
+ * launchHandoff?: typeof launchHostHandoff,
+ * connectionFrontController?: typeof runPsuConnectionFrontController }} [dependencies] */
+export async function main({
+  readHandoff = readHostHandoffForParentPid,
+  launchHandoff = launchHostHandoff,
+  connectionFrontController = runPsuConnectionFrontController,
+} = {}) {
   // Recovery is the no-control-plane path. Detect its dedicated flags before
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
@@ -17672,6 +17681,53 @@ async function main() {
     const recoveryArgs = parseArgs(rawArgv);
     if (await recoveryFlow(recoveryArgs, { rawArgv })) return;
   }
+  // A re-exec already has a destination and a checkpointed continuation. Resolve
+  // its validated parent-bound handoff before the connection picker: a plain
+  // interactive shim replays argv=[], otherwise stopping here for human input
+  // until the handoff expires. Legacy shims may have no owner in their env.
+  const adoptionEventOwnerId = adoptionOwnerId || parseArgs(rawArgv).ownerId || null;
+  const handoffReadStartedAt = Date.now();
+  const hostHandoff = isHostAdoptionReexec
+    ? readHandoff(process.ppid, {
+        ownerId: adoptionEventOwnerId,
+        onReject: (rejection) => {
+          const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
+          if (!rejectedOwnerId) return;
+          const { path: _path, ownerId: _ownerId, ...detail } = rejection;
+          appendHostEvent(rejectedOwnerId, "host-code-adoption-handoff-rejected", {
+            site: "parent-pid",
+            reexecExitCode: hostReexecExitCode,
+            ...detail,
+          });
+        },
+      })
+    : null;
+  if (isHostAdoptionReexec) {
+    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionEventOwnerId;
+    if (ownerIdForHandoff) {
+      const firstTurnText = hostHandoff?.firstTurnText;
+      appendHostEvent(ownerIdForHandoff, "host-code-adoption-handoff-acceptance", {
+        reexecExitCode: hostReexecExitCode,
+        parentPid: process.ppid,
+        accepted: Boolean(hostHandoff),
+        mode: hostHandoff?.mode ?? null,
+        firstTurnPresent:
+          typeof firstTurnText === "string" && firstTurnText.length > 0,
+        firstTurnBytes:
+          typeof firstTurnText === "string"
+            ? Buffer.byteLength(firstTurnText, "utf8")
+            : 0,
+        argsCount: Array.isArray(hostHandoff?.args)
+          ? hostHandoff.args.length
+          : null,
+        elapsedMs: Math.max(0, Date.now() - handoffReadStartedAt),
+      });
+    }
+  }
+  if (hostHandoff) {
+    await launchHandoff(hostHandoff);
+    return;
+  }
   const frontControllerStartedAt = Date.now();
   if (isHostAdoptionReexec && adoptionOwnerId) {
     appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-started", {
@@ -17683,7 +17739,7 @@ async function main() {
   try {
     connection = hostedCustomer
       ? { handled: false, argv: rawArgv }
-      : await runPsuConnectionFrontController(rawArgv);
+      : await connectionFrontController(rawArgv);
   } catch (error) {
     if (isHostAdoptionReexec && adoptionOwnerId) {
       appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-failed", {
@@ -17744,55 +17800,6 @@ async function main() {
   // flow. Re-running bootstrap-su here would select or mint another adv row
   // while the handoff's already-minted child belongs to the predecessor row.
   if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
-  const handoffReadStartedAt = Date.now();
-  // WI-6554700010008431: a refused handoff is CONSUMED, and the event below is
-  // keyed by the handoff's own ownerId — so without this sink a refusal on a
-  // shim whose env carries no PAPERCUSP_SID left no event at all.
-  // WI-6554700010008431: headless fleet shims carry the owner as `--owner-id=`, not
-  // PAPERCUSP_SID, so the env-only fallback was null for exactly the population that
-  // lost its handoff — and an ambiguous or MISSING handoff then logged no event at all.
-  const adoptionEventOwnerId = adoptionOwnerId || args.ownerId || null;
-  const hostHandoff = startupStep("host-handoff-lookup", () => isHostAdoptionReexec
-    ? readHostHandoffForParentPid(process.ppid, {
-        ownerId: adoptionEventOwnerId,
-        onReject: (rejection) => {
-          const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
-          if (!rejectedOwnerId) return;
-          const { path: _path, ownerId: _ownerId, ...detail } = rejection;
-          appendHostEvent(rejectedOwnerId, "host-code-adoption-handoff-rejected", {
-            site: "parent-pid",
-            reexecExitCode: hostReexecExitCode,
-            ...detail,
-          });
-        },
-      })
-    : null);
-  if (isHostAdoptionReexec) {
-    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionEventOwnerId;
-    if (ownerIdForHandoff) {
-      const firstTurnText = hostHandoff?.firstTurnText;
-      appendHostEvent(ownerIdForHandoff, "host-code-adoption-handoff-acceptance", {
-        reexecExitCode: hostReexecExitCode,
-        parentPid: process.ppid,
-        accepted: Boolean(hostHandoff),
-        mode: hostHandoff?.mode ?? null,
-        firstTurnPresent:
-          typeof firstTurnText === "string" && firstTurnText.length > 0,
-        firstTurnBytes:
-          typeof firstTurnText === "string"
-            ? Buffer.byteLength(firstTurnText, "utf8")
-            : 0,
-        argsCount: Array.isArray(hostHandoff?.args)
-          ? hostHandoff.args.length
-          : null,
-        elapsedMs: Math.max(0, Date.now() - handoffReadStartedAt),
-      });
-    }
-  }
-  if (hostHandoff) {
-    await launchHostHandoff(hostHandoff);
-    return;
-  }
   // WI-37841 — FIRST, before any flow can fail. A launch carrying a PRE-PINNED
   // owner id was started programmatically (launch-su's "+ New session"), so
   // nobody is watching its window and every diagnostic it prints from here on is
