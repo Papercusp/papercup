@@ -444,7 +444,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
-    let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
+    let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
     let child: ReturnType<CensusSpawn>;
@@ -506,13 +506,41 @@ export async function inspectRetentionTrees(root: string, opts: {
       if (!sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.stderr.on('data', (chunk: string) => {
+      stderrOverflow ||= stderr.length + chunk.length > 4096;
+      stderr = (stderr + chunk).slice(-4096);
+    });
     child.once('error', (error) => finish(`find failed: ${String(error)}`));
     // A process-group SIGKILL also kills timeout itself, so Node reports a
     // signal with a null exit code rather than the direct-child status 137.
-    child.once('close', (code, signal) => finish(timedOut || (sudo && (code === 137 || (progressSupervised && signal === 'SIGKILL'))) ? 'retention native census timed out' :
-      code !== 0 ? `find exited ${code}: ${stderr.trim()}` :
-      malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined));
+    child.once('close', async (code, signal) => {
+      if (timedOut || (sudo && (code === 137 || (progressSupervised && signal === 'SIGKILL')))) {
+        finish('retention native census timed out'); return;
+      }
+      // GNU find's ignore_readdir_race covers a failed stat, but not a
+      // directory removed after its metadata was emitted and before descent.
+      // Accept only that same absent-object case, proven again after find exits.
+      // Unknown diagnostics, truncated stderr, replacements and permission errors
+      // still invalidate the complete candidate set. This remains planning
+      // evidence: reclaim rechecks each candidate before any removal.
+      const disappearedOnly = async () => {
+        if (code !== 1 || signal || stderrOverflow || !stderr.trim()) return false;
+        const currentRoot = await fsp.lstat(root);
+        if (currentRoot.dev !== rootStat.dev || currentRoot.ino !== rootStat.ino) return false;
+        for (const line of stderr.trimEnd().split('\n')) {
+          const match = /^(?:[^:]*\/)?find: (?:‘(.+)’|'(.+)'): No such file or directory$/.exec(line);
+          const path = match?.[1] ?? match?.[2];
+          if (!path || !path.startsWith(root + '/') || resolve(path) !== path) return false;
+          try { await fsp.lstat(path); return false; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+        }
+        return true;
+      };
+      if (code !== 0 && !await disappearedOnly().catch(() => false)) {
+        finish(`find exited ${code}: ${stderr.trim()}`); return;
+      }
+      finish(malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined);
+    });
   });
 }
 

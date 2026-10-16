@@ -121,6 +121,53 @@ describe('streaming retention census evidence', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('accepts the real native directory-descent disappearance that ignore_readdir_race does not cover', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-descent-race-'));
+    const vanished = join(root, 'vanished');
+    await fsp.mkdir(vanished); await fsp.writeFile(join(root, 'survivor'), 'keep');
+    let nativeExit: number | null | undefined;
+    const spawn = ((command: string, args: string[]) => {
+      // Remove the empty directory after the actual find emits its metadata,
+      // immediately before find tries to descend. No timing-dependent churn.
+      const child = spawnProcess(command, [...args, '-a', '(', '!', '-path', vanished,
+        '-o', '-exec', 'rmdir', '--', '{}', ';', ')'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      child.once('close', (code) => { nativeExit = code; });
+      return child;
+    }) as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now() + 60_000, includeRecent: true, spawn });
+      expect(nativeExit).toBe(1);
+      expect(await fsp.lstat(vanished).catch((error: NodeJS.ErrnoException) => error.code)).toBe('ENOENT');
+      expect(census.error).toBeUndefined();
+      expect(census.entries).toContainEqual(expect.objectContaining({ path: join(root, 'survivor') }));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['present', 'permission', 'mixed', 'overflow', 'malformed'])('refuses unproven or incomplete disappearance evidence (%s)', async (mode) => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-descent-refusal-'));
+    const path = join(root, 'candidate');
+    const info = await fsp.lstat(root);
+    if (mode === 'present') await fsp.mkdir(path);
+    const spawn = (() => {
+      const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+      queueMicrotask(() => {
+        child.stdout.write(['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), join(root, 'survivor'), ''].join('\0'));
+        const missing = `find: ‘${path}’: No such file or directory\n`;
+        child.stderr.write(mode === 'permission' ? `find: ‘${path}’: Permission denied\n` :
+          mode === 'mixed' ? `find: ‘${path}’: Permission denied\n${missing}` :
+          mode === 'overflow' ? 'x'.repeat(4096) + missing : missing);
+        if (mode === 'malformed') child.stdout.write('f\0truncated');
+        child.emit('close', 1);
+      });
+      return child;
+    }) as unknown as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), spawn });
+      expect(census.error).toBeDefined(); expect(census.entries).toEqual([]);
+      if (mode === 'malformed') expect(census.error).toBe('incomplete retention metadata records');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('kills a timed-out native walk and refuses the incomplete candidate set', async () => {
     const root = mkdtempSync(join(tmpdir(), 'retention-timeout-'));
     const kill = vi.fn();
