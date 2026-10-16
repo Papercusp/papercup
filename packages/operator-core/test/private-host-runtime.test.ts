@@ -156,7 +156,7 @@ it('prepares every roster API bundle before the private execute phase', () => {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  expect(contracts).toBe(17);
+  expect(contracts).toBe(18);
   expect(cleanupProofs).toBe(1);
 });
 

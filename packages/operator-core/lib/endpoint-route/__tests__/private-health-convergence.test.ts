@@ -1,10 +1,27 @@
 import { expect, it } from 'vitest';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { isolatedIntegrationDiagnosticArtifacts } from '../../../test/isolated-integration-proof';
 import { reloadPrivateHealthSnapshot, waitForPrivateHealthSnapshot } from '../../../test/portal-roster-browser-fixture';
 
 function clock() {
   let time = 0;
   return { now: () => time, pause: async (ms: number) => { time += ms; }, timeoutMs: 2_000 };
 }
+
+it('preserves the Health publication and HTTP evidence when a failed run is pruned', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'health-diagnostics-'));
+  const names = ['portal-health-reads.json', 'portal-health-writes.json', 'portal-health-seed.json',
+    'portal-health-publication.json', 'portal-cloud-health-observations.json'];
+  try {
+    await mkdir(join(root, 'phases/execute'), { recursive: true });
+    for (const name of names) await writeFile(join(root, 'phases/execute', name), '{}');
+    const retained = isolatedIntegrationDiagnosticArtifacts(root);
+    for (const name of names) expect(retained).toContain('phases/execute/' + name);
+    expect(retained).not.toContain('phases/execute/worker.log');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 it('waits for the selected workspace collector generation after an older successful response', async () => {
   const bodies = [
