@@ -14,6 +14,7 @@ import { readHostedEntitlementAuthority, writeHostedEntitlementAuthority,
 import { createHostedAuthRuntime } from './hosted-auth-runtime';
 import type { HostedAuthFlow, HostedAuthFlowConsumeResult } from './routes/hosted-auth/flow';
 import { HOSTED_AUTH_FLOW_COOKIE } from './routes/hosted-auth';
+import { HOSTED_SESSION_COOKIE } from '../auth/hosted-session';
 
 const h = vi.hoisted(() => ({ provider: undefined as unknown as HostedIdentityProvider }));
 // Replace the upstream IdP and OAuth nonce storage only. The actual callback,
@@ -68,7 +69,7 @@ describe('configured hosted authentication trial rollout (real PG)', () => {
 
   async function fixture(trialEntitlementPolicy?: HostedTrialEntitlementPolicy) {
     const identity = { externalUserId: `callback-${randomUUID()}`, primaryEmail: `${randomUUID()}@example.test`,
-      emailVerified: true, displayName: 'Callback Member' };
+      emailVerified: true as const, displayName: 'Callback Member' };
     const admitted = await new PostgresHostedSelfSignupAdmission(runService).complete({
       attemptId: randomUUID(), providerId: 'workos', identity, upstreamSessionId: randomUUID(),
       sessionExpiresAt: new Date(Date.now() + 3_600_000), acceptedAt: new Date(),
@@ -107,10 +108,13 @@ describe('configured hosted authentication trial rollout (real PG)', () => {
   it('backfills the authenticated organization from its original grant and never renews on sign-in', async () => {
     const f = await fixture(policy());
     const response = await f.callback();
-    expect(response.status).toBe(302);
+    expect(response.status).toBe(303);
     expect(response.headers.get('location')).toBe('https://app.papercusp.com/workspaces');
-    const cookie = response.headers.get('set-cookie')!;
-    expect(cookie).toContain('hs_');
+    const cookie = response.headers.get('set-cookie')!.match(new RegExp(`${HOSTED_SESSION_COOKIE}=([^;,]+)`))![1];
+    const sessionId = f.runtime.components.sessionCookieCodec.decode(decodeURIComponent(cookie));
+    expect(sessionId).toMatch(/^hs_/);
+    expect(await f.runtime.components.sessionStore.resolve(sessionId!))
+      .toMatchObject({ userId: f.userId, organizationId: f.organizationId });
     const stored = await f.stored();
     expect(Number(stored.authority_revision)).toBe(1);
     expect(stored.authority.assignments[0]).toMatchObject({ organizationId: f.organizationId,
@@ -128,7 +132,7 @@ describe('configured hosted authentication trial rollout (real PG)', () => {
 
   it('does not grant allowances without server policy or before callback authentication', async () => {
     const unconfigured = await fixture();
-    expect((await unconfigured.callback()).status).toBe(302);
+    expect((await unconfigured.callback()).status).toBe(303);
     expect(await unconfigured.stored()).toMatchObject({ authority: null, authority_revision: 0 });
     const configured = await fixture(policy());
     const response = await configured.callback(true);
