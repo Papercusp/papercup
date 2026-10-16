@@ -53,7 +53,8 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
 
   const fresh = () => `pool-${randomUUID()}`;
   const organization = (ws: string, id: string) => organizations.get(`${ws}:${id}`)!;
-  async function allowance(organizationId: string, quotas: Record<string, number> = {}, budget = 1000000) {
+  async function allowance(organizationId: string, quotas: Record<string, number> = {}, budget = 1000000,
+    effectiveUntil = '2099-01-01T00:00:00Z') {
     let g = grants.get(organizationId);
     if (!g) {
       g = { userId: randomUUID(), revision: 0 };
@@ -62,7 +63,7 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
       grants.set(organizationId, g);
     }
     const record = { source: 'migration', actor: { kind: 'service', principalId: 'service:pool-fixture' },
-      auditReceiptId: 'audit:pool-fixture-bundle', effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil: '2099-01-01T00:00:00Z' };
+      auditReceiptId: 'audit:pool-fixture-bundle', effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil };
     g.revision = await writeHostedEntitlementAuthority({ organizationId, userId: g.userId, kind: 'hosted-free',
       expectedRevision: g.revision, authority: { schemaVersion: 1,
         bundles: [{ schemaVersion: 1, bundleId: 'pool-fixture', bundleVersion: 1, record,
@@ -167,6 +168,41 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     const [bound] = await db.adminSql`SELECT workspace_host_id FROM harness_shared.customer_workspaces
       WHERE workspace_id = ${ws} AND id = 'larger'`;
     expect(bound.workspace_host_id).toBe('larger-placeholder');
+  });
+
+  it('refuses authority that expires while pooled admission waits for the organization lock', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-16T08:00:00Z'));
+    let admission!: Promise<{ error?: unknown }>;
+    const ws = fresh();
+    try {
+      await customer(ws, 'expiry');
+      await host(ws, 'warm');
+      const org = organization(ws, 'expiry');
+      await allowance(org, {}, 1000000, '2026-10-16T08:00:01Z');
+      await db.adminSql.begin(async tx => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`hosted-entitlement:organization:${org}`}, 0))`;
+        const [{ pid }] = await tx`SELECT pg_backend_pid() AS pid`;
+        admission = admitHostedLifecycleJob(input(ws, 'expiry')).then(() => ({}), error => ({ error }));
+        await expect.poll(async () => {
+          const [row] = await db.adminSql`SELECT EXISTS (
+            SELECT 1 FROM pg_locks waiting JOIN pg_locks held
+              ON held.locktype = waiting.locktype AND held.classid = waiting.classid AND held.objid = waiting.objid
+             WHERE held.pid = ${pid} AND held.granted AND NOT waiting.granted) AS blocked`;
+          return row.blocked;
+        }).toBe(true);
+        vi.setSystemTime(new Date('2026-10-16T08:00:01Z'));
+      });
+      expect((await admission).error).toBeInstanceOf(Error);
+      expect(String((await admission).error)).toContain('hosted_pool_entitlement_no_active_assignment');
+      expect(await operations(ws)).toHaveLength(0);
+      const [bound] = await db.adminSql`SELECT workspace_host_id FROM harness_shared.customer_workspaces
+        WHERE workspace_id = ${ws} AND id = 'expiry'`;
+      expect(bound.workspace_host_id).toBe('expiry-placeholder');
+    } finally {
+      await admission;
+      vi.useRealTimers();
+    }
   });
 
   it('counts pending capacity across a deleted directory and its replacement before either VM exists', async () => {

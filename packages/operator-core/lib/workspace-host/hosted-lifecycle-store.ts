@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
-import { readHostedEntitlementAuthority } from '../auth/hosted-entitlement-store';
+import { lockHostedEntitlementAuthority, readHostedEntitlementAuthority } from '../auth/hosted-entitlement-store';
 import { checkHostedEntitlement } from '../auth/hosted-entitlements';
 import {
   appendWorkspaceHostSpendObservation,
@@ -510,6 +510,7 @@ function policyFrom(row: DirectoryRow, override?: Partial<HostedLifecyclePolicy>
 async function admitHostedPoolHostResources(
   tx: Sql, input: AdmitHostedLifecycleJobInput, organizationId: string, placement: WorkspaceHostPoolPlacement,
 ): Promise<HostedPoolHostResourceAdmission> {
+  await lockHostedEntitlementAuthority(tx, organizationId);
   const now = new Date();
   const authority = await readHostedEntitlementAuthority(tx, organizationId, now);
   if (!authority.ok) throw new Error(`hosted_pool_entitlement_${authority.reason}`);
