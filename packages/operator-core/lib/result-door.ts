@@ -2641,8 +2641,14 @@ function markPendingScratchWrite<T extends DoorableResult>(
     kind: 'pending-spill',
     tool: 'capability:read',
     args: {
-      ...(recordAt(sourceCursor?.args) ?? {}),
-      file_path: spillPath,
+      // A pending write's absolute path can be much longer than the result-door
+      // envelope allows capability:read to page.  The scratch URI resolves to the
+      // same reference without putting that path in the cursor (and remains valid
+      // after the writer settles).  Do not spread the source cursor's file_path:
+      // capability:read prefers file_path when both keys are present.
+      uri: spillUri,
+      byte_offset: 0,
+      byte_limit: 3_072,
     },
     path: spillPath,
     uri: spillUri,
