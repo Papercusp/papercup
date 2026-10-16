@@ -1313,6 +1313,14 @@ export async function reclaimCutWorktrees(
     if (!Number.isSafeInteger(total)) throw new Error('release-cut usage exceeds safe integer bytes');
     return bytes;
   };
+  // Error.message starts with du's complete argument list. Retain the actual
+  // failure before that list consumes the bounded receipt's diagnostic budget.
+  const usageFailure = (error: unknown): string => {
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown } | null;
+    return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
+      killed: detail?.killed === true,
+      stderr: String(detail?.stderr ?? '').slice(-1024), message: errText(error) });
+  };
   try {
     const before = await measure();
     cap.beforeBytes = [...before.values()].reduce((sum, n) => sum + n, 0);
@@ -1326,7 +1334,7 @@ export async function reclaimCutWorktrees(
       return { ok: true, dryRun: true, targets, errors, cap };
     }
   } catch (e) {
-    errors.push(`release-cut usage before reclaim: ${errText(e)}`);
+    errors.push(`release-cut usage before reclaim: ${usageFailure(e)}`);
     return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
   }
   let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
@@ -1337,7 +1345,7 @@ export async function reclaimCutWorktrees(
     cap.afterBytes = [...after.values()].reduce((sum, n) => sum + n, 0);
     cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
     cap.retainedPaths = [...after.keys()];
-  } catch (e) { errors.push(`release-cut usage after reclaim: ${errText(e)}`); }
+  } catch (e) { errors.push(`release-cut usage after reclaim: ${usageFailure(e)}`); }
   return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution };
 }
 

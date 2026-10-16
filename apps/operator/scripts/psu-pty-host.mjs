@@ -14502,11 +14502,10 @@ export function hostThroughPty(o) {
       // addressed, not a coalesce-duplicate) — mirroring the coalesce fast-path
       // just above, which already returns immediately. Run the entire
       // mutex+gate+delivery pipeline as a detached background continuation;
-      // every outcome it reaches (deferred/dropped/delivered/error) is already
-      // durably recorded via appendHostEvent()/writeTerminalDiagnostic() calls
-      // inside it, exactly as a caller under the OLD bare-close-is-`true`
-      // protocol would have had to learn it — from the durable event log or
-      // the pty's own output, never from this ACK.
+      // every outcome it reaches is returned as a structured result. Branches
+      // that need detailed evidence record it locally; the detached settlement
+      // below also records every refusal uniformly, so an early accepted ACK
+      // never leaves a later negative outcome unexplained.
       const runGatedDelivery = async () => {
       // EI-8822: hold the per-host inject mutex across the ENTIRE gated
       // critical section (gate wait → pty write → submit verify) so a wake

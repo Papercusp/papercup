@@ -645,7 +645,7 @@ describe('gather + execute against a real temporary repo', () => {
     plan.verdicts[0]!.disposition = 'reclaimable';
     const bin = path.join(tmp, 'bin');
     fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(bin, 'du'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'du'), '#!/bin/sh\nprintf "du: fixture permission denied\\n" >&2\nexit 1\n', { mode: 0o755 });
     const previous = process.env.PATH;
     process.env.PATH = bin;
     try {
@@ -654,6 +654,9 @@ describe('gather + execute against a real temporary repo', () => {
       expect(result.cap.beforeBytes).toBeNull();
       expect(result.cap.afterBytes).toBeNull();
       expect(result.errors[0]).toContain('usage before reclaim');
+      const failure = JSON.parse(result.errors[0]!.split('usage before reclaim: ')[1]!);
+      expect(failure).toMatchObject({ code: 1, signal: null, killed: false,
+        stderr: 'du: fixture permission denied\n' });
       expect(fs.existsSync(tree)).toBe(true);
     } finally { process.env.PATH = previous; }
   });

@@ -594,17 +594,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
-  it('lets an advancing dependency copy cross its initial watchdog deadline', async () => {
+  it.each(['copy', 'copy-lock'])('lets advancing %s progress cross the initial watchdog deadline', async kind => {
+    const progressLine = kind === 'copy'
+      ? "'copy progress: fixture written=' + (++written) + 'MiB'"
+      : "'copy lock progress: fixture advances=' + (++written)";
     const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
       let written = 0;
-      const timer = setInterval(() => console.log('copy progress: fixture written=' + (++written) + 'MiB'), 100);
+      const timer = setInterval(() => console.log(${progressLine}), 100);
       setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, 1800);
     `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
       stallWindowMs: 500, extensionMs: 500 });
     expect(output).toContain('copy-complete');
   });
 
-  it('rejects chattering stalled copies and joins a TERM-resistant descendant before cleanup', async () => {
+  it.each(['copy', 'copy-lock'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
     const destination = join(tmp, 'dependency-copy-writer');
     const pidPath = join(tmp, 'dependency-copy-writer.pid');
     await fsPromises.mkdir(destination);
@@ -618,7 +621,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       const { spawn } = require('node:child_process');
       spawn(process.execPath, ['-e', ${JSON.stringify(writer)}, ${JSON.stringify(pidPath)}, ${JSON.stringify(destination)}],
         { stdio: 'ignore' });
-      setInterval(() => console.log('copy progress: fixture written=1MiB'), 100);
+      setInterval(() => console.log(${JSON.stringify(kind === 'copy'
+        ? 'copy progress: fixture written=1MiB' : 'copy lock progress: fixture advances=1')}), 100);
     `], { cwd: tmp, env: childEnv(), timeoutMs: 1500, maxMs: 5000,
       stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
     expect(existsSync(pidPath)).toBe(true);

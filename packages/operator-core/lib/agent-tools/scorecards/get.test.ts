@@ -13,6 +13,7 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { currentStageDiagnosticContext, STAGE_STALL_LOG_MS } from '../../sync/hyperbee/stage-stall-log';
 
@@ -1051,6 +1052,25 @@ describe('scorecards:get evidence-first projection', () => {
         ok: false,
         error: 'timeout',
         retryable: true,
+        diagnostics: {
+          handlerState: 'completed',
+          stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],
+        },
+      },
+    });
+
+    readScorecardEvidenceM.mockRejectedValueOnce(
+      new PgReadQueryTimeoutError(
+        'Query call did not complete within 16000ms of the WHOLE call (connect + acquire + execute)',
+      ),
+    );
+    const wholeCallDeadline = await getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext());
+    expect(wholeCallDeadline).toMatchObject({
+      data: {
+        ok: false,
+        error: 'timeout',
+        retryable: true,
+        message: expect.stringContaining('No scorecard was returned; retry shortly.'),
         diagnostics: {
           handlerState: 'completed',
           stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],

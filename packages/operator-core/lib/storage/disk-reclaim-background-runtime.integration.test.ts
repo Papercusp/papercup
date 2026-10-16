@@ -55,6 +55,8 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
     sourcePaths: [assertion, censusAssertion, reclaimSource, censusSource,
+      'packages/operator-core/lib/release-cut-reclaim.ts',
+      'packages/operator-core/lib/native-bg-task-ledger.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
       'scripts/lib/retention-pins.mjs', 'scripts/lib/fs-mutex.mjs',
@@ -149,4 +151,7 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
+  options.testTimeoutMs);
+it('accepts the real isolated privileged release holder scanner in the observed private background runtime',
+  context => runSelection({ reclaimTitles: ['finds cwd executable and deleted fd holders through the real isolated privileged release scanner'], expectedReclaimCases: 1, census: false }, context),
   options.testTimeoutMs);

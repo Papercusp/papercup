@@ -55,7 +55,6 @@ KEY = "swaptier-stub-not-a-real-credential-000000"
 IDLE_SEC = int(os.environ.get("SWAPTIER_IDLE_SEC", "60"))
 REAL_MODEL = False
 CODEX_SESSIONS = {}
-GATEWAY_CHECK = None
 WARM_PREFIX = ""
 WAKE_TIMEOUT = float(os.environ.get("SWAPTIER_WAKE_TIMEOUT", "300"))
 
@@ -560,8 +559,10 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
     """Type a prompt into every agent, press Enter once its echo shows, wait for DONE-<marker>.
 
     Returns {name: {t0, tEcho, tEnter, tDone}} (None where a step never happened)."""
-    if GATEWAY_CHECK:
-        GATEWAY_CHECK()
+    # run() authenticates the model route once before launching agents. After
+    # that, each native task's completion/error and deadline are authoritative.
+    # A separate monitoring request can time out while that route still works;
+    # using it as a batch veto discards work without measuring the agents.
     state = {}
     for name in names:
         if REAL_MODEL:
@@ -1024,7 +1025,7 @@ def run(a):
     configured_swap = active_swap(arms[0], a.ram_gb) if a.active else None
     if configured_swap:
         arms[0]["device"] = configured_swap["device"]
-    global REAL_MODEL, GATEWAY_CHECK, WARM_PREFIX
+    global REAL_MODEL, WARM_PREFIX
     REAL_MODEL = a.cli == "codex"
     # Resumed JSONL may replay old rounds; only fresh unpredictable markers can
     # admit this run's new verification turn.
@@ -1034,7 +1035,6 @@ def run(a):
         rec.rec("server-population-preflight", **population)
     if configured_swap:
         rec.rec("active-swap-preflight", **configured_swap)
-    GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec, catalog=False)) if REAL_MODEL else None
     stub_log = os.path.join(a.out, "stub.jsonl")
     warm_files = sorted(glob.glob("/usr/lib/python3*/*.py"), key=os.path.getsize, reverse=True)[:16]
     procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "probe", "--out", os.path.join(a.out, "probe.csv")])]

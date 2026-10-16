@@ -271,10 +271,13 @@ function main() {
   // instrument nobody proved was pointed at the thing being measured.
   const uncovered = uncoveredSubmodules(scanned);
   if (uncovered.length > 0) {
+    const prefixes = submodulePrefixes();
+    const covered = prefixes.filter((prefix) => !uncovered.includes(prefix));
     console.error(
       `\ncheck-no-control-bytes: COVERAGE GAP — ${uncovered.length} submodule(s) hold files this guard ` +
         'would scan but contributed ZERO to the scan.\n' +
-        'A pass here would be evidence of nothing. Check that `git ls-files --recurse-submodules` still recurses.\n',
+        describeUnscanned({ declared: prefixes, scanned: covered, unscanned: uncovered, unscannedPresent: uncovered }, ROOT) +
+        '\nA pass here would be evidence of nothing. Check submodule registration and that `git ls-files --recurse-submodules` still recurses.\n',
     );
     for (const prefix of uncovered) console.error(`  unscanned submodule: ${prefix}`);
     process.exit(1);

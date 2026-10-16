@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
@@ -109,11 +109,25 @@ async function main() {
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-setup') {
-    await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
+    // Exercise the real writer before paying for an API build/container/native
+    // launch. A fresh isolated HOME has no installed hook scripts by default.
+    const probeHome = join(evidenceDir, 'codex-hook-preflight');
+    mkdirSync(probeHome);
+    let nativeHookPreflight;
+    try {
+      const { writeCodexLockHooks } = await import('../lib/role-codex-home');
+      const beforeInstall = writeCodexLockHooks(probeHome);
+      await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
+      const configured = writeCodexLockHooks(probeHome, { lockSid: 'su-private-hook-preflight',
+        activitySid: 'su-private-hook-preflight', injectSid: 'su-private-hook-preflight' });
+      const hooks = configured ? JSON.parse(readFileSync(join(probeHome, 'hooks.json'), 'utf8')).hooks : {};
+      nativeHookPreflight = { beforeInstall, configured, events: Object.keys(hooks),
+        privateHookRoot: configured && JSON.stringify(hooks).includes(join(e.HOME!, '.papercusp', 'hooks')) };
+    } finally { rmSync(probeHome, { recursive: true, force: true }); }
     console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
       accountId: 'private-current-su', provider: 'codex', providerForwarding: false,
       launcherPath: process.env.PAPERCUSP_PSU_LAUNCHER ?? null,
-      nodeOptions: e.NODE_OPTIONS ?? '' }));
+      nodeOptions: e.NODE_OPTIONS ?? '', nativeHookPreflight }));
     return;
   }
   if (['committed-reader-setup', 'committed-reader-setup-exception'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {

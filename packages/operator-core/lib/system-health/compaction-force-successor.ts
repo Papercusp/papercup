@@ -34,18 +34,23 @@ export type HostlessSourceProcessVerdict = 'dead' | 'live' | 'unknown';
 /**
  * Hostless recovery may only close an open source row after a positive local
  * process-death observation. `display:'terminal'` is the adv-session contract
- * that the recorded pid belongs to this operator host; a missing/other display,
- * missing pid, remote/ambiguous probe, or live pid stays unknown/live and keeps
- * the identity fence closed.
+ * that the recorded pid belongs to this operator host. Headless launches are
+ * also local psu processes, but intentionally have no display marker; their
+ * explicit `headless` placement is the local provenance for probing the pid.
+ * A missing/other display without that headless provenance, missing pid,
+ * remote/ambiguous probe, or live pid stays unknown/live and keeps the identity
+ * fence closed.
  */
 export function hostlessSourceProcessVerdict(
-  target: Pick<CompactionForceSuccessorTarget, 'live' | 'endedAt' | 'endedBy' | 'display' | 'pid'>,
+  target: Pick<CompactionForceSuccessorTarget, 'live' | 'endedAt' | 'endedBy' | 'display' | 'headless' | 'pid'>,
   probe: (record: { host?: string | null; pid?: number | null }) => boolean | null = probeProcessLiveness,
   localHost = hostname(),
 ): HostlessSourceProcessVerdict {
   if (target.endedAt != null || target.endedBy != null) return 'dead';
   if (target.live) return 'live';
-  if (target.display !== 'terminal' || !Number.isSafeInteger(target.pid) || (target.pid ?? 0) <= 0) {
+  const localProcessProvenance = target.display === 'terminal' ||
+    (target.headless === true && (target.display == null || target.display === ''));
+  if (!localProcessProvenance || !Number.isSafeInteger(target.pid) || (target.pid ?? 0) <= 0) {
     return 'unknown';
   }
   const observed = probe({ host: localHost, pid: target.pid });

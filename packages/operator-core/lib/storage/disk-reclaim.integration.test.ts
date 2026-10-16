@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open } from 'node:fs/promises';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,7 @@ import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, 
 import { CACHEDIR_TAG_SIGNATURE, type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
+import { scanProcHolders } from '../release-cut-reclaim';
 import { createFreshPgDb, applyEventSubstrateMigrationsForTest, COORD_SUBSCRIPTION_SUBSTRATE } from '../../test/_pg-helpers';
 
 const inspectionProbe = vi.hoisted(() => ({ before: undefined as ((path: string) => (() => void) | undefined) | undefined }));
@@ -559,6 +560,47 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.errors.join(' ')).toContain('"processesScanned":4');
     expect(await readFile(path, 'utf8')).toBe('expired');
   });
+
+  it('finds cwd executable and deleted fd holders through the real isolated privileged release scanner', async () => {
+    fixture = await mkdtemp(join(tmpdir(), 'release-holder-native-'));
+    const cwd = join(fixture, 'cwd'), executable = join(fixture, 'executable');
+    const descriptors = join(fixture, 'descriptors'), idle = join(fixture, 'idle');
+    for (const path of [cwd, executable, descriptors, idle]) await mkdir(path);
+    const binary = join(executable, 'sleep');
+    await copyFile('/bin/sleep', binary); await chmod(binary, 0o755);
+    const heldFile = join(descriptors, 'deleted');
+    await writeFile(heldFile, 'held descriptor');
+    const db = await createFreshPgDb('release-holder-native');
+    const fd = await open(heldFile, 'r');
+    await rm(heldFile);
+    const child = spawn(binary, ['120'], { cwd, stdio: 'ignore' });
+    const spawned = once(child, 'spawn');
+    const closed = once(child, 'close');
+    nativeDb.sql = db.sql;
+    managedProbe.active = true;
+    try {
+      await spawned;
+      await applyEventSubstrateMigrationsForTest(db.sql, {
+        label: 'disk-reclaim.integration.test.ts privileged release holder', ...COORD_SUBSCRIPTION_SUBSTRATE,
+        extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
+          '696-task-ledger.sql', '700-task-ledger-bash-job-id-idx.sql', '774-task-ledger-ended-unobserved-state.sql'],
+      });
+      const scan = await scanProcHolders([cwd, executable, descriptors, idle].map(key => ({ key, prefixes: [key] })));
+      console.info('NATIVE_RELEASE_HOLDER_RESULT', JSON.stringify({ verified: scan.verified,
+        diagnostics: scan.diagnostics, holders: [...scan.holders], childPid: child.pid, callerPid: process.pid }));
+      expect(scan.holders.get(cwd)).toContain(`pid ${child.pid} reference`);
+      expect(scan.holders.get(executable)).toContain(`pid ${child.pid} reference`);
+      expect(scan.holders.get(descriptors)).toContain(`pid ${process.pid} reference`);
+      expect(scan.holders.has(idle)).toBe(false);
+      expect(scan.verified, JSON.stringify(scan)).toBe(true);
+      expect(scan.diagnostics).toMatchObject({ readFailures: 0, deadlineExceeded: false });
+      expect(scan.diagnostics?.processesScanned).toBeGreaterThan(0);
+    } finally {
+      child.kill('SIGTERM'); await closed; await fd.close();
+      managedProbe.active = false; nativeDb.sql = undefined;
+      await db.cleanup();
+    }
+  }, 180_000);
 
   it('runs the native cargo delegate repeatedly with captured receipts and no missed completion', async () => {
     const phase = (name: string) => console.info('NATIVE_RETENTION_PHASE', name);

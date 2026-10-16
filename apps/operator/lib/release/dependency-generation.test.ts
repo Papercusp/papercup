@@ -4198,6 +4198,60 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
     await held.exited;
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('relays measured copy progress when the waiter cannot see the holder process namespace', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'namespace-progress.lock');
+    let holderOutput = '';
+    let result: ShellResult | undefined;
+    const holder = spawn('bash', ['-c', [
+      'source "$LIB"',
+      'dependency_generation_acquire_copy_lock fixture || exit $?',
+      'trap dependency_generation_release_copy_lock EXIT',
+      // Real writes in the holder remain measurable; only the waiter loses /proc visibility.
+      'cp() { for i in $(seq 1 80); do printf "%04096d" 0 >> "$2"; sleep 0.1; done; }',
+      'dependency_generation_copy_with_progress ignored "$WORK"',
+    ].join('\n')], { stdio: ['ignore', 'ignore', 'pipe'], detached: true, env: {
+      ...process.env, LIB: SCRIPT, WORK: join(root, 'copied-bytes'),
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1',
+    } });
+    holder.stderr!.on('data', chunk => { holderOutput += chunk.toString(); });
+    const exited = new Promise(resolve => holder.once('exit', resolve));
+    try {
+      for (let i = 0; i < 100 && !existsSync(`${lock}.holder`); i++)
+        await new Promise(resolve => setTimeout(resolve, 50));
+      expect(existsSync(`${lock}.holder`)).toBe(true);
+      result = runShell([
+        'dependency_generation_subtree_io() { return 0; }',
+        'dependency_generation_acquire_copy_lock waiter && echo ACQUIRED',
+      // Four one-second sampling intervals fit inside this fixture's stall budget.
+      // The writer still runs for twice the budget, so the old implementation fails.
+      ].join('\n'), waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '4' }));
+    } finally {
+      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { holder.kill('SIGKILL'); }
+      await exited;
+    }
+    expect(result?.status, `${result?.stderr}\nholder:\n${holderOutput}`).toBe(0);
+    expect(result?.stdout).toContain('ACQUIRED');
+    expect(result?.stderr).toMatch(/copy lock progress: .* advances=[1-9]/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('does not turn a repeated holder progress record into progress without process visibility', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'namespace-stalled.lock');
+    const held = await holdLock(lock, join(root, 'work'), 'echo progress=copy:1:1:1024:0 >> "$LOCK.holder"; sleep 30');
+    try {
+      const result = runShell([
+        'dependency_generation_subtree_io() { return 0; }',
+        'dependency_generation_acquire_copy_lock waiter',
+      ].join('\n'), waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1' }));
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=stalled/);
+    } finally {
+      held.kill();
+      await held.exited;
+    }
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('times out reason=stalled behind a live holder that does no I/O', async () => {
     const { root } = copyFixture();
     const lock = join(root, 'stalled.lock');

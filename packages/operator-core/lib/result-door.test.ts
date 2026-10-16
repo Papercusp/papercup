@@ -959,6 +959,61 @@ describe('applyResultDoor', () => {
     expect(readSpill('ws-1', 'code:run', RUN_ID)).toContain(sourceText);
   });
 
+  it('EI-25795936191004283: four nested bindings keep their count and marker through code:run and tools:invoke', () => {
+    const bindings = Array.from({ length: 4 }, (_, index) => ({
+      id: 39_369 + index,
+      specId: 'AUTO-BAR-R-7-P-022',
+      ...Object.fromEntries(
+        Array.from({ length: 5 }, (_, field) => [
+          `evidence${field}`,
+          `binding-${index}-${field}-` + 'x'.repeat(300),
+        ]),
+      ),
+    }));
+    const produced = shapeCodeRunSummary({
+      ok: true,
+      summary: {
+        evs: [{
+          slug: 'green-main-cycle-time-2026-10-08',
+          count: bindings.length,
+          bindings,
+        }],
+        gsTopKeys: ['ok', 'slug', 'harnessSlug', 'bounded', 'detail', 'evidence', 'count', 'currentness'],
+        padding: 'p'.repeat(1_000),
+      },
+    }) as any;
+
+    const shapedBindings = produced.summary.evs[0].bindings as unknown[];
+    expect(shapedBindings).toHaveLength(bindings.length);
+    expect(shapedBindings).toContain('[omitted]');
+    expect(produced.summary.gsTopKeys).toHaveLength(8);
+    expect(produced.summaryNotice.arrayOriginalLengths).toMatchObject({
+      'summary.evs[0].bindings': 4,
+      'summary.gsTopKeys': 8,
+    });
+
+    const sourceText = JSON.stringify(produced);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: sourceText }] },
+      { toolName: 'tools:invoke', nestedTargetToolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
+      schemaVersion?: string;
+      state?: string;
+      content?: Array<{ uri?: string }>;
+    };
+    expect(envelope).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      content: [expect.objectContaining({ uri: expect.any(String) })],
+    });
+    expect((doored as any)._meta.resultDoor.innerTruncationMarkers).toContain('summaryNotice.truncated');
+    const spill = JSON.parse(readSpill('ws-1', 'tools:invoke', RUN_ID)) as {
+      content: Array<{ text: string }>;
+    };
+    expect(JSON.parse(spill.content[0].text)).toEqual(produced);
+  });
+
   it('EI-251528: evaluator rating-map payload-tier omissions remain explicitly incomplete at the result door', () => {
     const criteria = Array.from({ length: 9 }, (_, index) => `criterion-${index + 1}`);
     const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {

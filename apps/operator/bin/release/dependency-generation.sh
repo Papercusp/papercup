@@ -2045,10 +2045,26 @@ dependency_generation_sweep_legacy_store() {
 #   77 = DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT (not enough free space)
 DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=0
 DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+DEPENDENCY_GENERATION_COPY_LOCK_HOLDER=''
 
 dependency_generation_copy_lock_file() {
   printf '%s\n' \
     "${DEPENDENCY_GENERATION_COPY_LOCK_FILE:-${TMPDIR:-/tmp}/papercusp-dependency-generation-copy.lock}"
+}
+
+# EI-26175315759122898: user namespaces may share the host lock while being
+# forbidden to read the holder's /proc I/O. Relay actual copy counters through
+# the existing holder record, never a timer/heartbeat or arbitrary log output.
+dependency_generation_publish_copy_progress() {
+  local lock holder tmp
+  [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ] &&
+    [ -n "$DEPENDENCY_GENERATION_COPY_LOCK_HOLDER" ] || return 0
+  lock="$(dependency_generation_copy_lock_file)"
+  IFS= read -r holder < "$lock.holder" 2>/dev/null || return 0
+  [ "$holder" = "$DEPENDENCY_GENERATION_COPY_LOCK_HOLDER" ] || return 0
+  tmp="$lock.holder.progress.${BASHPID:-$$}"
+  { printf '%s\nprogress=%s\n' "$holder" "$1" > "$tmp" && mv -f -- "$tmp" "$lock.holder"; } \
+    2>/dev/null || rm -f -- "$tmp"
 }
 
 # WI-10004928 part 6: total I/O (rchar+wchar) of a pid and all its live
@@ -2105,11 +2121,12 @@ dependency_generation_subtree_io() {
 # The waiter keeps waiting while the holder's subtree I/O keeps changing, fails
 # after DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC (default 600) without
 # progress, and never waits past DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC
-# (default 5400). An unmeasurable holder gets no credit for progress, which
-# keeps the old wall-clock behaviour for that case.
+# (default 5400). A holder also publishes measured copy counters for waiters
+# without /proc access. Missing or unchanged evidence never extends the budget.
 dependency_generation_acquire_copy_lock() {
   local op="$1" lock fd timeout_sec max_sec started now waited next_notice holder
   local holder_pid io last_io last_progress next_sample idle reason
+  local holder_record holder_identity last_holder='' lock_progress last_lock_progress='' advances=0
   if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
     DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
     return 0
@@ -2137,14 +2154,27 @@ dependency_generation_acquire_copy_lock() {
   while ! flock -n "$fd"; do
     now="$(date +%s)"
     waited=$((now - started))
-    holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
+    holder_record="$(cat "$lock.holder" 2>/dev/null || true)"
+    holder="$(printf '%s' "$holder_record" | tr '\n' ' ')"
     if [ "$now" -ge "$next_sample" ]; then
-      holder_pid="$( { sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+      holder_identity="${holder_record%%$'\n'*}"
+      if [ "$holder_identity" != "$last_holder" ]; then
+        last_io=''
+        last_lock_progress=''
+        last_holder="$holder_identity"
+      fi
+      holder_pid="$(printf '%s\n' "$holder_identity" | sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p')"
+      lock_progress="$(printf '%s\n' "$holder_record" | sed -n 's/^progress=//p')"
+      [[ "$lock_progress" =~ ^copy:[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] || lock_progress=''
       io="$(dependency_generation_subtree_io "$holder_pid" || true)"
-      if [ -n "$io" ] && [ -n "$last_io" ] && [ "$io" != "$last_io" ]; then
+      if { [ -n "$io" ] && [ -n "$last_io" ] && [ "$io" != "$last_io" ]; } ||
+         { [ -n "$lock_progress" ] && [ "$lock_progress" != "$last_lock_progress" ]; }; then
         last_progress="$now"
+        advances=$((advances + 1))
+        dependency_generation_log "copy lock progress: $lock advances=$advances"
       fi
       last_io="$io"
+      last_lock_progress="$lock_progress"
       next_sample=$((now + ${DEPENDENCY_GENERATION_COPY_LOCK_SAMPLE_SEC:-5}))
     fi
     idle=$((now - last_progress))
@@ -2152,7 +2182,7 @@ dependency_generation_acquire_copy_lock() {
     if [ "$waited" -ge "$max_sec" ]; then
       reason=cap
     elif [ "$idle" -ge "$timeout_sec" ]; then
-      if [ -n "$last_io" ]; then reason=stalled; else reason=unmeasurable; fi
+      if [ -n "$last_io$last_lock_progress" ]; then reason=stalled; else reason=unmeasurable; fi
     fi
     if [ -n "$reason" ]; then
       # Sampling can span the holder's exit. Recheck the lock before rejecting
@@ -2171,7 +2201,8 @@ dependency_generation_acquire_copy_lock() {
     fi
     sleep 0.2
   done
-  printf 'pid=%s op=%s since=%s\n' "${BASHPID:-$$}" "$op" "$(date +%s)" > "$lock.holder" 2>/dev/null || true
+  DEPENDENCY_GENERATION_COPY_LOCK_HOLDER="pid=${BASHPID:-$$} op=$op since=$(date +%s)"
+  printf '%s\n' "$DEPENDENCY_GENERATION_COPY_LOCK_HOLDER" > "$lock.holder" 2>/dev/null || true
   DEPENDENCY_GENERATION_COPY_LOCK_FD="$fd"
   DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=1
 }
@@ -2183,6 +2214,7 @@ dependency_generation_release_copy_lock() {
   [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -eq 0 ] || return 0
   fd="$DEPENDENCY_GENERATION_COPY_LOCK_FD"
   DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+  DEPENDENCY_GENERATION_COPY_LOCK_HOLDER=''
   [ -n "$fd" ] || return 0
   flock -u "$fd" 2>/dev/null || true
   exec {fd}>&-
@@ -2518,6 +2550,7 @@ dependency_generation_copy_with_progress() (
     if [ "$written" -gt "${reported:-0}" ] || [ "$read_bytes" -gt "$read_reported" ]; then
       reported="$written"
       read_reported="$read_bytes"
+      dependency_generation_publish_copy_progress "copy:$pid:$copy_epoch:$written:$read_bytes"
       dependency_generation_log \
         "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
       if [ "$reflink" = --rsync-checksum ]; then

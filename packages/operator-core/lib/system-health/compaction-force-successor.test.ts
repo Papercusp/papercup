@@ -129,6 +129,32 @@ describe('hostless compaction successor dispatch', () => {
     });
   });
 
+  it('probes a local headless source when display metadata is absent', async () => {
+    const headless = { ...target, display: null };
+
+    const result = await dispatchCompactionForceSuccessor({ target: headless, brief: 'continue' });
+
+    expect(result.verified).toBe(true);
+    expect(mocks.probeProcessLiveness).toHaveBeenCalledWith({ host: expect.any(String), pid: 4242 });
+    expect(mocks.markAdvSessionEnded).toHaveBeenCalledWith(headless.advSessionId, null, 'reconciler', {
+      expectedBinding: headless.binding,
+      throwOnError: true,
+    });
+    expect(mocks.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps non-local display provenance fenced even when headless is set', async () => {
+    const remote = { ...target, display: 'remote' };
+
+    await expect(dispatchCompactionForceSuccessor({ target: remote, brief: 'continue' })).resolves.toEqual({
+      verified: false,
+      detail: 'the source has no live PTY host but its local terminal process death is unproven; identity-preserving replacement is refused',
+    });
+    expect(mocks.probeProcessLiveness).not.toHaveBeenCalled();
+    expect(mocks.markAdvSessionEnded).not.toHaveBeenCalled();
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
   it('does not treat an opened but unconfirmed successor as applied', async () => {
     mocks.dispatch.mockResolvedValue({
       structuredContent: {

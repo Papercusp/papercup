@@ -322,6 +322,150 @@
       "execDrained": true
     }
   },
+  "sourceClassificationContinuation20261016": {
+    "scope": "Classification of the six source families left by the earlier source audit. These are source witnesses, not measurements of loaded runtime use or benefit. The overall inventory remains incomplete because dynamic plugin operations, stored documentation instructions and live outcomes need separate evidence.",
+    "families": [
+      {
+        "id": "plugin-discovery-and-host-lifecycle",
+        "paths": [
+          "packages/operator-core/lib/plugin-host-runtime.ts",
+          "apps/operator/bin/host-bootstrap.ts",
+          "libs/papercusp/plugins/gitnexus-bridge/index.ts"
+        ],
+        "classification": "Generic plugin lifecycle can reach the optional engine through the bridge's dynamic-tool discovery; it is not another native graph producer.",
+        "sourceWitness": "plugin-host-runtime.ts wires loaded plugins through registerPluginTools and bounds the whole dynamic-tool sweep. host-bootstrap.ts loads plugin tools into the projected registry. The bridge derives operations from upstream tools/list, so its static capability list cannot establish the loaded operation population.",
+        "disposition": "Keep generic plugin isolation and discovery; retain the existing optional bridge only under D005 while its outcome ruling remains open.",
+        "licenceRoute": "Existing internal D005 authority; D004 distribution exclusion remains binding.",
+        "measuredUse": "The earlier bounded invocation ledger includes direct plugin context/list_repos use. No new discovery or upstream call was fired in this audit.",
+        "remaining": "Read the loaded operation population without rerunning the known-refused query; qualify its current runtime separately."
+      },
+      {
+        "id": "project-history-generation",
+        "paths": [
+          "packages/operator-core/lib/harness/routines/project-history-refresh-action.ts",
+          "packages/operator-core/lib/harness/routines/seed-project-history-refresh-routine.ts",
+          "libs/papercusp/packages/cli/src/project-history-cli.ts"
+        ],
+        "classification": "Inspected generation route consumes plan/work-item exports and Git history. GitNexus mentions in the routine explain scheduling separation and bounded child-process precedent.",
+        "sourceWitness": "project-history-cli.ts imports project-history data types, reads plans:list/plans:export and work_items:export through ptool, and reads repositories through its command runner. The inspected refresh routine launches that generator; its two GitNexus references are comments.",
+        "disposition": "Keep project-history generation as an independent ledger/Git consumer; do not count its output as a GitNexus benefit.",
+        "licenceRoute": "No GitNexus execution or distribution established in this inspected route.",
+        "measuredUse": "Source reachability only; no refresh fired."
+      },
+      {
+        "id": "snapshot-health-and-index-retention",
+        "paths": [
+          "packages/operator-core/lib/harness/routines/dependency-snapshot-health.ts",
+          "packages/operator-core/lib/storage/retention-policy.ts",
+          "scripts/affected-tests.mjs",
+          "scripts/lib/graph-dependency-suggestions.mjs"
+        ],
+        "classification": "Health derives freshness from stored dependencySnapshot metadata. The selector consumes the snapshot. The retention entry protects the optional index; it does not analyze or query it.",
+        "sourceWitness": "dependency-snapshot-health.ts uses a type-only routine import and revives stored gitnexus_health metadata. retention-policy.ts names gitnexus-index with keep semantics and no enforcer.",
+        "disposition": "Keep the existing health metadata and first-party selector under D018; keep index protection pending the explicit final retirement decision. This audit authorizes no reclaim.",
+        "licenceRoute": "First-party health/selector readers require no engine execution; any retained optional index remains under D005/D004.",
+        "measuredUse": "Prior selector and routine evidence remains dated and scoped. No new selector run, retention action or deployed freshness window was observed.",
+        "remaining": "Original P018 still needs 48 hours of deployed hourly freshness plus a real gate log; a single healthy fire cannot satisfy it."
+      },
+      {
+        "id": "native-client-routing-and-instructions",
+        "paths": [
+          "packages/operator-core/lib/omp-native-lsp-gate.ts",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-su.ts",
+          "packages/operator-core/lib/doc-claims/code-intel-routing-authority.ts",
+          "packages/operator-core/lib/desktop-install/papercusp-files.ts"
+        ],
+        "classification": "The inspected native-client gate controls the LSP builtin by model tier and flag. Documentation validators and installer fallback messages are instruction surfaces, not engine calls.",
+        "sourceWitness": "omp-native-lsp-gate.ts computes native LSP admission; both bootstrap routes forward that decision. The installer fallback still suggests gitnexus.context for symbol lookup, and the routing validator retains historical topology language.",
+        "disposition": "Keep client admission. Narrow current instructions to the maintained native operations while retaining explicitly dated historical evidence; instruction changes still need source-aligned review.",
+        "licenceRoute": "No engine execution in the inspected gate; references to optional tools do not waive D004 or establish licence clearance.",
+        "measuredUse": "Source only; no newly installed client or native journey observed.",
+        "remaining": "Stored docs/persona census and canonical authoring changes remain open; do not edit projected persona files."
+      },
+      {
+        "id": "s37-w01-behaviour-catalogue",
+        "paths": [
+          "packages/operator-core/lib/llm-testing/targets/code-search-catalog.ts",
+          "packages/operator-core/lib/llm-testing/scenarios/su/S37-code-search-discipline.ts",
+          "packages/operator-core/lib/llm-testing/scenarios/worker/W01-code-search-discipline.ts",
+          "packages/operator-core/lib/llm-testing/scenarios/index.ts"
+        ],
+        "classification": "Registered hermetic behaviour worlds answer graph/compiler/plugin calls with fixtures; they do not query a live index.",
+        "sourceWitness": "S37_WORLD.override handles graph:query, lsp:query and gitnexus.context/query. W01 shares the world/assertions; scenarios/index.ts registers both families. The catalogue says its descriptions restate live openings but still labels graph:query Curated GitNexus topology, unlike the current first-party tool description.",
+        "disposition": "Keep historical frozen behaviour evidence with its original attribution. Do not credit that catalogue as a fresh native-route or GitNexus benefit measure until its route-vintage mismatch is resolved.",
+        "licenceRoute": "Fixture responses do not execute or distribute GitNexus; any separate incumbent run retains D005/D004 constraints.",
+        "measuredUse": "No paid behaviour battery or model run was fired in this audit.",
+        "ownedFollowup": "EI-26175452189978263",
+        "remaining": "The filed source mismatch is not proof that a fresh behaviour run failed. Preserve baselines and qualify the current measured target before rerunning."
+      },
+      {
+        "id": "process-admission-and-packaging-guards",
+        "paths": [
+          "scripts/proc-guard.mjs",
+          "scripts/check-resource-governor-enforcement.mjs",
+          "scripts/check-no-unenrolled-detached-spawn.mjs",
+          "packages/operator-core/lib/code-intelligence/fair-comparison-admission.ts",
+          "scripts/gen-gitnexus-bridge-runtime.mjs",
+          "scripts/vendor-gitnexus-patch.mjs"
+        ],
+        "classification": "Process matching and spawn/admission checks constrain optional execution; bridge generation and finite vendor patching support the internal route. Their existence does not demonstrate consumer benefit.",
+        "sourceWitness": "proc-guard.mjs recognizes GitNexus CLI shapes. Resource-governor rules distinguish the scheduled analyzer, bounded direct-Cypher generator and offline patch child. fair-comparison-admission.ts records the incumbent as noncommercial and distribution-excluded under D004.",
+        "disposition": "Keep safety/admission checks and controlled comparison support while the optional incumbent is retained. Do not infer that product packaging is cleared from a workspace registration or generator check.",
+        "licenceRoute": "D005 internal route plus D004 exclusion; no new incumbent run, dependency or installer inclusion authorized here.",
+        "measuredUse": "Source only; no analyzer, benchmark, vendor mutation or installer build executed.",
+        "remaining": "Final shipping evidence must verify the actual public cut/installers; this source classification does not substitute for it."
+      }
+    ],
+    "sourceHashes": {
+      "packages/operator-core/lib/plugin-host-runtime.ts": "913128b0960b73fdc51d7cd6f344ddd0c3920694d9e3da833a2a25a48d95cac9",
+      "apps/operator/bin/host-bootstrap.ts": "4ebc890e9aad43fd11986508542bef019763496b4f2614562d61788d33f2f555",
+      "packages/operator-core/lib/harness/routines/project-history-refresh-action.ts": "178cfaef3f78de674174bb0e82436a6bc67e46a80c9d3be129e9b13cbc2dd120",
+      "libs/papercusp/packages/cli/src/project-history-cli.ts": "34c3aa367e6874b722a722fddc0812ec1e7191d1f8154af61d0ed186a946e74a",
+      "packages/operator-core/lib/harness/routines/dependency-snapshot-health.ts": "cd1a118046741fb252fae9b47b075aab664b2a120d2b728d80b72a93af0c1cab",
+      "packages/operator-core/lib/storage/retention-policy.ts": "b332e6089e0c96c479fa4095ab9c1ac4f96fb66bcebf04118b11707b40df33a9",
+      "packages/operator-core/lib/omp-native-lsp-gate.ts": "25d2eb31d63589bccc62461bcf71e819fe337cd423da1502b81a94fa4779a1f5",
+      "packages/operator-core/lib/llm-testing/targets/code-search-catalog.ts": "c04c1bf24cac53e089ba5b7d39e3b6fb9ce8f7b267b74226419df5a0c6db35ed",
+      "packages/operator-core/lib/llm-testing/scenarios/su/S37-code-search-discipline.ts": "f5a58377fc2c5f140a14be16a18640759ce669fe22c8b0bb860cf8165e869357",
+      "scripts/proc-guard.mjs": "12bedb1aec9c3a3927aef3aaa5fbaf87fff922b4ffa53bd55c53e3abd3a221e1",
+      "packages/operator-core/lib/code-intelligence/fair-comparison-admission.ts": "6f1d5d8bfbff11d80a7926d97e77f218abba24b0946a18b58978e48be6133130"
+    },
+    "verification": "JSON readback and the named source hashes qualify this artifact edit. No production source changed and no prior test pass was rerun or broadened.",
+    "remaining": [
+      "Complete dynamic plugin-operation and stored documentation instruction census.",
+      "Resolve the owned behaviour-catalogue route-vintage mismatch without rewriting historical attribution.",
+      "Measure original P012 outcomes through a registered check and retain unavailable measures explicitly.",
+      "Verify the deployed P018 freshness window and the final distribution exclusion on actual shipped artifacts."
+    ]
+  },
+  "loadedOperationCensus20261016": {
+    "read": "agent_tools:list { filter: gitnexus., onlyAllowed: false, limit: 100 } through this session's serving MCP transport; plugins:runtime_status independently names @papercupai/gitnexus-bridge as loaded.",
+    "registeredOperations": [
+      "gitnexus.list_repos",
+      "gitnexus.query",
+      "gitnexus.cypher",
+      "gitnexus.context",
+      "gitnexus.detect_changes",
+      "gitnexus.check",
+      "gitnexus.impact",
+      "gitnexus.explain",
+      "gitnexus.pdg_query",
+      "gitnexus.route_map",
+      "gitnexus.tool_map",
+      "gitnexus.shape_check",
+      "gitnexus.api_impact",
+      "gitnexus.group_list",
+      "gitnexus.trace"
+    ],
+    "reportedCount": 15,
+    "permissionMetadata": "Every returned operation had allowed:true and reason:null for this caller. This is catalog permission metadata only, not a successful operation probe.",
+    "countWriter": "packages/operator-core/lib/agent-tools/agent_tools/list.ts iterates listAllProjectedTools, filters MCP-exposed names, stops at limit and returns count:out.length. The returned 15 is below the requested 100. This census therefore covers matching registered entries in that serving catalogue read; it does not establish all upstream or future dynamic operations.",
+    "knownRefusal": "The catalogue includes gitnexus.query even though the bridge source refuses its handler before dispatch under D065. Registration and allowed:true must not be reported as query health. No query probe was run.",
+    "disposition": "Retain these existing optional internal registrations pending measured per-consumer outcomes; keep native graph operations on their current first-party route. D005 internal authority and D004 distribution exclusion remain unchanged.",
+    "runtimeLimit": "Serving-release catalogue only. Loaded implementation equality with current staging, operation usefulness, per-operation benefit and final shipment were not established.",
+    "documentationRead": "docs:search for gitnexus returned a bounded ranked page, including agent-insights/code-intelligence-backends-runbook and agent-insights/plugin-tools-empty-registry-window. This is discovery evidence, not a complete stored-document census. docs:get source for the backend runbook returned 46947 bytes with a spill pointer; no canonical document was edited.",
+    "incidentalRuntimeObservation": "plugins:runtime_status also reported manifest errors for two unrelated global plugins. Captured as unconfirmed runtime-vintage observation EI-26175726778617403; not treated as a GitNexus failure or expanded into a repair mission."
+  },
   "schemaReconciliation": {
     "decision": "D-019",
     "correction": "The carried unapplied-1519 premise was stale. No backup or migration retry is needed for schema readiness.",

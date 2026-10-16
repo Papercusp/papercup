@@ -3,15 +3,21 @@
 import { fork } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { mkdir, rm, symlink } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import type {} from '../../test/current-su-native-http-scenario';
 import type {} from '../../test/staging-first-http-fixture';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import { preparePrivateOperatorApiBundle } from '../../test/private-http-workspace-preflight';
+import { CC_HOOK_FILES } from '../desktop-install/papercusp-files';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const options = isolatedWorkerOptions(480_000);
+const hookSources = 'apps/operator/scripts/hooks';
+const hookInputs = [...CC_HOOK_FILES.map(name => `${hookSources}/cc/${name}`),
+  ...['inject', 'inject/adapters'].flatMap(dir => readdirSync(join(root, hookSources, dir))
+    .filter(name => name.endsWith('.mjs')).map(name => `${hookSources}/${dir}/${name}`))];
 
 it('launches autonomous current-su through the native container adapter without provider forwarding', async context => {
   let prepared: Awaited<ReturnType<typeof preparePrivateOperatorApiBundle>> | undefined;
@@ -28,7 +34,9 @@ it('launches autonomous current-su through the native container adapter without 
       'packages/operator-core/lib/external-bench/codex-hook-bridge.ts',
       'packages/operator-core/lib/agent-tools/capability/launch-agent.ts',
       'packages/operator-core/lib/console-spawn.ts', 'apps/operator/scripts/psu-launcher.mjs',
-      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+      'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh',
+      'packages/operator-core/lib/desktop-install/papercusp-files.ts',
+      'packages/operator-core/lib/role-codex-home.ts', ...hookInputs],
     retainedArtifacts: ['phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
       'phases/prepare/bundle-restricted-hold-inputs.json',
       'phases/prepare/hono-host.mjs.build-steps.jsonl'],

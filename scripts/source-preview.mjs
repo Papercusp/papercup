@@ -745,7 +745,8 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
     const lines = pending.split('\n');
     pending = lines.pop().slice(-4096);
     for (const line of lines) {
-      const counter = /((?:checksum read|copy) progress:.*?) (?:written|read)=(\d+)MiB/.exec(line);
+      const counter = /((?:checksum read|copy) progress:.*?) (?:written|read)=(\d+)MiB/.exec(line)
+        ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line);
       if (counter && Number(counter[2]) > (counters.get(counter[1]) ?? 0)) {
         counters.set(counter[1], Number(counter[2]));
         watchdog.noteProgress();

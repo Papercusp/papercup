@@ -18,6 +18,7 @@ import { getRubricWithoutSeeding } from '../../rubrics';
 import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
 import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   createStageAttempt,
@@ -712,7 +713,11 @@ export default defineTool({
               inlineResultBudgetChars(identity.ownerId),
             ));
           } catch (error) {
-            if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
+            if (
+              error instanceof OrgTxnTimeoutError ||
+              error instanceof DbCallDeadlineError ||
+              error instanceof PgReadQueryTimeoutError
+            ) {
               return respond({
                 ok: false,
                 error: 'timeout',

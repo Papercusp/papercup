@@ -79,6 +79,7 @@ import type { RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 import { unownedCell } from './coord/gate-ownership';
 import { certifyCheckpointProgress, DEFAULT_STALL_THRESHOLD_MS } from './release-trace-progress';
+import type { RepairSignatureEntry } from './release/frozen-candidate-repair-queue';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -811,6 +812,51 @@ describe('gitPipelinePosition (P-002)', () => {
     });
     expect(res.gate.candidateFailures?.unavailable).toMatch(/not "zero failures"/);
     expect(res.gate.candidateFailures?.nonTestLegs).toBeDefined();
+  });
+
+  it('WI-6554700010009052: passes the persisted queue signature into candidateFailures', async () => {
+    const signature: RepairSignatureEntry[] = [{
+      kind: 'lint-leg',
+      id: 'lint:tsc:workspaces',
+      recipe: 'npm run lint:tsc:workspaces',
+      admittedRound: 1,
+      measuredHead: 'c'.repeat(12),
+    }];
+    const repairQueue = {
+      candidate: 'c'.repeat(40),
+      repairHead: 'd'.repeat(40),
+      phase: 'awaiting-fixer',
+      decision: 'dispatch-fixer',
+      nextAction: 'repair',
+      retireRefusal: 'live-fixer',
+      legs: [],
+      signature,
+      admissions: [],
+    } as NonNullable<GitPipelineSnapshot['gate']['repairQueue']>;
+    const readCandidateFailures = vi.fn(async () => null as unknown as GateCandidateFailures);
+
+    await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git: fakeGit({}),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({ repairQueue }),
+        readCheckpointRunSnapshot: async () => null,
+        readCheckpointRunLock: async () => null,
+        readGateOwnership: async () => unownedCell('test'),
+        loadRuntimeVintage: async () => [],
+        readGateCandidateFailures: readCandidateFailures,
+      },
+    );
+
+    expect(readCandidateFailures).toHaveBeenCalledOnce();
+    expect(readCandidateFailures).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateSha: repairQueue.candidate,
+        repairHeadSha: repairQueue.repairHead,
+        queueSignature: signature,
+      }),
+    );
   });
 
   it('WI-2146319: preserves an unreadable queue identity and marks candidate failures unmeasured', async () => {

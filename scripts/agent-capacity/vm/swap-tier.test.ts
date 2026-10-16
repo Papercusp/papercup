@@ -118,24 +118,25 @@ describe('real Luna load and swap tuning', () => {
     expect(receipt.error === null).toBe(success);
   });
 
-  it('refuses another prompt batch after a previously healthy tunnel disappears', () => {
+  it('records a native route failure without substituting a monitoring request', () => {
     const code = [
-      'import importlib.util, json, socket, types',
+      'import importlib.util, json',
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
       'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
-      'server=socket.socket(); server.bind(("127.0.0.1",0)); port=server.getsockname()[1]; server.close()',
-      'rows=[]; typed=[]',
-      'm.GATEWAY_CHECK=lambda: m.gateway_preflight(f"http://127.0.0.1:{port}/v1","benchmark-owner",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
-      'm.type_text=lambda *args: typed.append(args)',
-      'try: m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",1)',
-      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows,"typed":typed}))',
+      'clock=[0]; typed=[]; m.REAL_MODEL=True; m.CODEX_SESSIONS={"a1":{}}',
+      'm.time.time=lambda:clock[0]; m.time.sleep=lambda *a:clock.__setitem__(0,clock[0]+1)',
+      'm.type_text=lambda *args: typed.append(args); m.press_enter=lambda *a:None; m.pane=lambda *a:"MARKER"',
+      'def failed(*a): raise m.NativeTaskError("native model route disconnected")',
+      'm.codex_completed=failed',
+      'state=m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",10)',
+      'print(json.dumps({"state":state,"typed":typed}))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const receipt = JSON.parse(result.stdout);
-    expect(receipt.error).toContain('refusing a batch');
-    expect(receipt.typed).toEqual([]);
-    expect(receipt.rows).toEqual([{ kind: 'gateway-preflight', success: false, status: null, error: 'URLError', catalog: true }]);
+    expect(receipt.state.a1.error).toBe('native model route disconnected');
+    expect(receipt.state.a1.tDone).toBeNull();
+    expect(receipt.typed).toEqual([['a1', 'dummy']]);
   });
 
   it('keeps each native runtime in its measured scope without requiring a daemon socket', () => {
@@ -168,7 +169,7 @@ describe('real Luna load and swap tuning', () => {
     }
   });
 
-  it('lets submitted native tasks settle without an interrupting health request', () => {
+  it('lets a native batch complete when an auxiliary health request would time out', () => {
     const code = [
       'import importlib.util, json',
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
@@ -176,7 +177,7 @@ describe('real Luna load and swap tuning', () => {
       'checks=[]; clock=[0]',
       'def check():',
       ' checks.append(1)',
-      ' if len(checks)>1: raise RuntimeError("health endpoint timed out while native task was completing")',
+      ' raise RuntimeError("health endpoint timed out while native task was completing")',
       'def tick(*a): clock[0]+=20',
       'm.GATEWAY_CHECK=check; m.time.time=lambda:clock[0]; m.time.monotonic=lambda:clock[0]; m.time.sleep=tick',
       'm.type_text=lambda *a:None; m.press_enter=lambda *a:None; m.pane=lambda *a:"MARKER DONE-MARKER"',
@@ -186,7 +187,7 @@ describe('real Luna load and swap tuning', () => {
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const receipt = JSON.parse(result.stdout);
-    expect(receipt.checks).toBe(1);
+    expect(receipt.checks).toBe(0);
     expect(receipt.state.a1).toMatchObject({ tDone: 20, error: null });
   });
 

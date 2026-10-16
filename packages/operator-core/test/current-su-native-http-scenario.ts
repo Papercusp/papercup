@@ -22,6 +22,7 @@ import { getModes } from '../lib/modes/store';
 import { readSessionConfinement } from '../lib/capability-envelope/session-confinement-store';
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
+import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
@@ -29,6 +30,17 @@ import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-po
 export async function prepareCurrentSuNativeScenario(workspace: string) {
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
+  // The normal desktop bootstrap installs these executable assets. The
+  // disposable runtime starts with an empty HOME, so install the same pinned
+  // sources there before the native launcher writes its per-session hooks.
+  const privateHome = process.env.HOME!;
+  assert.equal(process.env.PAPERCUSP_HOME, join(privateHome, '.papercusp'));
+  const hookSources = resolve(import.meta.dirname, '../../../apps/operator/scripts/hooks');
+  const ccHooks = await installClaudeHooks(privateHome, join(hookSources, 'cc'));
+  const injectionHooks = await installInjectionHooks(privateHome, join(hookSources, 'inject'));
+  for (const name of ['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh', 'lifecycle-report.sh'])
+    assert.ok(ccHooks.installed.includes(name), 'private native hook installation missing ' + name);
+  assert.ok(injectionHooks.includes(join('inject', 'index.mjs')), 'private native injection dispatcher missing');
   // ports.launch executes in this worker, independently of the private HTTP
   // host's environment. The installed psu shim otherwise chooses release.
   const launcher = resolve(import.meta.dirname, '../../../apps/operator/scripts/psu-launcher.mjs');
