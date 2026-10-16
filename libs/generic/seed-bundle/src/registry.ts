@@ -26,7 +26,21 @@ export interface SeedCutContext {
 export interface SeedRestoreContext {
   /** Optional host logger for distinguishing a held verify from a held restore. */
   readonly onPhase?: (event: SeedRestorePhaseEvent) => void;
+  /**
+   * Optional immutable identity carried into the process-local diagnostic
+   * snapshot.  The inspector uses these values to refuse observations from a
+   * different build or source revision.  They are diagnostic metadata only and
+   * never affect restore behaviour.
+   */
+  readonly diagnosticIdentity?: SeedRestoreDiagnosticIdentity;
   readonly [k: string]: unknown;
+}
+
+export interface SeedRestoreDiagnosticIdentity {
+  readonly processInstanceId?: string | null;
+  readonly buildSha?: string | null;
+  readonly sourceSha256?: string | null;
+  readonly script?: string | null;
 }
 
 /** A diagnostic boundary emitted while a store is being restored. */
