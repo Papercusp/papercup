@@ -67,6 +67,22 @@ const NATIVE_RUNTIME_FILES = [
 ];
 
 const VITEST_RESULT_CACHE = 'packages/operator-core/.vitest-tmp/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json';
+// Outputs of apps/operator-vite's maintained prebuild, including both ORT roots.
+const SPA_RUNTIME_FILES = [
+  'apps/operator/public/wake-runtime/ort.bundle.min.mjs',
+  'apps/operator/public/vad-runtime/ort-wasm-simd-threaded.wasm',
+  'apps/operator/public/vditor/dist/index.js',
+  'apps/operator/public/vditor-local/d3.min.js',
+  'apps/operator/public/monaco/.version',
+  'apps/operator/public/excalidraw/chunk-6U3AYISY.js',
+  'apps/operator/public/porcupine/porcupine_params.pv',
+  'apps/operator/public/elevenlabs-runtime/rawAudioProcessor.js',
+  'apps/operator/public/silero_vad_v5.onnx',
+  'apps/operator/public/silero_vad_legacy.onnx',
+  'apps/operator/public/vad.worklet.bundle.min.js',
+  'apps/operator/public/ort-wasm-simd-threaded.wasm',
+  'apps/operator/public/ort-wasm-simd-threaded.jsep.mjs',
+];
 const DEPENDENCY_POLICY_PATH = 'apps/operator/bin/release/dependency-generation.sh';
 const DEPENDENCY_POLICY = readFileSync(new URL('../../../' + DEPENDENCY_POLICY_PATH, import.meta.url), 'utf8');
 
@@ -1002,7 +1018,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
   });
 
-  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
+  it('allows SPA prebuild mirrors through the later host source census without hiding public source', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-spa-runtime-fixture'));
+    const dest = join(tmp, 'verifier-spa-runtime-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    for (const artifact of SPA_RUNTIME_FILES) write(dest, artifact, 'generated SPA runtime asset');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    for (const unexpected of [
+      'apps/operator/public/unexpected.js',
+      'apps/operator/public/ort-wasm-unexpected.ts',
+      'apps/operator/public/silero_vad_unexpected.onnx',
+      'apps/operator/public/excalidraw-extra/chunk.js',
+    ]) {
+      write(dest, unexpected, 'unexpected source');
+      await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
+      rmSync(join(dest, unexpected));
+    }
+    writeFileSync(join(dest, input), 'changed recorded source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES, ...SPA_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
     const suffix = input.replaceAll('/', '-');
     const fixture = makeSuperproject(join(tmp, `verifier-output-recorded-${suffix}`));
     write(fixture.repo, input, 'recorded route tree');
@@ -1035,7 +1073,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock'))])('rejects a redirect posing as runtime output: %s', async artifact => {
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock')), ...new Set(SPA_RUNTIME_FILES.map(path => path.split('/').slice(0, 4).join('/')))])('rejects a redirect posing as runtime output: %s', async artifact => {
     const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
     const input = SHIPPED.find(p => p.startsWith('apps/'))!;
     const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);

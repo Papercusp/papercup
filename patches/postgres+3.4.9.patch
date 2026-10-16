@@ -1,5 +1,5 @@
 diff --git a/node_modules/postgres/cf/src/connection.js b/node_modules/postgres/cf/src/connection.js
-index 8e79170..741cdd0 100644
+index 8e79170..9afca0c 100644
 --- a/node_modules/postgres/cf/src/connection.js
 +++ b/node_modules/postgres/cf/src/connection.js
 @@ -88,6 +88,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -114,7 +114,7 @@ index 8e79170..741cdd0 100644
    }
  
    function connected() {
-@@ -423,10 +477,15 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -423,15 +477,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
  
    function terminate() {
      terminated = true
@@ -130,6 +130,17 @@ index 8e79170..741cdd0 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
+-      socket.readyState === 'open' && socket.end(b().X().end())
++      // A socket still opening has no PostgreSQL session to terminate. Leaving
++      // it alive removes its startup listener but retains a referenced TCP handle.
++      if (socket.readyState === 'open')
++        socket.end(b().X().end())
++      else
++        socket.destroy()
+     }
+     ended && (ended(), ending = ended = null)
+   }
+ 
 @@ -439,7 +498,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
@@ -359,7 +370,7 @@ index 0d44a15..6929fbe 100644
  
    execute() {
 diff --git a/node_modules/postgres/cjs/src/connection.js b/node_modules/postgres/cjs/src/connection.js
-index 07f6716..aeb2daa 100644
+index 07f6716..c6bf17d 100644
 --- a/node_modules/postgres/cjs/src/connection.js
 +++ b/node_modules/postgres/cjs/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -474,7 +485,7 @@ index 07f6716..aeb2daa 100644
    }
  
    function connected() {
-@@ -421,10 +475,15 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -421,15 +475,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
  
    function terminate() {
      terminated = true
@@ -490,6 +501,17 @@ index 07f6716..aeb2daa 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
+-      socket.readyState === 'open' && socket.end(b().X().end())
++      // A socket still opening has no PostgreSQL session to terminate. Leaving
++      // it alive removes its startup listener but retains a referenced TCP handle.
++      if (socket.readyState === 'open')
++        socket.end(b().X().end())
++      else
++        socket.destroy()
+     }
+     ended && (ended(), ending = ended = null)
+   }
+ 
 @@ -437,7 +496,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
@@ -719,7 +741,7 @@ index 45327f2..246ebab 100644
  
    execute() {
 diff --git a/node_modules/postgres/src/connection.js b/node_modules/postgres/src/connection.js
-index 1b1cccd..83ac308 100644
+index 1b1cccd..feb611e 100644
 --- a/node_modules/postgres/src/connection.js
 +++ b/node_modules/postgres/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -834,7 +856,7 @@ index 1b1cccd..83ac308 100644
    }
  
    function connected() {
-@@ -421,10 +475,15 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -421,15 +475,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
  
    function terminate() {
      terminated = true
@@ -850,6 +872,17 @@ index 1b1cccd..83ac308 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
+-      socket.readyState === 'open' && socket.end(b().X().end())
++      // A socket still opening has no PostgreSQL session to terminate. Leaving
++      // it alive removes its startup listener but retains a referenced TCP handle.
++      if (socket.readyState === 'open')
++        socket.end(b().X().end())
++      else
++        socket.destroy()
+     }
+     ended && (ended(), ending = ended = null)
+   }
+ 
 @@ -437,7 +496,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0

@@ -427,6 +427,7 @@ interface RawResource {
 }
 
 interface RawDisk extends RawResource {
+  id?: string;
   status?: GcpComputeDiskStatus;
   users?: string[];
   sizeGb?: string;
@@ -1204,6 +1205,8 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
       ...observedResource(raw, this.now()),
       status: raw.status ?? 'CREATING',
       attachedInstanceNames: attachedNames(raw.users),
+      attachedInstanceRefs: [...(raw.users ?? [])],
+      ...(raw.id ? { diskId: String(raw.id) } : {}),
       ...(numberValue(raw.sizeGb) !== undefined ? { sizeGb: numberValue(raw.sizeGb) } : {}),
     };
   }

@@ -4,12 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Exercise the installed driver, including the maintained patch, rather than a
 // copied scheduler. No server is needed: the socket factory records each open.
+const driverEntry = process.env.PAPERCUSP_POSTGRES_SHUTDOWN_TEST_ENTRY ?? import.meta.resolve('postgres');
 const drivers = await Promise.all([
   ['esm', './connection.js'],
   ['commonjs', '../cjs/src/connection.js'],
   ['cloudflare', '../cf/src/connection.js'],
 ].map(async ([name, path]) => [name, (await import(
-  /* @vite-ignore */ new URL(path, import.meta.resolve('postgres')).href
+  /* @vite-ignore */ new URL(path, driverEntry).href
 )).default] as const));
 
 afterEach(() => vi.useRealTimers());
@@ -69,7 +70,11 @@ function fixture() {
     expect(socket.destroyed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
+});
 
+// The Cloudflare build uses its own Workers socket polyfill, rather than Node's
+// net.Socket. The deferred/custom-socket cases above cover that build too.
+describe.each(drivers.filter(([name]) => name !== 'cloudflare'))('%s postgres shutdown during TCP connect', (_name, Connection) => {
   it('closes a default TCP socket terminated before its connect event', async () => {
     const accepted = new Set<net.Socket>();
     const server = net.createServer(socket => {

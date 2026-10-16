@@ -157,6 +157,10 @@ export interface GcpInstanceObservation extends GcpResourceObservation {
 export interface GcpDiskObservation extends GcpResourceObservation {
   status: GcpComputeDiskStatus;
   attachedInstanceNames: readonly string[];
+  /** Unshortened Compute users, so equal basenames in different projects/zones stay distinct. */
+  attachedInstanceRefs?: readonly string[];
+  /** Numeric allocation identity; a deleted/recreated disk may keep the same name. */
+  diskId?: string;
   sizeGb?: number;
 }
 
@@ -1685,6 +1689,35 @@ function refName(value: string): string {
   return value.split('/').filter(Boolean).at(-1) ?? value;
 }
 
+function zonalResourcePath(value: string, projectId: string, zone: string, kind: 'disks' | 'instances'): string {
+  const path = value.replace(/^https:\/\/(?:www\.googleapis\.com|compute\.googleapis\.com)\/compute\/v1\//, '');
+  const qualified = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/.test(path)
+    ? `projects/${projectId}/zones/${zone}/${kind}/${path}`
+    : path.startsWith('zones/') ? `projects/${projectId}/${path}` : path;
+  if (!/^projects\/[a-zA-Z0-9-]+\/zones\/[a-zA-Z0-9-]+\/(?:disks|instances)\/[a-zA-Z0-9-]+$/.test(qualified) ||
+      qualified.split('/')[4] !== kind) {
+    throw new Error('GCP retained resource identity is not a canonical zonal resource');
+  }
+  return qualified;
+}
+
+function retainedDiskResource(resources: readonly WorkspaceHostResourceRef[], projectId: string, zone: string): WorkspaceHostResourceRef {
+  const disks = resources.filter((item) => item.target === GCP_WORKSPACE_HOST_TARGET && item.kind === DISK_KIND);
+  const disk = disks[0];
+  if (disks.length !== 1 || !disk || disk.parentProviderId !== projectId || disk.zone !== zone) {
+    throw new Error('GCP retained data disk identity must match the exact project and zone');
+  }
+  return disk;
+}
+
+function assertInstanceRetainsDisk(instance: Pick<GcpInstanceObservation, 'recreateInput'>, disk: WorkspaceHostResourceRef, projectId: string, zone: string): void {
+  const dataDisk = instance.recreateInput?.disks[1];
+  if (!dataDisk || dataDisk.autoDelete ||
+      zonalResourcePath(dataDisk.source, projectId, zone, 'disks') !== zonalResourcePath(disk.providerId, projectId, zone, 'disks')) {
+    throw new Error('GCP retained data disk identity is ambiguous or differs from the instance attachment');
+  }
+}
+
 function isDeleteStepInput(input: GcpStepInput): input is GcpDeleteStepInput {
   return input.op.startsWith('delete-');
 }
@@ -1759,6 +1792,35 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     return this.client.inventoryManagedResources(request);
   }
 
+  private async verifyRetainedDisk(
+    resources: readonly WorkspaceHostResourceRef[], projectId: string, zone: string,
+    hostId: string, instanceName: string, ctx: WorkspaceHostProviderContext, requireAttached = false,
+  ): Promise<WorkspaceHostResourceRef> {
+    if (ctx.connection.scope?.id && ctx.connection.scope.id !== projectId) {
+      throw new Error('GCP retained data disk identity differs from the connection project');
+    }
+    const disk = retainedDiskResource(resources, projectId, zone);
+    const expected = zonalResourcePath(disk.providerId, projectId, zone, 'disks');
+    if (expected !== `projects/${projectId}/zones/${zone}/disks/${refName(disk.providerId)}`) {
+      throw new Error('GCP retained data disk identity differs from the checkpoint project or zone');
+    }
+    const observed = await this.client.getDisk(projectId, zone, refName(disk.providerId));
+    if (!observed || observed.status !== 'READY' ||
+        zonalResourcePath(observed.selfLink ?? observed.name, projectId, zone, 'disks') !== expected ||
+        (disk.incarnationId && observed.diskId !== disk.incarnationId) ||
+        (ctx.durableTenantIdentity && (!disk.incarnationId || !observed.diskId))) {
+      throw new Error('GCP retained data disk identity is absent, unready or has a different allocation');
+    }
+    assertManagedHostResource(observed, hostId, 'retained data disk');
+    const users = observed.attachedInstanceRefs ?? observed.attachedInstanceNames;
+    const writer = zonalResourcePath(instanceName, projectId, zone, 'instances');
+    if ((requireAttached && users.length !== 1) || users.length > 1 ||
+        users.some((user) => zonalResourcePath(user, projectId, zone, 'instances') !== writer)) {
+      throw new Error('GCP retained data disk has a foreign or ambiguous writer attachment');
+    }
+    return disk;
+  }
+
   async plan(request: WorkspaceHostPlanRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPlan> {
     if (request.action !== 'provision' && request.host.target !== GCP_WORKSPACE_HOST_TARGET) {
       throw new Error(`GCP provider cannot plan host target '${request.host.target}'`);
@@ -1830,12 +1892,14 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       if (!observed?.recreateInput) {
         throw new Error('GCP upgrade requires a fresh instance read with recreateInput');
       }
-      const recreateInput = observed.recreateInput;
-      const disk = requireKnownResource(request.host.resources, [DISK_KIND], request.action);
-      const [bootDisk, dataDisk] = recreateInput.disks;
-      if (refName(dataDisk.source) !== refName(disk.providerId) || dataDisk.autoDelete) {
-        throw new Error('GCP upgrade refused because the retained data disk identity is ambiguous');
+      if (instance.incarnationId && observed.instanceId !== instance.incarnationId) {
+        throw new Error('GCP upgrade instance allocation differs from its persisted identity');
       }
+      const recreateInput = observed.recreateInput;
+      const disk = await this.verifyRetainedDisk(request.host.resources, projectId, zone, request.host.hostId, instance.providerId, ctx, true);
+      const [bootDisk, dataDisk] = recreateInput.disks;
+      assertManagedHostResource(observed, request.host.hostId, 'upgrade instance');
+      assertInstanceRetainsDisk(observed, disk, projectId, zone);
       const metadata = { items: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript, ctx.durableTenantIdentity).items };
       // The same recreate, parameterized only by boot image, so the rollback is exactly the
       // forward insert pointed at the prior image — never a second, drifting description.
@@ -1880,6 +1944,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             projectId,
             zone,
             resourceName: instance.providerId,
+            incarnationId: requireString(observed.instanceId, 'GCP upgrade instance incarnation id'),
             requestId: gcpWorkspaceHostRequestUuid(deleteKey),
             hostId: request.host.hostId,
           } satisfies GcpStepInput,
@@ -2657,6 +2722,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
                 parentProviderId: input.projectId,
                 region: input.zone.slice(0, input.zone.lastIndexOf('-')),
                 zone: input.zone,
+                ...(found.diskId ? { incarnationId: found.diskId } : {}),
               }),
               operation.name,
             )
@@ -2668,10 +2734,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           requireKnownResource(request.knownResources, [FIREWALL_KIND, EXISTING_FIREWALL_KIND], request.step.id);
         }
         if (input.requiresNat) requireKnownResource(request.knownResources, [NAT_KIND], request.step.id);
-        requireKnownResource(request.knownResources, [DISK_KIND], request.step.id);
+        const disk = await this.verifyRetainedDisk(request.knownResources, input.projectId, input.zone, input.hostId, input.request.name, ctx);
+        assertInstanceRetainsDisk({ recreateInput: input.request }, disk, input.projectId, input.zone);
         const operation = await this.client.insertInstance(input.projectId, input.zone, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
         const found = await this.client.getInstance(input.projectId, input.zone, input.request.name);
+        if (found?.status === 'RUNNING') {
+          assertManagedHostResource(found, input.hostId, 'created instance');
+          assertInstanceRetainsDisk(found, disk, input.projectId, input.zone);
+          await this.verifyRetainedDisk(request.knownResources, input.projectId, input.zone, input.hostId, input.request.name, ctx, true);
+        }
         return found?.status === 'RUNNING'
           ? this.applied(
               request,
@@ -2757,7 +2829,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       case 'delete-router':
       case 'delete-subnetwork':
       case 'delete-network':
-        return this.deleteResource(request, input, ctx.signal);
+        return this.deleteResource(request, input, ctx);
     }
   }
 
@@ -2802,7 +2874,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     input: Extract<GcpStepInput, { op: 'start-instance' | 'stop-instance' | 'reset-instance' | 'repair-instance' }>,
     expected: GcpComputeInstanceStatus,
     mutation: () => Promise<GcpOperationRef>,
-    signal?: AbortSignal,
+    ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
     // Pool assignment may select an already-running VM. Stop/start also replay after
     // ambiguous outcomes; observe convergence before asking GCP to mutate it again.
@@ -2862,6 +2934,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const destroyedIncarnationId = input.op === 'delete-instance'
       ? input.incarnationId ?? beforeIncarnationId
       : undefined;
+    if (input.op === 'delete-instance' && request.step.action === 'upgrade') {
+      const zone = requireString(input.zone, 'GCP upgrade zone');
+      const disk = await this.verifyRetainedDisk(request.knownResources, input.projectId, zone, input.hostId, input.resourceName, ctx, true);
+      assertInstanceRetainsDisk(before as GcpInstanceObservation, disk, input.projectId, zone);
+    }
     if (input.op === 'delete-instance') assertManagedHostResource(before, input.hostId, 'instance');
     if (input.op === 'delete-disk') {
       const disk = before as GcpDiskObservation;
@@ -2920,7 +2997,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         input.requestId,
       );
     else operation = await this.client.deleteNetwork(input.projectId, input.resourceName, input.requestId);
-    if (!(await this.settled(operation, signal))) return this.inProgress(request, operation.name);
+    if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
     const after = await this.describeDeleteTarget(input);
     if (after) {
       if (input.op === 'delete-instance') {
@@ -2991,6 +3068,10 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const existing = await this.describeCreatedTarget(input);
     if (existing) {
       if (input.op === 'insert-instance') {
+        const disk = await this.verifyRetainedDisk(request.knownResources, input.projectId, input.zone, input.hostId, input.request.name, ctx, true);
+        assertManagedHostResource(existing, input.hostId, 'reconciled instance');
+        assertInstanceRetainsDisk(existing as GcpInstanceObservation, disk, input.projectId, input.zone);
+        assertInstanceRetainsDisk({ recreateInput: input.request }, disk, input.projectId, input.zone);
         assertInstanceBootsRequestedImage(
           existing.name,
           'sourceImage' in existing ? existing.sourceImage : undefined,
@@ -3045,6 +3126,8 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
               parentProviderId: 'projectId' in input ? input.projectId : undefined,
               region: 'region' in input ? input.region : undefined,
               zone: 'zone' in input ? input.zone : undefined,
+              ...(input.op === 'insert-disk' && (existing as GcpDiskObservation).diskId
+                ? { incarnationId: (existing as GcpDiskObservation).diskId } : {}),
             });
         return this.report(request, ctx, this.unchanged(request, resourceRef));
       }
@@ -3186,8 +3269,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     disks.forEach((disk, index) => {
       const observed = observedDisks[index];
       if (!observed) drift.push(`disk-absent:${disk.providerId}`);
-      else if (vm && !observed.attachedInstanceNames.map(refName).includes(refName(vm.providerId)))
-        drift.push(`disk-detached:${disk.providerId}`);
+      else if (vm) {
+        const users = observed.attachedInstanceRefs ?? observed.attachedInstanceNames;
+        const zone = requireString(vm.zone, 'GCP VM zone');
+        const expected = zonalResourcePath(vm.providerId, projectId, zone, 'instances');
+        if (disk.parentProviderId !== projectId || disk.zone !== zone ||
+            (disk.incarnationId && observed.diskId !== disk.incarnationId) ||
+            users.length !== 1 || users.some((user) => zonalResourcePath(user, projectId, zone, 'instances') !== expected)) {
+          drift.push(`disk-detached:${disk.providerId}`);
+        }
+      }
     });
     const resources = host.resources
       .filter((item) => item.kind !== VM_KIND || !!instance)

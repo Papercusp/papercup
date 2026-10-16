@@ -237,6 +237,12 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     this.disks.set(name, { ...current, ...patch });
   }
 
+  rewriteInstance(name: string, patch: Partial<GcpInstanceObservation>): void {
+    const current = this.instances.get(name);
+    if (!current) throw new Error(`fake GCP instance '${name}' is absent`);
+    this.instances.set(name, { ...current, ...patch });
+  }
+
   async validateConnection() {
     return {
       ok: true,
@@ -445,6 +451,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
       this.insertDiskCalls.push({ input, requestId });
       this.disks.set(input.name, {
         name: input.name,
+        diskId: `disk-allocation:${requestId}`,
         status: 'READY',
         attachedInstanceNames: [],
         sizeGb: input.sizeGb,
@@ -1523,6 +1530,64 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
       status: 'READY',
       attachedInstanceNames: ['pc-host-gcp-1-vm'],
     });
+  });
+
+  it.each([
+    'projects/foreign-project/zones/us-central1-a/disks/pc-host-gcp-1-data',
+    'projects/papercusp-dev-123/zones/us-central1-b/disks/pc-host-gcp-1-data',
+    'https://untrusted.example/compute/v1/projects/papercusp-dev-123/zones/us-central1-a/disks/pc-host-gcp-1-data',
+  ])('refuses replacement before deleting when the same disk basename names another resource: %s', async (source) => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const observed = (await client.getInstance('papercusp-dev-123', 'us-central1-a', 'pc-host-gcp-1-vm'))!;
+    const prior = observed.recreateInput!;
+    client.rewriteInstance(observed.name, { recreateInput: { ...prior, disks: [prior.disks[0], { ...prior.disks[1], source }] } });
+    await expect(provider.plan({ action: 'upgrade', operationId: 'upgrade-foreign', idempotencyKey: 'upgrade-foreign', host,
+      image: { id: 'projects/papercusp/global/images/papercusp-v2' } }, context({}, 'echo bootstrap'))).rejects.toThrow(/identity/);
+    expect(client.deleteCalls).toBe(0);
+  });
+
+  it.each(['project', 'zone', 'allocation', 'writer'])('refuses a retained disk with foreign %s before replacement', async (mismatch) => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    if (mismatch === 'allocation') client.rewriteDisk('pc-host-gcp-1-data', { diskId: 'recreated-disk' });
+    if (mismatch === 'writer') client.rewriteDisk('pc-host-gcp-1-data', {
+      attachedInstanceRefs: ['projects/foreign-project/zones/us-central1-a/instances/pc-host-gcp-1-vm'],
+    });
+    const resources = host.resources.map((item) => item.kind === 'disk' ? {
+      ...item, ...(mismatch === 'project' ? { parentProviderId: 'foreign-project' } : {}),
+      ...(mismatch === 'zone' ? { zone: 'us-central1-b' } : {}),
+    } : item);
+    await expect(provider.plan({ action: 'upgrade', operationId: 'upgrade-foreign', idempotencyKey: 'upgrade-foreign', host: { ...host, resources },
+      image: { id: 'projects/papercusp/global/images/papercusp-v2' } }, context({}, 'echo bootstrap'))).rejects.toThrow(/identity|writer/);
+    expect(client.deleteCalls).toBe(0);
+  });
+
+  it('pins deletion to the planned VM incarnation and refuses to attach to a second writer', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan({ action: 'upgrade', operationId: 'upgrade-fenced', idempotencyKey: 'upgrade-fenced', host,
+      image: { id: 'projects/papercusp/global/images/papercusp-v2' } }, context({}, 'echo bootstrap'));
+    client.rewriteInstance('pc-host-gcp-1-vm', { instanceId: 'new-incarnation' });
+    const result = await provider.apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: resources }, context());
+    expect(result.state).toBe('destroyed');
+    expect(client.deleteCalls).toBe(0);
+    client.rewriteDisk('pc-host-gcp-1-data', { attachedInstanceRefs: ['projects/foreign-project/zones/us-central1-a/instances/pc-host-gcp-1-vm'] });
+    await expect(provider.apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[1]!, knownResources: resources }, context())).rejects.toThrow('writer');
+    expect(client.insertInstanceCalls).toHaveLength(1);
+  });
+
+  it('reconciles a lost replacement response only after the exact disk is attached to that VM', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan({ action: 'upgrade', operationId: 'upgrade-reconcile', idempotencyKey: 'upgrade-reconcile', host,
+      image: { id: 'projects/papercusp/global/images/papercusp-v2' } }, context({}, 'echo bootstrap'));
+    for (const step of plan.steps) await provider.apply({ planId: plan.planId, operationId: plan.operationId, step, knownResources: resources }, context());
+    const request = { planId: plan.planId, operationId: plan.operationId, step: plan.steps[1]!, knownResources: resources, reason: 'ambiguous-timeout' as const };
+    await expect(provider.reconcile(request, context())).resolves.toMatchObject({ state: 'unchanged' });
+    client.rewriteDisk('pc-host-gcp-1-data', { attachedInstanceNames: [] });
+    await expect(provider.reconcile(request, context())).rejects.toThrow('writer');
+    expect(client.insertInstanceCalls).toHaveLength(2);
   });
 
   // WI-10002490: once delete-boot-runtime applies there is no VM left to read, so the way back has

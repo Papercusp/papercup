@@ -124,6 +124,7 @@ describe('frozen native SPA preparation', () => {
 const fs = require('node:fs');
 fs.writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2),
   out: process.env.VITE_BUILD_OUT_ROOT, command: process.env.VITE_BUILD_CMD ?? null,
+  viteOut: process.env.PAPERCUSP_VITE_OUT_DIR, finalOut: process.env.PAPERCUSP_VITE_FINAL_OUT_DIR,
   lock: process.env.VITE_BUILD_LOCK ?? null, snapshot: process.env.VITE_BUILD_SNAPSHOT_DIR ?? null,
   retain: process.env.PAPERCUSP_RETAIN_DIST_CHUNKS }));
 if (${Boolean(options.sourceVolumeFull)} && process.env.VITE_BUILD_OUT_ROOT === ${JSON.stringify(app)}) process.exit(28);
@@ -157,7 +158,8 @@ printf '%s' "$VERIFIER_SPA_DIST"
     expect(result.status, result.stderr).toBe(0);
     expect(result.selected).toBe(result.expected);
     expect(result.build).toEqual({ cwd: result.frozen, args: ['--workspace', '@papercusp/operator-vite', 'run', 'build'],
-      out: result.outputRoot, command: null, lock: null, snapshot: null, retain: '0' });
+      out: result.outputRoot, viteOut: result.expected, finalOut: result.expected,
+      command: null, lock: null, snapshot: null, retain: '0' });
     expect(result.sourceOutputExists).toBe(false);
     expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_run_step verifier-host-bundle'));
     expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
@@ -175,6 +177,7 @@ printf '%s' "$VERIFIER_SPA_DIST"
     [{ incomplete: true }, 3, 'VERIFY_TAURI_SPA_BUILD_INCOMPLETE'],
     [{ external: true }, 3, 'VERIFY_TAURI_SPA_UNBOUND'],
     [{ buildExit: 17 }, 17, ''],
+    [{ buildExit: 28 }, 28, ''],
   ] as const)('refuses boot when frozen SPA preparation fails (%j)', (options, status, marker) => {
     const result = prepare(options);
     expect(result.status).toBe(status);

@@ -258,12 +258,13 @@ never a prose message that scrolls away — and carry it forward in every status
 report.
 
 **Before burning hours re-deriving something a PEER may already know, ask the
-router: `consult:get_feedback { question }`.** It searches every agent's real
-transcript history (yours excluded), wakes the best-qualified peer with
-why-they-were-chosen evidence, and answers instantly from the archive when a
-closed consult already settled the question. Honest by design: below the
-relevance floor it says "no one knows more than you do — proceed", never a
-costumed expert. Reach for it at exactly the moments you'd otherwise
+router: `consult:get_feedback { question }`.** It answers instantly from the archive when a
+closed consult already settled the question; otherwise it ranks every agent's
+real transcript history (yours excluded) and launches an ISOLATED answer
+session from the best-qualified peer's transcript, with why-they-were-chosen
+evidence — the expert's own live session is never woken. Honest by design: a
+below-floor responder is labelled `via:'minimum'`, and `min_agents: 0` returns
+"no one knows more than you do — proceed", never a costumed expert. Reach for it at exactly the moments you'd otherwise
 deep-dive an unfamiliar subsystem, re-debug a failure someone else already
 fixed, or guess at another lane's design intent. (It is who-knows DISCOVERY —
 for a KNOWN agent use `coord:send`; for live state, query it; for an owner

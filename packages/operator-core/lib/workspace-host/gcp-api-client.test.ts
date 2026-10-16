@@ -67,6 +67,17 @@ function makeBillingReader(fetchImpl: typeof fetch): GoogleBigQueryBillingExport
   });
 }
 
+describe('GCP retained disk identity', () => {
+  it('preserves allocation and full writer references instead of collapsing foreign project/zone names', async () => {
+    const writer = `https://www.googleapis.com/compute/v1/projects/foreign-project/zones/us-central1-b/instances/pc-host-vm`;
+    const client = makeClient(vi.fn(async () => json({ name: 'pc-host-data', id: '934573450987654321',
+      status: 'READY', users: [writer], selfLink: `https://www.googleapis.com/compute/v1/projects/${PROJECT}/zones/${ZONE}/disks/pc-host-data` })) as typeof fetch);
+    await expect(client.getDisk(PROJECT, ZONE, 'pc-host-data')).resolves.toMatchObject({
+      diskId: '934573450987654321', attachedInstanceNames: ['pc-host-vm'], attachedInstanceRefs: [writer],
+    });
+  });
+});
+
 describe('GCP Cloud Billing export reader', () => {
   it('uses bounded public BigQuery REST and preserves exact gross, credit, net, and conservative cents', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
