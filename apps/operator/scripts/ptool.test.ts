@@ -515,6 +515,15 @@ describe('ptool operator routing', () => {
     expect(resolvePtoolOperatorCandidates(managed)).toEqual(['http://127.0.0.1:9271']);
   });
 
+  it.each(['0', '65536', 'not-a-port'])('ignores an undialable managed proxy target %s', target => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: target,
+    })).toBe('http://127.0.0.1:9071');
+  });
+
   it('keeps a bare operator URL pinned when another host proxy is configured', () => {
     expect(resolvePtoolOperatorBase({
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
