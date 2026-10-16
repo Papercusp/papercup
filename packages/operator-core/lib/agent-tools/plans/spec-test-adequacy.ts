@@ -404,7 +404,11 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
     const adequacy = (rawAdequacy ?? {}) as Record<string, unknown>;
     const ownDetails = detailsOf(row);
     const sameProofRows = (byReference.get(logicalEvidenceReferenceKey(row)) ?? [row])
-      .filter((candidate) => proofIdentity(candidate) === proofIdentity(row));
+      .filter((candidate) => proofIdentity(candidate) === proofIdentity(row) &&
+        // Shared mutant runs carry separate target claims. A sibling target's
+        // case must not become an invented association through metadata union.
+        ((row.evidenceKind !== 'mutation' && row.evidenceKind !== 'counterexample') ||
+          detailsOf(candidate).targeted === ownDetails.targeted));
     const mergedAdequacy = { ...adequacy };
     let changed = false;
     for (const key of ['scenarioIds', 'causalPairIds', 'testCases'] as const) {
@@ -2356,8 +2360,9 @@ function appendRatingRerunProbes(
  *  26 — shared mutant runs preserve distinct targets and require a measured case for each target.
  *  28 — binder-authored fixtureFree=true no longer establishes fixture absence for test-backed evidence without a fixture fingerprint.
  *  29 — outside-lineage re-observations can establish fixture absence for the same measured executable proof and selected cases.
+ *  30 — shared mutation metadata stays target-scoped; unambiguous explicit measured-case associations need no title convention.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 29;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 30;
 
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
@@ -2539,16 +2544,30 @@ function mutationTargetMatchesMeasuredCase(
     row.testRunId === mutation.testRunId &&
     row.evidenceRef === mutation.evidenceRef;
   const targetRequirement = mutationTargetRequirement(clause);
-  const targetsOnRun = new Set(evidence
-    .filter(sameRun)
+  // Exact and historical lowercase self-clause IDs name one target. Scenario
+  // IDs remain case-sensitive, so distinct scenarios need distinct failed cases.
+  const normalizedTarget = (value: string) =>
+    targetRequirement.selfTarget !== null && targetRequirement.acceptedTargets.includes(value)
+      ? targetRequirement.selfTarget
+      : value;
+  const sameRunRows = evidence.filter(sameRun);
+  const targetsOnRun = new Set(sameRunRows
     .map((row) => detailsOf(row).targeted)
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
-    // Exact and historical lowercase self-clause IDs name one target. Scenario IDs
-    // remain case-sensitive, so distinct scenarios still need distinct failed cases.
-    .map((value) => targetRequirement.selfTarget !== null && targetRequirement.acceptedTargets.includes(value)
-      ? targetRequirement.selfTarget
-      : value));
+    .map(normalizedTarget));
   if (targetsOnRun.size <= 1) return true;
+
+  const declaredCases = detailsOf(mutation).testCases;
+  if (declaredCases !== undefined) {
+    if (!declaredCases.some((title) => hasSameCaseTitleIdentity(title, caseTitle))) return false;
+    // Ambiguous explicit associations fail closed, including titles that would
+    // otherwise match the legacy colon convention below.
+    return !sameRunRows.some((row) => {
+      const details = detailsOf(row);
+      return typeof details.targeted === 'string' && normalizedTarget(details.targeted) !== normalizedTarget(target) &&
+        (details.testCases ?? []).some((title) => hasSameCaseTitleIdentity(title, caseTitle));
+    });
+  }
 
   const separator = caseTitle.lastIndexOf(' > ');
   const scenarioCase = separator >= 0 ? caseTitle.slice(separator + 3) : caseTitle;
