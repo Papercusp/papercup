@@ -114,6 +114,7 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         prompts: { select, input: vi.fn(), search: vi.fn() },
         readLastActiveModel: () => null,
         fetchPortCapabilities: async () => null,
+        readOperatorTarget: () => { throw new Error("Unknown capabilities need no operator discovery"); },
         readCodexModels,
         readOmpModels,
       });
@@ -126,6 +127,39 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
       expect(select).toHaveBeenCalledTimes(3);
     },
   );
+
+  it("ties a hidden-target notice to the supplied operator without host discovery", async () => {
+    const notice = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const target = await chooseResumeTarget(trackedSession("claude"), { picker: true }, {
+        prompts: {
+          select: async ({ message, choices }: {
+            message: string; choices: Array<{ value: any }>;
+          }) => {
+            if (message === "Continue this session with which backend/model?") return "<choose-model>";
+            if (message === "Reasoning effort") return "high";
+            expect(choices.some((row) => row.value?.targetAgent === "omp")).toBe(false);
+            return choices.find((row) => row.value?.kind === "model" &&
+              row.value.targetAgent === "codex")!.value;
+          },
+          input: vi.fn(), search: vi.fn(),
+        },
+        readLastActiveModel: () => null,
+        fetchPortCapabilities: async () => ({
+          known: true, via: "capabilities", pairs: [{ source: "claude", target: "codex" }],
+        }),
+        readOperatorTarget: () => ({ url: "http://fixture-operator.invalid" }),
+        readCodexModels: () => [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: ["high"] }],
+        readOmpModels: async () => [],
+      });
+      expect(target).toMatchObject({ operation: "port", sourceAgent: "claude", targetAgent: "codex" });
+      expect(notice).toHaveBeenCalledWith(expect.stringContaining(
+        "serving operator at http://fixture-operator.invalid cannot port a claude session",
+      ));
+    } finally {
+      notice.mockRestore();
+    }
+  });
 
   it.each(CROSS_PAIRS)(
     "a scripted %s resume with --agent=%s also resolves to a session port",
