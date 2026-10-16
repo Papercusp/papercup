@@ -7,12 +7,53 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, expect, it } from 'vitest';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, waitForPrivateOperator } from './private-http-workspace-preflight';
 import { createHash } from 'node:crypto';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+function pgStartup(fields: Record<string, string>) {
+  const body = Buffer.from(Object.entries(fields).flatMap(([key, value]) => [key, value]).join('\0') + '\0\0');
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(header.length + body.length, 0);
+  header.writeUInt32BE(196608, 4);
+  return Buffer.concat([header, body]);
+}
+
+it('retains only the database and application identity from a private PG startup', () => {
+  const packet = pgStartup({ user: 'private-user', database: 'other-private-db',
+    application_name: 'pcusp:other-pool:p123', password: 'private-password', options: 'private-options' });
+  expect(privatePgStartupIdentity(Buffer.concat([packet, Buffer.from('private query content')]))).toEqual({
+    database: 'other-private-db', applicationName: 'pcusp:other-pool:p123' });
+});
+
+it('ignores SSL, cancellation and query packets in private socket evidence', () => {
+  for (const code of [80877103, 80877102]) {
+    const packet = Buffer.alloc(16);
+    packet.writeUInt32BE(packet.length, 0);
+    packet.writeUInt32BE(code, 4);
+    expect(privatePgStartupIdentity(packet)).toBeNull();
+  }
+  expect(privatePgStartupIdentity(Buffer.from('Qprivate SQL text\0'))).toBeNull();
+  expect(privatePgStartupIdentity('private text')).toBeNull();
+});
+
+it('rejects truncated, unterminated and oversized private startup packets', () => {
+  const packet = pgStartup({ database: 'private-db', application_name: 'private-pool' });
+  expect(privatePgStartupIdentity(packet.subarray(0, -1))).toBeNull();
+  const malformed = Buffer.from(packet);
+  malformed[malformed.length - 1] = 1;
+  expect(privatePgStartupIdentity(malformed)).toBeNull();
+  const oversized = pgStartup({ database: 'x'.repeat(16_384) });
+  expect(privatePgStartupIdentity(oversized)).toBeNull();
+});
+
+it('does not retain unbounded or control-character startup identity values', () => {
+  expect(privatePgStartupIdentity(pgStartup({ database: 'x'.repeat(129), application_name: 'line\nbreak' }))).toEqual({
+    database: null, applicationName: null });
+});
 
 it('retires the roster worker auth listener before its shared database pools', () => {
   const file = 'roster-stop-http-fixture.ts';

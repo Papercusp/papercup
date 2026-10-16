@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, privateBundleRuntimeEnv, privatePgStartupIdentity, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
@@ -24,6 +24,8 @@ const healthCleanupProof = process.argv.includes('--health-cleanup-proof');
 const healthPublicationProof = process.argv.includes('--health-publication-proof');
 const socketOrigins = new Map<number, { socket: net.Socket; stack: string; createdAt: number; connectedAt: number }>();
 const originalConnect = net.Socket.prototype.connect;
+const originalWrite = net.Socket.prototype.write;
+const socketStartups = new WeakMap<net.Socket, NonNullable<ReturnType<typeof privatePgStartupIdentity>>>();
 // Use the same creation-stack/census evidence as the native current-build
 // fixture. A completed cleanup await alone cannot prove the worker will exit.
 net.Socket.prototype.connect = function(this: net.Socket, ...args: unknown[]) {
@@ -35,6 +37,13 @@ net.Socket.prototype.connect = function(this: net.Socket, ...args: unknown[]) {
   });
   return Reflect.apply(originalConnect, this, args);
 } as typeof originalConnect;
+net.Socket.prototype.write = function(this: net.Socket, ...args: unknown[]) {
+  if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT) && !socketStartups.has(this)) {
+    const identity = privatePgStartupIdentity(args[0]);
+    if (identity) socketStartups.set(this, identity);
+  }
+  return Reflect.apply(originalWrite, this, args);
+} as typeof originalWrite;
 const requestedBrowserProof = process.argv.find(value => value.startsWith('--browser-proof='))?.slice('--browser-proof='.length);
 if (requestedBrowserProof) {
   assert.ok(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'].includes(requestedBrowserProof));
@@ -906,10 +915,12 @@ finally {
     const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
     await _stopInvalidationListenerForTests();
   });
-  let pgConnections: Array<{ client_port: number; application_name: string; state: string }> = [];
+  let pgConnections: Array<{ client_port: number; application_name: string; datname: string; state: string }> = [];
   await cleanupPhase('database-census', async () => {
-    pgConnections = await sql`SELECT client_port, application_name, state
-      FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`;
+    // The broad import graph can also open a pool on another database in this
+    // disposable cluster. A current_database() filter hides that pool's owner.
+    pgConnections = await sql`SELECT client_port, application_name, datname, state
+      FROM pg_stat_activity WHERE client_port IS NOT NULL`;
   });
   // This disposable worker owns every hub subscription in its process. Retire
   // them after the census has retained their labels, including subscriptions
@@ -936,6 +947,7 @@ finally {
           pending: socket.pending, destroyed: socket.destroyed, writableEnded: socket.writableEnded,
           bytesRead: socket.bytesRead, bytesWritten: socket.bytesWritten,
           createdAt: origin!.createdAt, connectedAt: origin!.connectedAt } : null,
+        startupIdentity: socket ? socketStartups.get(socket) ?? null : null,
         pgConnection: pgConnections.find(row => row.client_port === local?.port) ?? null };
     });
     const retained = sockets.filter(socket => socket.referenced &&
@@ -950,6 +962,7 @@ finally {
       'file watchers remain referenced after roster worker cleanup; see roster-stop-resources.json');
   });
   net.Socket.prototype.connect = originalConnect;
+  net.Socket.prototype.write = originalWrite;
   retainNativeState('before-discovery-removal');
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
