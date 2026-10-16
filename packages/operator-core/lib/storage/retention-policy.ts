@@ -450,7 +450,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
     maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: 'b18e15f6f6be84e7aa4457555761a1489b384431f7d87a2153e0d76c1d4d1957' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '5d292a9ae9d7ef656206998718ab138248aef7c88b5392f7b190d0f49034d600' },
       { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
     note: 'The native owner eagerly removes every eligible dead private slot, oldest first; a 20 GiB cap receipt counts retained live/leased/recent roots and interrupted deletions. Protected overage is reported, never permission to bypass the owner guards.',
@@ -569,9 +569,9 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-backups',
-    title: 'Workspace backups on /mnt/data/papercusp-backups',
+    title: 'Workspace backups on the cold tier and retained legacy path',
     origin: 'agent',
-    roots: ['/mnt/data/papercusp-backups'],
+    roots: ['/mnt/data/papercusp-backups', '/mnt/cold-a/papercusp-backups'],
     keep: { kind: 'review', reason: 'backups; a newest-N rule needs the backup writer’s own index' },
     enforcers: [{ kind: 'none' }],
   },
