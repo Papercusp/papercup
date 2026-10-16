@@ -1335,8 +1335,8 @@ reserve_verifier_disk() {
       cargo_extra_gb=$((cargo_extra_gb + bulk_gb)); bulk_gb=0
     fi
     if [ "$cargo_extra_gb" -gt 0 ]; then
-      papercusp_require_disk_reservation "$NATIVE_CARGO_TARGET" \
-        "$((NATIVE_CARGO_NEED_GB + cargo_extra_gb))" "native dev Cargo build" \
+      papercusp_require_native_dev_disk_reservation "$NATIVE_CARGO_TARGET" \
+        "$((NATIVE_CARGO_NEED_GB + cargo_extra_gb))" \
         "$NATIVE_CARGO_DISK_RESERVATION_FILE" >&2 || {
           status=$?; release_verifier_disk_reservations; return "$status"
         }
