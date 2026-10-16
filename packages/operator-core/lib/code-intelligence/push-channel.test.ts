@@ -7,6 +7,7 @@ import { FLAG_DEFAULTS } from '@papercusp/flags';
 import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
+import { readPushIncidentAttribution, type PushInput } from './push-channel';
 
 const now = Date.now();
 const raw = () => ({ schema: 'graph-dependency-snapshot-v1', index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
@@ -24,6 +25,42 @@ function deps(): PushChannelDeps {
 }
 
 describe('shared snapshot-backed push channel', () => {
+  it('corroborates scoped recent symbol observations and rejects stale or changed source', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'push-incident-source-'));
+    const text = 'export const changed = 3;';
+    const sha256 = createHash('sha256').update(text).digest('hex');
+    const tx = vi.fn(async () => []);
+    const sql = { begin: async (fn: (tx: unknown) => unknown) => fn(tx) } as unknown as Parameters<typeof readPushIncidentAttribution>[2];
+    const row = { root, path: 'a.ts', workspace: input.workspace, harness: input.harness,
+      agentId: input.owner, at: Date.now(), base: 'a'.repeat(40), beforeSha256: 'b'.repeat(64), sha256,
+      symbols: [{ name: 'changed', line: 1 }] };
+    const measured = (patch = {}) => ({ ...input, root,
+      incidentAttribution: { status: 'measured', recentEdits: [{ ...row, ...patch }] } }) as PushInput;
+    try {
+      await writeFile(join(root, 'a.ts'), text);
+      expect((await readPushIncidentAttribution(measured(), ['a.ts'], sql)).changedSymbols).toEqual(['changed:a.ts:1']);
+      for (const patch of [{ workspace: 'foreign' }, { root: '/foreign' }, { harness: 'foreign' },
+        { agentId: 'another' }, { at: Date.now() - 86_400_001 }, { beforeSha256: sha256 }]) {
+        expect((await readPushIncidentAttribution(measured(patch), ['a.ts'], sql)).changedSymbols).toEqual([]);
+      }
+      expect((await readPushIncidentAttribution(measured(), ['unrelated.ts'], sql)).changedSymbols).toEqual([]);
+      await writeFile(join(root, 'a.ts'), 'export const changed = 4;');
+      expect((await readPushIncidentAttribution(measured(), ['a.ts'], sql)).changedSymbols).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it('automatically enriches observed failures, including structured native digests beyond the recall prefix', async () => {
+    const d = deps();
+    d.legs = () => new Map([['incident', snapshotIncidentLeg]]);
+    d.incidentContext = vi.fn(async (_input: PushInput, _paths: string[]) => ({ status: 'measured' as const, changedSymbols: ['target:lib/target.ts:7'],
+      workItems: [{ id: 'WI-42', state: 'open', paths: ['lib/target.ts'], relation: 'file-edit-ledger' as const }] }));
+    const delivered = await codeIntelPushText({ ...input, calls: [{ tool: 'testing:run', toolResponse: 'truncated recall',
+      incidentResult: { byFile: { 'lib/target.test.ts': { failed: 1, runId: 42 } } } }] }, 0, d);
+    expect(delivered).toContain('target:lib/target.ts:7');
+    expect(delivered).toContain('WI-42 [open] (file-edit-ledger)');
+    expect(delivered).toContain('"testRunIds":[42]');
+    expect(d.incidentContext).toHaveBeenCalledWith(expect.anything(), expect.arrayContaining(['lib/target.ts']));
+  });
   const editCall = () => ({ tool: 'Edit', toolInput: { file_path: 'lib/target.ts' }, interfaceEdit: {
     path: 'lib/target.ts', base: 'a'.repeat(40), changes: ['signature target', 'required Result.name', 'behavioural strand risk'],
     checks: ['node scripts/check-required-field-strands.mjs --typecheck', 'node scripts/check-behavioural-strands.mjs'],

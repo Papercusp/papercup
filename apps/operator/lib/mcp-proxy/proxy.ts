@@ -1053,6 +1053,8 @@ const INJECT_MAX_BODY_BYTES = 256 * 1024;
 /** Mirrors the server's validIdempotencyKey bound (_mcp-result-replay.ts KEY_MAX=200) so a
  *  client-supplied key we "respect" is one :3070 will actually honor for replay. */
 const IDEM_KEY_MAX = 200;
+/** Bound caller-facing recovery receipts for a failed JSON-RPC batch. */
+const MAX_IDEMPOTENCY_RECOVERY_KEYS = 16;
 
 function isValidIdemKey(v: unknown): v is string {
   return (
@@ -1060,6 +1062,63 @@ function isValidIdemKey(v: unknown): v is string {
     v.trim().length > 0 &&
     v.trim().length <= IDEM_KEY_MAX
   );
+}
+
+/**
+ * Return the per-call replay keys for a keyed request that failed after connect.
+ * The receipt goes only to the caller that supplied this batch; keys are never
+ * written to proxy telemetry. Do not offer partial batch recovery: retrying the
+ * whole batch with any unkeyed member could execute that member twice.
+ */
+function idempotencyRecoveryForBody(body: Buffer): {
+  keys: Array<{ requestId: string | number; toolName: string; key: string }>;
+  truncated: boolean;
+} | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString("utf8"));
+  } catch {
+    return null;
+  }
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  const calls = messages.filter(
+    (message) =>
+      !!message &&
+      typeof message === "object" &&
+      (message as { method?: unknown }).method === "tools/call",
+  );
+  if (calls.length === 0) return null;
+
+  const keys: Array<{
+    requestId: string | number;
+    toolName: string;
+    key: string;
+  }> = [];
+  for (const message of calls) {
+    const call = message as {
+      id?: unknown;
+      params?: { name?: unknown; _meta?: { idempotencyKey?: unknown } };
+    };
+    const id = call.id;
+    const key = call.params?._meta?.idempotencyKey;
+    const toolName = call.params?.name;
+    if (
+      (typeof id !== "string" && typeof id !== "number") ||
+      !isValidIdemKey(key) ||
+      typeof toolName !== "string"
+    ) {
+      return null;
+    }
+    keys.push({
+      requestId: id,
+      toolName: toolName.slice(0, 120),
+      key: key.trim(),
+    });
+  }
+  return {
+    keys: keys.slice(0, MAX_IDEMPOTENCY_RECOVERY_KEYS),
+    truncated: keys.length > MAX_IDEMPOTENCY_RECOVERY_KEYS,
+  };
 }
 
 /** How a forwarded request may be retried AFTER the socket connected:
@@ -1253,6 +1312,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "plans:get",
   "plans:get-specs",
   "plans:get-spec-evidence",
+  // This evaluator reads spec evidence and returns drafts; certification is separate.
+  "plans:evaluate-spec-test-adequacy",
   "plans:list",
   "plans:items",
   "plans:search",
@@ -2205,6 +2266,12 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // A bounded events:status read lets a worker inspect await/wake state when a
     // liveness event is silent. Keep that recovery read available during saturation.
     "events:status",
+    // EI-26064670039969095 / EI-25808381039378246 — these read-only state surfaces
+    // are used to recover and validate a live session. Keep them on the reserved
+    // control-plane lane so ordinary FIFO saturation cannot turn a valid read into
+    // a pre-forward 429 while the caller is diagnosing the pressure.
+    "facts:list",
+    "loop:status",
     "work_items:checkpoint",
     "work_items:claimable",
     "work_items:complete",
@@ -5889,6 +5956,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
           const failureStatus = refused ? 503 : 502;
+          const idempotencyRecovery =
+            !refused && fwd.klass === "keyed"
+              ? idempotencyRecoveryForBody(fwd.body)
+              : null;
           // A locally generated MCP failure still crosses the proxy response boundary. Keep
           // the same bounded trace event as a forwarded tools/call response so journald can
           // correlate an upstream reset with the trace id returned to the client.
@@ -5920,6 +5991,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               detail: String(last?.err?.message ?? last?.err ?? "unknown"),
               attempts,
               windowMs: retryWindowMs,
+              ...(idempotencyRecovery
+                ? {
+                    recovery: {
+                      idempotencyKeys: idempotencyRecovery.keys,
+                      truncated: idempotencyRecovery.truncated,
+                      instructions:
+                        "After reconciling state and allowing the original attempt to settle, replay the same logical call with its listed key. For ptool, pass --idempotency-key <key>; do not add the key to tool arguments. A fresh key re-executes the call.",
+                    },
+                  }
+                : {}),
               note: refused
                 ? "upstream target refused connections for the whole retry window (restart took too long or is down)"
                 : fwd.klass === "opaque"
@@ -5934,10 +6015,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                       fwd.hasCodeRunWrapper
                         ? "upstream errored AFTER connecting — not auto-retried (the outer code:run wrapper's " +
                           "nested outcome is unknown; its script may have performed reads or writes. " +
-                          "Repeating the same request is safe for writes only when the caller preserves " +
-                          "its idempotency key)"
+                          "After reconciling state and allowing the original attempt to settle, replay this " +
+                          "same logical call with the matching recovery.idempotencyKeys entry; a fresh key re-executes it)"
                         : "upstream errored AFTER connecting — not auto-retried (the write's outcome is unknown; " +
-                          "resending the same call is safe server-side dedup if the caller preserves its idempotency key)"
+                          "the recovery.idempotencyKeys receipt contains the key to replay this same logical call " +
+                          "after reconciling state and allowing the original attempt to settle; a fresh key re-executes it)"
                     : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
             }),
           );

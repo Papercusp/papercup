@@ -325,7 +325,8 @@ export type CensusSpawn = (cmd: string, args: string[]) => ChildProcessByStdio<n
 const defaultCensusSpawn: CensusSpawn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
 export interface RetentionTreeCensus {
-  entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number }>;
+  entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number;
+    buildDirs?: Array<{ path: string; dev: number; ino: number }> }>;
   retained: Array<{ path: string; reason: string; entry?: RetentionTreeCensus['entries'][number] }>;
   inspectedNodes: number;
   retainedRecentTrees: number;
@@ -397,6 +398,9 @@ export async function inspectRetentionTrees(root: string, opts: {
   /** Caps need recent trees too. Elevation is explicit and scoped by the caller
    * to a policy-authorized agent root; never silently fall back on denial. */
   includeRecent?: boolean; sudo?: string | null;
+  /** Discover build candidates during the existing walk. Tags are validated
+   * through directory descriptors by the effect, never followed here. */
+  collectBuildDirs?: boolean;
   /** Execute the bounded census through sudo itself. A separate `sudo true`
    * probe cannot establish whether this operation will succeed, and must not
    * suppress the real command or discard its error. */
@@ -444,6 +448,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
+    const ancestors = new Map<string, { path: string; dev: number; ino: number }>();
     let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
@@ -469,6 +474,18 @@ export async function inspectRetentionTrees(root: string, opts: {
         groups.set(child, group);
       }
       const newest = Math.max(modifiedMs, changedMs);
+      if (opts.collectBuildDirs) {
+        // GNU find visits directories before their children. Keep only the
+        // current ancestry, rather than retaining every directory in the tree.
+        for (const ancestor of ancestors.keys()) if (!path.startsWith(ancestor + '/')) ancestors.delete(ancestor);
+        if (type === 'd') ancestors.set(path, { path, dev: Number(dev), ino: Number(ino) });
+        const candidate = type === 'd' && path.endsWith('/node_modules') ? ancestors.get(path)
+          : type === 'f' && path.endsWith('/CACHEDIR.TAG') ? ancestors.get(dirname(path)) : undefined;
+        if (candidate && candidate.path !== child) {
+          const builds = group.entry.buildDirs ??= [];
+          if (!builds.some(value => value.path === candidate.path)) builds.push(candidate);
+        }
+      }
       group.entry.newestWriteMs = Math.max(group.entry.newestWriteMs, newest);
       group.entry.bytes += Number(blocks) * 512;
       if (excluded.includes(path)) group.reason = 'protected policy root';

@@ -104,6 +104,30 @@ describe('hosted pool resource policy (P-537)', () => {
     expect(evaluateHostedPoolResourceAdmission(input)).toMatchObject({ allowed: true, guaranteed: true });
   });
 
+  it('allows provisioning without consuming protected warm inventory, while retaining burst order', () => {
+    const input = poolInput();
+    Object.assign(input.capacity, { freeHosts: 0, requestedWarmHosts: 0 });
+    expect(evaluateHostedPoolResourceAdmission(input)).toMatchObject({ allowed: true, guaranteed: false });
+    input.capacity.olderBurstWaiters = 1;
+    expect(evaluateHostedPoolResourceAdmission(input).reasons).toContain('older pool burst requests have priority');
+  });
+
+  it('lets paid guarantees compete for a short pool without mutually reserving it forever', () => {
+    const input = poolInput();
+    input.capacity = { freeHosts: 1, reservedForOtherCustomers: 1, olderBurstWaiters: 1 };
+    input.entitlements = { ...input.entitlements!, quotas: { ...input.entitlements!.quotas, 'pool.reserved-hosts': 1 } };
+    expect(evaluateHostedPoolResourceAdmission(input)).toMatchObject({ allowed: true, guaranteed: true });
+    input.capacity.freeHosts = 0;
+    input.capacity.reservedForOtherCustomers = 0;
+    expect(evaluateHostedPoolResourceAdmission(input).reasons).toContain('pool capacity reserved or exhausted');
+  });
+
+  it.each([NaN, null, -1, 0.5, 2])('refuses invalid warm demand %s', requestedWarmHosts => {
+    const input = poolInput();
+    Object.assign(input.capacity, { requestedWarmHosts });
+    expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(false);
+  });
+
   it.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER])('fails closed on malformed or overflowing demand %s', value => {
     const input = poolInput();
     input.pending.agents = value;

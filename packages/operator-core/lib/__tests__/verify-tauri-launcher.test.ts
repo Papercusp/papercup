@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,124 @@ const repo = resolve(import.meta.dirname, '../../../..');
 const source = readFileSync(resolve(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
+
+describe('native Playwright assertion source preflight', () => {
+  function preflight(...args: string[]) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-assertion-source-'));
+    try {
+      const helper = resolve(dir, 'preflight.mjs');
+      // Exercise these exact helper bytes. A child inherits NODE_OPTIONS, whose
+      // committed-source loader otherwise replaces an edited helper with HEAD.
+      writeFileSync(helper, readFileSync(resolve(repo, 'scripts/lib/verify-tauri-assertion-env.mjs')));
+      symlinkSync(resolve(repo, 'node_modules'), resolve(dir, 'node_modules'));
+      return spawnSync(process.execPath, [helper, '--command', ...args], { encoding: 'utf8', timeout: 10_000 });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.each([
+    ['bash', '-c', 'cd apps/operator && npx playwright test e2e/example.spec.mts'],
+    ['sh', '-c', 'npx playwright test --config playwright.config.mts'],
+    ['npx', 'playwright', 'test', 'e2e/example.spec.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test --config /tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && cd /tmp/shared && npx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test --config=/tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test -c /tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test -c/tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test --config ../../../../shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/../shared" && npx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'cd \'$OPERATOR_SOURCE_ROOT/apps/operator\' && npx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'npx playwright test --config "$OPERATOR_SOURCE_ROOT/../shared/playwright.config.mts"'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator"; npx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" || npx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator"\nnpx playwright test e2e/example.spec.mts'],
+    ['bash', '-c', 'npx "playwright" "test" e2e/example.spec.mts'],
+    ['bash', '-c', 'npx playwright test e2e/example.spec.mts # cd "$OPERATOR_SOURCE_ROOT/apps/operator"'],
+    ['bash', '-c', '# cd "$OPERATOR_SOURCE_ROOT/apps/operator"\nnpx playwright test e2e/example.spec.mts'],
+    ['bash', '-lc', 'npx playwright test e2e/example.spec.mts'],
+    ['bash', '--noprofile', '-c', 'npx playwright test e2e/example.spec.mts'],
+  ])('rejects unpinned Playwright source before native preparation: %j', (...args) => {
+    const result = preflight(...args);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('OPERATOR_SOURCE_ROOT');
+  });
+
+  it.each([
+    'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test e2e/example.spec.mts',
+    'cd "${OPERATOR_SOURCE_ROOT}/apps/operator" && npx playwright test e2e/example.spec.mts',
+    'npx playwright test --config "$OPERATOR_SOURCE_ROOT/apps/operator/playwright.config.mts"',
+    'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test --config playwright.config.mts',
+    'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test --config="$OPERATOR_SOURCE_ROOT/apps/operator/playwright.config.mts"',
+    'cd /tmp/shared && cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test e2e/example.spec.mts',
+    'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && cd .. && pnpm exec playwright test --config operator/playwright.config.mts',
+    'cd -- "$OPERATOR_SOURCE_ROOT/apps/operator" && npm exec playwright test -c playwright.config.mts',
+    'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx "playwright" "test" e2e/example.spec.mts',
+  ])('accepts the owned source root without expanding it before boot: %s', command => {
+    expect(preflight('bash', '-c', command).status).toBe(0);
+  });
+
+  it('keeps non-Playwright assertion commands available', () => {
+    expect(preflight('bash', '-c', 'printf assertion').status).toBe(0);
+  });
+
+  it.each([
+    ['bash', '-lc', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test e2e/example.spec.mts'],
+    ['bash', '--noprofile', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test e2e/example.spec.mts'],
+  ])('checks the effective command with additional shell flags: %j', (...args) => {
+    expect(preflight(...args).status).toBe(0);
+  });
+});
+
+describe('pinned native dependency donor preflight', () => {
+  function preflight(kind: 'missing' | 'file' | 'symlink' | 'physical', pinned = true) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-donor-preflight-'));
+    const donor = resolve(dir, 'installed-donor');
+    const capture = resolve(dir, 'node-called');
+    const start = source.indexOf('install_in_flight_preflight() {');
+    const end = source.indexOf('\ninstall_in_flight_preflight ||', start);
+    if (start < 0 || end < 0) throw new Error('Install preflight was not found');
+    const preparation = source.slice(start, end);
+    mkdirSync(donor);
+    if (kind === 'file') writeFileSync(resolve(donor, 'node_modules'), 'not an install');
+    if (kind === 'physical') mkdirSync(resolve(donor, 'node_modules'));
+    if (kind === 'symlink') {
+      mkdirSync(resolve(dir, 'shared-dependencies'));
+      symlinkSync(resolve(dir, 'shared-dependencies'), resolve(donor, 'node_modules'));
+    }
+    writeFileSync(resolve(dir, 'node'), '#!/bin/sh\nprintf called > "$FIXTURE_CAPTURE"\n', { mode: 0o755 });
+    try {
+      const result = spawnSync('bash', ['-c', `
+REPO_DIR="$FIXTURE_DONOR"
+${preparation}
+install_in_flight_preflight
+`], { encoding: 'utf8', timeout: 10_000, env: { ...process.env,
+        PATH: `${dir}:${process.env.PATH}`, FIXTURE_DONOR: donor, FIXTURE_CAPTURE: capture,
+        VERIFY_TAURI_SOURCE_REF: pinned ? 'exact-pin' : '',
+        VERIFY_TAURI_SOURCE_REPO_DIR: resolve(dir, 'separate-frozen-source') } });
+      return { ...result, inspectedInstall: existsSync(capture) };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it.each(['missing', 'file', 'symlink'] as const)('rejects a %s dependency install before preparation', kind => {
+    const result = preflight(kind);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('VERIFY_TAURI_DEPENDENCY_DONOR_INVALID');
+    expect(result.inspectedInstall).toBe(false);
+  });
+
+  it('accepts a physical donor independent of the frozen source location', () => {
+    const result = preflight('physical');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.inspectedInstall).toBe(true);
+  });
+
+  it('preserves the unpinned install diagnostic', () => {
+    const result = preflight('missing', false);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.inspectedInstall).toBe(true);
+  });
+});
 
 function executeLauncher(isolated: boolean) {
   const dir = mkdtempSync(resolve(tmpdir(), 'tauri-launcher-'));

@@ -573,6 +573,7 @@ export interface CriterionCheckRunnerFailure {
   error: NonNullable<TestFilesCoreResult['error']>;
   hint?: string;
   routerOutput?: string;
+  diagnostics?: Extract<TestFilesCoreResult, { ok: false }>['diagnostics'];
   detachedRunId?: string;
   detachedDurable?: boolean;
 }
@@ -1555,6 +1556,9 @@ export async function evaluateCriterionTestChecks(input: {
       ...('hint' in run && typeof run.hint === 'string' ? { hint: run.hint } : {}),
       ...('routerOutput' in run && typeof run.routerOutput === 'string'
         ? { routerOutput: run.routerOutput.slice(-2000) }
+        : {}),
+      ...('diagnostics' in run && run.diagnostics
+        ? { diagnostics: run.diagnostics }
         : {}),
       ...('detachedRunId' in run && typeof run.detachedRunId === 'string'
         ? { detachedRunId: run.detachedRunId }

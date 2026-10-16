@@ -152,6 +152,10 @@ export const INFRA_TRANSIENT_MESSAGE_PATTERN =
 export const PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN =
   '(^|[^A-Za-z0-9_])nsenter: cannot open /proc/[0-9]+/ns/[A-Za-z_]+: (permission denied|operation not permitted)';
 
+/** The native exec pre-tool guard deliberately rejects rm -f cleanup syntax. */
+export const NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN =
+  'rm -f style (commands are not permitted|cleanup[^.]*not permitted)';
+
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
  * Keep the specific structured_result_shape code ahead of generic transient
@@ -197,6 +201,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'caller',
     messagePattern: '(^|[^A-Za-z0-9_])git_command_interrupted([^A-Za-z0-9_]|$)',
     why: 'capability:git-evidence returns this reason when its request AbortSignal cancels a Git command; this is expected request/session control flow, not a structural tool defect',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['blocked_command', 'PreToolUseCommandRejected'],
+    messagePattern: NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN,
+    why: 'the native exec pre-tool guard deliberately rejected rm -f cleanup syntax before command execution; this is an expected caller-side refusal, not a structural tool defect',
   },
   {
     class: 'caller',
@@ -585,6 +595,14 @@ function matchesPattern(pattern: string, value: string): boolean {
   }
 }
 
+function isExpectedNativeShellCleanupRefusal(
+  input: Pick<SuspectedToolFailure, 'toolName' | 'message'>,
+): boolean {
+  const toolName = input.toolName.trim().toLowerCase();
+  if (!['exec_command', 'functions.exec', 'functions.exec_command'].includes(toolName)) return false;
+  return matchesPattern(NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN, input.message);
+}
+
 /**
  * Return the documented external class this report matches, or null. Null is
  * the safe default and is returned for anything uncertain.
@@ -789,10 +807,12 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN,
     'i',
   ).test(input.message);
+  const nativeShellCleanupRefusal = isExpectedNativeShellCleanupRefusal(input);
   // Keep other caller-class overrides available for genuine contract defects.
   const structuredAttested = input.directEvidence !== undefined &&
     !structuredResultShapeCallerDiagnostic &&
-    !processNamespacePermissionRefusal;
+    !processNamespacePermissionRefusal &&
+    !nativeShellCleanupRefusal;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   const deferredWrapperUnavailable = [input.errorCode, input.status]
     .some((value) => [
@@ -818,7 +838,8 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     // reached the named handler. Non-empty expected/actual prose cannot turn
     // that discovery report into a claimable server defect.
     direct: attested && !knownExternal && !deferredWrapperUnavailable &&
-      !expectedSelfAwaitRefusal && !processNamespacePermissionRefusal,
+      !expectedSelfAwaitRefusal && !processNamespacePermissionRefusal &&
+      !nativeShellCleanupRefusal,
     knownExternal,
   };
 }

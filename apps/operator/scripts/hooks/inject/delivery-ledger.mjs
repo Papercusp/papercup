@@ -146,7 +146,8 @@ export function codeIntelDelivery(owner, env, update, boundary = null) {
     }
     const previousTurn = state.turn;
     if (boundary) {
-      state = { turn: randomUUID(), chars: 0, subjects: boundary === 'compaction' ? [] : state.subjects };
+      state = { turn: randomUUID(), chars: 0, subjects: boundary === 'compaction' ? [] : state.subjects,
+        recentEdits: Array.isArray(state.recentEdits) ? state.recentEdits : [] };
     }
     const wanted = `${file}.${state.turn}.lock`;
     mkdirSync(wanted, { mode: 0o700 });

@@ -1646,6 +1646,60 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
     ]);
   });
 
+  it.each(['add', 'replace', 'remove'] as const)(
+    'keeps a replication-only %s visible in the shared diff and full-replacement review excerpt (EI-26146508253136257)',
+    (operation) => {
+      const input = fixture(3);
+      const rubric = input.rubrics.rows[0]!;
+      // Force the real excerpt path with an unchanged prefix, rather than a small
+      // patch that happens to show the omitted replication change in full.
+      rubric.criteria[0]!.method = 'An unchanged detailed procedure. '.repeat(120);
+      rubric.criteria[1]!.replication = operation === 'add' ? undefined : 'Original replication drill.';
+      const before = projectAcceptanceBarContractSnapshot(input);
+      const nextCriteria = rubric.criteria.map((criterion) => criterion.barKey === 'R-2'
+        ? { ...criterion, replication: operation === 'remove' ? undefined : 'Run the revised replication drill.' }
+        : criterion);
+      const candidate = buildAcceptanceBarAmendmentCandidate(
+        before,
+        nextCriteria,
+        new Map(before.bars.map((bar) => [bar.barKey, { planItemIds: bar.mappings.map((mapping) => mapping.planItemId) }])),
+        new Map(input.planItems.rows.map((item) => [item.itemId, item.status])),
+        {
+          rubricRevision: 3,
+          subjectPlanRevision: 8,
+          barSetHash: computeAcceptanceBarSetHash(nextCriteria),
+          barContract: { ...rubric.barContract!, subjectPlanRevision: 8 },
+        },
+      );
+      const diff = diffAcceptanceBarContractSnapshots(before, candidate, 'amend');
+      const approval = {
+        schemaVersion: 1,
+        kind: 'acceptance-bar-amendment-approval',
+        rubricRef: rubric.rubricId,
+        subjectPlan: rubric.subjectPlan!,
+        bars: [],
+      } as const;
+      const brief = buildAmendmentReviewBrief({
+        rubricRef: rubric.rubricId,
+        previewPostRef: 'thread-post:42',
+        preview: { approval: { ...approval, bars: [] }, changes: diff.changes },
+        patch: { criteria: nextCriteria },
+      });
+      const excerpt = JSON.parse(brief.split('```json\n')[1]!.split('\n```')[0]!);
+
+      expect(candidate.bars.map((bar) => bar.barHash)).toEqual(before.bars.map((bar) => bar.barHash));
+      expect(computeAcceptanceBarSetHash(nextCriteria)).toBe(rubric.barSetHash);
+      expect(diff).toMatchObject({ changed: true, requiresAmendment: false });
+      expect(diff.changes).toEqual([{ barKey: 'R-2', kinds: ['method-only'], fields: ['replication'] }]);
+      expect(brief).toContain('Changed BARs: R-2 (method-only: replication).');
+      expect(excerpt.changedCriteria).toEqual([JSON.parse(JSON.stringify(nextCriteria[1]))]);
+      expect(excerpt.omittedUnchangedBarKeys).toEqual(['R-1', 'R-3']);
+      expect(excerpt).not.toHaveProperty('criteria');
+      expect(brief).toContain('must not be submitted to rubrics:amend');
+      expect(brief).toContain(JSON.stringify(approval));
+    },
+  );
+
   it('reports changed requirement intent in the amendment candidate diff', () => {
     const input = fixture(1);
     const before = projectAcceptanceBarContractSnapshot(input);

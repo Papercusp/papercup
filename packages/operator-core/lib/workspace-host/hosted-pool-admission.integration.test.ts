@@ -9,7 +9,7 @@ import { Governor } from '../resource-governor/admission';
 import { PgAdmissionLedgerQueueStore } from '../resource-governor/admission-ledger-store';
 import { WorkItemAdmissionQueueDriver } from '../resource-governor/queue';
 import { allSessionsLiveResolver } from '../../test/_admission-ledger-fixture';
-import { hostedPoolAgentAdmissionGuard, createHostedPoolAgentReservations } from './hosted-agent-admission';
+import { hostedPoolAgentAdmissionGuard, createHostedPoolAgentReservations, retireHostedPoolAgentReservations } from './hosted-agent-admission';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 
 const h = vi.hoisted(() => ({ sql: null as any }));
@@ -25,7 +25,7 @@ vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { writeHostedEntitlementAuthority } = await import('../auth/hosted-entitlement-store');
-const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation, completeHostedPoolReuse } =
+const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation, recordHostedPoolActivity, completeHostedPoolReuse } =
   await import('./hosted-lifecycle-store');
 const { beginWorkspaceHostOperation, readWorkspaceHostDestroyTarget, upsertWorkspaceHostResourceCheckpoint,
   readWorkspaceHostResourceCheckpoints } = await import('./observability-store');
@@ -172,6 +172,158 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     return { store, driver, governor, admit };
   }
 
+  async function idleRequest(prefix = 'idle') {
+    const id = `${prefix}-${randomUUID()}`;
+    const binding = await agentBinding(fresh(), id);
+    await allowance(binding.organizationId, {
+      'pool.idle-stop-minutes': 5, 'pool.agents': 4, 'pool.pending-agents': 4,
+    });
+    const ws = binding.controlPlaneWorkspaceId;
+    const measuredAt = Date.now();
+    const o = observation({ workload: { activeCommands: 0, attachedViewers: 0,
+      connectorGeneration: binding.generation, observedAtMs: measuredAt } });
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET observed_state = 'running', pool_observation = ${JSON.stringify(o)}::jsonb
+      WHERE workspace_id = ${ws} AND id = ${binding.hostId}`;
+    await db.adminSql`UPDATE harness_shared.customer_workspaces
+      SET last_activity_at = ${new Date(measuredAt - 60 * 60_000).toISOString()}::timestamptz,
+          idle_stop_after_minutes = 1
+      WHERE workspace_id = ${ws} AND id = ${id}`;
+    const request: AdmitHostedLifecycleJobInput = { ...input(ws, id, binding.hostId),
+      pool: undefined, action: 'stop', idleStop: true, riskTier: 'low',
+      estimate: { cents: 0, currency: 'USD', source: 'test-catalog', evidenceRef: 'test://stop',
+        estimatedAt: new Date().toISOString() }, request: { hostId: binding.hostId, action: 'stop' } };
+    return { binding, ws, measuredAt, o, request };
+  }
+
+  it('idle-stop binds current authority, workload and host identity in its existing operation receipt', async () => {
+    const { ws, request, binding, measuredAt } = await idleRequest();
+    const receipt = await admitHostedLifecycleJob(request);
+    expect(receipt).toMatchObject({ action: 'stop', created: true, idleStop: {
+      schemaVersion: 1, idleStopAfterMinutes: 5, connectorGeneration: binding.generation,
+      hostGeneration: 1, controllerFence: 7, hostDesiredRevision: 1, workloadObservedAtMs: measuredAt,
+    } });
+    expect(receipt.idleStop?.authorityRevision).toBe(grants.get(binding.organizationId)!.revision);
+    expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it.each([undefined, 0])('idle-stop holds without an enabled canonical idle quota (%s), ignoring directory defaults', async minutes => {
+    const { request, binding, ws } = await idleRequest();
+    await allowance(binding.organizationId, minutes === undefined ? {} : { 'pool.idle-stop-minutes': minutes });
+    await expect(admitHostedLifecycleJob(request)).rejects.toThrow('hosted_pool_idle_policy_disabled');
+    expect(await operations(ws)).toHaveLength(0);
+  });
+
+  it.each([
+    ['commands', { activeCommands: 1 }], ['unknown', { activeCommands: null }],
+    ['viewer', { attachedViewers: 1 }], ['stale', { observedAtMs: Date.now() - 5 * 60_000 }],
+    ['future', { observedAtMs: Date.now() + 10 * 60_000 }], ['connector', { connectorGeneration: 2 }],
+  ])('idle-stop holds for %s workload evidence', async (_name, patch) => {
+    const { request, ws, o } = await idleRequest();
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET pool_observation = ${JSON.stringify({ ...o, workload: { ...o.workload, ...patch } })}::jsonb
+      WHERE workspace_id = ${ws} AND id = ${request.hostId}`;
+    await expect(admitHostedLifecycleJob(request)).rejects.toThrow('hosted_pool_idle_');
+    expect(await operations(ws)).toHaveLength(0);
+  });
+
+  it.each(['missing', 'generation', 'revision'])('idle-stop holds for %s host observation', async reason => {
+    const { request, ws, o } = await idleRequest();
+    const next = reason === 'missing' ? { ...o, workload: undefined } : reason === 'generation'
+      ? { ...o, generation: 2 } : { ...o, desiredRevision: 2 };
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET pool_observation = ${JSON.stringify(next)}::jsonb
+      WHERE workspace_id = ${ws} AND id = ${request.hostId}`;
+    await expect(admitHostedLifecycleJob(request)).rejects.toThrow('hosted_pool_idle_');
+  });
+
+  it('idle-stop rechecks rotated connector and expired authority', async () => {
+    const rotated = await idleRequest('rotated');
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors SET generation = 2
+      WHERE control_workspace_id = ${rotated.ws} AND customer_workspace_id = ${rotated.binding.customerWorkspaceId}`;
+    await expect(admitHostedLifecycleJob(rotated.request)).rejects.toThrow('hosted_pool_idle_');
+    const expired = await idleRequest('expired');
+    await allowance(expired.binding.organizationId, { 'pool.idle-stop-minutes': 5 }, 1000000, '2026-01-02T00:00:00Z');
+    await expect(admitHostedLifecycleJob(expired.request)).rejects.toThrow('hosted_pool_idle_entitlement_');
+  });
+
+  it.each(['reserve', 'start'] as const)('idle-stop counts canonical %s receipts until process settlement', async phase => {
+    const { binding, request } = await idleRequest();
+    const call = createHostedPoolAgentReservations(binding, db.adminSql as any);
+    await call('reserve', 'busy');
+    if (phase === 'start') await call('start', 'busy');
+    await expect(admitHostedLifecycleJob(request)).rejects.toThrow('hosted_pool_idle_active_work');
+    await call('finish', 'busy');
+    await expect(admitHostedLifecycleJob(request)).resolves.toMatchObject({ action: 'stop' });
+  });
+
+  it('idle-stop serializes with agent admission: exactly one side may start', async () => {
+    const { binding, request } = await idleRequest();
+    const result = await Promise.allSettled([admitHostedLifecycleJob(request), agents(binding).admit('racer')]);
+    expect(result.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(result.filter(r => r.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('idle-stop rejects later native starts until its operation settles', async () => {
+    const { binding, request, ws } = await idleRequest();
+    await admitHostedLifecycleJob(request);
+    await expect(agents(binding).admit('too-late')).rejects.toThrow('hosted_pool_agent_host_draining');
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations SET status = 'failed'
+      WHERE workspace_id = ${ws} AND id = ${request.operationId!}`;
+    await expect(agents(binding).admit('after-refused-stop')).resolves.toMatchObject({ kind: 'queued' });
+  });
+
+  it('fences native starts for an operator-requested stop as well as an idle stop', async () => {
+    const ws = fresh();
+    const binding = await agentBinding(ws, 'manual-stop');
+    await allowance(binding.organizationId, { 'pool.agents': 1 });
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_operations
+      (workspace_id, id, host_id, action, status, customer_workspace_id, organization_id)
+      VALUES (${ws}, 'manual-stop-operation', ${binding.hostId}, 'stop', 'queued',
+        ${binding.customerWorkspaceId}, ${binding.organizationId})`;
+    await expect(agents(binding).admit('after-manual-stop')).rejects.toThrow('hosted_pool_agent_host_draining');
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations SET status = 'failed'
+      WHERE workspace_id = ${ws} AND id = 'manual-stop-operation'`;
+    await expect(agents(binding).admit('after-refused-manual-stop')).resolves.toMatchObject({ kind: 'queued' });
+  });
+
+  it('idle-stop cannot relabel a start or a spending request', async () => {
+    const { request } = await idleRequest();
+    await expect(admitHostedLifecycleJob({ ...request, action: 'start' })).rejects.toThrow('hosted_pool_idle_request_invalid');
+    await expect(admitHostedLifecycleJob({ ...request, estimate: { ...request.estimate, cents: 1 } }))
+      .rejects.toThrow('hosted_pool_idle_request_invalid');
+  });
+
+  it('persists only current generation workload and advances activity only for measured work', async () => {
+    const raw = await agentBinding(fresh(), 'activity');
+    const binding = { ...raw, hosting: 'papercusp' as const };
+    const ws = binding.controlPlaneWorkspaceId;
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'running',
+      pool_observation = ${JSON.stringify(observation())}::jsonb
+      WHERE workspace_id = ${ws} AND id = ${binding.hostId}`;
+    const start = Date.now();
+    const idle = { activeCommands: 0, attachedViewers: 0 };
+    expect(await recordHostedPoolActivity(binding, idle, new Date(start))).toBe(true);
+    expect(await recordHostedPoolActivity(binding, idle, new Date(start + 100))).toBe(true);
+    expect(await recordHostedPoolActivity(binding, { ...idle, activeCommands: null }, new Date(start + 200))).toBe(true);
+    const [quiet] = await db.adminSql`SELECT last_activity_at FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${ws} AND id = 'activity'`;
+    expect(new Date(quiet.last_activity_at).getTime()).toBe(start);
+    expect(await recordHostedPoolActivity(binding, { ...idle, activeCommands: 1 }, new Date(start + 300))).toBe(true);
+    expect(await recordHostedPoolActivity(binding, idle, new Date(start + 100))).toBe(false);
+    const [observed] = await db.adminSql`SELECT host.pool_observation, customer.last_activity_at
+      FROM harness_shared.workspace_hosts host JOIN harness_shared.customer_workspaces customer
+        ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+      WHERE host.workspace_id = ${ws} AND host.id = ${binding.hostId}`;
+    expect(observed.pool_observation.workload).toMatchObject({ activeCommands: 1, connectorGeneration: 1, observedAtMs: start + 300 });
+    expect(new Date(observed.last_activity_at).getTime()).toBe(start + 300);
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors SET generation = 2
+      WHERE control_workspace_id = ${ws} AND customer_workspace_id = 'activity'`;
+    expect(await recordHostedPoolActivity(binding, idle, new Date(start + 400))).toBe(false);
+    expect(await recordHostedPoolActivity({ ...binding, hosting: 'byoc' }, idle)).toBe(false);
+    expect(await recordHostedPoolActivity({ ...binding, generation: 2 }, { ...idle, activeCommands: -1 })).toBe(false);
+  });
+
   it('connector process reservations retain running quota across independent handlers and release exactly their own key', async () => {
     const binding = await agentBinding(fresh(), 'remote-process');
     await allowance(binding.organizationId, { 'pool.agents': 1, 'pool.pending-agents': 1 });
@@ -200,6 +352,37 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     const [count] = await db.adminSql`SELECT count(*)::int AS n FROM harness_shared.resource_governor_admissions
       WHERE workspace_id = ${ws}`;
     expect(count.n).toBe(1);
+  });
+
+  it('releases only the absent host receipts, with replay-safe cancellation and no guessed process death', async () => {
+    const ws = fresh();
+    const binding = await agentBinding(ws, 'retire-agents');
+    const other = await agentBinding(ws, 'keep-agents');
+    await allowance(binding.organizationId, { 'pool.agents': 2 });
+    await allowance(other.organizationId, { 'pool.agents': 1 });
+    const call = createHostedPoolAgentReservations(binding, db.adminSql as any);
+    const running = await call('reserve', 'running');
+    await call('start', 'running');
+    const queued = await call('reserve', 'queued');
+    const kept = await createHostedPoolAgentReservations(other, db.adminSql as any)('reserve', 'other-host');
+    const retire = (workspaceId = ws) => retireHostedPoolAgentReservations({
+      controlPlaneWorkspaceId: workspaceId, hostId: binding.hostId }, db.adminSql as any);
+    await expect(retire()).rejects.toThrow('host_not_absent');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_state = 'absent'
+      WHERE workspace_id = ${ws} AND id = ${binding.hostId}`;
+    await expect(retire()).rejects.toThrow('host_not_absent');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'absent'
+      WHERE workspace_id = ${ws} AND id = ${binding.hostId}`;
+    await expect(retire('foreign-workspace')).rejects.toThrow('host_not_absent');
+    expect(await retire()).toBe(2);
+    expect(await retire()).toBe(0);
+    const records = await db.adminSql`SELECT receipt_id, state, record FROM harness_shared.resource_governor_admissions
+      WHERE workspace_id = ${ws} ORDER BY receipt_id`;
+    for (const receipt of [running, queued]) {
+      expect(records.find(row => row.receipt_id === receipt.receiptId)).toMatchObject({ state: 'cancelled',
+        record: { state: 'cancelled', cancellationReason: 'provider-confirmed host absence' } });
+    }
+    expect(records.find(row => row.receipt_id === kept.receiptId)).toMatchObject({ state: 'queued' });
   });
 
   it('agent reservations enforce the boot queue cap, count running once, and release on cancellation', async () => {
@@ -587,6 +770,134 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
       .rejects.toThrow('tenant concurrency limit reached');
   });
 
+  it('protects paid warm capacity from an earlier burst customer and records server priority', async () => {
+    const ws = fresh();
+    await customer(ws, 'burst');
+    await customer(ws, 'paid');
+    await allowance(organization(ws, 'paid'), { 'pool.reserved-hosts': 1 });
+    await host(ws, 'warm');
+    const forged = input(ws, 'burst');
+    Object.assign(forged.pool!, { guaranteed: true, reservedForOtherCustomers: 0, olderBurstWaiters: 0 });
+    await expect(admitHostedLifecycleJob(forged)).rejects.toThrow('pool capacity reserved or exhausted');
+    expect(await operations(ws)).toHaveLength(0);
+    const paid = input(ws, 'paid');
+    const receipt = await admitHostedLifecycleJob(paid);
+    expect(receipt.resourceAdmission).toMatchObject({ priority: { guaranteed: true,
+      freeHosts: 1, reservedForOtherCustomers: 0, olderBurstWaiters: 1, requestedWarmHosts: 1 } });
+    expect(receipt.placement).toMatchObject({ kind: 'assign-warm', hostId: 'warm' });
+    expect(await admitHostedLifecycleJob(paid)).toEqual({ ...receipt, created: false });
+  });
+
+  it('orders unreserved warm demand by persisted customer creation, independent of arrival at admission', async () => {
+    const ws = fresh();
+    await customer(ws, 'older');
+    await customer(ws, 'newer');
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET created_at = now() - interval '1 hour'
+      WHERE workspace_id = ${ws} AND id = 'older'`;
+    await host(ws, 'warm');
+    await expect(admitHostedLifecycleJob(input(ws, 'newer'))).rejects.toThrow('older pool burst requests have priority');
+    expect(await operations(ws)).toHaveLength(0);
+    await expect(admitHostedLifecycleJob(input(ws, 'older'))).resolves.toMatchObject({
+      placement: { kind: 'assign-warm', hostId: 'warm' },
+      resourceAdmission: { priority: { guaranteed: false, olderBurstWaiters: 0 } },
+    });
+  });
+
+  it('releases expired paid priority and applies downgrade without a phantom burst waiter', async () => {
+    const ws = fresh();
+    await customer(ws, 'expired');
+    await customer(ws, 'newer');
+    await allowance(organization(ws, 'expired'), { 'pool.reserved-hosts': 1 }, 1000000, '2026-01-02T00:00:00Z');
+    await host(ws, 'warm');
+    await expect(admitHostedLifecycleJob(input(ws, 'newer'))).resolves.toMatchObject({
+      placement: { kind: 'assign-warm' }, resourceAdmission: { priority: { reservedForOtherCustomers: 0, olderBurstWaiters: 0 } },
+    });
+    const next = fresh();
+    await customer(next, 'burst');
+    await customer(next, 'paid');
+    const paidOrg = organization(next, 'paid');
+    await allowance(paidOrg, { 'pool.reserved-hosts': 1 });
+    await host(next, 'warm');
+    await expect(admitHostedLifecycleJob(input(next, 'burst'))).rejects.toThrow('pool capacity reserved or exhausted');
+    await allowance(paidOrg, { 'pool.reserved-hosts': 0 });
+    await expect(admitHostedLifecycleJob(input(next, 'burst'))).resolves.toMatchObject({
+      resourceAdmission: { priority: { guaranteed: false, reservedForOtherCustomers: 0 } },
+    });
+  });
+
+  it('consumes paid reservation once per pending host and ignores failed attempts as FIFO demand', async () => {
+    const ws = fresh();
+    await customer(ws, 'paid');
+    await customer(ws, 'burst');
+    await allowance(organization(ws, 'paid'), { 'pool.reserved-hosts': 1 });
+    await host(ws, 'warm-a');
+    await host(ws, 'warm-b');
+    await admitHostedLifecycleJob(input(ws, 'paid'));
+    await expect(admitHostedLifecycleJob(input(ws, 'burst'))).resolves.toMatchObject({
+      resourceAdmission: { priority: { freeHosts: 1, reservedForOtherCustomers: 0, olderBurstWaiters: 0 } },
+    });
+    const failed = fresh();
+    await customer(failed, 'failed');
+    await customer(failed, 'newer');
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_operations
+      (workspace_id, id, host_id, action, status, organization_id, customer_workspace_id, provider_target)
+      VALUES (${failed}, 'old-failure', 'failed-placeholder', 'provision', 'failed',
+        ${organization(failed, 'failed')}, 'failed', 'gcp')`;
+    await host(failed, 'warm');
+    await expect(admitHostedLifecycleJob(input(failed, 'newer'))).resolves.toMatchObject({
+      resourceAdmission: { priority: { olderBurstWaiters: 0 } },
+    });
+  });
+
+  it('admits one of two paid guarantees when the compatible warm pool is short', async () => {
+    const ws = fresh();
+    await customer(ws, 'paid-a');
+    await customer(ws, 'paid-b');
+    await allowance(organization(ws, 'paid-a'), { 'pool.reserved-hosts': 1 });
+    await allowance(organization(ws, 'paid-b'), { 'pool.reserved-hosts': 1 });
+    await host(ws, 'warm');
+    await expect(admitHostedLifecycleJob(input(ws, 'paid-b'))).resolves.toMatchObject({
+      placement: { kind: 'assign-warm' }, resourceAdmission: { priority: { guaranteed: true, reservedForOtherCustomers: 1 } },
+    });
+    await expect(admitHostedLifecycleJob(input(ws, 'paid-a'))).rejects.toBeInstanceOf(HostedLifecyclePlacementError);
+    expect(await operations(ws)).toHaveLength(1);
+  });
+
+  it('provisions against resource allowance without requiring or consuming a warm VM', async () => {
+    const ws = fresh();
+    await customer(ws, 'tenant');
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'tenant'), action: 'provision' })).resolves.toMatchObject({
+      placement: { kind: 'provision' }, resourceAdmission: { priority: { freeHosts: 0, requestedWarmHosts: 0 } },
+    });
+  });
+
+  it('excludes exhausted allowances and incompatible pool placeholders from priority', async () => {
+    const ws = fresh();
+    await customer(ws, 'exhausted');
+    await customer(ws, 'other-pool');
+    await customer(ws, 'eligible');
+    await allowance(organization(ws, 'exhausted'), { 'pool.hosts': 0, 'pool.reserved-hosts': 1 });
+    await allowance(organization(ws, 'other-pool'), { 'pool.reserved-hosts': 1 });
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET desired_spec = jsonb_set(desired_spec, '{zone}', '"us-central1-b"'::jsonb)
+      WHERE workspace_id = ${ws} AND id = 'other-pool-placeholder'`;
+    await host(ws, 'warm');
+    await expect(admitHostedLifecycleJob(input(ws, 'eligible'))).resolves.toMatchObject({
+      resourceAdmission: { priority: { reservedForOtherCustomers: 0, olderBurstWaiters: 0 } },
+    });
+  });
+
+  it('uses stable customer id ordering when demand timestamps are equal', async () => {
+    const ws = fresh();
+    await customer(ws, 'a');
+    await customer(ws, 'b');
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET created_at = '2026-01-02T00:00:00Z'
+      WHERE workspace_id = ${ws}`;
+    await host(ws, 'warm');
+    await expect(admitHostedLifecycleJob(input(ws, 'b'))).rejects.toThrow('older pool burst requests have priority');
+    await expect(admitHostedLifecycleJob(input(ws, 'a'))).resolves.toMatchObject({ placement: { kind: 'assign-warm' } });
+  });
+
   it('lets exactly one of two customers reserve the last warm VM', async () => {
     const ws = fresh();
     await customer(ws, 'a');
@@ -595,8 +906,11 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     const results = await Promise.allSettled([admitHostedLifecycleJob(input(ws, 'a')), admitHostedLifecycleJob(input(ws, 'b'))]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     const refused = results.find((result) => result.status === 'rejected') as PromiseRejectedResult;
-    expect(refused.reason).toBeInstanceOf(HostedLifecyclePlacementError);
-    expect(refused.reason.placement.kind).toBe('queue');
+    if (refused.reason instanceof HostedLifecyclePlacementError) {
+      expect(refused.reason.placement.kind).toBe('queue');
+    } else {
+      expect(refused.reason.message).toContain('older pool burst requests have priority');
+    }
     expect(await operations(ws)).toHaveLength(1);
   });
 

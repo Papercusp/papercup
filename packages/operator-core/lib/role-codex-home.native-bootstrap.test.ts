@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from './psu-launch-log.mjs';
+import { codexSessionFrameObserved } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 
 // Use the maintained per-user install precedence. The test worker's PATH can
 // prefer a broken system wrapper over the Codex PSU actually launches.
@@ -91,7 +92,7 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
 
 describe('native gateway account bootstrap', () => {
   it.runIf(Boolean(codex) && process.platform === 'linux').each([400, 200])(
-    'binds a fresh native session after local catalog status %s without provider forwarding', async status => {
+    'keeps a fresh TUI alive without a pre-submission rollout after local catalog status %s', async status => {
       const home = mkdtempSync(join(tmpdir(), 'codex-native-catalog-'));
       const requests: string[] = [];
       const server = createServer((req, res) => {
@@ -115,7 +116,13 @@ describe('native gateway account bootstrap', () => {
         console.info('PRIVATE_NATIVE_CATALOG_PROBE ' + diagnostic);
         expect(requests.some(path => path.includes('/models')), diagnostic).toBe(true);
         expect(requests.some(path => path.includes('/responses')), diagnostic).toBe(false);
-        expect(sessions.some(path => String(path).endsWith('.jsonl')), diagnostic).toBe(true);
+        // A fresh Codex thread creates its rollout only after the first prompt.
+        // Both catalog outcomes must leave it alive: waiting for this rollout
+        // before submitting kickoff is the launcher deadlock this guards.
+        expect(result.exitedBeforeBudget, diagnostic).toBe(false);
+        expect(sessions.some(path => String(path).endsWith('.jsonl')), diagnostic).toBe(false);
+        expect(codexSessionFrameObserved(result.output, { dims: { cols: 120, rows: 30 } }),
+          'The maintained launcher must recognize the real configured composer: ' + diagnostic).toBe(true);
       } finally {
         server.closeAllConnections();
         await new Promise<void>(done => server.close(() => done()));

@@ -201,6 +201,69 @@ describe('plans:start write receipt recovery', () => {
   });
 });
 
+describe('plans:bind-spec-evidence target refusal recovery', () => {
+  const refusal = (index: number) => {
+    const target = 'PARITY-P003-' + index;
+    const runId = 21257392 + index;
+    return {
+      ok: false,
+      slug: 'cloud-portal-desktop-parity-closure-2026-10-09',
+      error: 'mutation_target_rejected',
+      clause: target + '@1',
+      targeted: null,
+      acceptedTargets: [target],
+      reason: target + '@1: this mutation binding carries no adequacy.targeted; accepted target: ' + target + '.',
+      correctedCall: {
+        tool: 'plans:bind-spec-evidence',
+        args: {
+          harness: 'papercusp',
+          slug: 'cloud-portal-desktop-parity-closure-2026-10-09',
+          items: [{
+            workItemId: 'WI-10007845',
+            specId: target,
+            specRevision: 1,
+            fromTestRun: runId,
+            details: { adequacy: { targeted: target } },
+          }],
+        },
+      },
+      derivedFromTestRun: { testRunId: runId, outputTail: 'D'.repeat(5_000) },
+    };
+  };
+
+  it.each([
+    { toolName: 'plans:bind-spec-evidence' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'plans:bind-spec-evidence' },
+  ])('keeps the target correction inline through $toolName', (route) => {
+    const source = {
+      ok: false,
+      counts: { ok: 0, failed: 4 },
+      results: [1, 2, 3, 4].map(refusal),
+    };
+    const out = applyResultDoor(
+      { content: [{ type: 'text', text: JSON.stringify(source) }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(out) as any;
+
+    expect(body._projection.truncated).toBe(true);
+    expect(body.results).toHaveLength(4);
+    for (const row of body.results) {
+      expect(row).toMatchObject({
+        ok: false,
+        error: 'mutation_target_rejected',
+        targeted: null,
+        acceptedTargets: expect.any(Array),
+        reason: expect.stringContaining('accepted target'),
+        correctedCall: { tool: 'plans:bind-spec-evidence', args: { items: expect.any(Array) } },
+      });
+    }
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+    const payload = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+});
+
 /** The single spill file written under <scratchRoot>/<ws>/<tool>/<runId>/. */
 function readSpill(ws: string, tool: string, runId: string): string {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, ws, tool, runId);

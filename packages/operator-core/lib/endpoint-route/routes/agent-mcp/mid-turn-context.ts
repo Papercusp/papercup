@@ -1043,11 +1043,7 @@ const midTurnContext = defineTool({
       /** Native hook response wall, shared with both retrieval legs. */
       wallMs?: number;
       /** Bounded, caller-measured P-018 attribution; never inferred here. */
-      incidentAttribution?: {
-        status: 'measured' | 'unknown';
-        changedSymbols?: string[];
-        workItems?: { id: string; state: string; title?: string; paths: string[] }[];
-      };
+      incidentAttribution?: import('../../../code-intelligence/push-channel').IncidentAttribution;
     };
     try {
       body = (await req.json()) as typeof body;

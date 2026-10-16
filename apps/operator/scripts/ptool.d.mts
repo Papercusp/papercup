@@ -483,6 +483,14 @@ export function formatToolCatalogFailure(requestedToolName: any, error: any): st
  * arguments still need the catalog's input schema.
  */
 export function canDispatchWithoutCatalog(toolName: any, inputKind: any): boolean;
+/**
+ * A complete legacy tools/list can still omit the serving-generation marker.
+ * Scripted calls already carry their exact arguments, so they can use the
+ * same catalog-independent dispatch path as a tools/list transport failure.
+ * Interactive calls must retain the catalog gate because ptool still needs
+ * the input schema to collect arguments.
+ */
+export function canBypassMissingServingGeneration(toolName: any, inputKind: any, error: any): boolean;
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName: any, error: any): string;

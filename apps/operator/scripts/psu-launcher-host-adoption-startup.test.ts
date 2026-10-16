@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { main } from './psu-launcher.mjs';
+import { main, usePtyHost } from './psu-launcher.mjs';
 import {
   normalizeGcpIapProfile,
   PSU_CONNECTION_STORE_VERSION,
@@ -49,6 +49,23 @@ describe('guarded host adoption before the connection picker', () => {
       expect.objectContaining({ ownerId: null, onReject: expect.any(Function) }));
     expect(launchHandoff).toHaveBeenCalledExactlyOnceWith(handoff);
     expect(connectionFrontController).not.toHaveBeenCalled();
+  });
+
+  it('restores --headless before launching a legacy handoff without its posture env', async () => {
+    bareLauncher('1');
+    process.argv.push('--headless');
+    vi.stubEnv('PAPERCUSP_PSU_HEADLESS', undefined);
+    vi.stubEnv('PAPERCUSP_PSU_NO_PTY', undefined);
+    vi.stubEnv('PAPERCUSP_PSU_PTY', undefined);
+    const handoff = { ownerId: 'su-existing', mode: 'carry-respawn', childEnv: {} };
+    const launchHandoff = vi.fn(async () => {
+      expect(process.env.PAPERCUSP_PSU_HEADLESS).toBe('1');
+      expect(usePtyHost({ env: process.env, stdin: { isTTY: false }, stdout: { isTTY: false } })).toBe(true);
+    });
+
+    await main({ readHandoff: () => handoff, launchHandoff });
+
+    expect(launchHandoff).toHaveBeenCalledExactlyOnceWith(handoff);
   });
 
   it('keeps an ordinary first launch on the connection route without scanning handoffs', async () => {

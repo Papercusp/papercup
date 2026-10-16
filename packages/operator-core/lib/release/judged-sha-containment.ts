@@ -13,7 +13,9 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 export function integrationBranch(): string {
   return process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging';

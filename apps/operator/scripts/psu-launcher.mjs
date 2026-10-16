@@ -48,6 +48,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, delimiter, basename, relative, isAbsolute } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
+import { launchWithHostedAgentSlot } from "@papercusp/operator-core/lib/workspace-host/hosted-agent-admission-client";
 
 /** Keep the packaged adapter relocatable while preserving source-checkout development. */
 export function resolveNativeMcpAssets(moduleUrl = import.meta.url, available = existsSync) {
@@ -3137,14 +3138,44 @@ export async function resolveDirectTrackedResumeSession(
       `/api/adv/sessions/resumable?agentId=${encodeURIComponent(wanted)}`,
     );
     const exact = result?.exact;
-    // Older operators predate the `exact` response marker but still return the
-    // resumable rows. Accept a row only when its globally-unique coord owner is
-    // an exact match; this preserves the identity guard while allowing a newer
-    // launcher to resume through a lagging :3070 build.
+    // Older operators predate agentId lookup and return the bounded picker
+    // window without `exact`. A matching historical row in that window is
+    // not proof of the latest registration, so resolve the owner independently.
     if (!("exact" in (result ?? {}))) {
-      return (result?.sessions ?? [])
-        .filter((session) => session?.coordOwnerId === wanted && session?.agent)
-        .sort((a, b) => Number(b.id) - Number(a.id))[0] ?? null;
+      // A legacy operator ignores agentId and returns its bounded picker
+      // window. The existing per-agent dossier resolves the latest native
+      // handle independently of that window. Its store path is only a row-id
+      // hint: the exact server read below must still prove owner and backend.
+      const detail = await apiImpl(`/api/adv/roster/agent?owner=${encodeURIComponent(wanted)}`);
+      const handle = detail?.nativeSession;
+      if (detail?.ownerId !== wanted || handle?.ownerId !== wanted ||
+          handle?.source !== "adv_sessions") return null;
+      let path = null;
+      let rowId = null;
+      if (handle.backend === "claude" && UUID_RE.test(handle.sessionId ?? "")) {
+        path = `/api/adv/sessions/resumable?sessionId=${encodeURIComponent(handle.sessionId)}`;
+      } else {
+        const storeKey = handle.backend === "codex" && typeof handle.codexHome === "string"
+          ? basename(handle.codexHome)
+          : handle.backend === "omp" && typeof handle.agentHome === "string"
+            ? basename(dirname(handle.agentHome)) : "";
+        const match = /^session-(\d+)$/.exec(storeKey);
+        rowId = match ? Number(match[1]) : null;
+        if (Number.isSafeInteger(rowId) && rowId > 0)
+          path = `/api/adv/sessions/resumable?id=${rowId}`;
+      }
+      if (!path) throw new Error(
+        `psu: the operator cannot resolve the tracked row for agent "${wanted}"; ` +
+        "upgrade the operator to support exact agent-ID resume, or use the numeric psu session ID.",
+      );
+      const read = await apiImpl(path);
+      return (read?.sessions ?? []).find((session) =>
+        session.coordOwnerId === wanted && session.agent === handle.backend &&
+        (rowId != null ? Number(session.id) === rowId :
+          read?.exact?.ownerId === wanted &&
+          read?.exact?.requestedSessionId === handle.sessionId &&
+          Number(session.id) === read.exact.id),
+      ) ?? null;
     }
     if (exact?.requestedAgentId !== wanted) return null;
     return (result.sessions ?? []).find((session) =>
@@ -11886,6 +11917,9 @@ export function sanitizeInheritedEnv(env) {
   const out = stripRecoveryMarkers(env);
   delete out.PAPERCUSP_ORIGINAL_CODEX_ROUTING;
   delete out[SCOPED_INFERENCE_GATEWAY_ENV];
+  // Only this host's explicit code-adoption envelope may carry its slot. A
+  // newly launched session must not inherit its parent's native reservation.
+  delete out.PAPERCUSP_HOSTED_NATIVE_SLOT;
   for (const key of Object.keys(out)) {
     if (
       key === "INIT_CWD" ||
@@ -12753,6 +12787,7 @@ export function runWrapper(options) {
       `psu: session model ${launchModelFix.from ?? "(default)"} → ${launchModelFix.to} (1M default, WI-10006049)\n`,
     );
   }
+  const launchNative = () => {
   const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
   args = prepareCodexGatewayLaunch(env, args);
   if (env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined && !managedPtyEnabled) {
@@ -13046,6 +13081,33 @@ export function runWrapper(options) {
     reportSessionEndedImpl,
     onSpawn,
     onSpawnFailure: reportPreSpawnFailure,
+  });
+  };
+  if (!env.PAPERCUSP_HOSTED_CONNECTOR_BEARER && !env.PAPERCUSP_HOSTED_CONTROL_PLANE_URL) {
+    return launchNative();
+  }
+  void launchWithHostedAgentSlot(env, (finish) => {
+    let nativeSpawned = false;
+    const reportSpawned = onSpawn;
+    onSpawn = () => { nativeSpawned = true; return reportSpawned(); };
+    const reportEnded = reportSessionEndedImpl;
+    reportSessionEndedImpl = async (...details) => {
+      try { return await reportEnded(...details); } finally {
+        // A bridge failure after spawn is not an exit witness. Keep its charge
+        // until the native host reports a real end or host retirement proves it.
+        if (!nativeSpawned || details[2]?.launchFailed !== true) await finish();
+      }
+    };
+    const reportFailed = onSpawnFailure;
+    if (reportFailed) onSpawnFailure = async () => {
+      try { return await reportFailed(); } finally { await finish(); }
+    };
+    launchNative();
+  }).catch((error) => {
+    if (supervisorBeat) clearInterval(supervisorBeat);
+    process.stderr.write(`psu: hosted native-agent admission failed: ${error?.message ?? error}\n`);
+    void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
+    process.exitCode = 1;
   });
 }
 
@@ -17750,6 +17812,10 @@ export async function main({
     }
   }
   if (hostHandoff) {
+    // Old hosts omitted headless posture from childEnv. The shim still replays
+    // the original --headless flag; restore it before this fast path skips the
+    // ordinary launch setup, or the detached successor loses its injectable PTY.
+    if (parseArgs(rawArgv).headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
     await launchHandoff(hostHandoff);
     return;
   }

@@ -13,7 +13,9 @@ import { promisify } from 'node:util';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const exec = promisify(execFile);
+let execMemo: typeof execFile.__promisify__ | null = null;
+const exec = ((...args: unknown[]) =>
+  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 let phase = 'inputs';
 const SOURCE_PATHS = ['apps/operator/lib/mcp-proxy/proxy.ts', 'apps/operator/lib/mcp-proxy/budgets.mjs',
   'packages/operator-core/lib/agent-tools/work_items/checkpoint.ts',

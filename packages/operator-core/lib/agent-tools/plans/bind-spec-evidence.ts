@@ -392,6 +392,8 @@ type ResolvedBinding =
       ok: true;
       binding: z.infer<typeof bindingSchema>;
       derived?: Record<string, unknown>;
+      /** Original small request item for a concise target correction. */
+      correctionInput?: TestRunBindingInput;
       /** A clean commit-stamped run: measure its binding at the commit that ran (D-001 (b)). */
       asCommitted?: { commitSha: string; repoPrefix: string | null };
     }
@@ -633,6 +635,7 @@ export async function mutationTargetingRefusal(
   binding: z.infer<typeof bindingSchema>,
   scope: { planSlug: string; harnessSlug: string | undefined; slugArg?: string; harnessArg?: string },
   loadClauses: typeof listSpecClauses = listSpecClauses,
+  correctionInput?: TestRunBindingInput,
 ): Promise<MutationTargetRefusal | null> {
   if ((binding.evidenceKind !== 'mutation' && binding.evidenceKind !== 'counterexample') || !binding.specId) return null;
   const [clause] = await loadClauses({
@@ -652,6 +655,39 @@ export async function mutationTargetingRefusal(
   const label = `${clause.specId}@${clause.revision}`;
   const given =
     adequacy.targeted === undefined ? 'no adequacy.targeted' : `adequacy.targeted = ${JSON.stringify(adequacy.targeted)}`;
+  const correctedCall = correctionInput
+    ? (() => {
+        const priorAdequacy = correctionInput.details?.adequacy;
+        const correctionAdequacy =
+          priorAdequacy && typeof priorAdequacy === 'object' && !Array.isArray(priorAdequacy)
+            ? (priorAdequacy as Record<string, unknown>)
+            : {};
+        return {
+          tool: 'plans:bind-spec-evidence' as const,
+          args: {
+            ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
+            ...(scope.slugArg ? { slug: scope.slugArg } : {}),
+            items: [{
+              ...correctionInput,
+              details: {
+                ...(correctionInput.details ?? {}),
+                adequacy: { ...correctionAdequacy, targeted: acceptedTargets[0] },
+              },
+            }],
+          },
+        };
+      })()
+    : {
+        tool: 'plans:bind-spec-evidence' as const,
+        args: {
+          ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
+          ...(scope.slugArg ? { slug: scope.slugArg } : {}),
+          binding: {
+            ...binding,
+            details: { ...(binding.details ?? {}), adequacy: { ...adequacy, targeted: acceptedTargets[0] } },
+          },
+        },
+      };
   return {
     clause: label,
     targeted: adequacy.targeted ?? null,
@@ -660,17 +696,7 @@ export async function mutationTargetingRefusal(
       `${label}: this ${binding.evidenceKind} binding carries ${given}, which plans:evaluate-spec-test-adequacy ` +
       `would reject for falsifiability — it requires ${requirement}; a boolean or sibling-case target never ` +
       `qualifies. Accepted: ${acceptedTargets.join(', ')}.`,
-    correctedCall: {
-      tool: 'plans:bind-spec-evidence',
-      args: {
-        ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
-        ...(scope.slugArg ? { slug: scope.slugArg } : {}),
-        binding: {
-          ...binding,
-          details: { ...(binding.details ?? {}), adequacy: { ...adequacy, targeted: acceptedTargets[0] } },
-        },
-      },
-    },
+    correctedCall,
   };
 }
 
@@ -1068,6 +1094,7 @@ export async function bindSpecEvidenceItems(
             return {
               ok: true,
               binding: parsed.binding,
+              correctionInput: item,
               ...(asCommitted ? { asCommitted } : {}),
               derived: {
                 testRunId: expansion.binding.testRunId,
@@ -1133,7 +1160,7 @@ export async function bindSpecEvidenceItems(
                 harnessSlug,
                 ...(args.slug ? { slugArg: args.slug } : {}),
                 ...(args.harness ? { harnessArg: args.harness } : {}),
-              }),
+              }, undefined, entry.correctionInput),
             );
             if (targetingRefusal) {
               return {

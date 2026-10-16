@@ -311,14 +311,18 @@ export async function consequenceFor(filePath, deps = {}) {
     ...(behavioural.invokedInjectedMembers?.(before, after, relPath) ?? []),
     ...(relPath.endsWith('/package.json') || relPath === 'package.json' ? behavioural.diffPackageScriptValues(before, after) : []),
   ];
-  if (!changes.length && !behaviour.length) return null;
+  const symbols = deps.includeSourceChanges ? required.diffExportedSymbolText(before, after, relPath).slice(0, 12) : [];
+  if (!changes.length && !behaviour.length && !symbols.length) return null;
   const checks = [];
   // JSON quoting is valid shell quoting for these validated paths except expansion
   // characters; refuse those rather than suggest a shell-active filename.
   if (!/^[A-Za-z0-9_./@+-]+$/.test(relPath)) return null;
   if (changes.length) checks.push(`node scripts/check-required-field-strands.mjs --typecheck --base ${base} --files=${relPath}`);
   if (behaviour.length) checks.push(`node scripts/check-behavioural-strands.mjs --base ${base} --files=${relPath}`);
-  return { path: relPath, base, changes: [...changes, ...(behaviour.length ? ['behavioural strand risk'] : [])].slice(0, 4), checks };
+  return { path: relPath, base, changes: [...changes, ...(behaviour.length ? ['behavioural strand risk'] : [])].slice(0, 4), checks,
+    ...(symbols.length ? { sourceChange: { root, path: relPath, base, symbols,
+      beforeSha256: (await import('node:crypto')).createHash('sha256').update(before).digest('hex'),
+      sha256: (await import('node:crypto')).createHash('sha256').update(after).digest('hex'), at: Date.now() } } : {}) };
 }
 
 function done() {

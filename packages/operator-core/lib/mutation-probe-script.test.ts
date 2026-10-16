@@ -508,6 +508,83 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       expect(code, out).toBe(0);
       expect(resultOf(out).line).toMatch(/ mutant_ledger=none$/);
     });
+
+    describe('diagnostic retention (EI-26074153873782928)', () => {
+      const retainedPath = (out: string): string => {
+        const record = out.match(/^MUTATION_PROBE_DIAGNOSTICS_JSON=(.+)$/m)?.[1];
+        expect(record, out).toBeTruthy();
+        return JSON.parse(record!).path;
+      };
+      const diagnosticEnv = () => ({ ...process.env, PAPERCUSP_SCRATCH_ROOT: join(dir, 'diagnostics') });
+
+      it('retains the full failing phase after a harness error and removes its temporary mirror', () => {
+        const temporary = join(dir, 'private-pg-tmp');
+        mkdirSync(temporary);
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', 'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then echo assertion-before-receipt-failure; exit 2; fi; grep -q "^beta$" {}',
+        ], { ...diagnosticEnv(), TMPDIR: temporary });
+        expect(code, out).toBe(2);
+        const retained = retainedPath(out);
+        expect(readFileSync(join(retained, 'mutant.log'), 'utf8')).toContain('assertion-before-receipt-failure');
+        expect(JSON.parse(readFileSync(join(retained, 'diagnostics.json'), 'utf8'))).toMatchObject({
+          exitCode: 2, subject, sourceBlob: git(dir, ['hash-object', subject]),
+        });
+        expect(readdirSync(temporary).filter(name => name.startsWith('mutation-probe.'))).toEqual([]);
+        // The enclosing private-PG cleanup must not remove the diagnostic copy.
+        rmSync(temporary, { recursive: true, force: true });
+        expect(readFileSync(join(retained, 'mutant.log'), 'utf8')).toContain('assertion-before-receipt-failure');
+        expect(read()).toBe(ORIGINAL);
+      });
+
+      it.each(['baseline', 'copy-baseline', 'mutant'])('retains exact %s receipts despite a successful assertion verdict', (phase) => {
+        const receipt = {
+          receiptId: 'unresolved-insert', attempt: 0, filePath: 'a.test.ts', status: 'fail',
+          outcome: 'timeout', reason: 'pg_insert_timeout_25000ms', row: { runGroupId: 'original-run' },
+        };
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', guardWritingReceipts({ [phase]: [receipt] }),
+        ], diagnosticEnv());
+        expect(code, out).toBe(0);
+        const retained = retainedPath(out);
+        expect(JSON.parse(readFileSync(join(retained, `test-run-receipts.${phase}.jsonl`), 'utf8'))).toEqual(receipt);
+        expect(existsSync(join(retained, `${phase}.log`))).toBe(true);
+        expect(resultOf(out).line).toContain('verdict=caught');
+        expect(read()).toBe(ORIGINAL);
+      });
+
+      it('does not archive a successful probe with complete ledger receipts', () => {
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', guardWritingReceipts(Object.fromEntries(['baseline', 'copy-baseline', 'mutant'].map(phase => [phase, [
+            { filePath: 'a.test.ts', outcome: 'inserted', id: phase },
+          ]]))),
+        ], diagnosticEnv());
+        expect(code, out).toBe(0);
+        expect(out).not.toContain('MUTATION_PROBE_DIAGNOSTICS_JSON=');
+        expect(existsSync(join(dir, 'diagnostics'))).toBe(false);
+        expect(read()).toBe(ORIGINAL);
+      });
+
+      it('keeps the original logs and receipts when archival itself fails', () => {
+        const blockedRoot = join(dir, 'blocked-diagnostics');
+        writeFileSync(blockedRoot, 'a file cannot contain the archive directory');
+        const temporary = join(dir, 'probe-tmp');
+        mkdirSync(temporary);
+        const receipt = { filePath: 'a.test.ts', outcome: 'timeout', reason: 'unresolved-insert' };
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', guardWritingReceipts({ mutant: [receipt] }),
+        ], { ...process.env, TMPDIR: temporary, PAPERCUSP_SCRATCH_ROOT: blockedRoot });
+        expect(code, out).toBe(0);
+        expect(out).toContain('diagnostic archival failed; preserving original phase logs and receipts at ');
+        const scratch = join(temporary, readdirSync(temporary).find(name => name.startsWith('mutation-probe.'))!);
+        expect(existsSync(join(scratch, 'mutant.log'))).toBe(true);
+        expect(JSON.parse(readFileSync(join(scratch, 'test-run-receipts.mutant.jsonl'), 'utf8'))).toEqual(receipt);
+        expect(read()).toBe(ORIGINAL);
+      });
+    });
   });
 
   it('does not invent scope for an explicitly unscoped caller', () => {

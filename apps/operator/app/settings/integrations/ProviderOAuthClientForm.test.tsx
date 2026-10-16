@@ -57,6 +57,28 @@ const renderForm = (summary: ProviderOAuthClientSummary | null) =>
   render(<ProviderOAuthClientForm providerId="fixture-tickets" displayName="Fixture Tickets" client={summary} />);
 
 describe('ProviderOAuthClientForm', () => {
+  it('saves the selected instance origin with its own app credentials', async () => {
+    renderForm(client({ instanceRequired: true }));
+    fireEvent.change(screen.getByLabelText('Instance origin'), { target: { value: 'https://first.example.com/' } });
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'first-client' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'first-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save OAuth app' }));
+    await waitFor(() => expect(H.calls).toHaveLength(1));
+    expect(H.calls[0]!.body).toEqual({ origin: 'https://first.example.com', clientId: 'first-client', clientSecret: 'first-secret' });
+  });
+
+  it('refuses an invalid instance and requires a fresh secret when switching to a new instance', async () => {
+    renderForm(client({ instanceRequired: true, configured: true, origin: 'https://first.example.com', hasClientSecret: true, clientId: 'first' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'second-client' } });
+    fireEvent.change(screen.getByLabelText('Instance origin'), { target: { value: 'https://127.0.0.1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save OAuth app' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('HTTPS origin');
+    fireEvent.change(screen.getByLabelText('Instance origin'), { target: { value: 'https://second.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save OAuth app' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('client secret');
+    expect(H.calls).toEqual([]);
+  });
   it('renders nothing for a provider that does not sign in through OAuth', () => {
     const { container } = renderForm(null);
     expect(container.innerHTML).toBe('');

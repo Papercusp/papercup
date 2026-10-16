@@ -53,6 +53,7 @@ import {
   type PluginOAuthRequirement,
   type PluginTriggerPack,
   type ProviderAdapter,
+  type HostFetch,
 } from '@papercusp/plugin-sdk';
 import {
   isSocialPlatformVerified,
@@ -67,9 +68,6 @@ import {
 import { blueskyEventName } from './bluesky-adapter';
 import { mastodonEventName } from './mastodon-adapter';
 import { redditEventName } from './reddit-adapter';
-import { youtubeActivityEventName } from './youtube-activities-adapter';
-import { youtubeCommentEventName } from './youtube-comments-adapter';
-import { threadsReplyEventName } from './threads-conversation-adapter';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -144,11 +142,7 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: true,
   },
   youtube: {
-    names: new Set([
-      youtubeActivityEventName({ type: 'upload' }),
-      youtubeCommentEventName({ parentId: undefined }),
-      youtubeCommentEventName({ parentId: 'p' }),
-    ]),
+    names: new Set<string>(), // Filled by the real provider's multi-stream scan below.
     closed: false, // snippet.type is provider-controlled.
   },
   'facebook-pages': {
@@ -160,18 +154,11 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: true,
   },
   threads: {
-    names: new Set([
-      threadsReplyEventName({ is_reply: false } as never),
-      threadsReplyEventName({ is_reply: true } as never),
-    ]),
+    names: new Set<string>(), // Filled by the real provider's conversation scan below.
     closed: true,
   },
   tiktok: {
-    // tiktok-videos-adapter emits the literal.
-    // ONE name, and that is the platform speaking rather than a gap: TikTok
-    // exposes no comment surface at all at this grant tier, so an upload is the
-    // only inbound event that can exist.
-    names: new Set(['post']),
+    names: new Set<string>(), // Filled by the real Display API provider below.
     closed: true,
   },
 };
@@ -219,6 +206,38 @@ beforeAll(async () => {
   } }, { fetch: async () => jsonResponse(200, { id: config.igUserId, mentioned_media: { id: '333', caption: 'mention', timestamp: created_time } }) }) as { records: Array<{ event: string }> };
   for (const record of mentions.records) PRODUCIBLE.instagram!.names.add(record.event);
   expect(PRODUCIBLE.instagram!.names).toEqual(new Set(['comment', 'reply', 'mention']));
+
+  const harvest = async (id: string, config: Record<string, unknown>, fetch: HostFetch, expected: string[]) => {
+    const provider = createRequire(import.meta.url)(resolve(REPO_ROOT, `libs/papercusp/plugins/${id}/index.cjs`)).providerAdapter as ProviderAdapter;
+    let cursor: string | null = null;
+    let completed = false;
+    for (let n = 0; n < 10; n++) {
+      const page = await provider.syncPage({ source: `${id}-events`, config, cursor, mode: cursor ? 'incremental' : 'backfill' }, { fetch });
+      for (const record of page.records) PRODUCIBLE[id]!.names.add(record.event!);
+      cursor = page.nextCursor;
+      if (!page.hasMore) { completed = true; break; }
+    }
+    expect(completed, `${id} event fixture must complete`).toBe(true);
+    expect(PRODUCIBLE[id]!.names).toEqual(new Set(expected));
+  };
+  await harvest('threads', { userId: '42' }, async ({ request }) => jsonResponse(200, {
+    data: new URL(request.url).pathname.endsWith('/threads')
+      ? [{ id: '100', timestamp: created_time, text: 'post', is_reply: false }]
+      : [{ id: '101', timestamp: created_time, text: 'reply', is_reply: true, root_post: { id: '100' }, replied_to: { id: '100' } }],
+  }), ['post', 'reply']);
+  await harvest('youtube', { channelId: 'UC42' }, async ({ request }) => {
+    const path = new URL(request.url).pathname;
+    const snippet = { publishedAt: created_time, textOriginal: 'comment' };
+    return jsonResponse(200, { items: path.endsWith('/activities')
+      ? [{ id: 'activity', snippet: { publishedAt: created_time, type: 'upload', title: 'upload' } }]
+      : path.endsWith('/commentThreads')
+        ? [{ id: 'thread', snippet: { topLevelComment: { id: 'comment', snippet }, totalReplyCount: 1, videoId: 'video' } }]
+        : [{ id: 'reply', snippet: { ...snippet, parentId: 'comment' } }],
+    });
+  }, ['upload', 'comment', 'reply']);
+  await harvest('tiktok', { openId: 'owner' }, async () => jsonResponse(200, {
+    data: { videos: [{ id: 'video', create_time: Date.parse(created_time) / 1000, title: 'video' }], has_more: false }, error: { code: 'ok' },
+  }), ['post']);
 });
 
 /**

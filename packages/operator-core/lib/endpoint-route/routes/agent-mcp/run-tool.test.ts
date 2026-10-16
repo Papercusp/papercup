@@ -23,6 +23,7 @@ const tool = (await import('./run-tool')).default;
 function req(body: unknown): Parameters<typeof tool.handler>[0] {
   return {
     headers: new Headers(),
+    signal: new AbortController().signal,
     json: async () => body,
   } as unknown as Parameters<typeof tool.handler>[0];
 }
@@ -46,6 +47,33 @@ beforeEach(() => {
   invokeM.mockResolvedValue({ ok: true, status: 200, body: { ok: true } });
 });
 
+describe('POST /agent-mcp/run-tool — request cancellation', () => {
+  it.each(['work_items:get', 'tools:invoke'])('carries the request signal for %s without trusting a body signal', async name => {
+    const controller = new AbortController();
+    const request = new Request('http://localhost/api/agent-mcp/run-tool', {
+      method: 'POST', signal: controller.signal,
+      body: JSON.stringify({ name, signal: { aborted: false } }),
+    });
+    await tool.handler(request, fakeCtx());
+    const forwarded = (invokeM.mock.calls[0]![0] as { signal?: AbortSignal }).signal;
+    expect(forwarded).toBe(request.signal);
+    const reason = new Error('private HTTP caller disconnected');
+    controller.abort(reason);
+    expect(forwarded?.aborted).toBe(true);
+    expect(forwarded?.reason).toBe(reason);
+  });
+
+  it('preserves a request cancelled before dispatch', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before route entry'));
+    const request = new Request('http://localhost/api/agent-mcp/run-tool', {
+      method: 'POST', signal: controller.signal, body: JSON.stringify({ name: 'work_items:get' }),
+    });
+    await tool.handler(request, fakeCtx());
+    expect(invokeM).toHaveBeenCalledWith(expect.objectContaining({ signal: request.signal }));
+  });
+});
+
 describe('POST /agent-mcp/run-tool — callerSid shaping', () => {
   it('carries the verified cookie actor rather than caller-supplied identity into dispatch', async () => {
     const principal = { kind: 'user' as const, slug: 'employee-id', workspaceId: 'ws1',
@@ -64,7 +92,8 @@ describe('POST /agent-mcp/run-tool — callerSid shaping', () => {
 
   it('no callerSid in the body ⇒ omits the field entirely', async () => {
     await tool.handler(req({ name: 't:x' }), fakeCtx());
-    expect(invokeM).toHaveBeenCalledWith({ name: 't:x', args: undefined, confirmed: false });
+    expect(invokeM).toHaveBeenCalledWith({ name: 't:x', args: undefined, confirmed: false,
+      signal: expect.any(AbortSignal) });
   });
 
   it('a plain string callerSid is forwarded trimmed', async () => {
@@ -97,6 +126,7 @@ describe('POST /agent-mcp/run-tool — callerSid shaping', () => {
     await tool.handler(req({ name: 'capability:computer', args: { action: 'screenshot' }, harness: 'desktop-pot' }), fakeCtx());
     expect(invokeM).toHaveBeenCalledWith({
       name: 'capability:computer', args: { action: 'screenshot' }, confirmed: false, harness: 'desktop-pot',
+      signal: expect.any(AbortSignal),
     });
   });
 

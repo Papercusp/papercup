@@ -44,8 +44,8 @@ import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { saveEventType, validateSavedEventPayload } from '../../events/saved-event-type';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof emit.handler>[1];
-const call = async (args: Record<string, unknown>) => {
-  const res = (await emit.handler(args as never, ctx)) as { content: Array<{ text: string }> };
+const call = async (args: Record<string, unknown>, callCtx = ctx) => {
+  const res = (await emit.handler(args as never, callCtx)) as { content: Array<{ text: string }> };
   return JSON.parse(res.content[0].text);
 };
 
@@ -97,6 +97,12 @@ describe('events:emit envelope', () => {
       source: 'su-emitter',
       workspaceId: 'ws-x',
     });
+  });
+
+  it('omits operator-scope harness sentinel from emitted event identity', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'k1', woken: 0, notified: [], msgId: null, waiters: 0 });
+    await call({ event: 'k1' }, { ...ctx, harnessSlug: '*' } as never);
+    expect(emitAwaitedEvent).toHaveBeenCalledWith(expect.not.objectContaining({ harnessSlug: '*' }));
   });
 
   it('response carries woken, notified=count (NOT the array), waiters, msg_id', async () => {

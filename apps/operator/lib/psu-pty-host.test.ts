@@ -5,9 +5,116 @@
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
+
+describe('shared carry-drill ledger pruning', () => {
+  it('retains each drill’s latest terminal outcome within the size bound', () => {
+    const root = mkdtempSync(join(tmpdir(), 'carry-drill-ledger-'));
+    const oldTerminal = JSON.stringify({
+      ts: '2026-10-15T10:49:36.110Z',
+      kind: 'carry-drill-carry-dropped',
+      ownerId: 'su-old',
+      drillId: 'drill-retained-terminal',
+      sessionClass: 'claude-su',
+      reason: 'superseded',
+    });
+    const previousTerminal = JSON.stringify({
+      ts: '2026-10-16T00:01:00.000Z',
+      kind: 'carry-drill-carry-delivered',
+      ownerId: 'su-previous',
+      drillId: 'drill-latest-terminal',
+      sessionClass: 'claude-su',
+    });
+    const latestTerminal = JSON.stringify({
+      ts: '2026-10-16T00:02:00.000Z',
+      kind: 'carry-drill-carry-dropped',
+      ownerId: 'su-latest',
+      drillId: 'drill-latest-terminal',
+      sessionClass: 'claude-su',
+      reason: 'provider-quota-rejected',
+    });
+    const filler = Array.from({ length: 20_000 }, (_, index) => JSON.stringify({
+      ts: `2026-10-16T01:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      kind: 'carry-drill-requested',
+      ownerId: `su-${index}`,
+      drillId: `drill-${index}`,
+      sessionClass: 'claude-su',
+    }));
+    const body = [oldTerminal, previousTerminal, latestTerminal, ...filler].join('\n') + '\n';
+    expect(Buffer.byteLength(body)).toBeGreaterThan(1024 * 1024);
+    const pruned = realHost.pruneSharedDrillLedger(body);
+    expect(pruned).toContain(oldTerminal);
+    expect(pruned).toContain(latestTerminal);
+    expect(pruned).not.toContain(previousTerminal);
+    expect(Buffer.byteLength(pruned)).toBeLessThanOrEqual(1024 * 1024);
+
+    try {
+      // The writer's pruning path is exercised with a real oversized file.
+      const ledgerPath = join(root, 'carry-drills.events.jsonl');
+      writeFileSync(ledgerPath, body);
+      expect(realHost.appendSharedDrillLedgerEvent('su-new', 'carry-drill-carry-delivered', {
+        drillId: 'drill-new-terminal',
+        sessionClass: 'claude-su',
+      }, root)).toBe(true);
+      const written = readFileSync(ledgerPath, 'utf8');
+      expect(written).toContain(oldTerminal);
+      expect(written).toContain(latestTerminal);
+      expect(written).not.toContain(previousTerminal);
+      expect(Buffer.byteLength(written)).toBeLessThanOrEqual(1024 * 1024 + 512);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Codex configured composer readiness (EI-26141756824840354)', () => {
+  const dims = { rows: 30, cols: 120 };
+  // Layout captured from no-forwarding native 0.162.1 and 0.163.0 boots.
+  // The footer appears only after the initial loading frame is replaced.
+  const frame = (composer = '› Ask Codex to do anything', footer = 'gpt-6-luna default · /tmp/pcv/codex-native-catalog-fixture') =>
+    '\x1b[1;1H\x1b[J\x1b[2;1H  >_ OpenAI Codex (v0.163.0)' +
+    `\x1b[3;1H     /tmp/pcv/codex-native-catalog-fixture\x1b[15;1H${composer}\x1b[17;1H  ${footer}`;
+
+  it.each(['›', '› Ask Codex to do anything'])('recognizes the configured model footer with empty composer %s', composer => {
+    const output = '\x1b[6n' + frame(composer) + '\x1b[17;95H⚠ 2 warnings · f2 to view';
+    expect(realHost.codexFooterStateFromOutput(output, dims)).toBe('ready');
+    expect(realHost.startupOutputReady('codex', output, dims)).toBe(true);
+    expect(realHost.codexSessionFrameObserved(output, { dims })).toBe(true);
+  });
+
+  it('requires a post-probe paint, retaining the bounded-buffer probe contract', () => {
+    expect(realHost.codexSessionFrameObserved(frame(), { dims })).toBe(false);
+    expect(realHost.codexSessionFrameObserved(frame(), { dims, probeAlreadySeen: true })).toBe(true);
+    expect(realHost.codexSessionFrameObserved(frame() + '\x1b[6n', { dims })).toBe(false);
+  });
+
+  it.each([
+    ['plain prose', '› Ask Codex to do anything\r\n\r\n  gpt-6-luna default · /tmp/work'],
+    ['incomplete paint', '\x1b[15;1H› Ask Codex to do anything\x1b[17;1H  gpt-6-luna default · /tmp/work'],
+    ['loading model', frame('›', 'loading default · /tmp/work')],
+    ['incomplete footer', frame('›', 'gpt-6-luna default ·')],
+    ['missing effort', frame('›', 'gpt-6-luna · /tmp/work')],
+    ['nonempty composer', frame('› /hooks')],
+    ['menu choice', frame('› 1. Use this model')],
+    ['missing composer', frame('')],
+    ['active startup', frame() + '\x1b[18;1HStarting · GPT-6-Luna max · Context 100% left'],
+  ])('does not accept %s as configured composer readiness', (_name, output) => {
+    expect(realHost.startupOutputReady('codex', output, dims)).toBe(false);
+    expect(realHost.codexSessionFrameObserved('\x1b[6n' + output, { dims })).toBe(false);
+  });
+
+  it('reads current cells after loading, clearing, and menu repaints', () => {
+    const loading = frame('›', 'loading default · /tmp/work');
+    const ready = loading + '\x1b[17;1H\x1b[2K  gpt-6-luna default · /tmp/work';
+    expect(realHost.codexFooterStateFromOutput(ready, dims)).toBe('ready');
+    expect(realHost.codexFooterStateFromOutput(ready + '\x1b[15;1H› /hooks', dims)).toBeNull();
+    expect(realHost.codexFooterStateFromOutput(ready + '\x1b[2J\x1b[HStarting MCP servers', dims)).toBeNull();
+  });
+});
 
 describe('Codex hook observation transaction', () => {
   it('keeps visible cells on ED3 and rejects partial scrollback-erasure paint', () => {

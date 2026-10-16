@@ -171,6 +171,18 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
   {
+    n: 1, errorCode: 'blocked_command', status: 'denied',
+    message: 'The shell command was refused before execution by the PreToolUse guard: the command contains rm -f style cleanup, which is not permitted.',
+    expectedClass: 'caller',
+    note: 'the native exec guard rejected rm -f cleanup syntax before running the command; this is expected caller-side control flow (EI-26073126519701733)',
+  },
+  {
+    n: 1, errorCode: 'PreToolUseCommandRejected', status: 'denied',
+    message: 'A path-free diagnostic was rejected because the guard said rm -f style commands are not permitted.',
+    expectedClass: 'caller',
+    note: 'the same native exec guard refusal is also reported with its PreToolUseCommandRejected code (EI-26010063340730329)',
+  },
+  {
     n: 2, errorCode: 'handler_error', status: 'error',
     message: "capability:bash cwd '" + missingHomeCwdFixture + "' does not exist — the child process cannot start. (Node would report this as a misleading \"spawn /usr/bin/bash ENOENT\".) Pass an existing directory as cwd.",
     expectedClass: 'caller',

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { stat, realpath, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { walkRawTranscripts, readRawTranscript } from './lib/raw-session-corpus.mjs';
 import { ENVELOPE_RE, unwrapWholePaste } from '../packages/operator-core/lib/turn-provenance/envelope-grammar.ts';
 
@@ -570,7 +570,7 @@ export function verifyMeasurementReportReadback(comparison, readback, reportId) 
   return comparison.reportReady && result.report.body_md === renderMeasurementComparison(comparison);
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   const options = parseArgs(process.argv.slice(2));
   if (options.comparison) {
     const manifest = JSON.parse(await readFile(options.comparison, 'utf8'));

@@ -10,10 +10,10 @@
  * mints provider credentials for a provider call.
  */
 import type postgres from 'postgres';
-import type { HostFetch } from '@papercusp/plugin-sdk';
+import { normalizeProviderInstanceOrigin, type HostFetch } from '@papercusp/plugin-sdk';
 import { getExternalTriggerSource } from '../external-triggers/source-store';
 import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
-import { connectionAccessToken } from './connection-lifecycle';
+import { connectionAccessToken, descriptorOAuthPlugin } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
 import {
   providerSetupStoreKey,
@@ -78,6 +78,13 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
       if (allowed && !allowed.has(sourceId)) return null;
       const row = await getExternalTriggerSource(sql, opts.workspaceId, sourceId);
       if (!row) return null;
+      const descriptor = registry.get(row.kind)?.descriptor;
+      if (descriptor?.oauth?.instance) {
+        const origin = normalizeProviderInstanceOrigin(row.config?.connectionOrigin);
+        if (!origin || !row.credentialRef?.startsWith(`${descriptorOAuthPlugin(descriptor, origin)}:`)) {
+          throw new HostFetchError('token-unavailable', 'host.fetch: instance origin does not match the source credential');
+        }
+      }
       // A source whose credential ref is not the install's pasted-credential store holds its own
       // account credential (an OAuth connection), which host.fetch prefers (WI-6554700010008555).
       const ownCredential = row.credentialRef != null && row.credentialRef !== providerSetupStoreKey(row.kind);

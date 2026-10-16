@@ -594,6 +594,15 @@ TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID:run:$(date +%s%N)-$$-$RANDOM"
 # only: it never reclaims a stale lock and a failed diagnostic must not prevent a
 # verifier launch.
 install_in_flight_preflight() {
+  # A pinned source clone supplies code, while REPO_DIR supplies the installed
+  # dependencies. Refuse a source-only/shadow donor before allocating WORK or
+  # exporting another source snapshot; the snapshot repeats its full census.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && \
+    { [ ! -d "$REPO_DIR/node_modules" ] || [ -L "$REPO_DIR/node_modules" ]; }; then
+    echo "VERIFY_TAURI_DEPENDENCY_DONOR_INVALID: pinned source requires a physical installed dependency donor: $REPO_DIR" >&2
+    echo 'Set PAPERCUSP_REPO_DIR to the installed canonical tree, independently of the frozen wrapper/source directory.' >&2
+    return 2
+  fi
   PAPERCUSP_PREFLIGHT_REPO_DIR="$REPO_DIR" node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 

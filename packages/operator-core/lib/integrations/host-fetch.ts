@@ -11,7 +11,7 @@
  */
 import {
   providerCredentialForHost,
-  providerEgressAllows,
+  providerSourceEgressAllows,
   providerPrincipalCredentialForHost,
   type HostFetch,
   type HostFetchRequest,
@@ -201,7 +201,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     if (url.username || url.password) {
       throw new HostFetchError('egress-denied', 'host.fetch: URLs with embedded credentials are refused');
     }
-    if (!providerEgressAllows(registered.descriptor.egressHosts, url.hostname)) {
+    if (!providerSourceEgressAllows(registered.descriptor, url, resolved.config)) {
       throw new HostFetchError(
         'egress-denied',
         `host.fetch: ${url.hostname} is not in provider "${providerId}" egressHosts`,

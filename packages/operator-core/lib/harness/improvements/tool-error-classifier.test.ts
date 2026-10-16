@@ -472,6 +472,34 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     })).toMatchObject({ class: 'structural', direct: true });
   });
 
+  it.each([
+    [
+      'blocked_command',
+      'The shell command was refused before execution by the PreToolUse guard: the command contains rm -f style cleanup, which is not permitted.',
+    ],
+    [
+      'PreToolUseCommandRejected',
+      'A path-free diagnostic was rejected because the guard said rm -f style commands are not permitted.',
+    ],
+    [
+      null,
+      'The shell command was refused before execution: rm -f style commands are not permitted.',
+    ],
+  ] as const)('classifies the expected native rm cleanup refusal as caller and denies direct promotion (%s)', (errorCode, message) => {
+    expect(classifyToolError(errorCode, 'denied', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode,
+      status: 'denied',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'A focused test command with bounded output handling can execute through exec_command.',
+        actual: message,
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
     const errorCode = 'resolver_owner_mismatch_or_not_executing';
     const message = 'The bulk-resolve run is stopped and no report was written.';

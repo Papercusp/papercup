@@ -24,16 +24,16 @@
  * Wave B special-case is a different string — so that clause is re-derived below
  * for Wave B's names.
  *
- * WHAT IS NEW IN WAVE B'S SHAPE. Wave A had exactly one read adapter per platform,
- * so `${platform}-adapter.test.ts` was a complete enumeration. Wave B does not:
- * YouTube has activities AND comments, Facebook Pages has posts AND comments. A
- * one-file-per-platform check would report the platform covered while its SECOND
- * adapter silently skipped the kit. So the adapter check below enumerates adapter
- * MODULES derived from the source, not one file per platform name.
+ * Provider migration P-001 now puts each platform's streams behind one package
+ * syncPage. Enumerate delivered package descriptors and their real unit suites;
+ * the old app-adapter census would require code that has deliberately been retired.
+ * The SDK kit is the subject of the no-special-case check. Runtime conformance
+ * remains the actual package suites' job, not a conclusion inferred from source.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { stripComments } from './comment-stripper.fixture';
@@ -47,6 +47,7 @@ import {
 } from '../../oauth/providers';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO = resolve(HERE, '../../../../..');
 
 /**
  * The directory this gate reads its subjects from. Defaults to the real one.
@@ -57,10 +58,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * that legitimately holds a mutation for the length of a suite run can have it
  * committed even though nothing went wrong.
  */
-const SUBJECT_DIR = process.env.WAVE_B_GATE_SUBJECT_DIR ?? HERE;
+const SUBJECT_DIR = process.env.WAVE_B_GATE_SUBJECT_DIR ?? join(REPO, 'packages/plugin-sdk/src');
 
 /** The kit itself: the runner plus the contract every adapter implements. */
-const KIT_FILES = ['conformance.ts', 'adapter-contract.ts'] as const;
+const KIT_FILES = ['provider-conformance.ts', 'provider.ts'] as const;
 
 const read = (file: string): string => readFileSync(join(SUBJECT_DIR, file), 'utf8');
 
@@ -262,60 +263,53 @@ describe('P-019 Wave B gate — the kit was not bent to fit a Wave B platform', 
   });
 });
 
-describe('P-019 Wave B gate — every Wave B read adapter runs the shared kit', () => {
-  /**
-   * Adapter modules, derived from the source rather than from a filename
-   * convention: a READ adapter implements SocialAdapter and therefore declares
-   * `readonly platformId = '<id>'`, and a write adapter does not. So this finds
-   * every read adapter regardless of what it is called, which is the point — the
-   * failure being guarded against is an adapter that exists and is NOT kit-run,
-   * and a convention-based scan cannot see a file that breaks the convention.
-   */
-  const readAdaptersByPlatform = new Map<string, string[]>();
-  const sources = readdirSync(SUBJECT_DIR).filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'));
-
-  for (const file of sources) {
-    const declared = /readonly\s+platformId\s*=\s*'([a-z-]+)'/.exec(read(file));
-    if (!declared) continue;
-    const platformId = declared[1]!;
-    if (!waveBIds.has(platformId)) continue;
-    readAdaptersByPlatform.set(platformId, [...(readAdaptersByPlatform.get(platformId) ?? []), file]);
+/** Find an actual call of the SDK import, including a renamed import; comments and strings cannot qualify. */
+function callsSdkKit(text: string): boolean {
+  const source = ts.createSourceFile('provider.test.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const imports = new Set<string>();
+  for (const node of source.statements) {
+    if (!ts.isImportDeclaration(node) || !ts.isStringLiteral(node.moduleSpecifier) || node.moduleSpecifier.text !== '@papercusp/plugin-sdk') continue;
+    const named = node.importClause?.namedBindings;
+    if (named && ts.isNamedImports(named)) for (const entry of named.elements) {
+      if ((entry.propertyName ?? entry.name).text === 'runProviderConformance') imports.add(entry.name.text);
+    }
   }
+  let called = false;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && imports.has(node.expression.text)) called = true;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return called;
+}
 
-  it('found the adapter modules at all', () => {
-    // POSITIVE CONTROL for the two data-driven suites below. `it.each` over an
-    // empty array is a silent pass, so the enumeration is asserted separately
-    // before anything is concluded from it.
-    expect(sources.length).toBeGreaterThan(3);
-    expect([...readAdaptersByPlatform.keys()].sort()).toEqual([...waveBIds].sort());
+describe('P-019 Wave B gate — delivered provider suites use the shared SDK kit', () => {
+  const plugins = join(REPO, 'libs/papercusp/plugins');
+  const delivered = readdirSync(plugins, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
+    try {
+      const manifest = JSON.parse(readFileSync(join(plugins, entry.name, 'papercusp.json'), 'utf8'));
+      return manifest.provider?.datatypes?.includes('social-post') && waveBIds.has(manifest.provider.id) ? [manifest.provider.id as string] : [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
   });
 
-  it.each([...waveBIds])('the %s platform has at least one read adapter', (platformId) => {
-    expect(readAdaptersByPlatform.get(platformId) ?? []).not.toEqual([]);
+  it('finds one delivered provider for every Wave B platform', () => {
+    expect(waveBIds.size).toBeGreaterThan(0);
+    expect(delivered.sort()).toEqual([...waveBIds].sort());
   });
 
-  it('every Wave B read adapter module is exercised against the shared kit', () => {
-    const modules = [...readAdaptersByPlatform.values()].flat().sort();
+  it.each([...waveBIds])('%s has a real package unit suite calling the SDK kit', (id) => {
+    const suite = readFileSync(join(REPO, `packages/operator-core/lib/providers/${id}/${id}-provider.test.ts`), 'utf8');
+    expect(callsSdkKit(suite), `${id} must exercise its package through runProviderConformance`).toBe(true);
+  });
 
-    // POSITIVE CONTROL: at least one per platform, or the loop is under-measuring.
-    expect(modules.length).toBeGreaterThanOrEqual(waveBIds.size);
-
-    const notRun = modules.filter((file) => {
-      const testFile = file.replace(/\.ts$/, '.test.ts');
-      let source: string;
-      try {
-        source = read(testFile);
-      } catch {
-        return true;
-      }
-      return !source.includes("from './conformance'") || !source.includes('runSocialAdapterConformance(');
-    });
-
-    expect(
-      notRun,
-      'these Wave B read adapters are not run against the shared conformance kit. Wave B platforms ' +
-        'have several read adapters each, so a per-platform check would report the platform covered ' +
-        'while one of its adapters skipped the kit entirely.',
-    ).toEqual([]);
+  it('CONTROL: detects a removed call, a local imitation, prose and a string without rejecting import aliases', () => {
+    const imported = "import { runProviderConformance } from '@papercusp/plugin-sdk';";
+    expect(callsSdkKit(`${imported} it('kit', async () => { await runProviderConformance(harness); });`)).toBe(true);
+    expect(callsSdkKit("import { runProviderConformance as check } from '@papercusp/plugin-sdk'; it('kit', () => check(harness));")).toBe(true);
+    for (const source of [imported, `${imported} // runProviderConformance(harness)`, `${imported} const prose = 'runProviderConformance(harness)';`,
+      "function runProviderConformance() {} it('kit', () => runProviderConformance());"]) expect(callsSdkKit(source)).toBe(false);
   });
 });

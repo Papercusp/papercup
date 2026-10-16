@@ -148,15 +148,6 @@ export const CENSUS: readonly CensusEntry[] = [
   p('packages/operator-core/lib/external-triggers/social/social-egress.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/social-watermark.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/storm-policy.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/threads-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/threads-conversation-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/threads-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/tiktok-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/tiktok-videos-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-activities-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-comments-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-write-adapter.ts', 'social'),
 
   // Google Workspace leftovers (Gmail and Calendar already ship as packages).
   p('packages/operator-core/lib/external-triggers/google-workspace.ts', 'google-workspace'),
@@ -168,7 +159,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 36;
+export const CENSUS_HIGH_WATERMARK = 27;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.

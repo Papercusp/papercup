@@ -16,6 +16,7 @@
 
 import { useCallback, useState, type CSSProperties, type FormEvent } from 'react';
 import { toast } from 'sonner';
+import { normalizeProviderInstanceOrigin } from '@papercusp/plugin-sdk';
 import type { ProviderOAuthClientSummary } from '@papercusp/operator-core/lib/integrations/ticket-integrations';
 import { Button } from '../../harness/Button';
 import { formatTime, IntegrationRequestError } from './ticket-integrations-client';
@@ -41,12 +42,15 @@ export function ProviderOAuthClientForm({
   // Mid-edit drafts and whether a saved registration is being replaced: transient form state.
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [instanceOrigin, setInstanceOrigin] = useState<string | null>(null);
   const [replacing, setReplacing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const editing = Boolean(client && (!client.configured || replacing));
-  const secretNeeded = Boolean(client && client.secretRequired && !client.hasClientSecret);
+  const origin = instanceOrigin ?? client?.origin ?? '';
+  const secretNeeded = Boolean(client && client.secretRequired && (!client.hasClientSecret ||
+    (client.instanceRequired && normalizeProviderInstanceOrigin(origin) !== client.origin)));
 
   const save = useCallback(
     async (event: FormEvent) => {
@@ -54,6 +58,11 @@ export function ProviderOAuthClientForm({
       setFormError(null);
       const id = clientId.trim();
       const secret = clientSecret.trim();
+      const savedOrigin = client?.instanceRequired ? normalizeProviderInstanceOrigin(origin.trim()) : null;
+      if (client?.instanceRequired && !savedOrigin) {
+        setFormError('Enter the instance’s HTTPS origin, such as https://your.instance, without a path or port.');
+        return;
+      }
       if (!id) {
         setFormError('Enter the app’s client ID.');
         return;
@@ -73,7 +82,7 @@ export function ProviderOAuthClientForm({
           method: 'PUT',
           cache: 'no-store',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(secret ? { clientId: id, clientSecret: secret } : { clientId: id }),
+          body: JSON.stringify({ clientId: id, ...(secret ? { clientSecret: secret } : {}), ...(savedOrigin ? { origin: savedOrigin } : {}) }),
         });
         const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; detail?: string } | null;
         if (!res.ok || !json || json.ok === false) {
@@ -81,6 +90,7 @@ export function ProviderOAuthClientForm({
         }
         setClientId('');
         setClientSecret('');
+        setInstanceOrigin(null);
         setReplacing(false);
         toast.success(`${displayName} OAuth app saved.`);
       } catch (err) {
@@ -89,7 +99,7 @@ export function ProviderOAuthClientForm({
         setBusy(false);
       }
     },
-    [clientId, clientSecret, displayName, providerId, secretNeeded],
+    [clientId, clientSecret, client?.instanceRequired, origin, displayName, providerId, secretNeeded],
   );
 
   if (!client) return null;
@@ -113,8 +123,13 @@ export function ProviderOAuthClientForm({
       <p style={hintText}>
         Redirect URL for the app: <code data-oauth-redirect-uri>{client.redirectUri}</code>
       </p>
+      {client.origin && !editing ? <p style={hintText}>Instance: {client.origin}</p> : null}
       {editing ? (
         <>
+          {client.instanceRequired ? <input
+            type="text" name="oauth-instance-origin" aria-label="Instance origin" autoComplete="off" spellCheck={false}
+            placeholder="https://your.instance" value={origin} onChange={(event) => setInstanceOrigin(event.target.value)} style={inputStyle}
+          /> : null}
           <input
             type="text"
             name="oauth-client-id"
@@ -158,6 +173,7 @@ export function ProviderOAuthClientForm({
                   setReplacing(false);
                   setClientId('');
                   setClientSecret('');
+                  setInstanceOrigin(null);
                   setFormError(null);
                 }}
               >

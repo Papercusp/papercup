@@ -31,6 +31,7 @@ import type postgres from 'postgres';
 import { providerOptionSourceOf } from '@papercusp/plugin-sdk/provider';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { detachExternalTriggerBinding } from '../external-triggers/admin';
+import { loadHarnessRegistry } from '../harness-registry';
 import { listProviderOptions, type ProviderOptionsDeps } from '../integrations/provider-options';
 import { requestRegistry } from '../integrations/ticket-integrations';
 import { detectPossibleSecrets } from '../memory/secret-detect';
@@ -453,6 +454,20 @@ export async function armTriggerPack(
     }
     if (state.fingerprint !== input.fingerprint || armInputSnapshot(seen, seenBindings) !== armInputSnapshot(row, bindings)) {
       return { ok: false as const, error: 'trigger_pack_review_stale' as const, installationId: row.id, review: state };
+    }
+    // Setup and provider reads may precede a registry removal. Hold its row through
+    // the arm writes and bypass the process cache when resolving every target.
+    await tx`SELECT workspace_id FROM harness_shared.harness_registry
+      WHERE workspace_id = ${workspaceId} FOR SHARE`;
+    const registry = await loadHarnessRegistry(workspaceId, { fresh: true });
+    const targets = new Set([row.harnessSlug, ...bindings.flatMap((binding) =>
+      binding.planHarnessSlug === null ? [] : [binding.planHarnessSlug])]);
+    for (const target of targets) {
+      if (!registry.projects.some((project) => project.slug === target
+        && typeof project.path === 'string' && project.path.trim().length > 0)) {
+        throw new TriggerPackLifecycleError('trigger_pack_target_unavailable',
+          `target pot '${target}' is unavailable`, { harnessSlug: target });
+      }
     }
     await tx`
       UPDATE harness_shared.trigger_pack_installations

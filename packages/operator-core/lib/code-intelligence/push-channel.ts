@@ -10,6 +10,7 @@ import { loadHarnessRegistry } from '../harness-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot } from './push-snapshot';
 
 export const CODE_INTEL_PUSH_TURN_CHARS = 1_500;
@@ -20,7 +21,7 @@ export const PUSH_LEG_FLAGS = {
   completion: FLAGS.CODE_INTEL_PUSH_COMPLETION, intent: FLAGS.CODE_INTEL_PUSH_INTENT,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
-export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[] }
+export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; incidentResult?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[] }
 export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
   /** Populated only from the registered harness root, never request cwd. */
@@ -51,7 +52,52 @@ export interface PushFact {
 export interface IncidentAttribution {
   status: 'measured' | 'unknown';
   changedSymbols?: readonly string[];
-  workItems?: readonly { id: string; state: string; title?: string; paths: readonly string[] }[];
+  workItems?: readonly { id: string; state: string; title?: string; paths: readonly string[]; relation?: 'file-edit-ledger' | 'open-on-path' }[];
+  recentEdits?: readonly { root: string; path: string; base: string; workspace: string; harness: string;
+    agentId: string; at: number; beforeSha256: string; sha256: string; symbols: readonly { name: string; line: number }[] }[];
+}
+
+/** Reuse the edit-time WI authority. A file lock is not a symbol-change
+ * measurement: only locally compared, still-current source hashes name symbols.
+ * Old serving-checkout repo_root values are deliberately not used as a join key.
+ */
+export async function readPushIncidentAttribution(input: PushInput, paths: string[], sql = getOrgPg().sql): Promise<IncidentAttribution> {
+  const changedSymbols: string[] = [];
+  for (const row of (input.incidentAttribution?.recentEdits ?? []).slice(0, 8)) {
+    if (!row || row.root !== input.root || row.workspace !== input.workspace || row.harness !== input.harness
+      || row.agentId !== input.owner || !paths.includes(row.path) || !safeSnapshotPath(row.path)
+      || !Number.isFinite(row.at) || row.at > Date.now() || Date.now() - row.at >= 86_400_000
+      || !/^[a-f0-9]{40,64}$/i.test(row.base) || !/^[a-f0-9]{64}$/i.test(row.beforeSha256)
+      || row.beforeSha256 === row.sha256 || !Array.isArray(row.symbols)
+      || !await corroboratePushSources(input.root, [{ path: row.path, sha256: row.sha256 }], AbortSignal.timeout(75))) continue;
+    for (const symbol of row.symbols.slice(0, 12)) if (/^[A-Za-z_$][\w$]*$/.test(symbol.name)
+      && Number.isSafeInteger(symbol.line) && symbol.line > 0) changedSymbols.push(`${symbol.name}:${row.path}:${symbol.line}`);
+  }
+  const harness = input.harness;
+  if (!harness || !paths.length) return { status: 'measured', changedSymbols };
+  return (sql as any).begin(async (tx: any) => {
+    await tx`SELECT set_config('statement_timeout', '75ms', true)`;
+    const rows: { id: string; state: string; title: string; path: string; relation: 'file-edit-ledger' | 'open-on-path' }[] = await tx`
+      SELECT DISTINCT w.feature_id AS id, w.status AS state, left(w.title, 100) AS title,
+        e.file AS path, 'file-edit-ledger' AS relation
+      FROM harness_shared.edit_attribution_ledger e JOIN harness_shared.work_items w
+        ON w.workspace_id = e.workspace_id AND w.harness_slug = e.harness_slug AND w.feature_id = e.work_item_id
+      WHERE e.workspace_id = ${input.workspace} AND e.harness_slug = ${harness}
+        AND e.file = ANY(${paths}::text[]) AND e.ts >= now() - interval '24 hours'
+      UNION
+      SELECT w.feature_id AS id, w.status AS state, left(w.title, 100) AS title,
+        p.path, 'open-on-path' AS relation
+      FROM harness_shared.work_items w
+      CROSS JOIN LATERAL jsonb_array_elements_text(CASE WHEN jsonb_typeof(w.payload->'paths') = 'array'
+        THEN w.payload->'paths' ELSE '[]'::jsonb END) p(path)
+      WHERE w.workspace_id = ${input.workspace} AND w.harness_slug = ${harness}
+        AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+        AND p.path = ANY(${paths}::text[])
+      ORDER BY relation, id, path LIMIT 8`;
+    return { status: 'measured', changedSymbols: [...new Set(changedSymbols)].slice(0, 4),
+      workItems: rows.map((row: { id: string; state: string; title: string; path: string; relation: 'file-edit-ledger' | 'open-on-path' }) =>
+        ({ id: row.id, state: row.state, title: row.title, paths: [row.path], relation: row.relation })) };
+  });
 }
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
@@ -196,7 +242,7 @@ function incidentResponseRecord(value: unknown, depth = 0): Record<string, unkno
 
 function failedIncidentPaths(call: PushCall): string[] {
   if (!/(?:^|[:_/.])(?:testing[:_]run|test[:_]file|run-tests)(?:$|[:_/.])/.test(call.tool ?? '')) return [];
-  const response = incidentResponseRecord(call.toolResponse);
+  const response = incidentResponseRecord(call.incidentResult ?? call.toolResponse);
   if (!response) return [];
   const paths = new Set<string>();
   const byFile = response.byFile;
@@ -264,13 +310,13 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
     ? attribution.changedSymbols.slice(0, 4).join(', ') : 'unknown';
   const workItems = attribution?.status === 'measured' && attribution.workItems?.length
     ? attribution.workItems.filter(item => item.paths.some(path => reached.has(path))).slice(0, 4)
-      .map(item => `${item.id} [${item.state}]${item.title ? ` ${item.title}` : ''}`).join('; ') || 'none measured on static reach'
+      .map(item => `${item.id} [${item.state}]${item.relation ? ` (${item.relation})` : ''}${item.title ? ` ${item.title}` : ''}`).join('; ') || 'none measured on static reach'
     : 'unknown';
   const suggestedCall = 'testing:run ' + JSON.stringify({ files: failed.slice(0, 2), harness: input.harness });
   const subject = ('failed-tests:' + failed.join('|')).slice(0, 1000);
   const citedPaths = [...new Set([...failed, ...dependencies, ...symbols.map(symbol => symbol.path)])].slice(0, 12);
   const runIds = [...new Set(calls.flatMap(call => {
-    const response = incidentResponseRecord(call.toolResponse);
+    const response = incidentResponseRecord(call.incidentResult ?? call.toolResponse);
     const rows = response?.byFile;
     if (!rows || typeof rows !== 'object' || Array.isArray(rows)) return [];
     return Object.entries(rows).flatMap(([path, row]) => {
@@ -291,7 +337,7 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
       + 'Symbols on static reach (change status unknown): ' + symbolText + '; observed turn edit strands: ' + changedText + '.\n'
       + 'Recently changed symbols (measured ledger attribution): ' + changedSymbols + '.\n'
       + 'Work items changed/open on these paths: ' + workItems + '. '
-      + 'Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. '
+      + 'File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. '
       + recovery,
   }];
 };
@@ -350,6 +396,7 @@ export interface PushChannelDeps {
   enabled(flag: FlagKey): Promise<boolean>;
   legs(): ReadonlyMap<PushLegId, PushLeg>;
   context?(input: PushInput, paths: string[]): Promise<FirstTouchContext>;
+  incidentContext?(input: PushInput, paths: string[]): Promise<IncidentAttribution>;
   commit(input: PushInput, snapshot: PushSnapshot, facts: readonly PushFact[], requestBudget: number, signal: AbortSignal): Promise<string>;
 }
 
@@ -412,6 +459,7 @@ const defaults: PushChannelDeps = {
       locks: locks.status === 'fulfilled' ? locks.value : null };
   },
   commit: commitPushFacts,
+  incidentContext: readPushIncidentAttribution,
 };
 
 /** A failed optional push never drops memory, worn rules, or the failure hint. */
@@ -432,7 +480,14 @@ export async function codeIntelPushText(input: PushInput, memoryChars = 0, deps:
             { timeoutMs: 100, fallback: undefined, label: 'code-intel-first-touch-context' });
           input.firstTouchContext = context.value;
         }
-        for (const fact of leg(input, snapshot)) {
+        let candidates = leg(input, snapshot);
+        if (id === 'incident' && candidates.length && deps.incidentContext) {
+          const measured = await withBoundedTimeout(() => deps.incidentContext!(input, [...candidates[0].citedPaths]),
+            { timeoutMs: 100, fallback: undefined, label: 'code-intel-incident-context' });
+          input.incidentAttribution = measured.value ?? { status: 'unknown' };
+          candidates = leg(input, snapshot);
+        }
+        for (const fact of candidates) {
           if (id === 'first-touch' && facts.some(f => f.leg === 'interface' && f.citedPaths[0] === fact.subject)) continue;
           if (fact.leg === id && fact.subject.length <= 1000 && fact.subject.trim() && fact.text.trim()
             && fact.citedPaths.every(safeSnapshotPath)

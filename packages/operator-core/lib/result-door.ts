@@ -786,6 +786,20 @@ const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
 
 // A failed admission does not roll back approval or promotion. Retain the
 // committed legs beside the refusal; the immutable spill holds full diagnostics.
+const PLANS_BIND_SPEC_EVIDENCE_REFUSAL_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].slug',
+  'results[].error',
+  'results[].clause',
+  'results[].targeted',
+  'results[].acceptedTargets',
+  'results[].reason',
+  'results[].correctedCall',
+] as const;
+
 const PLANS_START_RECEIPT_PRESERVE_PATHS = [
   'ok', 'counts.ok', 'counts.failed',
   'results[].ok', 'results[].slug', 'results[].harnessSlug', 'results[].error',
@@ -3648,6 +3662,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         : []),
       ...(isScorecardsEmitCall(opts) ? SCORECARDS_EMIT_SPILL_PRESERVE_PATHS : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
+      ...(opts.toolName === 'plans:bind-spec-evidence' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:bind-spec-evidence')
+        ? PLANS_BIND_SPEC_EVIDENCE_REFUSAL_PRESERVE_PATHS
+        : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === PIPELINE_POSITION_TOOL)
         ? PIPELINE_POSITION_PRESERVE_PATHS

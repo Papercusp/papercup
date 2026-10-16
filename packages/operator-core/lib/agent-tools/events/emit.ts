@@ -22,6 +22,7 @@ import { buildAnnouncedKey, defaultAnnounceScope, type AnnounceScopeKind } from 
 import { getPresence } from '../coordination/presence';
 import { softText, clampText, LIMITS } from '../limits';
 import { saveEventType, validateSavedEventPayload } from '../../events/saved-event-type';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'events:emit',
@@ -215,6 +216,7 @@ export default defineTool({
       if (args.eventStatus === 'retired') return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, saved: true, event: args.event, status: 'retired', fired: false }) }] };
     }
     await validateSavedEventPayload(identity.workspaceId!, args.event, args.payload);
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const result = await emitAwaitedEvent({
       key: args.event,
       summary: clampText(args.summary, LIMITS.ANNOTATION),
@@ -222,7 +224,7 @@ export default defineTool({
       to: args.to,
       source: identity.ownerId,
       workspaceId: identity.workspaceId ?? undefined,
-      harnessSlug: ctx.harnessSlug,
+      ...(concreteHarnessSlug ? { harnessSlug: concreteHarnessSlug } : {}),
       cause: ctx.reactionCause,
     });
     // ── event-key-nearmiss-guard P-004: an emit that reached NO ONE (waiters:0,

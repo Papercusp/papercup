@@ -21,8 +21,11 @@ const censusSelected = [
   'refuses unproven or incomplete disappearance evidence',
 ];
 const selected = [
+  'waits for first mutex admission within the whole run deadline',
+  'stops waiting for first mutex admission when the run deadline expires',
   'runs the native cargo delegate repeatedly with captured receipts and no missed completion',
   'starts effects without an all-candidate holder census',
+  'starts the next pass after a root whose census spent the preceding deadline',
   'runs independent owners when a whole-root census exhausts the run deadline',
   'finishes an advancing root beyond its inspection allowance',
   'reaps an elevated census worker at its native deadline',
@@ -34,6 +37,15 @@ const selected = [
   'refreshes a new pin after a FIFO handoff without repeating the census',
   'refreshes a new lease after a FIFO handoff without repeating the census',
 ];
+const buildSelected = [
+  'expires build directories',
+  'protected build sources',
+  'build source written',
+  'native build removal',
+  'removed build bytes',
+];
+// The first two are parameterized over local and native metadata walks.
+const buildSelectedCount = 7;
 const options = isolatedTestFileWorkerOptions(process.env, 1);
 
 it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime', async context => {
@@ -55,7 +67,7 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
       const receipts = join(evidenceDir, 'reclaim-test-receipts.ndjson');
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime', '--', process.execPath, join(root, 'scripts/test-files.mjs'),
-        assertion, censusAssertion, '--', '-t', [...selected, ...censusSelected].join('|')], {
+        assertion, censusAssertion, '--', '-t', [...selected, ...buildSelected, ...censusSelected].join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
           // Each runner owns its map. Inheriting the outer path loses the
@@ -106,9 +118,9 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const row = rows.find(value => value.filePath === assertion);
         expect(row).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-          passed: selected.length, failed: 0, collectionFailed: false,
+          passed: selected.length + buildSelectedCount, failed: 0, collectionFailed: false,
         } } });
-        for (const title of selected) expect(row.row.executionDetails.passedCaseTitles.some(
+        for (const title of [...selected, ...buildSelected]) expect(row.row.executionDetails.passedCaseTitles.some(
           (passed: string) => passed.includes(title))).toBe(true);
         const census = rows.find(value => value.filePath === censusAssertion);
         expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {

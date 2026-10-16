@@ -28,6 +28,10 @@ export const PROVIDER_CAPABILITY_PATTERN = /^[a-z][a-z0-9]*\.[a-z][a-z0-9-]*$/;
 export const PROVIDER_EGRESS_HOST_PATTERN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 export interface ProviderOAuthDescriptor {
+  /** Each connection selects its own HTTPS origin. Endpoints are absolute-path references;
+   * the host binds them to its saved registration, never to a provider-supplied request URL.
+   * The source carries that bound origin as connection-owned config.connectionOrigin. */
+  instance?: true;
   authorizeUrl: string;
   tokenUrl: string;
   scopes: string[];
@@ -36,6 +40,8 @@ export interface ProviderOAuthDescriptor {
    * documents `scope=read,write`).
    */
   scopeSeparator?: ' ' | ',';
+  /** Form/query key for the host-held client id. TikTok uses client_key. */
+  clientIdParameter?: 'client_id' | 'client_key';
   /** Expiring grants normally require a refresh token. Opt into owner reauthorization
    * for APIs that issue none; the host still expires the grant and blocks the source. */
   refreshPolicy?: 'refresh-token' | 'reauthorize';
@@ -988,6 +994,59 @@ export function providerEgressAllows(egressHosts: readonly string[], host: strin
  * Semantic validation of a provider descriptor. Returns a list of issues (empty = valid).
  * The JSON schema enforces shape; this enforces identity, version and value rules.
  */
+export function normalizeProviderInstanceOrigin(value: unknown): string | null {
+  if (typeof value !== 'string' || value !== value.trim() || /[\\\s]/.test(value)) return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  const host = url.hostname;
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.pathname !== '/' || url.search || url.hash ||
+    host.length > 253 || !PROVIDER_EGRESS_HOST_PATTERN.test(host) || host.startsWith('*.') ||
+    /(?:^|\.)(?:localhost|local|internal|test|invalid|example|onion)$/.test(host)) return null;
+  return url.origin;
+}
+
+/** An instance endpoint cannot name a second origin, scheme or fragment. */
+export function providerInstanceEndpointIssue(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\s#]/.test(value)) {
+    return 'must be an absolute-path reference without a host, whitespace, backslash or fragment';
+  }
+  return null;
+}
+
+/** A descriptor bound by the host to one saved instance registration. The original stays pure data. */
+export function bindProviderInstance(descriptor: ProviderDescriptor, value: unknown): ProviderDescriptor {
+  if (!descriptor.oauth?.instance) return descriptor;
+  const origin = normalizeProviderInstanceOrigin(value);
+  if (!origin) throw new Error('provider_instance_origin_invalid');
+  const { instance: _instance, ...oauth } = descriptor.oauth;
+  const endpoint = (path: string): string => {
+    if (providerInstanceEndpointIssue(path)) throw new Error('provider_instance_endpoint_invalid');
+    const url = new URL(path, origin);
+    if (url.origin !== origin) throw new Error('provider_instance_endpoint_invalid');
+    return url.href;
+  };
+  if (descriptor.egressHosts.length || oauth.resourceToken) throw new Error('provider_instance_static_egress_refused');
+  return {
+    ...descriptor,
+    egressHosts: [new URL(origin).hostname],
+    oauth: { ...oauth, authorizeUrl: endpoint(oauth.authorizeUrl), tokenUrl: endpoint(oauth.tokenUrl),
+      ...(oauth.identity ? { identity: { ...oauth.identity, url: endpoint(oauth.identity.url) } } : {}),
+    },
+  };
+}
+
+/** The source's persisted connection origin is the whole egress budget for an instance grant. */
+export function providerSourceEgressAllows(
+  descriptor: Pick<ProviderDescriptor, 'oauth' | 'egressHosts'>,
+  url: URL,
+  config?: Record<string, unknown>,
+): boolean {
+  if (url.protocol !== 'https:' || url.username || url.password) return false;
+  if (!descriptor.oauth?.instance) return providerEgressAllows(descriptor.egressHosts, url.hostname);
+  const origin = normalizeProviderInstanceOrigin(config?.connectionOrigin);
+  return origin !== null && url.origin === origin;
+}
+
 export function validateProviderDescriptor(descriptor: unknown): string[] {
   const issues: string[] = [];
   if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
@@ -1018,7 +1077,8 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   for (const dup of duplicates(capabilities.filter(isNonEmptyString))) issues.push(`provider.capabilities repeats "${dup}"`);
   const egress = Array.isArray(d.egressHosts) ? d.egressHosts : [];
-  if (egress.length === 0) issues.push('provider.egressHosts must declare at least one host');
+  if (egress.length === 0 && d.oauth?.instance !== true) issues.push('provider.egressHosts must declare at least one host');
+  if (d.oauth?.instance === true && egress.length !== 0) issues.push('provider.egressHosts must be empty for an instance-scoped OAuth grant');
   for (const host of egress) {
     if (!isNonEmptyString(host) || !PROVIDER_EGRESS_HOST_PATTERN.test(host.toLowerCase())) {
       issues.push(`provider.egressHosts entry "${String(host)}" must be a hostname or *.domain`);
@@ -1026,13 +1086,21 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   if (d.oauth !== undefined) {
     const oauth = d.oauth as Partial<ProviderOAuthDescriptor>;
-    if (!isHttpsUrl(oauth.authorizeUrl)) issues.push('provider.oauth.authorizeUrl must be an https URL');
-    if (!isHttpsUrl(oauth.tokenUrl)) issues.push('provider.oauth.tokenUrl must be an https URL');
+    if (oauth.instance !== undefined && oauth.instance !== true) issues.push('provider.oauth.instance must be true when present');
+    const endpointIssue = (url: unknown) => oauth.instance === true ? providerInstanceEndpointIssue(url) : isHttpsUrl(url) ? null : 'must be an https URL';
+    for (const key of ['authorizeUrl', 'tokenUrl'] as const) {
+      const issue = endpointIssue(oauth[key]);
+      if (issue) issues.push(`provider.oauth.${key} ${issue}`);
+    }
+    if (oauth.instance && oauth.resourceToken) issues.push('provider.oauth.resourceToken is not supported with instance-scoped OAuth');
     if (!Array.isArray(oauth.scopes) || !oauth.scopes.every(isNonEmptyString)) {
       issues.push('provider.oauth.scopes must be a list of scope strings');
     }
     if (oauth.scopeSeparator !== undefined && oauth.scopeSeparator !== ' ' && oauth.scopeSeparator !== ',') {
       issues.push('provider.oauth.scopeSeparator must be " " or ","');
+    }
+    if (oauth.clientIdParameter !== undefined && oauth.clientIdParameter !== 'client_id' && oauth.clientIdParameter !== 'client_key') {
+      issues.push('provider.oauth.clientIdParameter must be client_id or client_key');
     }
     if (oauth.refreshPolicy !== undefined && oauth.refreshPolicy !== 'refresh-token' && oauth.refreshPolicy !== 'reauthorize') {
       issues.push('provider.oauth.refreshPolicy must be refresh-token or reauthorize');
@@ -1042,7 +1110,8 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
     if (oauth.identity !== undefined) {
       const identity = oauth.identity as Partial<ProviderOAuthIdentity>;
-      if (!isHttpsUrl(identity.url)) issues.push('provider.oauth.identity.url must be an https URL');
+      const issue = endpointIssue(identity.url);
+      if (issue) issues.push(`provider.oauth.identity.url ${issue}`);
       if (!isNonEmptyString(identity.idField)) issues.push('provider.oauth.identity.idField must name the account id field');
       if (identity.method !== undefined && identity.method !== 'GET' && identity.method !== 'POST') {
         issues.push('provider.oauth.identity.method must be GET or POST');

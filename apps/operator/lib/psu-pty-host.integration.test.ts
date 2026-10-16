@@ -498,6 +498,85 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
 });
 
 describe('plain launch kickoff turn-start proof', () => {
+  it.each(['immediate', 'delayed', 'healthy', 'old-banner', 'repeated-banner', 'no-receipt'] as const)(
+    'returns the provider admission verdict for a headless Codex kickoff: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-kickoff-capacity-'));
+      const codexHome = join(root, 'codex-home');
+      const nativeFile = join(codexHome, 'sessions', 'rollout-2026-10-16T00-00-00-01234567-89ab-4cde-8fab-0123456789ab.jsonl');
+      const proofPath = join(root, 'proof.json');
+      const proofToken = 'c'.repeat(48);
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      const ownerId = `su-capacity-launch-${scenario}-${process.pid}-${Math.floor(performance.now())}`;
+      const kickoff = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nBegin the assigned work';
+      const failed = !['healthy', 'old-banner'].includes(scenario);
+      const childCode = [
+        "const fs=require('node:fs'),path=require('node:path');let text='',submitted=false;",
+        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "const capacity=()=>process.stdout.write('Selected model is at capacity. Please try again in 90 seconds.\\n');",
+        "if(['old-banner','repeated-banner'].includes(process.env.SCENARIO))capacity();",
+        "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+        "process.stdin.on('data',data=>{for(const ch of data){if(ch!=='\\r'){text+=ch;continue;}if(submitted)continue;submitted=true;",
+        "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();",
+        "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text}]}},",
+        "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'capacity-fixture'}}];",
+        "fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));",
+        "process.stdout.write('SUBMITTED\\n');if(['immediate','repeated-banner','no-receipt'].includes(process.env.SCENARIO))capacity();",
+        "else if(process.env.SCENARIO==='delayed')setTimeout(capacity,600);",
+        "}process.stdout.write('COMPOSER_ECHO:'+text+'\\n');});",
+      ].join('');
+      const signalSource = new EventEmitter();
+      const { captured, io } = fakeIo();
+      const done = hostThroughPty({
+        command: execPath, args: ['-e', childCode], cwd: root, ownerId,
+        env: hermeticEnv({
+          PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_HEADLESS: '1',
+          CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SCENARIO: scenario,
+          ...(scenario === 'no-receipt' ? {} : {
+            [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
+          }),
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1200',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '4000',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '30',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+        }),
+        io, bridgeTty: false, signalSource, kickoff, nativePersistenceTimeoutMs: 1000,
+        onRespawn: async () => true,
+      });
+      try {
+        const receipt = await vi.waitFor(() => {
+          if (scenario === 'no-receipt') {
+            expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain('launch-kickoff-model-capacity-rejected');
+            expect(existsSync(metaPathFor(ownerId))).toBe(false);
+            return null;
+          }
+          const text = readFileSync(proofPath, 'utf8');
+          expect(text.length, captured()).toBeGreaterThan(0);
+          return JSON.parse(text);
+        }, { timeout: 8000 });
+        if (scenario === 'no-receipt') expect(await done).toBe(1);
+        else expect(receipt).toEqual({ token: proofToken, persisted: !failed, nativeRef: nativeFile,
+          reason: failed ? 'kickoff-not-submitted:model-capacity' : null });
+        const rows = readFileSync(nativeFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(rows.filter(row => row.payload?.role === 'user').map(row => row.payload.content[0].text)).toEqual([kickoff]);
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        const rejected = events.filter(row => row.kind === 'launch-kickoff-model-capacity-rejected');
+        expect(rejected).toHaveLength(failed ? 1 : 0);
+        if (failed) expect(rejected[0]).toMatchObject({ retryAfterMs: 90_000, nativeRef: nativeFile });
+        expect(events.some(row => row.kind === 'launch-kickoff-model-turn-absent')).toBe(false);
+        expect(captured().match(/SUBMITTED/g)).toHaveLength(1);
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 15_000,
+  );
+
   it.each([
     { receiptState: 'empty', receiptAllowed: true, nativePublication: 'immediate', isResume: false },
     { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'immediate', isResume: false },

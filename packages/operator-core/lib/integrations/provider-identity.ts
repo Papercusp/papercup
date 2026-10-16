@@ -44,6 +44,7 @@ export async function fetchProviderIdentity(
   const post = identity.method === 'POST';
   const response = await fetchImpl(url, {
     method: post ? 'POST' : 'GET',
+    redirect: 'manual',
     headers: {
       authorization: `Bearer ${secret}`,
       accept: 'application/json',

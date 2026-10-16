@@ -111,6 +111,25 @@ describe('provider registry', () => {
 });
 
 describe('host.fetch', () => {
+  it('binds instance requests to persisted source config before reading credentials or fetching', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor({ egressHosts: [], oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'] } });
+    await registry.register({ descriptor: d, adapter: adapter(d), pluginName: 'instance-provider' });
+    const accessToken = vi.fn(async (source: { sourceId: string }) => `${source.sourceId}-secret`);
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const hostFetch = createHostFetch(d.id, { registry, accessToken, fetchImpl,
+      resolveSource: async (sourceId) => ({ sourceId, providerId: d.id, config: sourceId === 'unbound' ? {} : { connectionOrigin: `https://${sourceId}.example.com` } }),
+    });
+    for (const [source, url] of [['first', 'https://second.example.com/api'], ['first', 'https://first.example.com:8443/api'], ['unbound', 'https://first.example.com/api']]) {
+      await expect(hostFetch({ source, request: { url } })).rejects.toMatchObject({ code: 'egress-denied' });
+    }
+    expect(accessToken).not.toHaveBeenCalled(); expect(fetchImpl).not.toHaveBeenCalled();
+    await hostFetch({ source: 'second', request: { url: 'https://second.example.com/api' } });
+    expect(accessToken).toHaveBeenCalledTimes(1); expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const init = (fetchImpl.mock.calls as unknown as [URL, RequestInit][])[0]![1];
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer second-secret');
+    expect(init.redirect).toBe('manual');
+  });
   async function setup() {
     const registry = createProviderRegistry();
     const d = descriptor();

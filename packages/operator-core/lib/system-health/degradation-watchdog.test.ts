@@ -230,6 +230,97 @@ describe('runDegradationSweepOnce — one alarm per episode against a durable op
     expect(open.size).toBe(0);
   });
 
+  it('resolves owner-scoped degradation only after positive ended-session evidence', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+      thresholds: { minEligible: 1 },
+    };
+    const owner = 'su-ended-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readEndedSessionOwners: async (owners) => {
+        expect(owners).toEqual([owner]);
+        return new Set([owner]);
+      },
+    });
+
+    expect(r.resolved).toEqual([key]);
+    expect(resolutions[0]).toMatchObject({
+      conditionKey: key,
+      summary: 'Superseded: compaction-force-respawn (su-ended-owner) owner session ended; scope is no longer applicable.',
+    });
+    expect(broadcasts).toHaveLength(0);
+    expect(open.has(key)).toBe(false);
+  });
+
+  it('does not re-open an ended owner condition from a stale collapsed window', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+      thresholds: { minEligible: 1 },
+    };
+    const owner = 'su-ended-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [{ scope: owner, window: windowOf(1, 0) }],
+      readEndedSessionOwners: async () => new Set([owner]),
+    });
+
+    expect(r.resolved).toEqual([key]);
+    expect(r.opened).toEqual([]);
+    expect(broadcasts).toHaveLength(0);
+    expect(open.has(key)).toBe(false);
+  });
+
+  it('explains owner-end recovery for session-scoped degradation alarms', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+      thresholds: { minEligible: 1 },
+    };
+    const result = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [{ scope: 'su-current-owner', window: windowOf(1, 0) }],
+      readOpenConditionKeys: async () => [],
+    });
+    expect(broadcasts[0]?.body).toContain('resolves itself once the rate reaches 0.5 or the scoped owner session ends.');
+    expect(result.opened).toEqual(['degraded:compaction-force-respawn:su-current-owner:otherRunner']);
+  });
+
+  it('keeps owner-scoped conditions open when liveness is live, unknown, or unreadable', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+    };
+    const owner = 'su-live-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readEndedSessionOwners: async () => new Set(),
+    });
+    expect(r.resolved).toEqual([]);
+    expect(resolutions).toHaveLength(0);
+    expect(open.has(key)).toBe(true);
+
+    const failed = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readEndedSessionOwners: async () => { throw new Error('liveness unavailable'); },
+    });
+    expect(failed.errors).toContain('compaction-force-respawn ended-session liveness: liveness unavailable');
+    expect(resolutions).toHaveLength(0);
+    expect(open.has(key)).toBe(true);
+  });
+
   it('a failed open-key read makes no rail writes', async () => {
     const r = await runDegradationSweepOnce({
       ...deps(),

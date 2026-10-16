@@ -25,6 +25,19 @@ const ROOT = resolve(__dirname, '../../../../../..');
 const HOOK = resolve(__dirname, '../posttooluse-required-field-strand-nudge.mjs');
 
 describe('P-037 merged interface consequence collector', () => {
+  it('optionally measures a body-only symbol change without inventing an interface consequence', async () => {
+    const hook = await loadHook();
+    const before = 'export function changed() { return 1; }\nexport const same = 2;';
+    const after = before.replace('return 1', 'return 3');
+    const result = await hook.consequenceFor(resolve(ROOT, 'packages/operator-core/lib/example.ts'), {
+      sizeOf: () => after.length, readFile: () => after, showAt: () => before,
+      resolveBase: () => 'a'.repeat(40), includeSourceChanges: true,
+    });
+    expect(result?.changes).toEqual([]);
+    expect(result?.sourceChange).toMatchObject({ root: ROOT, path: 'packages/operator-core/lib/example.ts',
+      symbols: [{ name: 'changed', line: 1 }], base: 'a'.repeat(40) });
+    expect(result?.sourceChange.sha256).not.toBe(result?.sourceChange.beforeSha256);
+  });
   async function collect(before: string, after: string) {
     const hook = await loadHook();
     return hook.consequenceFor(resolve(ROOT, 'packages/operator-core/lib/example.ts'), {
@@ -78,7 +91,8 @@ async function realDiffer() {
 
 async function loadHook() {
   return (await import(`file://${HOOK}`)) as {
-    consequenceFor: (p: string, deps?: Record<string, unknown>) => Promise<{ path: string; base: string; changes: string[]; checks: string[] } | null>;
+    consequenceFor: (p: string, deps?: Record<string, unknown>) => Promise<{ path: string; base: string; changes: string[]; checks: string[];
+      sourceChange?: { root: string; path: string; symbols: { name: string; line: number }[]; sha256: string; beforeSha256: string } } | null>;
     nudgeFor: (p: string, deps?: Record<string, unknown>) => Promise<string | null>;
     isCandidateFile: (p: string) => boolean;
     formatNudge: (rel: string, added: Array<{ path: string; reason: string }>) => string;

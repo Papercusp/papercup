@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   normalizeProviderOptions,
+  normalizeProviderInstanceOrigin,
+  bindProviderInstance,
+  providerSourceEgressAllows,
   providerCoverageIssues,
   providerSyncProgressIssues,
   providerCursorFreshness,
@@ -77,6 +80,52 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
 
+describe('instance-scoped OAuth descriptors', () => {
+  const instance: ProviderDescriptor = { ...descriptor({ url: '/api/v1/accounts/verify_credentials', idField: 'id' }), egressHosts: [],
+    oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
+      identity: { url: '/api/v1/accounts/verify_credentials', idField: 'id' } } };
+
+  it('binds all relative endpoints to a saved public HTTPS origin without mutating the descriptor', () => {
+    expect(validateProviderDescriptor(instance)).toEqual([]);
+    const bound = bindProviderInstance(instance, 'https://social.example.com/');
+    expect(validateProviderDescriptor(bound)).toEqual([]);
+    expect(bound.egressHosts).toEqual(['social.example.com']);
+    expect(bound.oauth).toMatchObject({ authorizeUrl: 'https://social.example.com/oauth/authorize', tokenUrl: 'https://social.example.com/oauth/token',
+      identity: { url: 'https://social.example.com/api/v1/accounts/verify_credentials' } });
+    expect(bound.oauth).not.toHaveProperty('instance');
+    expect(instance.oauth!.authorizeUrl).toBe('/oauth/authorize');
+  });
+
+  it('refuses insecure, credential-bearing, IP, private-literal and non-origin registration values', () => {
+    for (const value of ['http://social.example.com', 'https://name:secret@social.example.com', 'https://127.0.0.1', 'https://[::1]', 'https://0x7f000001',
+      'https://localhost', 'https://host.local', 'https://host.internal', 'https://social.example.com:8443', 'https://social.example.com/path',
+      'https://social.example.com?next=elsewhere', 'https://social.example.com#part', ' https://social.example.com', 'https://social.example.com\\evil', null]) {
+      expect(normalizeProviderInstanceOrigin(value), String(value)).toBeNull();
+      expect(() => bindProviderInstance(instance, value)).toThrow('provider_instance_origin_invalid');
+    }
+  });
+
+  it('refuses static host budgets and endpoints that select another authority', () => {
+    expect(validateProviderDescriptor({ ...instance, egressHosts: ['collector.example.com'] })).toContain('provider.egressHosts must be empty for an instance-scoped OAuth grant');
+    for (const authorizeUrl of ['https://collector.example.com/oauth', '//collector.example.com/oauth', '/\\collector.example.com', '/oauth#fragment']) {
+      const bad = { ...instance, oauth: { ...instance.oauth!, authorizeUrl } };
+      expect(validateProviderDescriptor(bad).some((issue) => issue.includes('authorizeUrl'))).toBe(true);
+      expect(() => bindProviderInstance(bad, 'https://social.example.com')).toThrow('provider_instance_endpoint_invalid');
+    }
+    expect(validateProviderDescriptor({ ...instance, oauth: { ...instance.oauth!, instance: false } })).toContain('provider.oauth.instance must be true when present');
+  });
+
+  it('permits only the persisted source origin, including its port, never a caller-selected or static host', () => {
+    const config = { connectionOrigin: 'https://social.example.com' };
+    expect(providerSourceEgressAllows(instance, new URL('https://social.example.com/api/v1/timelines/home'), config)).toBe(true);
+    for (const value of ['https://other.example.com/api', 'https://social.example.com:8443/api', 'https://social.example.com.evil.com/api', 'http://social.example.com/api', 'https://user@social.example.com/api']) {
+      expect(providerSourceEgressAllows(instance, new URL(value), config)).toBe(false);
+    }
+    expect(providerSourceEgressAllows(instance, new URL('https://social.example.com/api'))).toBe(false);
+    expect(providerSourceEgressAllows(instance, new URL('https://social.example.com/api'), { connectionOrigin: 'https://127.0.0.1' })).toBe(false);
+  });
+});
+
 /** A new source's starting destination policy (WI-10006213): keyed by declared datatypes only. */
 describe('validateProviderDescriptor: defaultDestinations', () => {
   const base = { ...descriptor({ url: 'https://api.example.com/user', idField: 'id' }), datatypes: ['ticket', 'ticket-comment'] };
@@ -126,6 +175,17 @@ describe('validateProviderDescriptor: membership', () => {
   it('container refs are printable, without spaces, and at most 200 characters', () => {
     for (const ref of ['T01:C02', 'drive/folder-1', '#general', 'team@example.com']) expect(PROVIDER_ACL_REF_PATTERN.test(ref)).toBe(true);
     for (const ref of ['', 'two words', 'line\nbreak', 'x'.repeat(201)]) expect(PROVIDER_ACL_REF_PATTERN.test(ref)).toBe(false);
+  });
+});
+
+describe('validateProviderDescriptor: oauth.clientIdParameter', () => {
+  it('accepts only supported client-id form keys', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    for (const clientIdParameter of ['client_id', 'client_key'] as const) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, clientIdParameter } })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, clientIdParameter: 'redirect_uri' as 'client_key' } }))
+      .toContain('provider.oauth.clientIdParameter must be client_id or client_key');
   });
 });
 

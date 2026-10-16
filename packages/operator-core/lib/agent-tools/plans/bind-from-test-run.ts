@@ -1402,6 +1402,27 @@ export async function expandTestRunBinding(
   let testPath = cargo && input.canonicalTestPath ? input.canonicalTestPath : await recordedTestPath(root, row, deps.git);
   // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
   let asCommitted: AsCommittedMapping | null = null;
+  // A distinct worktree can share this repository's common Git directory, so
+  // recordedTestPath already resolves it. A clean receipt still exercised its
+  // recorded commit, not later edits in this checkout. Keep the existing
+  // commit-content verification instead of applying this checkout's mtime guard.
+  if (testPath && !cargo && !input.canonicalTestPath && row.worktree_dirty === false
+    && row.root && !(await sameDirectory(root, row.root))) {
+    const git = withRepoIdentityMemo(deps.git ?? defaultGitRunner);
+    try {
+      const [rootTop, recordedTop] = await Promise.all([
+        git(root, ['rev-parse', '--show-toplevel']),
+        git(row.root, ['rev-parse', '--show-toplevel']),
+      ]);
+      if (isAbsolute(rootTop.trim()) && isAbsolute(recordedTop.trim())
+        && !(await sameDirectory(rootTop.trim(), recordedTop.trim()))) {
+        const mapped = await asCommittedTestPath(root, row, git);
+        if (mapped?.testPath === testPath) asCommitted = mapped;
+      }
+    } catch {
+      // Unverified identity retains the existing mutable-checkout safeguards.
+    }
+  }
   if (cargo && input.canonicalTestPath && row.worktree_dirty === false && row.commit_sha && FULL_SHA_RE.test(row.commit_sha)) {
     asCommitted = cargoMapping
       ? { ...cargoMapping, testPath: input.canonicalTestPath }

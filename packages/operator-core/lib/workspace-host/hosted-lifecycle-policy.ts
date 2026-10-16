@@ -30,7 +30,9 @@ export interface HostedPoolResourceAdmissionInput {
   pending: HostedPoolResources;
   requested: HostedPoolResources;
   budget: { currency: string; usedMinor: number; pendingMinor: number; requestedMinor: number };
-  capacity: { freeHosts: number; reservedForOtherCustomers: number; olderBurstWaiters: number };
+  capacity: { freeHosts: number; reservedForOtherCustomers: number; olderBurstWaiters: number;
+    /** Provisioning consumes allowance, but no existing warm VM. Defaults to requested.hosts. */
+    requestedWarmHosts?: number };
 }
 
 /** Pure resource half of admission; the caller persists its receipt atomically with reservation.
@@ -78,14 +80,17 @@ export function evaluateHostedPoolResourceAdmission(input: HostedPoolResourceAdm
     if (!decision.allowed) reasons.push(`pool cost: ${decision.reason}`);
   }
   const capacity = input.capacity;
+  const warmDemand = capacity.requestedWarmHosts === undefined ? input.requested.hosts : capacity.requestedWarmHosts;
   const reservedHosts = entitlement.quotas['pool.reserved-hosts'] ?? 0;
   const guaranteed = finiteInteger(reservedHosts) && input.requested.hosts > 0 &&
     input.allocated.hosts + input.pending.hosts + input.requested.hosts <= reservedHosts;
-  if (![capacity.freeHosts, capacity.reservedForOtherCustomers, capacity.olderBurstWaiters].every(finiteInteger) ||
-      capacity.reservedForOtherCustomers > capacity.freeHosts) {
+  if (![capacity.freeHosts, capacity.reservedForOtherCustomers, capacity.olderBurstWaiters, warmDemand].every(finiteInteger) ||
+      capacity.reservedForOtherCustomers > capacity.freeHosts || warmDemand > input.requested.hosts) {
     reasons.push('invalid pool capacity snapshot');
   } else if (input.requested.hosts > 0) {
-    if (input.requested.hosts > capacity.freeHosts - capacity.reservedForOtherCustomers) {
+    // Paid guarantees compete atomically for actual inventory. Subtracting all
+    // other guarantees from each paid request would deadlock a short pool.
+    if (warmDemand > capacity.freeHosts - (guaranteed ? 0 : capacity.reservedForOtherCustomers)) {
       reasons.push('pool capacity reserved or exhausted');
     }
     if (!guaranteed && capacity.olderBurstWaiters > 0) reasons.push('older pool burst requests have priority');

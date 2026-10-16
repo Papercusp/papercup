@@ -40,7 +40,12 @@ import {
 } from '../agent-tools/search/embedder';
 import { stampEmbedderMode } from '../search/embedder-mode-registry';
 import { rerankRows } from '../agent-tools/search/rerank';
-import { createMemoryWorkDeadline, MemoryTimeoutError, type MemoryWorkDeadline } from './op-deadline';
+import {
+  createMemoryWorkDeadline,
+  MemoryTimeoutError,
+  type MemoryTimeoutTelemetry,
+  type MemoryWorkDeadline,
+} from './op-deadline';
 import { createStageAttempt, withStageAttempt } from '../sync/hyperbee/stage-stall-log';
 import {
   CORPUS_BUDGET_CHARS,
@@ -338,6 +343,8 @@ export interface CorpusRecallResult {
   /** Why the leg ended here — see `CorpusRecallOutcome`. Read this before
    *  concluding anything from an empty `lines`. */
   outcome: CorpusRecallOutcome;
+  /** Safe timeout facts when the corpus leg's own bound or its parent budget expired. */
+  timeout?: MemoryTimeoutTelemetry;
   /**
    * P-008 — did the stage-1 cross-encoder rerank actually run?
    *
@@ -374,13 +381,14 @@ export interface CorpusRecallResult {
   stages?: SearchLegs[];
 }
 
-const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
+const empty = (outcome: CorpusRecallOutcome, timeout?: MemoryTimeoutTelemetry): CorpusRecallResult => ({
   block: null,
   lines: [],
   dropped: [],
   embedderAvailable: false,
   candidateCount: 0,
   outcome,
+  ...(timeout ? { timeout } : {}),
   // The leg never reached fusion, so there is no leg report to give. `null` says
   // that; `emptyLegs()` would say "every leg ran and found nothing", which is a
   // different — and here false — claim.
@@ -391,6 +399,37 @@ const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
   // false) statement about why no reranking happened.
   rerank: 'nothing-to-reorder',
 });
+
+function corpusTimeoutTelemetry(
+  error: unknown,
+  deadline: MemoryWorkDeadline,
+  parent: MemoryWorkDeadline | undefined,
+  startedAt: number,
+): MemoryTimeoutTelemetry | undefined {
+  // A parent request-budget expiry is the important distinction: it says the
+  // corpus leg never received its own wall, so do not mislabel it as backend
+  // slowness. Preserve the parent's closed phase and elapsed measurement.
+  const parentReason = parent?.signal.reason;
+  if (parent?.signal.aborted && parentReason instanceof MemoryTimeoutError) {
+    return {
+      scope: parentReason.scope,
+      phase: parentReason.phase,
+      elapsedMs: parentReason.elapsedMs ?? Math.max(0, Math.round(Date.now() - startedAt)),
+    };
+  }
+
+  const reason = error instanceof MemoryTimeoutError
+    ? error
+    : deadline.signal.reason instanceof MemoryTimeoutError ? deadline.signal.reason : null;
+  if (!reason) return undefined;
+  return {
+    // Once the parent is still alive, this is the corpus leg's own bound even
+    // when its internal deadline represented the expiry as request-budget.
+    scope: 'backend-operation',
+    phase: 'corpus-leg',
+    elapsedMs: reason.elapsedMs ?? Math.max(0, Math.round(Date.now() - startedAt)),
+  };
+}
 
 type QueryEmbedder = (text: string, signal?: AbortSignal) => Promise<number[]>;
 
@@ -583,11 +622,14 @@ export async function recallCorpusContext(input: CorpusRecallInput): Promise<Cor
   const signal = input.signal && input.deadline
     ? AbortSignal.any([input.signal, input.deadline.signal])
     : input.signal ?? input.deadline?.signal;
+  const startedAt = Date.now();
   const deadline = createMemoryWorkDeadline(timeoutMs, signal);
   try {
     return await deadline.run(() => recallCorpusContextInner({ ...input, signal: deadline.signal }, () => deadline.remainingMs()), 'corpus recall');
   } catch (error) {
-    if (deadline.signal.aborted || error instanceof MemoryTimeoutError) return empty('timed-out');
+    if (deadline.signal.aborted || error instanceof MemoryTimeoutError) {
+      return empty('timed-out', corpusTimeoutTelemetry(error, deadline, input.deadline, startedAt));
+    }
     throw error;
   } finally { deadline.close(); }
 }

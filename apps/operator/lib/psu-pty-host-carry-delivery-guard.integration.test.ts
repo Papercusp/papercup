@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path';
 import { execPath } from 'node:process';
 import { pathToFileURL } from 'node:url';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 
 const subjectPath = process.env.PROBE_SCRIPT
   ? resolve(process.env.PROBE_SCRIPT)
@@ -102,7 +103,7 @@ describe('carry-respawn native-turn delivery authority', () => {
     let mints = 0;
     const done = hostThroughPty({ command: execPath,
       args: ['-e', "process.stdin.setRawMode(true);process.stdout.write('READY\\n');process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);});setTimeout(()=>process.exit(0),4000);"],
-      cwd: '/tmp', env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex' },
+      cwd: '/tmp', env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex' },
       ownerId, io, bridgeTty: false, onExit: () => {},
       mintCarryRespawnArgs: () => { mints++; return { args: ['-e', 'process.exit(0)'], nativeId: null }; },
     });
@@ -138,7 +139,7 @@ describe('carry-respawn native-turn delivery authority', () => {
       const lateOwnerRow = sourceRow('Choose Workbench C and implement it yourself', new Date().toISOString()) + '\n';
       const { captured, io } = fakeIo();
       let mints = 0;
-      const env = { ...process.env, PAPERCUSP_AGENT: 'codex', CODEX_HOME: root, PAPERCUSP_SID: ownerId,
+      const env = { ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: root, PAPERCUSP_SID: ownerId,
         PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20', PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '100' };
       const done = hostThroughPty({ command: execPath,
         args: ['-e', "process.stdout.write('OLD-READY\\n');process.stdin.on('data',d=>{if(d.includes(4))process.exit(0);});setTimeout(()=>process.exit(0),7000);"],
@@ -224,7 +225,7 @@ describe('carry-respawn native-turn delivery authority', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
@@ -304,7 +305,7 @@ describe('carry-respawn native-turn delivery authority', () => {
         args: ['-e', childCode],
         cwd: root,
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           CLAUDE_CONFIG_DIR: claudeConfig,
@@ -400,7 +401,7 @@ describe('carry-respawn native-turn delivery authority', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           CLAUDE_CONFIG_DIR: claudeConfig,
@@ -525,7 +526,7 @@ describe('carry-respawn native-turn delivery authority', () => {
         args: ['-e', childCode],
         cwd: '/tmp',
         env: {
-          ...process.env,
+          ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
           TERM: 'xterm-256color',

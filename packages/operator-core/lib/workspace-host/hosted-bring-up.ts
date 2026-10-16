@@ -36,6 +36,7 @@ import {
 import { enrollGcpIapWorkspaceHostConnector } from './gcp-iap-connector-enrollment';
 import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import type { WorkspaceHostInitializationAdmission } from './initialization-admission';
+import { retireHostedPoolAgentReservations } from './hosted-agent-admission';
 import {
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperationsForHost,
@@ -293,6 +294,7 @@ export async function retireHostedCustomerWorkspaceAfterDestroy(
   input: { controlPlaneWorkspaceId: string; hostId: string },
   dependencies: {
     revokeConnectors?: (input: { controlPlaneWorkspaceId: string; hostId: string }) => Promise<void>;
+    retireAgentReservations?: typeof retireHostedPoolAgentReservations;
   } = {},
 ): Promise<{ customerWorkspaceId: string } | null> {
   const bindings = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
@@ -313,7 +315,13 @@ export async function retireHostedCustomerWorkspaceAfterDestroy(
        LIMIT 2
     `,
   );
-  if (bindings.length === 0) return null;
+  if (bindings.length === 0) {
+    // Replacement can move the directory before the old VM finishes destroy.
+    // The receipt helper independently requires provider-confirmed absence.
+    await (dependencies.retireAgentReservations ?? retireHostedPoolAgentReservations)(input);
+    await (dependencies.revokeConnectors ?? revokeHostedWorkspaceConnectorsForDestroyedHost)(input);
+    return null;
+  }
   if (bindings.length > 1) {
     throw new Error(`host ${input.hostId} is bound to multiple customer workspaces`);
   }
@@ -327,6 +335,7 @@ export async function retireHostedCustomerWorkspaceAfterDestroy(
   }
 
   await (dependencies.revokeConnectors ?? revokeHostedWorkspaceConnectorsForDestroyedHost)(input);
+  await (dependencies.retireAgentReservations ?? retireHostedPoolAgentReservations)(input);
 
   const updated = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
     query<Array<{ id: string }>>`

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, dockerAllocationScope, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
 
 const failureRuntime = { container: 'owned-app', network: 'owned', appUrl: 'http://127.0.0.1:32123', mailUrl: 'http://127.0.0.1:32124' };
 
@@ -314,15 +314,55 @@ test('provider config routes mail and data into the isolated fixture', () => {
   assert.throws(() => sandboxEnvironment({ ...input, appUrl: 'https://example.com' }), /loopback/);
 });
 
-test('slow allocation is joined before cleanup instead of being killed at the warning threshold', async () => {
-  const observations = [];
-  const outcome = await dockerAllocation(['create', '--name', 'fixture'], {}, {
-    pendingAfterMs: 10,
-    onPending: () => observations.push('still pending'),
-    spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>process.stdout.write("allocated-container"),80)']),
+for (const operation of ['create', 'start', 'stop', 'rm']) {
+  test(`slow Docker ${operation} is joined before cleanup instead of being killed at the warning threshold`, async () => {
+    const observations = [];
+    const outcome = await dockerAllocation([operation, 'fixture'], {}, {
+      pendingAfterMs: 10,
+      onPending: () => observations.push('still pending'),
+      spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>process.stdout.write("daemon-outcome"),80)']),
+    });
+    observations.push('safe to continue ' + outcome);
+    assert.deepEqual(observations, ['still pending', 'safe to continue daemon-outcome']);
   });
-  observations.push('safe to clean ' + outcome);
-  assert.deepEqual(observations, ['still pending', 'safe to clean allocated-container']);
+}
+
+test('hook teardown joins late create before inspecting and refuses the timed-out setup continuation', async () => {
+  let settle, created = false, removed = false;
+  const calls = [];
+  const scope = dockerAllocationScope({ allocate: async args => {
+    calls.push(args[0]);
+    await new Promise(resolve => { settle = resolve; });
+    created = true;
+    return 'owned-container';
+  } });
+  const setup = scope.run(['create', 'owned-container']).then(() => scope.run(['start', 'owned-container']));
+  const setupFailed = assert.rejects(setup, /scope is closing/);
+  await new Promise(resolve => setImmediate(resolve));
+  const cleanup = scope.close(() => {
+    assert.equal(created, true, 'inspection must follow the actual create outcome');
+    removed = true;
+  });
+  assert.equal(scope.close(() => assert.fail('duplicate cleanup')), cleanup);
+  assert.equal(removed, false);
+  settle();
+  await setupFailed;
+  await cleanup;
+  assert.equal(removed, true);
+  assert.deepEqual(calls, ['create']);
+});
+
+test('failed pending allocation still permits cleanup and preserves its original failure', async () => {
+  let reject, cleaned = false;
+  const scope = dockerAllocationScope({ allocate: () => new Promise((_, fail) => { reject = fail; }) });
+  const outcome = scope.run(['create']);
+  const failed = assert.rejects(outcome, /daemon failure/);
+  await new Promise(resolve => setImmediate(resolve));
+  const cleanup = scope.close(() => { cleaned = true; });
+  reject(new Error('daemon failure'));
+  await failed;
+  await cleanup;
+  assert.equal(cleaned, true);
 });
 
 test('allocation errors redact injected credentials', async () => {
@@ -339,8 +379,9 @@ test('allocation evidence identifies a pending request and its failed outcome wi
   await assert.rejects(dockerAllocation(['start', owner, secret], { PASSWORD: secret }, {
     pendingAfterMs: 10, onPending() {}, onProgress: receipt => receipts.push(receipt),
     spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>{process.stderr.write("private output");process.exitCode=7},80)']),
+    readEvents: () => ({ status: 1, stdout: '' }),
   }), /start 7/);
-  assert.deepEqual(receipts.map(row => row.status), ['started', 'pending', 'failed']);
+  assert.deepEqual(receipts.map(row => row.status), ['started', 'pending', 'failed', 'events-unavailable']);
   assert.ok(receipts.every(row => row.operation === 'start' && row.resource === owner &&
     Number.isFinite(Date.parse(row.at)) && row.elapsedMs >= 0));
   assert.ok(receipts.at(-1).elapsedMs >= receipts[1].elapsedMs);
@@ -383,6 +424,25 @@ test('unavailable daemon history preserves the failed allocation outcome and rec
   }), /run 7/);
   assert.deepEqual(receipts.map(row => row.status), ['started', 'failed', 'events-unavailable']);
   assert.equal(JSON.stringify(receipts).includes('private daemon response'), false);
+});
+
+test('personal SSH allocation receipts retain exact resource and daemon identity without arguments', async () => {
+  const owner = 'pc-personal-ssh-' + randomUUID(), receipts = [], secret = randomUUID();
+  for (const operation of ['create', 'start', 'stop', 'rm']) {
+    await dockerAllocation([operation, '--name', owner, secret], {}, {
+      onProgress: receipt => receipts.push(receipt),
+      spawnChild: () => spawn(process.execPath, ['-e', 'process.stdout.write("owned-id")']),
+      readEvents: args => {
+        assert.equal(args[args.indexOf('--filter') + 1], 'container=' + owner);
+        return { status: 0, stdout: JSON.stringify({ Action: operation === 'rm' ? 'destroy' : operation === 'stop' ? 'die' : operation,
+          Actor: { Attributes: { name: owner, credential: secret } }, time: Math.floor(Date.now() / 1000) }) };
+      },
+    });
+  }
+  assert.ok(receipts.every(receipt => receipt.resource === owner));
+  assert.deepEqual(receipts.filter(row => row.status === 'daemon-event').map(row => [row.operation, row.daemonAction]),
+    [['create', 'create'], ['start', 'start'], ['stop', 'die'], ['rm', 'destroy']]);
+  assert.equal(JSON.stringify(receipts).includes(secret), false);
 });
 
 test('container start remains joined past its warning and cleanup follows the actual daemon outcome', { timeout: 5000 }, async () => {

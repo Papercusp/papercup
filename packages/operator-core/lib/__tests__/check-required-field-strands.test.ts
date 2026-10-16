@@ -17,6 +17,21 @@ import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSign
 
 const ROOT = resolve(__dirname, '../../../..');
 
+describe('measured exported symbol changes for incident pushes', () => {
+  it('distinguishes a body edit from unchanged exports, comments and formatting', async () => {
+    // @ts-expect-error — shared executable guard has no type declarations
+    const { diffExportedSymbolText } = await import('../../../../scripts/check-required-field-strands.mjs');
+    const before = 'export function changed() { return 1; }\nexport const same = 2;';
+    expect(diffExportedSymbolText(before, before.replace('return 1', 'return 3'), 'a.ts'))
+      .toEqual([{ name: 'changed', line: 1 }]);
+    expect(diffExportedSymbolText(before, '// comment\nexport function changed(){return 1;}\nexport const same=2;', 'a.ts'))
+      .toEqual([]);
+    expect(diffExportedSymbolText(before, 'export const same = 2;', 'a.ts'))
+      .toEqual([{ name: 'changed', line: 1 }]);
+    expect(diffExportedSymbolText(before, 'export function changed( {', 'a.ts')).toEqual([]);
+  });
+});
+
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
   matchedByFilter: number;

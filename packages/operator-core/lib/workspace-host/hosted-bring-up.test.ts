@@ -41,6 +41,7 @@ import {
   hostedConnectorRouteLabel,
   PAPERCUSP_HOSTED_BRING_UP_AGENTS,
   readHostedBringUpBinding,
+  retireHostedCustomerWorkspaceAfterDestroy,
   revokeHostedWorkspaceConnectorsForDestroyedHost,
   workspaceHostBringUpOperationIds,
   type HostedConnectorEnrollmentDependencies,
@@ -282,6 +283,22 @@ describe('hosted bring-up binding (D-407, aws-byoc-gcp-parity D-016 rule c)', ()
 });
 
 describe('hosted workspace offboarding connector cleanup', () => {
+  it('still retires an absent VM after its customer binding moved to a replacement', async () => {
+    workspaceDb.run = async () => [];
+    const retireAgentReservations = vi.fn(async () => 2);
+    const revokeConnectors = vi.fn(async () => {});
+    const input = { controlPlaneWorkspaceId: 'control', hostId: 'old-host' };
+    await expect(retireHostedCustomerWorkspaceAfterDestroy(input,
+      { retireAgentReservations, revokeConnectors })).resolves.toBeNull();
+    expect(retireAgentReservations).toHaveBeenCalledWith(input);
+    expect(revokeConnectors).toHaveBeenCalledWith(input);
+    retireAgentReservations.mockRejectedValueOnce(new Error('hosted_pool_agent_host_not_absent'));
+    revokeConnectors.mockClear();
+    await expect(retireHostedCustomerWorkspaceAfterDestroy(input,
+      { retireAgentReservations, revokeConnectors })).rejects.toThrow('host_not_absent');
+    expect(revokeConnectors).not.toHaveBeenCalled();
+  });
+
   it('selects connector bindings by host and revokes the persisted credential', async () => {
     const binding = {
       control_workspace_id: 'papercusp-workspace',

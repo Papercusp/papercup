@@ -2793,6 +2793,7 @@ async function maybeCaptureRecipe(
     const { resolveProseProfileSelection } = await import('../../search/prose-vector-dims');
     const { potHomeSlugForHarness } = await import('../../hive-federation');
     const { resolveAgentIdentity } = await import('../coordination/identity');
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
 
     let ownerId: string | null = null;
     try {
@@ -2809,7 +2810,7 @@ async function maybeCaptureRecipe(
     // that still permits genuinely generic recipes while filtering bound ones.
     let recommendationContext: RecipeAuthorityContext = {
       workspace: workspaceId,
-      ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+      ...(concreteHarnessSlug ? { harness: concreteHarnessSlug } : {}),
     };
     try {
       const identity = readIdentity(ctx);
@@ -2829,7 +2830,7 @@ async function maybeCaptureRecipe(
         ...recipeAuthorityContextFromRefs(liveRefs),
         workspace: workspaceId,
         ...(liveFleet ? { fleet: liveFleet } : {}),
-        ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+        ...(concreteHarnessSlug ? { harness: concreteHarnessSlug } : {}),
       };
     } catch (err) {
       ctx.log(`code:run live recipe authority read failed (bound recommendations filtered): ${(err as Error)?.message ?? String(err)}`);

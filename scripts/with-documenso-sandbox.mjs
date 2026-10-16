@@ -163,7 +163,7 @@ export async function dockerAllocation(args, environment = {}, {
 } = {}) {
   const startedAt = Date.now();
   // Never log argv, output or environment: those can contain credentials.
-  const resource = args.find(arg => /^daohr-documenso-[a-f0-9-]{12}(?:-(?:pg|mail|app|reaper))?$/.test(arg));
+  const resource = args.find(arg => /^(?:daohr-documenso-[a-f0-9-]{12}(?:-(?:pg|mail|app|reaper))?|pc-personal-ssh-[a-f0-9-]{36})$/.test(arg));
   const progress = status => onProgress({ operation: args[0], ...(resource ? { resource } : {}),
     status, at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
   progress('started');
@@ -195,7 +195,7 @@ export async function dockerAllocation(args, environment = {}, {
     // Keep run atomic: a separate create/start would strand an unstarted reaper
     // if the wrapper died between requests. Read its exact daemon history after
     // the joined request, so late bridge setup can be distinguished from create.
-    if (args[0] === 'run' && resource) {
+    if (['run', 'create', 'start', 'stop', 'rm'].includes(args[0]) && resource) {
       try {
         const events = readEvents(['events', '--since', String(Math.floor(startedAt / 1000)),
           '--until', String(Math.ceil(Date.now() / 1000)), '--filter', 'container=' + resource,
@@ -210,18 +210,46 @@ export async function dockerAllocation(args, environment = {}, {
               !['create', 'start', 'die', 'kill', 'destroy'].includes(action)) continue;
           const timeMs = event.timeNano ? Math.floor(Number(event.timeNano) / 1_000_000) : Number(event.time) * 1000;
           if (!Number.isFinite(timeMs) || timeMs < startedAt - 1000) continue;
-          onProgress({ operation: 'run', resource, status: 'daemon-event', daemonAction: action,
+          onProgress({ operation: args[0], resource, status: 'daemon-event', daemonAction: action,
             at: new Date(timeMs).toISOString(), elapsedMs: Math.max(0, timeMs - startedAt) });
           matched++;
         }
         if (!matched) throw new Error('no matching event history');
       } catch {
         // A bounded diagnostic failure cannot replace the allocation outcome.
-        onProgress({ operation: 'run', resource, status: 'events-unavailable',
+        onProgress({ operation: args[0], resource, status: 'events-unavailable',
           at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
       }
     }
   }
+}
+
+/** A test-hook timeout does not cancel its async continuation. Close admission
+ * first, join requests already sent to the daemon, then inspect/remove resources.
+ * This prevents a late create from appearing after an empty cleanup inspection.
+ * An external process kill still requires the sandbox's independent reaper.
+ */
+export function dockerAllocationScope({ allocate = dockerAllocation } = {}) {
+  const pending = new Set();
+  let closing = false, cleanup;
+  return {
+    run(args, environment = {}, options = {}) {
+      if (closing) return Promise.reject(new Error('Docker allocation scope is closing'));
+      const outcome = Promise.resolve().then(() => allocate(args, environment, options));
+      pending.add(outcome);
+      outcome.then(() => pending.delete(outcome), () => pending.delete(outcome));
+      return outcome;
+    },
+    close(remove) {
+      closing = true;
+      // Keep a single teardown outcome even if both a hook and a failure path close.
+      cleanup ??= (async () => {
+        await Promise.allSettled([...pending]);
+        return remove();
+      })();
+      return cleanup;
+    },
+  };
 }
 
 /** Start is also a daemon mutation: wait for its outcome before cleanup, and

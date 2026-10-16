@@ -50,6 +50,29 @@ function nativeFixtureFailureDiagnostic(
 describe('native P018 private operator CLI incident claim and resume', () => {
   it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
     const root = resolve(import.meta.dirname, '../../../..');
+    const sourcePaths = ['packages/operator-core/lib/code-intelligence/push-channel.ts',
+      'packages/operator-core/lib/code-intelligence/push-snapshot.ts',
+      'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
+      'packages/operator-core/lib/edit-attribution.ts',
+      'apps/operator/scripts/hooks/inject/core.mjs',
+      'apps/operator/scripts/hooks/inject/delivery-ledger.mjs',
+      'apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs',
+      'scripts/check-required-field-strands.mjs',
+      'scripts/check-behavioural-strands.mjs',
+      'packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts'];
+    const sourceHashes = () => Object.fromEntries(sourcePaths.map(path =>
+      [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
+    const beforeHashes = sourceHashes();
+    // Native Node children execute committed source under the inherited guard.
+    // Refuse before bundling/allocating PG if their fixture would be substituted.
+    const fixturePath = 'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts';
+    const fixtureBlob = spawnSync('git', ['show', `HEAD:${fixturePath}`], {
+      cwd: root, encoding: 'buffer', timeout: 10_000,
+    });
+    expect(fixtureBlob.status, 'Native fixture must be committed before its guarded child can run').toBe(0);
+    expect(createHash('sha256').update(fixtureBlob.stdout).digest('hex'),
+      'Native fixture differs from HEAD; let git-sync commit it before replay (the child would substitute old assertions)')
+      .toBe(beforeHashes[fixturePath]);
     // Prepare the maintained ESM handler artifact before allocating private PG.
     // A direct tsx import of apps/operator's CommonJS entry is intentionally
     // refused by the committed-source guard.
@@ -84,10 +107,18 @@ describe('native P018 private operator CLI incident claim and resume', () => {
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
     const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
     expect(line, result.output).toBeDefined();
-    expect(JSON.parse(line!.slice('NATIVE_INCIDENT_API_PROOF='.length))).toMatchObject({
+    const proof = JSON.parse(line!.slice('NATIVE_INCIDENT_API_PROOF='.length));
+    expect(proof).toMatchObject({
       transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
+      push: { duplicateSuppressed: true, attribution: { status: 'measured',
+        recentEdits: [expect.objectContaining({ path: 'a-target.ts', symbols: [{ name: 'incidentTarget', line: 1 }] })] },
+        handlerHash, observationProducer: 'maintained collector and delivery ledger with controlled before image',
+        scope: expect.stringContaining('private current-source endpoint replay') },
     });
+    const afterHashes = sourceHashes();
+    expect(afterHashes).toEqual(beforeHashes);
+    writeSync(2, `NATIVE_P038_RUNTIME_PROOF=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
     } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
   // The build and private journey have separate producer deadlines. The test
   // deadline must allow both plus the maintained process-group exit fence.

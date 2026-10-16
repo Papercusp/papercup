@@ -762,7 +762,8 @@ function assertPrivatePreparationEvidence() {
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
-type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number };
+type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number;
+  onProgress?: (progress: { step: string; completedSteps: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   builder: PrivateBundleBuilder & { maxMs: number }): Promise<PrivateBundleReceipt>;
@@ -831,6 +832,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
         if (!existsSync(stepPath)) return;
         // Only fully appended rows can advance. Nested shell steps may interleave.
         const lines = readFileSync(stepPath, 'utf8').split('\n').slice(0, -1);
+        const progress: Array<{ step: string; completedSteps: number }> = [];
         for (const line of lines.slice(rowsSeen)) {
           try {
             const step = JSON.parse(line);
@@ -840,10 +842,14 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
             if (step.event === 'start' && !completed.has(step.step)) openSteps.add(key);
             else if (step.event === 'end' && step.status === 0 && openSteps.delete(key) && !completed.has(step.step)) {
               completed.add(step.step); lastProgressAt = Date.now();
+              progress.push({ step: step.step, completedSteps: completed.size });
             }
           } catch { /* an invalid journal row cannot extend the deadline */ }
         }
         rowsSeen = lines.length;
+        // Forward the same validated completions that renew this builder's
+        // deadline, so enclosing watchdogs need no synthetic heartbeat.
+        for (const step of progress) builder.onProgress?.(step);
       };
       const observeProgress = () => {
         try { sample(); }
@@ -868,6 +874,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
       child.once('error', error => { failure = error; stopGroup(child.pid); });
       child.once('close', (status, signal) => {
         poll.stop(); clearTimeout(deadline);
+        observeProgress();
         receipt = { ...receipt, pid: child.pid, status, signal,
           progress: { extensions, completedSteps: completed.size },
           error: failure && { code: (failure as NodeJS.ErrnoException).code, message: failure.message } };

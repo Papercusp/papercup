@@ -39,6 +39,7 @@ import {
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
   canDispatchOnFallbackOperator,
+  canBypassMissingServingGeneration,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -1572,6 +1573,17 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(canDispatchWithoutCatalog('', 'stdin')).toBe(false);
   });
 
+  it('bypasses a missing serving-generation marker only for scripted calls', () => {
+    const missingGeneration = Object.assign(new Error('legacy tools/list'), {
+      code: 'serving_generation_missing',
+    });
+
+    expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', missingGeneration)).toBe(true);
+    expect(canBypassMissingServingGeneration('rubrics:get', 'file', missingGeneration)).toBe(true);
+    expect(canBypassMissingServingGeneration('rubrics:get', null, missingGeneration)).toBe(false);
+    expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', new Error('other catalog error'))).toBe(false);
+  });
+
   it('dispatches supplied arguments without asking the client for tools/list', async () => {
     const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
     const client = {
@@ -1808,6 +1820,11 @@ describe('ptool keyed result recovery without concurrent replay', () => {
   it('refuses legacy tool listings that cannot enforce serving-generation compatibility', () => {
     expect(() => requireServingGeneration({ name: 'plans:bind-spec-evidence' }))
       .toThrow(/serving_generation_missing: plans:bind-spec-evidence .*incompatible legacy release/);
+    try {
+      requireServingGeneration({ name: 'plans:bind-spec-evidence' });
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('serving_generation_missing');
+    }
     expect(requireServingGeneration({
       name: 'plans:bind-spec-evidence',
       _meta: { 'papercusp/servingGeneration': ' serving-generation-v1:listed ' },

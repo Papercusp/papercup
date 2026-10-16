@@ -713,6 +713,8 @@ describe('recallCorpusContext — degradation (never throws, never blocks a turn
     const timedOut = await recallCorpusContext(base);
     expect(timedOut.outcome).toBe('timed-out');
     expect(timedOut.lines).toEqual([]);
+    expect(timedOut.timeout).toMatchObject({ scope: 'backend-operation', phase: 'corpus-leg' });
+    expect(timedOut.timeout?.elapsedMs).toBeGreaterThanOrEqual(0);
 
     delete process.env.PAPERCUSP_MEMORY_CORPUS_TIMEOUT_MS;
     runHybridSearch.mockReset();

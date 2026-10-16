@@ -208,22 +208,26 @@ describe('fallback observations — durable and readable across processes (real 
 
   it('filters scoped windows by the explicit workspace and producer context', async () => {
     const gateTag = 'gate-reuse:green-checkpoint';
+    const now = new Date('2026-01-01T12:00:00.000Z');
+    // This case tests context filtering, with observations strictly inside the
+    // scoped reader's half-open window instead of racing Date's millisecond tick.
+    const observedAt = new Date(now.getTime() - 1);
     observeFallback('context-filter', { eligible: 1, applied: 0, reason: 'dirty-checkout', scope: 'shared-task' }, {
-      sql: db.adminSql, workspaceId: 'default', processTag: gateTag,
+      sql: db.adminSql, workspaceId: 'default', processTag: gateTag, observedAt,
     });
     observeFallback('context-filter', { eligible: 2, applied: 0, reason: 'dirty-checkout', scope: 'shared-task' }, {
-      sql: db.adminSql, workspaceId: WS, processTag: 'gate-reuse',
+      sql: db.adminSql, workspaceId: WS, processTag: 'gate-reuse', observedAt,
     });
     observeFallback('context-filter', { eligible: 3, applied: 0, reason: 'otherRunner', scope: 'shared-task' }, {
-      sql: db.adminSql, workspaceId: 'default', processTag: 'local-check',
+      sql: db.adminSql, workspaceId: 'default', processTag: 'local-check', observedAt,
     });
     expect(await flushFallbackObservations()).toMatchObject({ written: 3, failed: 0 });
 
     const scoped = await readFallbackWindowsByScope('context-filter', 60 * 60 * 1000, {
-      sql: db.adminSql, workspaceId: 'default', processTag: gateTag,
+      sql: db.adminSql, workspaceId: 'default', processTag: gateTag, now,
     });
     const flat = await readFallbackWindow('context-filter', 60 * 60 * 1000, {
-      sql: db.adminSql, workspaceId: 'default', processTag: gateTag,
+      sql: db.adminSql, workspaceId: 'default', processTag: gateTag, now,
     });
     expect(flat).toMatchObject({ samples: 1, eligible: 1, applied: 0 });
     expect(scoped).toHaveLength(1);
@@ -231,6 +235,25 @@ describe('fallback observations — durable and readable across processes (real 
       scope: 'shared-task',
       window: { samples: 1, eligible: 1, applied: 0, reasons: [{ reason: 'dirty-checkout', eligible: 1 }] },
     });
+  });
+
+  it('excludes the upper millisecond boundary and includes it in the next scoped window', async () => {
+    const observedAt = new Date('2026-01-01T12:00:00.000Z');
+    const opts = { sql: db.adminSql, workspaceId: WS, processTag: 'boundary-producer' };
+    observeFallback('scope-boundary', { eligible: 1, applied: 0, reason: 'probe', scope: 'boundary' }, {
+      ...opts, observedAt,
+    });
+    expect(await flushFallbackObservations()).toMatchObject({ written: 1, failed: 0 });
+
+    // Same row and filters: only the upper bound changes. The flat reader has
+    // no upper bound, so it also establishes that the row was written and matches.
+    expect(await readFallbackWindow('scope-boundary', 1, { ...opts, now: observedAt }))
+      .toMatchObject({ samples: 1, eligible: 1, applied: 0 });
+    expect(await readFallbackWindowsByScope('scope-boundary', 1, { ...opts, now: observedAt }))
+      .toEqual([]);
+    expect(await readFallbackWindowsByScope('scope-boundary', 1, {
+      ...opts, now: new Date(observedAt.getTime() + 1),
+    })).toMatchObject([{ scope: 'boundary', window: { samples: 1, eligible: 1, applied: 0 } }]);
   });
 
   it('BAR R-14: a real PostgreSQL write rejection is non-throwing, counted, and leaves no row', async () => {

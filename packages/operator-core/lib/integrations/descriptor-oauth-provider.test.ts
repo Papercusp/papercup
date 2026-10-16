@@ -41,6 +41,30 @@ describe('makeDescriptorOAuthProvider: authorize URL', () => {
     expect(url.searchParams.has('actor')).toBe(false);
   });
 
+  it('uses a declared client_key for authorization, exchange and refresh while retaining rotated tokens', async () => {
+    const tokenFetch = vi.fn(async () => Response.json({ access_token: 'access', refresh_token: 'rotated', scope: 'user.info.basic,video.list' }));
+    vi.stubGlobal('fetch', tokenFetch);
+    const provider = makeDescriptorOAuthProvider('provider:tiktok', {
+      authorizeUrl: 'https://www.tiktok.com/v2/auth/authorize/', tokenUrl: 'https://open.tiktokapis.com/v2/oauth/token/',
+      scopes: ['user.info.basic', 'video.list'], scopeSeparator: ',', clientIdParameter: 'client_key',
+    }, { ...client, clientSecret: 'host-secret' });
+    const url = new URL(provider.buildAuthorizeUrl([...(provider.defaultScopes ?? [])], 'state-1'));
+    expect(url.searchParams.get('client_key')).toBe('client-1');
+    expect(url.searchParams.has('client_id')).toBe(false);
+    expect(url.searchParams.get('scope')).toBe('user.info.basic,video.list');
+    expect(await provider.exchangeCode('code')).toMatchObject({ refreshToken: 'rotated', scopes: ['user.info.basic', 'video.list'] });
+    expect(await provider.refresh('old-refresh')).toMatchObject({ refreshToken: 'rotated' });
+    expect(tokenFetch).toHaveBeenCalledTimes(2);
+    for (const call of tokenFetch.mock.calls as unknown as [string, RequestInit][]) expect(call[1].redirect).toBe('manual');
+    const forms = tokenFetch.mock.calls.map((call) => new URLSearchParams((call as unknown as [string, RequestInit])[1].body as string));
+    for (const form of forms) {
+      expect(form.get('client_key')).toBe('client-1'); expect(form.has('client_id')).toBe(false);
+      expect(form.get('client_secret')).toBe('host-secret');
+    }
+    expect(forms[0].get('code')).toBe('code'); expect(forms[0].get('redirect_uri')).toBe(client.redirectUri);
+    expect(forms[1].get('refresh_token')).toBe('old-refresh'); expect(forms[1].get('grant_type')).toBe('refresh_token');
+  });
+
   it.each([3070, 3170])('uses the exact host callback on port %i for authorization and token exchange', async (port) => {
     const redirectUri = `http://localhost:${port}/api/oauth/callback`;
     const tokenFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>

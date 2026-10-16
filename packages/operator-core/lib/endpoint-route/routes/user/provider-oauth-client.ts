@@ -30,6 +30,7 @@ const STATUS_BY_CODE: Record<OAuthClientRegistrationErrorCode, number> = {
   'invalid-client-id': 422,
   'invalid-client-secret': 422,
   'client-secret-required': 422,
+  'invalid-instance-origin': 422,
   'registrations-unreadable': 409,
 };
 
@@ -114,8 +115,8 @@ const save = defineTool({
       const { entry, ref } = await oauthProvider(ctx.params.providerId);
       const oauthClient = await saveOAuthClientRegistration(
         ref,
-        { clientId: body.clientId, clientSecret: body.clientSecret },
-        { requireSecret: !entry.descriptor.oauth?.pkce },
+        { clientId: body.clientId, clientSecret: body.clientSecret, ...(body.origin !== undefined ? { origin: body.origin } : {}) },
+        { requireSecret: !entry.descriptor.oauth?.pkce, requireOrigin: entry.descriptor.oauth?.instance === true },
       );
       invalidate();
       return Response.json({ ok: true, providerId: entry.descriptor.id, oauthClient });

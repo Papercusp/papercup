@@ -17,9 +17,8 @@
  * shape for the wave-B gate. So a module's platforms come from the markers the
  * code itself carries — `readonly platformId` on a read adapter, `platform:` /
  * `readonly platform` on a write adapter — and a shared module inherits the
- * platforms of the modules that import it. The assertion below pins that rule
- * to an active shared module; a registry row alone does not imply that a source
- * adapter exists in this directory.
+ * platforms of the modules that import it. A planted importer pins that rule
+ * as the legacy population shrinks during package migration.
  *
  * IT MUST NOT PASS VACUOUSLY. A guard whose job is to notice an absence reports
  * a fully-compliant tree and a broken scanner identically. So it asserts a
@@ -100,7 +99,10 @@ function loadModules(): Module[] {
       .filter((f) => files.includes(f));
     return { file, code, imports, platforms: declaredPlatforms(code) };
   });
+  return attributeSharedModules(modules);
+}
 
+function attributeSharedModules(modules: Module[]): Module[] {
   // Propagate importer -> imported to a fixpoint: a shared module inherits the
   // platforms of everything that pulls it in. Bounded by the module count, so a
   // cycle terminates instead of spinning.
@@ -164,29 +166,39 @@ const MODULES = loadModules();
 
 describe('the scan is measuring something', () => {
   it('sees the whole adapter directory', () => {
-    expect(MODULES.length).toBeGreaterThanOrEqual(20);
+    expect(MODULES.map((m) => m.file)).toEqual(expect.arrayContaining([
+      'bluesky-adapter.ts', 'mastodon-adapter.ts', 'reddit-adapter.ts',
+    ]));
+    expect(MODULES.map((m) => m.file).sort()).toEqual(readdirSync(SUBJECT_DIR).filter(isSubject).sort());
   });
 
   it('finds host literals to judge', () => {
     const total = MODULES.reduce((n, m) => n + hostLiterals(m.code).length, 0);
-    expect(total).toBeGreaterThanOrEqual(8);
+    expect(total).toBeGreaterThan(0);
   });
 
   it('exempts exactly one file, the registry itself', () => {
     expect([...EXEMPT]).toEqual(['platform-registry.ts']);
   });
 
-  it('attributes the active shared Threads module through its import', () => {
-    // threads-common carries the Threads API origin and declares no platform
-    // marker of its own. It must inherit attribution from its adapter import.
-    const platformsOf = (file: string) =>
-      [...(MODULES.find((m) => m.file === file)?.platforms ?? [])].sort();
-    expect(platformsOf('threads-common.ts')).toEqual(['threads']);
+  it('attributes a shared module through its importer, including a second import hop', () => {
+    const modules = attributeSharedModules([
+      { file: 'adapter.ts', code: '', imports: ['shared.ts'], platforms: new Set(['threads']) },
+      { file: 'shared.ts', code: '', imports: ['origin.ts'], platforms: new Set<string>() },
+      { file: 'origin.ts', code: "const API = 'https://graph.threads.net';", imports: [], platforms: new Set<string>() },
+    ]);
+    expect([...modules[2]!.platforms]).toEqual(['threads']);
+    expect(undeclaredHostFindings(modules)).toEqual([]);
+    modules[0]!.platforms = new Set(['reddit']);
+    modules[1]!.platforms.clear(); modules[2]!.platforms.clear();
+    expect(undeclaredHostFindings(attributeSharedModules(modules))).toEqual([
+      { file: 'origin.ts', host: 'graph.threads.net', kind: 'undeclared', platforms: ['reddit'] },
+    ]);
   });
 
-  it('is looking at a current API origin it exists to police', () => {
+  it('is looking at a current permalink origin it exists to police', () => {
     const hostsIn = (file: string) => hostLiterals(MODULES.find((m) => m.file === file)?.code ?? '');
-    expect(hostsIn('threads-common.ts')).toContain('graph.threads.net');
+    expect(hostsIn('bluesky-adapter.ts')).toContain('bsky.app');
   });
 });
 

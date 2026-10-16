@@ -3,7 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { withWorkspace } from '@papercusp/db-org';
 import { backfillHostedTrialEntitlementAuthority, lockHostedEntitlementAuthority,
   parseHostedTrialEntitlementPolicy, readHostedEntitlementAuthority } from '../auth/hosted-entitlement-store';
-import { checkHostedEntitlement } from '../auth/hosted-entitlements';
+import { checkHostedEntitlement, type ResolvedHostedEntitlements } from '../auth/hosted-entitlements';
 import {
   appendWorkspaceHostSpendObservation,
   evaluateWorkspaceHostSpendFinality,
@@ -23,7 +23,9 @@ import type { Sql } from 'postgres';
 import { notifyAttentionOnce } from '../attention-notify';
 import {
   classifyHostedLifecycleJob,
+  evaluateHostedIdleStop,
   evaluateHostedLifecycleAdmission,
+  evaluateHostedPoolResourceAdmission,
   type HostedBillingOwner,
   type HostedCostEstimate,
   type HostedLifecycleAction,
@@ -46,6 +48,9 @@ import {
   recordWorkspaceHostBillingClosure,
 } from './billing-closure-release-receipt';
 import { WorkspaceHostReleaseBindingError } from './release-stage-receipt';
+import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+import { parseHostedWorkspaceWorkload, type HostedWorkspaceWorkload } from './hosted-relay-confidentiality-registry';
+import { VIEWER_HOLD_SEC } from '../desktop/desktop-lifecycle';
 
 type TxRunner = <T>(workspaceId: string, fn: (tx: Sql) => Promise<T>) => Promise<T>;
 type Notify = typeof notifyAttentionOnce;
@@ -151,6 +156,8 @@ export interface AdmitHostedLifecycleJobInput {
   operationId?: string;
   request?: unknown;
   policy?: Partial<HostedLifecyclePolicy>;
+  /** Server-only idle automation. Ordinary customer-requested stops omit this. */
+  idleStop?: true;
   /** Server-resolved requirements. Candidate inventory is read inside admission, never supplied by a customer. */
   pool?: Omit<WorkspaceHostPoolRequest, 'workspaceId' | 'customerWorkspaceId' | 'target' | 'nowMs' | 'mayProvision'>;
 }
@@ -168,6 +175,21 @@ export interface HostedLifecycleAdmissionReceipt {
   placement?: WorkspaceHostPoolPlacement;
   /** Host and storage allocation admission; agent and guest filesystem enforcement remain separate. */
   resourceAdmission?: HostedPoolHostResourceAdmission;
+  /** An admission snapshot, never permission to skip stop-time revalidation. */
+  idleStop?: HostedPoolIdleStopAdmission;
+}
+
+interface HostedPoolIdleStopAdmission {
+  schemaVersion: 1;
+  authorityRevision: number;
+  auditReceiptIds: readonly string[];
+  measuredAt: string;
+  idleStopAfterMinutes: number;
+  hostGeneration: number;
+  controllerFence: number;
+  hostDesiredRevision: number;
+  connectorGeneration: number;
+  workloadObservedAtMs: number;
 }
 
 interface HostedPoolHostResourceAdmission {
@@ -185,6 +207,8 @@ interface HostedPoolHostResourceAdmission {
   budget: { currency: string; committedMinor: number; requestedMinor: number };
   /** Disjoint retained disks and pending allocations, never two full-volume charges. */
   storage?: HostedPoolStorageAdmission;
+  priority?: { guaranteed: boolean; freeHosts: number; reservedForOtherCustomers: number;
+    olderBurstWaiters: number; requestedWarmHosts: number };
 }
 
 type HostedPoolStorageCapacity = { dbGiB: number; workspaceGiB: number };
@@ -361,6 +385,7 @@ export interface HostedPoolObservation {
   size: WorkspaceHostPoolCandidate['size'];
   observedAtMs: number;
   cleanAttestationRef: string | null;
+  workload?: HostedWorkspaceWorkload & { connectorGeneration: number; observedAtMs: number };
   /** Same-owner stopped VM and exact retained disk measured by the provider; not a health attestation. */
   stoppedOwner?: { customerWorkspaceId: string; dataVolumeId: string };
 }
@@ -412,6 +437,58 @@ export async function refreshHostedStoppedOwnerObservation(input: {
 }
 
 /** Refresh eligibility from controller-owned state and a real provider catalog, never browser fields. */
+/** Only the authenticated current connector can write idle workload evidence.
+ * A liveness pong alone never proves an idle guest. Provider refreshes may
+ * replace this snapshot; missing evidence then safely holds idle-stop.
+ */
+export async function recordHostedPoolActivity(binding: HostedConnectorBinding, raw: HostedWorkspaceWorkload,
+  at = new Date()): Promise<boolean> {
+  const activity = parseHostedWorkspaceWorkload(raw);
+  if (!activity || binding.hosting !== 'papercusp' || binding.state !== 'active' ||
+      !Number.isSafeInteger(at.getTime()) || at.getTime() < 0) return false;
+  return transaction(binding.controlPlaneWorkspaceId, async tx => {
+    // Match admission/offboarding lock order and serialize simultaneous reports
+    // before taking connector/host locks. A shared directory lock upgraded at
+    // the end would deadlock two reports that both need to update activity.
+    const customers = await tx<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${binding.controlPlaneWorkspaceId} AND id = ${binding.customerWorkspaceId}
+        AND organization_id = ${binding.organizationId} AND workspace_host_id = ${binding.hostId}
+        AND kind = 'hosted' AND state = 'active' FOR UPDATE`;
+    if (customers.length !== 1) return false;
+    const [role] = await tx<Array<{ role: string }>>`SELECT current_user AS role`;
+    if (!role?.role) throw new Error('hosted_pool_activity_role_unknown');
+    await tx`SELECT set_config('role', 'hosted_service', true)`;
+    const connectors = await tx<Array<{ host_id: string }>>`
+      SELECT host_id FROM papercusp_auth.hosted_workspace_connectors
+      WHERE control_workspace_id = ${binding.controlPlaneWorkspaceId} AND organization_id = ${binding.organizationId}
+        AND customer_workspace_id = ${binding.customerWorkspaceId} AND host_id = ${binding.hostId}
+        AND generation = ${binding.generation} AND state = 'active' AND revoked_at IS NULL FOR SHARE`;
+    await tx`SELECT set_config('role', ${role.role}, true)`;
+    if (connectors.length !== 1) return false;
+    const rows = await tx<Array<{ id: string }>>`
+      UPDATE harness_shared.workspace_hosts host
+      SET pool_observation = jsonb_set(pool_observation, '{workload}',
+        ${JSON.stringify({ ...activity, connectorGeneration: binding.generation, observedAtMs: at.getTime() })}::jsonb)
+      FROM harness_shared.customer_workspaces customer
+      WHERE host.workspace_id = ${binding.controlPlaneWorkspaceId} AND host.id = ${binding.hostId}
+        AND customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+        AND customer.id = ${binding.customerWorkspaceId} AND customer.organization_id = ${binding.organizationId}
+        AND customer.kind = 'hosted' AND customer.state = 'active' AND host.observed_state = 'running'
+        AND (pool_observation->>'generation')::bigint = host_generation
+        AND (pool_observation->>'controllerFence')::bigint = controller_fence
+        AND (pool_observation->>'desiredRevision')::bigint = desired_revision
+        AND coalesce((pool_observation->'workload'->>'observedAtMs')::bigint, -1) <= ${at.getTime()}
+      RETURNING host.id`;
+    if (rows.length !== 1) return false;
+    await tx`UPDATE harness_shared.customer_workspaces
+      SET last_activity_at = CASE WHEN last_activity_at IS NULL OR ${activity.activeCommands !== null && activity.activeCommands > 0 || activity.attachedViewers > 0}
+        THEN greatest(last_activity_at, ${at.toISOString()}::timestamptz) ELSE last_activity_at END
+      WHERE workspace_id = ${binding.controlPlaneWorkspaceId} AND id = ${binding.customerWorkspaceId}`;
+    return true;
+  });
+}
+
 export async function refreshHostedPoolObservation(input: {
   workspaceId: string;
   controllerId: string;
@@ -521,7 +598,12 @@ interface PoolHostRow {
   previously_tenant_used: boolean;
 }
 
-async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput): Promise<WorkspaceHostPoolPlacement> {
+interface HostedPoolPlacementSnapshot {
+  placement: WorkspaceHostPoolPlacement;
+  candidates: WorkspaceHostPoolCandidate[];
+}
+
+async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput): Promise<HostedPoolPlacementSnapshot> {
   // Stable row order also serializes against ordinary controller writers, which do not
   // take our provider/tenant advisory locks. Keep these locks until the operation insert.
   const hosts = await tx<PoolHostRow[]>`
@@ -549,7 +631,7 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
       FROM harness_shared.workspace_host_operations
      WHERE workspace_id = ${input.workspaceId} AND status IN ('queued', 'running')`;
   if (reservations.some((operation) => operation.data_volume_id === input.pool!.dataVolumeId)) {
-    return { kind: 'queue', reason: 'existing-tenant-needs-reconciliation', rejected: [] };
+    return { placement: { kind: 'queue', reason: 'existing-tenant-needs-reconciliation', rejected: [] }, candidates: [] };
   }
   const candidates: WorkspaceHostPoolCandidate[] = [];
   for (const host of hosts) {
@@ -589,10 +671,89 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
         ? o!.cleanAttestationRef : null,
     });
   }
-  return selectWorkspaceHostPoolPlacement({
+  return { candidates, placement: selectWorkspaceHostPoolPlacement({
     ...input.pool!, workspaceId: input.workspaceId, customerWorkspaceId: input.customerWorkspaceId,
     target: input.providerTarget, nowMs: Date.now(), mayProvision: input.action === 'provision',
-  }, candidates);
+  }, candidates) };
+}
+
+/** D-071: directory placeholders are durable demand; the operation ledger owns
+ * reservations. Read the same tenancy/eligibility rules as placement, never a
+ * customer-supplied tier, priority, queue position or free-host count.
+ */
+async function readHostedPoolPriority(tx: Sql, input: AdmitHostedLifecycleJobInput,
+  organizationId: string, snapshot: HostedPoolPlacementSnapshot) {
+  const customers = await tx<Array<{ id: string; organization_id: string; waiting: boolean; older: boolean }>>`
+    SELECT customer.id, customer.organization_id,
+           (host.observed_state IN ('absent', 'provisioning')
+             AND NOT EXISTS (SELECT 1 FROM harness_shared.workspace_host_resources resource
+               WHERE resource.workspace_id = host.workspace_id AND resource.host_id = host.id
+                 AND resource.state NOT IN ('absent', 'compensated'))
+             AND NOT EXISTS (SELECT 1 FROM harness_shared.workspace_host_operations operation
+               WHERE operation.workspace_id = customer.workspace_id
+                 AND operation.customer_workspace_id = customer.id)) AS waiting,
+           (customer.created_at, customer.id) < (SELECT current.created_at, current.id
+             FROM harness_shared.customer_workspaces current
+             WHERE current.workspace_id = ${input.workspaceId} AND current.id = ${input.customerWorkspaceId}) AS older
+      FROM harness_shared.customer_workspaces customer
+      JOIN harness_shared.workspace_hosts host
+        ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
+     WHERE customer.workspace_id = ${input.workspaceId} AND customer.kind = 'hosted'
+       AND customer.state = 'active' AND host.target = ${input.providerTarget}
+       AND host.region = ${input.pool!.region} AND host.desired_spec->'scope' = ${JSON.stringify(input.pool!.scope)}::jsonb
+       AND host.desired_spec->>'zone' = ${input.pool!.zone}
+     ORDER BY customer.created_at, customer.id`;
+  // Acquire ALL authority locks in one stable order before resolving any clock.
+  // Cross-provider admissions may share organizations; own-first order cycles.
+  const organizations = [...new Set([organizationId, ...customers.map(customer => customer.organization_id)])].sort();
+  for (const id of organizations) await lockHostedEntitlementAuthority(tx, id);
+  const authorities = new Map<string, ResolvedHostedEntitlements>();
+  for (const id of organizations) {
+    const authority = await readHostedEntitlementAuthority(tx, id);
+    if (authority.ok) authorities.set(id, authority.resolution);
+  }
+  // UNION makes running/stopped VMs and queued/running starts disjoint by host.
+  // A stopped VM already consumes its reservation; waking it is not another host.
+  const consumed = await tx<Array<{ organization_id: string; hosts: number }>>`
+    SELECT organization_id, count(*)::int AS hosts FROM (
+      SELECT customer.organization_id, host.id AS host_id
+        FROM harness_shared.customer_workspaces customer
+        JOIN harness_shared.workspace_hosts host
+          ON host.workspace_id = customer.workspace_id AND host.id = customer.workspace_host_id
+       WHERE customer.workspace_id = ${input.workspaceId} AND customer.organization_id = ANY(${organizations}::text[])
+         AND (host.observed_state IN ('running', 'stopped', 'starting', 'stopping') OR EXISTS (
+           SELECT 1 FROM harness_shared.workspace_host_resources resource
+            WHERE resource.workspace_id = host.workspace_id AND resource.host_id = host.id AND resource.kind = 'vm'
+              AND resource.provider_id IS NOT NULL AND resource.state NOT IN ('absent', 'compensated')))
+      UNION
+      SELECT operation.organization_id, operation.host_id
+        FROM harness_shared.workspace_host_operations operation
+       WHERE operation.workspace_id = ${input.workspaceId} AND operation.organization_id = ANY(${organizations}::text[])
+         AND operation.status IN ('queued', 'running') AND operation.action IN ('provision', 'start')
+    ) demand GROUP BY organization_id`;
+  const nowMs = Date.now();
+  const request: WorkspaceHostPoolRequest = { ...input.pool!, workspaceId: input.workspaceId,
+    customerWorkspaceId: input.customerWorkspaceId, target: input.providerTarget, nowMs, mayProvision: false };
+  const freeHosts = snapshot.candidates.filter(candidate =>
+    selectWorkspaceHostPoolPlacement(request, [candidate]).kind === 'assign-warm').length;
+  let reservedForOtherCustomers = 0;
+  const valid = new Set<string>();
+  for (const [id, authority] of authorities) {
+    const usedHosts = consumed.find(row => row.organization_id === id)?.hosts ?? 0;
+    if ((authority.recheckAt !== null && authority.recheckAt.getTime() <= nowMs) ||
+        !checkHostedEntitlement(authority, { kind: 'provider', provider: input.providerTarget as 'gcp' | 'aws' | 'azure' }).allowed ||
+        !checkHostedEntitlement(authority, { kind: 'quota', key: 'pool.hosts', used: usedHosts, requested: 1 }).allowed) continue;
+    valid.add(id);
+    if (id === organizationId) continue;
+    const allowance = Math.min(authority.quotas['pool.reserved-hosts'] ?? 0, authority.quotas['pool.hosts'] ?? 0);
+    if (!Number.isSafeInteger(allowance) || allowance < 0) continue;
+    const remaining = Math.max(0, allowance - usedHosts);
+    reservedForOtherCustomers = Math.min(freeHosts, reservedForOtherCustomers + remaining);
+  }
+  const olderBurstWaiters = customers.filter(customer => customer.id !== input.customerWorkspaceId &&
+    customer.waiting && customer.older && valid.has(customer.organization_id)).length;
+  return { freeHosts, reservedForOtherCustomers, olderBurstWaiters,
+    requestedWarmHosts: snapshot.placement.kind === 'assign-warm' ? 1 : 0 };
 }
 
 export class HostedLifecycleAdmissionError extends Error {
@@ -622,8 +783,10 @@ function policyFrom(row: DirectoryRow, override?: Partial<HostedLifecyclePolicy>
  * counted once as allocated. Unknown capacity fails closed, including old rows.
  */
 async function admitHostedPoolHostResources(
-  tx: Sql, input: AdmitHostedLifecycleJobInput, organizationId: string, placement: WorkspaceHostPoolPlacement,
+  tx: Sql, input: AdmitHostedLifecycleJobInput, organizationId: string, snapshot: HostedPoolPlacementSnapshot,
 ): Promise<HostedPoolHostResourceAdmission> {
+  const { placement } = snapshot;
+  const capacity = await readHostedPoolPriority(tx, input, organizationId, snapshot);
   await lockHostedEntitlementAuthority(tx, organizationId);
   let authority = await readHostedEntitlementAuthority(tx, organizationId);
   // Existing sessions can predate trial-policy rollout. A login observer is
@@ -745,11 +908,102 @@ async function admitHostedPoolHostResources(
     if (!check.allowed) throw new Error(`hosted_pool_budget_exceeded:${check.reason}`);
   }
   const storage = await admitHostedPoolStorage(tx, input, organizationId, authority.resolution);
+  const priority = evaluateHostedPoolResourceAdmission({ organizationId, entitlements: authority.resolution,
+    nowMs: Date.now(), allocated: { agents: 0, ...allocated, ...storage.allocated },
+    pending: { agents: 0, ...pending, ...storage.pending }, requested: { agents: 0, ...requested, ...storage.requested },
+    budget: { currency: input.estimate.currency, usedMinor: committedMinor, pendingMinor: 0, requestedMinor }, capacity });
+  if (!priority.allowed) throw new Error(`hosted_pool_priority_rejected:${priority.reasons.join('; ')}`);
   return { schemaVersion: 1, authorityRevision: authority.authorityRevision,
     bundleId: authority.resolution.bundleId, bundleVersion: authority.resolution.bundleVersion,
     auditReceiptIds: authority.resolution.auditReceiptIds, measuredAt: now.toISOString(), allocated, pending, requested,
     capacity: { hosts: 1, cpuMillicores: size.cpuCount * 1000, memoryMiB: size.memoryMiB },
-    budget: { currency: input.estimate.currency, committedMinor, requestedMinor }, storage };
+    budget: { currency: input.estimate.currency, committedMinor, requestedMinor }, storage,
+    priority: { ...capacity, guaranteed: priority.guaranteed } };
+}
+
+/** D-072: admission uses current authority and complete content-free evidence.
+ * The directory lock is already held; keep directory -> organization -> connector
+ * -> host ordering shared with agent admission and the workload writer.
+ * This receipt does not replace the execution-time guest drain/fence.
+ */
+async function admitHostedPoolIdleStop(tx: Sql, input: AdmitHostedLifecycleJobInput,
+  organizationId: string): Promise<HostedPoolIdleStopAdmission> {
+  const authority = await readHostedEntitlementAuthority(tx, organizationId);
+  if (!authority.ok) throw new Error(`hosted_pool_idle_entitlement_${authority.reason}`);
+  const minutes = authority.resolution.quotas['pool.idle-stop-minutes'];
+  if (typeof minutes !== 'number' || !Number.isSafeInteger(minutes) || minutes < 1) {
+    throw new Error('hosted_pool_idle_policy_disabled');
+  }
+  const [role] = await tx<Array<{ role: string }>>`SELECT current_user AS role`;
+  if (!role?.role) throw new Error('hosted_pool_idle_role_unknown');
+  let connectors: Array<{ generation: number }>;
+  await tx`SELECT set_config('role', 'hosted_service', true)`;
+  try {
+    connectors = await tx<Array<{ generation: number }>>`
+      SELECT generation FROM papercusp_auth.hosted_workspace_connectors
+      WHERE control_workspace_id = ${input.workspaceId} AND organization_id = ${organizationId}
+        AND customer_workspace_id = ${input.customerWorkspaceId} AND host_id = ${input.hostId}
+        AND state = 'active' AND revoked_at IS NULL LIMIT 2 FOR SHARE`;
+    await tx`SELECT set_config('role', ${role.role}, true)`;
+  } catch (error) {
+    await tx`SELECT set_config('role', ${role.role}, true)`.catch(() => {});
+    throw error;
+  }
+  if (connectors.length !== 1) throw new Error('hosted_pool_idle_connector_unknown');
+  const [host] = await tx<Array<{ host_generation: number; controller_fence: number;
+    desired_revision: number; observed_revision: number; desired_state: string; observed_state: string;
+    pool_observation: unknown; last_activity_at: Date | string | null }>>`
+    SELECT host.host_generation, host.controller_fence, host.desired_revision, host.observed_revision,
+           host.desired_state, host.observed_state, host.pool_observation, customer.last_activity_at
+    FROM harness_shared.workspace_hosts host JOIN harness_shared.customer_workspaces customer
+      ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+    WHERE host.workspace_id = ${input.workspaceId} AND host.id = ${input.hostId}
+      AND customer.id = ${input.customerWorkspaceId} AND customer.organization_id = ${organizationId}
+      AND customer.kind = 'hosted' AND customer.state = 'active' FOR UPDATE OF host`;
+  const o = host && isObject(host.pool_observation) ? host.pool_observation : null;
+  if (!host || host.desired_state !== 'running' || host.observed_state !== 'running' ||
+      Number(host.desired_revision) !== Number(host.observed_revision) ||
+      !o || o.generation !== Number(host.host_generation) || o.controllerFence !== Number(host.controller_fence) ||
+      o.desiredRevision !== Number(host.desired_revision)) throw new Error('hosted_pool_idle_host_unverified');
+  const workload = isObject(o.workload) ? o.workload : null;
+  const activity = workload ? parseHostedWorkspaceWorkload({ activeCommands: workload.activeCommands,
+    attachedViewers: workload.attachedViewers }) : null;
+  // Read the clock after all blocking locks. Unknown/stale/future evidence holds.
+  const now = Date.now();
+  if (!workload || !activity || !Number.isSafeInteger(workload.observedAtMs) ||
+      Number(workload.observedAtMs) > now || now - Number(workload.observedAtMs) > 75_000 ||
+      workload.connectorGeneration !== Number(connectors[0]!.generation)) {
+    throw new Error('hosted_pool_idle_workload_unverified');
+  }
+  if (activity.activeCommands !== 0 || activity.attachedViewers !== 0) {
+    throw new Error('hosted_pool_idle_active_work');
+  }
+  const [agents] = await tx<Array<{ pending: number; running: number }>>`
+    SELECT count(*) FILTER (WHERE state IN ('queued', 'eligible'))::int AS pending,
+           count(*) FILTER (WHERE state IN ('leased', 'running'))::int AS running
+    FROM harness_shared.resource_governor_admissions
+    WHERE workspace_id = ${input.workspaceId} AND admission_class = 'agent'
+      AND record->'metadata'->>'hostedCustomerWorkspaceId' = ${input.customerWorkspaceId}
+      AND record->'metadata'->>'hostedHostId' = ${input.hostId}
+      AND state IN ('queued', 'eligible', 'leased', 'running')`;
+  if (!agents || agents.pending > 0 || agents.running > 0) throw new Error('hosted_pool_idle_active_work');
+  const [jobs] = await tx<Array<{ count: number }>>`
+    SELECT count(*)::int AS count FROM harness_shared.workspace_host_operations
+    WHERE workspace_id = ${input.workspaceId} AND host_id = ${input.hostId} AND status IN ('queued', 'running')`;
+  const lastActivityAt = host.last_activity_at === null ? null : new Date(host.last_activity_at).toISOString();
+  const decision = evaluateHostedIdleStop({ state: 'active', observedState: host.observed_state,
+    lastActivityAt, idleStopAfterMinutes: minutes, activeLifecycleJobs: jobs?.count ?? Number.NaN,
+    activeWork: { activeAgents: agents.running, pendingAgentStarts: agents.pending, activeCommands: 0 },
+    desktopViewers: { attachedViewers: 0, lastSeenAt: new Date(Number(workload.observedAtMs)).toISOString(),
+      holdSec: VIEWER_HOLD_SEC } }, now);
+  if (!jobs || jobs.count > 0 || !decision.due || decision.idleForMs < VIEWER_HOLD_SEC * 1000) {
+    throw new Error('hosted_pool_idle_not_due');
+  }
+  return { schemaVersion: 1, authorityRevision: authority.authorityRevision,
+    auditReceiptIds: authority.resolution.auditReceiptIds, measuredAt: new Date(now).toISOString(),
+    idleStopAfterMinutes: minutes, hostGeneration: Number(host.host_generation),
+    controllerFence: Number(host.controller_fence), hostDesiredRevision: Number(host.desired_revision),
+    connectorGeneration: Number(connectors[0]!.generation), workloadObservedAtMs: Number(workload.observedAtMs) };
 }
 
 /**
@@ -771,6 +1025,8 @@ export async function admitHostedLifecycleJob(
     operationId: required(raw.operationId ?? uuid(), 'operation_id'),
   };
   safeInt(input.estimate.cents, 'estimate_cents');
+  if (input.idleStop !== undefined && (input.idleStop !== true || input.action !== 'stop' ||
+      input.pool !== undefined || input.estimate.cents !== 0)) throw new Error('hosted_pool_idle_request_invalid');
 
   return transaction(input.workspaceId, async (tx) => {
     // Operation identity is workspace-global, including collisions across provider/tenant.
@@ -853,6 +1109,7 @@ export async function admitHostedLifecycleJob(
         ? { kind: row.billing_owner_kind, id: row.billing_owner_id }
         : null);
     if (!billingOwner) throw new Error('hosted_lifecycle_billing_owner_required');
+    const idleStop = input.idleStop ? await admitHostedPoolIdleStop(tx, input, row.organization_id) : undefined;
 
     const decision = evaluateHostedLifecycleAdmission(
       policyFrom(row, input.policy),
@@ -878,9 +1135,10 @@ export async function admitHostedLifecycleJob(
     let resourceAdmission: HostedPoolHostResourceAdmission | undefined;
     if (input.pool) {
       if (input.action !== 'start' && input.action !== 'provision') throw new Error('hosted_pool_action_invalid');
-      placement = await placeHostedPoolJob(tx, input);
+      const poolSnapshot = await placeHostedPoolJob(tx, input);
+      placement = poolSnapshot.placement;
       if (placement.kind === 'queue') throw new HostedLifecyclePlacementError(placement);
-      resourceAdmission = await admitHostedPoolHostResources(tx, input, row.organization_id, placement);
+      resourceAdmission = await admitHostedPoolHostResources(tx, input, row.organization_id, poolSnapshot);
       // A new provision reserves the already-locked, customer-bound FK placeholder.
       // Existing VMs instead compare the exact observed generation and controller fence.
       if ('hostId' in placement) {
@@ -911,6 +1169,7 @@ export async function admitHostedLifecycleJob(
       ...(hostDesiredRevision !== undefined ? { hostDesiredRevision } : {}),
       ...(placement ? { placement } : {}),
       ...(resourceAdmission ? { resourceAdmission } : {}),
+      ...(idleStop ? { idleStop } : {}),
     };
 
     const approvedBy =

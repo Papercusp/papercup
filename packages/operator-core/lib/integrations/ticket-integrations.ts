@@ -72,7 +72,7 @@ export const TICKET_SOURCE_CONFIG_KEYS = ['teamIds', 'workspaceGid', 'projectGid
 export type TicketSourceConfigKey = (typeof TICKET_SOURCE_CONFIG_KEYS)[number];
 
 /** Config the connection flow owns. It is reported back but never settable from the page. */
-const CONNECTION_OWNED_CONFIG_KEYS = ['accountLabel'] as const;
+const CONNECTION_OWNED_CONFIG_KEYS = ['accountLabel', 'connectionOrigin', 'connectionAccountId'] as const;
 
 /**
  * The config keys a source of this provider may set: the properties its descriptor's configSchema
@@ -159,6 +159,8 @@ export interface TicketProviderSummary {
 
 /** An OAuth provider's client registration status, plus whether its flow needs a client secret. */
 export interface ProviderOAuthClientSummary extends OAuthClientRegistrationStatus {
+  /** The client registration must name the instance it belongs to. */
+  instanceRequired?: boolean;
   /** False when the provider's flow uses PKCE and can run with a client ID alone. */
   secretRequired: boolean;
 }
@@ -282,8 +284,8 @@ const tracksTickets = (descriptor: ProviderDescriptor): boolean =>
   descriptor.datatypes.includes(TICKET_DATATYPE) && Boolean(descriptor.oauth);
 
 /** The existing OAuth start link for a descriptor provider, returning to Settings → Integrations. */
-export function ticketConnectHref(descriptor: ProviderDescriptor): string {
-  const plugin = descriptorOAuthPlugin(descriptor);
+export function ticketConnectHref(descriptor: ProviderDescriptor, instanceOrigin?: string): string {
+  const plugin = descriptorOAuthPlugin(descriptor, instanceOrigin);
   const params = new URLSearchParams({
     provider: plugin,
     plugin,
@@ -324,11 +326,13 @@ export function summarizeIntegrationProvider(
       },
       required: [...new Set([...missingRequiredJsonSchemaKeys(schema, {}), 'harnessSlug'])],
     } : null,
-    connectHref: d.oauth ? ticketConnectHref(d) : null,
+    connectHref: d.oauth ? ticketConnectHref(d, oauthClient?.origin) : null,
     credentials,
     sourceSettings: providerSourceSettingsOffer(d),
     appRegistration: providerAppRegistrationView(d),
-    oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce } : null,
+    oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce,
+      ...(d.oauth.instance ? { instanceRequired: true, configured: oauthClient.configured && Boolean(oauthClient.origin) } : {}),
+    } : null,
   };
 }
 

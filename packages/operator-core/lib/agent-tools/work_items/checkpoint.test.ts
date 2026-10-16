@@ -556,6 +556,39 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     }
   });
 
+  it('documents checks beside checkpoint, not nested in the structured checkpoint body', () => {
+    const json = z.toJSONSchema(checkpoint.args as never);
+    const descriptions: string[] = [];
+    const collectDescriptions = (value: unknown): void => {
+      if (!value || typeof value !== 'object') return;
+      if ('description' in value && typeof (value as { description?: unknown }).description === 'string') {
+        descriptions.push((value as { description: string }).description);
+      }
+      for (const child of Object.values(value)) collectDescriptions(child);
+    };
+    collectDescriptions(json);
+
+    expect(descriptions.some((description) => description.includes('`checks` is a sibling argument, not a field inside this object'))).toBe(true);
+    expect(descriptions.some((description) => description.includes('root-level `checks` beside `checkpoint`'))).toBe(true);
+    expect(descriptions.some((description) => description.includes('`items[n].checks` beside `items[n].checkpoint`'))).toBe(true);
+  });
+
+  it('publishes the retireIds rowsMode constraint for single and items[] writes', () => {
+    const json = z.toJSONSchema(checkpoint.args as never) as {
+      properties?: {
+        retireIds?: { 'x-papercusp-call-constraint'?: string };
+        items?: {
+          items?: {
+            properties?: { retireIds?: { 'x-papercusp-call-constraint'?: string } };
+          };
+        };
+      };
+    };
+    const expected = "Requires effective `rowsMode:'replace'`; an `items[]` entry overrides the root setting, and omitted `rowsMode` defaults to `'merge'`.";
+    expect(json.properties?.retireIds?.['x-papercusp-call-constraint']).toContain(expected);
+    expect(json.properties?.items?.items?.properties?.retireIds?.['x-papercusp-call-constraint']).toContain(expected);
+  });
+
   it('teaches the single-item attestation exclusion in the published schema', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
       properties?: {

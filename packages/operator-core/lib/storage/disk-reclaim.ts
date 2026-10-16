@@ -19,7 +19,7 @@ import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
 import {
   RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
-  retentionRootSizeCap,
+  retentionRootSizeCap, buildDirsEligible, isBuildDirName, BUILD_DIR_NAMES, CACHEDIR_TAG_SIGNATURE,
   type CompiledPolicy, type RetentionClass, type RetentionPinProtection,
 } from './retention-policy';
 
@@ -35,7 +35,11 @@ export interface RetentionEntry {
   path: string; root: string; classId: string;
   newestWriteMs: number; bytes: number; dev: number; ino: number;
   protectedReason?: string;
+  buildDirs?: Array<{ path: string; dev: number; ino: number }>;
+  /** Reclaim only rebuildable descendants; the source entry stays. */
+  buildOnly?: boolean;
 }
+interface BuildRemovalResult { removed: Array<{ path: string; bytes: number }>; }
 export interface ReclaimDelegate {
   classId: string;
   run: (dryRun: boolean) => Promise<{ ok: boolean; detail: unknown }>;
@@ -81,6 +85,9 @@ export interface DiskReclaimReceipt {
 }
 export interface DiskReclaimOptions {
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
+  /** Reuse the last durable local receipt to give roots after a blocked census
+   * the first turn next time. Selection and all safety evidence remain fresh. */
+  previousReceipt?: DiskReclaimReceipt | null;
   /** Dependency seams also permit an isolated fixture tree; production uses the policy roots. */
   roots?: Array<{ path: string; classId: string }>;
   /** Inspection bounds apply independently to each policy root; an incomplete root cannot starve another. */
@@ -104,7 +111,7 @@ export interface DiskReclaimOptions {
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
-  removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void) => Promise<void>;
+  removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void, dryRun?: boolean) => Promise<void | BuildRemovalResult>;
 }
 
 /** The workflow checkpoints each callback separately. Only safe, productive
@@ -158,12 +165,14 @@ export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
  * Expected readbacks compare JSON values: JSONB may reorder object keys, while
  * changed values, missing records and reordered arrays must still fail closed.
  */
-export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string, expected?: DiskReclaimReceipt): Promise<DiskReclaimReceipt | null> {
+export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string, expected?: DiskReclaimReceipt,
+  options: { requireScan?: boolean } = {}): Promise<DiskReclaimReceipt | null> {
   const rows = await sql.unsafe(
     `SELECT details FROM harness_shared.audit_log
       WHERE workspace_id = $1 AND action = 'disk-retention:receipt'
         AND jsonb_typeof(details) = 'object' AND details->>'schemaVersion' = '1'
         AND details->>'id' = subject
+        ${options.requireScan ? "AND jsonb_typeof(details->'scan') = 'object'" : ''}
         ${id ? 'AND subject = $2' : "AND details->>'dryRun' = 'false'"}
       ORDER BY ts DESC, id DESC LIMIT 1`,
     id ? [workspaceId, id] : [workspaceId],
@@ -538,10 +547,12 @@ interface RetentionScanBudget {
   progress: NonNullable<DiskReclaimReceipt['scan']>;
 }
 async function inspectEntry(path: string, root: string, classId: string, budget: RetentionScanBudget, retainAfterMs?: number,
-  retained?: (reason: string) => void): Promise<RetentionEntry | null> {
+  retained?: (reason: string) => void, collectBuildDirs = false): Promise<RetentionEntry | null> {
   const first = await lstat(path);
   let newestWriteMs = 0, bytes = 0;
   const stack = [path];
+  const directories = new Map<string, { path: string; dev: number; ino: number }>();
+  const buildDirs: NonNullable<RetentionEntry['buildDirs']> = [];
   while (stack.length) {
     if (Date.now() > budget.deadline) throw new Error('incomplete tree scan');
     const current = stack.pop()!;
@@ -568,9 +579,20 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
     if (--budget.left < 0) throw new Error('incomplete tree scan');
     budget.progress.inspectedNodes++;
     bytes += s.blocks * 512;
-    if (s.isDirectory()) stack.push(...(await readdir(current)).map((name) => join(current, name)));
+    if (s.isDirectory()) {
+      if (collectBuildDirs) {
+        const identity = { path: current, dev: s.dev, ino: s.ino };
+        directories.set(current, identity);
+        if (current !== path && isBuildDirName(current.slice(current.lastIndexOf('/') + 1))) buildDirs.push(identity);
+      }
+      stack.push(...(await readdir(current)).map((name) => join(current, name)));
+    } else if (collectBuildDirs && current.endsWith('/CACHEDIR.TAG')) {
+      const parent = directories.get(dirname(current));
+      if (parent && parent.path !== path && !buildDirs.some(value => value.path === parent.path)) buildDirs.push(parent);
+    }
   }
-  return { path, root, classId, newestWriteMs, bytes, dev: first.dev, ino: first.ino };
+  return { path, root, classId, newestWriteMs, bytes, dev: first.dev, ino: first.ino,
+    ...(collectBuildDirs ? { buildDirs } : {}) };
 }
 
 export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Promise<DiskReclaimReceipt> {
@@ -624,6 +646,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       }
       const censusPolicy = { ...policy, pins: [] };
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
+      const previous = options.previousReceipt;
+      if (previous && !previous.complete && !previous.dryRun && previous.host === receipt.host) {
+        const blocked = previous.scan?.stoppedAtRoot;
+        const index = roots.findIndex(root => blocked !== null && blocked !== undefined && root.aliases.includes(blocked));
+        // Rotate the existing physical order rather than dropping the slow root.
+        // A large first root must not spend every run before its peers start.
+        if (index >= 0) roots.push(...roots.splice(0, index + 1));
+      }
       receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
@@ -655,7 +685,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const keep = policy.classes.get(root.classId)?.keep;
         const maxBytes = retentionRootSizeCap(policy.classes.get(root.classId)!);
         const capped = maxBytes !== undefined;
-        const retainAfterMs = keep?.kind === 'max-age' ? started - keep.maxAgeHours * HOUR : undefined;
+        const collectBuildDirs = keep?.kind === 'max-age' && keep.buildDirMaxAgeHours !== undefined;
+        const retainAfterMs = keep?.kind === 'max-age'
+          ? started - Math.min(keep.maxAgeHours, keep.buildDirMaxAgeHours ?? keep.maxAgeHours) * HOUR : undefined;
         try {
           const names = await readdir(root.path);
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
@@ -668,7 +700,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // by metadata progress and the complete walk by the remaining run.
             // Cap accounting still requires a successful complete-root census.
             const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, {
-              retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped,
+              retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, collectBuildDirs,
               excludedPaths: excluded, timeoutMs: Math.max(1, runDeadline - Date.now()),
               progressTimeoutMs: options.budgetMs ?? 60_000,
             }));
@@ -696,7 +728,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
             if (!deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
-              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain);
+              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain, collectBuildDirs);
             }
             catch (err) {
               if (budgetExpired()) { stopAtBudget(root.path); return null; }
@@ -736,6 +768,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           selected.push(...entries.filter((entry) => !picked.has(entry.path) && !entry.protectedReason && deletionClassFor(entry.path, policy, started)));
           selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
         }
+        for (const entry of entries) {
+          if (entry.protectedReason || !entry.buildDirs?.length || !keep || !buildDirsEligible(keep, entry.newestWriteMs, started) ||
+              !deletionClassFor(entry.path, policy, started) || selected.some(value => value.path === entry.path)) continue;
+          selected.push({ ...entry, buildOnly: true });
+          agePaths.add(entry.path);
+        }
+        selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
         if (!selected.length) {
           if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
           continue;
@@ -782,9 +821,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
         }
-        for (const entry of selected) {
+        for (let entry of selected) {
           yield* yieldEffects();
-          if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) { effect.processed++; continue; }
+          if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) {
+            if (keep && entry.buildDirs?.length && buildDirsEligible(keep, entry.newestWriteMs, started)) entry = { ...entry, buildOnly: true };
+            else { effect.processed++; continue; }
+          }
           if (budgetExpired()) { stopAtBudget(root.path); break; }
           if (stopEffects()) break;
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
@@ -808,7 +850,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
               if (options.inspectTrees && (retainAfterMs !== undefined || capped) && !regularFile) {
                 const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, {
-                  retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path],
+                  retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path], collectBuildDirs,
                   timeoutMs: Math.max(1, effectDeadline - Date.now()),
                 }));
                 if (census.error) throw new Error(census.error);
@@ -817,7 +859,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
                 return current ? { ...current, root: entry.root, classId: entry.classId } : null;
               }
               return inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
-                (reason) => { outcome.reason = reason; });
+                (reason) => { outcome.reason = reason; }, collectBuildDirs);
             });
             if (!fresh) continue;
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
@@ -829,6 +871,22 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             }
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes) { outcome.status = 'changed'; continue; }
+            if (entry.buildOnly) {
+              if (!isDeepStrictEqual(fresh.buildDirs, entry.buildDirs)) { outcome.status = 'changed'; continue; }
+              const result = await measureEffect('removalMs', () => outsideInspectionBudget(() => (options.removeEntry ??
+                ((value, ms, observe, dryRun) => removePrivilegedRetentionEntry(value, ms, nativeRetentionCommand, observe, dryRun)))
+                (entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; }, receipt.dryRun)));
+              if (!result) throw new Error('build removal receipt unavailable');
+              outcome.bytes = 0; outcome.reason = 'source entry retained after build inspection';
+              for (const removed of result.removed) {
+                const childOutcome = { path: removed.path, classId: entry.classId, bytes: removed.bytes,
+                  status: receipt.dryRun ? 'would-remove' as const : 'removed' as const };
+                receipt.entries.push(childOutcome);
+                if (cap) cap.afterBytes -= removed.bytes;
+                if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', childOutcome)));
+              }
+              continue;
+            }
             if (receipt.dryRun) { outcome.status = 'would-remove'; if (cap) cap.afterBytes -= entry.bytes; continue; }
             await measureEffect('removalMs', () => outsideInspectionBudget(() => options.removeEntry
               ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; })
@@ -863,17 +921,16 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       }
     };
     const cursor = reclaim();
-    let firstLease = true;
     try {
       while (true) {
-        if (!firstLease && Date.now() >= runDeadline) throw new Error('retention run budget exhausted while yielding to queued writer');
+        const remainingMs = runDeadline - Date.now();
+        if (remainingMs <= 0) throw new Error('retention run budget exhausted');
         let done = false;
         await withFsMutex('papercusp-disk-retention', async (held) => {
           mutex = held;
           done = (await cursor.next()).done === true;
-        }, { timeoutMs: firstLease ? 1_000 : Math.max(1, runDeadline - Date.now()) });
+        }, { timeoutMs: Math.max(1, remainingMs) });
         if (done) break;
-        firstLease = false;
       }
     } finally { await cursor.return(); }
   } catch (err) { receipt.errors.push(message(err)); }
@@ -902,7 +959,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
  * Reuse the existing enrolled/timeout-bounded subprocess route. */
 export async function removePrivilegedRetentionEntry(entry: RetentionEntry, timeoutMs: number,
   execute: typeof nativeRetentionCommand = nativeRetentionCommand,
-  observeTiming?: (timing: NativeRetentionTiming) => void): Promise<void> {
+  observeTiming?: (timing: NativeRetentionTiming) => void, dryRun = false): Promise<void | BuildRemovalResult> {
   if (resolve(entry.root) !== entry.root || dirname(entry.path) !== entry.root || entry.path === entry.root ||
       !Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino)) throw new Error('unsafe privileged retention target');
   const root = await lstat(entry.root);
@@ -919,7 +976,106 @@ try:
     s = os.stat(name, dir_fd=fd, follow_symlinks=False)
     if (s.st_dev, s.st_ino) != (e['dev'], e['ino']) or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
         raise RuntimeError('retention candidate identity changed')
-    if stat.S_ISDIR(s.st_mode):
+    if e.get('buildOnly'):
+        parent = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            if (os.fstat(parent).st_dev, os.fstat(parent).st_ino) != (e['dev'], e['ino']):
+                raise RuntimeError('retention source identity changed')
+            def open_parent(path):
+                parts = path.split('/')
+                if not parts or any(p in ('', '.', '..') for p in parts):
+                    raise RuntimeError('unsafe build path')
+                current = os.dup(parent)
+                try:
+                    for part in parts[:-1]:
+                        nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+                        os.close(current)
+                        current = nxt
+                        if os.fstat(current).st_dev != e['dev']:
+                            raise RuntimeError('build filesystem boundary')
+                    return current, parts[-1]
+                except:
+                    os.close(current)
+                    raise
+            selected = []
+            for target in sorted(e.get('buildDirs', []), key=lambda t: (len(t['path']), t['path'])):
+                prefix = e['path'] + '/'
+                if not target['path'].startswith(prefix):
+                    raise RuntimeError('build target outside source')
+                if any(target['path'].startswith(t['path'] + '/') for t in selected):
+                    continue
+                pfd, leaf = open_parent(target['path'][len(prefix):])
+                try:
+                    bfd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+                    try:
+                        bs = os.fstat(bfd)
+                        if (bs.st_dev, bs.st_ino) != (target['dev'], target['ino']) or bs.st_dev != e['dev']:
+                            raise RuntimeError('build target identity changed')
+                        valid = leaf in e['buildNames']
+                        if not valid:
+                            try:
+                                tag = os.open('CACHEDIR.TAG', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=bfd)
+                                try:
+                                    ts = os.fstat(tag)
+                                    valid = stat.S_ISREG(ts.st_mode) and ts.st_dev == e['dev'] and os.read(tag, 128).startswith(e['tagSignature'].encode())
+                                finally:
+                                    os.close(tag)
+                            except FileNotFoundError:
+                                pass
+                        if not valid:
+                            continue
+                        selected.append(dict(target, bytes=0))
+                    finally:
+                        os.close(bfd)
+                finally:
+                    os.close(pfd)
+            # Recheck the source after tag reads and inside the native effect.
+            # This single walk also accounts only selected build bytes, so
+            # nested targets never double-subtract from the source/root cap.
+            newest, total = 0, 0
+            def account(path, s):
+                global newest, total
+                if s.st_dev != e['dev'] or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
+                    raise RuntimeError('unsafe source descendant')
+                newest = max(newest, s.st_mtime_ns / 1000000, s.st_ctime_ns / 1000000)
+                size = s.st_blocks * 512
+                total += size
+                for target in selected:
+                    if path == target['path'] or path.startswith(target['path'] + '/'):
+                        target['bytes'] += size
+            for directory, dirs, files, dfd in os.fwalk('.', dir_fd=parent, follow_symlinks=False):
+                account(os.path.normpath(os.path.join(e['path'], directory)), os.fstat(dfd))
+                for child in dirs + files:
+                    cs = os.stat(child, dir_fd=dfd, follow_symlinks=False)
+                    if cs.st_dev != e['dev'] or not (stat.S_ISDIR(cs.st_mode) or stat.S_ISREG(cs.st_mode)):
+                        raise RuntimeError('unsafe source descendant')
+                    if child in files:
+                        account(os.path.normpath(os.path.join(e['path'], directory, child)), cs)
+            # Allow only floating-point rounding of the same nanosecond value
+            # between Python and JS (less than 0.001 ms at current epochs).
+            if abs(newest - e['newestWriteMs']) > 0.001 or total != e['bytes']:
+                raise RuntimeError('retention source changed before build removal')
+            current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (e['dev'], e['ino']):
+                raise RuntimeError('retention source identity changed')
+            # Validate the whole batch before the first effect. Reopen each
+            # parent from the original source descriptor immediately at unlink.
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise RuntimeError('fd-safe retention removal unavailable')
+            for target in selected:
+                pfd, leaf = open_parent(target['path'][len(e['path']) + 1:])
+                try:
+                    bs = os.stat(leaf, dir_fd=pfd, follow_symlinks=False)
+                    if (bs.st_dev, bs.st_ino) != (target['dev'], target['ino']) or not stat.S_ISDIR(bs.st_mode):
+                        raise RuntimeError('build target identity changed')
+                    if not e['dryRun']:
+                        shutil.rmtree(leaf, dir_fd=pfd)
+                finally:
+                    os.close(pfd)
+            print(json.dumps({'removed': [{'path': t['path'], 'bytes': t['bytes']} for t in selected]}))
+        finally:
+            os.close(parent)
+    elif stat.S_ISDIR(s.st_mode):
         if not shutil.rmtree.avoids_symlink_attacks:
             raise RuntimeError('fd-safe retention removal unavailable')
         shutil.rmtree(name, dir_fd=fd)
@@ -930,9 +1086,17 @@ finally:
 `;
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const result = await execute(repoRoot, '/usr/bin/sudo', ['-n', '/usr/bin/python3', '-c', worker], {
-    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino }), timeoutMs, observeTiming,
+    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino, dryRun,
+      buildNames: BUILD_DIR_NAMES, tagSignature: CACHEDIR_TAG_SIGNATURE }), timeoutMs, observeTiming,
+    stdoutOnly: entry.buildOnly, outputLimit: entry.buildOnly ? Math.max(4000, JSON.stringify(entry.buildDirs).length * 2) : undefined,
   });
   if (!result.ok) throw new Error(`privileged retention removal failed:${JSON.stringify(result.detail)}`);
+  if (entry.buildOnly) {
+    const value = JSON.parse((result.detail as { output: string }).output) as BuildRemovalResult;
+    if (!Array.isArray(value.removed) || value.removed.some(target => !entry.buildDirs?.some(candidate => candidate.path === target.path) ||
+        !Number.isSafeInteger(target.bytes) || target.bytes < 0)) throw new Error('invalid build removal receipt');
+    return value;
+  }
 }
 
 /** Bounded, enrolled execution of an existing native cleaner. */
@@ -1040,6 +1204,10 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');
   const { readRetentionLeases, isLeaseLive, defaultRetentionDir } = await import('../release-cut-reclaim');
+  // Admission failures contain no cursor. They still remain the latest visible
+  // outcome, but must not erase an earlier interrupted census's continuation.
+  const previousReceipt = await readReclaimReceipt(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(),
+    undefined, undefined, { requireScan: true });
   let isPinnedPath: (path: string) => boolean = () => { throw new Error('retention protection has not been read'); };
   const readProtection = async () => {
     const dir = defaultRetentionDir();
@@ -1109,7 +1277,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const inspectTrees: typeof inspectRetentionTrees = (root, options) =>
     inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees,
+  try { return await runDiskReclaimOnce({ ...options, previousReceipt, delegates, readProtection, inspectTrees,
     removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
     scanHolders: holders.scan, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;

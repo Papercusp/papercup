@@ -286,6 +286,26 @@ it('prepares the real bundle receipt after progress renews the build checkpoint'
   expect(build.status).toBe(0);
 });
 
+it('reports only distinct completed build steps to the enclosing watchdog', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-progress-')); dirs.push(evidenceDir);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  const completed: Array<{ step: string; completedSteps: number }> = [];
+  await buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', `source "$1"; BUNDLE_HOST_STEP_LOG="$2";
+      bundle_host_run_step first true;
+      bundle_host_run_step first true;
+      (bundle_host_run_step first true);
+      bundle_host_run_step failed false;
+      printf '{"at":%s,"pid":%s,"step":"unpaired","event":"end","status":0}\n' "$(date +%s.%N)" "$$" >> "$2";
+      bundle_host_run_step last true;
+      printf '{"at":' >> "$2";
+      echo bundle > "$3"`, '_', common, journal, join(evidenceDir, 'hono-host.mjs')],
+    timeoutMs: 600, maxMs: 2400, pollMs: 20,
+    onProgress: progress => completed.push(progress),
+  });
+  expect(completed).toEqual([{ step: 'first', completedSteps: 1 }, { step: 'last', completedSteps: 2 }]);
+});
+
 it('withholds a prepared receipt when the progress builder stalls', async () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-prepared-stall-')); dirs.push(evidenceDir);
   await expect(preparePrivateOperatorApiBundle(evidenceDir, evidenceDir, { builder: {

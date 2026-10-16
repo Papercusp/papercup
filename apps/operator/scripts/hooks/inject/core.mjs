@@ -206,7 +206,7 @@ export async function postInjection(port, body, opts = {}) {
     // a second copy of the number on the server.
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
-    if (port === 'mid-turn') await collectInterfaceEdits(body);
+    if (port === 'mid-turn') await collectInterfaceEdits(body, undefined, env);
     if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
@@ -246,10 +246,11 @@ export async function postInjection(port, body, opts = {}) {
  * hook installed outside that checkout. Keep one bounded collection per batch. */
 export async function collectInterfaceEdits(body, collect = async path => {
   const { consequenceFor } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
-  return consequenceFor(path);
-}) {
+  return consequenceFor(path, { includeSourceChanges: true });
+}, env = process.env) {
   let remaining = 2;
   const seen = new Set();
+  const measured = [];
   for (const call of body.toolCalls ?? []) {
     for (const path of call.editedPaths ?? (call.editedPath ? [call.editedPath] : [])) {
       if (typeof path !== 'string') continue;
@@ -259,9 +260,26 @@ export async function collectInterfaceEdits(body, collect = async path => {
       try {
         const edit = await collect(abs);
         if (edit) (call.interfaceEdits ??= []).push(edit);
+        if (edit?.sourceChange) measured.push({ ...edit.sourceChange,
+          workspace: body.workspace, harness: body.harness, agentId: body.owner });
       } catch { /* an unreadable local repo cannot disturb the tool */ }
     }
   }
+  const hasIncidentCall = (body.toolCalls ?? []).some(call =>
+    /(?:^|[:_/.])(?:testing[:_]run|test[:_]file|run-tests)(?:$|[:_/.])/.test(call?.tool ?? ''));
+  // Ordinary tool batches must stay on the existing fast path. The ledger read
+  // is needed only when an observed test failure can consume retained edits, or
+  // when this batch actually measured a new edit.
+  if (!measured.length && !hasIncidentCall) return;
+  // Retain measured comparisons across fresh hooks in the existing fenced
+  // delivery ledger. This records observations, never inferred authorship.
+  const recent = codeIntelDelivery(body.owner, env, state => {
+    const rows = [...(Array.isArray(state.recentEdits) ? state.recentEdits : []), ...measured]
+      .filter(row => row && Number.isFinite(row.at) && row.at <= Date.now() && Date.now() - row.at < 86_400_000);
+    state.recentEdits = [...new Map(rows.map(row => [`${row.workspace}:${row.harness}:${row.root}:${row.path}`, row])).values()].slice(-8);
+    return state.recentEdits.filter(row => row.workspace === body.workspace && row.harness === body.harness);
+  });
+  if (recent?.length) body.incidentAttribution = { status: 'measured', recentEdits: recent };
 }
 
 function mergeCodeIntel(body, delivered, env) {
@@ -355,6 +373,7 @@ export function buildDigest(calls) {
       tool: typeof call.tool === 'string' ? call.tool : '',
       toolInput: clampField(call.toolInput, spec.fieldClamp),
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
+      ...(incidentResultFor(call.tool, call.toolResponse) ? { incidentResult: incidentResultFor(call.tool, call.toolResponse) } : {}),
       // Preserve the path independently of the 400-char recall digest. Edits often
       // exceed it, and a truncated JSON input cannot safely recover this field.
       ...(editedPathsFor(call.tool, call.toolInput).length
@@ -362,6 +381,36 @@ export function buildDigest(calls) {
     });
   }
   return digest;
+}
+
+/** Preserve observed failing-file identities outside the lossy recall prefix.
+ * Requested files, refusals and passing rows are never failure evidence. */
+export function incidentResultFor(tool, response, depth = 0) {
+  if (!/(?:^|[:_/.])(?:testing[:_]run|test[:_]file|run-tests)(?:$|[:_/.])/.test(tool ?? '') || depth > 5) return null;
+  if (typeof response === 'string') {
+    if (response.length > 512_000) return null;
+    try { return incidentResultFor(tool, JSON.parse(response), depth + 1); } catch { return null; }
+  }
+  if (!response || typeof response !== 'object') return null;
+  if (response.structuredContent) return incidentResultFor(tool, response.structuredContent, depth + 1);
+  for (const block of (Array.isArray(response.content) ? response.content.slice(0, 8) : [])) {
+    if (block?.type !== 'text') continue;
+    const found = incidentResultFor(tool, block.text, depth + 1);
+    if (found) return found;
+  }
+  const byFile = {};
+  const rows = response.byFile && typeof response.byFile === 'object' ? Object.entries(response.byFile) : [];
+  for (const value of (Array.isArray(response.files) ? response.files.slice(0, 64) : [])) {
+    if (value && typeof value === 'object') rows.push([value.path ?? value.file ?? value.filePath, value]);
+  }
+  for (const [path, row] of rows.slice(0, 64)) {
+    if (typeof path !== 'string' || path.length > 4096 || !row || typeof row !== 'object') continue;
+    if (row.status !== 'fail' && row.status !== 'error' && !(row.failed > 0) && row.collectionFailed !== true) continue;
+    byFile[path] = { status: 'fail', failed: 1,
+      ...(Number.isSafeInteger(row.runId) && row.runId > 0 ? { runId: row.runId } : {}) };
+    if (Object.keys(byFile).length >= 4) break;
+  }
+  return Object.keys(byFile).length ? { byFile } : null;
 }
 
 /**

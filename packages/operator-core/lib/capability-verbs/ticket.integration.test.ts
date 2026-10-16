@@ -364,6 +364,27 @@ describe('trigger-pack arming validates the configured destination', () => {
       await sql`UPDATE harness_shared.data_sources SET scope = 'personal', owner_user_id = ${userId} WHERE workspace_id = ${WS} AND id = ${chat.id}`;
     }
   });
+
+  it('refuses a target removed during the provider read before recording a review', async () => {
+    const input = await configuredForArm();
+    const [saved] = await sql`SELECT payload FROM harness_shared.harness_registry WHERE workspace_id = ${WS}`;
+    let removed = false;
+    const racingFetch: HostFetch = async (request) => {
+      if (!removed && new URL(request.request.url).pathname.endsWith('/projects')) {
+        removed = true;
+        await sql`UPDATE harness_shared.harness_registry SET payload = '{"projects":[]}'::jsonb WHERE workspace_id = ${WS}`;
+      }
+      return hostFetch(request);
+    };
+    try {
+      await expect(armTriggerPack(sql, WS, input, { options: { registry, hostFetchFor: () => racingFetch } }))
+        .rejects.toMatchObject({ code: 'trigger_pack_target_unavailable' });
+      expect(removed).toBe(true);
+      await expectUnarmed(input.installationId);
+    } finally {
+      await sql`UPDATE harness_shared.harness_registry SET payload = ${sql.json(saved!.payload)} WHERE workspace_id = ${WS}`;
+    }
+  });
 });
 
 describe('ticket:file refuses before any ticket HTTP', () => {

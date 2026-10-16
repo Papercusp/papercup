@@ -62,7 +62,10 @@ async function main() {
   console.log('LIVENESS_ALARM_HTTP_PHASE bundle-start');
   // The outer execution budget is 480s. Reserve 60s for startup and assertions;
   // only distinct successful build steps can extend the original 240s checkpoint.
-  const { path: bundle } = await buildPrivateOperatorApiBundle(root, evidenceDir, { timeoutMs: 240_000, maxMs: 420_000 });
+  const { path: bundle } = await buildPrivateOperatorApiBundle(root, evidenceDir, {
+    timeoutMs: 240_000, maxMs: 420_000,
+    onProgress: progress => console.log('LIVENESS_ALARM_HTTP_PHASE bundle-progress ' + JSON.stringify(progress)),
+  });
   const bytes = readFileSync(bundle);
   assert.ok(bytes.includes(Buffer.from('system-health/liveness-alarm.ts')), 'alarm missing from executed artifact');
   assert.ok(bytes.includes(Buffer.from('agentStrandObservation')), 'runtime observation missing from executed artifact');

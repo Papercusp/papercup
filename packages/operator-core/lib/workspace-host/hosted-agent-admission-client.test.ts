@@ -21,7 +21,7 @@ describe('hosted process reservation client', () => {
   });
 
   it.each(['fleet', 'host-adoption'])('reuses the same %s slot for this owner, with no second tenant charge', async kind => {
-    const launchEnv = { ...env, PAPERCUSP_SID: 'owner',
+    const launchEnv: NodeJS.ProcessEnv = { ...env, PAPERCUSP_SID: 'owner',
       ...(kind === 'fleet' ? { PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify({ metadata: {
         targetOwnerId: 'owner', hostedAgentProcessKey: 'existing' } }) } : {
         PAPERCUSP_HOSTED_NATIVE_SLOT: JSON.stringify({ ownerId: 'owner', processKey: 'existing' }) }) };

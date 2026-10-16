@@ -117,27 +117,28 @@ export async function closeLateInspectorWhenAvailable({
         continue;
       }
       const client = create(target.wsUrl, { requestTimeoutMs: 5_000 });
-      let exact = false;
       try {
         await client.connect();
         const identity = (await client.evaluate(
           '({pid:process.pid,entry:process.argv[1]})',
           { returnByValue: true },
         )).result.value;
-        exact = identity?.pid === pid && identity.entry === entry && startTicks(pid) === started;
+        const exact = identity?.pid === pid && identity.entry === entry && startTicks(pid) === started;
         if (exact) {
           await close(client, target.port);
           return { closed: true, port: target.port };
         }
       } finally {
-        if (!exact) client.close();
+        // A verified close can fail before it releases the transport. Ownership
+        // of this connection ends here on success, refusal, and failure alike.
+        client.close();
       }
       return { closed: false, reason: 'identity-mismatch' };
     }
     return { closed: false, reason: 'activation-timeout' };
-  } catch {
-    // Cleanup is best effort and must never change the original repair verdict.
-    return { closed: false, reason: 'cleanup-error' };
+  } catch (error) {
+    return { closed: false, reason: 'cleanup-error',
+      error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -176,10 +177,12 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
   }
   if (!target) {
     // The signal may have been accepted while the main thread was blocked. Keep
-    // polling after the foreground budget so a late inspector cannot remain
-    // listening indefinitely; exact PID/incarnation checks protect other tools.
-    void closeLateInspectorWhenAvailable({ pid, entry, started });
-    throw new Error('Terminal inspector did not open on loopback');
+    // Own cleanup until its bounded attempt settles. A detached promise loses
+    // the close verdict when the repair caller exits; attach the full receipt
+    // to the original activation failure so unresolved cleanup stays visible.
+    const inspectorCleanup = await closeLateInspectorWhenAvailable({ pid, entry, started });
+    throw Object.assign(new Error('Terminal inspector did not open on loopback; cleanup: ' +
+      (inspectorCleanup.closed ? 'closed' : inspectorCleanup.reason)), { inspectorCleanup });
   }
   const client = createCdpClient(target.wsUrl, { requestTimeoutMs: 5000 });
   let verified = false;

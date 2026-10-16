@@ -1,11 +1,12 @@
 /** E2E: real OpenSSH between the test client and an isolated private-network computer.
  * The remote psu/HTTP fixtures observe transport behavior; this is not release GUI proof. */
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, inject, test } from 'vitest';
+import { dockerAllocation, dockerAllocationScope } from '../../../../scripts/with-documenso-sandbox.mjs';
 import {
   defaultPsuConnectionStorePath, normalizeSshProfile, PSU_CONNECTION_STORE_VERSION,
   runPsuConnectionFrontController, savePsuConnectionStore,
@@ -16,15 +17,16 @@ let root = '';
 let container = '';
 let config = '';
 const masters = new Set<string>();
-const docker = (args: string[]) => new Promise<string>((resolve, reject) => {
-  const started = Date.now();
-  const phase = args.slice(0, 2).join(' ');
-  process.stderr.write(`PERSONAL_SSH_FIXTURE phase=${phase} state=started\n`);
-  execFile('docker', args, { encoding: 'utf8', timeout: 20_000 }, (error, stdout, stderr) => {
-    process.stderr.write(`PERSONAL_SSH_FIXTURE phase=${phase} elapsedMs=${Date.now() - started} state=${error ? 'failed' : 'complete'}\n`);
-    if (error) reject(new Error(`Docker fixture phase ${phase}: ${error.message}\n${stdout.slice(-2000)}\n${stderr.slice(-2000)}`, { cause: error }));
-    else resolve(stdout);
-  });
+const allocations = dockerAllocationScope();
+// Killing the Docker CLI does not cancel the daemon's create/start/stop/rm.
+// Reuse the maintained joined-request primitive, including for teardown, so a
+// delayed operation cannot race cleanup or masquerade as a product failure.
+const docker = (args: string[]): Promise<string> => allocations.run(args, {}, {
+  pendingAfterMs: 20_000,
+  onPending: () => {},
+  onProgress: (receipt: { operation: string; resource?: string; status: string; elapsedMs: number }) => {
+    process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify(receipt)}\n`);
+  },
 });
 
 async function ssh(command: string, args: string[]) {
@@ -57,7 +59,8 @@ beforeAll(async () => {
   writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,sys\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd()}),flush=True)\n`);
   writeFileSync(join(root, 'gui.py'), `from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write(b'personal-computer-gui')\nHTTPServer(('127.0.0.1',3070),H).serve_forever()\n`);
   container = `pc-personal-ssh-${randomUUID()}`;
-  await docker(['create', '--rm', '--name', container, '-p', '127.0.0.1::22',
+  process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
+  await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
     '--mount', `type=bind,source=${root},target=/fixture,readonly`, image, 'sh', '-ec',
     'apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server tmux python3 >/dev/null; '
     + 'mkdir -p /run/sshd /root/.ssh; cp /fixture/client.pub /root/.ssh/authorized_keys; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; '
@@ -88,16 +91,18 @@ beforeAll(async () => {
 }, 200_000);
 
 afterAll(async () => {
-  if (config) for (const socket of masters) {
-    try { execFileSync('ssh', ['-F', config, '-S', socket, '-O', 'exit', '--', 'personal-fixture'], { stdio: 'ignore', timeout: 5_000 }); } catch { /* already gone */ }
-  }
-  if (container) {
-    const ids = await docker(['ps', '--all', '--filter', `name=^/${container}$`, '--format', '{{.ID}}']);
-    if (ids.trim()) await docker(['rm', '--force', container]);
-    expect((await docker(['ps', '--all', '--filter', `name=^/${container}$`, '--format', '{{.ID}}'])).trim()).toBe('');
-  }
-  if (root) rmSync(root, { recursive: true, force: true });
-});
+  await allocations.close(async () => {
+    if (config) for (const socket of masters) {
+      try { execFileSync('ssh', ['-F', config, '-S', socket, '-O', 'exit', '--', 'personal-fixture'], { stdio: 'ignore', timeout: 5_000 }); } catch { /* already gone */ }
+    }
+    if (container) {
+      const ids = await dockerAllocation(['ps', '--all', '--filter', `name=^/${container}$`, '--format', '{{.ID}}']);
+      if (ids.trim()) await dockerAllocation(['rm', '--force', container]);
+      expect((await dockerAllocation(['ps', '--all', '--filter', `name=^/${container}$`, '--format', '{{.ID}}'])).trim()).toBe('');
+    }
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+}, 200_000);
 
 test('runs remote psu, serves the private GUI and refuses a revoked or offline computer', async () => {
   savePsuConnectionStore({ version: PSU_CONNECTION_STORE_VERSION,
@@ -112,7 +117,7 @@ test('runs remote psu, serves the private GUI and refuses a revoked or offline c
     },
   };
   const terminal = await runPsuConnectionFrontController(['--connect=desktop', '--resume=session 1', '--label=quoted value'], deps);
-  expect(terminal.exitCode).toBe(0);
+  expect(terminal.exitCode, `Remote psu failed; captured SSH/PTY output:\n${terminalOutput}`).toBe(0);
   expect(terminalOutput).toContain('"argv": ["--resume=session 1", "--label=quoted value"]');
   expect(terminalOutput).toContain('"forwarded": "1"');
   expect(terminalOutput).toContain('"cwd": "/root"');

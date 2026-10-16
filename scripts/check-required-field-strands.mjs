@@ -516,6 +516,31 @@ const isInaccessible = (member) =>
     ),
   ) || Boolean(member.name && ts.isPrivateIdentifier(member.name));
 
+/** Syntax-only change measurement, including bodies. A file edit alone does not
+ * prove every export changed. Compare printed declarations without comments. */
+export function diffExportedSymbolText(beforeText, afterText, fileName = 'f.ts') {
+  const printer = ts.createPrinter({ removeComments: true });
+  const collect = text => {
+    const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+    if (sf.parseDiagnostics.length) return null;
+    const rows = new Map();
+    for (const statement of sf.statements) {
+      if (!isExported(statement)) continue;
+      const nodes = ts.isVariableStatement(statement) ? statement.declarationList.declarations : [statement];
+      for (const node of nodes) {
+        if (!node.name || !ts.isIdentifier(node.name)) continue;
+        rows.set(node.name.text, { text: printer.printNode(ts.EmitHint.Unspecified, node, sf),
+          line: sf.getLineAndCharacterOfPosition(node.name.getStart(sf)).line + 1 });
+      }
+    }
+    return rows;
+  };
+  const before = collect(beforeText), after = collect(afterText);
+  if (!before || !after) return [];
+  return [...new Set([...before.keys(), ...after.keys()])].flatMap(name =>
+    before.get(name)?.text === after.get(name)?.text ? [] : [{ name, line: (after.get(name) ?? before.get(name)).line }]);
+}
+
 export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
   const sigs = new Map(); // key -> { typeParams, params: [{ name, optional, rest, type }], ret }

@@ -10,6 +10,7 @@ import type { DurableAdmissionRecord, SqlClient } from '../resource-governor/que
 import { WorkItemAdmissionQueueDriver } from '../resource-governor/queue';
 import { Governor } from '../resource-governor/admission';
 import { PgAdmissionLedgerQueueStore } from '../resource-governor/admission-ledger-store';
+import { boundedOrgTxn } from '../pg-bounded-txn';
 
 export function hostedPoolAgentAdmissionGuard(authenticated: HostedConnectorBinding) {
   const binding = Object.freeze({ ...authenticated });
@@ -32,6 +33,18 @@ export function hostedPoolAgentAdmissionGuard(authenticated: HostedConnectorBind
         AND id = ${binding.customerWorkspaceId} AND workspace_host_id = ${binding.hostId}
         AND kind = 'hosted' AND state = 'active' FOR SHARE`;
     if (customers.length !== 1) throw new Error('hosted_pool_agent_binding_inactive');
+    // Every stop admission holds the directory row through its operation INSERT.
+    // Thus a concurrent start either contributes a receipt BEFORE the stop's
+    // inventory, or sees the admitted drain here and cannot create new demand.
+    // Keep this fence independent of the idle-stop marker: an operator-requested
+    // stop also powers off the guest, so accepting a new process after that stop
+    // was queued would create work with no live host to own it.
+    const draining = await tx<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${binding.controlPlaneWorkspaceId} AND host_id = ${binding.hostId}
+        AND customer_workspace_id = ${binding.customerWorkspaceId}
+        AND action = 'stop' AND status IN ('queued', 'running') LIMIT 1`;
+    if (draining.length) throw new Error('hosted_pool_agent_host_draining');
     // Read a live clock AFTER taking the shared organization lock. Keep the
     // lock through INSERT, so other hosts and billing writers cannot race it.
     const authority = await readHostedEntitlementAuthority(tx, binding.organizationId);
@@ -126,4 +139,37 @@ export function createHostedPoolAgentReservations(binding: HostedConnectorBindin
     }
     return { receiptId: claim.receiptId, state: 'running' };
   };
+}
+
+/** Provider-confirmed absence is an exit witness for every process on that VM.
+ * Snapshot only existing receipts at that witness, then use canonical cancellation
+ * so a retry preserves audit history and cannot cancel a later incarnation's start.
+ * Connector revocation alone is not evidence that a process has stopped.
+ */
+export async function retireHostedPoolAgentReservations(input: {
+  controlPlaneWorkspaceId: string; hostId: string;
+}, sql?: SqlClient): Promise<number> {
+  const rows = await boundedOrgTxn(async tx => {
+    const hosts = await tx<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${input.controlPlaneWorkspaceId} AND id = ${input.hostId}
+        AND desired_state = 'absent' AND observed_state = 'absent'
+      FOR SHARE`;
+    if (hosts.length !== 1) throw new Error('hosted_pool_agent_host_not_absent');
+    return tx<Array<{ idempotency_key: string }>>`
+      SELECT idempotency_key FROM harness_shared.resource_governor_admissions
+      WHERE workspace_id = ${input.controlPlaneWorkspaceId} AND namespace = 'hosted-agent'
+        AND admission_class = 'agent' AND state IN ('queued', 'eligible', 'leased', 'running')
+        AND record->'metadata'->>'hostedHostId' = ${input.hostId}
+      ORDER BY receipt_id`;
+  }, sql ? { client: sql } : {});
+  const store = new PgAdmissionLedgerQueueStore({ ...(sql ? { sql } : {}),
+    workspaceId: input.controlPlaneWorkspaceId });
+  let retired = 0;
+  for (const row of rows) {
+    const result = await store.cancel('hosted-agent', row.idempotency_key,
+      'provider-confirmed host absence', Date.now());
+    if (result?.changed) retired += 1;
+  }
+  return retired;
 }

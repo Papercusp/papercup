@@ -533,11 +533,12 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     expect(missingArtifact.acceptedSource).toMatchObject({ matches: true, deployedContains: null });
   });
 
-  it('retains stale and unknown named runtime results without substituting deployed=true', async () => {
-    const stale = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
-    expect(stale.acceptedSource?.deployedContains).toBe(true);
-    expect(stale.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  it('uses an exact bundle-SHA mismatch instead of deployed containment and keeps unreadable identity unknown', async () => {
+    const mismatchedBundle = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
+    expect(mismatchedBundle.acceptedSource?.deployedContains).toBe(true);
+    expect(mismatchedBundle.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
     const unknown = await readAccepted({ runtimeBlob: null });
+    expect(unknown.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
     expect(unknown.acceptedSource?.runtimeContainment['staging-operator']).toBeNull();
   });
 
@@ -557,8 +558,13 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     const result = await readAccepted({ moveMtime: true, runtimeBlob: 'e'.repeat(40), startedAtMs: 2000 });
     expect(result.acceptedSource?.matches).toBe(true);
     expect(result.acceptedSource?.deployedContains).toBe(true);
-    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host')?.method).toBe('start-after-mtime');
-    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
+    // The health-reported bundle SHA is independent of path mtime and still
+    // proves that this exact accepted source is absent from the loaded build.
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host'))
+      .toMatchObject({ containsChange: false, method: 'blob' });
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'gateway')?.method).toBe('start-after-mtime');
+    expect(result.acceptedSource?.runtimeContainment.gateway).toBeNull();
   });
 
   it('binds actual PTY instance observations without demanding that every old session restart', async () => {

@@ -21,7 +21,8 @@ describe('on-demand su reference sections', () => {
     console.info('SU_REFERENCE_SIZE', JSON.stringify({ agent, plane: 'canonical-base', baselineBytes: baseline, actualBytes: actual }));
     expect(actual, `baseline=${baseline}, actual=${actual}`).toBeLessThanOrEqual(baseline * 0.7);
     for (const rule of ['File locking is ENFORCED', 'hold a work-item before you edit',
-      'The papercusp-way routing gate', 'Default posture', 'Owner directives']) {
+      'The papercusp-way routing gate', 'Default posture', 'Owner directives',
+      'A one-agent route limits implementation fan-out; it does not disable platform-routed independent acceptance checks']) {
       expect(compact.text).toContain(rule);
     }
     expect(compact.text).toContain('Operational reference index');

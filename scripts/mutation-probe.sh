@@ -890,6 +890,38 @@ kill_tree() {
   done
   kill -TERM "$pid" 2>/dev/null || true
 }
+
+# Phase logs and serialized receipts are needed to reconcile a timed-out INSERT
+# without rerunning the tests. Keep only regular diagnostic files, never the
+# relocated source tree, in the existing scratch store outside disposable TMPDIR.
+retain_probe_diagnostics() {
+  node - "$SCRATCH" "$1" "$FILE" "$ORIG_SUM" <<'NODE'
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const [source, exitCode, subject, sourceBlob] = process.argv.slice(2);
+const root = process.env.PAPERCUSP_SCRATCH_ROOT?.trim() || path.join(os.homedir(), '.papercusp', 'scratch');
+const workspace = process.env.PAPERCUSP_WORKSPACE_ID?.trim() || process.env.PAPERCUSP_WORKSPACE?.trim();
+if (workspace && (!/^[A-Za-z0-9_.-]+$/.test(workspace) || workspace === '.' || workspace === '..')) {
+  throw new Error('invalid diagnostic workspace scope');
+}
+const parent = path.join(root, ...(workspace ? [workspace] : []), 'mutation-probe');
+fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+const destination = fs.mkdtempSync(path.join(parent, 'evidence-'));
+const files = [];
+for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+  if (!entry.isFile() || !/(?:\.(?:log|err)|^test-run-receipts\.[^.]+\.jsonl)$/.test(entry.name)) continue;
+  fs.copyFileSync(path.join(source, entry.name), path.join(destination, entry.name));
+  files.push(entry.name);
+}
+fs.writeFileSync(path.join(destination, 'diagnostics.json'), JSON.stringify({
+  exitCode: Number(exitCode), subject, sourceBlob,
+  runGroupId: process.env.PAPERCUSP_TEST_RUN_GROUP || null, files,
+}) + '\n', { mode: 0o600 });
+process.stdout.write('MUTATION_PROBE_DIAGNOSTICS_JSON=' + JSON.stringify({ path: destination }) + '\n');
+NODE
+}
+
 finish() {
   local rc="${1:-$?}"
   # Disarm FIRST: without this the handler runs twice (once for TERM, once for
@@ -977,8 +1009,21 @@ finish() {
     rm -f -- "$PROBE_MANIFEST"
     flock -u "$PROBE_ADMISSION_FD"
   fi
-  # Only discard the scratch dir once integrity is proven; if anything went
-  # wrong the pristine copy is the operator's recovery path, so it stays.
+  # Integrity is independent of evidence custody. A failed guard or incomplete
+  # ledger must retain full logs/receipts even when the source is unchanged.
+  local retain_diagnostics=0 ledger
+  [ "$rc" -eq 0 ] || retain_diagnostics=1
+  for ledger in "${BASELINE_LEDGER:-}" "${COPY_BASELINE_LEDGER:-}" "${MUTANT_LEDGER:-}"; do
+    case "$ledger" in
+      missing:*|unconfirmed:*|partial:*|unreadable) retain_diagnostics=1 ;;
+    esac
+  done
+  if [ "$retain_diagnostics" -eq 1 ] && ! retain_probe_diagnostics "$rc"; then
+    log "diagnostic archival failed; preserving original phase logs and receipts at $SCRATCH"
+    exit "$rc"
+  fi
+  # Recovery snapshots stay above on unverified integrity or a tree conflict.
+  # Otherwise diagnostics now outlive removal of this private source mirror.
   rm -rf "$SCRATCH"
   exit $rc
 }

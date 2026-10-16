@@ -303,6 +303,18 @@ function hasCompletionEvidence(value: unknown): boolean {
 }
 
 /**
+ * Keep the detector snapshot available on an exact lifecycle-candidate read
+ * without bringing the duplicated claim-subject baseline (or other payload
+ * envelopes) through the result door. Bulk reads still omit payload entirely.
+ */
+function projectLifecycleCandidatePayload(raw: unknown): Record<string, unknown> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const payload = raw as Row;
+  if (!Object.prototype.hasOwnProperty.call(payload, "processLifecycleCandidate")) return undefined;
+  return { processLifecycleCandidate: payload.processLifecycleCandidate };
+}
+
+/**
  * In-band reference left in `workItem.terminalCompletionEvidence` when the same
  * record is already emitted as the row's `completion` alias. get.ts derives
  * `completion` from `workItem.terminalCompletionEvidence`, so a shaped row used to
@@ -398,7 +410,8 @@ function projectCompletionEvidence(
 /**
  * Identity + lifecycle facts about the item, plus as much of the summary as the
  * rung's shared budget affords (`summaryChars`; 0 ⇒ the field is omitted, which
- * `projectRow` discloses). Never the payload blob.
+ * `projectRow` discloses). Exact lifecycle-candidate reads may carry only the
+ * detector snapshot; bulk rows never carry the payload blob.
  */
 function projectWorkItem(
   raw: unknown,
@@ -408,6 +421,9 @@ function projectWorkItem(
   includeCompletionEvidence = true,
   // True only when the caller's row emits this same record as `completion`.
   completionEmittedAtRow = false,
+  // Exact lifecycle-judge reads need the detector snapshot, but never the
+  // duplicated claim-subject baseline or unrelated payload envelopes.
+  includeLifecycleCandidatePayload = false,
 ): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
@@ -429,6 +445,9 @@ function projectWorkItem(
     terminal || completionAuthority != null;
   const shouldExposeCompletionRecord =
     terminal || completionEvidencePresent || w.terminalOwner != null || w.terminalCompletionRef != null;
+  const lifecycleCandidatePayload = includeLifecycleCandidatePayload
+    ? projectLifecycleCandidatePayload(w.payload)
+    : undefined;
   return {
     id: w.id ?? null,
     kind: w.kind ?? null,
@@ -453,6 +472,7 @@ function projectWorkItem(
           terminalCompletionEvidence: completionEvidence,
         }
       : {}),
+    ...(lifecycleCandidatePayload !== undefined ? { payload: lifecycleCandidatePayload } : {}),
     assignee: w.assignee ?? null,
     takenAt: w.takenAt ?? null,
     lastProgressAt: w.lastProgressAt ?? null,
@@ -599,6 +619,7 @@ function compactSingleRow(
       dropped,
       true,
       completionPresent && sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
+      true,
     ),
     ...(completionRelevant ? { completion, hasCompletionEvidence: completionPresent } : {}),
     ...projectAssumptionFlags(r.assumptionFlags, caps, dropped, true),
@@ -1046,6 +1067,7 @@ function projectRow(
   dropped: Set<string>,
   includeCompletionEvidence = true,
   compactIdentity = false,
+  includeLifecycleCandidatePayload = false,
 ): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
   if (r.reportAttachments !== undefined) return r; // producer bounds one metadata list + a <=2048-byte page
@@ -1159,6 +1181,7 @@ function projectRow(
       completionPresent &&
         includeCompletionEvidence &&
         sameCompletionRecord(r.completion, w?.terminalCompletionEvidence),
+      includeLifecycleCandidatePayload,
     ),
     ...(operationalBrief !== undefined ? { operationalBrief } : {}),
     ...(r.threadWindow !== undefined
@@ -1563,6 +1586,7 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
           dropped,
           !compactIdentity,
           compactIdentity === true,
+          rows.length === 1,
         );
         if (compactIdentity && rows.length > 1 && !briefRequested) {
           const identity = shaped.workItem as Row | null | undefined;

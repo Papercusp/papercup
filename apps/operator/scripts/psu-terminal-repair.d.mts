@@ -48,9 +48,16 @@ export function closeLateInspectorWhenAvailable({ pid, entry, started, maxWaitMs
     closed: boolean;
     port: number;
     reason?: undefined;
+    error?: undefined;
 } | {
     closed: boolean;
     reason: string;
+    port?: undefined;
+    error?: undefined;
+} | {
+    closed: boolean;
+    reason: string;
+    error: string;
     port?: undefined;
 }>;
 /** Explicit exact-host operation; caller supplies its discovery owner identity.

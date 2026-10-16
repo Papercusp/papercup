@@ -61,6 +61,7 @@ export default defineTool({
       name,
       args: body.args,
       confirmed: body.confirmed === true,
+      signal: req.signal,
       ...(callerSid ? { callerSid } : {}),
       ...(authenticatedPrincipal ? { authenticatedPrincipal } : {}),
       ...(body.harness === undefined ? {} : { harness: body.harness }),

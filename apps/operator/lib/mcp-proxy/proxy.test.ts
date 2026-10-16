@@ -2269,8 +2269,9 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     let hits = 0;
     const receivedKeys: string[] = [];
     const appliedKeys = new Set<string>();
+    const storedResponses = new Map<string, string>();
     const server = track(
-      http.createServer((req) => {
+      http.createServer((req, res) => {
         hits++;
         const chunks: Buffer[] = [];
         req.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
@@ -2281,7 +2282,14 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           const rawKey = envelope.params?._meta?.idempotencyKey;
           const key = typeof rawKey === "string" ? rawKey : "";
           receivedKeys.push(key);
+          const stored = storedResponses.get(key);
+          if (stored) {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(stored);
+            return;
+          }
           if (key) appliedKeys.add(key);
+          if (key) storedResponses.set(key, '{"result":{"receipt":"applied-once"}}');
           req.socket.destroy();
         });
       }),
@@ -2462,6 +2470,15 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           forwardingResult?: string;
           attempts?: number;
           note?: string;
+          recovery?: {
+            idempotencyKeys?: Array<{
+              requestId: string | number;
+              toolName: string;
+              key: string;
+            }>;
+            truncated?: boolean;
+            instructions?: string;
+          };
         };
         expect(payload.forwardingResult).toBe("outcome_unknown");
         expect(payload.attempts).toBe(1);
@@ -2472,6 +2489,35 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
         expect(upstream.appliedEffects()).toBe(1);
         expect(upstream.receivedKeys()).toHaveLength(1);
         expect(upstream.receivedKeys()[0]).toBeTruthy();
+        expect(payload.recovery).toMatchObject({
+          idempotencyKeys: [{ requestId: 1, toolName: "code:run" }],
+          truncated: false,
+        });
+        expect(payload.recovery?.idempotencyKeys?.[0]?.key).toBe(
+          upstream.receivedKeys()[0],
+        );
+        expect(payload.recovery?.instructions).toContain("--idempotency-key <key>");
+        expect(payload.note).toContain("recovery.idempotencyKeys");
+
+        // The first attempt may have committed but lost its response. Reconcile state,
+        // then replay the same logical call with the receipt key to retrieve the stored result.
+        const recoveryKey = payload.recovery!.idempotencyKeys![0]!.key;
+        const replayCall = {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "code:run",
+            arguments: { script: "return 'controlled apply-then-reset';" },
+            _meta: { idempotencyKey: recoveryKey },
+          },
+        };
+        const replayed = await request(port(proxy), JSON.stringify(replayCall));
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toBe('{"result":{"receipt":"applied-once"}}');
+        expect(upstream.hits()).toBe(2);
+        expect(upstream.appliedEffects()).toBe(1);
+        expect(upstream.receivedKeys()).toEqual([recoveryKey, recoveryKey]);
 
         const entries = fs
           .readFileSync(logFile, "utf8")
@@ -2624,6 +2670,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       const r = await request(port(proxy), TOOLS_CALL);
       expect(r.status).toBe(502);
       expect(r.body).toContain("mcp_proxy_upstream_error");
+      expect(JSON.parse(r.body).recovery).toBeUndefined();
       expect(upstream.hits()).toBe(1); // opaque → not replayed
     }),
   );
@@ -2907,6 +2954,46 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toContain("sync completed");
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-26054464973454475: tools:invoke-wrapped plans:evaluate-spec-test-adequacy retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"rows":[],"count":0}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "plans:evaluate-spec-test-adequacy",
+            args: {
+              scorecardId: "EI-26004169159232210",
+              slug: "grading-replay-fixture",
+              replaySnapshot: true,
+            },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"ok":true,"rows":[],"count":0}}');
     expect(upstream.hits()).toBe(2);
   });
 
@@ -4824,6 +4911,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("events:await"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:cancel"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:status"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("facts:list"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("loop:status"))).toBe(true);
     expect(isReservedControlPlaneCall(call("work_items:checkpoint"))).toBe(
       true,
     );
@@ -4901,70 +4990,77 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(Buffer.from("{bad json"))).toBe(false);
   });
 
-  it("keeps tools:invoke events:status available while ordinary admission is saturated", async () => {
-    let releaseOrdinary: () => void = () => {};
-    const ordinaryGate = new Promise<void>((resolve) => {
-      releaseOrdinary = resolve;
-    });
-    let ordinaryStarted: () => void = () => {};
-    const ordinaryStartedGate = new Promise<void>((resolve) => {
-      ordinaryStarted = resolve;
-    });
-    let upstreamRequests = 0;
-    const upstream = track(
-      http.createServer((_req, res) => {
-        upstreamRequests += 1;
-        if (upstreamRequests === 1) {
-          ordinaryStarted();
-          void ordinaryGate.then(() => {
-            res.writeHead(200, { "content-type": "application/json" });
-            res.end('{"result":"ordinary"}');
-          });
-          return;
-        }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end('{"result":"events-status"}');
-      }),
-    );
-    await listen(upstream);
-    const proxy = track(
-      createMcpProxy({
-        listenPort: 0,
-        targetHost: "127.0.0.1",
-        targetPort: port(upstream),
-        retryWindowMs: 1_000,
-        maxInFlight: 2,
-        controlPlaneReserve: 1,
-        log: () => {},
-      }),
-    );
-    await listen(proxy);
+  it.each([
+    ["events:status", { event: "unit:liveness" }],
+    ["facts:list", { scope: "workspace" }],
+    ["loop:status", {}],
+  ])(
+    "keeps tools:invoke %s available while ordinary admission is saturated",
+    async (reservedTool, reservedArgs) => {
+      let releaseOrdinary: () => void = () => {};
+      const ordinaryGate = new Promise<void>((resolve) => {
+        releaseOrdinary = resolve;
+      });
+      let ordinaryStarted: () => void = () => {};
+      const ordinaryStartedGate = new Promise<void>((resolve) => {
+        ordinaryStarted = resolve;
+      });
+      let upstreamRequests = 0;
+      const upstream = track(
+        http.createServer((_req, res) => {
+          upstreamRequests += 1;
+          if (upstreamRequests === 1) {
+            ordinaryStarted();
+            void ordinaryGate.then(() => {
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end('{"result":"ordinary"}');
+            });
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(`{"result":"${reservedTool}"}`);
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 1_000,
+          maxInFlight: 2,
+          controlPlaneReserve: 1,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
 
-    const heldOrdinary = request(
-      port(proxy),
-      JSON.stringify({ method: "tools/call", params: { name: "unit:ordinary" } }),
-    );
-    await ordinaryStartedGate;
+      const heldOrdinary = request(
+        port(proxy),
+        JSON.stringify({ method: "tools/call", params: { name: "unit:ordinary" } }),
+      );
+      await ordinaryStartedGate;
 
-    const eventsStatus = await request(
-      port(proxy),
-      JSON.stringify({
-        method: "tools/call",
-        params: {
-          name: "tools:invoke",
-          arguments: {
-            name: "mcp__papercusp_su__events_status",
-            args: { event: "unit:liveness" },
+      const eventsStatus = await request(
+        port(proxy),
+        JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "tools:invoke",
+            arguments: {
+              name: `mcp__papercusp_su__${reservedTool.replace(":", "_")}`,
+              args: reservedArgs,
+            },
           },
-        },
-      }),
-    );
-    expect(eventsStatus.status).toBe(200);
-    expect(upstreamRequests).toBe(2);
+        }),
+      );
+      expect(eventsStatus.status).toBe(200);
+      expect(upstreamRequests).toBe(2);
 
-    releaseOrdinary();
-    await expect(heldOrdinary).resolves.toMatchObject({ status: 200 });
-  });
+      releaseOrdinary();
+      await expect(heldOrdinary).resolves.toMatchObject({ status: 200 });
+    },
+  );
 
   it("reserves only the bounded lexical-only recipes:search recovery form", () => {
     const direct = (args: Record<string, unknown>) =>

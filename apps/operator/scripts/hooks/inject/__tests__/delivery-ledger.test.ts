@@ -61,6 +61,18 @@ describe('delivery ledger', () => {
 });
 
 describe('code intelligence delivery reservations', () => {
+  it('retains source observations across turn and compaction boundaries', () => {
+    const env = home();
+    const observation = { path: 'a.ts', sha256: 'a'.repeat(64), at: Date.now() };
+    codeIntelDelivery('su-1', env, (state: CodeIntelState & { recentEdits?: unknown[] }) => {
+      state.recentEdits = [observation];
+    });
+    for (const boundary of ['turn-start', 'compaction']) {
+      codeIntelDelivery('su-1', env, () => null, boundary);
+      expect(codeIntelDelivery('su-1', env, (state: CodeIntelState & { recentEdits?: unknown[] }) => state.recentEdits))
+        .toEqual([observation]);
+    }
+  });
   it('does not remove a competing writer lock or run its update', () => {
     const env = home();
     const lock = path.join(ledgerDir(env), 'su-1.code-intel.json.initial.lock');

@@ -2719,8 +2719,10 @@ export const KICKOFF_QUOTA_REJECTION_GRACE_MS = 10_000;
 export const KICKOFF_QUOTA_REJECTION_POLL_MS = 250;
 
 /** Hold a persisted kickoff's success receipt until `deliveredAtMs + graceMs`,
- *  and stop early when the quota detector latches. `rejected:true` means the
- *  provider answered the kickoff with a usage-limit wall. Polling is used
+ *  and stop early when the quota detector latches or the caller observes a
+ *  capacity refusal for this submission. A native user row is only submission
+ *  proof; either provider refusal must prevent a successful launch receipt.
+ *  Polling is used
  *  because the detector exposes only a level, not an edge. Pure apart from the
  *  injected clock and sleep; exported for tests.
  * @param {object} opts
@@ -2731,7 +2733,8 @@ export const KICKOFF_QUOTA_REJECTION_POLL_MS = 250;
  * @param {() => number} [opts.now]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {() => boolean} [opts.shouldStop]
- * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean }>}
+ * @param {() => ({ retryAfterMs: number, matchedExcerpt: string } | null)} [opts.readModelCapacity]
+ * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean, modelCapacity?: { retryAfterMs: number, matchedExcerpt: string } }>}
  */
 export async function awaitKickoffQuotaRejection({
   isQuotaBlocked,
@@ -2741,6 +2744,7 @@ export async function awaitKickoffQuotaRejection({
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   shouldStop = () => false,
+  readModelCapacity = () => null,
 } = {}) {
   const startMs = Number(now());
   const fromMs = Number.isFinite(Number(deliveredAtMs)) ? Number(deliveredAtMs) : startMs;
@@ -2757,6 +2761,8 @@ export async function awaitKickoffQuotaRejection({
       blocked = false;
     }
     if (blocked) return { rejected: true, waitedMs, stopped: false };
+    const modelCapacity = readModelCapacity();
+    if (modelCapacity) return { rejected: true, waitedMs, stopped: false, modelCapacity };
     if (shouldStop()) return { rejected: false, waitedMs, stopped: true };
     if (atMs >= deadlineMs) return { rejected: false, waitedMs, stopped: false };
     await sleep(Math.min(stepMs, deadlineMs - atMs));
@@ -3494,8 +3500,66 @@ export function hostErrorEvidence(error) {
 /** Shared drill-lifecycle roll-up file — the SAME carry-drills.events.jsonl the
  *  tool side (cold-boot-drill-live.ts) writes requested/queued rows into. */
 const DRILL_LEDGER_MAX_BYTES = 1024 * 1024;
+const DRILL_TERMINAL_KINDS = new Set([
+  'carry-drill-carry-delivered',
+  'carry-drill-carry-dropped',
+  'carry-drill-respawn-failed',
+]);
 export function sharedDrillLedgerPath(dir = PSU_PTY_DIR) {
   return join(dir, 'carry-drills.events.jsonl');
+}
+
+/**
+ * Prune the bounded roll-up without losing the terminal history needed to
+ * resolve a one-shot carry-drill alarm. The old half-file cut could evict the
+ * only delivered/dropped row for a drill while its condition stayed open;
+ * prioritize the newest terminal row for each drill, retaining as many as fit
+ * within the cap, then fill the remaining budget with the recent tail. The
+ * ledger remains bounded even when many drills are active.
+ */
+export function pruneSharedDrillLedger(body) {
+  const lines = body.split('\n').filter(Boolean);
+  const terminalByDrill = new Map();
+  for (const [index, line] of lines.entries()) {
+    try {
+      const row = JSON.parse(line);
+      if (typeof row.drillId === 'string' && DRILL_TERMINAL_KINDS.has(row.kind)) {
+        terminalByDrill.set(row.drillId, { index, line });
+      }
+    } catch {
+      // Preserve malformed rows only through the recent tail; they cannot
+      // establish drill lifecycle state for the resolver.
+    }
+  }
+
+  const tail = body.slice(Math.floor(body.length / 2)).replace(/^[^\n]*\n/, '');
+  const tailLines = tail.split('\n').filter(Boolean);
+  const tailSet = new Set(tailLines);
+  const protectedCandidates = [...terminalByDrill.values()]
+    .filter(({ line }) => !tailSet.has(line))
+    .sort((a, b) => a.index - b.index)
+    .map(({ line }) => line);
+  const keepNewestWithinBudget = (candidates, budget) => {
+    const kept = [];
+    let bytes = 0;
+    for (let i = candidates.length - 1; i >= 0; i -= 1) {
+      const lineBytes = Buffer.byteLength(candidates[i]) + 1;
+      if (bytes + lineBytes > budget) break;
+      kept.unshift(candidates[i]);
+      bytes += lineBytes;
+    }
+    return { kept, bytes };
+  };
+  const protectedRows = keepNewestWithinBudget(protectedCandidates, DRILL_LEDGER_MAX_BYTES);
+  const tailRows = keepNewestWithinBudget(tailLines, DRILL_LEDGER_MAX_BYTES - protectedRows.bytes);
+  const retained = [...protectedRows.kept, ...tailRows.kept];
+  if (retained.length === 0 && lines.length > 0) {
+    // A single malformed or oversized line cannot be made useful to the
+    // resolver, but retaining it is preferable to replacing the ledger with
+    // an empty file and makes the bounded-write behavior explicit.
+    return `${lines[lines.length - 1]}\n`;
+  }
+  return retained.length > 0 ? `${retained.join('\n')}\n` : '';
 }
 
 /** EI-12655 (fix b): mirror a carry-drill lifecycle event into the SHARED drill
@@ -3514,8 +3578,8 @@ export function appendSharedDrillLedgerEvent(ownerId, kind, extra = {}, dir = PS
     const row = JSON.stringify({ ts: new Date().toISOString(), kind, ownerId, ...extra });
     try {
       if (statSync(p).size > DRILL_LEDGER_MAX_BYTES) {
-        const tail = readFileSync(p, 'utf8');
-        writeFileSync(p, tail.slice(Math.floor(tail.length / 2)).replace(/^[^\n]*\n/, ''), { mode: 0o600 });
+        const body = readFileSync(p, 'utf8');
+        writeFileSync(p, pruneSharedDrillLedger(body), { mode: 0o600 });
       }
     } catch {
       /* no ledger yet — the append below creates it */
@@ -3627,12 +3691,19 @@ export function looksLikeDiscoveryRecord(rec) {
  *  re-derives that trio when absent (healContextTrimmingEnv), and
  *  psu-host-handoff-env.test.ts pins this list ⊇ contextTrimmingEnv's keys. */
 export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
+  // The same native host keeps its tenant slot while adopting updated code.
+  'PAPERCUSP_HOSTED_NATIVE_SLOT',
   'PAPERCUSP_SID',
   'PAPERCUSP_AGENT',
   'PAPERCUSP_ADV_SESSION_ID',
   // Keep the proven launcher actor through host-code adoption. Without it,
   // the successor advertises human-owned provenance and quota recovery refuses.
   'PAPERCUSP_LAUNCHED_BY',
+  // A re-exec takes the handoff before parsing --headless. Detached successors
+  // still need the injectable PTY, with explicit PTY refusals preserved too.
+  'PAPERCUSP_PSU_HEADLESS',
+  'PAPERCUSP_PSU_PTY',
+  'PAPERCUSP_PSU_NO_PTY',
   HEADLESS_NORMALIZED_LOG_ENV,
   'PAPERCUSP_WORKSPACE',
   'PAPERCUSP_HARNESS_SLUG',
@@ -8242,6 +8313,18 @@ export function renderTerminalScreen(output, { rows = 24, cols = 80 } = {}) {
   return screen.map((cells) => cells.join('').replace(/ +$/, ''));
 }
 
+/** Native 0.162/0.163 no longer paints a status/context footer. Its configured
+ * frame has an empty composer followed by a model/effort/directory footer.
+ * Require a complete screen paint and adjacent visible chrome: accepting either
+ * token from flattened scrollback would also accept loading frames or menus. */
+function codexConfiguredComposerObserved(raw, screen) {
+  if (!/(?:\x1b\[2J|\x1b\[(?:1;1)?H\x1b\[0?J)/.test(raw)) return false;
+  const footerAt = screen.findLastIndex(line => line.trim());
+  if (footerAt < 0 || !/^\s{2,}(?!loading\b)[a-z0-9][a-z0-9._:/-]*\s+(?:default|none|minimal|low|medium|high|xhigh|max)\s+·\s+(?:\/|~\/|[a-z]:[\\/])/i.test(screen[footerAt])) return false;
+  const composer = screen.slice(0, footerAt).findLast(line => line.trim());
+  return /^\s*›(?:\s+Ask Codex to do anything)?\s*$/.test(composer ?? '');
+}
+
 /** WI-10005178: the Codex footer state as the terminal shows it. The rendered
  * screen decides; the flattened stream is only the fallback for a screen that
  * holds no complete footer (the bounded startup buffer trimmed the full paint and
@@ -8252,7 +8335,9 @@ export function renderTerminalScreen(output, { rows = 24, cols = 80 } = {}) {
  * @returns {string | null} */
 export function codexFooterStateFromOutput(output, dims) {
   const raw = String(output ?? '');
-  return codexStatusFooterState(renderTerminalScreen(raw, dims).join('\n'))
+  const screen = renderTerminalScreen(raw, dims);
+  return codexStatusFooterState(screen.join('\n'))
+    ?? (codexConfiguredComposerObserved(raw, screen) ? 'ready' : null)
     ?? codexStatusFooterState(stripAnsi(raw));
 }
 
@@ -8372,7 +8457,8 @@ export function codexTuiStartObserved(output) {
  *
  * Codex v0.157 can keep that header at `model: loading` after model selection;
  * its `Ready · <model> · Context NN% left` footer is then the positive session
- * proof. `Starting` is not ready. `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
+ * proof. In 0.162/0.163 the rendered configured composer/model footer supplies
+ * that proof instead. `Starting` is not ready. `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
  * has already trimmed away: the whole buffer then counts as post-probe.
  * Pure and exported for tests. */
 const CODEX_SESSION_MODEL_RE = /model:\s+(?!loading\b)[^\s│]/;
@@ -10881,6 +10967,7 @@ export function hostThroughPty(o) {
     String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex'
       ? makeModelCapacityDetector()
       : null;
+  let latestModelCapacity = null;
   const quotaBlockStarvationGuard = makeQuotaBlockStarvationGuard({
     thresholdMs: positiveNumber(
       env.PAPERCUSP_PSU_PTY_QUOTA_STARVATION_MS,
@@ -12416,11 +12503,13 @@ export function hostThroughPty(o) {
       };
       let freshChildRetries = 0;
       let kickoffChild = child;
+      let kickoffSubmittedAtMs = null;
       const injectLaunchKickoff = () => {
         // Keep proof and preparation tied to the child that this kickoff
         // submitted to. A same-host respawn can replace the mutable `child`
         // binding while the native proof is still settling.
         kickoffChild = child;
+        kickoffSubmittedAtMs = null;
         launchKickoffAttemptStartedAtMs = Date.now();
         launchKickoffAttemptBudgetMs = kickoffBudgetMs;
         // WI-10007230: owner input can cancel carry before its prewrite hook.
@@ -12441,6 +12530,13 @@ export function hostThroughPty(o) {
         return injectTurnAtPrompt({
           text: launchKickoff,
           label,
+          onSubmitted: (submission) => {
+            kickoffSubmittedAtMs = submission.submittedAtMs;
+            // Forget startup/replayed capacity copy so an identical NEW error
+            // can produce its own edge after this exact submission.
+            modelCapacityDetector?.reset();
+            latestModelCapacity = null;
+          },
           budgetMs: kickoffBudgetMs,
           requireInitialOutput: true,
           verifyKickoffMarkerEcho,
@@ -12700,13 +12796,23 @@ export function hostThroughPty(o) {
               KICKOFF_QUOTA_REJECTION_GRACE_MS,
             ),
             shouldStop: () => hostCleanedUp || shuttingDown,
+            // EI-26025268928325126: cover delayed capacity errors in the same
+            // admission window as quota errors. Never classify replayed resume
+            // output, another child's output, or a pre-submission banner here.
+            readModelCapacity: () => env.PAPERCUSP_PSU_HEADLESS === '1' && !isResumeLaunch &&
+              latestModelCapacity?.child === kickoffChild && kickoffSubmittedAtMs !== null &&
+              latestModelCapacity.detectedAtMs >= kickoffSubmittedAtMs
+                ? latestModelCapacity
+                : null,
           });
           if (quotaVerdict.rejected) {
-            const kickoffReason = 'provider-quota-rejected';
-            appendHostEvent(ownerId, 'launch-kickoff-quota-rejected', {
+            const capacity = quotaVerdict.modelCapacity;
+            const kickoffReason = capacity ? 'model-capacity' : 'provider-quota-rejected';
+            appendHostEvent(ownerId, capacity ? 'launch-kickoff-model-capacity-rejected' : 'launch-kickoff-quota-rejected', {
               waitedMs: quotaVerdict.waitedMs,
               nativeRef: proof.nativeRef ?? null,
               agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+              ...(capacity ? { retryAfterMs: capacity.retryAfterMs, matchedExcerpt: capacity.matchedExcerpt } : {}),
             });
             recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
               reason: kickoffReason,
@@ -12717,7 +12823,9 @@ export function hostThroughPty(o) {
             });
             try {
               writeTerminalDiagnostic(
-                `psu: kickoff REJECTED: the provider answered the launch kickoff with a usage-limit wall ` +
+                capacity
+                  ? `psu: kickoff REJECTED — the selected model is at capacity; retry after ${capacity.retryAfterMs}ms. The member was not started.\n`
+                  : `psu: kickoff REJECTED: the provider answered the launch kickoff with a usage-limit wall ` +
                   `${quotaVerdict.waitedMs}ms after delivery. This account cannot run the member. ` +
                   `Relaunch with account:'auto' (gateway pool with failover) or pin another account.\n`,
               );
@@ -12729,7 +12837,7 @@ export function hostThroughPty(o) {
               nativeRef: proof.nativeRef ?? null,
               reason: `kickoff-not-submitted:${kickoffReason}`,
             });
-            if (unreportedKickoffRefusalStrandsHost({
+            if ((capacity && env.PAPERCUSP_PSU_HEADLESS === '1' && !receipt?.published) || unreportedKickoffRefusalStrandsHost({
               delivered: false,
               headless: env.PAPERCUSP_PSU_HEADLESS === '1',
               receipt,
@@ -15259,6 +15367,7 @@ export function hostThroughPty(o) {
     const startupDialogChildPid = Number.isInteger(startupDialogChild.pid) ? startupDialogChild.pid : null;
     let bootstrapFailureRecorded = false;
     modelCapacityDetector?.reset();
+    latestModelCapacity = null;
     if (headlessClaudeOnboardingExpiryTimer) {
       clearTimeout(headlessClaudeOnboardingExpiryTimer);
       headlessClaudeOnboardingExpiryTimer = null;
@@ -15531,6 +15640,7 @@ export function hostThroughPty(o) {
       }
       const modelCapacity = modelCapacityDetector?.observe(stripAnsi(raw) ?? '') ?? null;
       if (modelCapacity) {
+        latestModelCapacity = { ...modelCapacity, child: startupDialogChild, detectedAtMs: Date.now() };
         appendHostEvent(ownerId, 'model-capacity-detected', {
           agent: 'codex',
           errorClass: modelCapacity.errorClass,

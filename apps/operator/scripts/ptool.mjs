@@ -1464,11 +1464,13 @@ export function requireServingGeneration(tool) {
   const toolName = typeof tool?.name === 'string' && tool.name.trim() ? tool.name.trim() : 'the requested tool';
   if (toolName === 'tools:find') return undefined;
 
-  throw new Error(
+  const error = new Error(
     `serving_generation_missing: ${toolName} was not dispatched because tools/list did not advertise a Papercusp ` +
       'serving generation. The connected operator may be an incompatible legacy release; reconnect to a current ' +
       'operator and re-read tools/list.',
   );
+  error.code = 'serving_generation_missing';
+  throw error;
 }
 
 // `tools/list` is a recovery prerequisite for every named ptool call, but it
@@ -2567,6 +2569,18 @@ export function formatToolCatalogFailure(requestedToolName, error) {
  */
 export function canDispatchWithoutCatalog(toolName, inputKind) {
   return typeof toolName === 'string' && toolName.trim().length > 0 && inputKind != null;
+}
+
+/**
+ * A complete legacy tools/list can still omit the serving-generation marker.
+ * Scripted calls already carry their exact arguments, so they can use the
+ * same catalog-independent dispatch path as a tools/list transport failure.
+ * Interactive calls must retain the catalog gate because ptool still needs
+ * the input schema to collect arguments.
+ */
+export function canBypassMissingServingGeneration(toolName, inputKind, error) {
+  return error?.code === 'serving_generation_missing' &&
+    canDispatchWithoutCatalog(toolName, inputKind);
 }
 
 /** Explain the catalog-independent fallback on stderr without contaminating
@@ -4363,6 +4377,41 @@ async function main() {
       // marker, even if the old handler would otherwise accept the arguments.
       requireServingGeneration(tool);
     } catch (error) {
+      if (canBypassMissingServingGeneration(args.tool, inputKind, error)) {
+        if (operatorFallbackUsed) {
+          console.error(
+            `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
+              'because its read-only metadata could not be verified. Pass --url=<intended operator> to pin the call.',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        const callArgs = mergeDispatchProjection(inputArgs, projection);
+        const idempotencyKey = args.idempotencyKey || randomUUID();
+        console.error(formatToolCatalogBypass(toolName, error));
+        try {
+          const recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
+            client,
+            toolName,
+            callArgs,
+            {
+              idempotencyKey,
+              tokenPaths,
+              initialTokenPath: ptoolTokenPathByClient.get(client),
+              reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
+            },
+          );
+          client = recovered.client;
+          const code = await printResult(recovered.result, {
+            raw: shouldPrintRawResult(inputKind, args.raw),
+          });
+          if (code !== 0) process.exitCode = code;
+        } catch (callError) {
+          console.error(formatToolCallFailure(toolName, callError, { idempotencyKey }));
+          process.exitCode = 1;
+        }
+        return;
+      }
       console.error(`ptool: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
       return;

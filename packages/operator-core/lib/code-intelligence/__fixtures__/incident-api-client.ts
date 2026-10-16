@@ -119,7 +119,7 @@ try {
     assert.equal(receipt.written, 1); assert.equal(receipt.ids.length, 1);
     return { id: receipt.ids[0], hash: createHash('sha256').update(output).digest('hex') };
   };
-  const failure = await run(2);
+  let failure = await run(2);
   const compiler = await firstPartyCallersOffthread({ root, name: 'incidentTarget', filePath: 'a-target.ts',
     paths: ['a-target.ts', 'b-consumer.ts', testPath], op: 'callers', limit: 8, vendorDir: LSP_VENDOR_DIR }, { budgetMs: 6_000 });
   assert.equal(compiler.error, null, JSON.stringify(compiler));
@@ -130,6 +130,100 @@ try {
     projection: { pick: ['results[].id', 'results[].ok', 'results[].item.id'] } });
   const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
   assert(id, JSON.stringify(created));
+  // P-038: exercise the composed current-source endpoint and its real PG
+  // dedupe, with fixture measurements rather than invented production history.
+  const beforeTarget = readFileSync(join(root, 'a-target.ts'), 'utf8');
+  const { recordEditAttributionStrict } = await import('../../edit-attribution.ts');
+  await recordEditAttributionStrict({ repoRoot: root, files: ['a-target.ts'],
+    agentId: 'native-incident-private-owner', workspaceId: workspace, goalRef: id,
+    intent: 'Private fixture changes incidentTarget', dispatchCallId: randomUUID() });
+  await writeFile(join(root, 'a-target.ts'), 'export function incidentTarget() { return 3; }\n');
+  const afterTarget = readFileSync(join(root, 'a-target.ts'), 'utf8');
+  assert.notEqual(afterTarget, beforeTarget);
+  const { collectInterfaceEdits } = await import(pathToFileURL(join(repo, 'apps/operator/scripts/hooks/inject/core.mjs')).href);
+  const { consequenceFor } = await import(pathToFileURL(join(repo, 'apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs')).href);
+  const required = await import(pathToFileURL(join(repo, 'scripts/check-required-field-strands.mjs')).href);
+  const behavioural = await import(pathToFileURL(join(repo, 'scripts/check-behavioural-strands.mjs')).href);
+  const observationScope = { owner: 'native-incident-private-owner', workspace, harness: workspace,
+    client: 'codex', cwd: root };
+  // The private harness has no source-history repository. Supply its controlled
+  // before image at the filesystem/history seam; use the maintained AST diff,
+  // hook collector and persistent ledger to derive every symbol observation.
+  await collectInterfaceEdits({ ...observationScope, toolCalls: [{ editedPaths: ['a-target.ts'] }] },
+    (path: string) => consequenceFor(path, { includeSourceChanges: true,
+      exists: (candidate: string) => candidate === join(root, 'scripts/check-required-field-strands.mjs'),
+      loadRequired: async () => required,
+      loadBehavioural: async () => ({ ...behavioural, submodulePaths: () => [],
+        repoForPath: (relPath: string) => ({ cwd: root, relPath }) }),
+      resolveBase: () => 'a'.repeat(40), showAt: () => beforeTarget,
+    }));
+  failure = await run(2);
+  const attributed = await call('work_items:get', { id, harness: workspace,
+    projection: { pick: ['results[].workItem.id', 'results[].workItem.state'] } });
+  const workItem = attributed.results?.[0]?.workItem;
+  assert.equal(workItem?.id, id); assert.equal(typeof workItem.state, 'string');
+  const sha = (path: string) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
+  const snapshotPath = join(homedir(), '.papercusp/graph-snapshot/papercusp/dependency-snapshot.json');
+  await mkdir(resolve(snapshotPath, '..'), { recursive: true });
+  const snapshot = JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+    // This is the explicit fixture snapshot identity, never a production commit.
+    index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
+    edges: [{ imported: 'a-target.ts', importer: testPath, importerSha256: sha(testPath) }],
+    symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols: [{
+      id: 'private-incident-target', name: 'incidentTarget', path: 'a-target.ts', line: 1, column: 17,
+      sha256: sha('a-target.ts'), signature: 'incidentTarget()', aliases: [], callers: [],
+    }] } });
+  await writeFile(snapshotPath, snapshot);
+  const replay: typeof observationScope & { toolCalls: unknown[];
+    incidentAttribution?: import('../push-channel.ts').IncidentAttribution } = { ...observationScope,
+    toolCalls: [{ tool: 'mcp__papercusp_su__testing_run', toolInput: { harness: workspace, files: [testPath] },
+      toolResponse: { byFile: { [testPath]: { status: 'fail', failed: 1, runId: failure.id } } } }] };
+  // A fresh collection loads the earlier observation from the delivery ledger;
+  // the failing-test request itself supplies no changed symbols or work items.
+  await collectInterfaceEdits(replay);
+  assert(replay.incidentAttribution, 'Shared collector must recover the earlier source observation');
+  assert.equal(replay.incidentAttribution?.status, 'measured');
+  assert.deepEqual(replay.incidentAttribution.recentEdits?.[0]?.symbols, [{ name: 'incidentTarget', line: 1 }]);
+  assert.equal(replay.incidentAttribution.recentEdits?.[0]?.sha256, sha('a-target.ts'));
+  const postIncident = async () => {
+    const response = await fetch(new URL('/api/agent-mcp/mid-turn-context', endpoint), {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(replay),
+      signal: AbortSignal.timeout(10_000),
+    });
+    assert.equal(response.status, 200);
+    return await response.json() as { ok: boolean; text: string };
+  };
+  // The maintained cold loader returns immediately; converge only on its
+  // bounded fixture load, retaining the first delivered response for evidence.
+  let delivered = await postIncident();
+  for (let attempt = 0; attempt < 10 && !delivered.text.includes('Code intelligence (incident)'); attempt++) {
+    await new Promise(done => setTimeout(done, 25));
+    delivered = await postIncident();
+  }
+  assert.match(delivered.text, /Code intelligence \(incident\)/);
+  assert.match(delivered.text, /Recently changed symbols.*incidentTarget:a-target\.ts:1/);
+  assert(delivered.text.includes(id), delivered.text);
+  assert.match(delivered.text, /file-edit-ledger/);
+  assert(delivered.text.includes(String(failure.id)), delivered.text);
+  assert.match(delivered.text, /cause, runtime execution and dynamic dispatch are unknown/);
+  const rows = await getOrgPg().sql<{ id: string; subject: string; chars: number; cited_paths: string[] }[]>`
+    SELECT id, subject, chars, cited_paths FROM harness_shared.code_intel_pushes
+    WHERE workspace_id = ${workspace} AND owner_id = 'native-incident-private-owner' AND leg = 'incident'`;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.subject, `failed-tests:${testPath}`);
+  assert.equal(rows[0]!.chars, delivered.text.length + 2);
+  const duplicate = await postIncident();
+  assert(!duplicate.text.includes('Code intelligence (incident)'), duplicate.text);
+  const [count] = await getOrgPg().sql<{ count: number }[]>`SELECT count(*)::int AS count
+    FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}
+      AND owner_id = 'native-incident-private-owner' AND leg = 'incident'`;
+  assert.equal(count!.count, 1);
+  const pushProof = { delivered: delivered.text, duplicateSuppressed: true, ledger: rows[0],
+    attribution: replay.incidentAttribution, testRunId: failure.id, handlerHash,
+    snapshotSha256: createHash('sha256').update(snapshot).digest('hex'),
+    sourceBeforeSha256: createHash('sha256').update(beforeTarget).digest('hex'), sourceAfterSha256: sha('a-target.ts'),
+    observationProducer: 'maintained collector and delivery ledger with controlled before image',
+    scope: 'private current-source endpoint replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam' };
   const claimed = await call('work_items:claim', { row: `${id},self,${workspace}`,
     projection: { pick: ['results[].taskBrief'] } });
   const brief = claimed.results?.[0]?.taskBrief;
@@ -144,6 +238,7 @@ try {
     projection: { pick: ['results[].resume.taskBrief'] } });
   assert.deepEqual(resumed.results[0].resume.taskBrief.incident.failures, brief.incident.failures);
   assert.equal(resumed.results[0].resume.taskBrief.sourceFingerprint, brief.sourceFingerprint);
+  await writeFile(join(root, 'a-target.ts'), beforeTarget);
   await run(1);
   const repaired = await call('work_items:get', { id, harness: workspace, resume: true,
     projection: { pick: ['results[].resume.taskBrief'] } });
@@ -152,7 +247,7 @@ try {
   assert.deepEqual(repaired.results[0].resume.taskBrief.incident.candidates, []);
   console.log('NATIVE_INCIDENT_API_PROOF=' + JSON.stringify({ workspace, transport: 'real-cli-http',
     failure: 'actual-node-assertion', staticCandidate: true, cause: 'unknown', runtimeExecution: 'unmeasured',
-    resume: 'current', repaired: true }));
+    resume: 'current', repaired: true, push: pushProof }));
 } finally {
   if ('closeAllConnections' in server) server.closeAllConnections();
   await new Promise<void>(done => server.close(() => done()));

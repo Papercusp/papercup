@@ -18,7 +18,9 @@ export const PR_DELIVERY_AUDIT_MAX = 100;
 const HISTORY_MAX = 100;
 const UPSTREAM_HEADS_MAX = 100;
 const terminal = new Set(['done', 'resolved', 'closed']);
-const exec = promisify(execFile);
+let execMemo: typeof execFile.__promisify__ | null = null;
+const exec = ((...args: unknown[]) =>
+  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const sha = /^[0-9a-f]{40}$/;
 
 export const prDeliveryAuditScopeSchema = z.object({

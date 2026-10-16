@@ -16,7 +16,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const ROOT = join(tmpdir(), `social-package-install-${process.pid}-${Date.now()}`);
 afterAll(async () => { await fs.rm(ROOT, { recursive: true, force: true }); });
 
-const PACKAGES = ['facebook-pages', 'instagram', 'x'];
+const PACKAGES = ['facebook-pages', 'instagram', 'x', 'threads', 'tiktok', 'linkedin', 'youtube'];
 describe('installed social packages use the generic Integrations model', () => {
   it.each(PACKAGES)('%s fails closed before installation when its daemon declaration is removed', async (id) => {
     const globalPluginsDir = join(ROOT, `${id}-refused`);
@@ -90,34 +90,58 @@ describe('installed social packages use the generic Integrations model', () => {
     expect(entry.descriptor.datatypes).toEqual(['social-post']);
     expect(await entry.adapter!.describe()).toEqual(entry.descriptor);
     const model = summarizeIntegrationProvider(entry, [], {
-      ref: id === 'x' ? 'x' : 'facebook', configured: false, clientId: null, hasClientSecret: false,
+      ref: manifest.provider.oauth.clientRegistrationRef, configured: false, clientId: null, hasClientSecret: false,
       redirectUri: 'https://operator.example/api/oauth/callback', savedAt: null,
     });
     expect(model).toMatchObject({ id: providerId, tracksTickets: false });
     expect(model.capabilities).toEqual(entry.descriptor.capabilities);
-    expect(model.displayName).toBe(id === 'facebook-pages' ? 'Facebook Pages' : id === 'x' ? 'X' : 'Instagram');
-    expect(model.requiredConfig).toEqual(id === 'x' ? ['userId', 'username'] : [id === 'facebook-pages' ? 'pageId' : 'igUserId']);
-    expect(new URL(model.connectHref!, 'https://operator.example').searchParams.get('plugin')).toContain(providerId);
-    expect(model.appRegistration?.createUrl).toBe(id === 'x' ? 'https://console.x.com/' : 'https://developers.facebook.com/apps/');
-    expect(model.oauthClient).toMatchObject({ configured: false, secretRequired: id !== 'x' });
-    expect(registry.forDatatype('social-post', 'social.post').map((e) => e.descriptor.id)).toEqual([providerId]);
+    expect(model.displayName).toBe(({ 'facebook-pages': 'Facebook Pages', x: 'X', instagram: 'Instagram', threads: 'Threads', tiktok: 'TikTok', linkedin: 'LinkedIn', youtube: 'YouTube' })[id]);
+    expect(model.requiredConfig).toEqual(id === 'x' ? ['userId', 'username'] : [id === 'facebook-pages' ? 'pageId' : id === 'threads' ? 'userId' : id === 'tiktok' ? 'openId' : id === 'linkedin' ? 'memberId' : id === 'youtube' ? 'channelId' : 'igUserId']);
+    expect(new URL(model.connectHref!, 'https://operator.example').searchParams.get('plugin')).toBe(`provider:${id === 'youtube' ? 'google' : providerId}`);
+    expect(model.appRegistration?.createUrl).toBe(id === 'x' ? 'https://console.x.com/' : id === 'tiktok' ? 'https://developers.tiktok.com/apps/' : id === 'linkedin' ? 'https://www.linkedin.com/developers/apps' : id === 'youtube' ? 'https://console.cloud.google.com/apis/credentials' : 'https://developers.facebook.com/apps/');
+    expect(model.oauthClient).toMatchObject({ configured: false, secretRequired: !['x', 'youtube'].includes(id) });
+    expect(registry.forDatatype('social-post', 'social.post').map((e) => e.descriptor.id)).toEqual(['tiktok', 'youtube'].includes(id) ? [] : [providerId]);
+    expect(registry.forDatatype('social-post').map((e) => e.descriptor.id)).toEqual([providerId]);
     // These calls cross the installed process boundary and return through host.fetch;
     // a descriptor-only registration cannot satisfy them. No vendor is contacted.
-    const config = id === 'x' ? { userId: '42', username: 'owner' } : id === 'facebook-pages' ? { pageId: '42' } : { igUserId: '42' };
+    const config = id === 'x' ? { userId: '42', username: 'owner' } : id === 'facebook-pages' ? { pageId: '42' } : id === 'threads' ? { userId: '42' } : id === 'tiktok' ? { openId: 'owner' } : id === 'linkedin' ? { memberId: 'owner' } : id === 'youtube' ? { channelId: 'UC42' } : { igUserId: '42' };
     const fetched: unknown[] = [];
     const page = await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, {
-      fetch: async (request) => { fetched.push(request); return { status: 200, headers: {}, body: JSON.stringify({ data: [], meta: { result_count: 0 } }), bodyEncoding: 'utf8' as const }; },
+      fetch: async (request) => { fetched.push(request); return { status: 200, headers: {}, body: JSON.stringify(id === 'tiktok' ? { data: { videos: [], has_more: false }, error: { code: 'ok' } } : id === 'youtube' ? { items: [] } : { data: [], meta: { result_count: 0 } }), bodyEncoding: 'utf8' as const }; },
     });
+    if (id === 'linkedin') {
+      expect(fetched).toEqual([]);
+      expect(await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.post', args: { destination: 'owner', text: 'installed test' } }, {
+        fetch: async (request) => { fetched.push(request); return { status: 201, headers: { 'x-restli-id': 'urn:li:share:123' }, body: '{}', bodyEncoding: 'utf8' as const }; },
+      })).toMatchObject({ externalId: 'urn:li:share:123' });
+    }
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'installed-source' })]));
     expect(page.records).toEqual([]);
     let failure: unknown;
     try {
-      await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, {
-        fetch: async () => ({ status: 429, headers: { 'retry-after': '37' }, body: '{}', bodyEncoding: 'utf8' as const }),
-      });
+      const host = { fetch: async () => ({ status: 429, headers: { 'retry-after': '37' }, body: '{}', bodyEncoding: 'utf8' as const }) };
+      if (id === 'linkedin') await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.post', args: { destination: 'owner', text: 'test' } }, host);
+      else await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, host);
     } catch (error) { failure = error; }
     expect(providerSyncErrorOf(failure)).toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 37 });
+    if (id === 'threads') {
+      let publications = 0; let statusReads = 0;
+      let ambiguous: unknown;
+      try {
+        await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.post', args: { destination: '42', text: 'one write' } }, {
+          fetch: async ({ request }) => {
+            const path = new URL(request.url).pathname;
+            const body = path.endsWith('/threads_publish') ? (publications++, {})
+              : path.endsWith('/container-1') ? { status: ++statusReads === 1 ? 'FINISHED' : 'PUBLISHED' }
+              : { id: 'container-1' };
+            return { status: path.endsWith('/threads_publish') ? 503 : 200, headers: {}, body: JSON.stringify(body), bodyEncoding: 'utf8' as const };
+          },
+        });
+      } catch (error) { ambiguous = error; }
+      expect(ambiguous).toMatchObject({ data: { kind: 'transient', containerId: 'container-1', observedStatus: 'PUBLISHED', retrySafe: false } });
+      expect(publications).toBe(1);
+    }
     if (id === 'facebook-pages') {
       const triggerPack = JSON.parse(await fs.readFile(join(REPO, 'libs/papercusp/plugins/social-facebook-pages/papercusp.json'), 'utf8'));
       expect(triggerPack.triggerPack.bindings.map((b: { source: { sourceKind: string }; eventPattern: string }) => [b.source.sourceKind, b.eventPattern])).toEqual([

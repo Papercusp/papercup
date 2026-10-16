@@ -323,6 +323,33 @@ function resultDoorPreservePaths(
   return paths.length > 0 ? paths : undefined;
 }
 
+/**
+ * `tools:invoke` keeps a target projection inside its dispatch envelope. The
+ * result door runs after the wrapper returns, so recover those paths from the
+ * original invocation args as well as the nested result metadata.
+ */
+// Exported for tests; not part of the route's public surface.
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export function resultDoorPreservePathsForDispatch(
+  result: McpCallResult,
+  toolName: string,
+  dispatchArgs: unknown,
+  directPaths: readonly string[] | undefined,
+): readonly string[] | undefined {
+  let nestedPaths: readonly string[] | undefined;
+  if (toolName === 'tools:invoke' && dispatchArgs && typeof dispatchArgs === 'object' && !Array.isArray(dispatchArgs)) {
+    const nestedArgs = decodeToolsInvokeArgs((dispatchArgs as Record<string, unknown>).args);
+    if (nestedArgs && typeof nestedArgs === 'object' && !Array.isArray(nestedArgs)) {
+      const rawProjection = (nestedArgs as Record<string, unknown>)[PROJECTION_ARG];
+      if (rawProjection !== undefined) {
+        const parsed = parseProjection(rawProjection);
+        if (parsed.ok) nestedPaths = parsed.spec.pick;
+      }
+    }
+  }
+  return resultDoorPreservePaths(result, [...(directPaths ?? []), ...(nestedPaths ?? [])]);
+}
+
 function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkipReason | undefined): McpCallResult {
   if (!reason) return result;
   return {
@@ -4879,7 +4906,7 @@ export function registerMcpHost(server: McpServer): void {
               // outcomes were already per-result-doored before persistence,
               // but this request must consume the CURRENT aggregate cohort or
               // retry fan-out can bypass the one-budget invariant entirely.
-              const preservePaths = resultDoorPreservePaths(storedResult, projectionSpec?.pick);
+              const preservePaths = resultDoorPreservePathsForDispatch(storedResult, toolName, dispatchArgs, projectionSpec?.pick);
               const replayedResult = projected.skipResultDoor
                 ? storedResult
               : await applyResultDoorAsync(storedResult, {
@@ -5177,7 +5204,7 @@ export function registerMcpHost(server: McpServer): void {
             // door's fixed policy rather than racing it.
             const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
             const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
-            const preservePaths = resultDoorPreservePaths(doorInput, projectionSpec?.pick);
+            const preservePaths = resultDoorPreservePathsForDispatch(doorInput, toolName, dispatchArgs, projectionSpec?.pick);
             // EI-19386201256023240: a tool whose documented/near-exclusive
             // caller is a programmatic client (a shell hook `json.loads`-ing
             // the raw body — e.g. activity:report's hook_bundle fold — see

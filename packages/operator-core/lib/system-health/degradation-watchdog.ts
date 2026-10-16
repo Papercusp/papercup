@@ -99,6 +99,8 @@ export interface DegradationMechanism {
    * (a gate task), never a per-run id, or every run would open its own condition.
    */
   scopeKeyed?: boolean;
+  /** The scope is a coord owner id; an ended owner makes its scoped condition obsolete. */
+  scopeIsSessionOwner?: boolean;
   /** Optional observation tenant partition for mechanisms owned by one workspace. */
   observationWorkspaceId?: string;
   /** Optional producer tag when other producers share the same mechanism. */
@@ -426,7 +428,8 @@ registerDegradationMechanism({
   description: 'Scheduler ticks admitted ordinary work rather than retaining only the critical-queue safety floor; this records the chosen policy, not a diagnosis of latency or successful routine execution.',
 });
 registerDegradationMechanism({
-  mechanism: 'compaction-force-respawn', scopeKeyed: true, thresholds: { minEligible: 1 },
+  mechanism: 'compaction-force-respawn', scopeKeyed: true, scopeIsSessionOwner: true,
+  thresholds: { minEligible: 1 },
   description: 'Flag-enabled force-cut attempts accepted carry-respawn injection rather than losing the host, capability, transcript, carry spec or injection. Disabled flags and deliberately excluded OMP sessions are ineligible.',
 });
 registerDegradationMechanism({
@@ -618,7 +621,8 @@ export function renderDegradationAlarm(
       `min eligible ${minEligible}).\n` +
       `Top reasons:\n  - ${top || '(none)'}\n\n` +
       `This condition is owned by one auto-filed work item and resolves itself once the rate reaches ` +
-      `${t.recoverRate}. Data: harness_shared.fallback_observations WHERE mechanism = '${m.mechanism}'` +
+      `${t.recoverRate}${m.scopeIsSessionOwner ? ' or the scoped owner session ends' : ''}. ` +
+      `Data: harness_shared.fallback_observations WHERE mechanism = '${m.mechanism}'` +
       (scope ? ` AND scope = '${scope}'` : '') +
       `.`,
   };
@@ -661,6 +665,8 @@ export interface DegradationSweepDeps {
   readPreviousWindows: (m: DegradationMechanism, windowMs: number, now: Date) => Promise<ScopedFallbackWindow[]>;
   /** Every currently-OPEN `degraded:` key, from the durable condition fold. */
   readOpenConditionKeys: () => Promise<string[]>;
+  /** Batch-read owner liveness for mechanisms whose scope is a session owner id. */
+  readEndedSessionOwners: (ownerIds: string[]) => Promise<Set<string>>;
   broadcast: (ev: SevereEventBroadcast) => Promise<boolean>;
   resolve: (res: SevereEventResolution) => Promise<boolean>;
   /** Retention pruner; null disables the prune leg. */
@@ -713,6 +719,16 @@ async function defaultReadOpenConditionKeys(): Promise<string[]> {
     .map((s) => s.condition_key);
 }
 
+async function defaultReadEndedSessionOwners(ownerIds: string[]): Promise<Set<string>> {
+  if (ownerIds.length === 0) return new Set();
+  const { resolveSessionStates } = await import('../agent-tools/coordination/liveness-oracle');
+  const states = await resolveSessionStates(
+    ownerIds.map((ownerId) => ({ ownerId })),
+    { hydrateBatch: true, psuHostPositiveAuthority: true, selfWake: true, hostCondition: true },
+  );
+  return new Set(ownerIds.filter((ownerId) => states.get(ownerId)?.sessionState === 'ended'));
+}
+
 async function defaultBroadcast(ev: SevereEventBroadcast): Promise<boolean> {
   const { broadcastSevereEvent } = await import('../severe-event-broadcast');
   return broadcastSevereEvent(ev);
@@ -734,6 +750,7 @@ function sweepDeps(overrides: Partial<DegradationSweepDeps>): DegradationSweepDe
     readWindows: defaultReadWindows,
     readPreviousWindows: defaultReadPreviousWindows,
     readOpenConditionKeys: defaultReadOpenConditionKeys,
+    readEndedSessionOwners: defaultReadEndedSessionOwners,
     broadcast: defaultBroadcast,
     resolve: defaultResolve,
     prune: defaultPrune,
@@ -741,6 +758,68 @@ function sweepDeps(overrides: Partial<DegradationSweepDeps>): DegradationSweepDe
     pruneEveryMs: DEGRADATION_PRUNE_EVERY_MS,
     ...overrides,
   };
+}
+
+/**
+ * A per-session degradation episode stops applying when that exact owner is
+ * positively ended. Silence alone stays insufficient; liveness is the required
+ * recovery evidence. This also catches episodes whose observations aged out of
+ * the metric window before a rate-based recovery sample was written.
+ */
+async function resolveEndedOwnerScopes(
+  mechanism: DegradationMechanism,
+  openKeys: Set<string>,
+  deps: DegradationSweepDeps,
+  out: DegradationSweepResult,
+): Promise<Set<string>> {
+  const endedScopes = new Set<string>();
+  if (!mechanism.scopeKeyed || !mechanism.scopeIsSessionOwner) return endedScopes;
+
+  const prefix = degradationKeyPrefix(mechanism.mechanism);
+  const keysByScope = new Map<string, string[]>();
+  for (const key of openKeys) {
+    if (!key.startsWith(prefix)) continue;
+    const tail = key.slice(prefix.length);
+    const separator = tail.indexOf(':');
+    if (separator <= 0) continue;
+    const scope = tail.slice(0, separator);
+    // Owner ids are already key-safe. Do not try to reverse lossy normalization
+    // for a malformed or non-owner scope.
+    if (degradationKeySegment(scope) !== scope) continue;
+    const keys = keysByScope.get(scope) ?? [];
+    keys.push(key);
+    keysByScope.set(scope, keys);
+  }
+  if (keysByScope.size === 0) return endedScopes;
+
+  let endedOwners: Set<string>;
+  try {
+    endedOwners = await deps.readEndedSessionOwners([...keysByScope.keys()]);
+  } catch (error) {
+    out.errors.push(`${mechanism.mechanism} ended-session liveness: ${errMsg(error)}`);
+    return endedScopes;
+  }
+
+  for (const ownerId of endedOwners) {
+    const keys = keysByScope.get(ownerId);
+    if (!keys) continue;
+    endedScopes.add(ownerId);
+    for (const conditionKey of keys) {
+      try {
+        const ok = await deps.resolve({
+          conditionKey,
+          summary: `Superseded: ${mechanism.mechanism} (${ownerId}) owner session ended; scope is no longer applicable.`,
+        });
+        if (ok) {
+          openKeys.delete(conditionKey);
+          out.resolved.push(conditionKey);
+        } else out.errors.push(`resolve failed for ended owner scope: ${conditionKey}`);
+      } catch (error) {
+        out.errors.push(`resolve failed for ended owner scope ${conditionKey}: ${errMsg(error)}`);
+      }
+    }
+  }
+  return endedScopes;
 }
 
 function errMsg(e: unknown): string {
@@ -777,6 +856,7 @@ export async function runDegradationSweepOnce(
   }
 
   for (const m of deps.mechanisms()) {
+    const endedOwnerScopes = await resolveEndedOwnerScopes(m, openKeys, deps, out);
     const t = resolveThresholds(m.thresholds);
     const windowMs = m.windowMs ?? DEGRADATION_WINDOW_MS;
     let windows: ScopedFallbackWindow[];
@@ -797,6 +877,7 @@ export async function runDegradationSweepOnce(
     }
     for (const { scope: rawScope, window } of windows) {
       const scope = m.scopeKeyed ? rawScope : null;
+      if (scope != null && endedOwnerScopes.has(scope)) continue;
       const previous = previousByScope.get(scope);
       const yieldDrop = previous && m.yieldDrop
         ? judgeYieldDrop(previous, window, { mechanism: m.mechanism, scope }, m.yieldDrop)

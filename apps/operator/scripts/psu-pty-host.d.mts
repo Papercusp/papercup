@@ -1061,8 +1061,10 @@ export function shouldRedeliverLaunchKickoffAfterRespawn({ reason, managedKickof
     maxRedeliveries?: number | undefined;
 }): boolean;
 /** Hold a persisted kickoff's success receipt until `deliveredAtMs + graceMs`,
- *  and stop early when the quota detector latches. `rejected:true` means the
- *  provider answered the kickoff with a usage-limit wall. Polling is used
+ *  and stop early when the quota detector latches or the caller observes a
+ *  capacity refusal for this submission. A native user row is only submission
+ *  proof; either provider refusal must prevent a successful launch receipt.
+ *  Polling is used
  *  because the detector exposes only a level, not an edge. Pure apart from the
  *  injected clock and sleep; exported for tests.
  * @param {object} opts
@@ -1073,9 +1075,10 @@ export function shouldRedeliverLaunchKickoffAfterRespawn({ reason, managedKickof
  * @param {() => number} [opts.now]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {() => boolean} [opts.shouldStop]
- * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean }>}
+ * @param {() => ({ retryAfterMs: number, matchedExcerpt: string } | null)} [opts.readModelCapacity]
+ * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean, modelCapacity?: { retryAfterMs: number, matchedExcerpt: string } }>}
  */
-export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, graceMs, pollMs, now, sleep, shouldStop, }?: {
+export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, graceMs, pollMs, now, sleep, shouldStop, readModelCapacity, }?: {
     isQuotaBlocked: () => boolean;
     deliveredAtMs: number;
     graceMs?: number | undefined;
@@ -1083,10 +1086,18 @@ export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, grac
     now?: (() => number) | undefined;
     sleep?: ((ms: number) => Promise<void>) | undefined;
     shouldStop?: (() => boolean) | undefined;
+    readModelCapacity?: (() => ({
+        retryAfterMs: number;
+        matchedExcerpt: string;
+    } | null)) | undefined;
 }): Promise<{
     rejected: boolean;
     waitedMs: number;
     stopped: boolean;
+    modelCapacity?: {
+        retryAfterMs: number;
+        matchedExcerpt: string;
+    };
 }>;
 /** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
  *  fresh-child retry remains, give up early on a child still at `Starting` after
@@ -1316,6 +1327,15 @@ export function hostErrorEvidence(error: any): {
     errorName: string;
 };
 export function sharedDrillLedgerPath(dir?: string): string;
+/**
+ * Prune the bounded roll-up without losing the terminal history needed to
+ * resolve a one-shot carry-drill alarm. The old half-file cut could evict the
+ * only delivered/dropped row for a drill while its condition stayed open;
+ * prioritize the newest terminal row for each drill, retaining as many as fit
+ * within the cap, then fill the remaining budget with the recent tail. The
+ * ledger remains bounded even when many drills are active.
+ */
+export function pruneSharedDrillLedger(body: any): string;
 /** EI-12655 (fix b): mirror a carry-drill lifecycle event into the SHARED drill
  *  ledger. The tool side records only requested/queued there; every HOST-side
  *  outcome (respawned / respawn-failed / carry-delivered / carry-dropped)

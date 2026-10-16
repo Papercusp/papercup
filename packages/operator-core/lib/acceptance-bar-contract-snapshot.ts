@@ -2157,7 +2157,7 @@ function sameValue(a: unknown, b: unknown): boolean {
 export type AcceptanceBarContractDiffView = Pick<AcceptanceBarContractSnapshot, 'contentHash'> & {
   plan: Pick<AcceptanceBarSubjectPlanSource, 'cohort' | 'adoptionEpoch'> | null;
   bars: Array<Pick<AcceptanceBarTrace, 'barKey' | 'criterionKey' | 'barHash' | 'model' | 'check' | 'requirement' |
-    'method' | 'falsifier' | 'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' |
+    'method' | 'replication' | 'falsifier' | 'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' |
     'passRatings' | 'coversBarKeys' | 'provenance'> & {
       mappings: Array<{ planItemId: string; specId: string }>;
     }>;
@@ -2225,6 +2225,13 @@ export function diffAcceptanceBarContractSnapshots(
     if (a.method !== b.method) {
       kinds.push('method-only');
       fields.push('method');
+    }
+    // Replication is verification procedure, not BAR hash material. It still
+    // belongs in the shared diff: review excerpts use this list to decide which
+    // criteria must stay visible instead of being labelled unchanged.
+    if ((a.replication ?? null) !== (b.replication ?? null)) {
+      kinds.push('method-only');
+      fields.push('replication');
     }
     const mappingOf = (bar: AcceptanceBarContractDiffView['bars'][number]) =>
       bar.mappings.map((mapping) => `${mapping.planItemId}\0${mapping.specId}`).sort();
