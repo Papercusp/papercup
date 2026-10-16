@@ -2549,6 +2549,7 @@ export function prescribedRecurrenceGuardCoverageGap(
     ...structuredEvidence.testResult,
     ...structuredEvidence.verifiedHow,
   ];
+  const negativeSomewhere = parts.some(partNegative);
   const declaredTestPath = prescribedItemPaths(item).filter((path) => TEST_PATH_RE.test(path));
   // A completion may run the prescribed test from its package cwd, so its
   // `testsRun` path can omit the repository's `packages/<package>/` prefix. Credit
@@ -2556,6 +2557,19 @@ export function prescribedRecurrenceGuardCoverageGap(
   // an arbitrary passing unit test is not proof of the prescribed recurrence guard.
   const pointsToDeclaredTest =
     declaredTestPath.some((path) => structuredEvidenceParts.some((part) => pathMentionedInEvidence(part, path))) &&
+    !structuredEvidenceParts.some(partNegative);
+  // A completion may identify the prescribed test in `filesChanged` while its
+  // `testsRun` command is package-relative (or only names the test basename).
+  // The changed-file declaration is already an exact repository-path claim; pair
+  // it with a passing structured result so a real packaging regression test is
+  // credited without treating an unrelated passing suite as coverage.
+  const changedDeclaredTestPath = declaredTestPath.some((path) =>
+    filesChanged.some((changedPath) => sameRepoPath(changedPath, path)),
+  );
+  const pointsToChangedDeclaredTest =
+    changedDeclaredTestPath &&
+    structuredEvidence.testResult.some(passingTestResult) &&
+    !negativeSomewhere &&
     !structuredEvidenceParts.some(partNegative);
   const filesDeleted = completionFilesDeleted(record)
     .map(repoRelativePath)
@@ -2566,7 +2580,6 @@ export function prescribedRecurrenceGuardCoverageGap(
   // A disclaimer anywhere still withholds credit from the bare addedTests+path pair (that
   // pair carries no prose of its own to disclaim); it is now evaluated per part, so only a
   // real disclaimer counts, not one manufactured at a field boundary.
-  const negativeSomewhere = parts.some(partNegative);
   const pointsToGuard = parts.some((part) => COMPLETION_GUARD_RE.test(part) && !partNegative(part));
   const pointsToAddedTest = completionAddedTests(record) && testPath && !negativeSomewhere;
   // An obsolete prescribed test may be intentionally removed while its replacement test and
@@ -2584,7 +2597,14 @@ export function prescribedRecurrenceGuardCoverageGap(
     !negativeSomewhere &&
     !structuredEvidenceParts.some(partNegative);
   const explicitWaiver = parts.some((part) => EXPLICIT_GUARD_WAIVER_RE.test(part));
-  if (pointsToGuard || pointsToAddedTest || pointsToDeclaredTest || pointsToDeletedReplacement || explicitWaiver) {
+  if (
+    pointsToGuard ||
+    pointsToAddedTest ||
+    pointsToDeclaredTest ||
+    pointsToChangedDeclaredTest ||
+    pointsToDeletedReplacement ||
+    explicitWaiver
+  ) {
     return undefined;
   }
   return { prescriptions };

@@ -101,6 +101,34 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     ).toBeUndefined();
   });
 
+  it('credits an exact declared packaging test path in filesChanged when testsRun uses only its basename', () => {
+    const declaredTestPath = 'papercusp-desktop/test/build-desktop-sidecar-workspace-install.test.js';
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: 'Packaged Server does not ship the boot-start helper',
+          summary:
+            'Fix: ship the helper, print its path from postinst, and add a packaging regression assertion beside the existing unit assertions.',
+          payload: {
+            paths: [
+              'papercusp-desktop/src-tauri/tauri.server.conf.json',
+              declaredTestPath,
+            ],
+          },
+        },
+        {
+          summary: 'Linux Server packages ship the executable boot-start helper; no-login reboot is healthy.',
+          testsRun: 'Canonical build-desktop-sidecar-workspace-install.test.js 53/53',
+          testResult: 'PASS: committed operational evidence; 53/53 tests passed.',
+          filesChanged: [
+            'papercusp-desktop/src-tauri/tauri.server.conf.json',
+            declaredTestPath,
+          ],
+        },
+      ),
+    ).toBeUndefined();
+  });
+
   it('credits a repo-relative prescribed test path in structured evidence when filesChanged names only the writer', () => {
     const item = {
       title: 'dev:restart guidance exceeds the enforced prompt-weight budget',
