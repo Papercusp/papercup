@@ -67,7 +67,9 @@ describe('renderDurableFilesystemScript', () => {
       'stat() { if [[ "$*" == *%u:%a* ]]; then printf "0:%s" "$(command stat -c %a "${@: -1}")"; else command stat "$@"; fi; }',
       `setquota() { printf 'QUOTA %s\n' "$*"; return ${options.quotaFailure ? 1 : 0}; }`,
       'chattr() { printf "PROJECT %s\\n" "$*"; }',
-      `lsattr() { local path="\${@: -1}"; if [[ "$path" == */postgres ]]; then printf '1001 '; else printf '1002 '; fi; printf '${options.inherit === false ? '--------------' : '--------P-----'} %s\\n' "$path"; }`,
+      // This shell contract test does not mount a filesystem; do not flush the shared test disk.
+      'sync() { [[ "$1" == -f && -f "$2" ]]; }',
+      `lsattr() { local path="\${@: -1}"; if [[ "$path" == */postgres ]]; then printf '1001 '; else printf '1002 '; fi; printf '%s %s\\n' '${options.inherit === false ? '--------------' : '--------P-----'}' "$path"; }`,
       block, 'echo BOOTSTRAP',
     ].join('\n')], { encoding: 'utf8', timeout: 5000 });
   }
@@ -133,7 +135,7 @@ describe('renderDurableFilesystemScript', () => {
     const rendered = [renderDurableFilesystemScript(input), renderDurableFilesystemScriptCore(input)];
     for (const script of rendered) {
       expect(spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' }).status).toBe(0);
-      expect(script).toContain('mkfs.ext4 -O quota,project -Q prjquota');
+      expect(script).toContain('mkfs.ext4 -O quota,project -E quotatype=prjquota -I 256');
       expect(script).toContain('defaults,nofail,discard,prjquota');
       expect(script.indexOf('setquota -P')).toBeLessThan(script.indexOf('echo BOOTSTRAP'));
       expect(script.indexOf('durable_storage_project 1002 "$home_seed"')).toBeLessThan(script.indexOf('cp -a "$home_target"'));
@@ -150,7 +152,7 @@ describe('renderDurableFilesystemScript', () => {
       const image = join(root, 'data.ext4');
       const created = spawnSync('truncate', ['-s', '32M', image], { encoding: 'utf8' });
       expect(created.status, created.stderr).toBe(0);
-      const formatted = spawnSync('/usr/sbin/mkfs.ext4', ['-q', '-O', 'quota,project', '-Q', 'prjquota', image], { encoding: 'utf8', timeout: 10000 });
+      const formatted = spawnSync('/usr/sbin/mkfs.ext4', ['-q', '-O', 'quota,project', '-E', 'quotatype=prjquota', '-I', '256', image], { encoding: 'utf8', timeout: 10000 });
       expect(formatted.status, formatted.stderr).toBe(0);
       const observed = spawnSync('/usr/sbin/tune2fs', ['-l', image], { encoding: 'utf8' });
       expect(observed.status, observed.stderr).toBe(0);
