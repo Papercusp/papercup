@@ -109,7 +109,7 @@ function checkPreflight(candidate: string) {
 
 describe('frozen native SPA preparation', () => {
   function prepare(options: { pinned?: boolean; missingBuilder?: boolean; buildExit?: number;
-    incomplete?: boolean; external?: boolean } = {}) {
+    incomplete?: boolean; external?: boolean; sourceVolumeFull?: boolean } = {}) {
     const dir = mkdtempSync(resolve(tmpdir(), 'tauri-spa-preflight-'));
     const frozen = resolve(dir, 'frozen');
     const app = resolve(frozen, 'apps/operator-vite');
@@ -126,6 +126,7 @@ fs.writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({ cwd: process.cwd(
   out: process.env.VITE_BUILD_OUT_ROOT, command: process.env.VITE_BUILD_CMD ?? null,
   lock: process.env.VITE_BUILD_LOCK ?? null, snapshot: process.env.VITE_BUILD_SNAPSHOT_DIR ?? null,
   retain: process.env.PAPERCUSP_RETAIN_DIST_CHUNKS }));
+if (${Boolean(options.sourceVolumeFull)} && process.env.VITE_BUILD_OUT_ROOT === ${JSON.stringify(app)}) process.exit(28);
 if (${options.buildExit ?? 0}) process.exit(${options.buildExit ?? 0});
 fs.mkdirSync(process.env.VITE_BUILD_OUT_ROOT + '/dist/assets', { recursive: true });
 fs.writeFileSync(process.env.VITE_BUILD_OUT_ROOT + '/dist/index.html', 'frozen HTML');
@@ -145,19 +146,28 @@ printf '%s' "$VERIFIER_SPA_DIST"
         PAPERCUSP_SHARED_SPA_DIST: options.external ? resolve(dir, 'unbound-donor-dist') : '',
         VITE_BUILD_CMD: 'unbound-command', VITE_BUILD_LOCK: 'donor-lock', VITE_BUILD_SNAPSHOT_DIR: 'donor-snapshot' } });
       return { status: result.status, stderr: result.stderr, selected: result.stdout,
-        expected: resolve(app, 'dist'), frozen, app,
+        expected: resolve(dir, 'verifier-spa/dist'), outputRoot: resolve(dir, 'verifier-spa'), frozen, app,
+        sourceOutputExists: existsSync(resolve(app, 'dist')),
         build: existsSync(capture) ? JSON.parse(readFileSync(capture, 'utf8')) : null };
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
 
-  it('builds the pinned SPA in its frozen source and selects only that artifact', () => {
+  it('builds from pinned source into the admitted work directory and selects only that artifact', () => {
     const result = prepare();
     expect(result.status, result.stderr).toBe(0);
     expect(result.selected).toBe(result.expected);
     expect(result.build).toEqual({ cwd: result.frozen, args: ['--workspace', '@papercusp/operator-vite', 'run', 'build'],
-      out: result.app, command: null, lock: null, snapshot: null, retain: '0' });
+      out: result.outputRoot, command: null, lock: null, snapshot: null, retain: '0' });
+    expect(result.sourceOutputExists).toBe(false);
     expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_run_step verifier-host-bundle'));
     expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
+  });
+
+  it('builds on the admitted work volume when the source volume refuses output allocation', () => {
+    const result = prepare({ sourceVolumeFull: true });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.selected).toBe(result.expected);
+    expect(result.sourceOutputExists).toBe(false);
   });
 
   it.each([

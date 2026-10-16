@@ -1778,27 +1778,30 @@ prepare_verifier_spa() {
     return 3
   fi
   local app="$OPERATOR_SOURCE_ROOT/apps/operator-vite"
+  # Hardlinked source stays on the donor device; generated output belongs on
+  # WORK's admitted build volume. The donor can have no build capacity left.
+  local build_root="$WORK/verifier-spa"
   [ -x "$app/bin/vite-build-singleflight" ] || {
     echo "VERIFY_TAURI_SPA_BUILD_MISSING: frozen source has no maintained Vite builder: $app" >&2
     return 3
   }
   log "building frozen operator SPA through the maintained workspace prebuild and singleflight builder"
   # Keep npm's asset prebuild and the existing admission/atomic-output contract.
-  # Reset inherited build seams so neither commands nor output escape this tree.
+  # Reset inherited build seams and pin output to this run's private work tree.
   (
     cd "$OPERATOR_SOURCE_ROOT" || exit 1
     env -u VITE_BUILD_CMD -u VITE_BUILD_LOCK -u VITE_BUILD_SNAPSHOT_DIR \
-      VITE_BUILD_OUT_ROOT="$app" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
+      VITE_BUILD_OUT_ROOT="$build_root" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
       PAPERCUSP_RETAIN_DIST_CHUNKS=0 \
-      PAPERCUSP_VITE_OUT_DIR="$app/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$app/dist" \
+      PAPERCUSP_VITE_OUT_DIR="$build_root/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$build_root/dist" \
       bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run build
   ) || return $?
-  if [ ! -s "$app/dist/index.html" ] || [ ! -d "$app/dist/assets" ] \
-    || [ -z "$(find "$app/dist/assets" -type f -size +0c -print -quit)" ]; then
-    echo "VERIFY_TAURI_SPA_BUILD_INCOMPLETE: frozen build needs non-empty index.html and assets: $app/dist" >&2
+  if [ ! -s "$build_root/dist/index.html" ] || [ ! -d "$build_root/dist/assets" ] \
+    || [ -z "$(find "$build_root/dist/assets" -type f -size +0c -print -quit)" ]; then
+    echo "VERIFY_TAURI_SPA_BUILD_INCOMPLETE: frozen build needs non-empty index.html and assets: $build_root/dist" >&2
     return 3
   fi
-  VERIFIER_SPA_DIST="$app/dist"
+  VERIFIER_SPA_DIST="$build_root/dist"
   log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
 }
 vh_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
