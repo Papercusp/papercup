@@ -25,7 +25,8 @@ export function workspaceHostDurableTenantIdentity(workspaceId, customerWorkspac
 }
 
 /** Shared by both provider renderers: probe failure is never blank-media proof. */
-export function renderDurableDataProbeCore(dataMode = 'fresh') {
+export function renderDurableDataProbeCore(dataMode = 'fresh', allocation) {
+  validateDurableStorageAllocationCore(allocation);
   if (!['fresh', 'existing'].includes(dataMode)) throw new Error('durable data mode must be fresh or existing');
   return [
     `data_mode='${dataMode}'`,
@@ -47,7 +48,7 @@ export function renderDurableDataProbeCore(dataMode = 'fresh') {
     'elif [[ "$data_mode" == fresh && "$data_probe_status" == 2 && -z "$data_type" ]]; then',
     '  data_signatures=$(wipefs --no-act --noheadings --output TYPE "$data_device") || { echo "durable data signature probe failed" >&2; exit 1; }',
     '  [[ -z "${data_signatures//[[:space:]]/}" ]] || { echo "durable data device has existing signatures" >&2; exit 1; }',
-    '  mkfs.ext4 "$data_device"',
+    allocation ? '  mkfs.ext4 -O quota,project -Q prjquota "$data_device"' : '  mkfs.ext4 "$data_device"',
     '  data_freshly_formatted=1',
     'else',
     '  echo "durable data filesystem unavailable or unsupported; refusing to format" >&2; exit 1',
@@ -62,6 +63,63 @@ export function renderDurableDataProbeCore(dataMode = 'fresh') {
     // Do not let agents/services launched by the later bootstrap inherit the lock.
     'flock -u 9',
     'exec 9>&-',
+  ];
+}
+
+/** The existing admitted split is also the guest's hard limit. Linux quota zero
+ * means unlimited, so a zero-share combined database/workspace host cannot boot. */
+export function validateDurableStorageAllocationCore(allocation) {
+  if (allocation === undefined) return;
+  if (!allocation || ![allocation.dbGiB, allocation.workspaceGiB].every(
+    value => Number.isSafeInteger(value) && value > 0 && Number.isSafeInteger(value * 1024 * 1024),
+  ) || !Number.isSafeInteger(allocation.dbGiB + allocation.workspaceGiB)) {
+    throw new Error('durable storage allocation requires positive safe integral DB/workspace GiB');
+  }
+}
+
+/** Shared by the TypeScript GCP render and the dependency-free AWS push. The
+ * filesystem and quotas must be qualified BEFORE any customer process starts.
+ * Existing unqualified data is never tuned, reformatted or silently relabelled. */
+export function renderDurableStorageQuotaCore(allocation, tenantIdentity) {
+  validateDurableStorageAllocationCore(allocation);
+  if (allocation === undefined) return [];
+  if (!/^[a-f0-9]{64}$/.test(tenantIdentity ?? '')) throw new Error('durable storage quota requires tenant identity');
+  return [
+    '# Begin admitted durable storage quotas.',
+    'for data_quota_tool in tune2fs setquota chattr lsattr findmnt; do command -v "$data_quota_tool" >/dev/null || { echo "durable storage quota tool missing: $data_quota_tool" >&2; exit 1; }; done',
+    'data_features=$(LC_ALL=C tune2fs -l "$data_device" | sed -n "s/^Filesystem features: *//p")',
+    'for data_feature in quota project; do [[ " $data_features " == *" $data_feature "* ]] || { echo "durable storage quota filesystem feature missing: $data_feature" >&2; exit 1; }; done',
+    'data_quota_options=$(findmnt -rn -M "$data_mount" -o OPTIONS)',
+    '[[ ",$data_quota_options," == *,prjquota,* ]] || { echo "durable storage project quota enforcement is not mounted" >&2; exit 1; }',
+    'data_storage_marker="$data_mount/.papercusp-storage-quota"',
+    `data_expected_storage="papercusp-storage-quota-v1:${tenantIdentity}:\${data_uuid}:${allocation.dbGiB}:${allocation.workspaceGiB}"`,
+    'exec 9>"${data_probe_marker}.lock"',
+    'flock -n 9 || { echo "durable storage quota initialization is already running" >&2; exit 1; }',
+    '[[ ! -L "$data_storage_marker" ]] || { echo "durable storage quota marker is a symlink" >&2; exit 1; }',
+    'if [[ -e "$data_storage_marker" ]]; then',
+    '  [[ -f "$data_storage_marker" && "$(stat -c %u:%a "$data_storage_marker")" == 0:600 && "$(cat "$data_storage_marker")" == "$data_expected_storage" ]] || { echo "durable storage quota allocation identity mismatch" >&2; exit 1; }',
+    'else',
+    '  [[ "$data_freshly_formatted" == 1 ]] || { echo "existing durable volume has no storage quota pin; migration qualification required" >&2; exit 1; }',
+    '  (umask 077; set -o noclobber; printf "%s\\n" "$data_expected_storage" > "$data_storage_marker")',
+    '  sync -f "$data_storage_marker"',
+    'fi',
+    // Both shared projects have hard BLOCK limits (setquota uses KiB). Inode
+    // limits remain unlimited; they must never be confused with byte caps.
+    `setquota -P 1001 0 ${allocation.dbGiB * 1024 * 1024} 0 0 "$data_mount"`,
+    `setquota -P 1002 0 ${allocation.workspaceGiB * 1024 * 1024} 0 0 "$data_mount"`,
+    'durable_storage_project() {',
+    '  local project="$1" path="$2" actual_project attributes rest',
+    '  [[ -d "$path" && ! -L "$path" && "$(stat -c %d "$path")" == "$(stat -c %d "$data_mount")" ]] || { echo "durable storage quota directory identity mismatch: $path" >&2; return 1; }',
+    '  chattr -p "$project" +P "$path"',
+    '  read -r actual_project attributes rest <<< "$(lsattr -d -p "$path")"',
+    '  [[ "$actual_project" == "$project" && "$attributes" == *P* ]] || { echo "durable storage project inheritance not enforced: $path" >&2; return 1; }',
+    '}',
+    'durable_storage_project 1001 "$data_mount/postgres"',
+    'for data_workspace_dir in repositories transcripts workspaces; do durable_storage_project 1002 "$data_mount/$data_workspace_dir"; done',
+    'if [[ -e "$data_mount/home" || -L "$data_mount/home" ]]; then durable_storage_project 1002 "$data_mount/home"; fi',
+    'flock -u 9',
+    'exec 9>&-',
+    '# End admitted durable storage quotas.',
   ];
 }
 
@@ -96,6 +154,7 @@ export function renderDurableTenantGuardCore(tenantIdentity) {
 }
 
 export function renderDurableFilesystemScriptCore(input) {
+  const storageQuota = renderDurableStorageQuotaCore(input.allocation, input.tenantIdentity);
   if (!/^\/dev\/disk\/by-id\/[A-Za-z0-9._:-]+$/.test(input.devicePath)) {
     throw new Error(`durable data device must be a /dev/disk/by-id path, got ${JSON.stringify(input.devicePath)}`);
   }
@@ -114,18 +173,20 @@ export function renderDurableFilesystemScriptCore(input) {
     `data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`,
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,
     'test -b "$data_device"',
-    ...renderDurableDataProbeCore(input.dataMode),
+    ...renderDurableDataProbeCore(input.dataMode, input.allocation),
     'install -d -m 0750 "$data_mount"',
-    'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
+    `grep -q "^UUID=\${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard${input.allocation ? ',prjquota' : ''} 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab`,
     'mountpoint -q "$data_mount" || mount "$data_mount"',
     ...renderDurableTenantGuardCore(input.tenantIdentity),
     'resize2fs "$data_device"',
     'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then restorecon -F "$data_mount"; fi',
     'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
+    ...storageQuota,
     'home_target="$(readlink -f -- /home)"',
     '[[ -n "$home_target" && -d "$home_target" && ! -L "$home_target" ]] || { echo "workspace home mount target is not a real directory: /home -> ${home_target:-unresolved}" >&2; exit 1; }',
     'if [[ ! -e "$data_mount/home" && ! -L "$data_mount/home" ]]; then',
     '  home_seed="$(mktemp -d "$data_mount/.home-seed.XXXXXX")"',
+    ...(input.allocation ? ['  durable_storage_project 1002 "$home_seed"'] : []),
     '  cp -a "$home_target"/. "$home_seed"/',
     '  mv -T -- "$home_seed" "$data_mount/home"',
     'fi',
@@ -153,6 +214,7 @@ export function renderAwsHostBootstrapPushCore(input) {
     hostBootstrapScript: input.hostBootstrapScript,
     dataMode: input.dataMode,
     tenantIdentity: input.tenantIdentity,
+    allocation: input.allocation,
     ...(input.workspaceDataRoot ? { workspaceDataRoot: input.workspaceDataRoot } : {}),
   });
   const scriptSha256 = createHash('sha256').update(script, 'utf8').digest('hex');

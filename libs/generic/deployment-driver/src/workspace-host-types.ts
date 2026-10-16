@@ -289,6 +289,9 @@ export interface WorkspaceHostTransportProfile {
 export interface WorkspaceHostDataPolicy {
   /** Stop/start retains this data resource; it is never implicitly ephemeral. */
   volumeGiB: number;
+  /** Explicit shares of the ONE data volume. Pooled admission requires their sum
+   * to equal volumeGiB; filesystem enforcement is a separate runtime obligation. */
+  allocation?: { dbGiB: number; workspaceGiB: number };
   encrypted: boolean;
   backupPolicyRef?: string;
 }

@@ -4861,7 +4861,8 @@ async function amendAcceptanceBarRubric(
       const requirementChangedBars = [...new Set([
         ...changedBars,
         ...sourceMappings.mappings.filter((mapping) => {
-          const criterion = guard.data.criteria.find((candidate) => candidate.barKey === mapping.barKey);
+          const criterion = (guard.data.criteria as Array<Record<string, unknown>>)
+            .find((candidate) => candidate.barKey === mapping.barKey);
           return criterion?.evidencePlane && criterion.evidencePlane !== mapping.evidencePlane;
         }).map((mapping) => mapping.barKey),
         ...amendedRequirementBarKeys(
@@ -5024,7 +5025,7 @@ async function amendAcceptanceBarRubric(
       const projectionOnly = canonicalUnchanged && changedBars.length === 0;
       if (projectionOnly && !preview) {
         if (requirementsRerender.rerendered.length === 0) return {
-          rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
+          rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
           subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
           changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
           idempotencyKey: '',
@@ -5052,6 +5053,9 @@ async function amendAcceptanceBarRubric(
               origin='local'
           WHERE workspace_id=${rubricScope.workspaceId} AND harness_slug=${rubricScope.harnessSlug}
             AND plan_slug=${input.rubricId}`;
+        await writePlanIndexRows(tx as never, {
+          workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint,
+        }, deriveIndexFromContent(subjectBody));
         injectAmendmentFault(input, 'after-rubric');
         await recordPlanRevisionInTransaction(tx, {
           planSlug: subjectPlanHint, harnessSlug: subjectScope.harnessSlug, workspaceId: subjectScope.workspaceId,
@@ -5059,7 +5063,8 @@ async function amendAcceptanceBarRubric(
           identity: { ownerId: actorId, ownerLabel: actorId, source: 'static-client', workspaceId: null, userId: null },
         });
         return {
-          rubric: { ...stored, barContract: { ...stored.barContract!, subjectPlanRevision: nextSubjectRevision } },
+          rubric: { ...stored, revision: oldRubricRevision,
+            barContract: { ...stored.barContract!, subjectPlanRevision: nextSubjectRevision } },
           decisionId: '', rubricRevision: oldRubricRevision, subjectPlanRevision: nextSubjectRevision,
           barSetHash: stored.barSetHash!, changedBars, reboundContracts: 0,
           invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey: '',

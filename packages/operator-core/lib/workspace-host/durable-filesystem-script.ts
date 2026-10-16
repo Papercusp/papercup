@@ -1,5 +1,5 @@
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
-import { renderDurableDataProbeCore, renderDurableTenantGuardCore } from './aws-host-bootstrap-push-core.mjs';
+import { renderDurableDataProbeCore, renderDurableTenantGuardCore, renderDurableStorageQuotaCore } from './aws-host-bootstrap-push-core.mjs';
 
 /**
  * Where a workspace host's durable data disk is mounted, on every provider. The host bootstrap
@@ -9,6 +9,8 @@ import { renderDurableDataProbeCore, renderDurableTenantGuardCore } from './aws-
 export const WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT = '/var/lib/papercusp';
 
 export interface DurableFilesystemScriptInput {
+  /** Immutable admitted split. Omitted only for the legacy non-pool host route. */
+  allocation?: { dbGiB: number; workspaceGiB: number };
   /** Hash of the controller's persisted customer binding; required for a bound volume. */
   tenantIdentity?: string;
   /** Only a newly provisioned blank volume may be formatted. Retained/restored data never may. */
@@ -35,6 +37,7 @@ export interface DurableFilesystemScriptInput {
  * the layout across a reboot on a provider that does not re-run this script at boot.
  */
 export function renderDurableFilesystemScript(input: DurableFilesystemScriptInput): string {
+  const storageQuota = renderDurableStorageQuotaCore(input.allocation, input.tenantIdentity);
   if (!/^\/dev\/disk\/by-id\/[A-Za-z0-9._:-]+$/.test(input.devicePath)) {
     throw new Error(`durable data device must be a /dev/disk/by-id path, got ${JSON.stringify(input.devicePath)}`);
   }
@@ -49,9 +52,9 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     `data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`,
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,
     'test -b "$data_device"',
-    ...renderDurableDataProbeCore(input.dataMode),
+    ...renderDurableDataProbeCore(input.dataMode, input.allocation),
     'install -d -m 0750 "$data_mount"',
-    'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
+    `grep -q "^UUID=\${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard${input.allocation ? ',prjquota' : ''} 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab`,
     'mountpoint -q "$data_mount" || mount "$data_mount"',
     ...renderDurableTenantGuardCore(input.tenantIdentity),
     'resize2fs "$data_device"',
@@ -64,6 +67,7 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     // by this backing path would rewrite them to var_lib_t, refusing sshd the authorized_keys.
     'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then restorecon -F "$data_mount"; fi',
     'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
+    ...storageQuota,
     // ⛔ WORKSPACE + AGENT HOMES MUST LAND ON THE DURABLE DISK (WI-10003296).
     //
     // Upgrades replace the boot disk while retaining only `data_device`. Both identities whose
@@ -88,6 +92,7 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     '[[ -n "$home_target" && -d "$home_target" && ! -L "$home_target" ]] || { echo "workspace home mount target is not a real directory: /home -> ${home_target:-unresolved}" >&2; exit 1; }',
     'if [[ ! -e "$data_mount/home" && ! -L "$data_mount/home" ]]; then',
     '  home_seed="$(mktemp -d "$data_mount/.home-seed.XXXXXX")"',
+    ...(input.allocation ? ['  durable_storage_project 1002 "$home_seed"'] : []),
     '  cp -a "$home_target"/. "$home_seed"/',
     '  mv -T -- "$home_seed" "$data_mount/home"',
     'fi',

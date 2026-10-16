@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
+import * as coldEnvironment from '../../storage/cold-tier-evidence';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
@@ -493,6 +494,8 @@ describe('completed isolated runtime certification', () => {
   });
   it('keeps exact certification receipts through actual harness retention pruning', async () => {
     const state = await setup();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(artifacts, 'mutex'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(artifacts, 'pins'));
     // A completed verifier must satisfy the retention policy's terminal-result
     // contract; without endedAt this fixture exercises the 24-hour grace instead.
     Object.assign(state.verifier, { startedAt: at(0), endedAt: at(50) });
@@ -827,6 +830,47 @@ describe('repo-backed server measurement', () => {
     } finally {
       h.fixtureMeasurementRoot = '';
       await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('binds and independently rechecks native host proof, rejecting unavailable or changed observations', async () => {
+    const native = vi.spyOn(coldEnvironment, 'measureNativeColdEnvironment');
+    const fingerprint = 'sha256-native-storage-environment-v1:' + 'a'.repeat(64);
+    const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'],
+      nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY };
+    try {
+      native.mockResolvedValue(fingerprint);
+      const bound = await measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe);
+      expect(bound.environmentFingerprint).toBe(fingerprint);
+      expect(native).toHaveBeenLastCalledWith('workspace-test', 'papercusp', recipe.nativeInstrumentKey, true);
+      h.rows = [{ id: 9201, plan_slug: 'native-plan', spec_id: 'NATIVE-1', spec_revision: 1,
+        spec_is_current: true, evidence_kind: 'operational', evidence_ref: 'native:cold-cutover',
+        source_fingerprint: bound.sourceFingerprint, test_fingerprint: bound.testFingerprint,
+        fixture_fingerprint: null, rubric_fingerprint: null, environment_fingerprint: fingerprint,
+        coverage_evidence_ref: null, coverage_evidence_present: false, test_run_id: null, test_run_present: false,
+        details: { currentMeasurement: recipe, evidencePlane: 'live' },
+        observed_at: '2026-10-16T00:00:00Z', created_at: '2026-10-16T00:00:00Z', created_by: 'su-test',
+        binding_fingerprint: 'native-binding' }];
+      const read = async () => (await listSpecEvidence({ planSlugs: ['native-plan'], harnessSlug: 'papercusp', workspaceId: 'workspace-test' }))[0]!;
+      expect((await read()).currentness.overall).toBe('current');
+      expect(native).toHaveBeenLastCalledWith('workspace-test', 'papercusp', recipe.nativeInstrumentKey);
+      native.mockResolvedValue('sha256-native-storage-environment-v1:' + 'b'.repeat(64));
+      expect((await read()).currentness.dimensions.environment).toBe('stale');
+      native.mockResolvedValue(null);
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+      native.mockRejectedValue(new Error('native observation unavailable'));
+      expect((await read()).currentness.overall).toBe('unknown');
+      await expect(measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe)).rejects.toThrow('native observation unavailable');
+    } finally { native.mockRestore(); }
+  });
+
+  it('allows only native storage selectors and refuses ambiguous environment selectors', () => {
+    const base = { kind: 'repo-files', sourcePaths: ['src/feature.ts'], nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY };
+    expect(evidenceMeasurementSchema.safeParse(base).success).toBe(true);
+    for (const extra of [{ runtimeUnits: ['operator'] }, { artifactReceiptPath: 'docs/evidence/package.json' },
+      { nativeInstrumentKey: 'unregistered:fake' }]) {
+      expect(evidenceMeasurementSchema.safeParse({ ...base, ...extra }).success).toBe(false);
     }
   });
 
