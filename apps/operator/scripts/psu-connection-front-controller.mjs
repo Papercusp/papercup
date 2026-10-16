@@ -1727,6 +1727,8 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     const profile = await hostedLogin(undefined, store, deps);
     selection = profile.name;
   }
+  if (transport.gui && (selection == null || selection === "local"))
+    throw new Error("--connect-gui needs a saved SSH machine: use --connect=<name> --connect-gui");
   // Only psu itself continues on this computer. Returning unhandled for any
   // other program would make the launcher start a local psu in its place.
   if (transport.program !== "psu" && (selection == null || selection === "local"))

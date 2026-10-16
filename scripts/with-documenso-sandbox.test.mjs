@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
 
 const failureRuntime = { container: 'owned-app', network: 'owned', appUrl: 'http://127.0.0.1:32123', mailUrl: 'http://127.0.0.1:32124' };
 
@@ -54,6 +54,54 @@ test('successful child does not inspect providers or issue extra requests', asyn
     probe: () => assert.fail('success needs no failure probe'),
     report: () => assert.fail('success needs no failure report'),
   }), 0);
+});
+
+test('exited provider logs produce only fixed diagnostic signals before cleanup', async () => {
+  const reports = [], calls = [], credential = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(1)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: args => {
+      calls.push(args);
+      return { status: 0, stdout: args[0] === 'logs'
+        ? 'PrismaClientInitializationError P1001 credential=' + credential
+        : JSON.stringify({ Status: args.at(-1) === failureRuntime.container ? 'exited' : 'running', ExitCode: 1 }) };
+    },
+    probe: async () => ({ status: 200 }), report: value => reports.push(value),
+  }), 1);
+  assert.deepEqual(calls.filter(args => args[0] === 'logs'), [['logs', '--tail', '200', failureRuntime.container]]);
+  assert.deepEqual(reports[0].providerFailure, { inspection: 'classified', signals: ['database-unreachable'] });
+  assert.equal(JSON.stringify(reports).includes(credential), false);
+  assert.equal(JSON.stringify(reports).includes('PrismaClientInitializationError'), false);
+});
+
+test('provider diagnostic log failure preserves the original child outcome without leaking exception text', async () => {
+  const reports = [], credential = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(19)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: args => {
+      if (args[0] === 'logs') throw new Error(credential);
+      return { status: 0, stdout: JSON.stringify({ Status: 'exited', ExitCode: 1 }) };
+    },
+    probe: async () => ({ status: 200 }), report: value => reports.push(value),
+  }), 19);
+  assert.deepEqual(reports[0].providerFailure, { inspection: 'unavailable' });
+  assert.equal(JSON.stringify(reports).includes(credential), false);
+});
+
+test('provider failure classifier leaves unknown errors unknown and distinguishes startup failure classes', () => {
+  assert.deepEqual(sandboxProviderFailureSignals('private token=' + randomUUID()), []);
+  for (const [text, expected] of [
+    ['Assertion pthread_create failed', 'node-thread-creation'],
+    ['FATAL ERROR: Reached heap limit Allocation failed', 'javascript-heap-exhaustion'],
+    ['P1000 Authentication failed', 'database-authentication'],
+    ['P2024 connection pool timeout', 'database-pool-timeout'],
+    ['P2021 missing table', 'database-schema-missing'],
+    ['Invalid environment variables', 'environment-invalid'],
+    ['listen EADDRINUSE', 'address-in-use'],
+    ['ERR_MODULE_NOT_FOUND', 'module-missing'],
+    ['PrismaClientRustPanicError', 'prisma-engine-panic'],
+    ['UnhandledPromiseRejection', 'unhandled-exception'],
+  ]) assert.deepEqual(sandboxProviderFailureSignals(text), [expected]);
 });
 
 async function withReaperServer(handler, run) {

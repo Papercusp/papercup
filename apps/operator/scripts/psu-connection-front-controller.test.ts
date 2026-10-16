@@ -229,6 +229,29 @@ describe("personal computer connections", () => {
     expect(runInteractive).not.toHaveBeenCalled();
   });
 
+  it("never silently launches local psu when the GUI picker chooses this computer", async () => {
+    await expect(runPsuConnectionFrontController(["--connect-gui"], {
+      home: tempHome(), interactive: true, pickConnection: async () => "local",
+    })).rejects.toThrow("needs a saved SSH machine");
+  });
+
+  it("cancels the private forward when the remote operator health check fails", async () => {
+    const home = tempHome();
+    savedStore(home, [normalizeSshProfile({ name: "desktop", host: "desktop.private" })]);
+    const openBrowser = vi.fn();
+    const commands: string[][] = [];
+    await expect(runPsuConnectionFrontController(["--connect=desktop", "--connect-gui"], {
+      home, interactive: true, commandAvailable: () => true, notice: vi.fn(), openBrowser,
+      reservePort: async () => ({ port: 45124, release: async () => {} }),
+      probeOperator: async () => { throw new Error("remote operator offline"); },
+      runCommand: async (_command: string, args: string[]) => {
+        commands.push(args); return { code: args.includes("check") ? 1 : 0 };
+      },
+    })).rejects.toThrow("remote operator offline");
+    expect(commands.at(-1)).toContain("cancel");
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
   it("refuses an offline or unauthorized SSH host before opening a browser or remote program", async () => {
     const home = tempHome();
     savedStore(home, [normalizeSshProfile({ name: "desktop", host: "desktop.private" })]);
