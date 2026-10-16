@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../../test/_org-test-db';
+import { createTextCollector } from '../child-output.js';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations, fallbackObservationCounters } =
@@ -40,12 +41,14 @@ function writeFromChildProcess(dsn: string): Promise<{ code: number | null; out:
       env: { ...process.env, FO_DSN: dsn },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => { out += String(d); });
-    child.stderr.on('data', (d) => { err += String(d); });
+    const out = createTextCollector(child.stdout);
+    const err = createTextCollector(child.stderr);
     child.on('error', reject);
-    child.on('close', (code) => resolve({ code, out: out || err }));
+    child.on('close', (code) => {
+      const stdout = out.text();
+      const stderr = err.text();
+      resolve({ code, out: stdout || stderr });
+    });
   });
 }
 

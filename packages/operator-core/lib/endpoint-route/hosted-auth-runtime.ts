@@ -14,7 +14,8 @@ import { Hono } from 'hono';
 import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import { createHostedIdentityBinder } from '../auth/hosted-identity-binding';
 import { PostgresHostedSelfSignupAdmission } from '../auth/hosted/self-signup';
-import { parseHostedTrialEntitlementPolicy, type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
+import { backfillHostedTrialEntitlementAuthority, parseHostedTrialEntitlementPolicy,
+  type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
 import {
   createHostedPrincipalResolver,
   type HostedPrincipalDenialReason,
@@ -238,6 +239,10 @@ export async function createHostedAuthRuntime(
     sessionCookieCodec,
     publicOrigin: configuration.publicOrigin,
     onSessionEstablished: async session => {
+      if (configuration.trialEntitlementPolicy) await runService(tx =>
+        backfillHostedTrialEntitlementAuthority(tx, {
+          organizationId: session.organizationId, policy: configuration.trialEntitlementPolicy!,
+        }));
       const principal = createHostedPrincipal({ workspaceId: configuration.controlPlaneWorkspaceId,
         activeOrganizationId: session.organizationId, userId: session.userId, sessionId: session.id,
         sessionVersion: session.permissionVersion, selectedWorkspaceId: session.workspaceId ?? undefined, permissions: [] });

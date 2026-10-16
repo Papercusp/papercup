@@ -81,6 +81,49 @@ function organization(value: string): string {
   return value.toLowerCase();
 }
 
+/** Lazy rollout for an authenticated organization's pre-policy signup grant.
+ * Use its original creation time, never the sign-in time. Any prior authority
+ * revision (including revocation), paid grant or ambiguity prevents a backfill.
+ * The shared organization lock serializes this with billing and admission.
+ */
+export async function backfillHostedTrialEntitlementAuthority(tx: Sql, input: {
+  organizationId: string; policy: HostedTrialEntitlementPolicy;
+}): Promise<'initialized' | 'ineligible'> {
+  const organizationId = organization(input.organizationId);
+  const policy = parseHostedTrialEntitlementPolicy(input.policy);
+  await lockHostedEntitlementAuthority(tx, organizationId);
+  return serviceRole(tx, async () => {
+    const grants = await tx<Array<{ user_id: string; kind: string; source: string;
+      created_at: Date | string; authority: unknown; authority_revision: string | number }>>`
+      SELECT user_id::text, kind, source, created_at, authority, authority_revision
+        FROM papercusp_auth.hosted_entitlements
+       WHERE organization_id = ${organizationId}::uuid
+       ORDER BY user_id, kind LIMIT 2 FOR UPDATE`;
+    const grant = grants[0];
+    if (grants.length !== 1 || !grant || grant.kind !== 'hosted-free' || grant.source !== 'self_signup' ||
+        grant.authority !== null || Number(grant.authority_revision) !== 0) return 'ineligible';
+    const createdAt = new Date(grant.created_at);
+    const record = policy.bundle.record;
+    const until = Math.min(createdAt.getTime() + policy.assignmentDurationMs, record.effectiveUntil?.getTime() ?? Infinity);
+    // An expired original trial is still recorded with its original interval;
+    // later sign-ins or configuration changes can never give it a fresh clock.
+    if (!Number.isSafeInteger(until) || !Number.isFinite(new Date(until).getTime()) ||
+        !Number.isFinite(createdAt.getTime()) || createdAt.getTime() > Date.now() || until <= createdAt.getTime()) {
+      return 'ineligible';
+    }
+    await writeHostedEntitlementAuthority({ organizationId, userId: grant.user_id,
+      kind: grant.kind, expectedRevision: 0,
+      authority: { schemaVersion: 1, bundles: [policy.bundle], overrides: [], assignments: [{
+        schemaVersion: 1, assignmentId: `trial:${organizationId}`, organizationId,
+        bundleId: policy.bundle.bundleId, bundleVersion: policy.bundle.bundleVersion,
+        record: { source: 'trial', actor: record.actor, auditReceiptId: `trial-backfill:${organizationId}`,
+          effectiveFrom: createdAt, effectiveUntil: new Date(until) },
+      }] },
+    }, async fn => fn(tx));
+    return 'initialized';
+  });
+}
+
 /** Validate historical rows too: foreign history is not inert authority. */
 function records(value: unknown, organizationId: string): HostedEntitlementAuthorityRecords {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('hosted_entitlement_authority_invalid');

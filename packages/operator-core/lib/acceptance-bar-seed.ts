@@ -497,7 +497,10 @@ function methodProjection(existing: Record<string, unknown>): Record<string, unk
  * unconditionally would false-refuse the large majority of plans — the mirror of
  * the false-pass it exists to fix.
  */
-export function validateAcceptanceBarSource(planContent: string):
+export function validateAcceptanceBarSource(
+  planContent: string,
+  canonicalPlanes?: ReadonlyMap<string, AcceptanceEvidencePlane>,
+):
   | { ok: true; bars: ParsedRequirementBar[]; mappings: ParsedBarMapping[] }
   | { ok: false; problems: AcceptanceBarSeedProblem[] } {
   const requirements = parseRequirementBars(planContent);
@@ -510,8 +513,8 @@ export function validateAcceptanceBarSource(planContent: string):
   const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
   const conflicts = requirements.bars.filter((bar) => {
     const mapping = mappingByKey.get(bar.barKey)!;
-    return mapping.evidencePlaneExplicit && bar.criterion?.evidencePlane &&
-      mapping.evidencePlane !== bar.criterion.evidencePlane;
+    const plane = canonicalPlanes?.get(bar.barKey) ?? bar.criterion?.evidencePlane;
+    return mapping.evidencePlaneExplicit && plane && mapping.evidencePlane !== plane;
   });
   if (conflicts.length) {
     return { ok: false, problems: conflicts.map((bar) => ({
@@ -628,12 +631,6 @@ export function acceptanceBarProjectionConflictDetail(unexpected: readonly strin
 }
 
 export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): AcceptanceBarSeedBuildResult {
-  const source = validateAcceptanceBarSource(input.planContent);
-  if (!source.ok) return refusal(source.problems);
-  const requirements = { ok: true as const, bars: source.bars };
-  const mappings = { ok: true as const, mappings: source.mappings };
-  const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
-
   const existingParsed = input.existingTemplateData === undefined
     ? null
     : rubricTemplateDataAuthoringSchema.safeParse(input.existingTemplateData);
@@ -665,6 +662,19 @@ export function buildAcceptanceBarSeed(input: AcceptanceBarSeedBuildInput): Acce
       detail: `rubric '${input.rubricSlug}' is not the acceptance rubric for '${input.planSlug}'`,
     }]);
   }
+  // A preserved, reviewed criterion owns its plane as well as its text. Checking
+  // an older requirement projection first can strand a BAR-neutral pin update.
+  // New seeds still validate authored planes; preserved maps must agree with the
+  // canonical plane, so this cannot bless an unreviewed mapping change.
+  const canonicalPlanes = preserveCanonicalBars
+    ? new Map(existing!.criteria.flatMap((criterion) => criterion.barKey && criterion.evidencePlane
+      ? [[criterion.barKey, criterion.evidencePlane] as const] : []))
+    : undefined;
+  const source = validateAcceptanceBarSource(input.planContent, canonicalPlanes);
+  if (!source.ok) return refusal(source.problems);
+  const requirements = { ok: true as const, bars: source.bars };
+  const mappings = { ok: true as const, mappings: source.mappings };
+  const mappingByKey = new Map(mappings.mappings.map((mapping) => [mapping.barKey, mapping]));
   const legacyMap = input.legacyCriterionMap;
   if (legacyMap && (!input.backfilled || !existing || existing.barContract ||
       Object.keys(legacyMap).length !== requirements.bars.length ||

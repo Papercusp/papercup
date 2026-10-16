@@ -6,7 +6,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
-  readHostedEntitlementAuthority, writeHostedEntitlementAuthority, type HostedEntitlementAuthorityRecords,
+  backfillHostedTrialEntitlementAuthority, readHostedEntitlementAuthority, writeHostedEntitlementAuthority,
+  type HostedEntitlementAuthorityRecords, type HostedTrialEntitlementPolicy,
 } from './hosted-entitlement-store';
 
 const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1524-hosted-entitlement-authority.sql', import.meta.url));
@@ -48,6 +49,85 @@ describe('hosted entitlement authority (real PG + hosted roles)', () => {
         bundleId: 'trial-v1', bundleVersion: 1,
         record: { ...record, auditReceiptId: 'audit:trial-assignment-v1' } }], overrides: [] };
   }
+  function trialPolicy(): HostedTrialEntitlementPolicy {
+    const bundle = structuredClone(authority(randomUUID()).bundles[0]) as any;
+    bundle.record.source = 'trial';
+    Object.assign(bundle.entitlements.quotas, { 'pool.hosts': 1, 'pool.cpu-millicores': 4000,
+      'pool.memory-mib': 16384, 'pool.workspace-gib': 100 });
+    bundle.entitlements.budgets['pool.cost.usd.minor'] = 10000;
+    return { bundle, assignmentDurationMs: 86_400_000 };
+  }
+  async function legacyGrant(createdAt: Date) {
+    const g = await grant();
+    await db.adminSql`UPDATE papercusp_auth.hosted_entitlements SET created_at = ${createdAt}
+      WHERE organization_id = ${g.organizationId}::uuid`;
+    return g;
+  }
+  it('backfills a legacy trial once under contention using the original grant clock', async () => {
+    const createdAt = new Date('2026-10-15T20:00:00Z');
+    const g = await legacyGrant(createdAt);
+    const policy = trialPolicy();
+    const results = await Promise.all([0, 1].map(() => service(tx =>
+      backfillHostedTrialEntitlementAuthority(tx, { organizationId: g.organizationId, policy }))));
+    expect(results.sort()).toEqual(['ineligible', 'initialized']);
+    expect(await read(g.organizationId)).toMatchObject({ ok: true, authorityRevision: 1,
+      resolution: { quotas: { 'pool.agents': 50 } } });
+    const [stored] = await db.adminSql`SELECT authority, authority_revision, created_at
+      FROM papercusp_auth.hosted_entitlements WHERE organization_id = ${g.organizationId}::uuid`;
+    expect(new Date(stored.created_at)).toEqual(createdAt);
+    expect(stored.authority.assignments[0].record).toMatchObject({
+      effectiveFrom: createdAt.toISOString(), effectiveUntil: '2026-10-16T20:00:00.000Z',
+      auditReceiptId: `trial-backfill:${g.organizationId}` });
+    policy.assignmentDurationMs *= 10;
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: g.organizationId, policy })))
+      .toBe('ineligible');
+    expect(await read(g.organizationId, new Date('2026-10-16T20:00:00Z')))
+      .toEqual({ ok: false, reason: 'no_active_assignment' });
+    const [replayed] = await db.adminSql`SELECT authority, authority_revision
+      FROM papercusp_auth.hosted_entitlements WHERE organization_id = ${g.organizationId}::uuid`;
+    expect(replayed).toEqual({ authority: stored.authority, authority_revision: stored.authority_revision });
+  });
+  it('records already-expired original trials without renewal and preserves revocation or paid authority', async () => {
+    const g = await legacyGrant(new Date('2026-10-12T00:00:00Z'));
+    const policy = trialPolicy();
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: g.organizationId, policy })))
+      .toBe('initialized');
+    expect(await read(g.organizationId)).toEqual({ ok: false, reason: 'no_active_assignment' });
+    await writeHostedEntitlementAuthority({ ...g, expectedRevision: 1, authority: null }, service);
+    policy.assignmentDurationMs *= 100;
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: g.organizationId, policy })))
+      .toBe('ineligible');
+    expect(await read(g.organizationId)).toEqual({ ok: false, reason: 'authority_missing' });
+    const paid = await grant();
+    await writeHostedEntitlementAuthority({ ...paid, authority: authority(paid.organizationId, 100) }, service);
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: paid.organizationId, policy })))
+      .toBe('ineligible');
+    expect(await read(paid.organizationId)).toMatchObject({ ok: true, authorityRevision: 1,
+      resolution: { quotas: { 'pool.agents': 100 } } });
+  });
+  it('does not backfill a missing, ambiguous or non-signup grant and rolls back with its transaction', async () => {
+    const policy = trialPolicy();
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: randomUUID(), policy })))
+      .toBe('ineligible');
+    const ambiguous = await grant();
+    await service(async sql => { await sql`INSERT INTO papercusp_auth.hosted_entitlements
+      (organization_id, user_id, kind, source) VALUES
+      (${ambiguous.organizationId}::uuid, ${randomUUID()}::uuid, 'hosted-free', 'self_signup')`; });
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: ambiguous.organizationId, policy })))
+      .toBe('ineligible');
+    const other = await grant();
+    await db.adminSql`UPDATE papercusp_auth.hosted_entitlements SET source = 'billing'
+      WHERE organization_id = ${other.organizationId}::uuid`;
+    expect(await service(tx => backfillHostedTrialEntitlementAuthority(tx, { organizationId: other.organizationId, policy })))
+      .toBe('ineligible');
+    const rollback = await legacyGrant(new Date('2026-10-15T20:00:00Z'));
+    await expect(service(async tx => {
+      expect(await backfillHostedTrialEntitlementAuthority(tx, { organizationId: rollback.organizationId, policy }))
+        .toBe('initialized');
+      throw new Error('injected_backfill_rollback');
+    })).rejects.toThrow('injected_backfill_rollback');
+    expect(await read(rollback.organizationId)).toEqual({ ok: false, reason: 'authority_missing' });
+  });
   it('keeps legacy labels allowance-free and stores versioned authority on the existing grant', async () => {
     const g = await grant();
     expect(await read(g.organizationId)).toEqual({ ok: false, reason: 'authority_missing' });

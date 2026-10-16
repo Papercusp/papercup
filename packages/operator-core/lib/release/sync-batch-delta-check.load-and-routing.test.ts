@@ -477,12 +477,15 @@ describe('author routing (R-3)', () => {
     expect('assign_to' in (captured.createArgs[1] ?? {})).toBe(false);
   });
 
-  it('notifies the actual filed owner and queues the existing required-wake path', async () => {
+  it.each([
+    ['typecheck delta', buildSyncBatchDeltaDeps],
+    ['lint guard', buildSyncLintGuardDeps],
+  ] as const)('%s notifies the actual filed owner and queues the existing required-wake path (P037)', async (_leg, buildDeps) => {
     captured.messages.length = captured.wakes.length = 0;
     captured.messagePersisted = captured.notificationFails = false;
     captured.notificationAssignee = 'su-current-holder';
     captured.wakeQueued = 1;
-    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    const deps = buildDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
     const finding: RedFinding = { title: 'guard red', body: 'fix the measured red', conditionKey: 'guard:k',
       paths: ['src/timer.ts'], assignee: 'su-author-1', authorSource: 'edit-ledger:failing-file' };
     expect(await deps.fileRed(finding)).toMatchObject({ ok: true, id: 'WI-77', assignee: 'su-current-holder' });
