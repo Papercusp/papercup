@@ -16,6 +16,7 @@ it('private Health seed and browser readers release their worker database resour
   const runId = await recordIsolatedIntegrationProof({ root,
     filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/lib/pg-listen-hub.ts',
       'packages/operator-core/test/portal-roster-browser-fixture.ts',
       'packages/operator-core/test/isolated-integration-proof.ts'],
     execute: async (observe, evidenceDir) => {

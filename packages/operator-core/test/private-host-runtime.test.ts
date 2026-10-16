@@ -38,8 +38,12 @@ it('retires the roster worker auth listener before its shared database pools', (
   expect(phases[auth].body).toContain('await _stopInvalidationListenerForTests()');
   expect(phases[pools].body).toContain('_resetForTests()');
   const census = phases.findIndex(phase => phase.name === 'database-census');
+  const hub = phases.findIndex(phase => phase.name === 'listen-hub-stop');
   const closed = phases.findIndex(phase => phase.name === 'database-resources-closed');
   expect(census, 'capture actual pool labels before retiring query pools').toBeLessThan(pools);
+  expect(hub, 'retain hub connection labels before closing subscriptions').toBeGreaterThan(census);
+  expect(hub, 'collector LISTEN subscriptions must retire before the shared pools').toBeLessThan(pools);
+  expect(phases[hub].body).toContain('await _stopHubForTests()');
   expect(closed, 'verify referenced private sockets after pool close callbacks').toBeGreaterThan(pools);
   expect(phases[closed].body).toContain('assert.equal(retained.length, 0');
 });
