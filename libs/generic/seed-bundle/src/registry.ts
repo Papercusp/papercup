@@ -24,7 +24,19 @@ export interface SeedCutContext {
 
 /** Provider-specific context for a restore (first-boot time). */
 export interface SeedRestoreContext {
+  /** Optional host logger for distinguishing a held verify from a held restore. */
+  readonly onPhase?: (event: SeedRestorePhaseEvent) => void;
   readonly [k: string]: unknown;
+}
+
+/** A diagnostic boundary emitted while a store is being restored. */
+export type SeedRestorePhase = 'resolve' | 'verify' | 'restore';
+export type SeedRestorePhaseState = 'started' | 'succeeded' | 'failed';
+export interface SeedRestorePhaseEvent {
+  readonly kind: string;
+  readonly phase: SeedRestorePhase;
+  readonly state: SeedRestorePhaseState;
+  readonly reason?: string;
 }
 
 /** The verdict of {@link SeedProvider.verify}. */

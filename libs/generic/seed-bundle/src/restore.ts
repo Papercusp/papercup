@@ -9,7 +9,7 @@
  */
 
 import { validateManifest, type SeedManifest, type SeedStoreEntry } from './manifest';
-import type { SeedPayload, SeedProviderRegistry, SeedRestoreContext } from './registry';
+import type { SeedPayload, SeedProviderRegistry, SeedRestoreContext, SeedRestorePhase } from './registry';
 
 /** The result of restoring one store. */
 export interface StoreRestoreOutcome {
@@ -40,6 +40,13 @@ export async function restoreSeed(
   resolvePayload: SeedPayloadResolver,
   ctx: SeedRestoreContext,
 ): Promise<RestoreResult> {
+  const emit = (event: Parameters<NonNullable<SeedRestoreContext['onPhase']>>[0]): void => {
+    try {
+      ctx.onPhase?.(event);
+    } catch {
+      // Diagnostics must never change the fail-soft restore contract.
+    }
+  };
   const validation = validateManifest(manifest);
   if (!validation.ok) {
     return {
@@ -55,17 +62,29 @@ export async function restoreSeed(
       outcomes.push({ kind: entry.kind, ok: false, reason: `no provider registered for kind ${entry.kind}` });
       continue;
     }
+    let phase: SeedRestorePhase = 'resolve';
     try {
+      emit({ kind: entry.kind, phase, state: 'started' });
       const payload = await resolvePayload(entry);
+      emit({ kind: entry.kind, phase, state: 'succeeded' });
+      phase = 'verify';
+      emit({ kind: entry.kind, phase, state: 'started' });
       const verdict = await provider.verify(entry, payload);
       if (!verdict.ok) {
+        emit({ kind: entry.kind, phase, state: 'failed', reason: verdict.reason ?? 'unknown' });
         outcomes.push({ kind: entry.kind, ok: false, reason: `verify failed: ${verdict.reason ?? 'unknown'}` });
         continue;
       }
+      emit({ kind: entry.kind, phase, state: 'succeeded' });
+      phase = 'restore';
+      emit({ kind: entry.kind, phase, state: 'started' });
       await provider.restore(entry, payload, ctx);
+      emit({ kind: entry.kind, phase, state: 'succeeded' });
       outcomes.push({ kind: entry.kind, ok: true });
     } catch (e) {
-      outcomes.push({ kind: entry.kind, ok: false, reason: `restore threw: ${(e as Error).message}` });
+      const reason = (e as Error).message;
+      emit({ kind: entry.kind, phase, state: 'failed', reason });
+      outcomes.push({ kind: entry.kind, ok: false, reason: `${phase} threw: ${reason}` });
     }
   }
 

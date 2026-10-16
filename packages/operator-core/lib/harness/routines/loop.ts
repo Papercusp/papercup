@@ -716,7 +716,7 @@ export async function deactivateLoop(
   // The already-inactive stamp runs FIRST: after the deactivation UPDATE below flips the row,
   // this predicate would also match the row just ended and overwrite the superseded-copy key
   // with the reason we just wrote. Ordered this way, each row is stamped exactly once.
-  await sql`
+  const alreadyInactive = await sql<Array<{ id: string }>>`
     UPDATE harness_shared.routines
        SET metadata = COALESCE(metadata, '{}'::jsonb)
                     || jsonb_build_object(
@@ -736,6 +736,7 @@ export async function deactivateLoop(
                        ),
            updated_at = now()
      WHERE name = ${loopRoutineName(ownerId)} AND active = FALSE
+    RETURNING id
   `;
   const ended = await sql<
     Array<{
@@ -795,6 +796,28 @@ export async function deactivateLoop(
       intervalSec: row.reschedule_interval_sec,
       detail: { reason },
     });
+  }
+
+  // A dead-man breach already deactivates its routine before the owner can respond. In that
+  // case loop:end finds the row in `alreadyInactive`, so there is no TRUE -> FALSE transition
+  // to record — but this explicit disposition still closes the one-shot dead-man condition.
+  // Signal absence cannot do that safely for one-shot alarms, and leaving it open after an
+  // intentional stop pages the owner indefinitely. Resolving an absent/already-resolved key is
+  // a cheap no-op; resolveAlarm is best-effort and never turns the successful stop into failure.
+  const routineIds = new Set([...alreadyInactive, ...ended].map((row) => row.id));
+  if (routineIds.size > 0) {
+    try {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      const resolutions = await Promise.allSettled([...routineIds].map((routineId) =>
+        resolveAlarm(`alarm:loop-dead-man:${routineId}`, 'loop-dead-man')));
+      for (const result of resolutions) {
+        if (result.status === 'rejected') {
+          console.warn(`[loop] dead-man condition resolution failed after loop:end: ${String(result.reason)}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[loop] dead-man condition resolution failed after loop:end: ${String(e)}`);
+    }
   }
 
   return ended.length > 0;

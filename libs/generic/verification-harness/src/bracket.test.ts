@@ -72,6 +72,48 @@ vh_bracket_trap
 `;
 
 describe('vh.sh bracket mode', () => {
+  it('retains declared original phase receipts before pruning a completed shell run', async () => {
+    const r = run(`
+vh_phase prepare ""
+vh_init receipt-proof "$ROOT/ev" --retain-artifact phases/prepare/source.json --retain-artifact phases/prepare/runtime.json
+vh_begin prepare
+printf '%s\\n' '{"source":"original source bytes"}' > "$VH_PHASE_DIR/source.json"
+printf '%s\\n' '{"runtime":"original runtime bytes"}' > "$VH_PHASE_DIR/runtime.json"
+vh_end
+vh_finish
+`);
+    try {
+      expect(r.code).toBe(0);
+      expect(r.result.verdict).toBe('pass');
+      const files = ['source.json', 'runtime.json'];
+      const originals = files.map(file => readFileSync(path.join(r.result.evidenceDir, 'phases/prepare', file)));
+      await runHarness({ contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }] },
+        evidenceRoot: path.join(r.root, 'ev'), runId: '20990101T000000Z-2',
+        runPhase: async () => ({ ok: true }) });
+      await pruneRuns(path.join(r.root, 'ev'), 1);
+      expect(existsSync(r.result.evidenceDir)).toBe(false);
+      files.forEach((file, i) => expect(readFileSync(path.join(r.root, 'ev', 'retained', r.result.runId,
+        'phases/prepare', file))).toEqual(originals[i]));
+      expect(JSON.parse(readFileSync(path.join(r.root, 'ev', 'retained', r.result.runId, 'result.json'), 'utf8')))
+        .toEqual(r.result);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+
+  it('refuses shell completion when a declared original receipt is missing', () => {
+    const r = run(`
+vh_phase prepare ""
+vh_init receipt-proof "$ROOT/ev" --retain-artifact phases/prepare/source.json
+vh_begin prepare
+vh_end
+vh_finish
+`);
+    try {
+      expect(r.code).not.toBe(0);
+      expect(r.stdout).not.toMatch(/HARNESS_RESULT .*verdict=pass/);
+      expect(existsSync(path.join(r.root, 'ev', 'retained'))).toBe(false);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+
   it('an abort under set -e fails the open phase at its last step and blocks the rest; the exit code is kept', () => {
     const r = run(`${chain}
 vh_begin prep

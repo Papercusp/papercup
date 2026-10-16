@@ -15,9 +15,28 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const { operatorBases, postInjection } = await import(path.join(HERE, '..', 'core.mjs'));
+const { operatorBases, postInjection, collectInterfaceEdits } = await import(path.join(HERE, '..', 'core.mjs'));
 
 type FetchInit = { body: string; signal: AbortSignal };
+
+describe('interface collector request cwd', () => {
+  it('resolves relative paths at the session cwd, deduplicates aliases and keeps the two-file bound', async () => {
+    const paths: string[] = [];
+    const call = { editedPaths: ['lib/target.ts', '/session/repo/lib/target.ts', 'lib/other.ts', 'lib/third.ts'], interfaceEdits: [] as unknown[] };
+    await collectInterfaceEdits({ cwd: '/session/repo', toolCalls: [call] }, async (p: string) => {
+      paths.push(p); return { path: p };
+    });
+    expect(paths).toEqual(['/session/repo/lib/target.ts', '/session/repo/lib/other.ts']);
+    expect(call.interfaceEdits).toHaveLength(2);
+  });
+  it('contains a failed local read and still examines the other bounded edit', async () => {
+    const paths: string[] = [];
+    await collectInterfaceEdits({ cwd: '/session/repo', toolCalls: [{ editedPaths: ['gone.ts', 'present.ts'] }] }, async (p: string) => {
+      paths.push(p); if (p.endsWith('gone.ts')) throw new Error('missing'); return null;
+    });
+    expect(paths).toEqual(['/session/repo/gone.ts', '/session/repo/present.ts']);
+  });
+});
 
 function refused(): Error {
   // undici's shape for a refused connect: TypeError('fetch failed') with a cause.
@@ -67,6 +86,26 @@ describe('operatorBases — which operators a hook may try', () => {
 describe('postInjection — falls back only when the pin could not be reached', () => {
   const env = { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170' };
   const body = { owner: 'su-test', prompt: 'hello' };
+  const edit = { path: 'lib/target.ts', base: 'a'.repeat(40), changes: ['signature target'],
+    checks: ['node scripts/check-required-field-strands.mjs --typecheck --base ' + 'a'.repeat(40) + ' --files=lib/target.ts'] };
+  it.each(['unreachable', 'empty', 'disabled-leg', 'missing-snapshot', 'no-fetch'])('preserves one merged local strand note when %s', async failure => {
+    const fetchImpl = (async () => {
+      if (failure === 'unreachable') throw refused();
+      return json(failure === 'disabled-leg' ? 'Other context' : '');
+    }) as typeof fetch;
+    const out = await postInjection('mid-turn', { owner: 'su-test', toolCalls: [{ tool: 'Edit', interfaceEdits: [edit, edit] }] },
+      { env, fetchImpl: failure === 'no-fetch' ? null as any : fetchImpl });
+    expect(out?.text).toContain('signature target');
+    expect(out?.text.match(/lib\/target.ts: signature/g)).toHaveLength(1);
+    expect(out?.text.length).toBeLessThanOrEqual(1500);
+  });
+  it('does not repeat a delivered interface note or exceed the code intelligence budget', async () => {
+    const b = { owner: 'su-test', toolCalls: [{ tool: 'Edit', interfaceEdits: [edit] }] };
+    const text = '## Code intelligence (interface)\nlib/target.ts: signature target';
+    expect((await postInjection('mid-turn', b, { env, fetchImpl: (async () => json(text)) as typeof fetch }))?.text).toBe(text);
+    const full = '## Code intelligence (grep)\n' + 'x'.repeat(1450);
+    expect((await postInjection('mid-turn', b, { env, fetchImpl: (async () => json(full)) as typeof fetch }))?.text.length).toBeLessThanOrEqual(1500);
+  });
 
   it('refused pin -> the proxy serves the turn, through the same endpoint', async () => {
     const calls: string[] = [];

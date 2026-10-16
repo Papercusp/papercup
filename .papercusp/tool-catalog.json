@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 967,
+  "count": 968,
   "tools": [
     {
       "name": "ablation:report",
@@ -8848,6 +8848,24 @@
         "when": "Serving or paying for a unit of a per-use Cupboard offer, after cupboard:checkout returned a microcharge preflight and the channel was funded.",
         "notWhen": "A one-time or subscription offer (cupboard:checkout alone settles those). Funding the channel itself. Reading what an org bought (cupboard:commerce-dashboards).",
         "chaining": "reserve → execute the unit → settle with actualQuantity. Reserve FIRST: settling a nonce that was never reserved is refused rather than billed, and a unit executed before reserving may turn out to be uncoverable. Reuse the SAME usageNonce across the pair; a fresh one on retry double-bills."
+      }
+    },
+    {
+      "name": "cupboard:my-listings",
+      "http": {
+        "path": "/api/agent-tools/cupboard/my-listings",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List your Cupboard submissions, including pending review, approved, rejected, delisted listings and creator drafts. Authenticates with the operator’s GitHub identity. Follow nextCursor for more pages.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "Checking what you published, its moderation state or rejection reason, or finding your own listing to delist.",
+        "notWhen": "Searching the public catalog for someone else’s packages; use cupboard:search.",
+        "chaining": "Read submissions → inspect review_status/review_reason → use cupboard:unpublish with a listing id to delist."
       }
     },
     {

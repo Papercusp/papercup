@@ -862,6 +862,8 @@ export interface BatchCall {
   tool?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
+  editedPaths?: string[];
+  interfaceEdits?: unknown[];
 }
 
 /**

@@ -2026,6 +2026,27 @@ export function runnerUnitIsOwn(
   return Boolean(unit && units?.includes(unit));
 }
 
+/**
+ * An older release:checkpoint-run launcher reserved a `manual:<attempt>:<time>` runner id,
+ * then transported a distinct gateFireId to this current CLI. If the reservation names this
+ * process's own systemd unit, the id mismatch is version skew for this runner, not a competing
+ * run. Return the stored id only for that exact, measured case; all other conflicts stay closed.
+ */
+export function ownUnitReservationRunnerIdAfterAttachConflict(
+  activation: {
+    status: string;
+    refusalReason?: string;
+    transaction?: { currentPhysicalRunner: QualificationPhysicalRunner | null };
+  },
+  gateFireId: string | undefined,
+  selfUnits: readonly string[],
+): string | null {
+  if (activation.status !== "conflict" || activation.refusalReason !== "runner-held" || !gateFireId) return null;
+  const runner = activation.transaction?.currentPhysicalRunner;
+  if (!runner?.id || runner.id === gateFireId || !runnerUnitIsOwn(runner, selfUnits)) return null;
+  return runner.id;
+}
+
 /** Report the store's failed invariant without inferring id skew from unit ownership. */
 export function checkpointQualificationAttachmentRefusalSummary(
   activation: {
@@ -3722,6 +3743,37 @@ export async function activateCheckpointQualificationRunner(
     started: true,
     evidenceRefs: [`checkpoint-run:${input.runId}`],
   });
+}
+
+/**
+ * Recover only the legacy launcher skew where a refused reservation is positively tied to this
+ * process's own systemd unit. Re-attaching with the stored physical runner id updates the existing
+ * slot; candidate/run/process invariants are still enforced by reserveQualificationRunner.
+ */
+export async function adoptOwnUnitRunnerReservationAfterAttachConflict(
+  activation: Awaited<ReturnType<typeof activateCheckpointQualificationRunner>>,
+  input: Parameters<typeof activateCheckpointQualificationRunner>[0],
+  selfUnits: readonly string[],
+  retry: typeof activateCheckpointQualificationRunner = activateCheckpointQualificationRunner,
+): Promise<{
+  activation: Awaited<ReturnType<typeof activateCheckpointQualificationRunner>>;
+  runnerId: string | undefined;
+  adopted: boolean;
+}> {
+  const legacyRunnerId = ownUnitReservationRunnerIdAfterAttachConflict(
+    activation,
+    input.gateFireId,
+    selfUnits,
+  );
+  if (!legacyRunnerId) return { activation, runnerId: input.gateFireId, adopted: false };
+
+  const attached = await retry({ ...input, gateFireId: legacyRunnerId });
+  const adopted = attached.status === 'not-qualifying' || attached.status === 'updated' || attached.status === 'idempotent';
+  return {
+    activation: attached,
+    runnerId: adopted ? legacyRunnerId : input.gateFireId,
+    adopted,
+  };
 }
 
 /**
@@ -23921,7 +23973,8 @@ if (require.main === module) {
       const qualificationTarget = gateVerdictTargetFromEnv();
       const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
       const qualificationCandidate = candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? null;
-      const activation = await activateCheckpointQualificationRunner({
+      let qualificationRunnerId = gateFireId;
+      let activation = await activateCheckpointQualificationRunner({
         target: qualificationTarget,
         attemptId: qualificationAttemptId,
         gateFireId,
@@ -23929,6 +23982,29 @@ if (require.main === module) {
         candidate: qualificationCandidate,
         pid: process.pid,
       });
+      if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
+        const selfUnits = ownCgroupUnits();
+        const adoption = await adoptOwnUnitRunnerReservationAfterAttachConflict(
+          activation,
+          {
+            target: qualificationTarget,
+            attemptId: qualificationAttemptId,
+            gateFireId,
+            runId,
+            candidate: qualificationCandidate,
+            pid: process.pid,
+          },
+          selfUnits,
+        );
+        activation = adoption.activation;
+        qualificationRunnerId = adoption.runnerId;
+        if (adoption.adopted) {
+          console.warn(
+            `${orchestratorStdoutTag()} adopted own-unit legacy runner reservation ${qualificationRunnerId} ` +
+              `for CLI attachment; gateFireId ${gateFireId} remains the fire correlation identity`,
+          );
+        }
+      }
       if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
         // WI-6554700010009570: a refusal because a DIFFERENT live runner already holds this attempt
         // is a lost launch race, not a crash. Stand down on the lock-loser terminal so the no-verdict
@@ -23958,7 +24034,7 @@ if (require.main === module) {
       qualificationProgress = startCheckpointQualificationProgress({
         target: qualificationTarget,
         attemptId: qualificationAttemptId,
-        gateFireId,
+        gateFireId: qualificationRunnerId,
         runId,
         pid: process.pid,
       });

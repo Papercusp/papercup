@@ -14,9 +14,19 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-emitter', ownerLabel: 'e', source: 'static-client', workspaceId: 'ws-x', userId: null }),
+  deriveAgentRole: () => 'operator',
 }));
 vi.mock('../../events/await/engine', () => ({
   emitAwaitedEvent: vi.fn(),
+}));
+vi.mock('../../events/await/store', () => ({
+  registerAnnouncement: vi.fn(async () => ({ causalGeneration: 1, expiresTs: null })),
+  countActiveAwaitsByPrefixes: vi.fn(async () => new Map()),
+  findNearMissKeys: vi.fn(async () => []),
+}));
+vi.mock('../../events/saved-event-type', () => ({
+  saveEventType: vi.fn(async () => ({ eventKey: 'saved' })),
+  validateSavedEventPayload: vi.fn(async () => undefined),
 }));
 // P-009: the federation legs — sendMessage carries the fed-event row; the scope
 // resolver defaults to none (machine-local behavior unchanged).
@@ -31,6 +41,7 @@ import emit from './emit';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { sendMessage } from '../coordination/messages';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
+import { saveEventType, validateSavedEventPayload } from '../../events/saved-event-type';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof emit.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -41,6 +52,32 @@ const call = async (args: Record<string, unknown>) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('events:emit envelope', () => {
+  it('saves the final scoped declaration key without firing it', async () => {
+    const out = await call({ event: 'ready', announce: true, announceScope: 'harness', announceScopeRef: 'demo', save: true });
+    expect(out).toMatchObject({ announced: true, saved: true, event: 'harness:demo:ready' });
+    expect(saveEventType).toHaveBeenCalledWith(expect.objectContaining({ event: 'harness:demo:ready' }));
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+  it('saves a type before firing and preserves the authenticated contributor', async () => {
+    vi.mocked(emitAwaitedEvent).mockResolvedValue({ ok: true, key: 'demo:ready', woken: 1, notified: [], msgId: null, waiters: 1 });
+    const out = await call({ event: 'demo:ready', save: true, payloadSchema: { type: 'object' }, payload: {} });
+    expect(out.saved).toBe(true);
+    expect(saveEventType).toHaveBeenCalledWith(expect.objectContaining({ event: 'demo:ready', workspaceId: 'ws-x', ownerId: 'su-emitter' }));
+    expect(vi.mocked(saveEventType).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(emitAwaitedEvent).mock.invocationCallOrder[0]);
+  });
+
+  it('refuses invalid payloads before waking or notifying anyone', async () => {
+    vi.mocked(validateSavedEventPayload).mockRejectedValueOnce(new Error('event_payload_invalid'));
+    await expect(call({ event: 'demo:ready', payload: { invalid: true } })).rejects.toThrow('event_payload_invalid');
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('retires a saved event without firing and requires save for metadata', async () => {
+    expect(await call({ event: 'demo:ready', save: true, eventStatus: 'retired' })).toMatchObject({ status: 'retired', fired: false });
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(emit.args.safeParse({ event: 'demo:ready', title: 'Ready' }).success).toBe(false);
+  });
   it('validates and documents announce/to incompatibility before the handler', () => {
     expect(emit.args.safeParse({ event: 'g', announce: true, to: ['su-x'] }).success).toBe(false);
     expect(emit.args.safeParse({ event: 'g', announce: true }).success).toBe(true);

@@ -66,7 +66,7 @@ VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # vh_converge: wait for a cross-host observation to converge instead of reading it once.
 # shellcheck source=converge.sh
 source "$VH_LIB_DIR/bin/converge.sh"
-declare -ga VH_PHASE_IDS=() VH_SCOPE_TAGS=()
+declare -ga VH_PHASE_IDS=() VH_SCOPE_TAGS=() VH_RETAIN_ARGS=()
 declare -gA VH_DEPS=() VH_REUSABLE=() VH_ACTION=() VH_REUSE_FROM=() VH_STATUS=()
 VH_PREFLIGHT_FAILED=0
 VH_PREFLIGHT_DONE=0
@@ -280,6 +280,9 @@ vh_init() {
     case "$1" in
       --only|--only-phase|--from|--from-phase|--reuse) sel+=("$1" "${2:-}"); shift 2 ;;
       --only=*|--only-phase=*|--from=*|--from-phase=*|--reuse=*) sel+=("$1"); shift ;;
+      --retain-artifact)
+        [ -n "${2:-}" ] && [[ "$2" != --* ]] || { echo 'vh_init: missing --retain-artifact path' >&2; return 2; }
+        VH_RETAIN_ARGS+=("$1" "$2"); shift 2 ;;
       *) VH_ARGS_TMP+=("$1"); shift ;;
     esac
   done
@@ -568,9 +571,9 @@ vh_finish() {
   VH_FINALIZED=1
   local rc=0
   if [ "${VH_LOG_FD:-1}" = 2 ]; then
-    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" >&2 || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" ${VH_RETAIN_ARGS[@]+"${VH_RETAIN_ARGS[@]}"} >&2 || rc=$?
   else
-    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" ${VH_RETAIN_ARGS[@]+"${VH_RETAIN_ARGS[@]}"} || rc=$?
   fi
   VH_FINISH_RC="$rc"
   return "$rc"

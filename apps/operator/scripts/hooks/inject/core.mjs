@@ -20,6 +20,7 @@
  */
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
+import { resolve } from 'node:path';
 
 /**
  * @typedef {import('./ports.mjs').InjectionPort} InjectionPort
@@ -191,23 +192,13 @@ export async function postInjection(port, body, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
   try {
-    if (typeof fetchImpl !== 'function') return null;
     // wallMs: this hook's own wall, so the operator spends only what is left of
     // it (the Jev memory filter's wait, WI-10004485). Derived from the spec, never
     // a second copy of the number on the server.
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
-    if (port === 'mid-turn' && Array.isArray(body.toolCalls)) {
-      let remaining = 2;
-      for (const call of body.toolCalls) {
-        if (!call.editedPath || remaining-- <= 0) continue;
-        try {
-          const { consequenceFor } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
-          call.interfaceEdit = await consequenceFor(call.editedPath);
-        } catch { /* optional advisory: an unreadable local repo cannot disturb the tool */ }
-      }
-    }
-    if (controller.signal.aborted) return null;
+    if (port === 'mid-turn') await collectInterfaceEdits(body);
+    if (controller.signal.aborted || typeof fetchImpl !== 'function') return localStrandFallback(body);
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
@@ -228,19 +219,72 @@ export async function postInjection(port, body, opts = {}) {
         if (controller.signal.aborted) throw err;
       }
     }
-    if (!res || !res.ok) return null;
+    if (!res || !res.ok) return localStrandFallback(body);
     const payload = await res.json();
-    if (!payload || typeof payload !== 'object') return null;
+    if (!payload || typeof payload !== 'object') return localStrandFallback(body);
     const { text, deliveryToken } = payload;
-    if (typeof text !== 'string' || !text.trim()) return null;
+    if (typeof text !== 'string' || !text.trim()) return localStrandFallback(body);
+    // Preserve the existing local safety advice when the optional snapshot leg
+    // is unavailable, disabled, over budget or deduplicated. One merged payload.
+    const fallback = localStrandFallback(body, text);
+    if (fallback) return { text: `${text}\n\n${fallback.text}`, deliveryToken: typeof deliveryToken === 'string' ? deliveryToken : null };
     return { text, deliveryToken: typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null };
   } catch {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
-    return null;
+    return localStrandFallback(body);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Resolve native relative edit paths from the requesting session, including a
+ * hook installed outside that checkout. Keep one bounded collection per batch. */
+export async function collectInterfaceEdits(body, collect = async path => {
+  const { consequenceFor } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
+  return consequenceFor(path);
+}) {
+  let remaining = 2;
+  const seen = new Set();
+  for (const call of body.toolCalls ?? []) {
+    for (const path of call.editedPaths ?? (call.editedPath ? [call.editedPath] : [])) {
+      if (typeof path !== 'string') continue;
+      const abs = resolve(body.cwd || process.cwd(), path);
+      if (seen.has(abs) || remaining <= 0) continue;
+      seen.add(abs); remaining--;
+      try {
+        const edit = await collect(abs);
+        if (edit) (call.interfaceEdits ??= []).push(edit);
+      } catch { /* an unreadable local repo cannot disturb the tool */ }
+    }
+  }
+}
+
+function localStrandFallback(body, delivered = '') {
+  const edits = [...new Map((body.toolCalls ?? []).flatMap(call => call.interfaceEdits ?? []).map(edit => [edit.path, edit])).values()];
+  const section = delivered.indexOf('## Code intelligence');
+  const remaining = section < 0 ? 1500 : Math.max(0, 1500 - delivered.slice(section).length - 2);
+  if (!remaining) return null;
+  const notes = edits.filter(edit => !delivered.includes(`Code intelligence (interface)`) || !delivered.includes(edit.path))
+    .map(edit => `${edit.path}: ${edit.changes.join('; ')}.\n${edit.checks.join('\n')}`);
+  return notes.length ? { text: `## Interface and strand checks\n${notes.join('\n')}\nSnapshot consequences unavailable; consumer and test reach unknown.`.slice(0, remaining), deliveryToken: null } : null;
+}
+
+/** Keep native patch headers outside the lossy recall digest, including multi-file patches. */
+export function editedPathsFor(tool, input) {
+  // `write` is also a generic MCP tool name (for example coord/tool writes),
+  // so only recognize the client-native file edit spellings here. Treating a
+  // generic write as a file edit leaks arbitrary tool arguments into the
+  // interface-consequence advisory and changes the digest contract.
+  if (/^(?:Edit|Write|MultiEdit|edit)$|(?:^|[_:.])capability[_:.](?:edit|write)$/.test(tool ?? '')) {
+    const path = input?.file_path ?? input?.path;
+    return typeof path === 'string' && path.length <= 1000 ? [path] : [];
+  }
+  if (!/(?:^|_|:|\.)(?:apply_patch)$/.test(tool ?? '')) return [];
+  const patch = typeof input === 'string' ? input : input?.patch ?? input?.input;
+  if (typeof patch !== 'string' || patch.length > 2_000_000) return [];
+  return [...new Set([...patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)].map(match => match[1]))]
+    .filter(path => path.length <= 1000).slice(0, 12);
 }
 
 /**
@@ -289,10 +333,8 @@ export function buildDigest(calls) {
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
       // Preserve the path independently of the 400-char recall digest. Edits often
       // exceed it, and a truncated JSON input cannot safely recover this field.
-      ...(/(?:^|_|:)(?:Edit|Write|MultiEdit|edit|write)$/.test(call.tool ?? '')
-        && typeof call.toolInput === 'object' && call.toolInput
-        && typeof (call.toolInput.file_path ?? call.toolInput.path) === 'string'
-        ? { editedPath: (call.toolInput.file_path ?? call.toolInput.path).slice(0, 1000) } : {}),
+      ...(editedPathsFor(call.tool, call.toolInput).length
+        ? { editedPaths: editedPathsFor(call.tool, call.toolInput), editedPath: editedPathsFor(call.tool, call.toolInput)[0] } : {}),
     });
   }
   return digest;

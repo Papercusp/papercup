@@ -112,6 +112,7 @@ import {
   LOOP_INTERVAL_FLOOR_SEC,
   countAgentToolCallsInWindow,
 } from './loop';
+import { resolveAlarm } from '../../alarm-attention';
 
 describe('getLoopStatuses — default client acquisition attribution (EI-25884587459468153)', () => {
   it('labels the getOrgPg client as org-admin when its connection acquisition times out', async () => {
@@ -651,6 +652,7 @@ describe('computeLifecycleBackoff (EI-19325288514307343 — backed-off vs dead, 
 beforeEach(() => {
   upsertRoutineSpy.mockReset();
   recordLoopTransitionSpy.mockReset();
+  (resolveAlarm as unknown as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(true);
   // Echo the input back as a plausible RoutineRow (materializeLoop reads .id/.name/.nextFireAt/.targetRole).
   upsertRoutineSpy.mockImplementation(async (_sql: unknown, input: any) => ({
     id: `rt_${input.installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase(),
@@ -669,6 +671,42 @@ beforeEach(() => {
     rescheduleIntervalSec: input.rescheduleIntervalSec ?? null,
     targetOwnerId: input.targetOwnerId ?? null,
   }));
+});
+
+describe('deactivateLoop — dead-man condition disposition', () => {
+  it('resolves a dead-man alarm when the owner ends a loop already paused by the guard', async () => {
+    const sql = vi.fn()
+      .mockResolvedValueOnce([{ id: 'rt_ws_loop_su-dead' }])
+      .mockResolvedValueOnce([]);
+
+    await expect(deactivateLoop('su-dead', { sql: sql as any, reason: 'intentional wind-down' }))
+      .resolves.toBe(false);
+
+    expect(resolveAlarm).toHaveBeenCalledExactlyOnceWith(
+      'alarm:loop-dead-man:rt_ws_loop_su-dead',
+      'loop-dead-man',
+    );
+  });
+
+  it('resolves dead-man alarms for every loop row it deactivates', async () => {
+    const sql = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: 'rt_ws_loop_su-active',
+        workspace_id: 'ws',
+        install_slug: 'papercusp',
+        name: 'loop-su-active',
+        target_role: LOOP_WAKE_ACTION,
+        reschedule_interval_sec: 60,
+      }]);
+
+    await expect(deactivateLoop('su-active', { sql: sql as any })).resolves.toBe(true);
+
+    expect(resolveAlarm).toHaveBeenCalledExactlyOnceWith(
+      'alarm:loop-dead-man:rt_ws_loop_su-active',
+      'loop-dead-man',
+    );
+  });
 });
 
 describe('deactivateLoopForGoal (EI-21123319355080521)', () => {

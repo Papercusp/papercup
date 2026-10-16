@@ -20,7 +20,7 @@ export const PUSH_LEG_FLAGS = {
   completion: FLAGS.CODE_INTEL_PUSH_COMPLETION, intent: FLAGS.CODE_INTEL_PUSH_INTENT,
 } as const;
 export type PushLegId = keyof typeof PUSH_LEG_FLAGS;
-export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; interfaceEdit?: unknown }
+export interface PushCall { tool?: string; toolInput?: unknown; toolResponse?: unknown; interfaceEdit?: unknown; interfaceEdits?: unknown[] }
 export interface PushInput {
   owner: string; workspace: string; harness?: string; client?: string;
   /** Populated only from the registered harness root, never request cwd. */
@@ -131,9 +131,9 @@ registerCodeIntelPushLeg('first-touch', snapshotFirstTouchLeg);
  */
 export const snapshotInterfaceLeg: PushLeg = (input, snapshot) => {
   const facts: PushFact[] = [];
-  for (const call of input.calls.slice(0, 2)) {
-    if (!/(?:^|_|:)(?:Edit|Write|MultiEdit|edit|write)$/.test(call.tool ?? '')) continue;
-    const edit = call.interfaceEdit as { path?: unknown; base?: unknown; changes?: unknown; checks?: unknown } | null;
+  for (const value of input.calls.filter(call => /(?:^|_|:|\.)(?:Edit|Write|MultiEdit|edit|write|apply_patch)$/.test(call.tool ?? ''))
+    .flatMap(call => call.interfaceEdits ?? (call.interfaceEdit ? [call.interfaceEdit] : [])).slice(0, 2)) {
+    const edit = value as { path?: unknown; base?: unknown; changes?: unknown; checks?: unknown } | null;
     if (!edit || typeof edit.path !== 'string' || !safeSnapshotPath(edit.path)
       || typeof edit.base !== 'string' || !/^[a-f0-9]{40,64}$/.test(edit.base)
       || !Array.isArray(edit.changes) || !edit.changes.length || !Array.isArray(edit.checks)) continue;

@@ -17,6 +17,10 @@ vi.mock('../hive-store', () => ({
 // invite shipped the real team GitHub logins into the client bundle. Mocked separately here,
 // still to [], preserving this suite's existing behaviour.
 vi.mock('./canonical-hive-team-allowlist', () => ({ CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
+vi.mock('../sync/hyperbee/restore-hive-seed', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sync/hyperbee/restore-hive-seed')>();
+  return { ...actual, restoreHiveSeed: vi.fn(actual.restoreHiveSeed) };
+});
 
 import {
   bootstrapPapercuspHive,
@@ -35,6 +39,7 @@ import { join } from 'node:path';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { workspacesRoot, isKnownWorkspace } from '../workspace-registry';
+import { restoreHiveSeed } from '../sync/hyperbee/restore-hive-seed';
 
 // WI-3232: the seed CORESTORE must restore to the SAME dir boot opens it, else the
 // OFFLINE self-admit pot appears with EMPTY content (boot reads an empty corestore).
@@ -272,6 +277,53 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     // The boot log summarizes what restored vs deferred (diagnostic, like clone logging).
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/seed restore: restored=\[corestore\] deferred=\[git\]/));
     warn.mockRestore();
+  });
+
+  it('P-007: default bootstrap restore logs phase boundaries and records live clone progress', async () => {
+    const seedDir = mkdtempSync(join(tmpdir(), 'pcusp-bootstrap-seed-'));
+    const previousSeedDir = process.env.PAPERCUSP_SEED_DIR;
+    const previousNoSeed = process.env.PAPERCUSP_NO_SEED;
+    const info = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      writeFileSync(join(seedDir, 'manifest.json'), '{}');
+      process.env.PAPERCUSP_SEED_DIR = seedDir;
+      delete process.env.PAPERCUSP_NO_SEED;
+      vi.mocked(restoreHiveSeed).mockImplementationOnce(async (ctx) => {
+        ctx.log?.('[seed] corestore verify started', 'info');
+        ctx.log?.('[seed] corestore verify succeeded', 'info');
+        ctx.log?.('[seed] corestore restore started', 'info');
+        return { ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: [] };
+      });
+      const deps = spyDeps({
+        canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+        findJoinedCanonical: vi.fn(async () => null),
+        joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+      });
+
+      const result = await bootstrapPapercuspHive(deps);
+
+      expect(result.state).toBe('cloned-and-created');
+      expect(restoreHiveSeed).toHaveBeenCalledWith(expect.objectContaining({ seedDir, log: expect.any(Function) }));
+      expect(info).toHaveBeenCalledWith('[papercusp-hive] seed: corestore verify started');
+      expect(info).toHaveBeenCalledWith('[papercusp-hive] seed: corestore verify succeeded');
+      expect(info).toHaveBeenCalledWith('[papercusp-hive] seed: corestore restore started');
+      for (const detail of [
+        'seed: corestore verify started',
+        'seed: corestore verify succeeded',
+        'seed: corestore restore started',
+      ]) {
+        expect(deps.recordProgress).toHaveBeenCalledWith('clone', 'running', { detail });
+      }
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+      if (previousSeedDir === undefined) delete process.env.PAPERCUSP_SEED_DIR;
+      else process.env.PAPERCUSP_SEED_DIR = previousSeedDir;
+      if (previousNoSeed === undefined) delete process.env.PAPERCUSP_NO_SEED;
+      else process.env.PAPERCUSP_NO_SEED = previousNoSeed;
+      rmSync(seedDir, { recursive: true, force: true });
+    }
   });
 
   it('P-007: a restore failure is non-fatal — the join still runs (cold path)', async () => {

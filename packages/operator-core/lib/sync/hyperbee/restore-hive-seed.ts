@@ -36,6 +36,7 @@ import {
   type SeedManifest,
   type SeedStoreEntry,
   type SeedPayload,
+  type SeedRestorePhaseEvent,
   type StoreRestoreOutcome,
 } from '@papercusp/seed-bundle';
 import { createGitSeedProvider } from './seed-provider-git';
@@ -270,6 +271,12 @@ export async function restoreHiveSeed(ctx: RestoreHiveSeedCtx): Promise<RestoreH
     targetStoreDir: ctx.targetStoreDir,
     ...(ctx.decryptionKey ? { decryptionKey: ctx.decryptionKey } : {}),
     ...(ctx.originUrl ? { originUrl: ctx.originUrl } : {}),
+    // WI-6554700010011908: publish phase boundaries through the existing host log
+    // so a slow restore can be attributed to verify or restore independently.
+    onPhase: (event: SeedRestorePhaseEvent) => {
+      const reason = event.reason ? `: ${event.reason}` : '';
+      log(`[seed] ${event.kind} ${event.phase} ${event.state}${reason}`);
+    },
   };
   const result = await restoreSeed(subManifest, registry, resolvePayload, restoreCtx);
   for (const o of result.outcomes) {

@@ -841,6 +841,15 @@ export async function verifyDepsExtracted({
   if (healthy(first)) return 0;
 
   report(first);
+  // A prefix reifies an independent package tree. Keep the full-root verdict,
+  // but never turn its failure into a root install or root-lock mutation.
+  // The caller must repair the explicitly selected tree before retrying.
+  if (npmArgs.some((arg) => arg === "--prefix" || arg.startsWith("--prefix="))) {
+    console.error(
+      "NPM_INSTALL_SAFE_FATAL: explicit-prefix install failed full-root verification; refusing to broaden repair to the repository root.",
+    );
+    return 1;
+  }
   // Validate every parent before modifying any detected link or its local owner.
   // unlink removes only the link; it cannot recursively delete its target.
   const binTargets = first.brokenBinLinks.map((finding) => {

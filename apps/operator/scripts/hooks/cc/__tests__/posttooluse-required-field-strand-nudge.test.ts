@@ -35,8 +35,17 @@ describe('P-037 merged interface consequence collector', () => {
   it.each([
     ['export function f(a: string) { return a; }', 'export function f(a: number) { return a; }', 'signature f'],
     ['export function f() { return { x: 1 }; }', 'export function f() { return { y: 1 }; }', 'returned fields f'],
+    ['export class C { result() { return { x: 1 }; } }', 'export class C { result() { return { y: 1 }; } }', 'returned fields C.result'],
+    ['export class C { get result() { return { x: 1 }; } }', 'export class C { get result() { return { y: 1 }; } }', 'returned fields C.result'],
     ['export const f = () => ({ x: 1 });', 'export const f = () => ({ y: 1 });', 'returned fields f'],
     ['export const t = defineTool({ name: "t", parameters: { x: "string" } });', 'export const t = defineTool({ name: "t", parameters: { x: "number" } });', 'registered tool'],
+    ['export const t = defineTool({ name: "t", argSchema: { x: "string" } });', 'export const t = defineTool({ name: "t", argSchema: { x: "number" } });', 'registered tool'],
+    ['export const t = defineTool({ name: "t" });', 'export const t = defineTool({ name: "t", argSchema: {} });', 'registered tool'],
+    ['export function f() { return null; }', 'export function f() { return { x: 1 }; }', 'returned fields f'],
+    ['export const f = () => null;', 'export const f = () => ({ x: 1 } as const);', 'returned fields f'],
+    ['export function f() { return { x: 1 }; }', 'export function f() { return null; }', 'returned fields f'],
+    ['', 'export function f(a: string) { return a; }', 'signature f'],
+    ['export function f(a: string) { return a; }', '', 'signature f'],
     ['export interface R { x: string }', 'export interface R { x: string; y: number }', 'required R.y'],
   ])('detects the actual %s -> %s change', async (before, after, expected) => {
     const result = await collect(before, after);
@@ -50,6 +59,14 @@ describe('P-037 merged interface consequence collector', () => {
     expect(result?.changes).toContain('required R.y');
     expect(result?.changes).toContain('behavioural strand risk');
     expect(result?.checks).toHaveLength(2);
+  });
+  it('ignores an inner callback return and formatting-only return edits', async () => {
+    expect(await collect('export class C { private result() { return { a: 1 }; } }',
+      'export class C { private result() { return { b: 1 }; } }')).toBeNull();
+    expect(await collect('export function f() { const x = () => ({ a: 1 }); return null; }',
+      'export function f() { const x = () => ({ b: 1 }); return null; }')).toBeNull();
+    expect(await collect('export function f() { return { a: 1 }; }',
+      'export function f() { return { /* note */ a: 1 }; }')).toBeNull();
   });
 });
 

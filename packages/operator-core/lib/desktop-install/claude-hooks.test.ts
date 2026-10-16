@@ -158,8 +158,6 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-write-byte-integrity-guard.mjs`,
       `${DEST}/posttooluse-su-instance-override-reseed.mjs`,
       `${DEST}/workitem-verify-nudge.sh`,
-      `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
-      `${DEST}/posttooluse-behavioural-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
       `${DEST}/posttooluse-mdx-nudge.mjs`,
       `${DEST}/posttooluse-launch-prose-budget-nudge.mjs`,
@@ -196,11 +194,11 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // hook, so the strand nudge itself had no assertion at all. Both happen to carry the same
     // matcher, which is why the mislabel stayed green — the by-name form makes the gap visible.
     expect(postMatcherOf('workitem-verify-nudge.sh')).toBe('Edit|Write|MultiEdit');
-    expect(postMatcherOf('posttooluse-required-field-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-required-field-strand-nudge.mjs')).toBeUndefined();
     // EI-20022235111425919 — the behavioural sibling. It shipped in hooks/cc unregistered,
     // so packaged installs copied an inert file; this assertion is what a re-orphaning would
     // have to get past, alongside orphaned-cc-hooks.test.ts's list sweep.
-    expect(postMatcherOf('posttooluse-behavioural-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    expect(postMatcherOf('posttooluse-behavioural-strand-nudge.mjs')).toBeUndefined();
     expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe(MDX_NUDGE_MATCHER);
     const launchProseMatcher = new RegExp(postMatcherOf('posttooluse-launch-prose-budget-nudge.mjs')!);

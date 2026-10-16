@@ -61,6 +61,13 @@ describe('shared snapshot-backed push channel', () => {
     const injected = editCall(); injected.interfaceEdit.checks = ['node scripts/check-required-field-strands.mjs ; arbitrary payload'];
     expect(snapshotInterfaceLeg({ ...input, calls: [injected] }, snap)[0].text).not.toContain('arbitrary payload');
   });
+  it('does not spend the edit bound on preceding reads and accepts native multi-file patches', () => {
+    const edit = editCall().interfaceEdit;
+    const calls = [0, 1, 2].map(() => ({ tool: 'Read', interfaceEdit: edit }));
+    calls.push({ tool: 'functions.apply_patch', interfaceEdits: [edit, { ...edit, path: 'lib/other.ts' }] } as any);
+    expect(snapshotInterfaceLeg({ ...input, calls }, snapshot()).map(f => f.citedPaths[0]))
+      .toEqual(['lib/target.ts', 'lib/other.ts']);
+  });
 
   it('indexes static dependencies only and refuses foreign, stale and future snapshots', () => {
     expect(snapshot().importers.get('lib/target.ts')).toEqual(['app/use.ts', 'lib/target.test.ts']);

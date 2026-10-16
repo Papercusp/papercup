@@ -314,7 +314,7 @@ describe('hosted auth route contract', () => {
     );
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/`);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/?utilityWelcome=1`);
     expect(bindIdentity).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: started.state,

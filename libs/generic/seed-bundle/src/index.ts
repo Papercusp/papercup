@@ -39,6 +39,9 @@ export {
   type SeedCutContext,
   type SeedCutOutput,
   type SeedRestoreContext,
+  type SeedRestorePhase,
+  type SeedRestorePhaseState,
+  type SeedRestorePhaseEvent,
   type VerifyResult,
 } from './registry';
 

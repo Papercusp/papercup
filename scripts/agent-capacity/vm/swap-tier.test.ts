@@ -172,14 +172,50 @@ describe('real Luna load and swap tuning', () => {
       'rows=[]',
       'm.sh=lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="1 101", stderr="")',
       'm.pane=lambda n: "native runtime failed to create a worker"',
-      'try: m.check_codex_terminal("a4", types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
-      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows}))',
+      'evidence=m.check_codex_terminal("a4", types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
+      'print(json.dumps({"evidence":evidence,"rows":rows}))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status).toBe(0);
     const receipt = JSON.parse(result.stdout);
-    expect(receipt.rows).toEqual([{ kind: 'startup-failed', agent: 'a4', state: '1 101', stderr: '', pane: 'native runtime failed to create a worker' }]);
-    expect(receipt.error).toContain('exited before readiness');
+    expect(receipt.rows).toEqual([{ kind: 'startup-failed', agent: 'a4', state: '1 101', stderr: '', pane: 'native runtime failed to create a worker', dead: true, inspectionFailed: false }]);
+    expect(receipt.evidence).toMatchObject({ agent: 'a4', dead: true, inspectionFailed: false, state: '1 101', pane: 'native runtime failed to create a worker' });
+  });
+
+  it('captures every failed pane plus remaining cohort evidence before aborting startup', () => {
+    const code = [
+      'import importlib.util, types, json, io',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'clock=[100.0]; rows=[]',
+      'm.os.makedirs=lambda *a, **kw: None',
+      'm.open=lambda p, mode="r", **kw: io.BytesIO(b"fixture") if "b" in mode else io.StringIO()',
+      'm.sh=lambda argv, **kw: (types.SimpleNamespace(returncode=0, stdout="1 101", stderr="") if "display-message" in argv and argv[argv.index("-t")+1] in ("a1","a2") else types.SimpleNamespace(returncode=0, stdout="0 0", stderr=""))',
+      'm.time.sleep=lambda seconds: clock.__setitem__(0, clock[0]+seconds)',
+      'm.time.time=lambda: clock[0]',
+      'm.LAUNCH_DELAY_SEC=0',
+      'm.pane=lambda name: "native worker creation failed" if name in ("a1","a2") else ("still booting" if name=="a3" else "READY")',
+      'm.codex_ready=lambda text, model: text=="READY"',
+      'm.sh=lambda argv, **kw: (commands.append(argv) or (types.SimpleNamespace(returncode=0, stdout="1 101", stderr="") if "display-message" in argv and argv[argv.index("-t")+1] in ("a1","a2") else types.SimpleNamespace(returncode=0, stdout="0 0", stderr="")))',
+      'commands=[]',
+      'try: m.start_codex_agents(4,"agent",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})),"gpt-6-luna","low","http://127.0.0.1:18788/v1","test-owner")',
+      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows,"clock":clock[0]}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.error).toContain('2 terminal(s) exited');
+    expect(receipt.error).toContain('Per-terminal status and pane evidence recorded');
+    expect(receipt.clock).toBeLessThan(110);
+    expect(receipt.rows.filter((row: any) => row.kind === 'startup-failed')).toEqual([
+      expect.objectContaining({ agent: 'a1', state: '1 101', pane: 'native worker creation failed', dead: true }),
+      expect.objectContaining({ agent: 'a2', state: '1 101', pane: 'native worker creation failed', dead: true }),
+    ]);
+    expect(receipt.rows).toContainEqual(expect.objectContaining({
+      kind: 'startup-aborted', agent: 'a3', state: '0 0', pane: 'still booting',
+      reason: 'sibling-terminal-failed-before-cohort-readiness',
+    }));
+    expect(receipt.rows.some((row: any) => row.kind === 'agents-started')).toBe(false);
   });
 
   const nativeOutcome = (rows: unknown[]) => py(DRIVER,
