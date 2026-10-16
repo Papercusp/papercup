@@ -599,16 +599,33 @@ export async function runCarryDrillDropSweepOnce(
     }
   }
   // Absence from an incremental scan (or an unreadable ledger's empty fallback)
-  // says nothing about recovery. Only the matching drill's later terminal delivery does.
+  // says nothing about recovery. A matching drill's later delivery does; so does
+  // a superseded retirement when it is the latest terminal history. The latter
+  // repairs one-shot conditions emitted by older watchdog versions, including
+  // retirements that predate this sweep's watermark. A later real failure keeps
+  // the condition open.
+  const nowMs = deps.now();
   for (const key of openKeys) {
     const attempt = carryAttempt(key, prefix);
     if (!attempt) continue;
     const [drillId, failedAt] = attempt;
-    const latest = events.filter((event) => event.drillId === drillId &&
-      ['carry-drill-carry-delivered', 'carry-drill-carry-dropped', 'carry-drill-respawn-failed'].includes(event.kind) &&
-      Date.parse(event.ts) >= Date.parse(failedAt) && Date.parse(event.ts) <= deps.now())
-      .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0];
-    if (latest?.kind === 'carry-drill-carry-delivered' && Date.parse(latest.ts) > Date.parse(failedAt)) {
+    const failedAtMs = Date.parse(failedAt);
+    const terminal = events.flatMap((event) => {
+      if (event.drillId !== drillId ||
+          !['carry-drill-carry-delivered', 'carry-drill-carry-dropped', 'carry-drill-respawn-failed'].includes(event.kind)) {
+        return [];
+      }
+      const ts = Date.parse(event.ts);
+      return Number.isFinite(ts) && ts >= failedAtMs && ts <= nowMs ? [{ event, ts }] : [];
+    });
+    if (terminal.length === 0) continue;
+    const latestTs = terminal.reduce((max, { ts }) => Math.max(max, ts), Number.NEGATIVE_INFINITY);
+    const latest = terminal.filter(({ ts }) => ts === latestTs);
+    const delivered = latestTs > failedAtMs &&
+      latest.every(({ event }) => event.kind === 'carry-drill-carry-delivered');
+    const retiredSuperseded = latestTs >= failedAtMs &&
+      latest.every(({ event }) => event.kind === 'carry-drill-carry-dropped' && event.reason === 'superseded');
+    if (delivered || retiredSuperseded) {
       await resolveAlarm(key, 'carry-drill-drop-watchdog', deps.rail);
     }
   }

@@ -801,9 +801,8 @@ const ROWS: Record<SocialPlatformId, SocialPlatformRow> = {
     label: 'Instagram',
     egress: {
       hostPolicy: 'fixed',
-      // INSTAGRAM_GRAPH_ORIGIN in instagram-common.ts. Instagram shares
-      // Facebook's Graph host — that is a fact about the vendor, not a copied
-      // constant, so both rows declare it independently.
+      // Instagram shares Facebook's Graph host — that is a fact about the
+      // vendor, not a copied constant, so both rows declare it independently.
       apiHosts: ['graph.facebook.com'],
       notes:
         'Instagram Platform is served by the Facebook Graph host. Declared on this row in its own right: if Instagram ever moves to graph.instagram.com, only this row changes.',

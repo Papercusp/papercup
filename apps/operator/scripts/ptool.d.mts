@@ -392,8 +392,16 @@ export function buildCallToolParams(toolName: string, callArgs: any, { outputSch
         'papercusp/servingGeneration'?: string;
     };
 };
-/** Require a catalog generation before dispatching a call through ptool. */
-export function requireServingGeneration(tool: any): string;
+/**
+ * Require a catalog generation before dispatching a call through ptool.
+ *
+ * `tools:find` is the catalog recovery tool itself. Keep it callable when a
+ * legacy `tools/list` response omits the generation marker so callers can
+ * discover whether the connected operator has the current contract. Every
+ * other named call remains blocked until its catalog entry supplies a
+ * generation that the operator can enforce.
+ */
+export function requireServingGeneration(tool: any): string | undefined;
 /**
  * Per-attempt handshake budget for one local MCP origin. Pure and exported so
  * the direct-vs-proxy distinction cannot silently collapse back to one number.

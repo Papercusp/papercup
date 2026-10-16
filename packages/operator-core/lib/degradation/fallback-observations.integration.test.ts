@@ -12,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { createTextCollector } from '../child-output.js';
+import { recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations, fallbackObservationCounters } =
@@ -61,6 +62,63 @@ describe('fallback observations — durable and readable across processes (real 
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('round-trips unknown, empty, known and mixed gate populations without losing run identity', async () => {
+    const writer = {
+      observeFallback: (mechanism: string, decision: Parameters<typeof observeFallback>[1], opts: Parameters<typeof observeFallback>[2]) =>
+        observeFallback(mechanism, decision, { ...opts, sql: db.adminSql }),
+      flushFallbackObservations,
+    };
+    const context = { runContext: 'green-checkpoint' as const, runGroupId: CORRELATION_ID, writer };
+    for (const scope of ['unknown', 'mixed']) {
+      expect(await recordGateReuseDecision(scope, { offReason: 'dirty-checkout' }, context)).toBe(true);
+    }
+    expect(await recordGateReuseDecision('empty', { summary: { candidates: 0, reused: 0 } }, context)).toBe(true);
+    for (const scope of ['known', 'mixed']) {
+      expect(await recordGateReuseDecision(scope, { summary: { candidates: 20, reused: 20 } }, context)).toBe(true);
+    }
+    const opts = { sql: db.adminSql, workspaceId: 'default', processTag: 'gate-reuse:green-checkpoint' };
+    expect(await readFallbackWindow('gate-pass-reuse', 60_000, opts)).toMatchObject({
+      samples: 5, eligible: 40, applied: 40, knownAppliedRate: 1,
+      unknownSamples: 2, populationComplete: false, appliedRate: null,
+    });
+    const scoped = await readFallbackWindowsByScope('gate-pass-reuse', 60_000, opts);
+    expect(scoped.map(({ scope, window: w }) => [scope, w.eligible, w.applied, w.knownAppliedRate, w.appliedRate, w.unknownSamples, w.populationComplete])).toEqual([
+      ['empty', 0, 0, null, null, 0, false],
+      ['known', 20, 20, 1, 1, 0, true],
+      ['mixed', 20, 20, 1, null, 1, false],
+      ['unknown', 0, 0, null, null, 1, false],
+    ]);
+    const rows = await db.adminSql`
+      SELECT scope, population_known, correlation_id::text AS correlation_id, process_tag
+      FROM harness_shared.fallback_observations WHERE mechanism = 'gate-pass-reuse'
+      ORDER BY scope, population_known`;
+    expect(rows.map((r) => ({ ...r }))).toEqual([
+      { scope: 'empty', population_known: true, correlation_id: CORRELATION_ID, process_tag: opts.processTag },
+      { scope: 'known', population_known: true, correlation_id: CORRELATION_ID, process_tag: opts.processTag },
+      { scope: 'mixed', population_known: false, correlation_id: CORRELATION_ID, process_tag: opts.processTag },
+      { scope: 'mixed', population_known: true, correlation_id: CORRELATION_ID, process_tag: opts.processTag },
+      { scope: 'unknown', population_known: false, correlation_id: CORRELATION_ID, process_tag: opts.processTag },
+    ]);
+  });
+
+  it('keeps historical zero-count gate observations unknown while explicit measured zero stays known', async () => {
+    await db.adminSql`
+      INSERT INTO harness_shared.fallback_observations
+        (workspace_id, mechanism, eligible, applied, reason, scope, population_known)
+      VALUES ('p008-legacy', 'gate-pass-reuse', 0, 0, 'no-candidates', 'legacy', NULL),
+             ('p008-legacy', 'gate-pass-reuse', 0, 0, 'no-candidates', 'measured', true),
+             ('p008-legacy', 'gate-pass-reuse', 20, 20, 'applied', 'legacy-positive', NULL)
+    `;
+    const opts = { sql: db.adminSql, workspaceId: 'p008-legacy' };
+    expect(await readFallbackWindow('gate-pass-reuse', 60_000, opts)).toMatchObject({
+      eligible: 20, applied: 20, unknownSamples: 1, knownAppliedRate: 1, appliedRate: null,
+    });
+    const scoped = await readFallbackWindowsByScope('gate-pass-reuse', 60_000, opts);
+    expect(scoped.map(({ scope, window }) => [scope, window.unknownSamples])).toEqual([
+      ['legacy', 1], ['legacy-positive', 0], ['measured', 0],
+    ]);
   });
 
   it('a decision recorded in a child process is returned by the trailing-window reader here', async () => {

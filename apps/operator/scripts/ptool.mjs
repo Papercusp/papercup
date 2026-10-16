@@ -1446,7 +1446,15 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
   };
 }
 
-/** Require a catalog generation before dispatching a call through ptool. */
+/**
+ * Require a catalog generation before dispatching a call through ptool.
+ *
+ * `tools:find` is the catalog recovery tool itself. Keep it callable when a
+ * legacy `tools/list` response omits the generation marker so callers can
+ * discover whether the connected operator has the current contract. Every
+ * other named call remains blocked until its catalog entry supplies a
+ * generation that the operator can enforce.
+ */
 export function requireServingGeneration(tool) {
   const servingGeneration = tool?._meta?.['papercusp/servingGeneration'];
   if (typeof servingGeneration === 'string' && servingGeneration.trim()) {
@@ -1454,6 +1462,8 @@ export function requireServingGeneration(tool) {
   }
 
   const toolName = typeof tool?.name === 'string' && tool.name.trim() ? tool.name.trim() : 'the requested tool';
+  if (toolName === 'tools:find') return undefined;
+
   throw new Error(
     `serving_generation_missing: ${toolName} was not dispatched because tools/list did not advertise a Papercusp ` +
       'serving generation. The connected operator may be an incompatible legacy release; reconnect to a current ' +

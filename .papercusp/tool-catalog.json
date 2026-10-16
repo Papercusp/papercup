@@ -24261,7 +24261,7 @@
           "POST"
         ]
       },
-      "description": "Unified diff between a plan revision and its immediate predecessor — sourced from the plan_revisions snapshot pair, not git. Returns a `react-diff-view`-parseable patch string. Seq 1 returns the file-against-empty creation diff.",
+      "description": "Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Returns a react-diff-view-parseable patch string. Seq 1 returns the file-against-empty creation diff.",
       "capabilities": [
         "plans:read"
       ],
@@ -24279,7 +24279,7 @@
       ],
       "guidance": {
         "when": "You have a revisionId from plans:revisions and want the patch — what exactly changed in that revision.",
-        "notWhen": "You want a coarse git patch — that is plans:diff. The revision chain — plans:revisions. The current plan body — plans:get.",
+        "notWhen": "You want the revision list — plans:revisions. You want the authoring conversation — plans:revision-transcript. You want the current plan body — plans:get.",
         "chaining": "plans:revisions → plans:revision-diff { revisionId } for any revision."
       }
     },
@@ -24321,7 +24321,7 @@
           "POST"
         ]
       },
-      "description": "The revision chain for a plan, newest-first — one row per recorded plans:* write: seq, author (agent|human), the rationale, the session that produced it, a +/- diff-stat vs the prior revision, and timestamp. The conversation-linked counterpart to plans:history (git commits). Empty chain when the plan has no recorded revisions yet.",
+      "description": "The PG-canonical revision chain for a plan, newest-first — one metadata row per recorded plans:* write: seq, author (agent|human), rationale, authoring session, diff-stat, and timestamp. Use plans:revision-diff for one revision patch and plans:revision-transcript for its authoring conversation. This list does not include full historical snapshots.",
       "capabilities": [
         "plans:read"
       ],
@@ -24340,7 +24340,7 @@
       ],
       "guidance": {
         "when": "You need a plan's edit history with the *why* — what changed at each revision and the rationale behind it. The basis of the Revisions panel and of the context an agent launched from the plan is seeded with.",
-        "notWhen": "You want raw git commit history of the file — that is plans:history. The current plan body — plans:get.",
+        "notWhen": "You want a single revision patch — plans:revision-diff. You want the authoring conversation — plans:revision-transcript. You want the current plan body — plans:get. This list is metadata only.",
         "chaining": "plans:revisions → plans:revision-diff for one revision patch, or plans:revision-transcript for the conversation behind a revision."
       }
     },

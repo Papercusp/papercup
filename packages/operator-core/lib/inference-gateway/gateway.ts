@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
 import type { DirectOperationModelAttestation } from '../blueprint/operation-service';
 import { PassThrough, Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
 import {
@@ -4636,6 +4637,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   ): void {
     let buf = '';
     let done = false;
+    const decoder = new StringDecoder('utf8');
+    const decodeChunk = (chunk: Buffer | string): string => typeof chunk === 'string' ? chunk : decoder.write(chunk);
     // P-009: output tokens are only known at the END of a stream (the closing `message_delta` carries the
     // cumulative count), so after `message_start` a line-split watcher keeps reading — O(chunk) per chunk,
     // never buffering the body — and the LAST count seen is tallied once when the stream ends.
@@ -4643,7 +4646,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let outputTokens: number | null = null;
     let settled = false;
     const onDelta = (chunk: Buffer | string) => {
-      const lines = (lineCarry + chunk.toString()).split('\n');
+      const lines = (lineCarry + decodeChunk(chunk)).split('\n');
       lineCarry = lines.pop() ?? '';
       // A giant unterminated line is a content delta, never the small message_delta event.
       if (lineCarry.length > 65_536) lineCarry = '';
@@ -4661,15 +4664,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (settled || !billedClass) return;
       settled = true;
       stream.off('data', onDelta);
+      lineCarry += decoder.end();
       if (lineCarry) onDelta('\n');
       if (outputTokens === null) return;
       const t = billingTally(accountId, billedClass);
       t.outputTokens += outputTokens;
       t.outputKnown++;
     };
-    const onData = (chunk: Buffer) => {
+    const onData = (chunk: Buffer | string) => {
       if (done) return;
-      buf += chunk.toString('utf8');
+      buf += decodeChunk(chunk);
       const m = buf.match(/^data: (\{"type":"message_start".*\})$/m);
       if (m) {
         done = true;

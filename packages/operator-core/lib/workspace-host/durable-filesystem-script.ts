@@ -1,5 +1,5 @@
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
-import { renderDurableDataProbeCore, renderDurableTenantGuardCore, renderDurableStorageQuotaCore } from './aws-host-bootstrap-push-core.mjs';
+import { renderDurableDataProbeCore, renderDurableTenantGuardCore, renderDurableStorageQuotaCore, renderDurableToolPrerequisiteCore } from './aws-host-bootstrap-push-core.mjs';
 
 /**
  * Where a workspace host's durable data disk is mounted, on every provider. The host bootstrap
@@ -48,6 +48,7 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
   return [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
+    ...renderDurableToolPrerequisiteCore(),
     `data_device='${input.devicePath}'`,
     `data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`,
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,

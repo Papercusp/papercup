@@ -1,10 +1,11 @@
 /**
  * Concerns shared by the Threads adapters — P-018.
  *
- * WHY THIS IS NOT `instagram-common.ts` WITH A DIFFERENT HOST, even though both
- * sit under one Meta app identity and one review. Every structural similarity
- * here is superficial, and each of the four facts below would produce an
- * adapter that passes every test and is wrong against the live API:
+ * WHY THE THREADS GRAPH API IS NOT INSTAGRAM'S GRAPH API WITH A DIFFERENT HOST,
+ * even though both sit under one Meta app identity and one review. Every
+ * structural similarity here is superficial, and each of the four facts below
+ * would produce an adapter that passes every test and is wrong against the
+ * live API:
  *
  *  - THE HOST IS A THIRD ONE. `graph.threads.net` at `v1.0` — not
  *    `graph.facebook.com` (Pages, and Instagram's Facebook-Login flavor) and

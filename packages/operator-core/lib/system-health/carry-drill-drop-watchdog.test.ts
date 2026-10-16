@@ -460,6 +460,10 @@ describe('runOrphanedRespawnSweepOnce (WI-10001537)', () => {
 });
 
 describe('carry-delivery condition rail', () => {
+  function drillConditionKey(drillId: string, ts: string): string {
+    return `alarm:carry-delivery:${encodeURIComponent('fixture-host')}:drill:${encodeURIComponent(JSON.stringify([drillId, ts]))}`;
+  }
+
   function fixture() {
     const open = new Set<string>();
     const broadcast = vi.fn(async (event: { conditionKey?: string; oneShot?: boolean }) => {
@@ -494,6 +498,38 @@ describe('carry-delivery condition rail', () => {
     expect(open.size).toBe(1);
     await runCarryDrillDropSweepOnce(T0 + 3_000, { ...deps, readLedger: async () => [success], escalate });
     expect(open.size).toBe(0);
+  });
+
+  it('resolves a legacy superseded condition from pre-watermark history but keeps it open after a later real drop', async () => {
+    const superseded = drop('retired-drill', 1_000, 'superseded');
+    const { deps, open, resolve } = fixture();
+    const supersededKey = drillConditionKey('retired-drill', superseded.ts);
+    // This one-shot key could only have been emitted by an older watchdog; the
+    // superseded row itself is at the key timestamp and predates the watermark.
+    open.add(supersededKey);
+    await runCarryDrillDropSweepOnce(T0 + 5_000, {
+      ...deps, readLedger: async () => [superseded], escalate: async () => {},
+    });
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ conditionKey: supersededKey }));
+    expect(open.has(supersededKey)).toBe(false);
+
+    const negative = fixture();
+    const initialFailure = drop('later-failure-drill', 1_000);
+    const initialKey = drillConditionKey('later-failure-drill', initialFailure.ts);
+    await runCarryDrillDropSweepOnce(T0, {
+      ...negative.deps, readLedger: async () => [initialFailure], escalate: async () => {},
+    });
+    expect(negative.open.has(initialKey)).toBe(true);
+
+    const laterRetirement = drop('later-failure-drill', 2_000, 'superseded');
+    const laterFailure = drop('later-failure-drill', 3_000);
+    await runCarryDrillDropSweepOnce(T0 + 5_000, {
+      ...negative.deps,
+      readLedger: async () => [initialFailure, laterRetirement, laterFailure],
+      escalate: async () => {},
+    });
+    expect(negative.resolve).not.toHaveBeenCalledWith(expect.objectContaining({ conditionKey: initialKey }));
+    expect(negative.open.has(initialKey)).toBe(true);
   });
 
   it('keeps the drill watermark for a failed broadcast and still runs legacy delivery', async () => {

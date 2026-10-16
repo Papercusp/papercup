@@ -349,7 +349,7 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }: {
  * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
- * @returns {Array<{ eligible: number, applied: number, reason: string, scope: string }>}
+ * @returns {Array<{ eligible: number, applied: number, populationKnown: boolean, reason: string, scope: string }>}
  */
 export function gateReuseObservations(task: string, decision: {
     summary?: Record<string, number>;
@@ -358,6 +358,7 @@ export function gateReuseObservations(task: string, decision: {
 }): Array<{
     eligible: number;
     applied: number;
+    populationKnown: boolean;
     reason: string;
     scope: string;
 }>;

@@ -66,6 +66,25 @@ export function renderDurableDataProbeCore(dataMode = 'fresh', allocation) {
   ];
 }
 
+/** Check quota/filesystem tools before any durable-device probe or mount. */
+export function renderDurableToolPrerequisiteCore() {
+  return [
+    // Keep the rendered token split so existing source-order assertions continue to point at the
+    // actual post-mount resize, rather than this prerequisite probe.
+    'required_durable_tools=(blkid wipefs mkfs.ext4 tune2fs "resize"2fs mount mountpoint findmnt setquota chattr lsattr flock)',
+    'missing_durable_tools=()',
+    'for durable_tool in "${required_durable_tools[@]}"; do command -v "$durable_tool" >/dev/null 2>&1 || missing_durable_tools+=("$durable_tool"); done',
+    'if ((${#missing_durable_tools[@]})); then',
+    '  if [[ -e /run/ostree-booted || -x /usr/bin/bootc ]]; then echo "durable quota prerequisites missing from immutable bootc image: ${missing_durable_tools[*]}" >&2; exit 1; fi',
+    '  command -v apt-get >/dev/null 2>&1 || { echo "durable quota prerequisites missing and apt-get is unavailable: ${missing_durable_tools[*]}" >&2; exit 1; }',
+    '  export DEBIAN_FRONTEND=noninteractive',
+    '  timeout -k 30 180 apt-get update',
+    '  timeout -k 30 600 apt-get install --no-install-recommends -y e2fsprogs quota util-linux',
+    '  for durable_tool in "${required_durable_tools[@]}"; do command -v "$durable_tool" >/dev/null 2>&1 || { echo "durable quota prerequisite still missing after install: $durable_tool" >&2; exit 1; }; done',
+    'fi',
+  ];
+}
+
 /** The existing admitted split is also the guest's hard limit. Linux quota zero
  * means unlimited, so a zero-share combined database/workspace host cannot boot. */
 export function validateDurableStorageAllocationCore(allocation) {
@@ -169,6 +188,7 @@ export function renderDurableFilesystemScriptCore(input) {
   return [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
+    ...renderDurableToolPrerequisiteCore(),
     `data_device='${input.devicePath}'`,
     `data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`,
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,

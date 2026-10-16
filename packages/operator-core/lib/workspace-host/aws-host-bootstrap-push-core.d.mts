@@ -36,6 +36,7 @@ export declare function awsEbsNvmeDevicePathCore(volumeId: string): string;
 export declare function workspaceHostDurableTenantIdentity(workspaceId: string, customerWorkspaceId: string): string;
 export declare function renderDurableTenantGuardCore(tenantIdentity?: string): string[];
 export declare function renderDurableDataProbeCore(dataMode?: 'fresh' | 'existing', allocation?: DurableFilesystemScriptCoreInput['allocation']): string[];
+export declare function renderDurableToolPrerequisiteCore(): string[];
 export declare function validateDurableStorageAllocationCore(allocation?: DurableFilesystemScriptCoreInput['allocation']): void;
 export declare function renderDurableStorageQuotaCore(allocation?: DurableFilesystemScriptCoreInput['allocation'], tenantIdentity?: string): string[];
 export declare function renderDurableFilesystemScriptCore(input: DurableFilesystemScriptCoreInput): string;

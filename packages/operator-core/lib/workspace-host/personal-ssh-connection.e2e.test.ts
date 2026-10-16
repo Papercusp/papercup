@@ -34,8 +34,10 @@ async function ssh(command: string, args: string[]) {
   return new Promise<{ code: number | null; signal: string | null; output: string }>((resolve, reject) => {
     const child = spawn(command, ['-F', config, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
-    child.stdout.on('data', data => { output += String(data); });
-    child.stderr.on('data', data => { output += String(data); });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (data: string) => { output += data; });
+    child.stderr.on('data', (data: string) => { output += data; });
     const timeout = setTimeout(() => child.kill('SIGTERM'), 20_000);
     child.on('error', error => { clearTimeout(timeout); reject(error); });
     child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, output }); });

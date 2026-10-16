@@ -17,8 +17,9 @@
  * shape for the wave-B gate. So a module's platforms come from the markers the
  * code itself carries — `readonly platformId` on a read adapter, `platform:` /
  * `readonly platform` on a write adapter — and a shared module inherits the
- * platforms of the modules that IMPORT it. `instagram-common.ts` is therefore
- * Instagram's because its adapters import it, not because of its name.
+ * platforms of the modules that import it. The assertion below pins that rule
+ * to an active shared module; a registry row alone does not imply that a source
+ * adapter exists in this directory.
  *
  * IT MUST NOT PASS VACUOUSLY. A guard whose job is to notice an absence reports
  * a fully-compliant tree and a broken scanner identically. So it asserts a
@@ -56,7 +57,7 @@ const MARKERS = [
   /\bplatform:\s*'([a-z0-9-]+)'/g,
 ];
 
-/** Local sibling imports, e.g. `from './instagram-common'`. */
+/** Local sibling imports between modules in this directory. */
 const LOCAL_IMPORT = /from\s+'\.\/([a-zA-Z0-9._-]+)'/g;
 
 /** Every `scheme://host` literal left after comments are removed. */
@@ -175,19 +176,16 @@ describe('the scan is measuring something', () => {
     expect([...EXEMPT]).toEqual(['platform-registry.ts']);
   });
 
-  it('attributes the shared modules through imports rather than filenames', () => {
-    // These shared modules carry API-origin constants and declare no
-    // platform marker of their own. If import propagation broke, they would go
-    // unattributed and the gate would report that rather than silently pass.
+  it('attributes the active shared Threads module through its import', () => {
+    // threads-common carries the Threads API origin and declares no platform
+    // marker of its own. It must inherit attribution from its adapter import.
     const platformsOf = (file: string) =>
       [...(MODULES.find((m) => m.file === file)?.platforms ?? [])].sort();
-    expect(platformsOf('instagram-common.ts')).toEqual(['instagram']);
     expect(platformsOf('threads-common.ts')).toEqual(['threads']);
   });
 
-  it('is looking at the origin constants it exists to police', () => {
+  it('is looking at a current API origin it exists to police', () => {
     const hostsIn = (file: string) => hostLiterals(MODULES.find((m) => m.file === file)?.code ?? '');
-    expect(hostsIn('instagram-common.ts')).toContain('graph.facebook.com');
     expect(hostsIn('threads-common.ts')).toContain('graph.threads.net');
   });
 });
