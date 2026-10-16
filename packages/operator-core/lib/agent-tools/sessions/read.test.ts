@@ -25,6 +25,19 @@ const readArchivedSessionTurns = vi.hoisted(() => vi.fn(async () => null as null
   }>;
   errors: Array<{ path: string; error: string }>;
 }));
+const readLiveSessionTurns = vi.hoisted(() => vi.fn(async () => null as null | {
+  sourceKind: string;
+  owner: string | null;
+  turns: Array<{
+    source_kind: string;
+    turn_idx: number;
+    speaker: string;
+    owner: string | null;
+    ts: string | null;
+    text: string;
+  }>;
+  errors: Array<{ path: string; error: string }>;
+}));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-self', ownerLabel: 'su · self' })),
@@ -45,6 +58,7 @@ vi.mock('../search/filters', () => ({
 // archive reader's behavior is covered by its own injected-store tests.
 vi.mock('../../session-archive-read', () => ({
   readArchivedSessionTurns,
+  readLiveSessionTurns,
 }));
 
 const readModule = await import('./read');
@@ -342,6 +356,72 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       source_completeness: 'unknown',
       readMore: { tool: 'sessions:read', args: { ref, text_offset: 1_500, text_limit: 1_500 } },
     });
+  });
+
+  it("recovers a capped live self turn from the current source before archive fallback", async () => {
+    resolveSearchFilters.mockResolvedValueOnce({
+      filters: { owners: ['su-self'] },
+      selfSession: {
+        sourceKind: 'codex',
+        sessionId: 'sess-live-self',
+        filePath: '/managed/sess-live-self.jsonl',
+      },
+    });
+    const fullText = 'live-source '.repeat(900);
+    readLiveSessionTurns.mockReset();
+    readLiveSessionTurns.mockResolvedValue({
+      sourceKind: 'codex',
+      owner: 'su-self',
+      turns: [{
+        source_kind: 'codex',
+        turn_idx: 3,
+        speaker: 'assistant',
+        owner: 'su-self',
+        ts: null,
+        text: fullText,
+      }],
+      errors: [],
+    });
+    readArchivedSessionTurns.mockReset();
+    readArchivedSessionTurns.mockResolvedValue(null);
+    const indexed = fullText.slice(0, 8_000);
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'self', from_idx: 3, to_idx: 3, text_limit: 4_000 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-live-self-capped-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
+        tx: makeTx([{
+          source_kind: 'codex', session_id: 'sess-live-self', turn_idx: 3,
+          speaker: 'assistant', owner: 'su-self', ts: null,
+          text: indexed, text_full_chars: 8_000, text_offset: 0,
+        }]),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(readLiveSessionTurns).toHaveBeenCalledWith(
+      '/managed/sess-live-self.jsonl',
+      'codex',
+      'su-self',
+      { fullSource: true, turnIndices: [3] },
+    );
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      ok: true,
+      turn_count: 1,
+      turns: [{
+        text: fullText.slice(0, 4_000),
+        text_full_chars: fullText.length,
+        source_completeness: 'complete',
+        text_truncated: true,
+        readMore: { args: { text_offset: 4_000, text_limit: 4_000 } },
+      }],
+    });
+    expect(readArchivedSessionTurns).not.toHaveBeenCalled();
   });
 
   it('casts text-window bounds before PostgreSQL resolves substring overloads', async () => {

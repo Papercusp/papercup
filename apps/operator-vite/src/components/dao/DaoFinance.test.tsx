@@ -1,14 +1,47 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DaoFinance from './DaoFinance';
+import { captureWorkbenchResponses } from '../../../../../scripts/lib/dao-workbench-controls.mts';
 const view = { directoryId: 'dao', localHomeSlug: 'local-home', status: 'connected' as const };
 const account = { ok: true, policyVersion: 7, bindings: {}, wallet: { ok: true, value: { binding: { walletAddress: '0x' + '4'.repeat(40), chainId: 1 } } },
   equity: { status: 'ready', value: { issuedShares: '42', reservedShares: '5', blockNumber: '123', governanceBound: true, supplyInvariant: true } }, treasury: { status: 'not-bound' }, commerce: { status: 'not-bound' },
   actions: [{ contract: 'PapercuspEquity', name: 'requestRecovery', inputs: [{ name: 'memberId', type: 'uint256' }, { name: 'replacement', type: 'address' }] }] };
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (window as any).__DAO_HR_CAPTURE__; delete (window as any).__DAO_HR_RESPONSE__; });
 describe('DAO finance actions', () => {
+  it('retains wallet verification evidence after the automatic account refresh overwrites the last response', async () => {
+    const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      return Response.json(path.includes('/policy') ? { ok: true, canEdit: false, policy: null }
+        : body.op === 'wallet-challenge' ? { ok: true, value: { challengeId: 'challenge', message: 'Sign this exact challenge' } }
+        : body.op === 'wallet-verify' ? { ok: true, value: { bound: true } } : account);
+    });
+    // Reproduce the native observer's former single-slot behavior on the same requests.
+    vi.stubGlobal('fetch', async (path: string, init?: RequestInit) => {
+      const result = await fetcher(path, init);
+      if (init?.method === 'POST') (window as any).__DAO_HR_RESPONSE__ = {
+        op: JSON.parse(String(init.body)).op, status: result.status, body: await result.clone().json(),
+      };
+      return result;
+    });
+    const install = () => new Function('window', 'return ' + captureWorkbenchResponses())(window);
+    install(); const observer = window.fetch; install(); expect(window.fetch).toBe(observer);
+    render(<DaoFinance view={view} section="ownership" />); await screen.findByText('42');
+    fireEvent.change(screen.getByLabelText('Wallet address'), { target: { value: '0x' + '5'.repeat(40) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Request wallet signing challenge' }));
+    await screen.findByText('Sign this exact challenge');
+    fireEvent.change(screen.getByLabelText('Wallet signature'), { target: { value: '0x' + '1'.repeat(130) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify wallet signature' }));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'inspect')).toHaveLength(2));
+    await screen.findByText('42');
+    expect((window as any).__DAO_HR_RESPONSE__.op).toBe('inspect');
+    expect((window as any).__DAO_HR_CAPTURE__.responses['wallet-verify']).toMatchObject({
+      op: 'wallet-verify', status: 200, body: { ok: true, value: { bound: true } },
+    });
+    expect(fetcher.mock.calls.filter(([, init]) => init?.body && JSON.parse(String(init.body)).op === 'wallet-verify')).toHaveLength(1);
+    install(); expect((window as any).__DAO_HR_CAPTURE__.responses).toEqual({});
+  });
   it('uses the reviewed policy version for unsigned preparation and never sends a wallet transaction', async () => {
     const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : {};
