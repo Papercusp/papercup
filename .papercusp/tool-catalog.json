@@ -3320,7 +3320,7 @@
       "guidance": {
         "when": "A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.",
         "notWhen": "For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.",
-        "chaining": "Use op:\"isAncestor\" with two full SHAs, or op:\"readFileAtCommit\" with a full SHA and repository-relative path. Paths below a submodule follow the child commit pinned by each parent gitlink; the result reports resolved.repositoryPath, resolved.commitSha, and resolved.blobSha while commitSha remains the requested superproject commit. When a binding measurement pins a nested repository HEAD directly, pass its path as repositoryPath and use the child-relative file path and commit; the nested repository must resolve inside the selected root. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:\"base64\", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null."
+        "chaining": "op:\"isAncestor\" takes two full SHAs; op:\"readFileAtCommit\" takes a full SHA and a repository-relative path. Paths below a submodule follow each parent gitlink; resolved.{repositoryPath, commitSha, blobSha} name what was read while commitSha stays the requested superproject commit. If a binding pins a nested repository HEAD, pass that path as repositoryPath (it must resolve inside the selected root) with the child-relative path and commit. External test checkout: copy rootHarnessSlug from the cited binding measurement. Omit byte_offset/byte_limit for a whole file: blobs up to 128 KiB return {bytes, content} in one call. Larger blobs or deliberate pages return base64 {byte_offset, byte_length, total_bytes, eof, data, next_cursor} with no content; decode data, follow next_cursor.args unchanged, and stop only at eof:true with next_cursor null."
       }
     },
     {
@@ -14124,7 +14124,7 @@
           "POST"
         ]
       },
-      "description": "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin + owner-filtered recent routing decisions explaining why each account was picked. Optional `from` (inclusive) and `to` (exclusive) epoch-millisecond bounds plus `limit` filter the durable per-request `requestOutcomes` rows (retained for 14 days across gateway restarts). Without `agent`: the top ~25 owners ranked by bad outcomes plus the bounded all-owner routing-quality snapshot. `routingQuality` measures true upstream HTTP 429s per logical initial pick, automatic pick-vs-best-available divergence, and explicit/affinity pin-yield frequency; intentional pins are labeled and excluded from automatic-divergence counts. In-memory counters are since the last gateway restart.",
+      "description": "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent`: that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events}, last-routed account, live pin, and owner-filtered routing decisions explaining each pick; `from`/`to`/`limit` filter the durable `requestOutcomes` rows (kept 14 days across restarts). Without `agent`: the top ~25 owners by bad outcomes plus the all-owner `routingQuality` snapshot (true upstream 429s per initial pick, pick-vs-best divergence, pin-yield frequency; intentional pins are excluded from divergence). In-memory counters reset on gateway restart.",
       "capabilities": [
         "harness:read"
       ],
@@ -14149,7 +14149,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Pass `from`/`to` to inspect a historical time window from durable per-request outcomes after a gateway restart. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
+        "when": "An agent reports API errors or slow turns and you need the gateway's view of it: what it got (429, shed, stall, pin yield), on which account, when; `from`/`to` reach a historical window after a restart. Also fleet-wide triage (no args) after an error storm, or confirming an accounts:pin took effect before re-pinning.",
         "notWhen": "Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.",
         "chaining": "gateway:owner_report { agent, from, to, limit } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom."
       }
@@ -23180,7 +23180,7 @@
           "POST"
         ]
       },
-      "description": "Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs and must contain exact persisted evidence_ref values returned by plans:get-spec-evidence; underlying test-run table IDs (for example, test_runs:<id>) are not necessarily binding refs. For a test-run-based cohort, use workItemIds + specIds or read the bound evidence refs first. bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Historical scorecardId detail:\"full\" requires exactly one criteria value so the response can include that criterion’s exact evidence without returning the full evidence matrix. Check ok and rows.length before indexing.",
+      "description": "Grade affected current spec revisions against the reusable spec-test-adequacy rubric; read-only, never files a verdict. Resolves exact P-005 evidence bindings into per-clause verdicts with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. evidenceRefs must be exact evidence_ref values from plans:get-spec-evidence (a test_runs:<id> is not necessarily one); for a test-run cohort use workItemIds + specIds. bindingIds pins exact rows. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. scorecardId + slug replays a card as of its creation (historicalAuditOnly, never a current ship-read); with detail:\"full\" it needs exactly one criteria value.",
       "capabilities": [
         "plans:read"
       ],
@@ -30912,7 +30912,7 @@
           "POST"
         ]
       },
-      "description": "Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted. For spec-test-adequacy cards, direct rerunRecipe.args measure current evidence freshness; scorecardId replay reconstructs the creation-time grading for an audit.",
+      "description": "Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead. Follow cursors, concatenate exact JSON chunks, and parse only when complete: an incomplete page or index is not missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. History-only payload is omitted.",
       "capabilities": [
         "coord:read"
       ],
@@ -30939,9 +30939,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias. For grade-the-grader comparison of a spec-test-adequacy card, call plans:evaluate-spec-test-adequacy with its harness, slug, and scorecardId: issueId to reproduce the emission-time ratings.",
-        "notWhen": "Use the stored rerunRecipe.args when checking current evidence freshness; that live remeasurement may differ from the emitted rating after evidence changes. Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.",
-        "chaining": "Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For a spec-test-adequacy grading audit, call plans:evaluate-spec-test-adequacy with { harness, slug, scorecardId: issueId } and no direct selectors; compare rows[].ratings to the card and confirm historicalAuditOnly.asOf matches the card creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last."
+        "when": "Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.",
+        "notWhen": "Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.",
+        "chaining": "Spec-test-adequacy audit: call plans:evaluate-spec-test-adequacy { harness, slug, scorecardId: issueId } with no direct selectors, compare rows[].ratings to the card, and confirm historicalAuditOnly.asOf matches its creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read first. Emit the grading-integrity audit last."
       }
     },
     {
@@ -35610,7 +35610,7 @@
           "POST"
         ]
       },
-      "description": "Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.",
+      "description": "Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Batch reads also include a per-requested-ID receipt. Read `returns` for conditional warnings.",
       "capabilities": [
         "work_items:read"
       ],
