@@ -2021,6 +2021,57 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
   });
 
+  describe('explicit shared-run scenario case associations', () => {
+    const testPath = 'packages/operator-core/lib/dao-hr/hiring.integration.test.ts';
+    const cases = ['hiring requirements > missing offer amount is refused', 'hiring requirements > missing currency is refused'];
+    const targets = ['missing-amount', 'missing-currency'];
+    const scenarioClause = () => clause({ falsifier: { observation: 'An incomplete offer is accepted.', requiredScenarios: targets } });
+    const mutationFor = (index: number, testCases: string[]) => negativeEvidence({
+      id: 40101 + index,
+      evidenceKind: 'mutation',
+      evidenceRef: 'test-run 21169434 mutation-probe mutant fail hiring.integration.test.ts',
+      testRunId: 21169434,
+      testRunProvenance: {
+        filePath: testPath, commitSha: 'abc123', worktreeDirty: false,
+        source: 'mutation-probe', mutationPhase: 'mutant', mutationFailedCaseTitles: cases,
+      },
+      details: { adequacy: { targeted: targets[index], scenarioIds: [targets[index]], testCases,
+        outcome: 'caught', collected: true, skipped: false, executed: true } },
+    });
+    const evaluate = (mutations: SpecEvidenceForAdequacy[]) => evaluateSpecTestAdequacy({
+      clause: scenarioClause(), evidence: [successfulTestBinding(testPath, { testCases: cases }), ...mutations],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    it('keeps declared case and scenario metadata confined to each mutation target', () => {
+      const rows = activeSpecEvidence(targets.map((_, index) => mutationFor(index, [cases[index]!])));
+      expect(rows.map(row => row.details.adequacy)).toEqual(targets.map((target, index) => expect.objectContaining({
+        targeted: target, scenarioIds: [target], testCases: [cases[index]],
+      })));
+    });
+
+    it('credits exact declared colon-free cases with measured failures and passing baselines', () => {
+      const result = evaluate(targets.map((_, index) => mutationFor(index, [cases[index]!])));
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('id=40101');
+      expect(result.ratings.falsifiability.evidence).toContain('id=40102');
+    });
+
+    it('refuses a measured case declared for different targets on the shared run', () => {
+      const result = evaluate([mutationFor(0, [cases[0]!]), mutationFor(1, [cases[0]!])]);
+      expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+
+    it.each(['unmeasured', 'off-scenario', 'missing-baseline'] as const)('refuses an explicit %s association', mode => {
+      const rows = targets.map((_, index) => mutationFor(index, [cases[index]!]));
+      if (mode === 'unmeasured') rows.forEach(row => { row.testRunProvenance!.mutationFailedCaseTitles = ['another failed case']; });
+      if (mode === 'off-scenario') rows.forEach(row => { (row.details.adequacy as Record<string, unknown>).targeted = 'unregistered'; });
+      const baseline = successfulTestBinding(testPath, { testCases: mode === 'missing-baseline' ? ['another passing case'] : cases });
+      const result = evaluateSpecTestAdequacy({ clause: scenarioClause(), evidence: [baseline, ...rows], classRef: 'plan-class-feature-ship' });
+      expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+  });
+
   it('preserves same-run mutation targets and credits only the measured scenario case', () => {
     const testPath = 'packages/operator-core/lib/dao-hr/work-profile.integration.test.ts';
     const evidenceRef = 'test-run 21094686 mutation-probe mutant fail packages/operator-core/lib/dao-hr/work-profile.integration.test.ts @484a585cc8a6+dirty';

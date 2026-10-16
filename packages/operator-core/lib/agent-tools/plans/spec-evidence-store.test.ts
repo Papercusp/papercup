@@ -74,6 +74,7 @@ import {
   type ListSpecEvidenceDiagnostics,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
+  measureAndPinRepoFilesEvidenceAtCommitForScope,
   measureRepoFilesEvidenceDetailedAtRoot,
   measureRepoFilesEvidenceDetailedAtCommit,
   measureCompletedTestRuntime,
@@ -838,7 +839,7 @@ describe('repo-backed server measurement', () => {
     const fingerprint = 'sha256-native-storage-environment-v1:' + 'a'.repeat(64);
     const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
       sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'],
-      nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY };
+      nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY } satisfies Parameters<typeof measureAndPinEvidenceForScope>[2];
     try {
       native.mockResolvedValue(fingerprint);
       const bound = await measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe);
@@ -872,6 +873,17 @@ describe('repo-backed server measurement', () => {
       { nativeInstrumentKey: 'unregistered:fake' }]) {
       expect(evidenceMeasurementSchema.safeParse({ ...base, ...extra }).success).toBe(false);
     }
+  });
+
+  it('refuses to restamp a historical test commit with a native observation taken now', async () => {
+    const native = vi.spyOn(coldEnvironment, 'measureNativeColdEnvironment');
+    try {
+      await expect(measureAndPinRepoFilesEvidenceAtCommitForScope('workspace-test', 'papercusp', {
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'],
+        nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY,
+      }, { commitSha: 'a'.repeat(40), repoPrefix: null })).rejects.toThrow('cannot certify a historical test commit');
+      expect(native).not.toHaveBeenCalled();
+    } finally { native.mockRestore(); }
   });
 
   it('includes globbed source changes, additions, and removals in the source fingerprint', async () => {

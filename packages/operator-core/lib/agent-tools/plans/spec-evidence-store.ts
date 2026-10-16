@@ -802,6 +802,9 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
   at: { commitSha: string; repoPrefix: string | null },
   options: { git?: GitRunner } = {},
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
+  if (measurement.nativeInstrumentKey) {
+    throw new Error('Native storage observations cannot certify a historical test commit; bind a new live observation.');
+  }
   const root = await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
   const fixtureRoot = hasRepoFixturePaths(measurement)
