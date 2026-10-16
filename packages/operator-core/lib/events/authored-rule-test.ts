@@ -7,10 +7,11 @@ import type { LocalRuleDefinition, LocalRuleScope } from './local-rule-store';
 
 export interface RuleReplaySample {
   id: string; tool: string; args: unknown; ok: boolean; payload?: unknown;
-  source: 'tool-ledger' | 'event-latch'; inputComplete?: boolean;
+  source: 'tool-ledger' | 'event-latch' | 'fixture'; inputComplete?: boolean;
+  result?: unknown; sink?: string; client?: string;
 }
 export interface RuleReplayOutcome {
-  id: string; tool: string; matched: boolean; action: 'fire' | 'deny' | 'context' | 'none' | 'unknown';
+  id: string; tool: string; matched: boolean; eligible?: boolean; action: 'fire' | 'deny' | 'context' | 'none' | 'unknown';
   proposed?: unknown; reason?: string;
 }
 
@@ -19,7 +20,8 @@ function needsUnavailable(condition: unknown, sample: RuleReplaySample): boolean
   if (!condition || typeof condition !== 'object') return false;
   if (Array.isArray(condition)) return condition.some(c => needsUnavailable(c, sample));
   return Object.entries(condition).some(([path, value]) =>
-    path === 'result' || path.startsWith('result.') ||
+    ((path === 'result' || path.startsWith('result.')) && sample.result === undefined) ||
+    (path === 'client' && sample.client === undefined) ||
     ((path === 'args' || path.startsWith('args.') || path === 'input' || path.startsWith('input.')) && sample.inputComplete === false) ||
     needsUnavailable(value, sample));
 }
@@ -27,22 +29,24 @@ function needsUnavailable(condition: unknown, sample: RuleReplaySample): boolean
 /** Uses the exact production condition/guard evaluators; no executor/provider imports. */
 export function replayRule(rule: LocalRuleDefinition, samples: RuleReplaySample[]): RuleReplayOutcome[] {
   return samples.map(sample => {
-    const out = { id: sample.id, tool: sample.tool, matched: false, action: 'none' as RuleReplayOutcome['action'] };
+    const out = { id: sample.id, tool: sample.tool, matched: false, eligible: false, action: 'none' as RuleReplayOutcome['action'] };
     if (rule.delivery === 'async') {
       if (!keyMatchesPattern(rule.on, sample.tool) || (rule.onlyOnSuccess !== false && !sample.ok)) return out;
+      out.eligible = true;
       if (needsUnavailable(rule.when, sample)) return { ...out, action: 'unknown', reason: 'history does not retain the condition inputs' };
       try {
         const trigger = { tool: sample.tool, args: sample.args, key: sample.tool.startsWith('event:') ? sample.tool.slice(6) : sample.tool,
-          payload: sample.payload };
+          payload: sample.payload, result: sample.result };
         if (rule.when && !evaluateDataCondition(rule.when as DataCondition, trigger)) return out;
         return { ...out, matched: true, action: 'fire', proposed: { fire: rule.fire, args: rule.args ?? {} } };
       } catch (error) { return { ...out, action: 'unknown', reason: String(error) }; }
     }
     if (!ruleMatchesTool(rule.tools, sample.tool)) return out;
-    if (rule.context) return { ...out, matched: true, action: 'context', proposed: { sink: rule.sink, ...rule.context } };
+    if (rule.context) return sample.sink === rule.sink ? { ...out, eligible: true, matched: true, action: 'context', proposed: { sink: rule.sink, ...rule.context } } : out;
+    out.eligible = true;
     if (needsUnavailable(rule.guard, sample)) return { ...out, action: 'unknown', reason: 'history does not retain the guard inputs' };
     const verdict = evaluatePreToolGuards({ rules: [{ identityId: 'replay', pinRef: 'replay', rule }], unreadable: [] },
-      { tool: sample.tool, input: sample.args, client: 'replay', inputTruncated: sample.inputComplete === false });
+      { tool: sample.tool, input: sample.args, client: sample.client ?? '', inputTruncated: sample.inputComplete === false });
     return verdict.decision === 'deny' ? { ...out, matched: true, action: 'deny', reason: verdict.reason } : out;
   });
 }
@@ -51,6 +55,9 @@ export function replayRule(rule: LocalRuleDefinition, samples: RuleReplaySample[
  * only the latest payload per key: disclose this rather than invent a full log. */
 export async function readRuleReplaySamples(scope: LocalRuleScope, rule: LocalRuleDefinition, limit: number,
   harnessSlug?: string): Promise<RuleReplaySample[]> {
+  // The invocation ledger has no native turn-start/stop/compaction sink records.
+  // Explicit fixtures cover those hooks; never substitute ordinary tool calls.
+  if (rule.delivery === 'sync' && rule.context && rule.sink !== 'post-tool') return [];
   const bounded = Math.max(1, Math.min(200, Math.trunc(limit)));
   const event = rule.delivery === 'async' && rule.on.startsWith('event:');
   const patterns = rule.delivery === 'async' ? [rule.on] : rule.tools ?? ['*'];
@@ -71,7 +78,7 @@ export async function readRuleReplaySamples(scope: LocalRuleScope, rule: LocalRu
       'SELECT id::text,tool_name,args_json,status FROM harness_shared.tool_invocations WHERE workspace_id=$1 AND ($2::text IS NULL OR harness_slug=$2) AND (tool_name=ANY($3::text[]) OR EXISTS (SELECT 1 FROM unnest($4::text[]) AS p(prefix) WHERE starts_with(tool_name,p.prefix))) ORDER BY invoked_at DESC,id DESC LIMIT $5',
       [scope.workspaceId, scope.potSlug ? harnessSlug ?? null : null, exact, prefixes, bounded]);
     return rows.map(row => ({ id: 'tool:' + row.id, tool: row.tool_name, args: row.args_json,
-      ok: row.status === 'success' || row.status === 'ok', source: 'tool-ledger' as const,
-      inputComplete: row.args_json != null && JSON.stringify(row.args_json).length < 32000 }));
+      ok: row.status === 'success' || row.status === 'ok', source: 'tool-ledger' as const, sink: 'post-tool',
+      inputComplete: row.args_json != null && !(typeof row.args_json === 'object' && (row.args_json as Record<string, unknown>)._truncated === true) }));
   });
 }

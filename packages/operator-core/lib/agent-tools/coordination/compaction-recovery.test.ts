@@ -635,7 +635,7 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
     expect(sources[0]).toMatchObject({ source: { kind: 'work-item', id: 'WI-1', harness: 'h' }, checkIndex: 0 });
     expect(sources[0]!.check.claim).toBe('gate is green');
     expect(sources[0]!.check.probe).toMatchObject({ kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict' });
-    expect(deps).toMatchObject({ harness: 'h', readAtIso: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
+    expect(deps).toMatchObject({ harness: 'h', workspaceId: 'ws-1', readAtIso: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
   });
 
   it('the carry document renders the probe block for a successor, but not for a judge', async () => {

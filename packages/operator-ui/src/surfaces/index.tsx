@@ -42,6 +42,8 @@
  * boundary the operator's own route-level code-splitting gives them.
  */
 import { lazy, type ComponentProps, type ComponentType, type LazyExoticComponent } from 'react';
+// The persistent machine control shares the same host inventory and URL state in both shells.
+export const OPERATOR_MACHINE_SWITCHER = lazy(() => import('../../../../apps/operator/app/cloud-workspaces/MachineSwitcher'));
 import '../../../../apps/operator/app/harness/harness.css';
 // The DEV console's stylesheet. The operator loads it from `dev/layout.tsx`, a
 // route-level layout a host never renders; it is namespaced (`.pc-dev-*`), so

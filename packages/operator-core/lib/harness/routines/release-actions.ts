@@ -2158,6 +2158,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       status: leg.status,
       durationMs: Math.max(0, Math.floor(leg.durationMs)),
       ...(leg.skipReason ? { skipReason: leg.skipReason.slice(0, 500) } : {}),
+      ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
       ...(leg.executionIdentity
         ? {
             executionIdentity: {
@@ -2202,7 +2203,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
         id: leg.id.slice(0, 128),
         status: leg.status,
         durationMs: Math.max(0, Math.floor(leg.durationMs)),
-        ...(leg.outputTail ? { outputTail: leg.outputTail.slice(-500) } : {}),
+        ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 500) } : {}),
+        ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
       })),
     };
   }
@@ -4736,6 +4738,7 @@ export async function trackGateStall(
                   status: leg.status,
                   durationMs: Math.max(0, Math.floor(leg.durationMs)),
                   ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 1000) } : {}),
+                  ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
                 })),
               }),
               measuredIds,
@@ -6297,26 +6300,33 @@ export async function readFrozenCandidateRepairQueue(
 async function readRepairTickLegOutputs(
   sql: Pick<import('../../work-items').OrgSql, 'unsafe'>,
   target: GateVerdictTarget,
-): Promise<Record<string, string>> {
+  repairHead: string,
+): Promise<{ legOutputs: Record<string, string>; previousManifest: unknown }> {
   try {
     const rows = (await sql.unsafe(
-      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs
+      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs,
+              metadata->'repair_queue'->'manifest' AS manifest
          FROM harness_shared.routines
         WHERE workspace_id = $1 AND install_slug = $2 AND target_role = 'system:green-checkpoint'
         LIMIT 1`,
       [target.workspaceId, target.installSlug],
-    )) as unknown as Array<{ legs?: unknown }> | undefined;
+    )) as unknown as Array<{ legs?: unknown; manifest?: unknown }> | undefined;
+    const previousManifest = Array.isArray(rows) ? rows[0]?.manifest : null;
     const raw = Array.isArray(rows) ? rows[0]?.legs : undefined;
+    const head = raw && typeof raw === 'object' ? (raw as { head?: unknown }).head : null;
+    if (typeof head !== 'string' || head.length < 12 || !repairHead.startsWith(head)) return { legOutputs: {}, previousManifest };
     const legs = raw && typeof raw === 'object' && Array.isArray((raw as { legs?: unknown }).legs)
       ? ((raw as { legs: unknown[] }).legs as Array<Record<string, unknown>>)
       : [];
     const out: Record<string, string> = {};
     for (const leg of legs) {
-      if (leg && typeof leg.id === 'string' && typeof leg.outputTail === 'string') out[leg.id] = leg.outputTail;
+      if (!leg || typeof leg.id !== 'string' || (leg.status !== 'fail' && leg.status !== 'errored')) continue;
+      const paths = Array.isArray(leg.subjectPaths) ? leg.subjectPaths.filter((p): p is string => typeof p === 'string').slice(0, 40) : [];
+      out[leg.id] = [...paths, typeof leg.outputTail === 'string' ? leg.outputTail : ''].join('\n');
     }
-    return out;
+    return { legOutputs: out, previousManifest };
   } catch {
-    return {};
+    return { legOutputs: {}, previousManifest: null };
   }
 }
 
@@ -6501,16 +6511,21 @@ export async function writeFrozenCandidateRepairQueue(
   // carries leg claims from the row's previous manifest and reports whether the leg set moved.
   let manifested: import('../../release/repair-manifest').WithRepairManifestResult<FrozenCandidateRepairQueue> | null = null;
   if (queue) {
-    const { withRepairManifest } = await import('../../release/repair-manifest');
+    const { withRepairManifest, parseRepairManifest } = await import('../../release/repair-manifest');
     // WI-10002500: the manifest is a PURE derivation, so the npm-workspace name→dir map is
     // resolved here (the one place that may do I/O) and passed in. Without it a workspace-task
     // leg's mined paths stay workspace-relative and can never join the repo-relative admission
     // ledger, which made every such leg read `red-at-candidate` even after its fix had landed.
     const { npmWorkspaceDirsByName } = await import('../../release/npm-workspace-dirs');
+    const evidence = await readRepairTickLegOutputs(sql, target, queue.repairHead);
     manifested = withRepairManifest(queue, Date.now(), {
-      legOutputs: await readRepairTickLegOutputs(sql, target),
+      legOutputs: evidence.legOutputs,
       workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
     });
+    // Producers attach current paths before this write. Compare against the persisted
+    // manifest, not that already-updated input, so newly actionable paths are published.
+    const persisted = parseRepairManifest(evidence.previousManifest);
+    manifested.statusChanged ||= !persisted || JSON.stringify(persisted.rows) !== JSON.stringify(manifested.manifest.rows);
     queue = manifested.queue;
     // P-013 / D-007: project the convergence summary into `gate_health.convergence` in the
     // SAME statement that persists the queue.

@@ -562,7 +562,7 @@ export async function defaultRecoveryCarriedProbes(
           }
         : {},
     );
-    return await carriedProbeBlockForDelivery(sources, { harness: opts.sessionHarness ?? null, readAtIso });
+    return await carriedProbeBlockForDelivery(sources, { harness: opts.sessionHarness ?? null, workspaceId, readAtIso });
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     return (

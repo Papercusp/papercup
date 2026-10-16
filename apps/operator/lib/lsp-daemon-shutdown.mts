@@ -1,4 +1,6 @@
-/** The daemon's resource lifetime, using the packaged host's existing deadline. */
+/** The daemon's resource lifetime, using the packaged host's existing deadline.
+ * Explicit ESM keeps named imports usable in source hosts as well as bundles.
+ */
 import { runShutdownWithDeadline } from './shutdown-deadline.mts';
 
 interface LspDaemonShutdownDeps {

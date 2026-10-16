@@ -77,6 +77,7 @@ export interface CompactionConditionDeps {
   rail?: AlarmAttentionDeps;
   readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
   observeHealthyTranscript?: typeof observeHealthyClaudeTranscriptForOwner;
+  resolveSessionStatesFn?: typeof import('../agent-tools/coordination/liveness-oracle').resolveSessionStates;
 }
 export function compactionConditionKey(workspace: string, owner: string,
   kind: CompactionConditionKind, subject = ''): string {
@@ -221,9 +222,9 @@ function parseCompactionConditionKey(conditionKey: string): ParsedCompactionCond
   }
 }
 
-/** Current-signal conditions are obsolete when their owner has no active
- * adv-session. Conditions that need an operator or successor action remain
- * open until their own recovery evidence arrives. */
+/** Current-signal conditions are obsolete only when the shared liveness oracle
+ * reports their owner ended. Conditions that need an operator or successor
+ * action remain open until their own recovery evidence arrives. */
 const END_RESOLVABLE_SESSION_SIGNAL_KINDS = new Set<CompactionConditionKind>([
   'dark-telemetry',
   'over-limit',
@@ -239,14 +240,13 @@ const END_RESOLVABLE_SESSION_SIGNAL_KINDS = new Set<CompactionConditionKind>([
  * after that launched session has ended. Condition-staleness deliberately
  * does not infer recovery from silence for one-shot conditions. That is right
  * while the owner is alive, but it strands these episodes when the session
- * exits: the normal sweep only visits heartbeat-fresh presence rows. Query the
- * authoritative adv-session lifecycle for owners named by eligible episodes
- * and resolve only when the read proves there is no unended session. A failed
- * read is fail-open. Conditions that imply an operator/successor action are
+ * exits: the normal sweep only visits heartbeat-fresh presence rows. Resolve
+ * owners named by eligible episodes through the shared liveness oracle and
+ * resolve only on its explicit ended verdict. A failed or inconclusive read
+ * is fail-open. Conditions that imply an operator/successor action are
  * excluded because session end alone does not prove that action happened.
  */
 async function recoverEndedSessionSignalEpisodes(
-  sql: Sql,
   episodes: Array<{ conditionKey: string; openedAtMs: number }>,
   deps: CompactionConditionDeps,
 ): Promise<void> {
@@ -257,23 +257,31 @@ async function recoverEndedSessionSignalEpisodes(
       row.scope.subject === '');
   if (parsed.length === 0) return;
   const owners = [...new Set(parsed.map((row) => row.scope.owner))];
-  let activeOwners: Array<{ owner_id: string }>;
+  let endedOwners: Set<string>;
   try {
-    activeOwners = await sql<{ owner_id: string }[]>`
-      SELECT DISTINCT coord_owner_id AS owner_id
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ANY(${owners}::text[])
-         AND ended_at IS NULL
-         AND ended_by IS NULL
-    `;
+    const resolveStates = deps.resolveSessionStatesFn ??
+      (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
+    const verdicts = await resolveStates(
+      owners.map((ownerId) => ({ ownerId })),
+      {
+        // Match coord:presence for bare owner ids: hydrate presence, honor
+        // positive psu-host evidence, include self-wake state, and judge host health.
+        hydrateBatch: true,
+        psuHostPositiveAuthority: true,
+        selfWake: true,
+        hostCondition: true,
+      },
+    );
+    endedOwners = new Set(
+      owners.filter((ownerId) => verdicts.get(ownerId)?.sessionState === 'ended'),
+    );
   } catch (error) {
-    console.warn(`[compaction-watchdog] ended-session lifecycle read failed: ${String(error)}`);
+    console.warn('[compaction-watchdog] ended-session liveness read failed: ' + String(error));
     return;
   }
-  const active = new Set(activeOwners.map((row) => row.owner_id));
   const endedEpisodesByOwner = new Map<string, Array<{ conditionKey: string; openedAtMs: number }>>();
   for (const row of parsed) {
-    if (active.has(row.scope.owner)) continue;
+    if (!endedOwners.has(row.scope.owner)) continue;
     const ownerEpisodes = endedEpisodesByOwner.get(row.scope.owner) ?? [];
     ownerEpisodes.push(row.episode);
     endedEpisodesByOwner.set(row.scope.owner, ownerEpisodes);
@@ -1581,6 +1589,10 @@ async function maybeForceRespawn(
       '../events/await/psu-pty-discovery'
     );
     const host = await findLiveHostAsync(ownerId);
+    // OMP self-compacts natively and is ineligible for both force paths. Resolve
+    // this before the hostless successor fallback can record force-unavailable.
+    const ref = await resolveSessionRefReconciled(ownerId);
+    if (ref?.agent === 'omp') return false;
     if (!host) {
       const target = conditionDeps.resolveForceSuccessorTarget
         ? await conditionDeps.resolveForceSuccessorTarget(ownerId)
@@ -1637,8 +1649,6 @@ async function maybeForceRespawn(
       return false;
     }
     // EI-13477: reconciled, same reasoning as maybeCarryRespawn above.
-    const ref = await resolveSessionRefReconciled(ownerId);
-    if (ref?.agent === 'omp') return false;
     let transcriptPath: string | null = null;
     let transcriptSourceKind: 'claude' | 'codex' = 'claude';
     if (ref?.agent === 'codex') {
@@ -2479,14 +2489,14 @@ export async function checkCompactionCompliance(
   };
   // One-shot session-signal alarms do not re-emit while true, so the
   // condition-staleness rail cannot use signal absence to close them. Before
-  // scanning live presence rows, close episodes whose adv-session lifecycle is
-  // now definitively ended; active owners and episodes requiring follow-up
+  // scanning live presence rows, close episodes whose shared liveness verdict
+  // is definitively ended; every other verdict and episodes requiring follow-up
   // action remain untouched.
   try {
     const openEpisodes = await (deps.readOpenConditions ?? (() => readOpenCompactionConditions(sql)))();
-    await recoverEndedSessionSignalEpisodes(sql, openEpisodes, deps);
+    await recoverEndedSessionSignalEpisodes(openEpisodes, deps);
   } catch (error) {
-    // A failed lifecycle read must never turn an unknown owner into recovery.
+    // A failed condition or liveness read must never turn an unknown owner into recovery.
     console.warn(`[compaction-watchdog] ended-session recovery failed: ${String(error)}`);
   }
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the

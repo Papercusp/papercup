@@ -35,7 +35,7 @@
  * workflow.ts (the B-LOOP-2/3 lane), so it composes without collision.
  */
 import type { Sql, TransactionSql } from 'postgres';
-import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
+import { getOrgPg, isParkedNextFire, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
@@ -566,6 +566,13 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
                                  ELSE ${nextFireAtStr}::timestamptz END,
              reschedule_interval_sec = ${input.intervalSec},
              target_owner_id = ${input.ownerId},
+             -- A deliberate new arm supersedes its old end. Otherwise a later
+             -- accidental inactive row would still look intentionally ended.
+             metadata = CASE
+               WHEN COALESCE(metadata->'pause'->>'reason', metadata->>'loop_paused_reason', '')
+                    LIKE ${LOOP_END_PAUSE_PREFIX + '%'}
+               THEN COALESCE(metadata, '{}'::jsonb) - 'pause' - 'loop_paused_reason' - 'loop_paused_at'
+               ELSE metadata END,
              updated_at = now()
        WHERE id = ${canonical.id}
          AND (${input.onlyIfInactive !== true} OR (
@@ -661,6 +668,7 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
       `[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`,
     );
   }
+  const recordedNextFireAt = normalizeNextFireAt(row.nextFireAt);
   void recordLoopTransition(sql, {
     workspaceId,
     installSlug: input.harnessSlug,
@@ -670,7 +678,7 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
     targetOwnerId: input.ownerId,
     event: 'rearmed',
     actor: input.onlyIfInactive ? 'loop-recovery-materialize' : 'loop-explicit-materialize',
-    newNextFireAt: normalizeNextFireAt(row.nextFireAt)?.toISOString() ?? null,
+    newNextFireAt: isParkedNextFire(recordedNextFireAt) ? 'infinity' : recordedNextFireAt?.toISOString() ?? null,
     intervalSec: input.intervalSec,
     detail: { previousActive: existing[0]?.active ?? null },
   });

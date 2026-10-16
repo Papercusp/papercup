@@ -2043,13 +2043,14 @@ export async function defaultCarriedProbeBlock(input: {
   ownerId: string;
   checks: ReadonlyArray<CheckEntry>;
   harness: string;
+  workspaceId: string;
   readAtIso: string;
 }): Promise<string | null> {
   try {
     const { carriedProbeBlockForDelivery, carriedProbeSources } = await import('../../carry-probe-eval');
     return await carriedProbeBlockForDelivery(
       carriedProbeSources({ loop: { ownerId: input.ownerId, checks: input.checks } }),
-      { harness: input.harness, readAtIso: input.readAtIso },
+      { harness: input.harness, workspaceId: input.workspaceId, readAtIso: input.readAtIso },
     );
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
@@ -2193,6 +2194,7 @@ export async function rehydrateLoopWakeText(
           ownerId: d.subscriberId,
           checks,
           harness: marker.harness,
+          workspaceId: d.workspaceId,
           readAtIso: deliveryReadAtIso,
         })
       : null;

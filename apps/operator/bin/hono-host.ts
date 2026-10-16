@@ -131,7 +131,7 @@ import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-ga
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
 import { startSidecarParentDeathWatch } from '@papercusp/operator-core/lib/process-supervision/parent-death-watch';
-import { createLspDaemonShutdown } from '../lib/lsp-daemon-shutdown';
+import { createLspDaemonShutdown } from '../lib/lsp-daemon-shutdown.mts';
 import { runAdmissionPrecheckWorkerMain } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';

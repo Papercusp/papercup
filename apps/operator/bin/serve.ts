@@ -76,7 +76,7 @@ import { isBundledEntry, isCliEntry } from "@papercusp/operator-core/lib/util/cl
 import { resolveBindHost } from "@papercusp/operator-core/lib/resolve-bind-host";
 import { assertRemoteAuthReady } from "@papercusp/operator-core/lib/remote-auth-policy";
 import { runShutdownWithDeadline } from "../lib/shutdown-deadline.mts";
-import { createLspDaemonShutdown } from "../lib/lsp-daemon-shutdown";
+import { createLspDaemonShutdown } from "../lib/lsp-daemon-shutdown.mts";
 import { getBuildInfo } from "@papercusp/operator-core/lib/build-info";
 import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identity";
 import { pidAlive, startParentDeathWatch, startSidecarParentDeathWatch } from "@papercusp/operator-core/lib/process-supervision/parent-death-watch";

@@ -1,5 +1,6 @@
 /** Agent-authored lifecycle: portable definitions, scoped rows, revision-bound proof. */
 import { z } from 'zod';
+import { HOOK_SINKS } from '@papercusp/orchestrator/blueprint';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { withWorkspace } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -119,19 +120,24 @@ export const deleteRuleTool = defineTool({
   },
 });
 export const testRuleTool = defineTool({
-  ...metadata, name: 'rules:test', capability: 'intel:read',
+  ...metadata, name: 'rules:test', capability: 'coord:write',
   description: 'Dry-run a draft or saved rule over at most 200 matching historical triggers. Never dispatches actions or providers. Saved rules get revision-bound proof only with nonempty, complete evidence. Event history retains the latest payload per key, not every occurrence; tool result bodies are unavailable.',
   args: z.object({ ...scopeArgs, id: z.string().trim().min(1).max(200).optional(), definition: definition.optional(),
+    fixtures: z.array(z.object({ tool: z.string().min(1).max(200), input: z.unknown().optional(), result: z.unknown().optional(),
+      payload: z.unknown().optional(), ok: z.boolean().default(true), sink: z.enum(HOOK_SINKS).optional(), client: z.string().max(80).optional(),
+    })).max(20).optional().describe('Optional bounded fixtures for unavailable result bodies or native hook sinks. Evaluated by the same pure matcher; never dispatches providers.'),
     limit: z.number().int().min(1).max(200).default(50) }).refine(a => Boolean(a.id) !== Boolean(a.definition), 'provide exactly one of id or definition'),
   async handler(args, ctx) {
     const { scope, harness } = await address(args, ctx);
     const saved = args.id ? await withWorkspace(scope.workspaceId, sql => getLocalRule(scope, args.id!, sql)) : null;
     if (args.id && !saved) throw new Error('rule_missing');
     const rule = await validated(args.definition ?? { schemaVersion: 1, ...saved!.definition }, scope);
-    const samples = await readRuleReplaySamples(scope, rule, args.limit, harness);
+    const history = await readRuleReplaySamples(scope, rule, args.limit, harness);
+    const samples = [...history, ...(args.fixtures ?? []).map((fixture, index) => ({ ...fixture, args: fixture.input,
+      id: 'fixture:' + index, source: 'fixture' as const, inputComplete: true }))];
     const outcomes = replayRule(rule, samples);
-    const passed = samples.length > 0 && outcomes.every(o => o.action !== 'unknown');
-    const receipt = { passed, samples: samples.length, matched: outcomes.filter(o => o.matched).length,
+    const passed = outcomes.some(o => o.eligible !== false) && outcomes.every(o => o.action !== 'unknown');
+    const receipt = { passed, samples: samples.length, fixtureSamples: args.fixtures?.length ?? 0, matched: outcomes.filter(o => o.matched).length,
       history: rule.delivery === 'async' && rule.on.startsWith('event:') ? 'latest-per-event-key' : 'tool-invocation-arguments-without-result-bodies',
       sampleRefs: samples.map(s => s.id), outcomes, testedAt: new Date().toISOString() };
     if (saved && samples.length) await withWorkspace(scope.workspaceId, sql => recordLocalRuleTest(scope, saved.id, saved.revision, receipt, sql));

@@ -3786,6 +3786,18 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   // answerable. If the retry accounting stops at the broadcast, /admin/git and every gate
   // history reader still cannot tell a retry-absorbed green from a clean one — which IS the
   // defect, merely moved one layer down.
+  it('P036: persists structured failing paths independently from bounded output tails', () => {
+    const paths = ['packages/core/first.ts', 'packages/core/second.ts'];
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
+      postSuiteLegs: [{ id: 'lint:tsc', status: 'failed', durationMs: 1, subjectPaths: paths }],
+      repairTickLegs: { head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: ['lint:tsc'],
+        legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 1, subjectPaths: paths, outputTail: 'first/file.ts ' + 'x'.repeat(2000) }],
+      },
+    });
+    expect(detail.postSuiteLegs).toEqual([expect.objectContaining({ subjectPaths: paths })]);
+    expect(detail.repairTickLegs).toMatchObject({ legs: [expect.objectContaining({ subjectPaths: paths, outputTail: expect.stringMatching(/^first\/file.ts/) })] });
+  });
+
   it('EI-18685042025868279: buildCheckpointDetail persists cleanGreen:FALSE — the one value a truthiness check would silently drop', () => {
     const d = buildCheckpointDetail({
       reason: 'advanced',
@@ -4236,6 +4248,22 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     failingTests: ['lib/broken.test.ts'],
     signature: [],
   };
+
+  it.each(['current', 'foreign', 'missing'] as const)('P036: writer admits only %s-head lint path evidence', async (kind) => {
+    const lintQueue = { ...queue, failingTests: ['lint:tsc'], signature: [{ id: 'lint:tsc', kind: 'lint-leg' as const,
+      recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: queue.repairHead }] };
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: {
+      ...(kind === 'missing' ? {} : { head: kind === 'current' ? queue.repairHead.slice(0, 12) : 'f'.repeat(12) }),
+      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: ['packages/core/violating.ts'], outputTail: 'generic trailer' }],
+    } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
+    expect(write).toBeDefined();
+    const persisted = JSON.parse(write![1]![2] as string).repair_queue;
+    const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc');
+    expect(row.subjectPaths).toEqual(kind === 'current' ? ['packages/core/violating.ts'] : []);
+    expect(row.admitCommand !== null).toBe(kind === 'current');
+  });
 
   it('P-025: returns explicit unreadable state and makes the legacy reader throw on schema skew', async () => {
     const newer = {

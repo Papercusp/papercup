@@ -27,7 +27,7 @@ it.runIf(process.platform === 'linux')('drains default resources when its declar
   writeFileSync(file, 'export const answer = 42;\nconsole.log(answer);\n');
   const serverPath = fileURLToPath(new URL('../../../packages/operator-core/lib/code-intelligence/lsp-daemon-server.ts', import.meta.url));
   const adapterPath = fileURLToPath(new URL('../../../packages/operator-core/lib/code-intelligence/lsp-adapter.ts', import.meta.url));
-  const shutdownPath = fileURLToPath(new URL('./lsp-daemon-shutdown.ts', import.meta.url));
+  const shutdownPath = fileURLToPath(new URL('./lsp-daemon-shutdown.mts', import.meta.url));
   const watchPath = fileURLToPath(new URL('../../../packages/operator-core/lib/process-supervision/parent-death-watch.ts', import.meta.url));
   // The test runner stays alive to verify cleanup. This owned process models
   // the host primary declared by the real sidecar spawn plan.

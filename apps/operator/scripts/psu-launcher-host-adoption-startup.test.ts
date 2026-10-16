@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { main } from './psu-launcher.mjs';
+import {
+  normalizeGcpIapProfile,
+  PSU_CONNECTION_STORE_VERSION,
+  runPsuConnectionFrontController,
+  savePsuConnectionStore,
+} from './psu-connection-front-controller.mjs';
 
 vi.mock('./psu-pty-host.mjs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./psu-pty-host.mjs')>()),
@@ -53,6 +62,50 @@ describe('guarded host adoption before the connection picker', () => {
     expect(readHandoff).not.toHaveBeenCalled();
     expect(launchHandoff).not.toHaveBeenCalled();
     expect(connectionFrontController).toHaveBeenCalledExactlyOnceWith([]);
+  });
+
+  it('chooses the machine before local context and leaves context selection to remote psu once', async () => {
+    bareLauncher('0');
+    const home = mkdtempSync(join(tmpdir(), 'psu-machine-first-'));
+    const events: string[] = [];
+    const localContext = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('local context must not be queried'));
+    const remoteLaunch = vi.fn(async (_command: string, argv: string[]) => {
+      events.push('remote launch');
+      expect(argv.at(-1)).toContain("'PAPERCUSP_PSU_CONNECTION_FORWARDED=1' 'psu'");
+      const forwarded = await runPsuConnectionFrontController([], {
+        home,
+        transportForwarded: true,
+        pickConnection: () => { throw new Error('duplicate machine picker'); },
+      });
+      expect(forwarded).toEqual({ handled: false, argv: [] });
+      return { code: 0, signal: null };
+    });
+    try {
+      savePsuConnectionStore({
+        version: PSU_CONNECTION_STORE_VERSION,
+        profiles: [normalizeGcpIapProfile({
+          name: 'cloud', projectId: 'test-project', zone: 'us-central1-a',
+          instanceName: 'machine-1', sshUser: 'customer',
+        })],
+      }, join(home, 'connections.json'));
+      await main({
+        connectionFrontController: (argv: string[]) => runPsuConnectionFrontController(argv, {
+          home, storePath: join(home, 'connections.json'), interactive: true, transportForwarded: false,
+          pickConnection: async () => { events.push('machine picker'); return 'cloud'; },
+          commandAvailable: () => true,
+          runCommand: async () => ({ code: 0, signal: null }),
+          reservePort: async () => ({ port: 45123, release: async () => {} }),
+          probeOperator: async () => { events.push('remote context probe'); },
+          runInteractive: remoteLaunch,
+          notice: () => {},
+        }),
+      });
+      expect(events).toEqual(['machine picker', 'remote context probe', 'remote launch']);
+      expect(localContext).not.toHaveBeenCalled();
+      expect(remoteLaunch).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('keeps the connection route when the existing validator rejects or cannot find a handoff', async () => {

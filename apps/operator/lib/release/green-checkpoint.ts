@@ -60,6 +60,7 @@ import {
 } from "./selection-base";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
+import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
   buildRedLegsAtR1,
@@ -211,7 +212,6 @@ import {
   markFrozenRepairVerificationRed,
   parseFrozenRepairSelectiveCoverage,
   recordFrozenRepairSupersededRed,
-  recordFrozenRepairLegMeasurement,
   type RepairLegMeasurement,
   selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
@@ -628,6 +628,8 @@ export interface RepairTickLegRecord {
   durationMs: number;
   /** Bounded evidence tail, present only when the leg did NOT pass. */
   outputTail?: string;
+  /** Repo-relative failing paths captured before output truncation. */
+  subjectPaths?: string[];
 }
 
 /** P-009: the cheap-legs measurement an `awaiting-fixer` hold tick took at repairHead, so
@@ -14597,6 +14599,8 @@ async function runGreenCheckpointInner(
       // `mode:'full'` — the fallthrough the zero-wait-convergence promise forbids is then
       // countable from the queue's own history. An early typecheck-preflight failure never
       // ran the suite, so it records no radius (absent = "not recorded", never "nothing ran").
+      const withPostSuiteSubjects = (queue: FrozenCandidateRepairQueue) =>
+        withMeasuredLegSubjects(queue, candidate, postSuiteLegs ?? [], Date.now());
       const measuredSignature = {
         ...repairSignatureFromVerdict({
           failingTests,
@@ -14656,22 +14660,22 @@ async function runGreenCheckpointInner(
                     fresh.candidate,
                   )
                 : undefined;
-              return recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
+              return withPostSuiteSubjects(recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
                 repairHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
                 ...(coverage ? { selectiveCoverage: coverage } : {}),
-              }], decisionTrace);
+              }], decisionTrace));
             },
             (fresh) => {
               supersededBy = fresh;
             },
             (fresh) =>
-              recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
+              withPostSuiteSubjects(recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
                 measuredHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }], decisionTrace),
+              }], decisionTrace)),
             decisionTrace,
           ),
           "full-gate-red",
@@ -14711,10 +14715,10 @@ async function runGreenCheckpointInner(
             deps,
             repairQueue,
             (fresh) =>
-              recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
+              withPostSuiteSubjects(recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }], decisionTrace),
+              }], decisionTrace)),
             "candidate-red",
           );
           if (repairQueue.repairHead !== snapshotHead) {
@@ -14747,6 +14751,7 @@ async function runGreenCheckpointInner(
               ...measuredSignature,
               nowMs: Date.now(),
             }], decisionTrace);
+          repairQueue = withPostSuiteSubjects(repairQueue);
           await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
         }
         repairQueueRedPersisted = true;
@@ -14779,14 +14784,14 @@ async function runGreenCheckpointInner(
             candidate,
           });
         } else {
-          repairQueue = createFrozenCandidateRepairQueue({
+          repairQueue = withPostSuiteSubjects(createFrozenCandidateRepairQueue({
             candidate,
             qualificationAttemptId: deps.qualificationAttemptId ?? null,
             base: lastReady,
             ...measuredSignature,
             affectedTestProofGroup: deps.runId ?? null,
             nowMs: Date.now(),
-          });
+          }));
           repairQueueCreatedThisPass = true;
         }
       }
@@ -14799,10 +14804,10 @@ async function runGreenCheckpointInner(
           deps,
           repairQueue,
           (fresh) =>
-            recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
+            withPostSuiteSubjects(recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
               ...measuredSignature,
               nowMs: Date.now(),
-            }], decisionTrace),
+            }], decisionTrace)),
           "deferred-candidate-red",
         );
       }
@@ -16452,7 +16457,7 @@ export async function measureRepairTickLegs(
     runScript(
       script: string,
       workspace: string | null,
-    ): Promise<{ code: number; tail: string }>;
+    ): Promise<{ code: number; tail: string; subjectPaths?: string[] }>;
     log(line: string): void;
     now?: () => number;
     /** Injectable for tests so the bounded setup-contention retry below costs no real
@@ -16506,6 +16511,7 @@ export async function measureRepairTickLegs(
     const startedAt = now();
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
+    const subjectPaths = new Set<string>();
     let ranScript = false;
     // WI-10000288: distinguish "a script ran and declined to answer" from "a script ran and
     // verified", so a leg is reported `not-checked` only when NOTHING that ran verified.
@@ -16554,6 +16560,9 @@ export async function measureRepairTickLegs(
           tails.push(`${label}: NOT CHECKED (examined nothing — not gating)`);
         } else if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
+          for (const file of r.subjectPaths ?? extractSubjectPathsFromLegOutput(r.tail)) {
+            if (subjectPaths.size < REPAIR_MANIFEST_SUBJECT_PATH_CAP) subjectPaths.add(file);
+          }
           tails.push(
             `${label}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
           );
@@ -16578,6 +16587,7 @@ export async function measureRepairTickLegs(
       // names the digest was built to preserve — and with several legs joined, it dropped
       // every leg but the last.
       ...(tails.length ? { outputTail: tails.join(" | ").slice(0, 3000) } : {}),
+      ...(subjectPaths.size ? { subjectPaths: [...subjectPaths] } : {}),
     });
   }
   const failingSignatures = legs
@@ -16727,11 +16737,7 @@ async function foldRepairTickLegsIntoQueue(
       (fresh) =>
         fresh.candidate !== queue.candidate
           ? fresh
-          : recordFrozenRepairLegMeasurement(fresh, {
-              measurements,
-              head: measured.head,
-              nowMs: Math.max(measured.atMs, fresh.updatedAtMs + 1),
-            }),
+          : withMeasuredLegSubjects(fresh, measured.head, measured.legs, measured.atMs),
       "repair-tick leg lifecycle",
     );
   } catch (e) {
@@ -18235,6 +18241,8 @@ interface LegOutcome {
 /** Stable, machine-readable wall-clock evidence for one logical post-suite leg. */
 export interface PostSuiteLegRecord extends LegOutcome {
   id: string;
+  /** Repo-relative failing paths captured from full command output before tailing. */
+  subjectPaths?: string[];
   /** End-to-end wall time for this logical leg. Parallel subcommands use their union span. */
   durationMs: number;
   executionIdentity?: {
@@ -19619,10 +19627,13 @@ export async function runPostSuiteLegs(
       dependencyInode = Number(statSync(nodeModulesPath).ino);
     } catch {}
     const identity = options.identity;
-    const output = commands
-      .map((command) => command.stdout + command.stderr)
-      .join("\n")
-      .slice(-2000);
+    const fullOutput = commands
+      .map((command) => command.stdout + "\n" + command.stderr)
+      .join("\n");
+    const output = fullOutput.slice(-2000);
+    const subjectPaths = outcome.status === "failed"
+      ? extractSubjectPathsFromLegOutput(stripAnsi(fullOutput)).slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP)
+      : [];
     const exitCode =
       commands.find((command) => command.code !== 0)?.code ??
       commands.at(-1)?.code ??
@@ -19631,6 +19642,7 @@ export async function runPostSuiteLegs(
       id,
       status: outcome.status,
       durationMs,
+      ...(subjectPaths.length ? { subjectPaths } : {}),
       ...(outcome.skipReason ? { skipReason: outcome.skipReason } : {}),
       ...(identity
         ? {
@@ -22812,6 +22824,13 @@ export function realCheckpointDeps(
             });
             return {
               code: r.code,
+              subjectPaths: extractSubjectPathsFromLegOutput(stripAnsi(r.stdout + "\n" + r.stderr))
+                .map((file) => {
+                  const prefix = path.relative(cfg.checkpointRoot, invocation.cwd).replace(/\\/g, "/");
+                  return prefix && !file.startsWith(prefix + "/") && !/^(?:apps|packages|libs|scripts)\//.test(file)
+                    ? prefix + "/" + file : file;
+                })
+                .slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP),
               // WI-10002075: digest-first, never a blind tail — a red lint leg's last
               // 300 chars are its generic trailer, not the files it named.
               // WI-10007516: BOTH streams — `stderr || stdout` dropped vitest's stdout

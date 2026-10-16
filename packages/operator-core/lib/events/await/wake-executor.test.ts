@@ -2287,15 +2287,16 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
       ],
     });
     const carriedProbeBlockFn = vi.fn(async (_input: unknown) => '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [loop check 1]: observed "red"');
-    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe' });
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe', workspaceId: 'delivery-workspace' });
     const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
       getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
       carriedProbeBlockFn,
     });
     expect(carriedProbeBlockFn).toHaveBeenCalledTimes(1);
-    const arg = carriedProbeBlockFn.mock.calls[0]![0] as { ownerId: string; harness: string; readAtIso: string; checks: Array<{ claim: string }> };
+    const arg = carriedProbeBlockFn.mock.calls[0]![0] as { ownerId: string; harness: string; workspaceId: string; readAtIso: string; checks: Array<{ claim: string }> };
     expect(arg.ownerId).toBe('su-probe');
     expect(arg.harness).toBe('papercusp');
+    expect(arg.workspaceId).toBe('delivery-workspace');
     expect(arg.readAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     // every carried check reaches the runner; it skips the probe-less one itself
     expect(arg.checks.map((c) => c.claim)).toEqual(['gate is green', 'prose-only claim']);

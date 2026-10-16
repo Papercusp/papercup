@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
-import { createLspDaemonShutdown } from './lsp-daemon-shutdown';
+import { createLspDaemonShutdown } from './lsp-daemon-shutdown.mts';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 const resources = vi.hoisted(() => ({ clients: vi.fn(), database: vi.fn() }));
@@ -15,6 +15,36 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { end: resources.d
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 
 describe('LSP daemon resource shutdown', () => {
+  it.each(['hono-host.ts', 'serve.ts', 'lsp-daemon.ts'])('loads %s shutdown named import in a real source ESM process', (entry) => {
+    const entryUrl = new URL(`../bin/${entry}`, import.meta.url);
+    const source = ts.createSourceFile(entry, readFileSync(entryUrl, 'utf8'), ts.ScriptTarget.Latest, true);
+    const imports = source.statements.filter(ts.isImportDeclaration).filter(node =>
+      node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings) &&
+      node.importClause.namedBindings.elements.some(binding =>
+        (binding.propertyName ?? binding.name).text === 'createLspDaemonShutdown'));
+    expect(imports).toHaveLength(1);
+    const moduleUrl = new URL((imports[0]!.moduleSpecifier as ts.StringLiteral).text, entryUrl);
+    // Use the entrypoint's exact static named import, without namespace/default
+    // normalization. Vitest's transform and branch-only tests hid this failure.
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+      import { createLspDaemonShutdown } from ${JSON.stringify(moduleUrl.href)};
+      const order = [];
+      await new Promise(resolve => createLspDaemonShutdown({
+        closeClients: async () => { order.push('clients'); },
+        closeDatabase: async () => { order.push('database'); },
+        exit: code => { if (code !== 0) throw new Error('unexpected exit'); resolve(); },
+      })(async () => { order.push('rpc'); }));
+      console.log(JSON.stringify(order));
+    `], {
+      // This child verifies the source loader seam, not Vitest's transformation.
+      env: { ...process.env, NODE_OPTIONS: '' },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect({ status: result.status, signal: result.signal }, result.stderr).toEqual({ status: 0, signal: null });
+    expect(JSON.parse(result.stdout.trim())).toEqual(['rpc', 'clients', 'database']);
+  });
+
   it.each(['hono-host.ts', 'serve.ts'])('wires %s sidecar boot into the bounded resource drain', async (entry) => {
     // Execute the real divert branch without booting the rest of the host. The
     // RPC transport is the boundary; the supplied resource drain remains real.
@@ -130,7 +160,7 @@ describe('LSP daemon resource shutdown', () => {
   it('exits a real signalled process despite a remaining socket or hung cleanup', async () => {
     // The ref'd socket models the daemon's other live handles: merely closing
     // its RPC listener must not be mistaken for process termination.
-    const modulePath = fileURLToPath(new URL('./lsp-daemon-shutdown.ts', import.meta.url));
+    const modulePath = fileURLToPath(new URL('./lsp-daemon-shutdown.mts', import.meta.url));
     for (const hang of [false, true]) {
       const script = `
         const { createServer } = require('node:net');

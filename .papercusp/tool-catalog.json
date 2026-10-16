@@ -30447,7 +30447,7 @@
       },
       "description": "Dry-run a draft or saved rule over at most 200 matching historical triggers. Never dispatches actions or providers. Saved rules get revision-bound proof only with nonempty, complete evidence. Event history retains the latest payload per key, not every occurrence; tool result bodies are unavailable.",
       "capabilities": [
-        "intel:read"
+        "coord:write"
       ],
       "agentRoles": [
         "scoper",

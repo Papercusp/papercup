@@ -24,6 +24,7 @@
  * targetKind: 'event', wake: false }` — an inbox notice on each crossing.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { getRubric } from '../../rubrics';
 import {
   probeCheckResults,
@@ -118,14 +119,15 @@ export const RESCORE_CONFIRMED_PROBE_TOOLS: ReadonlySet<string> = new Set(['dev:
 export function rescoreProbeDispatcher(
   harness: string | undefined,
   dispatch: typeof dispatchPaletteTarget = dispatchPaletteTarget,
+  workspaceId?: string,
 ): (name: string, args: Record<string, unknown>) => ReturnType<typeof dispatchPaletteTarget> {
   return (name, args) =>
-    dispatch({
+    runWithWorkspaceIfConcrete(workspaceId, () => dispatch({
       name,
       args,
       ...(RESCORE_CONFIRMED_PROBE_TOOLS.has(name) ? { confirmed: true } : {}),
       ...(harness ? { harness } : {}),
-    });
+    }));
 }
 
 /** Re-run a rubric's executable checks and emit one event per pass → fail crossing. */
@@ -151,7 +153,7 @@ export async function rescoreRubric(
   const probeCriteria = executable.filter((c) => (c.check as { kind?: string } | undefined)?.kind === 'probe');
   if (probeCriteria.length > 0) {
     const harness = input.harnessSlug ?? rubric.subjectHarnessSlug ?? undefined;
-    const dispatchTool = deps.dispatchTool ?? rescoreProbeDispatcher(harness);
+    const dispatchTool = deps.dispatchTool ?? rescoreProbeDispatcher(harness, undefined, workspaceId);
     const evaluateProbes = deps.evaluateProbes ?? evaluateCriterionProbeChecks;
     // One evaluation per criterion. The evaluator fails closed for a whole batch (right for a
     // scorecard, which must not grade around an unjudged check), but a re-score that dropped every

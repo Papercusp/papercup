@@ -29,7 +29,9 @@ vi.mock('./resolve-repo-coords', () => ({
 
 import { publishRuleToCupboard } from './publish-rule-core';
 import { installRuleFromCupboardCore, InstallRuleError } from './install-rule-core';
-import { resolveLocalRule } from './rule-store';
+import { resolveLocalRule, parseRulePackage } from './rule-store';
+import { evaluatePreToolGuards, wornSyncRules } from '../agent-identities/sync-hook-rules';
+import { resolveLocalBlueprintPackage } from '../blueprint/compile-packages';
 
 const GITHUB_URL = 'https://github.com/acme/cupboard-rules';
 
@@ -86,6 +88,41 @@ afterEach(async () => {
 });
 
 describe('rule Cupboard round trip', () => {
+  it('exports a local authored definition, installs in a fresh home and executes only when worn', async () => {
+    const parsed = parseRulePackage({ ...guardRule('local-authored'), guard: { deny: { 'input.command': { equals: 'git push' } } } });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const exported = await publishRuleToCupboard({ ref: 'local-authored', github_url: GITHUB_URL, exportOnly: true },
+      { localRule: parsed.rule });
+    expect(exported).toMatchObject({ ok: true, exportedOnly: true });
+    expect(external.fetchGithubRepoMeta).not.toHaveBeenCalled();
+    expect(external.publishListingToCupboard).not.toHaveBeenCalled();
+    if (!exported.ok || !exported.export) throw new Error('export missing');
+    const manifest = JSON.parse(await fs.readFile(exported.export.manifestPath, 'utf8'));
+    expect(manifest).not.toHaveProperty('enabled');
+    expect(manifest).not.toHaveProperty('authorId');
+    const freshHome = join(root, 'fresh');
+    process.env.PAPERCUSP_HOME = freshHome;
+    _resetPapercuspRootForTests();
+    await installRuleFromCupboardCore({ githubUrl: GITHUB_URL, listingRef: 'local-authored' },
+      unpinnedDeps(join(root, 'rules', 'exports'), root), async () => null);
+    const pin = await resolveLocalBlueprintPackage({ kind: 'rule', ref: 'local-authored' });
+    expect(pin).not.toBeNull();
+    const call = { tool: 'capability:bash', input: { command: 'git push' }, client: 'codex' };
+    expect(evaluatePreToolGuards({ rules: [], unreadable: [] }, call).decision).toBe('none');
+    expect(evaluatePreToolGuards(wornSyncRules({ inputs: [pin!] }), call).decision).toBe('deny');
+  });
+
+  it('refuses unsafe local export refs and lifecycle fields before writing a package', async () => {
+    const parsed = parseRulePackage(guardRule('safe'));
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(await publishRuleToCupboard({ ref: '..', github_url: GITHUB_URL, exportOnly: true }, { localRule: parsed.rule }))
+      .toMatchObject({ ok: false, status: 400 });
+    expect(await publishRuleToCupboard({ ref: 'safe', listing_ref: '../escape', github_url: GITHUB_URL, exportOnly: true }, { localRule: parsed.rule }))
+      .toMatchObject({ ok: false, status: 422 });
+    expect(await publishRuleToCupboard({ ref: 'safe', github_url: GITHUB_URL, exportOnly: true },
+      { localRule: { ...parsed.rule, enabled: true } as never })).toMatchObject({ ok: false, status: 422 });
+  });
+
   it('publishes a local rule as a rule listing', async () => {
     await writeRuleDir(join(root, 'rules', 'installed'), 'no-rm-rf');
 
