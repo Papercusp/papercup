@@ -2927,7 +2927,9 @@ teardown() {
   fi
   vh_capture_phase_stop
   vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
-  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-1}" -ne 0 ]; then
+  # finalize returns 1 for a faithfully retained failing verdict; only 2+
+  # signals a finalization error. A test failure must not masquerade as lost proof.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-2}" -gt 1 ]; then
     artifacts_retained=0
     [ "$ec" -ne 0 ] || ec=1
     log "FATAL: pinned verifier completion evidence was not retained; preserving source at $OPERATOR_SOURCE_ROOT"
