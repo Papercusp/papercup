@@ -1232,7 +1232,7 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
                 AND survivor.execution_details->'mutation'->>'mode' = 'copy-out'
                 AND control.execution_details->>'mutationPhase' = 'load-check'
                 AND control.execution_details->'mutation'->>'leg' = 'load-check'
-                AND (control.execution_details->'mutation' - 'leg') = (survivor.execution_details->'mutation' - 'leg')
+                AND (control.execution_details->'mutation')::jsonb - 'leg' = (survivor.execution_details->'mutation')::jsonb - 'leg'
                 AND control.file_path = survivor.file_path
                 AND control.workspace_id IS NOT DISTINCT FROM survivor.workspace_id
                 AND control.harness_slug IS NOT DISTINCT FROM survivor.harness_slug
