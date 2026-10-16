@@ -370,9 +370,29 @@ export async function waitForSandboxPostgres(name, { run, secrets = [],
   }
 }
 
+/** Classify private provider logs without returning any part of their text.
+ * These are diagnostic signals, not root-cause verdicts. Unknown failures stay
+ * unknown rather than exposing an error line that may contain signing tokens.
+ */
+export function sandboxProviderFailureSignals(logs) {
+  return [
+    ['node-thread-creation', /pthread_create|uv_thread_create|WorkerThreadsTaskRunner::DelayedTaskScheduler::Start/],
+    ['javascript-heap-exhaustion', /FATAL ERROR:.*(?:heap|allocation)|JavaScript heap out of memory/i],
+    ['database-unreachable', /\bP1001\b|Can't reach database server/i],
+    ['database-authentication', /\bP1000\b|password authentication failed/i],
+    ['database-pool-timeout', /\bP2024\b/],
+    ['database-schema-missing', /\bP2021\b/],
+    ['environment-invalid', /Invalid environment variables|Missing environment variable/i],
+    ['address-in-use', /\bEADDRINUSE\b/],
+    ['module-missing', /\bMODULE_NOT_FOUND\b|\bERR_MODULE_NOT_FOUND\b/],
+    ['prisma-engine-panic', /PrismaClientRustPanicError/],
+    ['unhandled-exception', /uncaught exception|uncaughtException|UnhandledPromiseRejection/i],
+  ].filter(([, pattern]) => pattern.test(logs)).map(([signal]) => signal);
+}
+
 /** Preserve bounded failure evidence before the caller removes its providers.
- * Application logs may contain signup/signing tokens by this point, so record
- * only allowlisted container state and HTTP status, never logs or response bodies.
+ * Application logs may contain signup/signing tokens by this point: only fixed
+ * failure categories may leave the classifier, never log text or response bodies.
  */
 export async function waitForSandboxChild(child, { runtime,
   run = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),
@@ -391,6 +411,15 @@ export async function waitForSandboxChild(child, { runtime,
           exitCode: Number.isInteger(state.ExitCode) ? state.ExitCode : null, oomKilled: state.OOMKilled === true };
       } catch { return { name, status: 'unknown', inspection: 'failed' }; }
     });
+    let providerFailure;
+    if (['exited', 'dead'].includes(containers[0].status)) {
+      try {
+        const result = run(['logs', '--tail', '200', runtime.container]);
+        providerFailure = result.status === 0 && !result.error
+          ? { inspection: 'classified', signals: sandboxProviderFailureSignals((result.stdout || '') + (result.stderr || '')) }
+          : { inspection: 'unavailable' };
+      } catch { providerFailure = { inspection: 'unavailable' }; }
+    }
     const endpoints = await Promise.all([
       ['provider', runtime.appUrl + '/signup'], ['mail', runtime.mailUrl + '/email'],
     ].map(async ([name, url]) => {
@@ -405,7 +434,7 @@ export async function waitForSandboxChild(child, { runtime,
         return { name, status: null, failure };
       }
     }));
-    await report({ exitCode, containers, endpoints });
+    await report({ exitCode, containers, endpoints, ...(providerFailure ? { providerFailure } : {}) });
   }
   return exitCode;
 }
