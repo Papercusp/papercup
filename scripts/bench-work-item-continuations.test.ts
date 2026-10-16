@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { judgeContinuation, verifyCheckpoint } from './bench-work-item-continuations';
+import { checkpointProof, judgeContinuation, verifyCheckpoint } from './bench-work-item-continuations';
 
 describe('controlled live continuation evidence oracle', () => {
   const good = { wallMs: 10, successfulReadback: true, heldAtReadback: true, ordered: true,
@@ -21,6 +21,18 @@ describe('controlled live continuation evidence oracle', () => {
       { successfulReadback: false }, { heldAtReadback: false }]) {
       expect(judgeContinuation({ ...good, ...bad })[0]!.passed).toBe(false);
     }
+  });
+  it('preserves a committed verifier failure without copying checkpoint content', () => {
+    const receipt = { ok: false, results: [{ id: 'WI-1', ok: false,
+      errorCode: 'checkpoint_verify_failed', writeCommitted: true,
+      storedContentHash: 'old-hash', error: 'private checkpoint narrative' }] };
+    const readback = { results: [{ id: 'WI-1', checkpointContentHash: 'new-hash',
+      checkpoint: 'private checkpoint narrative' }] };
+    const proof = checkpointProof(receipt, readback, 'WI-1');
+    expect(proof).toEqual({ id: 'WI-1', responseOk: false, itemOk: false,
+      verified: false, errorCode: 'checkpoint_verify_failed', writeCommitted: true,
+      contentHash: 'old-hash', readBackContentHash: 'new-hash' });
+    expect(JSON.stringify(proof)).not.toContain('private checkpoint narrative');
   });
   it('cannot treat cancellation, missing ordering or lost acknowledgement as successful forwarding', () => {
     for (const key of ['ordered', 'cancelledAbsent', 'rejectedNotForwarded', 'unknownReceipt', 'unknownPersisted', 'sourceStable'] as const) {

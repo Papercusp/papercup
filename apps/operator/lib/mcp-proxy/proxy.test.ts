@@ -3021,6 +3021,42 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-21568697005575627: tools:invoke-wrapped release:trace retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"summary":"recovered"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "release:trace",
+            args: { sha: "bb1128e2d8c28c185e6c1f83723bad539bcaf645" },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"ok":true,"summary":"recovered"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-21268234394605529: PAPERCUSP_MCP_PROXY_READONLY_RETRY=0 restores 502 surfacing (kill-switch)", async () => {
     const prev = process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY;
     process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY = "0";
@@ -6653,6 +6689,79 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect((await ordinary).status).toBe(200);
     criticalContinuationAgent.destroy();
     controlPlaneAgent.destroy();
+  });
+
+  it.each(["connected", "before-headers", "after-headers"])("holds same-item continuation until the streamed response ends (client disconnected: %s)", async (disconnect) => {
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let releaseHeaders = () => {};
+    const headersGate = new Promise<void>((resolve) => { releaseHeaders = resolve; });
+    let firstReached = () => {};
+    const firstStarted = new Promise<void>((resolve) => { firstReached = resolve; });
+    let receivedFrame = () => {};
+    const firstFrame = new Promise<void>((resolve) => { receivedFrame = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://localhost").searchParams.get("client")!;
+      hits.push(client);
+      if (client === "first") {
+        firstReached();
+        void (async () => {
+          if (disconnect === "before-headers") await headersGate;
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(": tool still running\n\n");
+          await firstGate;
+          res.end('data: {"jsonrpc":"2.0","id":1,"result":{}}\n\n');
+        })();
+      } else {
+        res.end('{"result":{}}');
+      }
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream),
+      retryWindowMs: 1_000, maxInFlight: 10, controlPlaneReserve: 2,
+      criticalContinuationQueueWaitLogMs: 0, log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const body = (id: string) => JSON.stringify({ jsonrpc: "2.0", id: 1,
+      method: "tools/call", params: { name: "work_items:checkpoint", arguments: { id } } });
+    let clientRequest: http.ClientRequest;
+    const first = new Promise<number>((resolve) => {
+      clientRequest = http.request({ host: "127.0.0.1", port: port(proxy), method: "POST",
+        path: "/api/mcp?client=first" }, (res) => {
+        res.on("data", receivedFrame);
+        res.once("end", () => resolve(res.statusCode ?? 0));
+        res.once("aborted", () => resolve(res.statusCode ?? 0));
+      });
+      clientRequest.once("error", () => resolve(0));
+      clientRequest.end(body("WI-1"));
+    });
+    let second: ReturnType<typeof request> | undefined;
+    try {
+      if (disconnect === "before-headers") {
+        await firstStarted;
+        clientRequest!.destroy();
+        releaseHeaders();
+      } else {
+        await firstFrame;
+        if (disconnect === "after-headers") clientRequest!.destroy();
+      }
+      second = request(port(proxy), body("WI-1"), "/api/mcp?client=second");
+      await waitFor(() => hits.includes("second") || logs.some((line) =>
+        line.includes("queued critical-continuation request")));
+      expect(hits).toEqual(["first"]);
+      expect((await request(port(proxy), body("WI-2"), "/api/mcp?client=unrelated")).status).toBe(200);
+      expect(hits).toEqual(["first", "unrelated"]);
+      releaseFirst();
+      expect((await second).status).toBe(200);
+      expect(hits).toEqual(["first", "unrelated", "second"]);
+    } finally {
+      releaseHeaders();
+      releaseFirst();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+    }
   });
 
   it("EI-21552316713302755 / EI-21556422206126497: queues loop:end and compaction behind a continuation write", async () => {

@@ -29,6 +29,16 @@ export function verifyCheckpoint(receipt: any, readback: any, id: string) {
     stored?.ok === true && stored.checkpointContentHash === written.contentHash;
 }
 
+export function checkpointProof(receipt: any, readback: any, id: string) {
+  const written = receipt?.results?.find((row: any) => row.id === id);
+  const stored = readback?.results?.find((row: any) => row.id === id);
+  return { id, responseOk: receipt?.ok === true, itemOk: written?.ok === true,
+    verified: written?.verified === true, errorCode: written?.errorCode ?? null,
+    writeCommitted: written?.writeCommitted ?? null,
+    contentHash: written?.contentHash ?? written?.storedContentHash ?? null,
+    readBackContentHash: stored?.checkpointContentHash ?? null };
+}
+
 export function judgeContinuation(input: {
   wallMs: number; successfulReadback: boolean; heldAtReadback: boolean;
   ordered: boolean; cancelledAbsent: boolean; rejectedNotForwarded: boolean;
@@ -195,11 +205,13 @@ async function main() {
     phase = 'lost-ack-readback';
     const unknown = await write(unrelated, 'unknown');
     const unknownReadback = await read(unrelated);
+    const sameItemOrder = { blockedBeforeRelease: orderedBlocked,
+      heldSucceeded: heldReceipt?.ok === true,
+      orderedVerified: verifyCheckpoint(orderedReceipt, heldReadback, held),
+      reachedInOrder: reached.indexOf('held') < reached.indexOf('ordered') };
     const assertions = judgeContinuation({ wallMs,
       successfulReadback: verifyCheckpoint(receipt, readback, unrelated), heldAtReadback,
-      ordered: orderedBlocked && heldReceipt?.ok === true &&
-        verifyCheckpoint(orderedReceipt, heldReadback, held) &&
-        reached.indexOf('held') < reached.indexOf('ordered'),
+      ordered: Object.values(sameItemOrder).every(Boolean),
       cancelledAbsent: cancellation === 'cancelled' && !reached.includes('cancelled'),
       rejectedNotForwarded: overflow?.forwardingResult === 'not_forwarded' && !reached.includes('overflow'),
       unknownReceipt: unknown?.forwardingResult === 'outcome_unknown',
@@ -216,6 +228,11 @@ async function main() {
         ? `wallMs=${wallMs}; authoritative hash=${readback?.results?.[0]?.checkpointContentHash}`
         : `reached=${reached.join(',')}; queued=${queued}; unknown=${unknown?.forwardingResult}` })),
       sourceHashes: before, wallMs, items: { held, unrelated }, nonce,
+      sameItemOrder,
+      checkpointProofs: { held: checkpointProof(heldReceipt, null, held),
+        ordered: checkpointProof(orderedReceipt, heldReadback, held),
+        unrelated: checkpointProof(receipt, readback, unrelated),
+        unknown: checkpointProof(unknownServerReceipt, unknownReadback, unrelated) },
       checkpointHashes: { unrelated: readback?.results?.[0]?.checkpointContentHash,
         ordered: heldReadback?.results?.[0]?.checkpointContentHash, unknown: unknownReadback?.results?.[0]?.checkpointContentHash },
       receipts: { overflow: overflow?.forwardingResult, unknown: unknown?.forwardingResult },

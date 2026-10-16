@@ -1241,6 +1241,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "scheduler:get_claim_spec",
   // Process inventory is a ledger read; its optional reconciliation is dry-run only.
   "processes:list",
+  // release:trace composes a read-only snapshot and reports nextVerb without executing it.
+  "release:trace",
   // Scorecard reads use seed-free rubric resolution; a missing/malformed rubric stays
   // unknown instead of entering the first-party lazy-seed writer.
   "scorecards:get",
@@ -5446,6 +5448,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               abortAttempt = null;
             }
             const upstreamMs = Date.now() - attemptStartedAt;
+            // Headers are not a mutation completion boundary, even if the caller
+            // disconnected before they arrived. Hold the key while draining its body.
+            const continuationBodyDone = criticalContinuation && outcome.ures
+              ? new Promise<void>((resolve) => {
+                  const response = outcome.ures!;
+                  const finish = () => {
+                    for (const event of ["end", "error", "aborted", "close"])
+                      response.off(event, finish);
+                    resolve();
+                  };
+                  for (const event of ["end", "error", "aborted", "close"])
+                    response.once(event, finish);
+                })
+              : null;
             // The abort above surfaces as an ordinary failed attempt; `clientGone` is what
             // decides, so a race between the abort landing and the response arriving cannot
             // write to a dead socket.
@@ -5461,6 +5477,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // cannot rewrite) currently has no way to determine except by hand-verifying
               // application state. `upstreamStatus` present + 2xx means the write applied.
               if (outcome.ures) outcome.ures.resume(); // drain so the (keepAlive:false) socket is released
+              if (continuationBodyDone) await continuationBodyDone;
               record({
                 kind: "client_gone",
                 method: req.method,
@@ -5654,15 +5671,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 });
               }
               res.writeHead(status, ures.headers);
-              // WI-35737: an MCP response is an SSE stream that stays open long after headers
-              // arrive (and long after this function returns and releases its in-flight slot).
-              // `pipe` does NOT tear down the SOURCE when the destination dies, so without
-              // this a client that vanishes mid-stream leaves :3070 writing into a dead socket
-              // for the life of the stream. Safe for every class, unlike aborting a request
-              // in flight: headers are already back, so the tools/call has run — destroying
-              // the RESPONSE cannot half-apply anything.
+              // SSE headers precede tool completion. Keep a continuation's conflict keys
+              // until the upstream body ends, including when its caller disconnects.
+              // Otherwise the next same-item write can overtake the first verifier.
+              // Drain a disconnected continuation so its upstream tool can finish before
+              // the conflict key is released. Other response streams retain normal cleanup.
               res.on("close", () => {
-                if (!ures.destroyed) ures.destroy();
+                if (criticalContinuation) {
+                  ures.unpipe(res);
+                  if (!ures.destroyed) ures.resume();
+                } else if (!ures.destroyed) ures.destroy();
               });
               // WI-10006908 — the REVERSE direction. `pipe` does not end the destination when
               // the SOURCE aborts, and :3070 flushes SSE headers the instant a tools/call opens
@@ -5737,6 +5755,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   forwardingResult: "applied",
                 });
               }
+              if (continuationBodyDone) await continuationBodyDone;
               return;
             }
             last = outcome;
