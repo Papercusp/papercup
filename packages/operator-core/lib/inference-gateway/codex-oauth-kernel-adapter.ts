@@ -314,7 +314,11 @@ type QuotaFrame = StreamQuota | 'prelude' | null;
 const QUOTA_FRAME_MAX_BYTES = 64 * 1024;
 const QUOTA_PRELUDE_PEEK_MS = 200;
 const CODEX_QUOTA_CODES = new Set(['usage_limit_reached', 'usage_limit_exceeded', 'rate_limit_exceeded', 'insufficient_quota']);
-const CODEX_OVERLOAD_CODES = new Set(['server_error', 'overloaded_error', 'service_unavailable']);
+// OpenAI Responses also uses `server_overloaded` for the same retryable capacity
+// refusal as the older `server_error` envelope. Preserve safe pre-output failover
+// for both spellings; otherwise the native CLI retries an HTTP-200 failed stream
+// on the same selected model/account without giving the gateway a chance to route.
+const CODEX_OVERLOAD_CODES = new Set(['server_error', 'server_overloaded', 'overloaded_error', 'service_unavailable']);
 
 /** Inspect protocol error events, never model output containing quota-looking prose. */
 function quotaFrame(frame: string): QuotaFrame {
