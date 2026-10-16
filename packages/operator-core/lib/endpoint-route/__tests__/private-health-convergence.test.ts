@@ -49,6 +49,21 @@ it('propagates query failures instead of disguising them as stale generations', 
     'byoc-a', () => true, clock())).rejects.toThrow('private query denied');
 });
 
+it('retains every mismatched HTTP generation before a convergence timeout', async () => {
+  const observed: unknown[] = [];
+  let generation = 0;
+  await expect(waitForPrivateHealthSnapshot(async () => ({ rows: [{ workspaceId: 'byoc-a', generation: ++generation }] }),
+    'byoc-a', row => row.generation === 4, { ...clock(), observe: async body => { observed.push(body); } }))
+    .rejects.toThrow('did not converge');
+  expect(observed).toEqual([1, 2, 3].map(value => ({ rows: [{ workspaceId: 'byoc-a', generation: value }] })));
+});
+
+it('fails when generation evidence cannot be retained even if the query matches', async () => {
+  const failure = new Error('evidence write failed');
+  await expect(waitForPrivateHealthSnapshot(async () => ({ rows: [{ workspaceId: 'byoc-a', generation: 2 }] }),
+    'byoc-a', row => row.generation === 2, { ...clock(), observe: () => { throw failure; } })).rejects.toBe(failure);
+});
+
 it('captures the Health response body before reload releases its network resource', async () => {
   const body = { rows: [{ workspaceId: 'byoc-a', generation: 2 }] };
   let released = false;
