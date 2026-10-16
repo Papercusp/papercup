@@ -37,6 +37,13 @@ export { REFUSAL_MARKER_TTL_MS, wasRecentlyRefused, markRefused, clearRefused, _
  *  riding a seam that must not slow down or fail because of it. */
 export const FLUSH_GATE_BUDGET_MS = 4_000;
 
+/** Matches the structured refusal emitted by the host checkpoint writer. Keep
+ * this local structural check deliberately independent of the turn-end module:
+ * tests and the bundled sidecar mock that module at this seam, and an error
+ * crossing a dynamic-import boundary must remain diagnosable by its wire shape.
+ */
+const CHECKPOINT_WRITE_BLOCKED_CODE = 'checkpoint-write-blocked' as const;
+
 /** The effective bounded-timeout budget. Defaults to {@link FLUSH_GATE_BUDGET_MS};
  *  PAPERCUSP_FLUSH_GATE_BUDGET_MS (a positive integer ms) overrides it without a
  *  redeploy — mirroring {@link flushGateEnabled}. Two callers want a larger budget:
@@ -155,7 +162,15 @@ export interface FlushGateOutcome {
   /** Present on `mechanical-fallback` — what the system wrote. */
   fallback?: FlushFallbackResult;
   /** Safe diagnostics for a failed mandatory save; never includes storage URLs or messages. */
-  snapshotFailure?: { phase: 'checkpoint-write'; code: string; elapsedMs: number };
+  snapshotFailure?: {
+    phase: 'checkpoint-write';
+    /** A stable refusal code or a safe underlying storage code. */
+    code: string;
+    elapsedMs: number;
+    /** Present only for a locked-store refusal, never for raw storage errors. */
+    workItemId?: string;
+    blockedReason?: string;
+  };
 }
 
 /**
@@ -258,12 +273,32 @@ export async function runFlushGate(input: {
       await clearRefused(input.boundary, input.ownerId);
       return { verdict: 'mechanical-fallback', tripwires: [], fallback };
     } catch (error) {
+      const structured = error && typeof error === 'object' &&
+        (error as { code?: unknown }).code === CHECKPOINT_WRITE_BLOCKED_CODE &&
+        typeof (error as { workItemId?: unknown }).workItemId === 'string' &&
+        typeof (error as { blockedReason?: unknown }).blockedReason === 'string'
+        ? {
+            workItemId: (error as { workItemId: string }).workItemId,
+            blockedReason: (error as { blockedReason: string }).blockedReason,
+          }
+        : null;
       const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
-      const code = typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
-        ? rawCode : 'checkpoint-write-failed';
+      const code = structured
+        ? CHECKPOINT_WRITE_BLOCKED_CODE
+        : typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
+          ? rawCode : 'checkpoint-write-failed';
+      const snapshotFailure = {
+        phase: 'checkpoint-write' as const,
+        code,
+        elapsedMs: Date.now() - startedAt,
+        ...(structured ?? {}),
+      };
+      const refusalText = structured
+        ? `The host checkpoint write was blocked for ${structured.workItemId} (${structured.blockedReason}). The session remains intact; inspect the concurrent checkpoint update before retrying.`
+        : `The host checkpoint write failed (${code}). The session remains intact; inspect host persistence before retrying.`;
       return { verdict: 'refuse', tripwires: [],
-        refusalText: `The host checkpoint write failed (${code}). The session remains intact; inspect host persistence before retrying.`,
-        snapshotFailure: { phase: 'checkpoint-write', code, elapsedMs: Date.now() - startedAt } };
+        refusalText,
+        snapshotFailure };
     }
   }
   if (!flushGateEnabled()) return clear;

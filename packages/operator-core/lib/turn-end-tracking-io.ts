@@ -77,6 +77,31 @@ export interface AutoCheckpointResult {
 }
 
 /**
+ * Stable, safe diagnostic for a checkpoint write that was deliberately refused
+ * by the locked checkpoint store.  The store's `blockedReason` is a controlled
+ * guard outcome (for example, a concurrent authored update won the race), not
+ * a storage exception.  Keep it distinct from transport/database error codes
+ * so the host can tell an expected no-op from an unavailable writer without
+ * exposing the underlying error message.
+ */
+export const CHECKPOINT_WRITE_BLOCKED_CODE = 'checkpoint-write-blocked' as const;
+
+export class CheckpointWriteBlockedError extends Error {
+  readonly code = CHECKPOINT_WRITE_BLOCKED_CODE;
+  readonly workItemId: string;
+  readonly blockedReason: string;
+
+  constructor(workItemId: string, blockedReason: string) {
+    const safeWorkItemId = workItemId.trim() || 'unknown-work-item';
+    const safeBlockedReason = blockedReason.trim() || 'checkpoint-write-refused';
+    super(`Checkpoint write blocked for ${safeWorkItemId}: ${safeBlockedReason}`);
+    this.name = 'CheckpointWriteBlockedError';
+    this.workItemId = safeWorkItemId;
+    this.blockedReason = safeBlockedReason;
+  }
+}
+
+/**
  * Auto-checkpoint the caller's held work-items whose checkpoints are missing
  * or stale: compose a mechanical block from the turn's journal note + the
  * P-013 tool-call log tail, merge it under the agent-authored prose (replacing
@@ -149,7 +174,9 @@ export async function autoCheckpointStaleHeldItems(input: {
             transform: (prior) => mergeMechanicalCheckpoint(prior, block),
           },
         );
-        if (result.blockedReason && input.mode === 'respawn') throw new Error(`${item.id}: ${result.blockedReason}`);
+        if (result.blockedReason && input.mode === 'respawn') {
+          throw new CheckpointWriteBlockedError(item.id, result.blockedReason);
+        }
         if (!result.blockedReason) written.push({ id: item.id, mechanical: true });
       } catch (error) {
         if (input.mode === 'respawn') throw error;

@@ -1066,6 +1066,35 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     expect(bumpSessionEpoch).not.toHaveBeenCalled();
     expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
+
+  it('carries a structured blocked checkpoint refusal through the tool response', async () => {
+    autoCheckpointStaleHeldItems.mockRejectedValueOnce(Object.assign(
+      new Error('internal checkpoint detail'), {
+        code: 'checkpoint-write-blocked',
+        workItemId: 'WI-500',
+        blockedReason: 'write_refused',
+      },
+    ));
+    findLiveHost.mockReturnValue(carryHost);
+
+    const b = body(await call({ focus: 'resume after a blocked host save' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      requested: false,
+      error: 'flush-required',
+      snapshotFailure: {
+        phase: 'checkpoint-write',
+        code: 'checkpoint-write-blocked',
+        workItemId: 'WI-500',
+        blockedReason: 'write_refused',
+        elapsedMs: expect.any(Number),
+      },
+    });
+    expect(JSON.stringify(b)).not.toContain('internal checkpoint detail');
+    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
+  });
 });
 
 /**

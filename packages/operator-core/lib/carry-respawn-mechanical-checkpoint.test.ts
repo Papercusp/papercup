@@ -112,6 +112,25 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
     expect(out.refusalText).not.toContain('work_items:checkpoint');
   });
 
+  it('preserves a locked-store refusal code and affected item context', async () => {
+    notes.set('WI-1', null);
+    mocks.set.mockResolvedValueOnce({ stored: null, priorLength: 0, blockedReason: 'write_refused' });
+
+    const out = await runFlushGate({ ...input, boundary: 'compaction', mode: 'host-snapshot', brief: null });
+
+    expect(out.verdict).toBe('refuse');
+    expect(out.snapshotFailure).toEqual({
+      phase: 'checkpoint-write',
+      code: 'checkpoint-write-blocked',
+      workItemId: 'WI-1',
+      blockedReason: 'write_refused',
+      elapsedMs: expect.any(Number),
+    });
+    expect(out.refusalText).toContain('WI-1');
+    expect(out.refusalText).toContain('write_refused');
+    expect(out.refusalText).not.toContain('Error(');
+  });
+
   it('does not silently claim success for a blocked checkpoint write', async () => {
     notes.set('WI-1', null);
     mocks.set.mockResolvedValueOnce({ stored: null, priorLength: 0, blockedReason: 'write_refused' });
