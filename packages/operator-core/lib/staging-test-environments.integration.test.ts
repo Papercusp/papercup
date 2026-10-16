@@ -43,12 +43,14 @@ describe('current-build execution route contract', () => {
     let output = '';
     let ready!: (receipt: { taskId: string; cgroupPath: string; payloadPid: number }) => void;
     const receipt = new Promise<{ taskId: string; cgroupPath: string; payloadPid: number }>(done => { ready = done; });
-    child.stdout.on('data', chunk => {
-      output += String(chunk);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk;
       const line = output.split('\n').find(row => row.startsWith('PRIVATE_SCOPE_READY '));
       if (line) ready(JSON.parse(line.slice('PRIVATE_SCOPE_READY '.length)));
     });
-    child.stderr.on('data', chunk => { output += String(chunk); });
+    child.stderr.on('data', (chunk: string) => { output += chunk; });
     const closed = new Promise<{ code: number | null; signal: string | null }>((done, reject) => {
       child.once('error', reject);
       child.once('close', (code, signal) => done({ code, signal }));
@@ -425,8 +427,10 @@ describe('current-build execution route contract', () => {
         cwd: path.join(process.cwd(), 'apps/operator'), env: process.env, stdio: ['ignore', 'pipe', 'pipe']
       });
       let head = '', tail = '', lastHttp = 'unreachable', paired = null;
-      for (const stream of [host.stdout, host.stderr]) stream.on('data', chunk => {
-        const text = chunk.toString(); head = (head + text).slice(0, 2000); tail = (tail + text).slice(-2000);
+      host.stdout.setEncoding('utf8');
+      host.stderr.setEncoding('utf8');
+      for (const stream of [host.stdout, host.stderr]) stream.on('data', (text: string) => {
+        head = (head + text).slice(0, 2000); tail = (tail + text).slice(-2000);
       });
       const call = async (route, method = 'GET', body, token, origin = base) => {
         const response = await fetch(origin + route, {
@@ -532,9 +536,10 @@ describe('current-build execution route contract', () => {
       let head = '';
       let tail = '';
       let lastHttp = 'unreachable';
+      host.stdout.setEncoding('utf8');
+      host.stderr.setEncoding('utf8');
       for (const stream of [host.stdout, host.stderr]) {
-        stream.on('data', (chunk) => {
-          const text = chunk.toString();
+        stream.on('data', (text: string) => {
           head = (head + text).slice(0, 2000);
           tail = (tail + text).slice(-2000);
         });
