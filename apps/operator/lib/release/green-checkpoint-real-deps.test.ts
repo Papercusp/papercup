@@ -1911,7 +1911,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         status: "passed",
         exit: "completed",
         exitCode: 0,
-        output: "typecheck passed",
+        output: "typecheck passed\n",
       },
     });
     expect(
