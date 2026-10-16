@@ -8,7 +8,7 @@
   "originalCensus": "/tmp/tutorial-f419-original-root-ledger-census-20261012T1634.json",
   "priorCandidateMap": "/tmp/tutorial-original-receipt-repair-map-20261012T1822.json",
   "repairInventory": "/tmp/tutorial-original-current-repairs-20261012T1819.json",
-  "scope": "Six original receipts matched to existing completed repairs. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
+  "scope": "Original receipts matched to existing completed repairs. Two additional failures have committed-source qualification while their repair attribution remains unresolved. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
   "mappings": [
     {
       "originalTestRunId": 21103368,
@@ -78,8 +78,517 @@
       },
       "verification": "On 2026-10-15, authoritative work_items:get confirmed DONE with committed completion authority. The retained ledger readback and exact committed source/test hashes were checked without rerunning or reclosing the repair.",
       "proofBoundary": "This proves the stale citation repair at its retained immutable source. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103104,
+      "testFile": "packages/operator-core/lib/goal-launch-resolver-coverage.test.ts",
+      "observedFailure": "The launch-door guard reported blueprint/operation-agent-placement.ts as neither calling the goal resolver nor carrying a documented exemption.",
+      "repairId": "WI-6554700010009816",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "af19dc542c359104f09f1d3e82bf62e842b2b7b4",
+      "rootConnection": "The completed lane repair documents this system-launched operation worker in the existing guard allowlist: its launcher has no goal context, while placement already bounds live workers under its transactional claim. The original failure names exactly this newly documented entry.",
+      "retainedWorkingProof": "LOCAL21182155 PASS at df574832a0, worktreeDirty=true and root=null in the released reader. This remains working-only evidence.",
+      "committedQualification": "currentCommittedQualification: LOCAL21265617, complete conventional suite4PASS0FAIL0SKIP at exact388c01ddf8; clean source, no selector.",
+      "relatedOpenDesignFollowUp": "WI-6554700010009834 covers attributing accepted operation workers to the invoking session's goal. It remains open and unassigned; the guard repair and this qualification do not settle that design work.",
+      "proofBoundary": "The documented launch-door contract now passes at a committed source. This does not prove invoking-goal attribution for blueprint operations or full affected/tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21102917,
+      "testFile": "packages/operator-core/lib/pool-idle-timeout-declared.test.ts",
+      "observedFailure": "The admin-pool guard found scorecards.ts's _gradingAuditSubjectMutexSql singleton constructed directly from getHarnessAdminUrl, retaining an endpoint after it moves.",
+      "repairId": "WI-6554700010009816",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "af19dc542c359104f09f1d3e82bf62e842b2b7b4",
+      "rootConnection": "The completed repair removes the singleton memo and routes gradingAuditSubjectMutexSql through the existing getLongLivedAdminPool registry under grading-audit-subject. Test cleanup uses that registry's existing close seam. This changes the exact source site named by the original failure.",
+      "retainedWorkingProof": "LOCAL21182661 PASS at df574832a0, worktreeDirty=true and root=null in the released reader. This remains working-only evidence.",
+      "committedQualification": "currentCommittedQualification: LOCAL21265618, complete conventional suite30PASS0FAIL0SKIP at exact388c01ddf8; clean source, no selector.",
+      "proofBoundary": "This qualifies the maintained pool declaration/rebinding guard at committed source. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103221,
+      "testFile": "packages/operator-core/lib/sync-resolver/fanout-bound-audit.test.ts",
+      "observedFailure": "The calibrated live-tree audit found unbounded IO-backed portfolio reads at goals.ts Object.entries(declaration.data).",
+      "repairId": "WI-6554700010009162",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair bounds the exact goal collection fan-out with the existing shared createReadDeadline(6000), preserves ready portfolios and records collection read errors. Its real-PG regression holds pending portfolio legs while checking bounded settlement, ready collection preservation and cleanup. The earlier advSessions exemption repair concerns a distinct site.",
+      "retainedProof": {
+        "commit": "36e60ae25766c34a2c8a696b0a907fec320be327",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-36e60ae257-oAjktn",
+        "testRunIds": [21152313, 21152321, 21152314],
+        "testResult": "Existing complete conventional suites: fanout audit10, real-PG goals44 and scenario registry6 =60PASS0FAIL0SKIP; all clean local, nonscratch, unfiltered and collectionFailed=false.",
+        "logPath": "/tmp/tutorial-goal-full60-clean-36e60-20261012T1740.log",
+        "sha256": {
+          "packages/operator-core/lib/sync-resolver/goals.ts": "c8a201086afe04d87b742ceea2102c090761daf16a41143be8367acd8b30fd84",
+          "packages/operator-core/lib/sync-resolver/goals.integration.test.ts": "71717cef4c6d7b2b8fec524b69b12dd930be1f6edb826ddb6c60bbca8662a72a",
+          "packages/operator-core/lib/sync-resolver/fanout-bound-audit.test.ts": "8472168c2d65e03e587ec3c8786af73d6039cdd135e4482c34fc03d72591f74e"
+        }
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirms DONE/committed and stored root-cause verification. Exact-id current-build :3170 ledger read and git-show source/test hashes confirm the retained proof without replaying or reclosing the repair.",
+      "proofBoundary": "This maps the original declaration.data deadline defect to its completed repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103579,
+      "testFile": "packages/operator-core/lib/external-triggers/google-real-pg-cleanup-budget.test.ts",
+      "observedFailure": "The guard raised ENOENT while reading the deleted google-calendar.integration.test.ts fixture.",
+      "repairId": "WI-6554700010009218",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair discovers maintained google-*.integration.test.ts files, requires a nonempty census and retains the strict 300000ms cleanup-hook assertion. This removes the stale historical filename while keeping the maintained suites covered.",
+      "retainedProof": {
+        "commit": "36e60ae25766c34a2c8a696b0a907fec320be327",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-36e60ae257-PZwBwW",
+        "testRunId": 21152334,
+        "testResult": "Existing complete conventional guard2PASS0FAIL0SKIP; clean local, nonscratch, unfiltered and collectionFailed=false.",
+        "testSha256": "5e0433b8d72d21fff4ed2fc82e5bcb271ffad0a0c41734f139dbb4e3a9984549",
+        "logPath": "/tmp/tutorial-google-cleanup-clean-36e60-20261012T1744.log"
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirms DONE/committed and the stored ENOENT-versus-cleanup-budget distinguishing test. Exact-id current-build :3170 ledger read and git-show test hash confirm the retained proof without replaying or reclosing the repair.",
+      "proofBoundary": "This proves the source-census guard repair at its retained immutable source. It does not measure live Google teardown duration or establish full affected/tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101733,
+      "testFile": "packages/operator-core/lib/release/frozen-repair-coverage-mutation.test.ts",
+      "observedFailure": "The current-source calibration and mutation negative controls failed because the in-memory CJS VM had no require for external Node builtins; four cases reported require is not defined.",
+      "repairId": "WI-6554700010008914",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The maintained mutation harness now supplies Node createRequire(file) to the existing VM context, resolving the node:crypto imports that esbuild leaves external. The change directly fixes the harness layer named by the original failures and preserves the coverage and admission negative controls.",
+      "retainedProof": {
+        "commit": "accf2b8a3cecab506d2b8d07feb3ecaef6bf5c99",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-accf2b8a3c-GO8To1",
+        "testRunId": 21145408,
+        "testResult": "Complete conventional suite5PASS0FAIL0SKIP; terminal exit0; source=local, worktreeDirty=false.",
+        "logPath": "/tmp/tutorial-repairs-8913-8914-8916-clean-accf2b8a-20261012T1324.log",
+        "logSha256": "21fbafb8703136ff91f8e6784ef20f04b3aa941096c84f1c58b6f2108471228b"
+      },
+      "verification": "Authoritative work_items:get confirms DONE with committed completion authority and root-cause verification. The retained immutable proof was read without replaying or reclosing the repair.",
+      "proofBoundary": "This maps the original VM-harness failure to its completed repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103581,
+      "testFile": "packages/operator-core/lib/__tests__/tool-guidance-budget.test.ts",
+      "observedFailure": "The P-011 ratchet reported release:repair-queue and work_items:set_state above the 1500-character budget and reports:publish above the 1600-character hard cap.",
+      "repairId": "EI-25724240144074628",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair trims the projected prompt descriptions and guidance in the three named tool definitions, bringing the runtime catalog back under the enforced budget while preserving the tool contracts.",
+      "retainedProof": {
+        "commit": "1cc07fd251",
+        "testRunId": 21135142,
+        "testResult": "Complete source-captured conventional suite7PASS0FAIL0SKIP after the fix; the pre-fix run failed2/7 on the three named over-budget definitions.",
+        "sourceEvidence": "/tmp/pc-ei-25724240144074628-source-map-mv4l8zko.json"
+      },
+      "verification": "Authoritative work_items:get confirms DONE and records the pre-fix failing catalog plus post-fix 7/7 pass and source-capture evidence. The retained proof was read without replaying or reclosing the repair.",
+      "proofBoundary": "This maps the original guidance-budget failure to its completed source repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101439,
+      "testFile": "packages/operator-core/lib/agent-tools/plans/plan-content-writers-record-revisions.test.ts",
+      "observedFailure": "The revision and content_hash guards treated the isolated BM25 test corpus seed helper as a production content writer.",
+      "repairId": "WI-6554700010008916",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair classifies the private BM25 corpus seed helper in the existing reasoned exemption map while retaining live/private-database calibration enforcement. This directly addresses the original guard's false production-writer finding.",
+      "retainedProof": {
+        "commit": "accf2b8a3cecab506d2b8d07feb3ecaef6bf5c99",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-accf2b8a3c-GO8To1",
+        "testRunId": 21145411,
+        "testResult": "Complete conventional suite6PASS0FAIL0SKIP; source=local, worktreeDirty=false.",
+        "logPath": "/tmp/tutorial-repairs-8913-8914-8916-clean-accf2b8a-20261012T1324.log",
+        "logSha256": "21fbafb8703136ff91f8e6784ef20f04b3aa941096c84f1c58b6f2108471228b"
+      },
+      "verification": "Authoritative work_items:get confirms DONE with committed completion authority and the retained clean immutable proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the isolated-seed exemption repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100772,
+      "testFile": "packages/operator-core/lib/vitest-config-enrollment-guard.test.ts",
+      "observedFailure": "The enrollment guard treated configs under negated workspace paths and standalone repositories as declared but unenrolled.",
+      "repairId": "WI-6554700010009161",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair makes declared workspace collection honor the root package.json negation !apps/*-checkpoint and adds reasoned exemptions for standalone apps/slack-asana-bug-drill and libs/generic/rrf. The new guard case directly pins the negation behavior named by the original failure.",
+      "retainedProof": {
+        "commit": "6b831cd52b52d3b8ce3229c72cfeba0a645fe5d3",
+        "testResult": "Guard test16/16 pass; enrollment script exit0; mutation probe caught the removed-negation mutant; behavioral strands and operator-core TypeScript lint clean.",
+        "logs": [".papercusp/scratch/su-0dd6b-wi9161-verify.log", ".papercusp/scratch/su-0dd6b-wi9161-tsc2.log"]
+      },
+      "verification": "Authoritative work_items:get confirms DONE and records the exact committed source, clean script rerun and falsifiable mutation proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the enrollment guard repair and its committed focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100735,
+      "testFile": "packages/operator-core/lib/llm-testing/__tests__/runner-aggregate.test.ts",
+      "observedFailure": "The scenario registry did not expose the complete historical and current operator, oracle and architect suite manifest.",
+      "repairId": "WI-6554700010009163",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed registry guard requires the maintained historical and current SU38/39/40 scenarios while enforcing unique IDs and preserving target, assertion, cap and matrix checks. This directly repairs the missing-manifest failure.",
+      "retainedProof": {
+        "commit": "36e60ae25766c34a2c8a696b0a907fec320be327",
+        "testRunIds": [21152314, 21152313, 21152321],
+        "testResult": "Complete committed suites registry6PASS, fanout10PASS and real-PG goals44PASS: 60PASS0FAIL0SKIP; clean, unfiltered conventional configs.",
+        "logPath": "/tmp/tutorial-goal-full60-clean-36e60-20261012T1740.log",
+        "logSha256": "d2602741d06ab3c2db592c167fe2fc677e097fe98b5125ad58cd1bbb3a2615fe"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and exact clean ledger identities. The retained proof was read without replaying or reclosing the repair.",
+      "proofBoundary": "This maps the scenario-manifest repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100705,
+      "testFile": "packages/operator-core/lib/__tests__/check-mock-cast-escape.test.ts",
+      "observedFailure": "The JSON CLI drainage case failed to distinguish a valid red report from broken serialization while draining a large piped report.",
+      "repairId": "WI-6554700010008900",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair makes the CLI drainage test validate parseable complete report counts, the real policy verdict and exit status even when the guard legitimately reports baseline increases. This directly addresses the original drainage assertion.",
+      "retainedProof": {
+        "commit": "00fb1a462afe726ce3fd01dd116a92e81c08d9d8",
+        "testResult": "Four named suites84PASS0FAIL0SKIP; exact clean LOCAL21145204, worktreeDirty=false.",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-00fb1a462a-aQjwF2",
+        "logPath": "/tmp/tutorial-core-clean-00fb1a46-20261012T1225.log",
+        "logSha256": "fc5fcc25c9f353715329c29f6d09876965ee8d0c0f285e873a4fedaf3c9ea767"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and the retained exact clean proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the CLI drainage fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100604,
+      "testFile": "packages/operator-core/lib/sync-resolver/sync-read-audit.test.ts",
+      "observedFailure": "The sync-read audit lacked representative fixtures for registered argument-requiring query schemas.",
+      "repairId": "WI-6554700010008898",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair registers identity-specific queries with documented null fixtures and verifies they are skipped without fabricated REST reads, directly covering the missing fixture guard cases.",
+      "retainedProof": {
+        "commit": "00fb1a462afe726ce3fd01dd116a92e81c08d9d8",
+        "testResult": "Four named suites84PASS0FAIL0SKIP; exact clean LOCAL21145203, worktreeDirty=false.",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-00fb1a462a-aQjwF2",
+        "logPath": "/tmp/tutorial-core-clean-00fb1a46-20261012T1225.log",
+        "logSha256": "fc5fcc25c9f353715329c29f6d09876965ee8d0c0f285e873a4fedaf3c9ea767"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and the retained exact clean proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the sync-read fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100583,
+      "testFile": "packages/operator-core/lib/external-bench/arm-snapshot.test.ts",
+      "observedFailure": "The model-selection guard treated sourced training-cutoff facts as evaluated model pins.",
+      "repairId": "WI-6554700010008899",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed guard masks only sourced cutoff identity literals, keeps evaluated-model pin controls active, and updates the runbook reference to its governing decision. This directly separates sourced facts from forbidden model pins.",
+      "retainedProof": {
+        "commit": "00fb1a462afe726ce3fd01dd116a92e81c08d9d8",
+        "testResult": "Four named suites84PASS0FAIL0SKIP; exact clean LOCAL21145202/21145201, worktreeDirty=false.",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-00fb1a462a-aQjwF2",
+        "logPath": "/tmp/tutorial-core-clean-00fb1a46-20261012T1225.log",
+        "logSha256": "fc5fcc25c9f353715329c29f6d09876965ee8d0c0f285e873a4fedaf3c9ea767"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and the retained exact clean proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the model-selection contamination repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100177,
+      "testFile": "apps/operator/test/blueprint-project-pg.integration.test.ts",
+      "observedFailure": "The blueprint revision-retention fixture omitted the pinned worker identity before checking that revision A survived a mutable revision B.",
+      "repairId": "WI-6554700010008886",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed fixture gives revision A a pinned snapshot-worker identity, preserves it while revision B changes the model, and asserts the retained A snapshot. Production admission remains unchanged.",
+      "retainedProof": {
+        "commit": "a27723ae80ab407d49ef357107d432708469f7be",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-a27723ae80-BtTsa8",
+        "testResult": "Maintained lint:as-committed run passed9/9 with zero skips; clean uncommittedPaths0/2.",
+        "testSha256": "3da7d0217fe420b2d7c723641f6bb9a3bc7356ef6a69d7d5ffa431a3fe2cde3c",
+        "logPath": "/tmp/tutorial-blueprint-pin-8886-clean-a27723ae-20261012T1100.log"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and current-build ledger readback at the same clean root. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the blueprint snapshot fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100144,
+      "testFile": "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+      "observedFailure": "The DBOS sweep fixture used an independent partial dependency schema and omitted the maintained work-item dependency contract.",
+      "repairId": "WI-6554700010008888",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed fixture uses maintained HARNESS_FEATURES_CONSOLIDATED_DDL and WORK_ITEM_DEPS_DDL, guarding dependency-blocked dispatch and later settlement in the conventional integration suite.",
+      "retainedProof": {
+        "commit": "8355fb9c05476a80ad0967f71b407bc5ddb38da3",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-8355fb9c05-DnA1tJ",
+        "testRunId": 21145003,
+        "testResult": "Complete unfiltered file7PASS0FAIL0SKIP; clean immutable root, uncommitted0.",
+        "logPath": "/tmp/tutorial-dbos-8888-clean-8355fb9c-20261012T1122.log",
+        "testSha256": "a740503d1cdae71bbcb91090f3bf96d1a93b57e4f7b18e14a922d20f78cf7bba"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and retained immutable proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the DBOS dependency-schema fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103748,
+      "testFile": "packages/operator-core/lib/work-items-claim-issue-scope-reread.integration.test.ts",
+      "observedFailure": "The issue-scope read fixture counted an extra SQL statement instead of measuring actual PostgreSQL executions through the existing helper.",
+      "repairId": "WI-10006537",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair measures actual PostgreSQL executions through the fresh-database helper's native debug callback, preserves the one-query getIssue guard and adds a fragment-interpolation control. This directly fixes the fixture's extra-statement count.",
+      "retainedProof": {
+        "commit": "2763fadb52",
+        "root": "/tmp/papercusp-lint-as-committed-2763fadb52-qu9j52",
+        "testRunIds": [20834346, 20834347, 20834351],
+        "testResult": "Complete suites co-location6 + bootstrap17 + issue-scope14 =37PASS0FAIL0SKIP; clean uncommittedPaths0/3.",
+        "logPath": "/tmp/cloud-tutorial-wi6532-6537-clean-2763fadb.log"
+      },
+      "verification": "Authoritative work_items:get confirms DONE with exact clean ledger identities and the measured callback evidence. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the issue-scope SQL-count fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103738,
+      "testFile": "packages/operator-core/lib/identity-management-mutation.integration.test.ts",
+      "observedFailure": "The real-Postgres identity mutation fixture omitted transactional state and asynchronous host-discovery mocks for successor registration and control activation receipt cases.",
+      "repairId": "WI-10007725",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed fixture supplies production-consumed transactional state and asynchronous host-discovery mocks while preserving the identity mutation assertions. This directly covers the four original successor and current-registration failures.",
+      "retainedProof": {
+        "commit": "e39f2baef4c200bf7df967f431d828ecd82d9892",
+        "testRunIds": [20952507, 20952511],
+        "testResult": "Complete setup16PASS + identity7PASS =23PASS0FAIL0SKIP; clean immutable source and provenance stamped.",
+        "logPath": "/tmp/tutorial-wi7725-fixtures-committed-e39f2bae-20261009T0807.log",
+        "logSha256": "80a6a84711492f347a351e4a3e663a79e7031dee9f2858a786cdffd3909c102c"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed with exact clean ledger identities and immutable proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the identity fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103593,
+      "testFile": "packages/operator-core/lib/work-items-lifecycle.integration.test.ts",
+      "observedFailure": "The blueprint direct-item revision-pin integration fixture lacked pinned agent policy.identity, causing operation-unpinned-agent admission failures across fourteen cases.",
+      "repairId": "WI-6554700010009237",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed fixture adds a describe-scoped worker policy identity and applies it to the ten fixture operations, directly restoring the pinned-agent admission precondition named by the original failures.",
+      "retainedProof": {
+        "commit": "307ad2977b",
+        "testRunId": 21152106,
+        "testResult": "Complete file65PASS0FAIL0SKIP; operator-core TypeScript lint clean.",
+        "logPath": ".papercusp/scratch/su-0dd6b-wi9237-verify-20261012T173109Z.log",
+        "testSha256": "3ab4f22f"
+      },
+      "verification": "Authoritative work_items:get confirms DONE and committed source hash equality for the repaired test. The retained proof was read without replaying or reclosing the repair.",
+      "proofBoundary": "This maps the direct-item revision-pin fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21104419,
+      "testFile": "packages/operator-core/lib/agent-tools/harness/__tests__/create-git-sync-seed.integration.test.ts",
+      "observedFailure": "The harness:create hive git-sync seeding fixture failed to seed the member routine and did not preserve the non-fatal exploding-seeder result contract.",
+      "repairId": "WI-10006514",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair extends the existing harness-create fixtures with ready inherited blueprint providers through the real assembler and preserves the exploding-seeder { reason: error } contract, directly covering both original git-sync seed cases.",
+      "retainedProof": {
+        "commit": "202743ceba",
+        "testRunIds": [20831096, 20831097, 20831098, 20831099],
+        "testResult": "Full sibling suites dependency9PASS + auto-install2PASS + git-sync3PASS plus atomic4PASS =18PASS0SKIP; clean immutable root.",
+        "root": "/tmp/papercusp-lint-as-committed-202743ceba-KPdLZ6"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and exact clean ledger identities. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the harness-create git-sync fixture repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21104218,
+      "testFile": "packages/operator-core/lib/dream/dream-sink.integration.test.ts",
+      "observedFailure": "The accepted dream sink replay fixture compared terminal payloads to the pre-completion snapshot after concurrent and crash-after-capture attempts.",
+      "repairId": "WI-10006195",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed oracle captures the actual terminal payload after the completion trigger, asserts a nonempty intent token and retains exact payload equality across replay, directly fixing the original snapshot-ordering failure.",
+      "retainedProof": {
+        "commit": "54c6f7604a",
+        "testRunId": 20793753,
+        "testResult": "Dream2PASS + roster5PASS =7PASS0SKIP; committed-source clean ledger.",
+        "verified": "Native98801 exit0; worktreeDirty=false and isScratchConfig=false."
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and clean ledger proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the dream replay oracle repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21104020,
+      "testFile": "packages/operator-core/lib/sync-resolver/__tests__/cache-tag-trigger-coverage.integration.test.ts",
+      "observedFailure": "The cache-tag backing-table guard found missing active change-notify producers outside the documented coverage exemptions.",
+      "repairId": "WI-10006171",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair installs missing mapped report/occurrence producers, unifies dependency notifications, preserves hosted role normalization and migration failure context, directly restoring the table-to-trigger coverage contract.",
+      "retainedProof": {
+        "commit": "694f4df5",
+        "testResult": "Seven complete suites51PASS0FAIL0SKIP; stable committed stamp, clean7/7.",
+        "logPath": "/tmp/cloud-tutorial-wi6171-clean-694f4df5.log",
+        "submoduleCommit": "1c714094d41a606d010a8d6c6ddfa838e80b01aa"
+      },
+      "verification": "Authoritative work_items:get confirms DONE with stable committed proof and the original producer/trigger distinction. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the cache-trigger coverage repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21116350,
+      "testFile": "packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts",
+      "observedFailure": "The affected-tests result-line fixture lost the inner task-output retention and ordering contract needed for durable result parsing.",
+      "repairId": "EI-25477633446665003",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair retains raw settled-task evidence in the persistent logs namespace while preserving scratch response/source-map sweeping, directly fixing the missing inner task-output log evidence behind the result-line failure.",
+      "retainedProof": {
+        "testResult": "Three complete focused suites68PASS0FAIL0SKIP; requested3/executed3/matched3; uncommitted0 and provenance stamped.",
+        "verification": "The failure was reproduced with an aged scratch control while an equally aged persistent journal remained byte-identical; the runner dry case verified the persistent announced path and preserved scratch cleanup.",
+        "filesChanged": ["libs/test-config/src/hermetic-tmpdir.ts", "libs/test-config/src/hermetic-tmpdir.test.ts", "scripts/affected-tests.mjs", "packages/operator-core/lib/__tests__/affected-tests-stdout-ordering.test.ts", "packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts"]
+      },
+      "verification": "Authoritative work_items:get confirms DONE and the exact retention regression proof. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the affected-result retention repair and focused proof. Historical missing bytes remain unavailable; it supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21106387,
+      "testFile": "packages/operator-core/lib/sync/hyperbee/perf/no-pg-stub-covers-db-org-imports.test.ts",
+      "observedFailure": "The no-PG diagnostic binding guard found acquireTicketSnapshot and retryBeforeCallbackStarts absent from the throwing stub exports required by pg_health.",
+      "repairId": "EI-25780245251332643",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed repair adds both missing throwing no-PG bindings and extends the maintained diagnostic-binding guard, directly restoring the linker inventory required by the original failure.",
+      "retainedProof": {
+        "commit": "3637732094a74d337007a715f300a99743f02364",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-3637732094-RsMp7O",
+        "testRunId": 21146373,
+        "testResult": "Complete named suite2PASS0FAIL0SKIP; clean source=local, worktreeDirty=false, isScratchConfig=false.",
+        "logPath": "/tmp/tutorial-nopg-clean-20261012T1430.log",
+        "logSha256": "a2b40e22a0abae9179e98a5bdd850580af1d69e06a0a65413e749a8c10375e78"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and retained immutable source hashes. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the no-PG diagnostic binding repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21106163,
+      "testFile": "packages/operator-core/lib/search/search-surface-conformance.test.ts",
+      "observedFailure": "The search conformance guard followed unrelated work-item search and omitted JSON asset imports from its import graph.",
+      "repairId": "EI-25780814327176079",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed import-graph repair attributes referenced exports, local helpers and import-time engine calls while resolving JSON assets as validated leaves, directly restoring search-surface conformance without new exception entries.",
+      "retainedProof": {
+        "commit": "40bcd18842c6306c0b923039dc1c1ff906c9e566",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-40bcd18842-ViPvjq",
+        "testRunIds": [21146410, 21146411, 21146412],
+        "testResult": "Three complete suites export/JSON9PASS + conformance75PASS + purity5PASS =89PASS0FAIL0SKIP; clean, unfiltered and provenance stamped.",
+        "logPath": "/tmp/tutorial-search-clean-20261012T1432.log",
+        "logSha256": "02a245a692e902ca934fa120ef242c7e0d1114a1add68dc53fcaf426837dabdf"
+      },
+      "verification": "Authoritative work_items:get confirms DONE/committed and exact clean ledger/source hashes. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the search import-graph conformance repair and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100744,
+      "testFile": "packages/operator-core/lib/work-selection-census.test.ts",
+      "observedFailure": "The work-selection census reported stale or missing kind-decider and delegation anchors in the maintained agent-tool population.",
+      "repairId": "WI-6554700010009139",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed census repair updates the loop selection anchor to the existing claimWorkItem call inside the maintained budget wrapper, directly restoring the real-tree anchor and completeness checks named by this receipt.",
+      "retainedProof": {
+        "commit": "bfacb11b26",
+        "testRunIds": [21147745, 21147746, 21147747, 21147748, 21147751],
+        "testResult": "Five complete suites69PASS0FAIL0SKIP: census10, immutable3, sync-interest6, BAR6 and real-PG44; clean and uncommitted0.",
+        "completionReceipt": "/tmp/tutorial-f419-four-roots-close-bfacb-20261012T1606.json"
+      },
+      "verification": "Authoritative completion and retained committed proof were already verified for the same source repair while mapping original 21103368. This additional original receipt is source-equivalent; no test replay or reclose occurred.",
+      "proofBoundary": "This maps the same census-anchor repair for a second original receipt. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21107829,
+      "testFile": "packages/operator-core/lib/code-intelligence/acceptance-corpus.test.ts",
+      "observedFailure": "Acceptance-corpus fixtures retained stale Rust trait pins and failed current-head symbol and line assertions.",
+      "repairId": "EI-25725930805366740",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed fixture refresh updates the Rust trait pins from 319/335 to 337/353 and refreshes the baseline, directly fixing the four stale acceptance-corpus rows named by the original receipt.",
+      "retainedProof": {
+        "commit": "1cc07fd251",
+        "testResult": "One clean named file, 35 tests passed; uncommittedPaths=0 for the test path.",
+        "verification": "Compared the fixture pins to endpoint_ipc.rs declarations and ran the canonical focused test; symbol-drift, stale-pin, off-by-one and calibration controls passed."
+      },
+      "verification": "Authoritative completion is DONE and records the committed fixture correction and clean named-path pass. The repair was mapped without replaying or reclosing it.",
+      "proofBoundary": "This maps the acceptance-corpus fixture refresh and retained focused proof. It supplies no full affected verdict or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21100133,
+      "testFile": "apps/operator/lib/psu-pty-host.integration.test.ts",
+      "observedFailure": "Both managed and unmanaged pin-heal cases expected the second BOOT while the last recorded lifecycle event was respawn-predecessor-stop-started with gracefulWaitMs=5000. The fixture started its five-second successor deadline before the predecessor shutdown fence completed.",
+      "repairId": "WI-6554700010008893",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed fixture repair observes respawn-predecessor-stop-finished before starting the original five-second BOOT assertion. It retains managed/unmanaged pin checks, adds responsive and graceful-signal-resistant children, and asserts exitObserved, bounded hard-kill behavior and stop-finished before respawn. The original receipt names exactly these two pin-heal assertions; the separate SIGTERM fixture repair WI-6554700010008902 is not attributed to this receipt.",
+      "retainedProof": {
+        "commit": "00fb1a462afe726ce3fd01dd116a92e81c08d9d8",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-00fb1a462a-u4rTm7",
+        "testRunId": 21145211,
+        "testResult": "Complete conventional integration suite107PASS0FAIL0SKIP; terminal exit0. Exact ledger source=local, worktreeDirty=false, isScratchConfig=false. Retained router result requested=executed=matched=1, uncommittedPaths=0/1, provenance=stamped.",
+        "logPath": "/tmp/tutorial-pty-clean-00fb1a46-20261012T1225.log",
+        "logSha256": "bac1fab41ff3796cbec40bac84bacd8797da9171f5b1170b88427a03ff095d16",
+        "testSha256": "3ca0df6783760fd84383e09964033cd5a010ad3c142a940da21b86263631a46b"
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed DONE/committed and the stored responsive-versus-resistant distinguishing test. Exact-id testing:runs readback confirmed original21100133 and passing21145211 identities. The released ledger reader returns root=null; the retained log independently records immutable-root custody. The log digest and git-show committed test digest match the completion proof. No test was replayed and no repair was reclosed.",
+      "proofBoundary": "This maps the original pin-heal fixture timing failures to their completed repair and retained focused proof. It does not establish a product pin-heal defect, full affected PASS or tutorial shipment acceptance."
     }
   ],
+  "sourceReconciliations": [
+    {
+      "originalTestRunId": 21103010,
+      "testFile": "packages/operator-core/lib/external-triggers/plan-run-payload.test.ts",
+      "observedFailure": "Collection failed because sampleForPattern could not satisfy ^ext:[a-z0-9][a-z0-9-]*:message$ before the suite's cases ran.",
+      "sourceRepairCommit": "eb93b00db5c05e309cb7896953cdbe83bf60f66c",
+      "rootConnection": "The committed fixture sampler now expands character classes and their optional/repeated forms, then checks the candidate against the actual schema pattern. The diff directly replaces the sampler that produced the original collection error.",
+      "committedQualification": "currentCommittedQualification: LOCAL21265616, complete conventional suite36PASS0FAIL0SKIP, collectionFailed=false at exact388c01ddf8; clean source, no selector.",
+      "repairAttribution": "Unresolved. WI-10006318 owns an earlier trigger-envelope fix and is not asserted to own this later sampler change. WI-10005128 retains this reconciliation obligation.",
+      "proofBoundary": "The original collection error no longer occurs in the complete committed suite. This is source qualification, not an additional completed repair mapping or full affected acceptance."
+    },
+    {
+      "originalTestRunId": 21102911,
+      "testFile": "packages/operator-core/lib/agent-tools/testing/evidence.test.ts",
+      "observedFailure": "The two JSON-ingested selector cases recovered review-required/unknown instead of settled/pass or settled/skip. Original complete suite: 79PASS2FAIL0SKIP at f419975deb2dbad5228f3499e51db32238f3be5b.",
+      "sourceRepairCommit": "25b768f6978dcaf7808222bc64feda2d6b74d74f",
+      "rootConnection": "The fixture SQL stub captured values.at(-1), but persistHarnessTestRuns already wrote execution_details followed by configuration_snapshot at the original failing revision. The last value was the default null configuration snapshot. The repair captures values.at(-2), asserts the SQL column order and null snapshot, and feeds the actual execution details to recovery. This is a fixture defect; the original failure does not establish a production JSON-parser defect.",
+      "repairAttribution": "Unresolved. No completed repair item is asserted for this source change. WI-10005128 retains this reconciliation obligation.",
+      "retainedProof": {
+        "commit": "72743fd1075fb3782a00aeef205dcd0104edef84",
+        "root": "/tmp/pcv/papercusp-lint-as-committed-72743fd107-18nVSl",
+        "testRunId": 21187077,
+        "testResult": "Existing complete conventional unit suite81PASS0FAIL0SKIP; source=local, worktreeDirty=false, isScratchConfig=false, collectionFailed=false, testNamePattern=null.",
+        "ledgerReadback": "/tmp/tutorial-evidence-continuity-existing-runs-20261015.json",
+        "testSha256": "14c7073a8da2dab47a4b8006f06a68e0a24fec49bb0da3f05dd4c7f1288cd568",
+        "originalTestSha256": "d4226f0e70ab6fff8815fb18fc105d10ec79a97185eaa458703445d53de76ada",
+        "verification": "On 2026-10-16, exact-id testing:runs readback on current-build :3170 verified the stored original and passing source identities, measured counts and selectors. git merge-base --is-ancestor confirms the repair is included in the passing commit. git-show test bytes are identical at the repair and passing commits. The historical temporary checkout has been removed; no checkout was recreated and no test was replayed."
+      },
+      "proofBoundary": "This qualifies the repaired fixture at its retained immutable source. It does not establish a newly completed repair item, full affected PASS, current runtime behavior or final tutorial shipment."
+    }
+  ],
+  "currentCommittedQualification": {
+    "commit": "388c01ddf8e1b2a14cfa92429dd25f80de09898a",
+    "root": "/tmp/pcv/papercusp-lint-as-committed-388c01ddf8-z6k2ay",
+    "taskId": "0mva6ty5k1ohecbszzo",
+    "logPath": ".papercusp/scratch/bash-7887bbbb-ae8.log",
+    "ledgerReadback": "/tmp/tutorial-original-qualification-ledger-388c01dd-20261015.json",
+    "testRunIds": [21265616, 21265617, 21265618],
+    "testResult": "Three complete conventional suites70PASS0FAIL0SKIP: trigger-payload36, launch-door4 and pool-declaration30. Requested3/executed3/matched3, uncommittedPaths0/3, provenance stamped, childSubstituted0. Durable terminal exit0 at2026-10-15T23:48:32.155Z.",
+    "verification": "Current-build testing:runs readback confirms exact source commit/root, source=local, worktreeDirty=false, isScratchConfig=false, collectionFailed=false and no testNamePattern for all three rows. The released reader omits execution details and returns root=null; that incomplete view was not used to infer missing stored provenance.",
+    "sha256": {
+      "packages/operator-core/lib/goal-launch-resolver-coverage.test.ts": "a91c0b215fd6f6ee82ee06418fdab9f30ded3a75ea46a79c5cf7524ea22ba327",
+      "packages/operator-core/lib/pool-idle-timeout-declared.test.ts": "bdd13d160d5b4c4369eb37a524c54c6c6c73d5dac9bbe7d5d808acf7ce0dbadc",
+      "packages/operator-core/lib/scorecards.ts": "341b5d7944896cd8ae1f69cacebbe67a576dc5d89e49d841c4d19b548531d8c6",
+      "packages/operator-core/lib/external-triggers/plan-run-payload.test.ts": "7311688aa3e5de9e90a173b9957e5b9a9d9836bc912ad15320ce021257aaa159"
+    },
+    "scope": "Focused committed qualification of these three complete suites only; not a full affected verdict or final shipment."
+  },
   "sharedRetainedRepairProof": {
     "repairIds": ["WI-6554700010009138", "WI-6554700010009139", "WI-6554700010009143", "WI-6554700010009144"],
     "commit": "bfacb11b26",
@@ -107,7 +616,7 @@
   },
   "limitations": [
     "A literal filename candidate search missed repairs made in consumed source files. An unmapped row in that bounded inventory does not prove an unowned or unresolved defect.",
-    "The remaining original receipt population still requires root-cause and repair-owner reconciliation; these six mappings do not partition that whole population.",
+    "The remaining original receipt population still requires root-cause and repair-owner reconciliation; these scoped mappings and source reconciliations do not partition that whole population.",
     "Historical failed receipts remain immutable. A present focused PASS does not relabel an original failure or prove full affected acceptance.",
     "The dispatched current guard's response was lost to upstream_died_mid_stream; its exact task and terminal sink were subsequently recovered as recorded above. No historical receipt was relabeled."
   ]
