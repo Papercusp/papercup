@@ -262,7 +262,7 @@ export function createProgressAwareWatchdog({
  * wall-clock to have essentially cleared the configured window is what makes
  * the attribution positive rather than a guess.
  *
- * @param {{ signal: string | null, status: number | null, elapsedMs: number }} result
+ * @param {{ signal: string | null, status: number | null, elapsedMs?: number }} result
  * @param {{ killSignal: string, timeoutMs: number, slackMs?: number }} opts
  * @returns {boolean}
  */
@@ -284,8 +284,8 @@ export function isWatchdogTimeout(result, { killSignal, timeoutMs, slackMs = 200
  * after the watchdog fired. The group kill makes the watchdog a real bound on
  * the task tree rather than merely a signal sent to its shallowest process.
  *
- * @param {{ pid?: number, kill?: (signal: string) => unknown } | null | undefined} child
- * @param {string} signal
+ * @param {Pick<import('node:child_process').ChildProcess, 'pid' | 'kill'> | null | undefined} child
+ * @param {NodeJS.Signals} signal
  * @returns {'group' | 'child' | 'gone'}
  */
 export function killSpawnedProcessTree(child, signal) {
