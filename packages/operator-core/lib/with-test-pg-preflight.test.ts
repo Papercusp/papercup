@@ -334,6 +334,42 @@ describe('private API bundle durable evidence preflight', () => {
 });
 
 describe('isolated PostgreSQL durable evidence preflight', () => {
+  describe.each([{ mode: [] }, { mode: ['--isolated-runtime'] },
+    { mode: ['--isolated-runtime=operator-api'] }])('explicit sink validation ($mode)', ({ mode }) => {
+    it.each(['[object Object]', 'postgresql://fixture:redact-me@[broken/evidence',
+      'https://fixture:redact-me@unused.invalid/evidence'])(
+      'refuses malformed or non-PostgreSQL sink %j before bootstrapping', sink => {
+        const startedAt = performance.now();
+        const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), ...mode,
+          '--', process.execPath, '-e', 'process.exit(91)'], {
+          cwd: root, env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink },
+          encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        const diagnostic = childDiagnostic(result, startedAt);
+        expect(result.status, diagnostic).toBe(1);
+        expect(result.stderr, diagnostic).toContain('PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
+        expect(result.stderr).not.toContain(sink);
+        expect(result.stderr).not.toContain('redact-me');
+        expect(result.stdout).not.toContain('booting throwaway PG');
+      });
+  });
+
+  it.each(['postgres://unused.invalid/evidence', ' postgresql://unused.invalid/evidence ',
+    'postgresql:///evidence?host=/tmp/owned-pg'])(
+    'accepts a valid explicit sink %j through the next preflight without connecting', sink => {
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',
+        'papercusp-missing-evidence-preflight-child'], {
+        cwd: root, env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink },
+        encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('child preflight failed');
+      expect(result.stderr).not.toContain('evidence preflight failed');
+      expect(result.stdout).not.toContain('booting throwaway PG');
+    });
+
   it.each(['', '  '])('refuses an explicitly blank sink before allocating ordinary PostgreSQL (%j)', sink => {
     const env = { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink };
     const startedAt = performance.now();

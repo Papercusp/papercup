@@ -59,6 +59,19 @@ if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined && !process.env.PAPERCU
   console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
   process.exit(1);
 }
+// A resolver returns { url, ...metadata }; assigning that object to a child env
+// turns it into "[object Object]". The reporter cannot construct its client and
+// loses the ledger receipt after the entire suite. Reject invalid explicit
+// sinks here without printing their potentially credential-bearing contents.
+if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined) {
+  try {
+    const sink = new URL(process.env.PAPERCUSP_TEST_RUNS_DB_URL.trim());
+    if (sink.protocol !== 'postgres:' && sink.protocol !== 'postgresql:') throw new Error('unsupported protocol');
+  } catch {
+    console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
+    process.exit(1);
+  }
+}
 
 // Evidence must outlive the private database. Require an explicit reporter-only
 // sink before bootstrapping when the caller asks for durable ledger receipts.
