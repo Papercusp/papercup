@@ -165,15 +165,27 @@ export const snapshotInterfaceLeg: PushLeg = (input, snapshot) => {
 };
 registerCodeIntelPushLeg('interface', snapshotInterfaceLeg);
 
-function incidentResponseRecord(value: unknown): Record<string, unknown> | null {
+function incidentResponseRecord(value: unknown, depth = 0): Record<string, unknown> | null {
+  if (depth > 3) return null;
   if (typeof value === 'string') {
-    try { return incidentResponseRecord(JSON.parse(value)); } catch { return null; }
+    try { return incidentResponseRecord(JSON.parse(value), depth + 1); } catch { return null; }
   }
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.structuredContent) return incidentResponseRecord(record.structuredContent, depth + 1);
+  if (Array.isArray(record.content)) {
+    for (const block of record.content) {
+      const item = block as { type?: unknown; text?: unknown } | null;
+      if (item?.type !== 'text') continue;
+      const nested = incidentResponseRecord(item.text, depth + 1);
+      if (nested) return nested;
+    }
+  }
+  return record;
 }
 
 function failedIncidentPaths(call: PushCall): string[] {
-  if (!/(?:^|[:_/.])(?:testing:run|test:file|run-tests)(?:$|[:_/.])/.test(call.tool ?? '')) return [];
+  if (!/(?:^|[:_/.])(?:testing[:_]run|test[:_]file|run-tests)(?:$|[:_/.])/.test(call.tool ?? '')) return [];
   const response = incidentResponseRecord(call.toolResponse);
   if (!response) return [];
   const paths = new Set<string>();
@@ -195,19 +207,17 @@ function failedIncidentPaths(call: PushCall): string[] {
       if (failed && safeSnapshotPath(path)) paths.add(path);
     }
   }
-  const failed = response.status === 'failed' || response.status === 'fail' || response.status === 'error'
-    || response.ok === false || response.error !== undefined;
-  if (failed && paths.size === 0) {
-    const input = incidentResponseRecord(call.toolInput);
-    const selected = input?.files;
-    if (Array.isArray(selected)) for (const path of selected) if (safeSnapshotPath(path)) paths.add(path);
-  }
+  // A refused/aborted run and the list of requested files prove no file failed.
   return [...paths].slice(0, 4);
 }
 
 /** P-038: observed test failures are authoritative; static reach is hypothesis-only. */
 export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
-  const failed = [...new Set(input.calls.flatMap(failedIncidentPaths))];
+  const calls = input.calls.filter(call => {
+    const scope = incidentResponseRecord(call.toolInput)?.harness;
+    return scope === undefined || scope === input.harness;
+  });
+  const failed = [...new Set(calls.flatMap(failedIncidentPaths))].slice(0, 4);
   if (!failed.length) return [];
   const reverse = new Map<string, string[]>();
   for (const [imported, importers] of snapshot.importers) {
@@ -224,6 +234,7 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
     for (const dependency of reverse.get(path) ?? []) {
       if (!safeSnapshotPath(dependency) || reached.has(dependency)) continue;
       reached.add(dependency); queue.push(dependency);
+      if (reached.size >= 80) break;
     }
   }
   const symbols = [...new Map([...(snapshot.symbols?.values() ?? [])].flat()
@@ -232,15 +243,27 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
     .flatMap(value => {
       const edit = value as { path?: unknown; changes?: unknown } | null;
       return edit && typeof edit.path === 'string' && reached.has(edit.path) && Array.isArray(edit.changes)
-        ? edit.changes.filter((change): change is string => typeof change === 'string').slice(0, 3)
+        ? edit.changes.filter((change): change is string => typeof change === 'string' && change.length <= 120).slice(0, 3)
         : [];
-    });
+    }).slice(0, 3);
   const dependencies = [...reached].filter(path => !failed.includes(path)).slice(0, 8);
   const symbolText = symbols.length ? symbols.map(symbol => symbol.name + ':' + symbol.path + ':' + symbol.line).join(', ') : 'unknown';
   const changedText = edits.length ? edits.join('; ') : 'unknown';
   const suggestedCall = 'testing:run ' + JSON.stringify({ files: failed.slice(0, 2), harness: input.harness });
   const subject = ('failed-tests:' + failed.join('|')).slice(0, 1000);
   const citedPaths = [...new Set([...failed, ...dependencies, ...symbols.map(symbol => symbol.path)])].slice(0, 12);
+  const runIds = [...new Set(calls.flatMap(call => {
+    const response = incidentResponseRecord(call.toolResponse);
+    const rows = response?.byFile;
+    if (!rows || typeof rows !== 'object' || Array.isArray(rows)) return [];
+    return Object.entries(rows).flatMap(([path, row]) => {
+      const id = row && typeof row === 'object' ? (row as { runId?: unknown }).runId : undefined;
+      return failed.includes(path) && typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? [id] : [];
+    });
+  }))].slice(0, 4);
+  const recovery = runIds.length ? 'Recover recorded failures with testing:runs '
+    + JSON.stringify({ testRunIds: runIds, harness: input.harness }) + '.'
+    : 'Original test-row identity unknown; no exact ledger recovery can be prescribed.';
   return [{
     leg: 'incident',
     subject,
@@ -248,10 +271,10 @@ export const snapshotIncidentLeg: PushLeg = (input, snapshot) => {
     suggestedCall,
     text: 'Observed failing test files: ' + failed.join(', ') + '. The observed failure is authoritative.\n'
       + 'Static reach candidates (unverified): ' + (dependencies.join(', ') || 'unknown') + '.\n'
-      + 'Recently changed symbols (unverified): ' + symbolText + '; edit strands: ' + changedText + '.\n'
+      + 'Symbols on static reach (change status unknown): ' + symbolText + '; observed turn edit strands: ' + changedText + '.\n'
       + 'Work items changed/open on these paths: unknown from this bounded turn. '
       + 'Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. '
-      + 'Recover the exact failure with testing:runs ' + JSON.stringify({ testRunIds: [], harness: input.harness }) + '.',
+      + recovery,
   }];
 };
 registerCodeIntelPushLeg('incident', snapshotIncidentLeg);

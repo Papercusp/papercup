@@ -62,18 +62,41 @@ describe('shared snapshot-backed push channel', () => {
     const fact = snapshotIncidentLeg({ ...input, calls: [{
       tool: 'testing:run',
       toolInput: { files: ['app/use.test.ts'], harness: 'papercusp' },
-      toolResponse: { status: 'failed', byFile: { 'app/use.test.ts': { passed: 0, failed: 1, skipped: 0 } } },
+      toolResponse: { status: 'failed', byFile: { 'app/use.test.ts': { passed: 0, failed: 1, skipped: 0, runId: 42 } } },
     }] }, snap)[0];
     expect(fact).toMatchObject({ leg: 'incident', subject: 'failed-tests:app/use.test.ts',
       suggestedCall: 'testing:run {"files":["app/use.test.ts"],"harness":"papercusp"}' });
     expect(fact?.citedPaths).toEqual(expect.arrayContaining(['app/use.test.ts', 'app/use.ts', 'lib/target.ts']));
     expect(fact?.text).toContain('Observed failing test files: app/use.test.ts');
-    expect(fact?.text).toContain('Recently changed symbols (unverified): target:lib/target.ts:7');
+    expect(fact?.text).toContain('Symbols on static reach (change status unknown): target:lib/target.ts:7');
+    expect(fact?.text).toContain('testing:runs {"testRunIds":[42],"harness":"papercusp"}');
     expect(fact?.text).toContain('Work items changed/open on these paths: unknown');
     expect(snapshotIncidentLeg({ ...input, calls: [{
       tool: 'testing:run',
       toolResponse: { status: 'passed', byFile: { 'app/use.test.ts': { passed: 1, failed: 0, skipped: 0 } } },
     }] }, snap)).toEqual([]);
+  });
+
+  it('handles native MCP envelopes without calling refused selections failing files or crossing harnesses', () => {
+    const response = { status: 'failed', byFile: {
+      'app/use.test.ts': { failed: 1, runId: 42 }, 'app/pass.test.ts': { failed: 0, passed: 1, runId: 43 },
+    }, testRunIds: [43, 42] };
+    const call = { tool: 'mcp__papercusp_su__testing_run', toolInput: JSON.stringify({ harness: 'papercusp' }),
+      toolResponse: { content: [{ type: 'text', text: JSON.stringify(response) }] } };
+    const facts = snapshotIncidentLeg({ ...input, calls: [call] }, snapshot());
+    expect(facts).toHaveLength(1);
+    expect(facts[0].citedPaths).not.toContain('app/pass.test.ts');
+    expect(facts[0].text).toContain('"testRunIds":[42]');
+    expect(facts[0].text).not.toContain('43');
+    expect(snapshotIncidentLeg({ ...input, calls: [{ ...call, toolInput: { harness: 'foreign' } }] }, snapshot())).toEqual([]);
+    for (const toolResponse of [{ ok: false, error: 'invalid_root' }, { status: 'failed' }, { status: 'timeout' }]) {
+      expect(snapshotIncidentLeg({ ...input, calls: [{ ...call, toolInput: { files: ['app/use.test.ts'] }, toolResponse }] }, snapshot())).toEqual([]);
+    }
+    const unknown = snapshotIncidentLeg({ ...input, calls: [{ ...call, toolResponse: {
+      structuredContent: { byFile: { 'app/use.test.ts': { failed: 1 } } },
+    } }] }, snapshot());
+    expect(unknown[0].text).toContain('Original test-row identity unknown');
+    expect(unknown[0].text).not.toContain('"testRunIds":[]');
   });
 
   it('keeps absent reach unknown, bounds cycles and rejects untrusted path/base/commands', () => {
