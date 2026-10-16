@@ -250,6 +250,11 @@ async function coordCanary(health: unknown) {
       // Exercise the original Health seed and browser import graph without
       // building/starting an API or replaying the browser journey.
       await import('./portal-roster-browser-fixture');
+      // Collector and shared-query subscriptions also use the process-wide hub.
+      // Keep one alive so this proof exercises its teardown independently of
+      // the auth listener, whose unsubscribe may leave other subscribers.
+      const { hubListen } = await import('../lib/pg-listen-hub');
+      await hubListen('private_health_cleanup_probe', () => {});
       console.log('ROSTER_HEALTH_CLEANUP_SEEDED ' + JSON.stringify({ workspace }));
       return;
     }
@@ -867,6 +872,13 @@ finally {
   await cleanupPhase('database-census', async () => {
     pgConnections = await sql`SELECT client_port, application_name, state
       FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`;
+  });
+  // This disposable worker owns every hub subscription in its process. Retire
+  // them after the census has retained their labels, including subscriptions
+  // started by collector reads after the initial auth listener was installed.
+  await cleanupPhase('listen-hub-stop', async () => {
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
   });
   await cleanupPhase('database-close', () => sql.end({ timeout: 5 }));
   await cleanupPhase('db-org-pools-reset', () => _resetForTests());

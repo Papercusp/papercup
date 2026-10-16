@@ -586,8 +586,42 @@ describe('carry-delivery condition rail', () => {
         await expect(readRecentProductionCarryEvents(dir, ORPHAN_NOW)).rejects.toThrow();
       }
       writeFileSync(file, `${delivered}\n`);
-      await expect(readRecentProductionCarryEvents(dir, ORPHAN_NOW, 60_000, 1)).rejects.toThrow('complete-read bound');
       expect(await readRecentProductionCarryEvents(dir, ORPHAN_NOW)).toHaveLength(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('counts every in-window terminal outcome from an oversized ledger using bounded pages', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'carry-census-oversized-'));
+    const file = join(dir, 'fixture-owner.events.jsonl');
+    const row = (kind: string, atMs: number) => ({
+      kind,
+      mode: 'carry-respawn',
+      ts: new Date(atMs).toISOString(),
+    });
+    const stale = row('respawn-carry-delivered', ORPHAN_NOW - 120_000);
+    const recentOutcomes = [
+      row('respawn-carry-delivered', ORPHAN_NOW - 3_000),
+      row('respawn-carry-dropped', ORPHAN_NOW - 2_000),
+      row('respawn-failed', ORPHAN_NOW - 1_000),
+    ];
+    const ledger = [
+      recentOutcomes[0], ...Array.from({ length: 16 }, () => stale),
+      recentOutcomes[1], ...Array.from({ length: 16 }, () => stale),
+      recentOutcomes[2], ...Array.from({ length: 16 }, () => stale),
+    ];
+    writeFileSync(file, `${ledger.map((event) => JSON.stringify(event)).join('\n')}\n`);
+
+    try {
+      const maxPageBytes = 512;
+      expect(Buffer.byteLength(ledger.map((event) => JSON.stringify(event)).join('\n') + '\n')).toBeGreaterThan(maxPageBytes);
+      const events = await readRecentProductionCarryEvents(dir, ORPHAN_NOW, 60_000, maxPageBytes);
+      expect(events).toHaveLength(3);
+      expect(summarizeProductionCarryDelivery(events, ORPHAN_NOW, 60_000)).toMatchObject({
+        delivered: 1,
+        dropped: 1,
+        respawnFailed: 1,
+        terminalOutcomes: 3,
+      });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

@@ -80,10 +80,10 @@ export const CARRY_DRILL_DROP_BACKFILL_MS = 15 * 60_000;
 export const PRODUCTION_CARRY_WINDOW_MS = 60 * 60_000;
 export const PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES = 20;
 export const PRODUCTION_CARRY_DELIVERY_RATE_FLOOR = 0.5;
-/** The host writer caps each per-owner ledger at 256 KiB. Reading that same
- *  ceiling makes the watchdog bounded without discarding rows the writer still
- *  retains from a busy trailing hour. */
-export const PRODUCTION_CARRY_SCAN_TAIL_BYTES = 256 * 1024;
+/** Bounded page size for complete per-owner ledger scans. */
+export const PRODUCTION_CARRY_SCAN_CHUNK_BYTES = 256 * 1024;
+/** @deprecated Use PRODUCTION_CARRY_SCAN_CHUNK_BYTES. */
+export const PRODUCTION_CARRY_SCAN_TAIL_BYTES = PRODUCTION_CARRY_SCAN_CHUNK_BYTES;
 
 /**
  * An orphan older than this is history, not news — the same horizon
@@ -275,19 +275,34 @@ export function summarizeProductionCarryDelivery(
 }
 
 /**
- * Read recently-modified per-owner event ledgers, bounded to the writer's own
- * 256 KiB cap. The shared drill ledger is excluded: some production drop rows
- * are mirrored there for drill-report compatibility and would be double-counted.
+ * Read recently-modified per-owner event ledgers in bounded pages. Strict reads
+ * validate the whole ledger while retaining only in-window terminal outcomes,
+ * so an over-cap file cannot abort this census or inflate its memory use with
+ * old rows. Owner files are read sequentially to keep the shared libuv worker
+ * pool available to other filesystem work. The shared drill ledger is excluded:
+ * some production drop rows are mirrored there for drill-report compatibility
+ * and would be double-counted.
  */
 export async function readRecentProductionCarryEvents(
   dir: string = PSU_PTY_DIR,
   now: number = Date.now(),
   windowMs: number = PRODUCTION_CARRY_WINDOW_MS,
-  maxBytes: number = PRODUCTION_CARRY_SCAN_TAIL_BYTES,
+  chunkBytes: number = PRODUCTION_CARRY_SCAN_CHUNK_BYTES,
 ): Promise<PtyHostEvent[]> {
   const events: PtyHostEvent[] = [];
+  const windowStartMs = now - windowMs;
+  const isWindowTerminalOutcome = (event: PtyHostEvent): boolean => {
+    if (event.mode !== 'carry-respawn') return false;
+    const ts = eventTimeMs(event);
+    if (ts == null || ts < windowStartMs || ts > now) return false;
+    return event.kind === 'respawn-carry-delivered' || event.kind === 'respawn-carry-dropped' ||
+      event.kind === 'respawn-failed';
+  };
   for (const ownerId of await listRecentHostEventOwners(dir, now - windowMs, true)) {
-    events.push(...(await readHostEventTailAsync(ownerId, dir, maxBytes, { requireComplete: true })));
+    events.push(...(await readHostEventTailAsync(ownerId, dir, chunkBytes, {
+      requireComplete: true,
+      filterEvent: isWindowTerminalOutcome,
+    })));
   }
   return events;
 }
