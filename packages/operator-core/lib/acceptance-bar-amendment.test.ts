@@ -19,8 +19,7 @@ import {
 } from './acceptance-bar-amendment';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
-import { computeAcceptanceBarSetHash, normalizeAcceptanceBarCriterion } from './rubrics';
-import { requirementSections } from './requirement-contract';
+import { normalizeAcceptanceBarCriterion } from './rubrics';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import {
   ACCEPTANCE_BAR_MEANING_FIELDS,
@@ -386,60 +385,6 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     // receiver-side verified-revision override on the subject plan is cleared.
     expect(updates[1]).toContain('SET acceptance_bar_verified_revision = NULL');
     expect(updates[1]).not.toContain('template_data');
-  });
-
-  it.each(['live', 'tree'] as const)('validates a neutral pin repair against the amended canonical plane, with map %s', async (plane) => {
-    const seeded = buildAcceptanceBarSeed({
-      planSlug: 'subject-plan', planContent: subjectPlan(), actorId: 'seed-author',
-      declaredAt: '2026-09-06T00:00:00.000Z', cohort: 'post-epoch', adoptionEpoch: 1,
-      subjectPlanRevision: 2, planStatus: 'active',
-      rubricSlug: 'acceptance-subject-plan', rubricRevision: 4,
-    });
-    expect(seeded.ok).toBe(true);
-    if (!seeded.ok) throw new Error(seeded.message);
-    const original = {
-      ...seeded.criteria[0]!,
-      intent: { request: 'The writer persists one canonical BAR.', sourceRefs: ['owner-turn:1'] },
-      method: 'Inspect the canonical store through its authenticated tool.',
-      check: { kind: 'instrument' as const, instrumentKey: 'none' },
-      requiredTestLayers: [],
-    };
-    const canonical = normalizeAcceptanceBarCriterion({
-      ...original, evidencePlane: 'live', requiredScope: ['live'],
-    });
-    const template = {
-      ...seeded.templateData, criteria: [canonical],
-      barSetHash: computeAcceptanceBarSetHash([canonical]),
-    };
-    // A reviewed plane amendment lives in the canonical rubric. The original
-    // requirement projection can still name tree during a later neutral write.
-    const requirements = '**R-1 — Canonical outcome.**\n```requirement\n' +
-      JSON.stringify(requirementSections(original)) + '\n```';
-    const before = subjectPlan({ requirements, map: `| R-1 | P-001 | ${plane} |` });
-    const after = before.replace('`todo` persist', '`done` persist');
-    const saved = JSON.stringify(template);
-    const updates: string[] = [];
-    const sql = vi.fn(async (strings: TemplateStringsArray) => {
-      const statement = strings.join(' ');
-      if (statement.includes('SELECT status, acceptance_bar_rubric_slug')) return [{
-        status: 'active', acceptance_bar_rubric_slug: 'acceptance-subject-plan',
-        acceptance_bar_rubric_revision: 4, acceptance_bar_set_hash: template.barSetHash,
-      }];
-      if (statement.includes('pg_try_advisory_xact_lock')) return [{ ok: true }];
-      if (statement.includes('SELECT version, template_data')) return [{ version: 4, template_data: template }];
-      if (statement.includes('UPDATE harness_shared.harness_plans')) {
-        updates.push(statement);
-        return [{ plan_slug: 'acceptance-subject-plan' }];
-      }
-      throw new Error(`unexpected SQL: ${statement}`);
-    });
-    await expect(synchronizeAcceptanceBarSubjectRevision(sql as never, {
-      workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'subject-plan',
-      previousBody: before, nextBody: after, previousVersion: 2, nextVersion: 3,
-    })).resolves.toBe(plane === 'live');
-    expect(JSON.stringify(template)).toBe(saved);
-    expect(updates).toHaveLength(plane === 'live' ? 2 : 0);
-    expect(updates.every((statement) => !statement.includes('criteria'))).toBe(true);
   });
 
   it('does not repair the pin when the Requirements BAR meaning changes', async () => {

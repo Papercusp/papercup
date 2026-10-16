@@ -70,7 +70,7 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
-import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
+import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase, validLocalPort } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
 // psu-launcher marks inherited operator URLs as managed handoffs rather than

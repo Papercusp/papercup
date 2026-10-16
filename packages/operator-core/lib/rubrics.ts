@@ -4680,6 +4680,10 @@ async function amendAcceptanceBarRubric(
         stored.criteria.map(normalizeAcceptanceBarCriterion),
       );
       const built = buildRubricTemplateData(amended);
+      const canonicalUnchanged = isDeepStrictEqual(built.data, buildRubricTemplateData({
+        ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
+        criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
+      }).data);
       await assertRubricCompositionLinksResolve(amended);
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
       // files the plan's own items will write. Those are accepted as planned (and named on
@@ -4848,10 +4852,18 @@ async function amendAcceptanceBarRubric(
           `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
         );
       }
+      const sourceMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+      if (!sourceMappings.ok) {
+        throw new Error(`acceptance_bar_amendment_mapping_invalid:${sourceMappings.problems.map((problem) => problem.code).join(',')}`);
+      }
       // Rendering follows every represented field, while proof invalidation follows BAR meaning.
       // A method-only edit needs both plan locks whenever an explicit requirement block changes.
       const requirementChangedBars = [...new Set([
         ...changedBars,
+        ...sourceMappings.mappings.filter((mapping) => {
+          const criterion = guard.data.criteria.find((candidate) => candidate.barKey === mapping.barKey);
+          return criterion?.evidencePlane && criterion.evidencePlane !== mapping.evidencePlane;
+        }).map((mapping) => mapping.barKey),
         ...amendedRequirementBarKeys(
           stored.criteria as unknown as Array<Record<string, unknown>>,
           guard.data.criteria as Array<Record<string, unknown>>,
@@ -4872,7 +4884,7 @@ async function amendAcceptanceBarRubric(
         nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
         changedBars: requirementChangedBars,
       });
-      const desiredMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+      const desiredMappings = parseBarMappings(requirementsRerender.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!desiredMappings.ok) {
         throw new Error(
           `acceptance_bar_amendment_mapping_invalid:${desiredMappings.problems.map((problem) =>
@@ -5005,6 +5017,53 @@ async function amendAcceptanceBarRubric(
             lifecycle.message ?? 'acceptance_bar_amendment_candidate_not_ready_for_vetting',
           );
         }
+      }
+
+      // An identical canonical contract can repair an older writer's projection
+      // without creating an amendment, rubric revision, or fresh proof cohort.
+      const projectionOnly = canonicalUnchanged && changedBars.length === 0;
+      if (projectionOnly && !preview) {
+        if (requirementsRerender.rerendered.length === 0) return {
+          rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
+          subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
+          changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+          idempotencyKey: '',
+        };
+        const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
+        const validated = buildAcceptanceBarSeed({
+          planSlug: subjectPlanHint, planContent: requirementsRerender.content, actorId,
+          declaredAt: stored.barContract!.seededAt, cohort: stored.barContract!.cohort,
+          adoptionEpoch: stored.barContract!.adoptionEpoch,
+          subjectPlanRevision: nextSubjectRevision, planStatus: subjectRow.status,
+          rubricSlug: input.rubricId, rubricRevision: oldRubricRevision,
+          existingTemplateData: rubricRow.template_data, preserveExistingBars: true,
+        });
+        if (!validated.ok || validated.barSetHash !== stored.barSetHash) {
+          throw new Error('acceptance_bar_projection_repair_invalid');
+        }
+        const subjectBody = requirementsRerender.content;
+        await tx`UPDATE harness_shared.harness_plans
+          SET content=${subjectBody}, content_hash=${hashPlanContent(subjectBody)}, version=${nextSubjectRevision},
+              acceptance_bar_verified_revision=NULL, updated_at=now(), origin='local'
+          WHERE workspace_id=${subjectScope.workspaceId} AND harness_slug=${subjectScope.harnessSlug}
+            AND plan_slug=${subjectPlanHint}`;
+        await tx`UPDATE harness_shared.harness_plans
+          SET template_data=jsonb_set(template_data, '{barContract,subjectPlanRevision}', to_jsonb(${nextSubjectRevision}::integer)),
+              origin='local'
+          WHERE workspace_id=${rubricScope.workspaceId} AND harness_slug=${rubricScope.harnessSlug}
+            AND plan_slug=${input.rubricId}`;
+        injectAmendmentFault(input, 'after-rubric');
+        await recordPlanRevisionInTransaction(tx, {
+          planSlug: subjectPlanHint, harnessSlug: subjectScope.harnessSlug, workspaceId: subjectScope.workspaceId,
+          content: subjectBody, rationale: `canonical acceptance projection repair: ${reason}`,
+          identity: { ownerId: actorId, ownerLabel: actorId, source: 'static-client', workspaceId: null, userId: null },
+        });
+        return {
+          rubric: { ...stored, barContract: { ...stored.barContract!, subjectPlanRevision: nextSubjectRevision } },
+          decisionId: '', rubricRevision: oldRubricRevision, subjectPlanRevision: nextSubjectRevision,
+          barSetHash: stored.barSetHash!, changedBars, reboundContracts: 0,
+          invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey: '',
+        };
       }
 
       if (changedBars.length === 0 && requirementsRerender.rerendered.length === 0 && !preview) return {
@@ -5142,7 +5201,7 @@ async function amendAcceptanceBarRubric(
             sourceSnapshotHash: snapshot.contentHash,
             changes,
             revisionMovement: {
-              rubric: { from: oldRubricRevision, to: nextRubricRevision },
+              rubric: { from: oldRubricRevision, to: projectionOnly ? oldRubricRevision : nextRubricRevision },
               subject: { from: oldSubjectRevision, to: changedBars.length || requirementsRerender.rerendered.length ? nextSubjectRevision : oldSubjectRevision },
             },
             ...proofPartition,

@@ -379,7 +379,7 @@ async function serveForwardedNativeTool(
  * attempt can become a second execution in the receiving worker. */
 export async function runOnSuNativeToolOwner<T>(
   address: SuNativeToolAddress,
-  request: unknown,
+  request: unknown | (() => unknown | Promise<unknown>),
   local: () => Promise<T>,
   timeoutMs?: number,
   onProgress?: (value: unknown) => void,
@@ -395,7 +395,10 @@ export async function runOnSuNativeToolOwner<T>(
   if (!isForwardableOwner(owner)) throw new SuNativeToolOwnerError('unreachable', false);
   // Keep owner-local capabilities in this process. A request factory is only
   // materialized after routing proves the request must cross the worker RPC.
-  const body = typeof request === 'function' ? request() : request;
+  // Materialize request factories only after routing proves this call must
+  // cross the worker RPC. Owner-local calls keep their host-local context and
+  // avoid remote-only compatibility reads on the fast path.
+  const body = typeof request === 'function' ? await request() : request;
   const payload: ForwardedNativeToolRequest = {
     address, hostId: owner.hostId, nonce: owner.nonce, request: { op: 'native-tool', body },
   };
