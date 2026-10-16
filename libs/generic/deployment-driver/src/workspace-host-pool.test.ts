@@ -90,7 +90,27 @@ describe("ordinary VM pool placement (capacity-cost P-534)", () => {
 
   it("does not reuse a VM reserved by an in-flight operation, even for the same customer", () => {
     const owned = host({ customerWorkspaceId: "customer-a", dataVolumeId: "disk-a", reservationId: "wake-in-progress" });
-    expect(selectWorkspaceHostPoolPlacement(request({ mayProvision: false }), [owned])).toMatchObject({ kind: "queue" });
+    expect(selectWorkspaceHostPoolPlacement(request(), [owned, host({ hostId: "spare" })]))
+      .toMatchObject({ kind: "queue", reason: "existing-tenant-needs-reconciliation" });
+  });
+
+  it.each<Partial<WorkspaceHostPoolCandidate>>([
+    { health: "unknown" }, { observedAtMs: 0 }, { state: "draining" },
+    { controllerFence: 0 }, { dataVolumeId: "wrong-disk" },
+  ])("reconciles an existing data owner instead of routing around it %#", (overrides) => {
+    const owned = host({ hostId: "owned", customerWorkspaceId: "customer-a", dataVolumeId: "disk-a", ...overrides });
+    expect(selectWorkspaceHostPoolPlacement(request(), [owned, host()]))
+      .toMatchObject({ kind: "queue", reason: "existing-tenant-needs-reconciliation" });
+  });
+
+  it("refuses a conflicting writer even if a second host looks healthy", () => {
+    const owned = host({ customerWorkspaceId: "customer-a", dataVolumeId: "disk-a" });
+    const conflict = host({ hostId: "second", customerWorkspaceId: "customer-a", dataVolumeId: "disk-a" });
+    expect(selectWorkspaceHostPoolPlacement(request(), [owned, conflict]))
+      .toMatchObject({ kind: "queue", reason: "existing-tenant-needs-reconciliation" });
+    expect(selectWorkspaceHostPoolPlacement(request(), [owned, host({
+      hostId: "foreign-owner", customerWorkspaceId: "customer-b", dataVolumeId: "disk-a",
+    })])).toMatchObject({ kind: "queue", reason: "existing-tenant-needs-reconciliation" });
   });
 
   it("accepts the exact freshness and capacity boundary", () => {

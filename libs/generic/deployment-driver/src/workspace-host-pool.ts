@@ -66,7 +66,7 @@ export type WorkspaceHostPoolPlacement = {
       generation: number;
       controllerFence: number;
     }
-  | { kind: "provision" | "queue"; reason: "no-eligible-host" }
+  | { kind: "provision" | "queue"; reason: "no-eligible-host" | "existing-tenant-needs-reconciliation" }
 );
 
 const nonEmpty = (value: string): boolean => typeof value === "string" && value.trim().length > 0;
@@ -140,6 +140,14 @@ export function selectWorkspaceHostPoolPlacement(
     else eligible.push(host);
   }
   rejected.sort((a, b) => compare(a.hostId, b.hostId));
+  const owners = candidates.filter((host) => host.workspaceId === request.workspaceId &&
+    (host.customerWorkspaceId === request.customerWorkspaceId || host.dataVolumeId === request.dataVolumeId));
+  // A stale/unhealthy owner or a second wake cannot be routed around by provisioning.
+  // The existing durable operation must fence and reconcile that writer first. Even a
+  // clean warm VM must not be assigned while another VM may own this tenant's data.
+  if (owners.length > 1 || owners.some((owner) => !eligible.includes(owner))) {
+    return { kind: "queue", reason: "existing-tenant-needs-reconciliation", rejected };
+  }
   // Existing data locality first, then smallest adequate capacity, then stable id.
   // This is not a price ranking: no unmeasured price is silently assumed free.
   eligible.sort((a, b) =>
