@@ -1,5 +1,5 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -106,3 +106,77 @@ function checkPreflight(candidate: string) {
     return { status: failure.status, stderr: String(failure.stderr ?? '') };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
+
+describe('frozen native SPA preparation', () => {
+  function prepare(options: { pinned?: boolean; missingBuilder?: boolean; buildExit?: number;
+    incomplete?: boolean; external?: boolean } = {}) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-spa-preflight-'));
+    const frozen = resolve(dir, 'frozen');
+    const app = resolve(frozen, 'apps/operator-vite');
+    const capture = resolve(dir, 'build.json');
+    const preparation = source.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0];
+    if (!preparation) throw new Error('Frozen SPA preparation was not found');
+    mkdirSync(resolve(app, 'bin'), { recursive: true });
+    mkdirSync(resolve(frozen, 'scripts'), { recursive: true });
+    if (!options.missingBuilder) writeFileSync(resolve(app, 'bin/vite-build-singleflight'), '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(resolve(frozen, 'scripts/pc-heavy.sh'), '#!/bin/bash\n[ "$1" != -- ] || shift\nexec "$@"\n');
+    writeFileSync(resolve(dir, 'npm'), `#!/usr/bin/env node
+const fs = require('node:fs');
+fs.writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2),
+  out: process.env.VITE_BUILD_OUT_ROOT, command: process.env.VITE_BUILD_CMD ?? null,
+  lock: process.env.VITE_BUILD_LOCK ?? null, snapshot: process.env.VITE_BUILD_SNAPSHOT_DIR ?? null,
+  retain: process.env.PAPERCUSP_RETAIN_DIST_CHUNKS }));
+if (${options.buildExit ?? 0}) process.exit(${options.buildExit ?? 0});
+fs.mkdirSync(process.env.VITE_BUILD_OUT_ROOT + '/dist/assets', { recursive: true });
+fs.writeFileSync(process.env.VITE_BUILD_OUT_ROOT + '/dist/index.html', 'frozen HTML');
+if (!${Boolean(options.incomplete)}) fs.writeFileSync(process.env.VITE_BUILD_OUT_ROOT + '/dist/assets/app.js', 'frozen UI');
+`, { mode: 0o755 });
+    try {
+      const result = spawnSync('bash', ['-c', `set -euo pipefail
+OPERATOR_SOURCE_ROOT="$FIXTURE_FROZEN"
+WORK="$FIXTURE_DIR"
+log() { :; }
+${preparation}
+prepare_verifier_spa
+printf '%s' "$VERIFIER_SPA_DIST"
+`], { encoding: 'utf8', timeout: 15_000, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`,
+        FIXTURE_DIR: dir, FIXTURE_FROZEN: frozen, FIXTURE_CAPTURE: capture,
+        VERIFY_TAURI_SOURCE_REF: options.pinned === false ? '' : 'committed-pin',
+        PAPERCUSP_SHARED_SPA_DIST: options.external ? resolve(dir, 'unbound-donor-dist') : '',
+        VITE_BUILD_CMD: 'unbound-command', VITE_BUILD_LOCK: 'donor-lock', VITE_BUILD_SNAPSHOT_DIR: 'donor-snapshot' } });
+      return { status: result.status, stderr: result.stderr, selected: result.stdout,
+        expected: resolve(app, 'dist'), frozen, app,
+        build: existsSync(capture) ? JSON.parse(readFileSync(capture, 'utf8')) : null };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it('builds the pinned SPA in its frozen source and selects only that artifact', () => {
+    const result = prepare();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.selected).toBe(result.expected);
+    expect(result.build).toEqual({ cwd: result.frozen, args: ['--workspace', '@papercusp/operator-vite', 'run', 'build'],
+      out: result.app, command: null, lock: null, snapshot: null, retain: '0' });
+    expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_run_step verifier-host-bundle'));
+    expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
+  });
+
+  it.each([
+    [{ missingBuilder: true }, 3, 'VERIFY_TAURI_SPA_BUILD_MISSING'],
+    [{ incomplete: true }, 3, 'VERIFY_TAURI_SPA_BUILD_INCOMPLETE'],
+    [{ external: true }, 3, 'VERIFY_TAURI_SPA_UNBOUND'],
+    [{ buildExit: 17 }, 17, ''],
+  ] as const)('refuses boot when frozen SPA preparation fails (%j)', (options, status, marker) => {
+    const result = prepare(options);
+    expect(result.status).toBe(status);
+    expect(result.selected).toBe('');
+    expect(result.stderr).toContain(marker);
+    if ('missingBuilder' in options || 'external' in options) expect(result.build).toBeNull();
+  });
+
+  it('preserves the existing unpinned artifact selection without building', () => {
+    const result = prepare({ pinned: false });
+    expect(result.status).toBe(0);
+    expect(result.selected).toBe('');
+    expect(result.build).toBeNull();
+  });
+});
