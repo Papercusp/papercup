@@ -1,12 +1,12 @@
 /** E2E: real OpenSSH between the test client and an isolated private-network computer.
  * The remote psu/HTTP fixtures observe transport behavior; this is not release GUI proof. */
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, inject, test } from 'vitest';
-import { dockerAllocation, dockerAllocationScope } from '../../../../scripts/with-documenso-sandbox.mjs';
+import { startDockerAllocationOwner } from '../../../../scripts/with-documenso-sandbox.mjs';
 import {
   defaultPsuConnectionStorePath, normalizeSshProfile, PSU_CONNECTION_STORE_VERSION,
   runPsuConnectionFrontController, savePsuConnectionStore,
@@ -17,11 +17,11 @@ let root = '';
 let container = '';
 let config = '';
 const masters = new Set<string>();
-const allocations = dockerAllocationScope();
+let allocations: Awaited<ReturnType<typeof startDockerAllocationOwner>> | undefined;
 // Killing the Docker CLI does not cancel the daemon's create/start/stop/rm.
-// Reuse the maintained joined-request primitive, including for teardown, so a
-// delayed operation cannot race cleanup or masquerade as a product failure.
-const docker = (args: string[]): Promise<string> => allocations.run(args, {}, {
+// The external owner survives the runner's cgroup kill and joins each daemon
+// outcome before removing the exact labelled container and its private keys.
+const docker = (args: string[]): Promise<string> => allocations!.run(args, {}, {
   pendingAfterMs: 20_000,
   onPending: () => {},
   onProgress: (receipt: { operation: string; resource?: string; status: string; elapsedMs: number }) => {
@@ -47,18 +47,21 @@ async function ssh(command: string, args: string[]) {
 }
 
 beforeAll(async () => {
+  root = mkdtempSync(join(tmpdir(), 'pc-personal-ssh-'));
+  container = `pc-personal-ssh-${randomUUID()}`;
+  allocations = await startDockerAllocationOwner({ name: container, root,
+    onProgress: (receipt: unknown) => process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify(receipt)}\n`),
+  });
   // Fail before allocating keys/container state if Docker or its cached image
   // is unavailable. A network pull is never hidden inside the start budget.
   await docker(['version', '--format', '{{.Server.Version}}']);
   const image = (await docker(['image', 'inspect', '--format', '{{.Id}}', 'debian:stable-slim'])).trim();
   expect(image).toMatch(/^sha256:[a-f0-9]{64}$/);
-  root = mkdtempSync(join(tmpdir(), 'pc-personal-ssh-'));
   for (const name of ['client', 'host']) {
     execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(root, name)], { timeout: 10_000 });
   }
   writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,sys\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd()}),flush=True)\n`);
   writeFileSync(join(root, 'gui.py'), `from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write(b'personal-computer-gui')\nHTTPServer(('127.0.0.1',3070),H).serve_forever()\n`);
-  container = `pc-personal-ssh-${randomUUID()}`;
   process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
   await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
     '--mount', `type=bind,source=${root},target=/fixture,readonly`, image, 'sh', '-ec',
@@ -91,17 +94,10 @@ beforeAll(async () => {
 }, 200_000);
 
 afterAll(async () => {
-  await allocations.close(async () => {
-    if (config) for (const socket of masters) {
-      try { execFileSync('ssh', ['-F', config, '-S', socket, '-O', 'exit', '--', 'personal-fixture'], { stdio: 'ignore', timeout: 5_000 }); } catch { /* already gone */ }
-    }
-    if (container) {
-      const ids = await dockerAllocation(['ps', '--all', '--filter', `name=^/${container}$`, '--format', '{{.ID}}']);
-      if (ids.trim()) await dockerAllocation(['rm', '--force', container]);
-      expect((await dockerAllocation(['ps', '--all', '--filter', `name=^/${container}$`, '--format', '{{.ID}}'])).trim()).toBe('');
-    }
-    if (root) rmSync(root, { recursive: true, force: true });
-  });
+  if (config) for (const socket of masters) {
+    try { execFileSync('ssh', ['-F', config, '-S', socket, '-O', 'exit', '--', 'personal-fixture'], { stdio: 'ignore', timeout: 5_000 }); } catch { /* already gone */ }
+  }
+  if (allocations) expect(await allocations.close()).toBe('cleanup-verified');
 }, 200_000);
 
 test('runs remote psu, serves the private GUI and refuses a revoked or offline computer', async () => {

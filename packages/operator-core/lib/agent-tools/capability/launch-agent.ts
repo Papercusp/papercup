@@ -795,6 +795,11 @@ export default defineTool({
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
     const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
     const requestedDefaultEffort = args.effort;
+    // Internal recovery callers set this only when the durable leader identity
+    // must resume from its own launch record. It is intentionally outside the
+    // public schema so ordinary resumes continue using the fleet recipe.
+    const leaderRecoveryOwnerId = (args as typeof args & { __leaderRecoveryOwnerId?: string })
+      .__leaderRecoveryOwnerId?.trim() || null;
     try {
       if (args.model) {
         modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
@@ -1729,7 +1734,13 @@ export default defineTool({
             headless: args.headless,
             extraArgs: requestedProfileExtraArgs,
           },
-          reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
+          ...(leaderRecoveryOwnerId ? {
+            memberOwnerId: leaderRecoveryOwnerId,
+            preferMemberRecord: true,
+          } : {}),
+          reusePath: leaderRecoveryOwnerId
+            ? 'fleet leader recovery -> capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand'
+            : 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
         });
         if (!savedLaunchSpec.ok) return err(savedLaunchSpec.message);
         if (savedLaunchSpec.found) {
@@ -2163,6 +2174,7 @@ export default defineTool({
               // unless the caller deliberately requests another one. Without
               // this, `--account=auto` sessions silently restart on `default`.
               account: args.account ?? resumeAccount,
+              fleetRole: leaderRecoveryOwnerId ? 'leader' : undefined,
               // Resume/fork does not pass --agent, but the command builder
               // still needs the recorded backend to apply Codex's model
               // policy. A Codex source may have changed model OR reasoning
@@ -2209,7 +2221,7 @@ export default defineTool({
               // Fresh fleet members receive mode participation, not the launching
               // leader's personal mission or sticky owner-directed authority.
               launchMode: fleetSlug && !isSuccessor
-                ? normalizeLaunchMode(launchMode, { fleetRole: 'member' })
+                ? normalizeLaunchMode(launchMode, { fleetRole: leaderRecoveryOwnerId ? 'leader' : 'member' })
                 : launchMode,
               extraArgs: folded.extraArgs ?? null,
             });

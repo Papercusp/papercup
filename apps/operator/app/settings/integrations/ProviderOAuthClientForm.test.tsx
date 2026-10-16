@@ -57,6 +57,43 @@ const renderForm = (summary: ProviderOAuthClientSummary | null) =>
   render(<ProviderOAuthClientForm providerId="fixture-tickets" displayName="Fixture Tickets" client={summary} />);
 
 describe('ProviderOAuthClientForm', () => {
+  it('requires a real supplied User-Agent without inventing one and saves the exact public identification', async () => {
+    renderForm(client({ userAgentRequired: true }));
+    expect((screen.getByLabelText('User-Agent') as HTMLInputElement).value).toBe('');
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'form-client' } });
+    fireEvent.change(screen.getByLabelText('Client secret'), { target: { value: 'form-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save OAuth app' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('User-Agent');
+    expect(H.calls).toEqual([]);
+    const userAgent = 'desktop:fixture:1.0 (by /u/fixture-contact)';
+    fireEvent.change(screen.getByLabelText('User-Agent'), { target: { value: userAgent } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save OAuth app' }));
+    await waitFor(() => expect(H.calls).toHaveLength(1));
+    expect(H.calls[0].body).toEqual({ clientId: 'form-client', clientSecret: 'form-secret', userAgent });
+  });
+
+  it('preserves the saved public User-Agent when replacing credentials', async () => {
+    renderForm(client({ userAgentRequired: true, userAgent: 'desktop:saved-app:1.0', configured: true, clientId: 'saved', hasClientSecret: true }));
+    expect(screen.getByText('User-Agent: desktop:saved-app:1.0')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Replace' }));
+    expect((screen.getByLabelText('User-Agent') as HTMLInputElement).value).toBe('desktop:saved-app:1.0');
+    fireEvent.change(screen.getByLabelText('Client ID'), { target: { value: 'new-client' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save OAuth app' }));
+    await waitFor(() => expect(H.calls).toHaveLength(1));
+    expect(H.calls[0].body).toEqual({ clientId: 'new-client', userAgent: 'desktop:saved-app:1.0' });
+  });
+  it('opens the typed instance’s app settings before credentials exist and follows origin edits without a save', () => {
+    render(<ProviderOAuthClientForm providerId="federated" displayName="Federated" client={client({ instanceRequired: true })}
+      appRegistration={{ createUrl: '/settings/applications/new', definitionText: null, docsUrl: null, copyHint: null }} />);
+    expect(screen.queryByRole('link', { name: 'Create Federated app' })).toBeNull();
+    for (const origin of ['https://mastodon.social', 'https://hachyderm.io']) {
+      fireEvent.change(screen.getByLabelText('Instance origin'), { target: { value: origin } });
+      expect(screen.getByRole('link', { name: 'Create Federated app' }).getAttribute('href')).toBe(`${origin}/settings/applications/new`);
+    }
+    fireEvent.change(screen.getByLabelText('Instance origin'), { target: { value: 'https://127.0.0.1' } });
+    expect(screen.queryByRole('link', { name: 'Create Federated app' })).toBeNull();
+    expect(H.calls).toEqual([]);
+  });
   it('saves the selected instance origin with its own app credentials', async () => {
     renderForm(client({ instanceRequired: true }));
     fireEvent.change(screen.getByLabelText('Instance origin'), { target: { value: 'https://first.example.com/' } });

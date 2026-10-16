@@ -65,9 +65,6 @@ import {
   FACEBOOK_ALLOWED_OAUTH_SCOPES,
   GOOGLE_WORKSPACE_ALLOWED_SCOPES,
 } from '../../oauth/providers';
-import { blueskyEventName } from './bluesky-adapter';
-import { mastodonEventName } from './mastodon-adapter';
-import { redditEventName } from './reddit-adapter';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -103,10 +100,20 @@ const PROVIDER_ALLOWED: ReadonlyArray<{ provider: string; allowed: ReadonlySet<s
 ];
 
 /** The containment rule — the whole of property 3 above, as one function. */
-function providerFor(row: SocialPlatformRow): string | null {
+function providerFor(row: SocialPlatformRow): { provider: string; scopes: string[] } | null {
   if (row.auth.scopes.length === 0) return null;
+  // Migrated provider packages supply their own OAuth descriptor. The old
+  // built-in registry cannot establish that a newly installed provider is absent.
+  const path = resolve(REPO_ROOT, `libs/papercusp/plugins/${row.id}/papercusp.json`);
+  if (existsSync(path)) {
+    const descriptor = JSON.parse(readFileSync(path, 'utf8')).provider;
+    if (descriptor?.id === row.id && descriptor.oauth &&
+      row.auth.scopes.every((scope) => descriptor.oauth.scopes.includes(scope))) {
+      return { provider: descriptor.oauth.clientRegistrationRef, scopes: descriptor.oauth.scopes };
+    }
+  }
   for (const { provider, allowed } of PROVIDER_ALLOWED) {
-    if (row.auth.scopes.every((scope) => allowed.has(scope))) return provider;
+    if (row.auth.scopes.every((scope) => allowed.has(scope))) return { provider, scopes: [...row.auth.scopes] };
   }
   return null;
 }
@@ -122,23 +129,15 @@ function providerFor(row: SocialPlatformRow): string | null {
  */
 const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
   bluesky: {
-    names: new Set([
-      blueskyEventName({ reply: { root: 'r', parent: 'p' } } as never, null),
-      blueskyEventName({ mentions: ['did:self'] } as never, 'did:self'),
-      blueskyEventName({} as never, null),
-    ]),
+    names: new Set<string>(), // Filled by the actual provider's notifications and author feed.
     closed: true,
   },
   mastodon: {
-    names: new Set([
-      mastodonEventName({ source: 'notification-mention' } as never),
-      mastodonEventName({ inReplyToId: '1' } as never),
-      mastodonEventName({} as never),
-    ]),
+    names: new Set<string>(), // Filled by the actual instance-scoped provider below.
     closed: true,
   },
   reddit: {
-    names: new Set([redditEventName({ kind: 't1' }), redditEventName({ kind: 't3' })]),
+    names: new Set<string>(), // Filled by the actual Reddit provider's three streams below.
     closed: true,
   },
   youtube: {
@@ -220,6 +219,35 @@ beforeAll(async () => {
     expect(completed, `${id} event fixture must complete`).toBe(true);
     expect(PRODUCIBLE[id]!.names).toEqual(new Set(expected));
   };
+  await harvest('bluesky', { accountId: 'did:plc:owner' }, async ({ request }) => {
+    const post = (key: string, reply = false) => ({ uri: `at://did:plc:owner/app.bsky.feed.post/${key}`, cid: `cid-${key}`,
+      author: { did: 'did:plc:owner', handle: 'owner.example' }, indexedAt: created_time,
+      record: { $type: 'app.bsky.feed.post', text: key, createdAt: created_time,
+        ...(reply ? { reply: { root: { uri: 'at://did:plc:owner/app.bsky.feed.post/root', cid: 'root-cid' },
+          parent: { uri: 'at://did:plc:owner/app.bsky.feed.post/parent', cid: 'parent-cid' } } } : {}) } });
+    return jsonResponse(200, new URL(request.url).pathname.endsWith('/app.bsky.notification.listNotifications')
+      ? { notifications: [{ ...post('mention'), reason: 'mention' }] }
+      : { feed: [{ post: post('post') }, { post: post('reply', true) }] });
+  }, ['post', 'reply', 'mention']);
+  await harvest('reddit', { accountLabel: 'fixture-user' }, async ({ request }) => {
+    const submitted = new URL(request.url).pathname.endsWith('/submitted');
+    return jsonResponse(200, { kind: 'Listing', data: { children: [{
+      kind: submitted ? 't3' : 't1',
+      data: { name: submitted ? 't3_post' : 't1_comment', created_utc: 1_800_000_000,
+        edited: false, author: 'fixture-user', subreddit: 'papercusp',
+        ...(submitted ? { title: 'post', selftext: 'post' } : { body: 'reply or mention', was_comment: true }) },
+    }], after: null } });
+  }, ['post', 'reply', 'mention']);
+  await harvest('mastodon', { connectionOrigin: 'https://mastodon.social', connectionAccountId: 'owner' }, async ({ request }) => {
+    const url = new URL(request.url);
+    if (url.searchParams.has('max_id') || url.searchParams.has('min_id')) return jsonResponse(200, []);
+    const status = (id: string, reply: boolean) => ({ id, uri: `https://mastodon.social/users/owner/statuses/${id}`,
+      content: '<p>status</p>', created_at: created_time, in_reply_to_id: reply ? 'parent' : null,
+      visibility: 'public', account: { id: 'owner', acct: 'owner' } });
+    return jsonResponse(200, url.pathname.endsWith('/notifications')
+      ? [{ id: 'notification', type: 'mention', status: status('mention', false) }]
+      : [status('post', false), status('reply', true)]);
+  }, ['post', 'reply', 'mention']);
   await harvest('threads', { userId: '42' }, async ({ request }) => jsonResponse(200, {
     data: new URL(request.url).pathname.endsWith('/threads')
       ? [{ id: '100', timestamp: created_time, text: 'post', is_reply: false }]
@@ -326,10 +354,11 @@ describe('P-025 per-platform social trigger packs', () => {
 
       expect(manifest.oauth).toHaveLength(1);
       const requirement = manifest.oauth![0]!;
-      expect(requirement.provider).toBe(provider);
+      expect(requirement.provider).toBe(provider.provider);
       expect(requirement.fieldName).toBe(credField);
-      // The scope list is the REGISTRY's, not a copy typed into the manifest.
-      expect([...(requirement.scopes ?? [])].sort()).toEqual([...row.auth.scopes].sort());
+      // Actual packages declare their read/write scope union. Legacy providers
+      // keep using the registry until their packages are delivered.
+      expect([...(requirement.scopes ?? [])].sort()).toEqual([...provider.scopes].sort());
       for (const binding of manifest.triggerPack?.bindings ?? []) {
         if (binding.source.kind === 'external') {
           expect(binding.source.oauthField).toBe(credField);
@@ -346,9 +375,11 @@ describe('P-025 per-platform social trigger packs', () => {
       expect(cred.snapshotPolicy).toBe('strip');
       expect(cred.shareable).toBe(false);
 
-      // Exactly one other field: the environment identifier, which DOES travel.
+      // Account-scoped Reddit gets its username from the connected identity;
+      // it needs no separately shared environment identifier.
       const others = Object.keys(props).filter((key) => key !== credField);
-      expect(others).toHaveLength(1);
+      expect(others).toHaveLength(id === 'reddit' ? 0 : 1);
+      if (others.length === 0) return;
       const identifier = props[others[0]!]!;
       expect(identifier.secret ?? false).toBe(false);
       expect(identifier.shareable).toBe(true);

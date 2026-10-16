@@ -33,6 +33,7 @@ const {
   packageLockInstallView,
   REUSE_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA,
+  PC_TEST_PARTIAL_SKIP_LIST_ENV,
   reuseCandidates,
   reuseRunnerIdentity,
   reuseSoundnessAlarms,
@@ -53,6 +54,7 @@ import {
   decideReuseSkip,
   executedSourceRunnerIdentity,
   parseReuseSkipList,
+  PC_TEST_PARTIAL_SKIP_LIST_ENV as READER_PARTIAL_SKIP_LIST_ENV,
   REUSE_PROOF_FORMAT as RECORDER_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
 } from '@papercusp/test-config/test-pass-reuse-skip';
@@ -1495,6 +1497,7 @@ describe('skip-list channel: affected-tests writer -> vitest-config reader', () 
     expect(parsed.files).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
     expect(parsed).toMatchObject(META);
     expect(REUSE_SKIP_LIST_SCHEMA).toBe(READER_SCHEMA);
+    expect(PC_TEST_PARTIAL_SKIP_LIST_ENV).toBe(READER_PARTIAL_SKIP_LIST_ENV);
   });
 
   it('applies only in the same run context and runner identity', () => {

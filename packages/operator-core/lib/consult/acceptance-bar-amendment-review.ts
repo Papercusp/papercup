@@ -267,7 +267,7 @@ export function buildAmendmentReviewBrief(
     ? `work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''} }`
     : '';
   return [
-    'Before judging, read the complete brief. If conversations:get shows `_projection.truncated`, use `capability:read` with its returned scratch cursor through `eof:true`; do not decide from the excerpt.',
+    'Before judging, read the complete brief. If conversations:get shows `_projection.truncated`, call `capability:read` with the returned cursor\'s `file_path` or `uri` plus its `byte_offset` and `byte_limit`; follow `next_cursor` and stop when the response has `eof:true` and `next_cursor:null`. Do not decide from the excerpt.',
     'If rubrics:get reports that the backing rubric row exists but this server could not project it, do not treat the rubric as absent. Read the raw structured record with plans:get-template-data { slug:\'<unprefixed rubric slug>\', harness:\'<current review harness>\' } and grade its complete templateData.criteria. This read preserves fields an older rubric projector may not understand; recover any truncated response before judging.',
     answerOn
       ? `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router found no eligible reviewer, so ${ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR} launched you fresh: you are outside the implementer's lineage, and the apply guard re-checks that from your post.`

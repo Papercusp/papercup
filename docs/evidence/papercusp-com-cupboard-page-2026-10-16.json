@@ -4,10 +4,10 @@
   "name": "papercusp.com/cupboard — site suite, live deployment and mutants (plan papercusp-com-cupboard-page-2026-10-15)",
   "framework": "node",
   "command": [
-    "/home/builduser/papercupai-workspace/papercusp/scripts/pc-heavy.sh",
+    "$HOME/papercupai-workspace/papercusp/scripts/pc-heavy.sh",
     "bash",
     "-c",
-    "cd /home/builduser/.papercusp-workspaces/clones/papercusp-public-site && npx vitest run tests/cupboard-page.test.js --reporter=json --outputFile=/tmp/su81314-cupboard-vitest.json"
+    "cd $HOME/.papercusp-workspaces/clones/papercusp-public-site && npx vitest run tests/cupboard-page.test.js --reporter=json --outputFile=/tmp/su81314-cupboard-vitest.json"
   ],
   "exitCode": 0,
   "startedAt": "2026-10-16T05:55:56.798Z",

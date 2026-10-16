@@ -68,7 +68,7 @@ import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
 import { runAllPotBroadcastSweepOnce } from '../agent-tools/coordination/allpot-broadcast-sweep';
 import { runDeliveryLadderSweepOnce, DELIVERY_LADDER_OWNER } from '../agent-tools/coordination/delivery-ladder-sweep';
-import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
+import { runStorageGrowthAlarmOnce, runDiskHeadroomAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
@@ -1290,12 +1290,12 @@ const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlar
 );
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
 
-// Every 6h (:35, off the :50 growth alarm): disk consumer census
+// Hourly (:35, off the :50 growth alarm): disk consumer census (durable-headroom P-011)
 // (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1). Writes what is filling each
 // watched device (du as root via sudo -n at best-effort I/O level 7, falling back to an
 // unprivileged walk + Postgres/Docker sized through their APIs) to
 // harness_shared.disk_census_* so storage:census can show each consumer's size and
-// 24h growth; prunes rows older than 30 days. Four runs a day keep a run inside the
+// 24h growth; prunes rows older than 30 days. Hourly runs keep a run inside the
 // read's 18–30h baseline window. Per-device failures are recorded, never thrown.
 //
 // Restart-safe (WI-6554700010009855). A census takes ~75 min and bg-host restarts about
@@ -1311,10 +1311,14 @@ async function diskConsumerCensusTick(): Promise<void> {
   const pass = await DBOS.runStep(
     async () => {
       if (shouldShedHeavyTick('disk-consumer-census')) return null;
-      const { prepareCensusPass } = await import('../storage/disk-consumer-census');
+      const { prepareCensusPass, diskCensusPassInFlight } = await import('../storage/disk-consumer-census');
       const prepared = await prepareCensusPass();
       if ('skipped' in prepared) {
         console.log(`[disk-consumer-census] skipped: ${prepared.skipped}`);
+        return null;
+      }
+      if (await diskCensusPassInFlight(getOrgPg().sql as never, runKey, prepared.devices.length)) {
+        console.log('[disk-consumer-census] skipped: an older census pass is still active');
         return null;
       }
       return prepared;
@@ -1357,7 +1361,7 @@ const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensu
     maxRecoveryAttempts: 24,
   }),
 );
-DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });
+DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 * * * *' });
 
 // Hourly retention, independent of free space (disk-headroom P-004 / D-005).
 // Each bounded pass has its own Postgres checkpoint and fresh safety evidence.
@@ -1463,6 +1467,8 @@ async function diskSpaceAlarmTick(): Promise<void> {
       if (process.env.PAPERCUSP_DISK_SPACE_ALARM === '0') return;
       if (shouldShedHeavyTick('disk-space-alarm')) return;
       const r = await runDiskSpaceAlarmOnce();
+      // Cheap saved-census projection: no du walk, independent of the absolute statfs tier.
+      await runDiskHeadroomAlarmOnce();
       if (r.breaches.length > 0) {
         const crit = r.breaches.filter((b) => b.severity === 'critical').length;
         console.log(

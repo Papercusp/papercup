@@ -377,17 +377,39 @@ copy_staging_runtime_environment() {
 }
 
 prepare_staging_candidate() {
-  local target_sha="$1" phase
+  local target_sha="$1" phase phase_log phase_status
+  local -a phase_statuses
+  local log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+  local attempt="${INVOCATION_ID:-$$}"
   local snapshot_script="$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh"
   local setup_script="$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"
+  [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
+  if ! mkdir -p -- "$log_root"; then
+    log "FATAL: cannot create setup failure log directory $log_root"
+    return 1
+  fi
   create_staging_candidate "$target_sha" || return 1
   log "preparing isolated staging candidate $STAGING_CANDIDATE_ROOT at ${target_sha:0:10}"
   for phase in --source-only --prepare-existing --spa-only; do
-    if ! PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
+    # Stream progress while retaining raw evidence outside the candidate: the
+    # EXIT cleanup removes that checkout, including Vite's own failure logs.
+    phase_log="$log_root/staging-setup-$attempt-${phase#--}.log"
+    if PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
       timeout --kill-after=10s 900s bash "$snapshot_script" "$setup_script" \
-        --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto "$phase"; then
-      log "FATAL: candidate checkout preparation failed in $phase; the published staging alias is unchanged"
-      return 1
+        --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto "$phase" 2>&1 | tee "$phase_log"; then
+      rm -f -- "$phase_log"
+    else
+      # Capture both statuses before any command overwrites PIPESTATUS. Keep
+      # timeout's 124 distinct from a child failure; also fail on a lost log.
+      phase_statuses=("${PIPESTATUS[@]}")
+      phase_status="${phase_statuses[0]}"
+      if [[ "$phase_status" -eq 0 ]]; then phase_status="${phase_statuses[1]}"; fi
+      if ! printf '\nsetup exit status: %s\nphase: %s\nsource: %s\ncandidate: %s\n' \
+        "$phase_status" "$phase" "$target_sha" "$STAGING_CANDIDATE_ROOT" >> "$phase_log"; then
+        log "FATAL: could not append setup failure metadata to $phase_log"
+      fi
+      log "FATAL: candidate checkout preparation failed in $phase (exit $phase_status); raw build evidence retained at $phase_log; the published staging alias is unchanged"
+      return "$phase_status"
     fi
     staging_sync_checkpoint "candidate phase $phase complete" || return "$?"
   done

@@ -77,8 +77,9 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
   if (!harness || !paths.length) return { status: 'measured', changedSymbols };
   return (sql as any).begin(async (tx: any) => {
     await tx`SELECT set_config('statement_timeout', '75ms', true)`;
-    const rows: { id: string; state: string; title: string; path: string; relation: 'file-edit-ledger' | 'open-on-path' }[] = await tx`
-      SELECT DISTINCT w.feature_id AS id, w.status AS state, left(w.title, 100) AS title,
+    const rows: { id: string; state: string; title: string; paths: string[]; relation: 'file-edit-ledger' | 'open-on-path' }[] = await tx`
+      WITH attributed AS (
+      SELECT w.feature_id AS id, w.status AS state, left(w.title, 100) AS title,
         e.file AS path, 'file-edit-ledger' AS relation
       FROM harness_shared.edit_attribution_ledger e JOIN harness_shared.work_items w
         ON w.workspace_id = e.workspace_id AND w.harness_slug = e.harness_slug AND w.feature_id = e.work_item_id
@@ -93,10 +94,14 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
       WHERE w.workspace_id = ${input.workspace} AND w.harness_slug = ${harness}
         AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
         AND p.path = ANY(${paths}::text[])
-      ORDER BY relation, id, path LIMIT 8`;
+      )
+      SELECT id, state, title, relation, array_agg(path ORDER BY path) AS paths
+      FROM attributed GROUP BY id, state, title, relation
+      ORDER BY relation, id LIMIT 8`;
+    // Bound distinct relationships, not matched files: one broad work item
+    // must neither repeat in the note nor consume the other items' slots.
     return { status: 'measured', changedSymbols: [...new Set(changedSymbols)].slice(0, 4),
-      workItems: rows.map((row: { id: string; state: string; title: string; path: string; relation: 'file-edit-ledger' | 'open-on-path' }) =>
-        ({ id: row.id, state: row.state, title: row.title, paths: [row.path], relation: row.relation })) };
+      workItems: rows };
   });
 }
 export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly PushFact[];

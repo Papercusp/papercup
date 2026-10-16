@@ -1147,6 +1147,33 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(shaped.summaryNotice.truncated).toBe(true);
   });
 
+  it('retains a bounded nested object when its first projection exceeds the remaining budget', () => {
+    // Each B1 record is deliberately wide enough to force the last-resort
+    // object projection. The old top-level admission treated `b` atomically
+    // and returned only `head`/`nLines`, losing every nested key.
+    const summary = {
+      head: 'h'.repeat(1_200),
+      nLines: 10,
+      b: Object.fromEntries(
+        Array.from({ length: 8 }, (_, index) => [
+          `B1_${index}`,
+          Object.fromEntries(
+            Array.from({ length: 30 }, (_, field) => [`f${field}`, `value-${field}-${'x'.repeat(300)}`]),
+          ),
+        ]),
+      ),
+    };
+    const shaped = shapeCodeRunSummary({ summary }) as {
+      summary: { b: Record<string, unknown> };
+      summaryNotice: { truncated: true; returnedChars: number };
+    };
+
+    const nestedKeys = Object.keys(shaped.summary.b).filter((key) => key.startsWith('B1_'));
+    expect(nestedKeys.length).toBeGreaterThan(0);
+    expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    expect(shaped.summaryNotice.returnedChars).toBe(JSON.stringify(shaped.summary).length);
+  });
+
   it('uses spare summary budget for long nested evidence in the minimal code:run result', async () => {
     const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');

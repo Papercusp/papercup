@@ -37,7 +37,7 @@ describe('native launcher hosted quota boundary (local child, no provider)', () 
     const gate = join(dir, 'exit');
     const onSpawn = vi.fn();
     const ended = vi.fn(async () => {});
-    const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(vi.fn<typeof process.exit>());
     runWrapper({ wrapperBin: process.execPath, cwd: dir, preserveCwd: true,
       args: ['-e', 'setInterval(() => { if (require("node:fs").existsSync(process.argv[1])) process.exit(0); }, 10)', gate],
       envelopeEnv: hostedEnv(), onSpawn, reportSessionEndedImpl: ended });

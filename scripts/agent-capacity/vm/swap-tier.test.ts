@@ -383,6 +383,86 @@ const user = (text: string) => ({ role: 'user', content: [{ type: 'text', text }
 const toolResult = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'file body' }] };
 const toolUse = { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] };
 
+describe('minimum-resource active cohorts', () => {
+  it('runs bounded native tool cohorts while retaining fifty assigned agents and a separate fifty-agent burst', () => {
+    const code = [
+      'import importlib.util, types, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'calls=[]; rows=[]; m.REAL_MODEL=True',
+      'm.host_stats=lambda: {}; m.agent_stats=lambda n: {}',
+      'm.time.sleep=lambda *a: None; m.reclaim=lambda n: 0; m.write=lambda *a: None',
+      'def forbidden(*a): raise RuntimeError("swap must stay enabled around a live low-RAM cohort")',
+      'm.swap_off=forbidden; m.swap_on=forbidden',
+      'def prompt(names, marker, task, *a, **kw):',
+      ' calls.append({"names":list(names),"markers":[marker(n) for n in names],"tasks":[task(n) for n in names]})',
+      ' return {n:{"t0":1,"tEcho":2,"tEnter":2,"tDone":3,"error":None} for n in names}',
+      'm.prompt_all=prompt; m.stub_request_times=lambda *a: None',
+      'm.run_arm({"name":"zram","kind":"zram"},[f"a{i}" for i in range(50)],0,4,types.SimpleNamespace(rec=lambda k,**kw:rows.append({"kind":k,**kw})),"absent",active=[1,5,10],active_rounds=2,swap_ready=True,keep_swap=True)',
+      'print(json.dumps({"calls":calls,"phases":[r["phase"] for r in rows if r["kind"]=="phase" and r["edge"]=="start"]}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.calls.map((c: any) => c.names.length)).toEqual([1, 1, 5, 5, 10, 10, 50]);
+    expect(receipt.calls.at(-1).names).toHaveLength(50);
+    const activeCalls = receipt.calls.slice(0, -1);
+    const markers = activeCalls.flatMap((c: any) => c.markers);
+    expect(new Set(markers).size).toBe(markers.length);
+    for (const call of activeCalls) {
+      expect(call.markers.every((m: string) => m.startsWith('WARM-'))).toBe(true);
+      expect(call.tasks.every((t: string) => t.includes('sha256sum dummy-data.txt'))).toBe(true);
+    }
+    expect(receipt.calls.at(-1).tasks.every((t: string) => t.includes('sha256sum dummy-data.txt'))).toBe(true);
+    expect(receipt.phases).toEqual(['reclaim', 'idle', 'active-1', 'active-1', 'active-5', 'active-5', 'active-10', 'active-10', 'storm']);
+  });
+
+  it.each([
+    ['--active', '0'], ['--active', '51'], ['--active', '1', '--active-rounds', '0'],
+    ['--active', '1', '--arm', 'none'], ['--active', '1', '--single', '1'],
+    ['--active', '1', '--cli', 'claude'], ['--active', '1', '--warm', '0'],
+    ['--active', '1', '--active', '1'],
+    ['--active', '1', '--arm', 'pd-balanced-batch5=/dev/test'],
+  ])('refuses invalid active-cohort options before launching: %j', (...extra) => {
+    const code = [
+      'import importlib.util',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'm.run=lambda a: (_ for _ in ()).throw(RuntimeError("UNSAFE_LAUNCH"))',
+      `m.main(${JSON.stringify(['run', '--out', '/unused', '--agents', '50', '--single', '0', '--cli', 'codex', '--arm', 'zram', ...extra])})`,
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('active cohort');
+    expect(result.stderr).not.toContain('UNSAFE_LAUNCH');
+  });
+
+  it('enables the one swap arm before native startup and only disables it after stopping agents', () => {
+    const code = [
+      'import importlib.util, types, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'events=[]; m.Recorder=lambda *a: types.SimpleNamespace(rec=lambda *a, **kw: None)',
+      'm.subprocess.Popen=lambda *a, **kw: types.SimpleNamespace(terminate=lambda:None)',
+      'm.time.sleep=lambda *a:None; m.host_stats=lambda:{}; m.report=lambda *a:None',
+      'm.stop_agents=lambda:events.append("stop"); m.swap_off=lambda:events.append("swapoff")',
+      'm.swap_on=lambda *a:events.append("swapon")',
+      'm.gateway_preflight=lambda *a, **kw:None; m.codex_sandbox_preflight=lambda *a:None',
+      'm.start_agents=lambda *a:events.append("start") or ["a1"]',
+      'm.warm=lambda *a:events.append("warm")',
+      'm.run_arm=lambda *a, **kw:events.append({"arm":kw})',
+      'm.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
+      'print(json.dumps(events))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const events = JSON.parse(result.stdout);
+    expect(events).toEqual(['stop', 'swapoff', 'swapon', 'start', 'warm', {
+      arm: { active: [1], active_rounds: 3, swap_ready: true, keep_swap: true },
+    }, 'stop', 'swapoff']);
+  });
+});
+
 describe('stub reply plan', () => {
   it('answers a WARM prompt with a Read of warm file k, then a DONE text once the tool ran', () => {
     expect(plan([user('Please do step WARM-a3-1 now')])).toEqual(['warm-tool', 'WARM-a3-1', ['tool', '/f1.py']]);
@@ -486,6 +566,21 @@ describe('report reduction', () => {
     const [a] = py(DRIVER, 'm.summarize(inp, [])', lost);
     expect(a.storm.failed).toBe(1);
     expect(a.storm.allDoneSec).toBeNull();
+  });
+
+  it('reduces repeated active windows together without counting repeated tasks as distinct agents', () => {
+    const active = [
+      { t: 1, kind: 'arm-start', arm: 'zram' },
+      { t: 10, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'start' },
+      { t: 12, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'end' },
+      { t: 13, kind: 'wake', arm: 'zram', phase: 'active-1', agent: 'a1', t0: 10, tEcho: 10.5, tEnter: 10.5, tDone: 11, pre: st(0, 0), post: st(0, 0) },
+      { t: 20, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'start' },
+      { t: 22, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'end' },
+      { t: 23, kind: 'wake', arm: 'zram', phase: 'active-1', agent: 'a1', t0: 20, tEcho: 21, tEnter: 21, tDone: null, pre: st(0, 0), post: st(0, 0) },
+    ];
+    const [summary] = py(DRIVER, 'm.summarize(inp["rows"], inp["probe"])', { rows: active, probe: [[11, 100, 0], [15, 999, 0], [21, 2, 0]] });
+    expect(summary['active-1']).toMatchObject({ agents: 1, tasks: 2, failed: 1,
+      totalSec: { p95: 1 }, echoSec: { p95: 1 }, probeExecMs: { samples: 2, max: 100 } });
   });
 });
 

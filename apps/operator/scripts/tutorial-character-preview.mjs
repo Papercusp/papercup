@@ -28,16 +28,19 @@ export function characterStateAt(alignment, seconds) {
   }
   const speaking = index >= 0;
   const time = Math.max(0, seconds);
-  const wave = time > 0.55 && time < 2.2;
-  const point = time > 3.4 && time < 4.7;
-  const lastPunctuation = chars.slice(0, Math.max(0, index)).join('').match(/[.!?][^.!?]*$/)?.[0]?.[0];
+  const context = chars.slice(Math.max(0, index - 55), Math.max(0, index + 12)).join('');
+  const wave = speaking && /^hi\b/i.test(chars.join('').trim()) && time > 0.55 && time < 2.2;
+  const point = speaking && /\b(here|open|look|show)\b/i.test(context);
+  const thoughtful = /\b(check|review|evidence|compare|costs|blocked)\b/i.test(context);
+  const happy = /\b(hi|welcome|together|improve)\b|let['’]s/i.test(context);
   return {
     mouth: speaking ? visemeForCharacter(chars[index]) : 'rest',
-    expression: lastPunctuation === '!' ? 'happy' : 'warm',
+    expression: thoughtful ? 'thoughtful' : happy ? 'happy' : 'warm',
     blink: time % 3.7 > 2.75 && time % 3.7 < 2.88,
     gesture: wave ? 'wave' : point ? 'point' : 'idle',
-    armAngle: wave ? -48 + Math.sin(time * 14) * 12 : point ? -56 : Math.sin(time * 1.5) * 2,
-    gazeX: point ? 5 : Math.sin(time * 0.65) * 1.7,
+    armAngle: wave ? -48 + Math.sin(time * 14) * 12 : Math.sin(time * 1.5) * 2,
+    leftArmAngle: point ? 40 : 0,
+    gazeX: point ? -5 : Math.sin(time * 0.65) * 1.7,
     tilt: speaking ? Math.sin(time * 2.3) * 0.7 : 0,
   };
 }
@@ -58,13 +61,14 @@ async function synthesize(text, voiceId) {
   const payload = await response.json(); return { audio: Buffer.from(payload.audio_base64, 'base64'), alignment: payload.alignment };
 }
 
-export function pageHtml(svg, alignment, duration) {
+export function pageHtml(svg, alignment, duration, { width = 960, height = 540, transparent = false } = {}) {
   const clean = svg.replace(/<script[\s\S]*?<\/script>/gi, '');
-  return `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:#eaf2f5;overflow:hidden}svg{width:960px;height:540px}</style>${clean}<script>const a=${JSON.stringify(alignment)},d=${duration};${visemeForCharacter.toString()};${characterStateAt.toString()};window.setTime=t=>{const z=characterStateAt(a,Math.max(0,Math.min(d,t)));const r=document.querySelector('svg');Object.entries(z).forEach(([k,v])=>r.dataset[k]=v);r.querySelector('.right-arm').style.transform='rotate('+z.armAngle+'deg)';r.querySelector('.right-arm').style.transformOrigin='657px 357px';r.querySelector('#cup').style.transform='rotate('+z.tilt+'deg)';r.querySelector('#cup').style.transformOrigin='480px 449px';r.querySelectorAll('.pupil').forEach(p=>p.style.transform='translateX('+z.gazeX+'px)')};</script>`;
+  return `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;background:${transparent ? 'transparent' : '#eaf2f5'};overflow:hidden}svg{width:${width}px;height:${height}px}</style>${clean}<script>const a=${JSON.stringify(alignment)},d=${duration};${visemeForCharacter.toString()};${characterStateAt.toString()};window.setTime=t=>{const z=characterStateAt(a,Math.max(0,Math.min(d,t)));const r=document.querySelector('svg');Object.entries(z).forEach(([k,v])=>r.dataset[k]=v);r.querySelector('.right-arm').style.transform='rotate('+z.armAngle+'deg)';r.querySelector('.right-arm').style.transformOrigin='657px 357px';r.querySelector('.left-arm').style.transform='rotate('+z.leftArmAngle+'deg)';r.querySelector('.left-arm').style.transformOrigin='303px 357px';r.querySelector('#cup').style.transform='rotate('+z.tilt+'deg)';r.querySelector('#cup').style.transformOrigin='480px 449px';r.querySelectorAll('.pupil').forEach(p=>p.style.transform='translateX('+z.gazeX+'px)')};</script>`;
 }
 
-export async function renderPreview({ outDir, text = PREVIEW_TEXT } = {}) {
-  if (!outDir) throw new Error('outDir is required'); await mkdir(outDir, { recursive: true }); const framesDir = await mkdtemp(join(outDir, 'frames-'));
+export async function prepareNarration({ outDir, text = PREVIEW_TEXT } = {}) {
+  if (!outDir || !text?.trim()) throw new Error('outDir and nonempty text are required');
+  await mkdir(outDir, { recursive: true });
   const { loadVoicePrefs } = await import('../../../packages/operator-core/lib/voice-prefs.ts');
   const prefs = await loadVoicePrefs();
   const narrationHash = createHash('sha256').update(JSON.stringify({ text, voiceId: prefs.elevenlabsVoiceId, model: 'eleven_turbo_v2_5' })).digest('hex');
@@ -74,23 +78,42 @@ export async function renderPreview({ outDir, text = PREVIEW_TEXT } = {}) {
   await writeFile(join(outDir, 'narration.mp3'), audio);
   await writeFile(join(outDir, 'alignment.json'), JSON.stringify(alignment));
   await writeFile(join(outDir, 'narration-receipt.json'), JSON.stringify({ narrationHash, voiceId: prefs.elevenlabsVoiceId, provider: 'elevenlabs', text }));
-  const ends = alignment?.character_end_times_seconds ?? []; const duration = Math.max(1, (ends.at(-1) ?? 1) + 0.4); const svg = await readFile(new URL('../public/tutorial-character.svg', import.meta.url), 'utf8');
+  const ends = alignment?.character_end_times_seconds ?? [];
+  if (!alignment?.characters?.length || alignment.characters.length !== ends.length || ends.some(value => !Number.isFinite(value))) throw new Error('Narration alignment is missing or invalid');
+  return { audioPath: join(outDir, 'narration.mp3'), alignment, duration: Math.max(1, ends.at(-1) + 0.4), narrationHash };
+}
+
+export async function renderPreview({ outDir, text = PREVIEW_TEXT, width = 960, height = 540, transparent = false, durationSeconds } = {}) {
+  if (!outDir) throw new Error('outDir is required');
+  if (![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 1920)) throw new Error('Invalid character dimensions');
+  const { alignment, duration: speechDuration, narrationHash } = await prepareNarration({ outDir, text });
+  const duration = Math.max(speechDuration, durationSeconds ?? 0);
+  if (!Number.isFinite(duration) || duration > 1800) throw new Error('Invalid character duration');
+  const svg = await readFile(new URL('../public/tutorial-character.svg', import.meta.url), 'utf8');
+  const video = join(outDir, transparent ? 'papercup-character.mov' : 'papercup-speaking-preview.mp4');
+  const renderHash = createHash('sha256').update(JSON.stringify({ narrationHash, duration, width, height, transparent, fps: FPS, svg, renderer: await readFile(new URL(import.meta.url), 'utf8') })).digest('hex');
+  try {
+    const receipt = JSON.parse(await readFile(join(outDir, 'character-render-receipt.json'), 'utf8'));
+    if (receipt.renderHash === renderHash && receipt.videoSha256 === createHash('sha256').update(await readFile(video)).digest('hex')) return { outDir, video, duration, alignmentCharacters: alignment.characters.length, cached: true };
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const framesDir = await mkdtemp(join(outDir, 'frames-'));
   const browser = await chromium.launch({ headless: true });
   try {
-    const page = await browser.newPage({ viewport: { width: 960, height: 540 }, deviceScaleFactor: 1 });
-    await page.setContent(pageHtml(svg, alignment, duration));
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
+    await page.setContent(pageHtml(svg, alignment, duration, { width, height, transparent }));
     for (let frame = 0; frame < Math.ceil(duration * FPS); frame += 1) {
       await page.evaluate(async t => {
         window.setTime(t);
         // Capture a painted pose, rather than racing the first compositor frame.
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }, frame / FPS);
-      try { await page.screenshot({ path: join(framesDir, `frame-${String(frame).padStart(5, '0')}.png`) }); }
+      try { await page.screenshot({ path: join(framesDir, `frame-${String(frame).padStart(5, '0')}.png`), omitBackground: transparent }); }
       catch (error) { throw new Error(`Character capture failed at frame ${frame}/${Math.ceil(duration * FPS)}: ${error.message}`); }
     }
   } finally { await browser.close(); }
-  await run('ffmpeg', ['-y', '-v', 'error', '-framerate', String(FPS), '-i', join(framesDir, 'frame-%05d.png'), '-i', join(outDir, 'narration.mp3'), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-af', 'apad=pad_dur=0.5', '-t', String(duration), '-movflags', '+faststart', join(outDir, 'papercup-speaking-preview.mp4')]);
-  return { outDir, video: join(outDir, 'papercup-speaking-preview.mp4'), duration, alignmentCharacters: alignment?.characters?.length ?? 0 };
+  await run('ffmpeg', ['-y', '-v', 'error', '-framerate', String(FPS), '-i', join(framesDir, 'frame-%05d.png'), '-i', join(outDir, 'narration.mp3'), '-c:v', transparent ? 'qtrle' : 'libx264', '-pix_fmt', transparent ? 'argb' : 'yuv420p', '-c:a', 'aac', '-af', `apad=pad_dur=${duration}`, '-t', String(duration), '-movflags', '+faststart', video]);
+  await writeFile(join(outDir, 'character-render-receipt.json'), JSON.stringify({ renderHash, videoSha256: createHash('sha256').update(await readFile(video)).digest('hex'), duration, width, height, transparent }));
+  return { outDir, video, duration, alignmentCharacters: alignment?.characters?.length ?? 0 };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) { const i = process.argv.indexOf('--out'); const outDir = i >= 0 ? process.argv[i + 1] : '/tmp/papercup-speaking-preview'; renderPreview({ outDir }).then(result => console.log(JSON.stringify(result))).catch(error => { console.error(error); process.exitCode = 1; }); }

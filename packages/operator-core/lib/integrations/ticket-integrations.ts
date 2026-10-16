@@ -159,6 +159,7 @@ export interface TicketProviderSummary {
 
 /** An OAuth provider's client registration status, plus whether its flow needs a client secret. */
 export interface ProviderOAuthClientSummary extends OAuthClientRegistrationStatus {
+  userAgentRequired?: boolean;
   /** The client registration must name the instance it belongs to. */
   instanceRequired?: boolean;
   /** False when the provider's flow uses PKCE and can run with a client ID alone. */
@@ -309,6 +310,8 @@ export function summarizeIntegrationProvider(
   const d = entry.descriptor;
   const schema = configSchemaOf(d);
   const properties = isPlainObject(schema?.properties) ? schema.properties : {};
+  const settable = settableTicketConfigKeys(schema);
+  const requiredConfig = missingRequiredJsonSchemaKeys(schema, {}).filter((key) => settable.includes(key));
   return {
     id: d.id,
     displayName: d.displayName ?? d.id,
@@ -317,21 +320,25 @@ export function summarizeIntegrationProvider(
     tracksTickets: tracksTickets(d),
     canListContainers: d.capabilities.includes(TICKET_CONTAINERS_CAPABILITY),
     statusMapping: 'sectionCategories' in properties ? 'sections' : 'provider-defined',
-    requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
+    requiredConfig,
     sourceConfigSchema: schema ? {
       ...schema,
       properties: {
         ...Object.fromEntries(Object.entries(properties).filter(([key]) => settableTicketConfigKeys(schema).includes(key))),
         harnessSlug: { type: 'string', title: 'Project to store activity in', minLength: 1 },
       },
-      required: [...new Set([...missingRequiredJsonSchemaKeys(schema, {}), 'harnessSlug'])],
+      required: [...new Set([...requiredConfig, 'harnessSlug'])],
     } : null,
     connectHref: d.oauth ? ticketConnectHref(d, oauthClient?.origin) : null,
     credentials,
     sourceSettings: providerSourceSettingsOffer(d),
+    // Keep an instance setup path relative: the form binds it to its current
+    // origin input before credentials exist and when changing instances.
     appRegistration: providerAppRegistrationView(d),
     oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce,
-      ...(d.oauth.instance ? { instanceRequired: true, configured: oauthClient.configured && Boolean(oauthClient.origin) } : {}),
+      configured: oauthClient.configured && (!d.oauth.userAgentRequired || Boolean(oauthClient.userAgent)) && (!d.oauth.instance || Boolean(oauthClient.origin)),
+      ...(d.oauth.userAgentRequired ? { userAgentRequired: true } : {}),
+      ...(d.oauth.instance ? { instanceRequired: true } : {}),
     } : null,
   };
 }

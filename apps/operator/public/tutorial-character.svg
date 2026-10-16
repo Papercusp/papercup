@@ -12,8 +12,8 @@
       svg[data-mouth="open"] .mouth-open,svg[data-mouth="round"] .mouth-round,svg[data-mouth="closed"] .mouth-closed,svg[data-mouth="narrow"] .mouth-narrow,svg[data-mouth="teeth"] .mouth-teeth{display:block}
       svg[data-blink="true"] .eye-open{display:none} svg[data-blink="true"] .eye-closed{display:block}
       svg[data-expression="happy"] .brow{transform:translateY(-2px)}
-      svg[data-expression="thoughtful"] .brow.left{transform:rotate(-8deg);transform-origin:260px 250px}
-      svg[data-expression="thoughtful"] .brow.right{transform:rotate(8deg);transform-origin:380px 250px}
+      svg[data-expression="thoughtful"] .brow.left{transform:rotate(-8deg);transform-origin:417px 235px}
+      svg[data-expression="thoughtful"] .brow.right{transform:rotate(8deg);transform-origin:543px 235px}
       svg[data-gesture="wave"] .right-arm{transform:rotate(-18deg);transform-origin:657px 357px}
       svg[data-gesture="point"] .right-arm{transform:rotate(-32deg);transform-origin:657px 357px}
       svg[data-gesture="wave"] .hand{transform:translate(-4px,-8px)}

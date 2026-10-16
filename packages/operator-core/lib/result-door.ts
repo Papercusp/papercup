@@ -778,6 +778,11 @@ const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
   'ok',
   'committed',
   'completionReceipt',
+  'canonicalRatings.base-rate-check.rating',
+  'canonicalRatings.instrument-split.rating',
+  'canonicalRatings.terminal-re-rate.rating',
+  'canonicalRatings.platform-telemetry-excluded.rating',
+  'canonicalRatings.re-runnable-evidence.rating',
   'canonicalRatings.degenerate-distribution.rating',
   'created',
   'issueId',
@@ -953,7 +958,7 @@ const WORK_ITEMS_RELEASE_SPILL_RECOVERY =
 
 const SCORECARDS_EMIT_SPILL_RECOVERY =
   'scorecards:emit may have recorded a card before its response spill failed. Do NOT repeat this non-idempotent emit. ' +
-  'Use the preserved committed flag, completionReceipt, issueId, and canonicalRatings.degenerate-distribution.rating ' +
+  'Use the preserved committed flag, completionReceipt, issueId, and canonicalRatings rating entries ' +
   'to determine the write outcome; the omitted response bytes cannot be recovered.';
 
 const SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY =
@@ -1083,6 +1088,53 @@ type JsonObject = Record<string, unknown>;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Preserve every emitted criterion rating through a bounded scorecards:emit
+ * projection. The grading-integrity rubric currently has six canonical keys,
+ * but scorecard criteria are data-driven; deriving paths from the response
+ * keeps a newly-added criterion from silently becoming `{}` at the outer
+ * tools:invoke result door.
+ */
+function scorecardsEmitPreservePaths(value: unknown): string[] {
+  const canonicalRatings = isJsonObject(value) && isJsonObject(value.canonicalRatings)
+    ? value.canonicalRatings
+    : undefined;
+  const dynamicPaths = canonicalRatings
+    ? Object.keys(canonicalRatings)
+        .map((key) => `canonicalRatings.${key}.rating`)
+        .filter((path) => !(SCORECARDS_EMIT_SPILL_PRESERVE_PATHS as readonly string[]).includes(path))
+    : [];
+  return [...SCORECARDS_EMIT_SPILL_PRESERVE_PATHS, ...dynamicPaths];
+}
+
+/** Keep every scorecard verdict inline while leaving bulky evidence in the spill. */
+function compactScorecardsEmitRatings(value: unknown): JsonObject | null {
+  if (!isJsonObject(value)) return null;
+  const compact: JsonObject = {};
+  for (const [criterion, entry] of Object.entries(value)) {
+    if (!isJsonObject(entry) || !Object.prototype.hasOwnProperty.call(entry, 'rating')) return null;
+    compact[criterion] = { rating: entry.rating };
+  }
+  return Object.keys(compact).length > 0 ? compact : null;
+}
+
+function compactScorecardsEmitBody(value: unknown): JsonObject | null {
+  if (!isJsonObject(value)) return null;
+  const canonicalRatings = compactScorecardsEmitRatings(value.canonicalRatings);
+  if (!canonicalRatings) return null;
+  return {
+    ...value,
+    canonicalRatings,
+    _partial: true,
+    _compactProjection: {
+      kind: 'scorecards-emit',
+      preserves: ['canonicalRatings.<criterion>.rating'],
+      omits: ['canonicalRatings.<criterion>.evidence'],
+      recovery: 'full result is in _projection.cursor',
+    },
+  };
 }
 
 function scorecardsEmitReceipt(
@@ -2178,14 +2230,15 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     } as T;
   }
   const scorecardReceipt = spillPath == null ? scorecardsEmitReceipt(input.result, input.opts) : undefined;
+  const compactScorecardReceipt = scorecardReceipt ? compactScorecardsEmitBody(scorecardReceipt) : undefined;
   const boundedScorecardReceipt = scorecardReceipt
-    ? projectBoundedPayload(scorecardReceipt, {
+    ? projectBoundedPayload(compactScorecardReceipt ?? scorecardReceipt, {
         toolName: 'scorecards:emit',
         tier: 'trimmed',
         forced: true,
         originalChars: input.sourceBytes,
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
-        preservePaths: SCORECARDS_EMIT_SPILL_PRESERVE_PATHS,
+        preservePaths: scorecardsEmitPreservePaths(compactScorecardReceipt ?? scorecardReceipt),
         preserveTopLevelKeys: ['ok', 'committed', 'completionReceipt', 'created', 'issueId', 'previousIssueId', 'canonicalRatings'],
         recovery: preferVolatileScratchRecovery(
           volatileRecovery,
@@ -3660,7 +3713,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'evidenceRead.criteria',
           ]
         : []),
-      ...(isScorecardsEmitCall(opts) ? SCORECARDS_EMIT_SPILL_PRESERVE_PATHS : []),
+      ...(isScorecardsEmitCall(opts) ? scorecardsEmitPreservePaths(bodyShape.json?.parsed) : []),
       ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
       ...(opts.toolName === 'plans:bind-spec-evidence' ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:bind-spec-evidence')
@@ -3807,6 +3860,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       parsedJsonBody && opts.toolName === SPEC_TEST_ADEQUACY_TOOL
         ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
         : null;
+    const scorecardsEmitCompactBody =
+      parsedJsonBody && isScorecardsEmitCall(opts)
+        ? compactScorecardsEmitBody(bodyShape.json!.parsed)
+        : null;
     // Full fleet indexes can outgrow even the domain emergency shaper. The
     // source body has already been spilled above; retain the atomic numeric
     // contract inline instead of walking early obligation fields until the
@@ -3828,7 +3885,8 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const leaderBriefFits = leaderBriefPreview !== null &&
       Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
     let projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
-      evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
+      scorecardsEmitCompactBody ?? evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ??
+        (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
       // `work_items:get` is the continuity read. If its spill cannot be
@@ -3855,7 +3913,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // from the generic identity fields. Keep them visible even if
       // projection metadata forces the final identity-only fallback;
       // ordinary tools retain the generic behavior.
-      ...(opts.toolName === 'coord:orient'
+      ...(scorecardsEmitCompactBody != null
+        ? { preserveTopLevelKeys: ['ok', 'committed', 'completionReceipt', 'created', 'issueId', 'previousIssueId', 'canonicalRatings'] as const }
+        : opts.toolName === 'coord:orient'
         ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['ok', 'event_inspection'] as const }
@@ -3911,7 +3971,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           ...baseResultDoorMeta,
           structural: true,
           ...(leaderBriefFits ? { compactProjection: 'fleet:leader-brief-numeric-core' } : {}),
-          ...(evaluatorCompactBody != null
+      ...(scorecardsEmitCompactBody != null
+            ? { compactProjection: 'scorecards-emit:canonical-ratings' }
+            : evaluatorCompactBody != null
             ? { compactProjection: 'evaluator-specific:plans:evaluate-spec-test-adequacy' }
             : {}),
           recoveryCursor: recovery.cursor,

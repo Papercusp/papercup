@@ -1141,6 +1141,52 @@ export async function diagnoseFleetScopeLeaderLiveness(args: {
 
 export const FLEET_LEADER_MISSING_GRACE_MS = 10 * 60 * 1000;
 
+export type FleetLeaderResumeResult = 'resumed' | 'pending' | 'failed';
+
+export type FleetLeaderResume = (args: {
+  leaderOwnerId: string;
+  fleetSlug: string;
+  missingSinceMs: number;
+  nowMs: number;
+}) => Promise<FleetLeaderResumeResult>;
+
+/**
+ * Reuse the maintained resume door for both scheduler and background-sweep
+ * recovery. The deterministic key is tied to the persisted vacancy epoch, so
+ * concurrent callers deduplicate while a new vacancy gets a new attempt.
+ */
+export async function resumeFleetLeaderWithLaunchAgent(args: {
+  leaderOwnerId: string;
+  fleetSlug: string;
+  missingSinceMs: number;
+  nowMs: number;
+  ctx: Record<string, unknown>;
+}): Promise<FleetLeaderResumeResult> {
+  try {
+    const { default: launchTool } = await import('../agent-tools/capability/launch-agent');
+    const idempotencyKey = `fleet-leader-resume:${args.fleetSlug}:${args.leaderOwnerId}:${args.missingSinceMs}`;
+    const response = await launchTool.handler({
+      resume: { agentId: args.leaderOwnerId },
+      fork: false,
+      brief:
+        `Resume your retained leadership seat for active fleet '${args.fleetSlug}' using your saved launch/session settings. ` +
+        'Reconcile the fleet before taking any successor or member action.',
+      idempotencyKey,
+      __leaderRecoveryOwnerId: args.leaderOwnerId,
+    } as never, args.ctx as never) as {
+      isError?: boolean;
+      data?: { deduped?: boolean; launch?: { opened?: number; resumeVerified?: boolean | null } };
+    };
+    const launch = response?.data?.launch;
+    if (launch?.resumeVerified === true) return 'resumed';
+    if (response?.data?.deduped === true) return 'pending';
+    if (launch?.resumeVerified === null || (launch?.opened ?? 0) > 0) return 'pending';
+    return 'failed';
+  } catch {
+    return 'failed';
+  }
+}
+
 type FleetLeaderRosterSnapshot = {
   fleet: import('../agent-fleets-store').AgentFleetRecord;
   roster: import('../fleet/fleet-roster').ListFleetRosterResult;
@@ -1200,6 +1246,7 @@ export async function reconcileFleetScopeLeaderSuccession(args: {
   scope: FleetScopeContext;
   identity: AgentIdentity;
   nowMs?: number;
+  resumeLeader?: FleetLeaderResume;
 }): Promise<'live' | 'unavailable' | null> {
   const snapshot = await readFleetLeaderRosterSnapshot(args.scope);
   if (!snapshot) return null;
@@ -1240,6 +1287,30 @@ export async function reconcileFleetScopeLeaderSuccession(args: {
 
   if (nowMs - fleet.leaderMissingSinceMs < FLEET_LEADER_MISSING_GRACE_MS) {
     return 'unavailable';
+  }
+
+  if (fleet.leaderOwnerId && args.resumeLeader) {
+    const resume = await args.resumeLeader({
+      leaderOwnerId: fleet.leaderOwnerId,
+      fleetSlug: fleet.fleetSlug,
+      missingSinceMs: fleet.leaderMissingSinceMs,
+      nowMs,
+    }).catch(() => 'failed' as const);
+    if (resume === 'resumed') {
+      const cleared = await store.clearFleetLeaderMissingSince({
+        workspaceId: fleet.workspaceId,
+        fleetSlug: fleet.fleetSlug,
+        expectedLeaderOwnerId: fleet.leaderOwnerId,
+        expectedLeaderMissingSinceMs: fleet.leaderMissingSinceMs,
+        expectedUpdatedAtMs: fleet.updatedAt,
+        observedAtMs: nowMs,
+      }).catch(() => null);
+      return cleared ? 'live' : null;
+    }
+    // An enqueue with no bounded pickup proof must not promote a successor in
+    // the same pass. A measured launch failure is the only case that falls
+    // through to the existing CAS-protected member promotion.
+    if (resume === 'pending') return 'unavailable';
   }
 
   const { oldestLiveFleetMember } = await import('../fleet/fleet-roster');

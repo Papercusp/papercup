@@ -80,6 +80,40 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
 
+describe('host-held pasted credential session descriptors', () => {
+  const sessionDescriptor: ProviderDescriptor = {
+    id: 'session-example', contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.post'],
+    egressHosts: ['api.example.com'], setup: {
+      credentials: [{ key: 'account', label: 'Account' }, { key: 'password', label: 'App password' }],
+      session: { url: 'https://api.example.com/login', refreshUrl: 'https://api.example.com/refresh',
+        parameters: { identifier: 'account', password: 'password' }, hosts: ['api.example.com'],
+        accessTokenField: 'access', refreshTokenField: 'refresh', activeField: 'active', maxAgeSeconds: 3600,
+        identity: { idField: 'id', displayNameField: 'name', credentialKey: 'account' } },
+    },
+  };
+  it('admits pure-data login/refresh metadata without OAuth or a pasted bearer host', () => {
+    expect(validateProviderDescriptor(sessionDescriptor)).toEqual([]);
+    const noActive = structuredClone(sessionDescriptor); delete noActive.setup!.session!.activeField;
+    expect(validateProviderDescriptor(noActive)).toEqual([]);
+  });
+  it.each([
+    { url: 'https://foreign.example/login' }, { refreshUrl: 'https://other.example/refresh' },
+    { url: 'https://api.example.com/login?password=literal' }, { hosts: ['*.example.com'] },
+    { parameters: { password: 'undeclared' } }, { accessTokenField: '__proto__.token' },
+    { activeField: 'constructor.active' }, { maxAgeSeconds: 59 }, { maxAgeSeconds: 86401 },
+    { identity: { idField: 'access' } },
+  ])('rejects invalid endpoint, credential mapping, lifetime or response path %j', (patch) => {
+    const d = structuredClone(sessionDescriptor); Object.assign(d.setup!.session!, patch);
+    expect(validateProviderDescriptor(d).length).toBeGreaterThan(0);
+  });
+  it('rejects per-person login parameters and competing bearer credentials on the session host', () => {
+    const perPerson = structuredClone(sessionDescriptor); perPerson.setup!.credentials![1].perPrincipal = true;
+    expect(validateProviderDescriptor(perPerson)).toContain('provider.setup.session.parameters must reference declared source credential keys');
+    const overlap = structuredClone(sessionDescriptor); overlap.setup!.credentials![1].hosts = ['api.example.com'];
+    expect(validateProviderDescriptor(overlap)).toContain('provider.setup.session.hosts cannot overlap another credential');
+  });
+});
+
 describe('instance-scoped OAuth descriptors', () => {
   const instance: ProviderDescriptor = { ...descriptor({ url: '/api/v1/accounts/verify_credentials', idField: 'id' }), egressHosts: [],
     oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
@@ -103,6 +137,19 @@ describe('instance-scoped OAuth descriptors', () => {
       expect(normalizeProviderInstanceOrigin(value), String(value)).toBeNull();
       expect(() => bindProviderInstance(instance, value)).toThrow('provider_instance_origin_invalid');
     }
+  });
+
+  it('binds instance app setup paths and refuses authority escapes or unscoped relative setup', () => {
+    const scoped = { ...instance, setup: { appRegistration: { createUrl: '/settings/applications/new' } } };
+    expect(validateProviderDescriptor(scoped)).toEqual([]);
+    expect(bindProviderInstance(scoped, 'https://social.example.com').setup?.appRegistration?.createUrl).toBe('https://social.example.com/settings/applications/new');
+    expect(scoped.setup.appRegistration.createUrl).toBe('/settings/applications/new');
+    for (const createUrl of ['//evil.example.com/new', '/\\evil.example.com/new', '/new#part']) {
+      const bad = { ...scoped, setup: { appRegistration: { createUrl } } };
+      expect(validateProviderDescriptor(bad).some((issue) => issue.includes('createUrl'))).toBe(true);
+      expect(() => bindProviderInstance(bad, 'https://social.example.com')).toThrow('provider_instance_endpoint_invalid');
+    }
+    expect(validateProviderDescriptor({ ...descriptor({ url: 'https://api.example.com/me', idField: 'id' }), setup: scoped.setup }).some((issue) => issue.includes('createUrl'))).toBe(true);
   });
 
   it('refuses static host budgets and endpoints that select another authority', () => {
@@ -186,6 +233,28 @@ describe('validateProviderDescriptor: oauth.clientIdParameter', () => {
     }
     expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, clientIdParameter: 'redirect_uri' as 'client_key' } }))
       .toContain('provider.oauth.clientIdParameter must be client_id or client_key');
+  });
+});
+
+describe('validateProviderDescriptor: oauth.userAgentRequired', () => {
+  it('accepts an explicit requirement and rejects values that could silently disable it', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, userAgentRequired: true } })).toEqual([]);
+    for (const value of [false, 'true', 1]) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, userAgentRequired: value as true } }))
+        .toContain('provider.oauth.userAgentRequired must be true when present');
+    }
+  });
+});
+
+describe('validateProviderDescriptor: oauth.tokenEndpointAuthMethod', () => {
+  it('accepts the two host-held client authentication methods and rejects unknown methods', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    for (const tokenEndpointAuthMethod of ['client_secret_post', 'client_secret_basic'] as const) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, tokenEndpointAuthMethod } })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, tokenEndpointAuthMethod: 'none' as 'client_secret_basic' } }))
+      .toContain('provider.oauth.tokenEndpointAuthMethod must be client_secret_post or client_secret_basic');
   });
 });
 

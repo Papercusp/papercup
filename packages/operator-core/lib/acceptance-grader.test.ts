@@ -32,6 +32,7 @@ import {
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
 import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
+import { mockResolvedTyped } from './testing/typed-mock';
 
 describe('pre-publication review brief', () => {
   it('carries the exact unknown-only selection alongside independent verification', () => {
@@ -177,7 +178,7 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
 
   it('recovers the current Codex answerer from owner-bound native capacity evidence', async () => {
     const d = dependencies();
-    d.resolveTarget.mockResolvedValue({ ...target, agent: 'codex', advSessionId: 73 } as never);
+    mockResolvedTyped(d.resolveTarget, { ...target, agent: 'codex', advSessionId: 73 });
     d.readLogTail.mockImplementation(path => path === 'answerer.jsonl'
       ? JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
           error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } })

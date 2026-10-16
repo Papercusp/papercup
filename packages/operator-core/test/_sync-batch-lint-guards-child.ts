@@ -1,14 +1,17 @@
 /** Private background IO journey for P-028; no shared checkout writes or gate fire. */
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { configureScheduledRegistry, getManaged } from '@papercusp/scheduled-registry';
+import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import { buildSyncLintGuardDeps, SYNC_LINT_GUARDS_ROUTINE_NAME } from '../lib/release/sync-batch-lint-guards-deps';
 import { buildSyncBatchDeltaDeps, runBoundedArgv, SYNC_DELTA_ROUTINE_NAME } from '../lib/release/sync-batch-delta-check-deps';
-import { runSyncBatchDeltaCheck } from '../lib/release/sync-batch-delta-check';
+import { evaluateRadius, runSyncBatchDeltaCheck } from '../lib/release/sync-batch-delta-check';
 import { runSyncLintGuardTick } from '../lib/release/sync-batch-lint-guards';
 import { inboxWakeKey } from '../lib/agent-tools/coordination/inbox-wake';
 import { getMessageById } from '../lib/agent-tools/coordination/messages';
@@ -17,6 +20,10 @@ import { listRecentDeliveries, upsertInboxWakeAwait } from '../lib/events/await/
 import { setAutoPumpEnabledForTests } from '../lib/events/await/engine';
 import { drainDetached, pendingDetachedCount } from '../lib/detached-imports';
 import { fallbackObservationCounters, flushFallbackObservations } from '../lib/degradation/fallback-observations';
+import { INTEREST_SWEEP_TICK_MS, registerInterestWatch, startInterestWatchSweeper, stopInterestWatchSweeper } from '../lib/events/await/interest-watch';
+import { resolveProseProfileSelection } from '../lib/search/prose-vector-dims';
+
+export const SYNC_LINT_EXPECTED_BODY_FAILURE = 'EI260629 deliberate body assertion while interest sweep is blocked';
 
 export interface SyncLintPrivateReceipt {
   build: { sourceHashes: Record<string, string> };
@@ -30,7 +37,23 @@ export interface SyncLintPrivateReceipt {
     firstNotificationError: string; tscRuns: number; affectedRuns: number;
     cursorLeg: string; confirmations: number; gitHead: string;
   };
-  lifecycle: { detachedRemaining: number; fallbackFailed: number };
+  lifecycle: {
+    detachedRemaining: number;
+    fallbackFailed: number;
+    interestWatchStopRequested: true;
+    interestWatchTimerStopped: boolean;
+    stopWaitedForSweep: boolean;
+    sweepPersisted: boolean;
+    order: string[];
+  };
+}
+
+async function until(check: () => Promise<boolean>, label: string) {
+  const deadline = Date.now() + 10_000;
+  while (!(await check())) {
+    assert.ok(Date.now() < deadline, `timed out: ${label}`);
+    await nextTurn();
+  }
 }
 
 async function main() {
@@ -54,6 +77,15 @@ async function main() {
     sourceHashes[path] = actual;
   }
 
+  const deltaFile = 'src/type-error.ts';
+  // The affected pass is controlled, but its probe must select an actual task:
+  // a workspace name alone intentionally means nothing-selected in production.
+  const deltaProbe = { workspaces: ['private-typecheck'], guards: [],
+    taskCommands: [{ workspace: 'private-typecheck', command: 'node --test' }], derivation: null };
+  assert.equal(evaluateRadius({ probe: deltaProbe,
+    union: { paths: [deltaFile], totalPaths: 1, truncated: false }, batchCount: 1 }).run, true,
+  'P037 fixture must select a task before allocating fixture state');
+
   const sql = postgres(dsn, { max: 2, prepare: false });
   const harness = 'sync-lint-private';
   const author = 'su-11111111-2222-4333-8444-555555555555';
@@ -65,6 +97,11 @@ async function main() {
   const previousPump = setAutoPumpEnabledForTests(false);
   let receipt: Omit<SyncLintPrivateReceipt, 'lifecycle'> | undefined;
   let lifecycle: SyncLintPrivateReceipt['lifecycle'] | undefined;
+  const order: string[] = [];
+  let releaseSweep: (() => void) | undefined;
+  let lockedSweep: Promise<unknown> | undefined;
+  let sweepEntry: ReturnType<typeof getManaged>;
+  let watchId: string | undefined;
   try {
     const [server] = await sql`SELECT inet_server_port() AS port`;
     assert.equal(String(server!.port), pgPort);
@@ -143,7 +180,6 @@ async function main() {
     // are controlled; the compiler, attribution, cursor, filing and wake are real.
     const deltaRoot = join(runtimeRoot, 'typecheck-fixture');
     const deltaAuthor = 'su-22222222-3333-4444-8555-666666666666';
-    const deltaFile = 'src/type-error.ts';
     let deltaHead = 'c'.repeat(40);
     let tscRuns = 0;
     let affectedRuns = 0;
@@ -177,8 +213,7 @@ async function main() {
       delta.greenCheckpointRunning = async () => false;
       delta.headSha = async () => deltaHead;
       delta.listBatches = async () => [{ sha: deltaHead, committedAtMs: Date.now(), agent: null, paths: [deltaFile] }];
-      delta.probeRadius = async () => ({ workspaces: ['private-typecheck'], guards: [],
-        taskCommands: [], derivation: null });
+      delta.probeRadius = async () => deltaProbe;
       delta.runAffected = async () => { affectedRuns += 1; return { ok: true, failing: [] }; };
       delta.confirmOne = async () => { throw new Error('typecheck retry must never invoke a test confirmation'); };
       return delta;
@@ -235,14 +270,97 @@ async function main() {
       runtime: { workspaceId, runtimeRoot, pgPort }, filing: { id, assignee: author, conditionKey: condition!.condition_key },
       elapsedMs: Date.now() - startedAt, guard: 'real detector and npm child',
       wake: { eventKey: delivery.eventKey, deliveryId: delivery.id, queued: true, pickupConfirmed: false }, typecheck };
+
+    // Keep ONE P028/P037 baseline, then fail its body with the actual host
+    // sweep in flight. Only time is controlled: the managed callback, sweep,
+    // HNSW probe and persistence all use their production private-PG bindings.
+    await stopInterestWatchSweeper();
+    watchId = randomUUID();
+    await upsertInboxWakeAwait({ subscriberId: author, eventKey: `interest:${watchId}`, minSleepSec: 0 });
+    const profile = resolveProseProfileSelection('gemma', EMBEDDER_DIM_SPECS.gemma)!;
+    await registerInterestWatch(sql, { id: watchId, workspaceId, ownerId: author,
+      eventKey: `interest:${watchId}`, interest: 'private teardown guard',
+      embedding: [1, ...new Array<number>(767).fill(0)], embeddingMode: 'gemma', embeddingProfile: profile,
+      now: new Date(Date.now() - 60_000) });
+    let tick: (() => void) | undefined;
+    configureScheduledRegistry({
+      setIntervalImpl: (callback, ms) => {
+        assert.equal(ms, INTEREST_SWEEP_TICK_MS);
+        tick = callback;
+        return {};
+      },
+      clearIntervalImpl: () => { order.push('timer-stopped'); },
+    });
+    let lockReady!: (pid: number) => void;
+    const ready = new Promise<number>(resolve => { lockReady = resolve; });
+    const blocked = new Promise<void>(resolve => { releaseSweep = resolve; });
+    lockedSweep = sql.begin(async tx => {
+      await tx`LOCK TABLE harness_shared.interest_watches IN ACCESS EXCLUSIVE MODE`;
+      const [row] = await tx`SELECT pg_backend_pid() AS pid`;
+      lockReady(Number(row!.pid));
+      await blocked;
+    });
+    const blockerPid = await Promise.race([ready, lockedSweep.then(() => { throw new Error('sweep lock exited before ready'); })]);
+    await startInterestWatchSweeper();
+    assert.ok(tick, 'production start must register the managed callback');
+    tick();
+    sweepEntry = getManaged('interest-watch-sweeper');
+    assert.equal(sweepEntry?.running, true, 'registry must retain the async callback');
+    await until(async () => {
+      const rows = await sql`SELECT pid FROM pg_stat_activity
+        WHERE datname = current_database() AND ${blockerPid} = ANY(pg_blocking_pids(pid))
+          AND query LIKE '%interest_watches%'`;
+      return rows.length > 0;
+    }, 'real interest sweep blocked in private PG');
+    order.push('sweep-blocked', 'body-failed');
+    assert.fail(SYNC_LINT_EXPECTED_BODY_FAILURE);
   } finally {
     try {
       // Filing starts tracked event work and buffers fallback observations. Own
-      // both lifetimes before closing PG; beforeExit is too late for that IO.
+      // all host-owned lifetimes before closing PG; beforeExit is too late for
+      // that IO. The interest-watch interval is a lazy host boot loop and can
+      // otherwise start a final HNSW probe while this disposable PG is closing.
+      order.push('stop-requested');
+      let stopSettled = false;
+      const stopping = stopInterestWatchSweeper().then(stopped => { stopSettled = true; return stopped; });
+      let stopWaitedForSweep = false;
+      try {
+        if (sweepEntry) {
+          await until(async () => getManaged('interest-watch-sweeper') === undefined, 'timer stopped');
+          await nextTurn();
+          stopWaitedForSweep = !stopSettled && sweepEntry.running;
+          assert.equal(stopWaitedForSweep, true, 'stop must wait while the real SQL is blocked');
+        }
+      } finally {
+        releaseSweep?.();
+        if (sweepEntry) order.push('sweep-released');
+      }
+      await lockedSweep;
+      const interestWatchTimerStopped = await stopping;
+      order.push('stop-completed');
+      let sweepPersisted = false;
+      if (watchId) {
+        const [watch] = await sql`SELECT last_swept_at, last_match_count, last_error
+          FROM harness_shared.interest_watches WHERE id = ${watchId}`;
+        assert.ok(watch!.last_swept_at, 'real sweep claimed the watch');
+        assert.equal(watch!.last_error, null, 'HNSW sweep must finish without a DB error');
+        assert.equal(watch!.last_match_count, 0);
+        sweepPersisted = true;
+        order.push('sweep-persisted');
+      }
       await drainDetached();
+      order.push('detached-drained');
       const flush = await flushFallbackObservations({ sql });
-      lifecycle = { detachedRemaining: pendingDetachedCount(),
-        fallbackFailed: fallbackObservationCounters().failed };
+      order.push('fallback-flushed');
+      lifecycle = {
+        detachedRemaining: pendingDetachedCount(),
+        fallbackFailed: fallbackObservationCounters().failed,
+        interestWatchStopRequested: true,
+        interestWatchTimerStopped,
+        stopWaitedForSweep,
+        sweepPersisted,
+        order,
+      };
       assert.equal(flush.failed, 0, 'P028 fallback drain must persist before PG closes');
       assert.equal(lifecycle.detachedRemaining, 0, 'P028 detached work must settle before PG closes');
       assert.equal(lifecycle.fallbackFailed, 0, 'P028 must not lose buffered observations');
@@ -255,10 +373,11 @@ async function main() {
       setAutoPumpEnabledForTests(previousPump);
       try { await sql.end({ timeout: 5 }); }
       finally { await getOrgPg().sql.end({ timeout: 5 }); }
+      order.push('pools-closed');
+      if (receipt && lifecycle) console.log('SYNC_LINT_PRIVATE_RECEIPT ' + JSON.stringify({ ...receipt, lifecycle }));
     }
   }
   assert.ok(receipt && lifecycle);
-  console.log('SYNC_LINT_PRIVATE_RECEIPT ' + JSON.stringify({ ...receipt, lifecycle }));
 }
 
 // Preserve natural process teardown so native lifecycle failures remain visible.

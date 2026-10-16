@@ -34,6 +34,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { alarmWatchedPaths } from './disk-space-alarm';
+import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from '../dbos/routine-tick-overlap-guard';
 import {
   attributeOwnFiles,
   CENSUS_COVERAGE_GAP_BYTES,
@@ -67,6 +68,29 @@ export const CENSUS_STALE_MS = 24 * 60 * 60 * 1000;
 export interface CensusSql {
   <T = Record<string, unknown>>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T[]>;
   begin<T>(fn: (tx: CensusSql) => Promise<T>): Promise<T>;
+}
+
+/** Hourly schedules must not multiply a slow, restart-recoverable census pass.
+ * Prefer the oldest queued/running pass. Reuse the scheduler's bounded probe;
+ * a terminal or stale workflow cannot indefinitely suppress new measurements. */
+export async function diskCensusPassInFlight(
+  sql: CensusSql, workflowId: string, deviceCount: number, now = Date.now(),
+): Promise<boolean> {
+  const staleMs = Math.max(1, deviceCount) * CENSUS_DU_TIMEOUT_MS + 30 * 60_000;
+  return anotherRoutinesTickInFlight(workflowId, {
+    now: () => now,
+    queryInFlight: (selfId, cutoff) => sql.begin(async tx => {
+      await tx`SELECT set_config('statement_timeout', ${String(ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS)}, true)`;
+      return tx<{ workflow_uuid: string }>`
+        SELECT older.workflow_uuid FROM dbos.workflow_status older
+        JOIN dbos.workflow_status current ON current.workflow_uuid = ${selfId}
+        WHERE older.name = 'diskConsumerCensus'
+          AND older.status IN ('PENDING', 'ENQUEUED')
+          AND COALESCE(older.started_at_epoch_ms, older.created_at) > ${cutoff}
+          AND (older.created_at, older.workflow_uuid) < (current.created_at, current.workflow_uuid)
+        LIMIT 1`;
+    }),
+  }, staleMs);
 }
 
 export interface CensusDevice {

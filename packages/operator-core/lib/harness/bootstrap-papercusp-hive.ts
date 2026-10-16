@@ -23,6 +23,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { cloneGithubRepo, isCloneError, defaultClonesDir, parseGitProgressLine } from './clone-github';
@@ -51,6 +53,7 @@ import { createBundledEpochKeyProvider } from '../sync/hyperbee/bundled-epoch-ke
 import { chainEpochKeyProviders } from '../sync/hyperbee/epoch-key-provider-chain';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { getBuildInfo } from '../build-info';
 
 /**
  * P-011 kill-switch: the seed-bundle feature master gate (FLAGS.POT_SEED_BUNDLE,
@@ -498,10 +501,25 @@ async function defaultRestoreHiveSeed(
   // the clones dir the join would otherwise populate (same dirs the post-admission
   // deferred-git restore targets — see seedTargetDirs).
   const { targetStoreDir, targetRepoDir } = seedTargetDirs();
+  // Use the running artifact's baked build identity, not the current checkout.
+  // Hash the installed entry script at restore entry; absent/unreadable bytes
+  // stay explicitly unknown and never masquerade as source-pinned evidence.
+  const script = process.argv[1] ?? null;
+  let sourceSha256: string | null = null;
+  if (script) {
+    try {
+      const digest = createHash('sha256');
+      for await (const chunk of createReadStream(script)) digest.update(chunk);
+      sourceSha256 = digest.digest('hex');
+    } catch {
+      recordSeedRestoreLog('[seed] diagnostic source identity unavailable; phase evidence cannot be source-pinned', 'warn', record);
+    }
+  }
   const res = await restoreHiveSeed({
     seedDir,
     targetStoreDir,
     targetRepoDir,
+    diagnosticIdentity: { buildSha: getBuildInfo().sha, sourceSha256, script },
     // decryptionKey is intentionally absent pre-admission → the git seed defers.
     // WI-9413: an 'error' here means this install will boot EMPTY offline. It used to
     // render as ordinary 'clone/running' progress — indistinguishable from success in

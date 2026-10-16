@@ -52,6 +52,28 @@ describe('native Playwright assertion source preflight', () => {
   });
 
   it.each([
+    ['/tmp/shared/node_modules/.bin/playwright', 'test', '--config', '/tmp/shared/playwright.config.mts'],
+    ['npx', '@playwright/test', 'test', '--config', '/tmp/shared/playwright.config.mts'],
+    ['node', '/tmp/shared/node_modules/playwright/cli.js', 'test'],
+    ['bash', '-c', '/tmp/shared/node_modules/.bin/playwright test --config /tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && /tmp/shared/node_modules/.bin/playwright test --config /tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'npx @playwright/test test --config /tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx @playwright/test test --config /tmp/shared/playwright.config.mts'],
+    ['bash', '-c', 'npx @playwright/test@1.57.0 test'],
+    ['bash', '-c', 'npx playwright@1.57.0 test'],
+    ['bash', '-c', 'npx playwright-core test'],
+    ['bash', '-c', 'node /tmp/shared/node_modules/playwright/cli.js test'],
+    ['bash', '-c', 'node /tmp/shared/node_modules/@playwright/test/cli.js test'],
+    ['bash', '-c', 'node /tmp/shared/node_modules/playwright-core/cli.js test'],
+    ['bash', '-c', './node_modules/.bin/playwright test'],
+    ['bash', '-c', 'npm exec -- @playwright/test test'],
+  ])('rejects unsupported Playwright CLI forms before native preparation: %j', (...args) => {
+    const result = preflight(...args);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('OPERATOR_SOURCE_ROOT');
+  });
+
+  it.each([
     'cd "$OPERATOR_SOURCE_ROOT/apps/operator" && npx playwright test e2e/example.spec.mts',
     'cd "${OPERATOR_SOURCE_ROOT}/apps/operator" && npx playwright test e2e/example.spec.mts',
     'npx playwright test --config "$OPERATOR_SOURCE_ROOT/apps/operator/playwright.config.mts"',

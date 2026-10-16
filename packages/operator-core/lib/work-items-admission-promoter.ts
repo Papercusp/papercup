@@ -5933,9 +5933,14 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // Admission and the held census share one eligibility floor. Terminal rows can
     // retain admission='pending' after cleanup, but must not be reopened or reported
     // as live work needing re-homing. Preserve legacy NULL statuses as nonterminal.
+    // Rows carrying a duplicate candidate or degraded dedup coverage are unresolved
+    // review work. They must remain pending until the resolver adjudicates them; the
+    // fail-open liveness backstop must never turn that uncertainty into scheduler work.
     const pendingEligibility = sql`admission = 'pending'
       AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
-      AND created_ts < ${cutoffMs}`;
+      AND created_ts < ${cutoffMs}
+      AND (payload -> 'dedupCandidates') IS NULL
+      AND lower(COALESCE(payload #>> '{dedupCoverage,degraded}', 'false')) <> 'true'`;
     // Keep the pending predicate, workspace key, and (for harness scope) harness key on the
     // candidate read so it can use wi_admission_pending_idx. Oldest-first plus a hard cap keeps
     // this must-never-starve action quick when a workspace has a large pending backlog.

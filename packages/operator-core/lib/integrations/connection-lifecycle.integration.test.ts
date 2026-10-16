@@ -475,15 +475,19 @@ describe('descriptor credential group through the real OAuth callback', () => {
 describe('instance-scoped providers through the real OAuth callback and source fetch', () => {
   it('keeps two equal local account IDs separate and pins old refresh credentials after changing the selected instance', async () => {
     const d: ProviderDescriptor = { id: 'instance-fixture', contractVersion: 1, datatypes: ['social-post'], capabilities: [], egressHosts: [],
-      oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
+      oauth: { instance: true, userAgentRequired: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
         identity: { url: '/api/v1/me', idField: 'id', displayNameField: 'name' } },
       configSchema: { type: 'object', properties: { connectionOrigin: { type: 'string' }, connectionAccountId: { type: 'string' }, label: { type: 'string' } } },
     };
     const registry = providerRegistry();
     const entry = await registry.register({ descriptor: d, adapter: adapter(d), pluginName: PROVIDER_PLUGIN_NAME });
+    expect(summarizeIntegrationProvider(entry, [], { ref: d.id, origin: 'https://first.example.com', configured: true,
+      clientId: 'legacy', hasClientSecret: true, redirectUri: 'https://operator.example.com/api/oauth/callback', savedAt: null }).oauthClient)
+      .toMatchObject({ configured: false, userAgentRequired: true });
     const tokenRequests: Array<{ origin: string; client: string | null; secret: string | null; refresh: string | null; redirect: RequestRedirect | undefined }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input));
+      expect(new Headers(init?.headers).get('user-agent')).toBe(`${url.hostname}-app/1.0`);
       if (url.pathname === '/api/v1/me') return Response.json({ id: '42', name: url.hostname });
       if (url.pathname !== '/oauth/token') throw new Error('unexpected instance endpoint');
       const form = new URLSearchParams(String(init?.body));
@@ -493,8 +497,9 @@ describe('instance-scoped providers through the real OAuth callback and source f
     try {
       const firstOrigin = 'https://first.example.com'; const secondOrigin = 'https://second.example.com';
       for (const [origin, slot] of [[firstOrigin, 'first'], [secondOrigin, 'second']]) {
-        const status = await saveOAuthClientRegistration(d.id, { origin, clientId: `${slot}-client`, clientSecret: `${slot}-secret` }, { requireSecret: true, requireOrigin: true });
+        const status = await saveOAuthClientRegistration(d.id, { origin, clientId: `${slot}-client`, clientSecret: `${slot}-secret`, userAgent: `${new URL(origin).hostname}-app/1.0` }, { requireSecret: true, requireOrigin: true, requireUserAgent: true });
         const model = summarizeIntegrationProvider(entry, [], status);
+        expect(model.oauthClient).toMatchObject({ configured: true, userAgent: `${new URL(origin).hostname}-app/1.0`, userAgentRequired: true });
         const plugin = descriptorOAuthPlugin(d, origin);
         expect(new URL(model.connectHref!, 'https://operator.example.com').searchParams.get('provider')).toBe(plugin);
         const claims = { plugin, provider: plugin, providerHost: new URL(origin).hostname, harness: HARNESS, field: slot };
@@ -513,9 +518,10 @@ describe('instance-scoped providers through the real OAuth callback and source f
       expect(fetchImpl).not.toHaveBeenCalled();
       const firstPlugin = descriptorOAuthPlugin(d, firstOrigin);
       await fsTokenStorage.update(firstPlugin, HARNESS, { first_expires_at: Date.now() - 60_000 });
-      await host({ source: rows[0].id, request: { url: `${firstOrigin}/api/v1/timelines/home` } });
+      await host({ source: rows[0].id, request: { url: `${firstOrigin}/api/v1/timelines/home`, headers: { 'user-agent': 'package-cannot-override' } } });
       expect(tokenRequests.at(-1)).toEqual({ origin: firstOrigin, client: 'first-client', secret: 'first-secret', refresh: 'first.example.com-refresh', redirect: 'manual' });
       expect(new Headers(fetchImpl.mock.calls[0][1]?.headers).get('authorization')).toBe('Bearer first.example.com-access');
+      expect(new Headers(fetchImpl.mock.calls[0][1]?.headers).get('user-agent')).toBe('first.example.com-app/1.0');
       // Even a corrupted persisted origin cannot move the existing credential to another server.
       await sql`UPDATE harness_shared.data_sources SET config = jsonb_set(config, '{connectionOrigin}', ${JSON.stringify(secondOrigin)}::text::jsonb) WHERE id = ${rows[0].id}::uuid`;
       await expect(host({ source: rows[0].id, request: { url: `${secondOrigin}/api/v1/timelines/home` } })).rejects.toMatchObject({ code: 'token-unavailable' });

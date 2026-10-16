@@ -126,9 +126,9 @@ const MAX_SEED_RESTORE_POLL_MS = 5_000;
 function validateSeedRestoreIdentity({ expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry }) {
   if (!Number.isInteger(expectedPid) || expectedPid <= 0)
     throw new TypeError('seed restore diagnostics require a positive expectedPid');
-  if (expectedBuildSha !== undefined && (typeof expectedBuildSha !== 'string' || !/^[a-f0-9]{7,64}$/i.test(expectedBuildSha)))
+  if (typeof expectedBuildSha !== 'string' || !/^[a-f0-9]{7,64}$/i.test(expectedBuildSha))
     throw new TypeError('expectedBuildSha must be a hexadecimal build identifier');
-  if (expectedSourceSha256 !== undefined && (typeof expectedSourceSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedSourceSha256)))
+  if (typeof expectedSourceSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedSourceSha256))
     throw new TypeError('expectedSourceSha256 must be a 64-character hexadecimal digest');
   if (expectedEntry !== undefined && (typeof expectedEntry !== 'string' || !expectedEntry))
     throw new TypeError('expectedEntry must be a non-empty script path');
@@ -141,7 +141,8 @@ function validateSeedRestoreIdentity({ expectedPid, expectedBuildSha, expectedSo
  * that verify or restore completed.
  *
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
- * @param {{ expectedPid: number, expectedBuildSha?: string, expectedSourceSha256?: string,
+ * Build and source hash pins are required before any target evaluation.
+ * @param {{ expectedPid: number, expectedBuildSha: string, expectedSourceSha256: string,
  *   expectedEntry?: string, expectedOperationId?: string }} options
  */
 export async function readSeedRestoreDiagnostics(client, {
@@ -229,14 +230,15 @@ export async function readSeedRestoreDiagnostics(client, {
 
 /**
  * Observe one restore operation until it reaches a terminal state. The poll
- * budget includes protocol awaits and is capped at two minutes. The first
+ * budget includes protocol awaits and is capped at two minutes. An unavailable
+ * journal rejects immediately; it cannot produce qualifying phase evidence. The first
  * observed operation is pinned across polls; later operations cannot replace
  * it. The caller's CDP transport is closed on timeout/failure.
  * `resumeStartup` mirrors the CPU helper's exact --inspect-wait cleanup: if
  * setup fails before the resume, a best-effort resume is attempted in finally.
  *
  * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send' | 'close'>} client
- * @param {{ expectedPid: number, expectedBuildSha?: string, expectedSourceSha256?: string,
+ * @param {{ expectedPid: number, expectedBuildSha: string, expectedSourceSha256: string,
  *   expectedEntry?: string, expectedOperationId?: string, durationMs?: number,
  *   pollIntervalMs?: number, resumeStartup?: boolean, sleepImpl?: InspectorSleep }} options
  */
@@ -270,14 +272,22 @@ export async function captureSeedRestorePhases(client, {
     } finally { clearTimeout(timer); }
   };
   let operationId = expectedOperationId;
-  const read = () => withinDeadline(() => readSeedRestoreDiagnostics(client, {
-    expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId: operationId,
-  }));
+  const read = () => withinDeadline(async () => {
+    const snapshot = await readSeedRestoreDiagnostics(client, {
+      expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId: operationId,
+    });
+    identityConfirmed = true;
+    if (!snapshot.available) {
+      throw Object.assign(new Error(snapshot.reason ?? 'seed restore phase journal unavailable'), {
+        code: 'SEED_RESTORE_DIAGNOSTICS_UNAVAILABLE',
+      });
+    }
+    return snapshot;
+  });
   try {
     // --inspect-wait permits evaluations before startup is resumed. Refuse a
     // wrong PID/script without changing that target's execution state.
     let last = await read();
-    identityConfirmed = true;
     if (resumeStartup) {
       await withinDeadline(() => client.send('Runtime.runIfWaitingForDebugger'));
       resumed = true;

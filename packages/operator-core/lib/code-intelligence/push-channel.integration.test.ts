@@ -55,6 +55,29 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
     ]);
   });
 
+  it('groups multi-path work items before bounding attribution so repeated files cannot crowd out other items', async () => {
+    const workspace = 'push-incident-multi-path';
+    const paths = Array.from({ length: 12 }, (_, index) => `source-${index}.ts`);
+    for (const [id, itemPaths] of [['WI-many', paths], ['WI-next', ['next.ts']]] as const) {
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, kind, title, status, payload)
+        VALUES (${workspace}, 'papercusp', ${id}, 'feature', ${id}, 'open', ${JSON.stringify({ paths: itemPaths })}::jsonb)`;
+    }
+    // Repeated edits and several reached paths retain one relationship, with
+    // every supporting path, rather than repeating the same rendered item.
+    for (const path of [paths[0]!, paths[0]!, paths[1]!]) {
+      await db.adminSql`INSERT INTO harness_shared.edit_attribution_ledger
+        (workspace_id, harness_slug, repo_root, file, agent_id, work_item_id)
+        VALUES (${workspace}, 'papercusp', '/old-serving-checkout', ${path}, 'agent', 'WI-many')`;
+    }
+    const result = await readPushIncidentAttribution({ ...input, workspace }, [...paths, 'next.ts'], db.adminSql);
+    expect(result.workItems).toEqual([
+      expect.objectContaining({ id: 'WI-many', relation: 'file-edit-ledger', paths: paths.slice(0, 2).sort() }),
+      expect.objectContaining({ id: 'WI-many', relation: 'open-on-path', paths: [...paths].sort() }),
+      expect.objectContaining({ id: 'WI-next', relation: 'open-on-path', paths: ['next.ts'] }),
+    ]);
+  });
+
   it('concurrent workers cannot spend the per-turn budget more than once', async () => {
     const texts = await Promise.all(Array.from({ length: 6 }, (_, i) => deliver([fact(`fact-${i}`)])));
     const rows = await db.adminSql<{ chars: number }[]>`SELECT chars FROM harness_shared.code_intel_pushes WHERE workspace_id = ${input.workspace}`;

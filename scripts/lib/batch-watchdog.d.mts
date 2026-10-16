@@ -194,6 +194,16 @@ export function parseBatchProgress(output: string | null | undefined, { totalFil
     completionRows: number;
 };
 /**
+ * Return only Vitest's completed PASS rows. The `❯` row is a completed failure;
+ * it must remain in a resumed task so a partial checkpoint can never hide a red.
+ * This is deliberately weaker than a pass proof: it only names files that may be
+ * excluded from the next bounded attempt when the source identity is unchanged.
+ *
+ * @param {string | null | undefined} output
+ * @returns {string[]}
+ */
+export function parsePassingFilePaths(output: string | null | undefined): string[];
+/**
  * Classify progress without upgrading weak evidence into a spin diagnosis.
  *
  * `lastProgressAgeMs` is optional because the current synchronous capture path

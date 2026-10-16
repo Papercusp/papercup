@@ -14,7 +14,7 @@ const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: ac
 const response = (value: unknown, status = 200) => Response.json({ record: value }, { status });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
 const videoMedia: ProductTutorialVideoMedia = {
-  src: 'https://clips.papercusp.com/test/tutorial.mp4', captionsSrc: 'https://clips.papercusp.com/test/tutorial.vtt', transcriptHref: '/tutorial-transcript',
+  id: 'test-video-v1', src: 'https://clips.papercusp.com/test/tutorial.mp4', captionsSrc: 'https://clips.papercusp.com/test/tutorial.vtt', transcriptHref: '/tutorial-transcript',
   chapters: PRODUCT_TUTORIAL_CHAPTERS.map((chapter, index) => ({ id: chapter.id, startSeconds: index * 10, transcript: `Transcript for ${chapter.title}.` })),
 };
 describe('combined video and practice guide', () => {
@@ -50,7 +50,7 @@ describe('combined video and practice guide', () => {
     expect(pause).toHaveBeenCalled();
     expect(assign).not.toHaveBeenCalled();
     expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ expectedScope: { tenantId: 'org', userId: 'user' },
-      currentLessonId: 'cloud-first-agent', disposition: 'paused', reviewedLessonIds: ['welcome'] });
+      currentLessonId: 'cloud-first-agent', disposition: 'paused', reviewedLessonIds: ['welcome'], video: { mediaId: 'test-video-v1', chapterId: 'create-project', positionSeconds: 10 } });
     await act(async () => acknowledge(response(record({ disposition: 'paused', revision: 1, currentLessonId: 'cloud-first-agent', reviewedLessonIds: ['welcome'] }))));
     expect(assign).toHaveBeenCalledWith('/?app=home&chatPane=true');
     pause.mockRestore();
@@ -71,6 +71,21 @@ describe('combined video and practice guide', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Watch the project tutorial' }));
     await screen.findByLabelText('PaperCup cloud project tutorial');
     expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ disposition: 'active', reviewedLessonIds: ['welcome'] });
+  });
+  it('resumes only the saved edition and keeps video time separate from reviewed explanations', async () => {
+    const video = { mediaId: videoMedia.id, chapterId: 'visible-fleet', positionSeconds: 94.5 };
+    const fetcher = vi.fn().mockResolvedValue(response(record({ video })));
+    vi.stubGlobal('fetch', fetcher);
+    const view = render(<AccountProductTutorial account={{ ...account, workspaceId: 'chosen-workspace' }} videoMedia={videoMedia}><p>Home</p></AccountProductTutorial>);
+    const player = await screen.findByLabelText('PaperCup cloud project tutorial') as HTMLVideoElement;
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(94.5);
+    expect(screen.getByRole('button', { name: 'Try it — Continue with a visible fleet' })).toBeTruthy();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    view.rerender(<AccountProductTutorial account={{ ...account, workspaceId: 'chosen-workspace' }} videoMedia={{ ...videoMedia, id: 'new-edition' }}><p>Home</p></AccountProductTutorial>);
+    fireEvent.loadedMetadata(screen.getByLabelText('PaperCup cloud project tutorial'));
+    expect((screen.getByLabelText('PaperCup cloud project tutorial') as HTMLVideoElement).currentTime).toBe(0);
+    expect(vi.mocked(captureBrowserTelemetry).mock.calls.some(([, value]) => value.action === 'explanation_reviewed')).toBe(false);
   });
 });
 describe('account product guide entry', () => {

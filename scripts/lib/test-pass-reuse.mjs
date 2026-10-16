@@ -27,6 +27,8 @@ const GENERATED_SCHEMA_FILE_SET = new Set(GENERATED_SCHEMA_FILES);
 export const TEST_REUSE_ENV = "AFFECTED_TEST_REUSE";
 /** The channel that carries the skip list to vitest-config (a JSON array of repo-relative paths). */
 export const TEST_REUSE_SKIP_LIST_ENV = "PC_TEST_REUSE_SKIP_LIST";
+/** The explicit partial-integration resume skip-list channel consumed by vitest-config. */
+export const PC_TEST_PARTIAL_SKIP_LIST_ENV = "PC_TEST_PARTIAL_SKIP_LIST";
 /** Maximum proof age; default 24h. */
 export const TEST_REUSE_MAX_AGE_ENV = "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
 export const TEST_REUSE_MAX_AGE_MS_DEFAULT = 24 * 3600 * 1000;

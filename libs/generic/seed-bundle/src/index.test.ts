@@ -7,6 +7,7 @@ import {
   decodeManifest,
   canonicalJson,
   SeedProviderRegistry,
+  SEED_RESTORE_DIAGNOSTIC_SLOT,
   restoreSeed,
   type SeedManifest,
   type SeedProvider,
@@ -270,6 +271,37 @@ describe('restoreSeed', () => {
     release();
     expect((await ongoing).outcomes).toEqual([{ kind: 'corestore', ok: true }]);
     expect(phases).toContainEqual({ kind: 'corestore', phase: heldPhase, state: 'succeeded' });
+  });
+
+  it('publishes a bounded identity-pinned diagnostic operation while a provider await is held', async () => {
+    const key = Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT);
+    const root = globalThis as unknown as Record<symbol, unknown>;
+    delete root[key];
+    const reg = new SeedProviderRegistry();
+    const core = okProvider('corestore');
+    let release!: () => void;
+    const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
+    core.verify = vi.fn(async () => { await held; return { ok: true }; });
+    reg.register(core);
+    const ongoing = restoreSeed(validManifest({ stores: [validManifest().stores[1]] }), reg, resolve, {
+      diagnosticIdentity: { buildSha: 'a'.repeat(40), sourceSha256: 'b'.repeat(64), script: 'serve.mjs' },
+    });
+    try {
+      await vi.waitFor(() => {
+        const state = root[key] as { operations?: Array<{ status: string; identity: unknown; events: unknown[] }> };
+        const operation = state?.operations?.at(-1);
+        expect(operation?.status).toBe('running');
+        expect(operation?.identity).toMatchObject({ buildSha: 'a'.repeat(40), sourceSha256: 'b'.repeat(64), script: 'serve.mjs' });
+        expect(operation?.events).toContainEqual(expect.objectContaining({ phase: 'verify', state: 'started' }));
+      });
+      release();
+      await expect(ongoing).resolves.toMatchObject({ ok: true });
+      const state = root[key] as { operations?: Array<{ status: string; finishedAt: number | null }> };
+      expect(state.operations?.at(-1)).toMatchObject({ status: 'succeeded', finishedAt: expect.any(Number) });
+    } finally {
+      release();
+      delete root[key];
+    }
   });
 
   it('fails fast on an invalid manifest', async () => {

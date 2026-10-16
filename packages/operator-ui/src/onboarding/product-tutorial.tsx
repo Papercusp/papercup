@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PRODUCT_TUTORIAL_CHAPTERS, PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialChapter, type ProductTutorialLesson, type ProductTutorialVideoMedia } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
+import { PRODUCT_TUTORIAL_CHAPTERS, PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialChapterIds, productTutorialLessonIds, productTutorialTargetAvailability, type ProductTutorialChapter, type ProductTutorialLesson, type ProductTutorialVideoMedia, type ProductTutorialVideoPosition } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import type { AccountTutorialProgressRecord } from '@papercusp/operator-core/lib/onboarding/cloud-tutorial-progress';
 import { captureBrowserTelemetry } from '../browser-telemetry';
 import { useOperatorWorkspaceLocation } from '../seam';
@@ -211,12 +211,14 @@ const endpoint = '/api/hosted/browser/onboarding/tutorial-progress?scope=account
 export interface ProductTutorialAccount { tenantId: string; userId: string; sessionId: string; workspaceId: string | null }
 /** A player has no progress endpoint or product mutator. Try it is a separate
  * gesture routed through the guide's acknowledged pause/navigation operation. */
-export function ProductTutorialVideo({ media, lessonId, workspaceId, busy = false, onTry }: {
+export function ProductTutorialVideo({ media, lessonId, workspaceId, busy = false, initialVideo, onPosition, onTry }: {
   media: ProductTutorialVideoMedia; lessonId: string; workspaceId: string | null; busy?: boolean;
+  initialVideo?: ProductTutorialVideoPosition; onPosition?(position: ProductTutorialVideoPosition): void;
   onTry(chapter: ProductTutorialChapter): void;
 }) {
   const video = useRef<HTMLVideoElement>(null);
-  const [chapterId, setChapterId] = useState(() => PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.lessonId === lessonId)?.id ?? PRODUCT_TUTORIAL_CHAPTERS[0].id);
+  const saved = initialVideo?.mediaId === media.id ? initialVideo : undefined;
+  const [chapterId, setChapterId] = useState(() => saved?.chapterId ?? PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.lessonId === lessonId)?.id ?? PRODUCT_TUTORIAL_CHAPTERS[0].id);
   const [unavailable, setUnavailable] = useState(false);
   const chapters = PRODUCT_TUTORIAL_CHAPTERS.flatMap(chapter => {
     const timing = media.chapters.find(entry => entry.id === chapter.id);
@@ -228,17 +230,26 @@ export function ProductTutorialVideo({ media, lessonId, workspaceId, busy = fals
     if (!chapter) return;
     setChapterId(id);
     if (video.current) video.current.currentTime = chapter.startSeconds;
+    onPosition?.({ mediaId: media.id, chapterId: id, positionSeconds: chapter.startSeconds });
   };
   const availability = current && current.id !== 'meet-papercup' && !workspaceId ? 'Choose an authorized workspace before trying this chapter.' : null;
   return <section className="product-guide-video" aria-label="Watch and try the project tutorial">
     <h2>Build a project with PaperCup</h2>
     <p>Watch the example, then try each step in your own project. Watching records no completed product tasks.</p>
     <video ref={video} controls preload="metadata" playsInline aria-label="PaperCup cloud project tutorial"
-      onLoadedMetadata={() => { if (current && video.current) video.current.currentTime = current.startSeconds; }}
+      onLoadedMetadata={() => {
+        if (current && video.current) {
+          const desired = saved?.positionSeconds ?? current.startSeconds;
+          video.current.currentTime = Number.isFinite(video.current.duration) ? Math.min(desired, video.current.duration) : desired;
+        }
+      }}
       onTimeUpdate={() => {
         const time = video.current?.currentTime ?? 0;
         const playing = [...chapters].reverse().find(chapter => chapter.startSeconds <= time);
-        if (playing) setChapterId(playing.id);
+        if (playing && Number.isFinite(time) && time >= 0) {
+          setChapterId(playing.id);
+          onPosition?.({ mediaId: media.id, chapterId: playing.id, positionSeconds: time });
+        }
       }} onError={() => setUnavailable(true)}>
       <source src={media.src} type="video/mp4" />
       <track kind="captions" src={media.captionsSrc} srcLang="en" label="English" default />
@@ -272,8 +283,10 @@ export function validProductTutorialRecord(value: unknown, account: ProductTutor
     row.scope?.tenantId === account.tenantId && row.scope.userId === account.userId &&
     ['active', 'paused', 'skipped', 'closed'].includes(row.disposition) && productTutorialLessonIds.has(row.currentLessonId) &&
     Array.isArray(row.reviewedLessonIds) && row.reviewedLessonIds.every(id => productTutorialLessonIds.has(id)) &&
-    new Set(row.reviewedLessonIds).size === row.reviewedLessonIds.length;
+    new Set(row.reviewedLessonIds).size === row.reviewedLessonIds.length &&
+    (row.video === undefined || (typeof row.video === 'object' && row.video !== null && typeof row.video.mediaId === 'string' && /^[a-zA-Z0-9._-]{1,160}$/.test(row.video.mediaId) && productTutorialChapterIds.has(row.video.chapterId) && Number.isFinite(row.video.positionSeconds) && row.video.positionSeconds >= 0 && row.video.positionSeconds <= 14400));
 }
+type GuidePatch = Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds' | 'video'>;
 
 /** Account entry wraps the host's existing first-run/shell choice. It never
  * mounts that workspace UI while an enrolled guide is active. */
@@ -300,8 +313,9 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     }
   }, []);
   const operation = useRef<AbortController | null>(null);
+  const videoPosition = useRef<ProductTutorialVideoPosition | undefined>(undefined);
   const mounted = useRef(false);
-  const pending = useRef<{ body: string; patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>; href?: string } | null>(null);
+  const pending = useRef<{ body: string; patch: GuidePatch; href?: string } | null>(null);
   const identity = `${account.tenantId}:${account.userId}:${account.sessionId}`;
   const currentLesson = record ? PRODUCT_TUTORIAL_LESSONS.find(lesson => lesson.id === record.currentLessonId) : null;
   const analytics = useRef<{ identity: string; observer: ReturnType<typeof createProductTutorialAnalytics> } | null>(null);
@@ -324,6 +338,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     const abort = new AbortController();
     operation.current?.abort(); operation.current = abort;
     pending.current = null;
+    videoPosition.current = undefined;
     requestedFocus.current = null;
     setLoading(true); setRecord(null); setError(null); setLoadRequiresSignIn(false); setContinueUnavailable(false); setBusy(false);
     let loadFailure = 'Your guide could not be loaded. Check your connection and try again.';
@@ -356,10 +371,11 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     if (target) { target.focus(); requestedFocus.current = null; }
   }, [record, busy, loading, sessionSignal]);
 
-  async function save(patch: Pick<AccountTutorialProgressRecord, 'disposition' | 'currentLessonId' | 'reviewedLessonIds'>, href?: string, restart = false) {
+  async function save(patch: GuidePatch, href?: string, restart = false) {
     if ((!record && !restart) || busy || sessionSignal !== 'valid') return;
     const mutation = pending.current ?? { patch, href, body: JSON.stringify({ disposition: patch.disposition,
       currentLessonId: patch.currentLessonId, reviewedLessonIds: patch.reviewedLessonIds,
+      ...(!restart && (videoPosition.current ?? patch.video ?? record?.video) ? { video: videoPosition.current ?? patch.video ?? record?.video } : {}),
       expectedScope: record?.scope ?? { tenantId: account.tenantId, userId: account.userId },
       expectedRevision: record?.revision ?? 0, mutationId: crypto.randomUUID(), version: 3, ...(restart ? { restart: true } : {}) }) };
     pending.current = mutation;
@@ -374,10 +390,12 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
       if (!validProductTutorialRecord(body.record, account)) throw new Error('scope_changed');
       if (response.status === 409) {
         pending.current = null;
+        videoPosition.current = body.record.video;
         setRecord(body.record); setError('Another tab changed your guide. Review the current lesson, then try your choice again.'); return;
       }
       if (!response.ok) throw new Error('unavailable');
       pending.current = null;
+      videoPosition.current = body.record.video;
       // Observe the acknowledged record before navigation can unmount this
       // component. The later effect sees the same record and emits no duplicate.
       analytics.current?.observer.update(body.record);
@@ -421,7 +439,7 @@ export function AccountProductTutorial({ account, sessionSignal = 'valid', child
     <p>Product guide · Lesson {position + 1} of {PRODUCT_TUTORIAL_LESSONS.length}</p>
     <h1 id="product-guide-title" ref={heading} tabIndex={-1}>{lesson.title}</h1>
     <p>{lesson.introduction}</p>
-    {videoMedia && <ProductTutorialVideo key={`${identity}:${account.workspaceId ?? ''}`} media={videoMedia} lessonId={lesson.id} workspaceId={account.workspaceId} busy={busy}
+    {videoMedia && <ProductTutorialVideo key={`${identity}:${account.workspaceId ?? ''}:${videoMedia.id}`} media={videoMedia} lessonId={lesson.id} workspaceId={account.workspaceId} busy={busy} initialVideo={record.video} onPosition={position => { videoPosition.current = position; }}
       onTry={chapter => void save({ ...record, currentLessonId: chapter.lessonId, disposition: 'paused' }, productTutorialDestination(chapter.destination, account.workspaceId))} />}
     <nav aria-label="Product guide lessons"><ol>{PRODUCT_TUTORIAL_LESSONS.map((entry, index) => <li key={entry.id}>
       <button disabled={busy} aria-current={entry.id === lesson.id ? 'step' : undefined} onClick={() => move(index)}>{entry.title}{record.reviewedLessonIds.includes(entry.id) ? ' · Reviewed' : ''}</button>

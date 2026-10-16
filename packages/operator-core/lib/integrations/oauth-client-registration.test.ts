@@ -98,6 +98,28 @@ describe('clientRegistrationRefOf', () => {
 });
 
 describe('saveOAuthClientRegistration', () => {
+  it('stores a supplied User-Agent, exposes its public status, preserves omission and refuses unsafe or missing required values', async () => {
+    const userAgent = 'desktop:unit-app:1.0 (by /u/fixture-contact)';
+    const options = { requireSecret: true, requireUserAgent: true };
+    await expect(saveOAuthClientRegistration('unit-agent', { clientId: 'client', clientSecret: SECRET }, options))
+      .rejects.toMatchObject({ code: 'user-agent-required' });
+    await expect(fs.stat(file())).rejects.toMatchObject({ code: 'ENOENT' });
+    const status = await saveOAuthClientRegistration('unit-agent', { clientId: 'client', clientSecret: SECRET, userAgent }, options);
+    expect(status.userAgent).toBe(userAgent);
+    expect(JSON.stringify(status)).not.toContain(SECRET);
+    await saveOAuthClientRegistration('unit-agent', { clientId: 'renamed' }, options);
+    const before = await fs.readFile(file(), 'utf8');
+    for (const invalid of ['bad\r\ninjected: value', 'bad\tvalue', 'non-ascii-é', 'a'.repeat(513), null, 42]) {
+      await expect(saveOAuthClientRegistration('unit-agent', { clientId: 'client', userAgent: invalid }, options))
+        .rejects.toMatchObject({ code: 'invalid-user-agent' });
+      expect(await fs.readFile(file(), 'utf8')).toBe(before);
+    }
+    await expect(saveOAuthClientRegistration('unit-agent', { clientId: 'client', userAgent: '' }, options))
+      .rejects.toMatchObject({ code: 'user-agent-required' });
+    expect((await readFile())['unit-agent'].userAgent).toBe(userAgent);
+    await saveOAuthClientRegistration('unit-agent', { clientId: 'client', userAgent: '' }, { requireSecret: true });
+    expect((await readFile())['unit-agent'].userAgent).toBeUndefined();
+  });
   it('retains independent instance registrations when the card selects a different origin', async () => {
     const first = { origin: 'https://first.example.com', clientId: 'first-client', clientSecret: SECRET };
     const second = { origin: 'https://second.example.com', clientId: 'second-client', clientSecret: OTHER_SECRET };
@@ -222,14 +244,29 @@ describe('saveOAuthClientRegistration', () => {
 });
 
 describe('the connect flow reads what the page saved (SPEC-R-2-P-009)', () => {
+  it('uses the saved User-Agent for exchange, refresh and account identity and refuses a legacy registration without it', async () => {
+    const d = descriptor('unit-agent', { userAgentRequired: true, identity: { url: 'https://auth.unit-oauth.test/me', idField: 'id' } });
+    await providerRegistry().register({ descriptor: d, adapter: adapter(d), pluginName: PLUGIN_NAME });
+    await saveOAuthClientRegistration(d.id, { clientId: 'client', clientSecret: SECRET }, { requireSecret: true });
+    expect(await resolveOAuthProvider(`provider:${d.id}`)).toBeNull();
+    const userAgent = 'desktop:unit-app:1.0 (by /u/fixture-contact)';
+    await saveOAuthClientRegistration(d.id, { clientId: 'client', userAgent }, { requireSecret: true, requireUserAgent: true });
+    const fetch = vi.fn(async (url: URL | string, _init?: RequestInit) => String(url).endsWith('/me') ? Response.json({ id: 'account' }) : Response.json({ access_token: 'fresh' }));
+    vi.stubGlobal('fetch', fetch);
+    const provider = (await resolveOAuthProvider(`provider:${d.id}`))!;
+    await provider.exchangeCode('code'); await provider.refresh('refresh');
+    await connectionAdapterForPlugin(`provider:${d.id}`)!.resolveAccount('access');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetch.mock.calls) expect(new Headers(init?.headers).get('user-agent')).toBe(userAgent);
+  });
   it('pins an old account’s authorize, identity and refresh to its own origin after selecting another instance', async () => {
     const d = { ...descriptor('unit-instance', { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token',
       clientRegistrationRef: 'unit-instance', identity: { url: '/api/v1/me', idField: 'id' } }), egressHosts: [] };
     await providerRegistry().register({ descriptor: d, adapter: adapter(d), pluginName: PLUGIN_NAME });
     const options = { requireSecret: true, requireOrigin: true };
     const firstOrigin = 'https://first.example.com'; const secondOrigin = 'https://second.example.com';
-    await saveOAuthClientRegistration('unit-instance', { origin: firstOrigin, clientId: 'first-client', clientSecret: SECRET }, options);
-    await saveOAuthClientRegistration('unit-instance', { origin: secondOrigin, clientId: 'second-client', clientSecret: OTHER_SECRET }, options);
+    await saveOAuthClientRegistration('unit-instance', { origin: firstOrigin, clientId: 'first-client', clientSecret: SECRET, userAgent: 'first-app/1.0' }, options);
+    await saveOAuthClientRegistration('unit-instance', { origin: secondOrigin, clientId: 'second-client', clientSecret: OTHER_SECRET, userAgent: 'second-app/1.0' }, options);
     expect(await resolveOAuthProvider('provider:unit-instance')).toBeNull();
     expect(await resolveOAuthProvider('provider:unit-instance@foreign.example.com')).toBeNull();
     const plugin = descriptorOAuthPlugin(d, firstOrigin);
@@ -247,6 +284,8 @@ describe('the connect flow reads what the page saved (SPEC-R-2-P-009)', () => {
     expect(firstAccount).toMatchObject({ providerAccountId: 'first.example.com:same-local-id', sourceConfig: { connectionOrigin: firstOrigin, connectionAccountId: 'same-local-id' } });
     expect(secondAccount.providerAccountId).toBe('second.example.com:same-local-id');
     expect((fetch.mock.calls[1] as unknown as [URL, RequestInit])[1].redirect).toBe('manual');
+    expect(new Headers((fetch.mock.calls[1] as unknown as [URL, RequestInit])[1].headers).get('user-agent')).toBe('first-app/1.0');
+    expect(new Headers((fetch.mock.calls[2] as unknown as [URL, RequestInit])[1].headers).get('user-agent')).toBe('second-app/1.0');
     expect(connectionAdapterForPlugin('provider:unit-instance')).toBeNull();
     expect(connectionAdapterForPlugin('provider:unit-instance@first.example.com:8443')).toBeNull();
   });

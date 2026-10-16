@@ -64,6 +64,11 @@ import {
 import { capabilityPolicyFlags } from '@papercusp/orchestrator/managed-capability-policy';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import {
+  codexFreshDefaultAuthPreflight,
+  codexThreadWriterHolder,
+  rehealResumeCodexAuth,
+} from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   latestAdvSessionByCoordOwner,
@@ -671,6 +676,16 @@ export function codexWakeGatewayEnv(route: WakeAccountRoute | null): Record<stri
     return { PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_ACCOUNT_ID: route.accountId };
   }
   return {};
+}
+
+function prepareDirectCodexWakeAuth(codexHome: string) {
+  rehealResumeCodexAuth(codexHome);
+  return codexFreshDefaultAuthPreflight({
+    agent: 'codex',
+    headless: true,
+    account: 'default',
+    codexHome,
+  });
 }
 
 export type EnsureCodexHomeForWakeResult = {
@@ -3038,6 +3053,8 @@ export interface ExecuteWakeDeps {
   forceResume?: (pid: number) => Promise<boolean>;
   /** EI-212246: atomic single-winner claim immediately before Channel 2 resume. */
   claimResume?: (advSessionId: number, key?: string | null, windowSec?: number, ownerId?: string | null) => Promise<boolean | 'retired'>;
+  /** Codex's native single-writer flock probe; a confirmed holder parks the wake before claiming/spawning. */
+  codexThreadWriterHolder?: typeof codexThreadWriterHolder;
   /** Delivery-time grading-auditor task lookup before a Channel 2 resume claim. */
   readGradingAuditTasks?: GradingAuditResumeGuardDeps['readTasks'];
   /** Delivery-time exact scorecard read for a grading-auditor task. */
@@ -3095,6 +3112,8 @@ export interface ExecuteWakeDeps {
    *  Injected so the archive/repair ordering is testable without PG or a live
    *  launch-spec store; the default reuses the /adv route's repair inputs. */
   ensureCodexHomeForWake?: (input: EnsureCodexHomeForWakeInput) => Promise<EnsureCodexHomeForWakeResult>;
+  /** Restore and verify the system Codex login before a direct/default headless resume. */
+  prepareDirectCodexWakeAuth?: typeof prepareDirectCodexWakeAuth;
   /** WI-3940: upper bound (ms) on each rematerialize-on-miss PG call in the
    *  resume leg. The seams above are fail-soft on REJECTION, but a WEDGED PG
    *  connection HANGS past every try/catch and stalls the whole wake pipeline
@@ -5178,6 +5197,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
               `(${repair.reason ?? 'unknown'}); parked before native resume`,
           };
         }
+        if (!codexAccountRoute || codexAccountRoute.mode === 'default') {
+          const auth = (deps.prepareDirectCodexWakeAuth ?? prepareDirectCodexWakeAuth)(home);
+          if (!auth.ready) {
+            return {
+              kind: 'park',
+              reason:
+                'Codex default-account auth unavailable (' + auth.reason +
+                '); parked before provider request',
+            };
+          }
+        }
         // The adv-session/handle id is only an archive lookup hint. It may be
         // stale, and using it here would let a missing/failed rematerialize
         // launch `codex exec resume` against a home with no matching rollout.
@@ -5278,6 +5308,31 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     const nativeResumeSessionId = resumeAgent === 'codex'
       ? codexSessionId
       : fresh?.sessionId ?? handle.sessionId;
+    // Codex serializes writers for a native thread with its own flock. The DB
+    // resume claim below arbitrates competing Papercusp resumers, but cannot see
+    // a still-running native process whose managed host/pid is no longer visible.
+    // Check Codex's lock authority before claiming the row so a known-live writer
+    // parks this wake without launching a doomed `exec resume` or mutating the
+    // adv-session's terminal markers. The probe is fail-open on unsupported or
+    // unreadable lock state; Codex remains the final arbiter for a racing writer.
+    if (resumeAgent === 'codex' && codexHome && nativeResumeSessionId) {
+      try {
+        const writer = (deps.codexThreadWriterHolder ?? codexThreadWriterHolder)(codexHome, nativeResumeSessionId);
+        if (writer.held) {
+          return {
+            kind: 'park',
+            reason:
+              `Codex thread ${nativeResumeSessionId} already has an active writer ` +
+              `(pid ${writer.pid ?? 'unknown'}); parked before resume claim/spawn`,
+          };
+        }
+      } catch (error) {
+        console.warn(
+          `[wake-executor] Codex writer-lock probe failed open for ${nativeResumeSessionId}: ` +
+            `${redactSensitiveText(error instanceof Error ? error.message : String(error))}`,
+        );
+      }
+    }
     const gradingAuditFreshness = await revalidateGradingAuditChannel2Delivery(
       d,
       nativeResumeSessionId,

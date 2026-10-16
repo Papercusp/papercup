@@ -122,6 +122,26 @@ describe('resolveFsMutexLockRoot', () => {
       await rm(temp, { recursive: true, force: true });
     }
   });
+
+  it('reuses a successful production lock-root resolution instead of redoing filesystem setup', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-root-cache-'));
+    const lockRoot = join(temp, 'locks');
+    const firstPhases: Record<string, number> = {};
+    const secondPhases: Record<string, number> = {};
+    const originalOverride = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = lockRoot;
+
+    try {
+      await expect(ensureFsMutexLockRoot(undefined, { phaseTimingsMs: firstPhases })).resolves.toBe(lockRoot);
+      await expect(ensureFsMutexLockRoot(undefined, { phaseTimingsMs: secondPhases })).resolves.toBe(lockRoot);
+      expect(firstPhases).toHaveProperty('lock-root.mkdir');
+      expect(secondPhases).toEqual({});
+    } finally {
+      if (originalOverride === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = originalOverride;
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('censusLegacyFsMutexRoot read-only inspection', () => {

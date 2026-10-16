@@ -413,6 +413,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief.length).toBeGreaterThan(5000);
     expect(brief.indexOf('capability:read')).toBeLessThan(800);
     expect(brief.slice(0, 800)).toContain('eof:true');
+    expect(brief.slice(0, 800)).toContain('byte_offset');
+    expect(brief.slice(0, 800)).toContain('next_cursor:null');
+    expect(brief.slice(0, 800)).not.toContain('through `eof:true`');
   });
 
   it('preserves changed criteria after a large unchanged prefix', () => {

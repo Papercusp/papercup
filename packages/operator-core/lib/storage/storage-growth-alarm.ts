@@ -120,7 +120,7 @@ export interface GrowthAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 
   escalate?: (t: { title: string; body: string }) => Promise<void>;
   /** Injectable for tests — the persistent cross-restart cooldown floor. */
   recentlyEscalated?: () => Promise<boolean>;
-  /** Existing six-hourly disk census, injected for deterministic tests. */
+  /** Existing hourly disk census, injected for deterministic tests. */
   readDiskCensus?: () => Promise<readonly CensusDeviceView[]>;
 }
 

@@ -52,25 +52,12 @@ export function censusLegacyFsMutexRoot(legacyRoot: any, staleMs?: number): Prom
     complete: boolean;
 }>;
 /**
- * Prepare the resolved mutex root and preserve the old lock identity across the
- * migration. A legacy root is moved aside only after a complete read-only
- * census finds zero active and zero unknown leases; its stale markers remain in
- * a sibling quarantine directory, and the old path becomes a symlink to the
- * account-home root. An explicit override is authoritative and bypasses this
- * migration.
- *
- * The optional legacyRoot and homeDir values are deterministic test seams; the
- * production callers use the platform defaults.
- *
- * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
+ * Resolve the mutex root, reusing a completed canonical migration and sharing
+ * one in-flight migration across concurrent callers. A call that remains on
+ * the legacy root is deliberately not retained: once that lease drains, the
+ * next caller must be allowed to complete the migration.
  */
-export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
-    platform?: NodeJS.Platform;
-    homeDir?: string;
-    legacyRoot?: string;
-    phaseTimingsMs?: Record<string, number>;
-}): Promise<string>;
+export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {}): Promise<any>;
 /**
  * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex
  * named `name`. Blocks (retrying every `retryMs`) until acquired, a stale/dead

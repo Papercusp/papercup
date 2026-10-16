@@ -167,14 +167,14 @@ const MODULES = loadModules();
 describe('the scan is measuring something', () => {
   it('sees the whole adapter directory', () => {
     expect(MODULES.map((m) => m.file)).toEqual(expect.arrayContaining([
-      'bluesky-adapter.ts',
+      'social-egress.ts',
     ]));
     expect(MODULES.map((m) => m.file).sort()).toEqual(readdirSync(SUBJECT_DIR).filter(isSubject).sort());
   });
 
-  it('finds host literals to judge', () => {
-    const total = MODULES.reduce((n, m) => n + hostLiterals(m.code).length, 0);
-    expect(total).toBeGreaterThan(0);
+  it('reads executable sources and detects hosts even after all vendor adapters move into packages', () => {
+    expect(MODULES.reduce((n, m) => n + m.code.length, 0)).toBeGreaterThan(500);
+    expect(hostLiterals("const origin = 'https://bsky.app/profile';")).toEqual(['bsky.app']);
   });
 
   it('exempts exactly one file, the registry itself', () => {
@@ -196,9 +196,11 @@ describe('the scan is measuring something', () => {
     ]);
   });
 
-  it('is looking at a current permalink origin it exists to police', () => {
-    const hostsIn = (file: string) => hostLiterals(MODULES.find((m) => m.file === file)?.code ?? '');
-    expect(hostsIn('bluesky-adapter.ts')).toContain('bsky.app');
+  it('allows declared permalinks and refuses a planted undeclared API origin', () => {
+    const module = { file: 'planted.ts', code: "const link = 'https://bsky.app/profile';", imports: [], platforms: new Set(['bluesky']) };
+    expect(undeclaredHostFindings([module])).toEqual([]);
+    expect(undeclaredHostFindings([{ ...module, code: "const origin = 'https://foreign.example/api';" }]))
+      .toEqual([{ file: 'planted.ts', host: 'foreign.example', kind: 'undeclared', platforms: ['bluesky'] }]);
   });
 });
 

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
+import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions, recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
 import type { SyncLintPrivateReceipt } from '../../test/_sync-batch-lint-guards-child';
 
 const root = resolve(import.meta.dirname, '../../../..');
@@ -19,6 +19,7 @@ const sourcePaths = [filePath, 'packages/operator-core/test/_sync-batch-lint-gua
   'packages/operator-core/lib/agent-tools/coordination/inbox-wake.ts',
   'packages/operator-core/lib/events/await/store.ts',
   'packages/operator-core/lib/events/await/engine.ts',
+  'packages/operator-core/lib/events/await/interest-watch.ts',
   'packages/operator-core/lib/automation/routine-classification.ts',
   'packages/operator-core/lib/detached-imports/index.ts',
   'packages/operator-core/lib/degradation/fallback-observations.ts',
@@ -26,7 +27,7 @@ const sourcePaths = [filePath, 'packages/operator-core/test/_sync-batch-lint-gua
   'packages/operator-core/test/isolated-integration-proof.ts'];
 const workerOptions = isolatedWorkerOptions(180_000);
 
-it('runs real guard/typecheck children and retries the persisted typecheck red at the same synthetic HEAD in private PG', async context => {
+it('runs the shared guard/typecheck proof and drains a real in-flight sweep after its body fails in private PG', async context => {
   const sourceHashes = Object.fromEntries(sourcePaths.map(path => [path,
     createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
   const runId = await recordIsolatedIntegrationProof({ root, filePath, sourcePaths,
@@ -51,15 +52,33 @@ it('runs real guard/typecheck children and retries the persisted typecheck red a
       observe(child);
       try {
         const result = await captureIsolatedWorker(child, evidenceDir, workerOptions);
-        expect(result, result.output.slice(-12_000)).toMatchObject({ code: 0, signal: null, timedOut: false,
+        expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 1, signal: null, timedOut: false,
           exitWaitTimedOut: false, stdioDrainTimedOut: false });
+        expect(result.output).toContain('SYNC_LINT_PRIVATE_FAILURE AssertionError');
+        expect(result.output).toContain('EI260629 deliberate body assertion while interest sweep is blocked');
+        expect(result.output.match(/SYNC_LINT_PRIVATE_FAILURE /g)).toHaveLength(1);
+        // A failed P037 assertion must not leave the host-owned interest
+        // sweeper probing a PG server that teardown is already closing. That
+        // race used to emit a late HNSW probe plus lost fallback observations
+        // after the worker's own failure had been recorded.
+        expect(result.output).not.toContain('[hnsw-iterative-scan] capability probe failed transiently');
+        expect(result.output).not.toContain('[fallback-observations] write failed');
         const line = result.output.split('\n').find(row => row.startsWith('SYNC_LINT_PRIVATE_RECEIPT '));
         expect(line, result.output.slice(-8000)).toBeTruthy();
         const receipt: SyncLintPrivateReceipt = JSON.parse(line!.slice('SYNC_LINT_PRIVATE_RECEIPT '.length));
         expect(receipt.build.sourceHashes).toEqual(sourceHashes);
         expect(receipt.runtime.workspaceId).toMatch(/^test-runtime-/);
         expect(receipt.elapsedMs).toBeLessThan(15 * 60_000);
-        expect(receipt.lifecycle).toEqual({ detachedRemaining: 0, fallbackFailed: 0 });
+        expect(receipt.lifecycle).toMatchObject({
+          detachedRemaining: 0,
+          fallbackFailed: 0,
+          interestWatchStopRequested: true,
+          interestWatchTimerStopped: true,
+          stopWaitedForSweep: true,
+          sweepPersisted: true,
+          order: ['sweep-blocked', 'body-failed', 'stop-requested', 'timer-stopped',
+            'sweep-released', 'stop-completed', 'sweep-persisted', 'detached-drained', 'fallback-flushed', 'pools-closed'],
+        });
         expect(receipt.filing.assignee).toBe('su-11111111-2222-4333-8444-555555555555');
         expect(receipt.filing.conditionKey).toBe('sync-delta-guard:lint:no-raw-setinterval:src/timer.ts');
         expect(receipt.wake).toMatchObject({ queued: true, pickupConfirmed: false,

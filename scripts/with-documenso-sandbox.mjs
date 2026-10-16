@@ -11,9 +11,10 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
 import { getContainerRuntimeClient, Wait } from 'testcontainers';
@@ -250,6 +251,147 @@ export function dockerAllocationScope({ allocate = dockerAllocation } = {}) {
       return cleanup;
     },
   };
+}
+
+function fixtureOwnerIdentity(name, root) {
+  if (!/^pc-personal-ssh-[a-f0-9-]{36}$/.test(name) ||
+      resolve(root) !== root || !/^pc-personal-ssh-/.test(root.split('/').at(-1))) {
+    throw new Error('Invalid Docker fixture ownership identity');
+  }
+  const socketPath = join(root, 'owner.sock');
+  if (Buffer.byteLength(socketPath) > 100) throw new Error('Docker fixture ownership socket path is too long');
+  return socketPath;
+}
+
+function fixtureMessages(socket, receive) {
+  let buffer = '';
+  socket.setEncoding('utf8');
+  socket.on('data', data => {
+    buffer += data;
+    if (buffer.length > 2_500_000) return socket.destroy(new Error('Fixture ownership message is too large'));
+    for (let end; (end = buffer.indexOf('\n')) >= 0;) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      try { receive(JSON.parse(line)); }
+      catch (error) { socket.destroy(error); return; }
+    }
+  });
+  return message => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
+}
+
+/** Reuse the joined allocation scope, but place its owner outside the runner's
+ * kill cgroup. The lease is the socket, not a PID or a polling timer: EOF closes
+ * admission, joins pending daemon mutations, then removes only the labelled
+ * container. Fixture keys survive until removal is verified. This transient,
+ * named scope has a one-hour safety ceiling; there is no persistent service.
+ */
+export async function startDockerAllocationOwner({ name, root,
+  onProgress = receipt => console.error('[docker-fixture-owner] ' + JSON.stringify(receipt)),
+}) {
+  const socketPath = fixtureOwnerIdentity(name, root);
+  chmodSync(root, 0o700);
+  const unit = 'papercusp-fixture-' + name + '.scope';
+  let socket, send, closing = false, sequence = 0, resolveReady, rejectReady;
+  const waiting = new Map();
+  const ready = new Promise((done, fail) => { resolveReady = done; rejectReady = fail; });
+  const fail = error => {
+    rejectReady(error);
+    for (const request of waiting.values()) request.reject(error);
+    waiting.clear();
+  };
+  const server = createServer(connection => {
+    if (socket) { connection.destroy(); return; }
+    socket = connection;
+    server.close();
+    send = fixtureMessages(socket, message => {
+      if (message.kind === 'ready') { resolveReady(); return; }
+      if (message.kind === 'progress') { onProgress(message.receipt); return; }
+      const request = waiting.get(message.id);
+      if (!request) return;
+      waiting.delete(message.id);
+      if (message.error) request.reject(new Error(message.error));
+      else request.resolve(message.result);
+    });
+    socket.on('error', fail);
+    socket.on('close', () => fail(new Error('Docker fixture ownership lease closed')));
+  });
+  await new Promise((done, reject) => { server.once('error', reject); server.listen(socketPath, done); });
+  const child = spawn('systemd-run', ['--user', '--scope', '--quiet', '--collect',
+    '--property=CollectMode=inactive-or-failed', '--unit=' + unit,
+    '--property=RuntimeMaxSec=3600', '--property=TimeoutStopSec=10', '--',
+    process.execPath, '--import', 'tsx', fileURLToPath(import.meta.url), '--docker-allocation-owner', name, root],
+  { stdio: 'ignore', env: process.env });
+  child.once('error', fail);
+  child.once('exit', code => { if (code !== 0) fail(new Error('Docker fixture owner exited ' + code)); });
+  const timer = setTimeout(() => fail(new Error('Docker fixture owner did not establish its lease')), 15_000);
+  try { await ready; }
+  catch (error) { server.close(); socket?.destroy(); throw error; }
+  finally { clearTimeout(timer); }
+  onProgress({ status: 'owner-ready', resource: name, unit });
+  /** @returns {Promise<string>} */
+  const request = message => new Promise((resolve, reject) => {
+    if (socket.destroyed) { reject(new Error('Docker fixture ownership lease closed')); return; }
+    const id = ++sequence;
+    waiting.set(id, { resolve, reject });
+    send({ ...message, id });
+  });
+  let cleanup;
+  return {
+    unit,
+    run(args, environment = {}, options = {}) {
+      if (closing || socket.destroyed) return Promise.reject(new Error('Docker allocation scope is closing'));
+      return request({ kind: 'run', args, environment, pendingAfterMs: options.pendingAfterMs });
+    },
+    close() {
+      closing = true;
+      cleanup ??= request({ kind: 'close' }).finally(() => socket.end());
+      return cleanup;
+    },
+  };
+}
+
+/** Owner-side entrypoint. All accepted requests live in this scope, so killing
+ * the test worker cannot sever the Docker CLI before its daemon outcome joins.
+ */
+export async function runDockerAllocationOwner(name, root) {
+  const socketPath = fixtureOwnerIdentity(name, root);
+  const receipt = value => appendFileSync(join(root, 'owner.jsonl'), JSON.stringify(value) + '\n', { mode: 0o600 });
+  const socket = createConnection(socketPath);
+  let send, cleanup, exitCode = 0;
+  const scope = dockerAllocationScope();
+  const remove = async () => {
+    const list = () => dockerAllocation(['ps', '--all', '--filter', 'name=^/' + name + '$',
+      '--format', '{{.ID}} {{.Label "papercusp.test.owner"}}'], {}, { onProgress() {} });
+    for (const row of (await list()).split('\n').filter(Boolean)) {
+      const [id, owner] = row.trim().split(/\s+/);
+      if (!/^[a-f0-9]{12,64}$/.test(id) || owner !== name) throw new Error('Docker fixture cleanup ownership mismatch');
+      await dockerAllocation(['rm', '--force', id], {}, { onProgress() {} });
+    }
+    if ((await list()).trim()) throw new Error('Docker fixture cleanup left a container');
+    receipt({ status: 'cleanup-verified', resource: name });
+    rmSync(root, { recursive: true, force: true });
+  };
+  const close = () => cleanup ??= scope.close(remove).catch(error => {
+    exitCode = 1;
+    receipt({ status: 'cleanup-failed', resource: name, message: error.message });
+    throw error;
+  });
+  send = fixtureMessages(socket, message => {
+    if (message.kind === 'run') {
+      scope.run(message.args, message.environment, { pendingAfterMs: message.pendingAfterMs,
+        onPending() {}, onProgress: value => { receipt(value); send({ kind: 'progress', receipt: value }); },
+      }).then(result => send({ id: message.id, result }), error => send({ id: message.id, error: error.message }));
+    } else if (message.kind === 'close') {
+      close().then(() => { send({ id: message.id, result: 'cleanup-verified' }); socket.end(); },
+        error => { send({ id: message.id, error: error.message }); socket.end(); });
+    } else socket.destroy(new Error('Unknown Docker fixture ownership request'));
+  });
+  socket.once('connect', () => send({ kind: 'ready' }));
+  // Errors and EOF both revoke admission. Keep the event loop alive until the
+  // joined cleanup settles, even if no recipient remains for its reply.
+  socket.on('error', () => {});
+  await new Promise(done => socket.once('close', done));
+  await close().catch(() => {});
+  return exitCode;
 }
 
 /** Start is also a daemon mutation: wait for its outcome before cleanup, and
@@ -617,6 +759,8 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
 }
 
 if (isCliEntry(import.meta.url)) {
-  try { process.exitCode = await runSandbox(parseSandboxArgs(process.argv.slice(2))); }
+  try { process.exitCode = process.argv[2] === '--docker-allocation-owner'
+    ? await runDockerAllocationOwner(process.argv[3], process.argv[4])
+    : await runSandbox(parseSandboxArgs(process.argv.slice(2))); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

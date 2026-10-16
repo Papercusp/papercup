@@ -30,7 +30,14 @@ describe('PaperCup speaking character timing', () => {
     characterStateAt(alignment, 3);
     expect(characterStateAt(alignment, 1.05)).toEqual(first);
     expect(characterStateAt(alignment, 2.8).blink).toBe(true);
-    expect(characterStateAt(alignment, 0.8).gesture).toBe('wave');
+    expect(characterStateAt(alignment, 0.8).gesture).toBe('idle');
+  });
+
+  it('greets during speech, then directs a thoughtful look and gesture toward the demonstrated screen', () => {
+    const aligned = (text: string) => ({ characters: [...text], character_start_times_seconds: [...text].map((_, i) => i / 10), character_end_times_seconds: [...text].map((_, i) => (i + 1) / 10) });
+    expect(characterStateAt(aligned('Hi, welcome.'), .8)).toMatchObject({ gesture: 'wave', expression: 'happy' });
+    expect(characterStateAt(aligned('Open the evidence here.'), 1)).toMatchObject({ gesture: 'point', expression: 'thoughtful', gazeX: -5, leftArmAngle: 40 });
+    expect(characterStateAt(aligned('Open the evidence here.'), 4)).toMatchObject({ mouth: 'rest', gesture: 'idle' });
   });
 
   it('renders a visible resting mouth and closed consonant in valid SVG', () => {

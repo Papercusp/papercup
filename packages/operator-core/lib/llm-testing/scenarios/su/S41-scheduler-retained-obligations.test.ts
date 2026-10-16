@@ -23,7 +23,7 @@ describe('S41 actual scheduler advice behavior instrument', () => {
   it('registers four fresh AUTO worlds without injecting the answer into user context', () => {
     expect(SU_S41_SCHEDULER_RETAINED_OBLIGATIONS.map(s => s.id)).toHaveLength(S41_CASES.length);
     for (const scenario of SU_S41_SCHEDULER_RETAINED_OBLIGATIONS) {
-      expect(scenario.version).toBe(2);
+      expect(scenario.version).toBe(3);
       expect(scenario.targetConfig).toEqual({ modes: ['auto'] });
       expect(scenario.toolOverride).not.toBe(scenario.toolOverride);
       expect(scenario.simUserContext).not.toContain(S41_EVENT);
@@ -44,6 +44,29 @@ describe('S41 actual scheduler advice behavior instrument', () => {
     }
     expect(await result('blocked', 'tools:invoke', { name: 'scheduler:get_next', args: {} })).toEqual(s41SchedulerMiss());
     expect(await result('blocked', 'tools:invoke', { name: 'dev:pg_query', args: {} })).toMatchObject({ ok: false });
+  });
+
+  it('keeps discovery complete within the target result limit and names the test selector', async () => {
+    const found = await result('independent', 'tools:find', { query: 'testing:run run one test file' });
+    expect(JSON.stringify(found).length).toBeLessThan(2000);
+    const schema = found.hits.find((hit: { tool: string }) => hit.tool === 'testing:run')?.argSchema;
+    expect(schema).toContain('files');
+    expect(schema).toContain('array');
+    expect(JSON.stringify(await result('independent', 'agent_tools:list')).length).toBeLessThan(2000);
+  });
+
+  it('executes the advertised files selector and refuses undocumented guesses', async () => {
+    const { world, state } = makeS41World('independent');
+    const invoke = async (args: unknown) => {
+      const response = await world.override('tools:invoke', { name: 'testing:run', args }) as { content: [{ text: string }] };
+      return JSON.parse(response.content[0].text);
+    };
+    for (const input of [{}, { test: S41_TEST }, { arbitrary: S41_TEST }, { files: [S41_TEST, 'other.test.ts'] }]) {
+      expect(await invoke(input)).toMatchObject({ ok: false });
+      expect(state.independentDone).toBe(false);
+    }
+    expect(await invoke({ files: [S41_TEST] })).toMatchObject({ ok: true, passed: 4, failed: 0 });
+    expect(state.independentDone).toBe(true);
   });
 
   it('calibration: finishes independent work before blocking and registering an exact bounded wake', () => {

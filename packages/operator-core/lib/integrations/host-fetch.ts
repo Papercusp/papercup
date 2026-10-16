@@ -86,6 +86,8 @@ export interface HostFetchDeps {
    * broader access. Without this dep per-person fields are never consulted.
    */
   principalCredential?(key: string): Promise<string | null>;
+  /** Session exchange stays host-side, including every credential-bearing response. */
+  credentialSession?(source: HostFetchSource): Promise<{ accessToken: string; secrets: string[] }>;
   fetchImpl?: typeof fetch;
 }
 
@@ -212,6 +214,13 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
       );
     }
     const resourceToken = registered.descriptor.oauth?.resourceToken;
+    const session = registered.descriptor.setup?.session;
+    for (const endpointUrl of session ? [session.url, session.refreshUrl] : []) {
+      const endpoint = new URL(endpointUrl);
+      if (url.origin === endpoint.origin && url.pathname === endpoint.pathname) {
+        throw new HostFetchError('credential-endpoint-private', 'host.fetch: session credential endpoints are host-only');
+      }
+    }
     if (resourceToken) {
       const endpoint = new URL(resourceToken.url);
       if (url.origin === endpoint.origin && url.pathname === endpoint.pathname) {
@@ -257,7 +266,13 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     // token). Declaring one must not cut an existing OAuth source off from its own account: that
     // source is sent its own token, and the pasted value is only its fallback.
     const ownToken = pasted && resolved.ownCredential ? await deps.accessToken(resolved) : null;
-    if (principalValue) {
+    const secretValues: string[] = [];
+    if (session?.hosts.includes(url.hostname)) {
+      if (!deps.credentialSession) throw new HostFetchError('credential-unavailable', 'host.fetch: session resolver unavailable');
+      const credential = await deps.credentialSession(resolved);
+      headers.set('authorization', `Bearer ${credential.accessToken}`);
+      secretValues.push(...credential.secrets);
+    } else if (principalValue) {
       headers.set('authorization', `Bearer ${principalValue}`);
     } else if (ownToken) {
       headers.set('authorization', `Bearer ${ownToken}`);
@@ -289,7 +304,6 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
       if (token) headers.set('authorization', `Bearer ${token}`);
     }
 
-    const secretValues: string[] = [];
     const accountAuthorization = headers.get('authorization');
     if (accountAuthorization?.startsWith('Bearer ')) secretValues.push(accountAuthorization.slice(7));
     if (resourceToken?.hosts.includes(url.hostname)) {

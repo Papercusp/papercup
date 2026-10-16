@@ -42,6 +42,12 @@ export interface ProviderOAuthDescriptor {
   scopeSeparator?: ' ' | ',';
   /** Form/query key for the host-held client id. TikTok uses client_key. */
   clientIdParameter?: 'client_id' | 'client_key';
+  /** How the host authenticates exchange and refresh at the token endpoint (RFC 6749).
+   * Defaults to client_secret_post. Client credentials always remain host-held. */
+  tokenEndpointAuthMethod?: 'client_secret_post' | 'client_secret_basic';
+  /** Require an owner-supplied User-Agent in the host-held OAuth app registration.
+   * The host sends it on token, identity and API requests; packages cannot override it. */
+  userAgentRequired?: true;
   /** Expiring grants normally require a refresh token. Opt into owner reauthorization
    * for APIs that issue none; the host still expires the grant and blocks the source. */
   refreshPolicy?: 'refresh-token' | 'reauthorize';
@@ -247,8 +253,26 @@ export const PROVIDER_INGRESS_PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}(?:\.[
 export interface ProviderSetupDescriptor {
   /** Secrets the owner pastes (e.g. a bot token). Shown as masked fields; never readable back. */
   credentials?: ProviderCredentialField[];
+  /** Host-held session obtained from the pasted credentials; never exposed through host.fetch. */
+  session?: ProviderCredentialSessionDescriptor;
   /** The vendor app the owner creates first, when the vendor needs one (P-002). */
   appRegistration?: ProviderAppRegistration;
+}
+
+/** JSON session login and bearer refresh, using the existing protected credential store. */
+export interface ProviderCredentialSessionDescriptor {
+  url: string;
+  refreshUrl: string;
+  /** JSON request parameter -> setup.credentials key. No literal values. */
+  parameters: Record<string, string>;
+  hosts: string[];
+  accessTokenField: string;
+  refreshTokenField: string;
+  /** Optional boolean response field. Explicit false refuses an inactive account. */
+  activeField?: string;
+  /** Conservative upper bound; a JWT's earlier exp is also respected. */
+  maxAgeSeconds: number;
+  identity: { idField: string; displayNameField?: string; /** Pasted public account identifier, excluded from secret redaction. */ credentialKey?: string };
 }
 
 /**
@@ -259,7 +283,8 @@ export interface ProviderSetupDescriptor {
  */
 export interface ProviderAppRegistration {
   /**
-   * https page in the vendor's console where the app is created. May contain the placeholder
+   * HTTPS page in the vendor's console where the app is created. Instance OAuth descriptors
+   * may use an absolute-path reference, bound by the host to the selected instance. May contain the placeholder
    * {@link PROVIDER_APP_DEFINITION_PLACEHOLDER}, which the host replaces with the URL-encoded JSON
    * of `definition` (e.g. `https://api.slack.com/apps?new_app=1&manifest_json={definition}`).
    */
@@ -1029,6 +1054,9 @@ export function bindProviderInstance(descriptor: ProviderDescriptor, value: unkn
   return {
     ...descriptor,
     egressHosts: [new URL(origin).hostname],
+    ...(descriptor.setup?.appRegistration?.createUrl.startsWith('/') ? { setup: { ...descriptor.setup,
+      appRegistration: { ...descriptor.setup.appRegistration, createUrl: endpoint(descriptor.setup.appRegistration.createUrl) },
+    } } : {}),
     oauth: { ...oauth, authorizeUrl: endpoint(oauth.authorizeUrl), tokenUrl: endpoint(oauth.tokenUrl),
       ...(oauth.identity ? { identity: { ...oauth.identity, url: endpoint(oauth.identity.url) } } : {}),
     },
@@ -1086,6 +1114,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   if (d.oauth !== undefined) {
     const oauth = d.oauth as Partial<ProviderOAuthDescriptor>;
+    if (oauth.userAgentRequired !== undefined && oauth.userAgentRequired !== true) issues.push('provider.oauth.userAgentRequired must be true when present');
     if (oauth.instance !== undefined && oauth.instance !== true) issues.push('provider.oauth.instance must be true when present');
     const endpointIssue = (url: unknown) => oauth.instance === true ? providerInstanceEndpointIssue(url) : isHttpsUrl(url) ? null : 'must be an https URL';
     for (const key of ['authorizeUrl', 'tokenUrl'] as const) {
@@ -1101,6 +1130,9 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
     if (oauth.clientIdParameter !== undefined && oauth.clientIdParameter !== 'client_id' && oauth.clientIdParameter !== 'client_key') {
       issues.push('provider.oauth.clientIdParameter must be client_id or client_key');
+    }
+    if (oauth.tokenEndpointAuthMethod !== undefined && !['client_secret_post', 'client_secret_basic'].includes(oauth.tokenEndpointAuthMethod)) {
+      issues.push('provider.oauth.tokenEndpointAuthMethod must be client_secret_post or client_secret_basic');
     }
     if (oauth.refreshPolicy !== undefined && oauth.refreshPolicy !== 'refresh-token' && oauth.refreshPolicy !== 'reauthorize') {
       issues.push('provider.oauth.refreshPolicy must be refresh-token or reauthorize');
@@ -1220,7 +1252,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     const serviceHosts = (Array.isArray(d.serviceCredentials) ? d.serviceCredentials : []).flatMap((c) =>
       Array.isArray(c?.hosts) ? c.hosts.filter(isNonEmptyString) : [],
     );
-    issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts));
+    issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts, d.oauth?.instance === true));
   }
   if (d.ingress !== undefined) {
     const fields = (Array.isArray(d.setup?.credentials) ? d.setup.credentials : [])
@@ -1363,16 +1395,74 @@ function ingressDescriptorIssues(
   return issues;
 }
 
-function setupDescriptorIssues(setup: unknown, egress: string[], serviceHosts: string[]): string[] {
+function setupDescriptorIssues(setup: unknown, egress: string[], serviceHosts: string[], instance = false): string[] {
   if (!setup || typeof setup !== 'object' || Array.isArray(setup)) return ['provider.setup must be an object'];
   const s = setup as Partial<ProviderSetupDescriptor>;
   return [
-    ...(s.appRegistration === undefined ? [] : appRegistrationIssues(s.appRegistration)),
+    ...(s.appRegistration === undefined ? [] : appRegistrationIssues(s.appRegistration, instance)),
     ...(s.credentials === undefined ? [] : credentialFieldIssues(s.credentials, egress, serviceHosts)),
+    ...(s.session === undefined ? [] : credentialSessionIssues(s.session, s.credentials, egress, serviceHosts)),
   ];
 }
 
-function appRegistrationIssues(registration: unknown): string[] {
+function credentialSessionIssues(raw: unknown, fields: unknown, egress: string[], serviceHosts: string[]): string[] {
+  const at = 'provider.setup.session';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [`${at} must be an object`];
+  const s = raw as Partial<ProviderCredentialSessionDescriptor>;
+  const issues: string[] = [];
+  const path = (v: unknown): v is string => typeof v === 'string' && PROVIDER_INGRESS_PATH_PATTERN.test(v) &&
+    !v.split('.').some((part) => ['__proto__', 'prototype', 'constructor'].includes(part));
+  const credentials = (Array.isArray(fields) ? fields : []).filter((f): f is ProviderCredentialField => !!f && typeof f === 'object');
+  const hosts = Array.isArray(s.hosts) ? s.hosts : [];
+  if (!hosts.length) issues.push(`${at}.hosts must list at least one host`);
+  for (const host of hosts) {
+    if (typeof host !== 'string' || host.startsWith('*.') || !PROVIDER_EGRESS_HOST_PATTERN.test(host) || !providerEgressAllows(egress, host)) {
+      issues.push(`${at}.hosts must be exact hosts in provider.egressHosts`);
+    }
+    if (serviceHosts.includes(host) || credentials.some((f) => f.hosts?.includes(host))) {
+      issues.push(`${at}.hosts cannot overlap another credential`);
+    }
+  }
+  for (const key of ['url', 'refreshUrl'] as const) {
+    if (!isHttpsUrl(s[key])) { issues.push(`${at}.${key} must be an https URL`); continue; }
+    const url = new URL(s[key]!);
+    if (url.username || url.password || url.port || url.search || url.hash || !hosts.includes(url.hostname)) {
+      issues.push(`${at}.${key} must be a credential-free endpoint on a session host`);
+    }
+  }
+  if (isHttpsUrl(s.url) && isHttpsUrl(s.refreshUrl) && new URL(s.url!).origin !== new URL(s.refreshUrl!).origin) {
+    issues.push(`${at}.refreshUrl must use the login origin`);
+  }
+  const parameters = s.parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters) || !Object.keys(parameters).length) {
+    issues.push(`${at}.parameters must map request parameters to credential keys`);
+  } else for (const [parameter, key] of Object.entries(parameters)) {
+    if (!path(parameter) || parameter.includes('.') || !credentials.some((f) => f.key === key && !f.perPrincipal)) {
+      issues.push(`${at}.parameters must reference declared source credential keys`);
+    }
+  }
+  for (const key of ['accessTokenField', 'refreshTokenField'] as const) {
+    if (!path(s[key])) issues.push(`${at}.${key} must be a safe JSON field path`);
+  }
+  if (s.activeField !== undefined && !path(s.activeField)) issues.push(`${at}.activeField must be a safe JSON field path`);
+  if (s.accessTokenField === s.refreshTokenField) issues.push(`${at} access and refresh fields must differ`);
+  if (!Number.isInteger(s.maxAgeSeconds) || s.maxAgeSeconds! < 60 || s.maxAgeSeconds! > 86400) {
+    issues.push(`${at}.maxAgeSeconds must be an integer from 60 to 86400`);
+  }
+  if (!s.identity || !path(s.identity.idField) || (s.identity.displayNameField !== undefined && !path(s.identity.displayNameField))) {
+    issues.push(`${at}.identity must name safe public identity fields`);
+  }
+  const secretPaths = [s.accessTokenField, s.refreshTokenField];
+  if (s.identity?.credentialKey !== undefined && !credentials.some((f) => f.key === s.identity!.credentialKey && !f.perPrincipal)) {
+    issues.push(`${at}.identity.credentialKey must name a declared source credential`);
+  }
+  if (secretPaths.includes(s.identity?.idField) || (s.identity?.displayNameField && secretPaths.includes(s.identity.displayNameField))) {
+    issues.push(`${at}.identity cannot expose a token field`);
+  }
+  return issues;
+}
+
+function appRegistrationIssues(registration: unknown, instance = false): string[] {
   const at = 'provider.setup.appRegistration';
   if (!registration || typeof registration !== 'object' || Array.isArray(registration)) return [`${at} must be an object`];
   const r = registration as Partial<ProviderAppRegistration> & Record<string, unknown>;
@@ -1381,7 +1471,8 @@ function appRegistrationIssues(registration: unknown): string[] {
     if (forbidden in r) issues.push(`${at}.${forbidden} is not allowed: a descriptor never carries a credential value`);
   }
   const createUrl = r.createUrl;
-  if (typeof createUrl !== 'string' || !isHttpsUrl(createUrl)) {
+  const relative = instance && typeof createUrl === 'string' && createUrl.startsWith('/') && providerInstanceEndpointIssue(createUrl) === null;
+  if (typeof createUrl !== 'string' || (!isHttpsUrl(createUrl) && !relative)) {
     issues.push(`${at}.createUrl must be an https URL`);
   } else {
     const placeholders: string[] = createUrl.match(/\{[^}]*\}/g) ?? [];

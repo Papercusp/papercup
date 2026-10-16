@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, dockerAllocationScope, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, dockerAllocationScope, startDockerAllocationOwner, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
 
 const failureRuntime = { container: 'owned-app', network: 'owned', appUrl: 'http://127.0.0.1:32123', mailUrl: 'http://127.0.0.1:32124' };
 
@@ -363,6 +363,136 @@ test('failed pending allocation still permits cleanup and preserves its original
   await failed;
   await cleanup;
   assert.equal(cleaned, true);
+});
+
+async function fixtureCondition(check, description) {
+  const deadline = Date.now() + 15_000;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for ' + description);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
+function allocationOwnerFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'pc-personal-ssh-'));
+  const control = mkdtempSync(join(tmpdir(), 'pc-allocation-control-'));
+  const name = 'pc-personal-ssh-' + randomUUID();
+  mkdirSync(join(control, 'bin'));
+  // A real CLI subprocess with a deliberately delayed mutation. Its state is
+  // outside the fixture mount, so removal ordering is independently observable.
+  writeFileSync(join(control, 'bin', 'docker'), `#!${process.execPath}
+import { existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+const control = ${JSON.stringify(control)}, root = ${JSON.stringify(root)}, name = ${JSON.stringify(name)};
+const operation = process.argv[2], container = control + '/container';
+if (operation === 'create') {
+  writeFileSync(control + '/started', 'started');
+  const timer = setInterval(() => {
+    if (!existsSync(control + '/release')) return;
+    clearInterval(timer);
+    writeFileSync(control + '/created', JSON.stringify({ keysRetained: existsSync(root + '/private-key') }));
+    writeFileSync(container, name);
+    process.stdout.write('abcdef123456');
+  }, 10);
+} else if (operation === 'ps') {
+  if (existsSync(container)) process.stdout.write('abcdef123456 ' + readFileSync(container, 'utf8'));
+} else if (operation === 'rm') {
+  if (process.argv.at(-1) !== 'abcdef123456') process.exit(9);
+  rmSync(container);
+  writeFileSync(control + '/removed', 'removed');
+}
+`, { mode: 0o700 });
+  writeFileSync(join(root, 'private-key'), 'disposable test fixture');
+  return { root, control, name, env: { ...process.env, PATH: join(control, 'bin') + ':' + process.env.PATH } };
+}
+
+test('external allocation owner survives killed worker cgroup and removes a late create before fixture keys', { timeout: 30_000 }, async () => {
+  const fixture = allocationOwnerFixture();
+  const { root, control, name, env } = fixture;
+  const workerUnit = 'papercusp-test-allocation-worker-' + randomUUID() + '.scope';
+  const worker = spawn('systemd-run', ['--user', '--scope', '--quiet', '--collect', '--unit=' + workerUnit,
+    '--property=RuntimeMaxSec=30', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', `
+      import { startDockerAllocationOwner } from ${JSON.stringify(new URL('./with-documenso-sandbox.mjs', import.meta.url).href)};
+      const owner = await startDockerAllocationOwner({ name: ${JSON.stringify(name)}, root: ${JSON.stringify(root)}, onProgress() {} });
+      await owner.run(['create', ${JSON.stringify(name)}]);
+      await owner.close();
+    `], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  worker.stdout.on('data', data => { output += data; });
+  worker.stderr.on('data', data => { output += data; });
+  const exited = new Promise(resolve => worker.once('exit', (code, signal) => resolve({ code, signal })));
+  try {
+    await fixtureCondition(() => existsSync(join(control, 'started')), 'pending create; worker output=' + output);
+    const ownerUnit = 'papercusp-fixture-' + name + '.scope';
+    const cgroup = unit => spawnSync('systemctl', ['--user', 'show', '--property=ControlGroup', '--value', unit], { encoding: 'utf8' }).stdout.trim();
+    assert.ok(cgroup(workerUnit));
+    assert.ok(cgroup(ownerUnit));
+    assert.notEqual(cgroup(workerUnit), cgroup(ownerUnit));
+    const killed = spawnSync('systemctl', ['--user', 'kill', '--signal=SIGKILL', workerUnit], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(killed.status, 0, killed.stderr);
+    const result = await exited;
+    assert.notEqual(result.code, 0, output);
+    assert.equal(existsSync(join(control, 'removed')), false, 'must join the pending create');
+    assert.equal(existsSync(join(root, 'private-key')), true, 'pending daemon still owns the mount');
+    writeFileSync(join(control, 'release'), 'settle after the worker died');
+    await fixtureCondition(() => existsSync(join(control, 'removed')) && !existsSync(root), 'verified late-create cleanup');
+    assert.deepEqual(JSON.parse(readFileSync(join(control, 'created'), 'utf8')), { keysRetained: true });
+    assert.equal(existsSync(join(control, 'container')), false);
+  } finally {
+    writeFileSync(join(control, 'release'), 'release pending CLI even on assertion failure');
+    spawnSync('systemctl', ['--user', 'stop', workerUnit], { timeout: 5000 });
+    await fixtureCondition(() => !existsSync(root), 'owner cleanup after test finalization');
+    rmSync(control, { recursive: true, force: true });
+  }
+});
+
+test('external allocation owner closes admission, joins setup and verifies cleanup on normal teardown', { timeout: 30_000 }, async () => {
+  const { root, control, name, env } = allocationOwnerFixture();
+  const previousPath = process.env.PATH;
+  let owner;
+  try {
+    process.env.PATH = env.PATH;
+    owner = await startDockerAllocationOwner({ name, root, onProgress() {} });
+    const creating = owner.run(['create', name]);
+    await fixtureCondition(() => existsSync(join(control, 'started')), 'normal pending create');
+    const closing = owner.close();
+    assert.equal(owner.close(), closing);
+    await assert.rejects(owner.run(['start', name]), /scope is closing/);
+    writeFileSync(join(control, 'release'), 'settle');
+    assert.equal(await creating, 'abcdef123456');
+    assert.equal(await closing, 'cleanup-verified');
+    assert.equal(existsSync(root), false);
+    assert.equal(existsSync(join(control, 'container')), false);
+  } finally {
+    process.env.PATH = previousPath;
+    writeFileSync(join(control, 'release'), 'release pending CLI');
+    if (owner) await owner.close();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(control, { recursive: true, force: true });
+  }
+});
+
+test('external allocation owner refuses another owner and retains private state for accountable cleanup', { timeout: 30_000 }, async () => {
+  const { root, control, name, env } = allocationOwnerFixture();
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = env.PATH;
+    const owner = await startDockerAllocationOwner({ name, root, onProgress() {} });
+    writeFileSync(join(control, 'container'), 'a-different-fixture-owner');
+    await assert.rejects(owner.close(), /cleanup ownership mismatch/);
+    assert.equal(existsSync(join(control, 'removed')), false);
+    assert.equal(existsSync(join(root, 'private-key')), true);
+    const receipts = readFileSync(join(root, 'owner.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(receipts.at(-1).status, 'cleanup-failed');
+    await assert.rejects(owner.run(['start', name]), /scope is closing/);
+  } finally {
+    process.env.PATH = previousPath;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(control, { recursive: true, force: true });
+  }
+});
+
+test('external allocation owner rejects an invalid identity before allocating a socket or scope', async () => {
+  await assert.rejects(startDockerAllocationOwner({ name: 'another-persons-container', root: tmpdir() }), /Invalid Docker fixture ownership/);
 });
 
 test('allocation errors redact injected credentials', async () => {

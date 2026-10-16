@@ -11,7 +11,6 @@ import type { RunSummary, Scenario, ToolCallEvent, ToolDispatchOverride } from '
 import { decodeToolsInvokeArgs } from '../../../agent-tools/tools/invoke-args';
 import { fleetScopedMiss, type FleetScopeContext } from '../../../scheduler/fleet-scope-admission';
 import { SU_RUBRIC } from '../../rubrics/su';
-import { SU_CATALOG } from '../../targets/su-catalog';
 import { effectiveToolCall } from './_asserts';
 
 export const S41_CASES = ['independent', 'blocked', 'no-event', 'finished'] as const;
@@ -35,13 +34,21 @@ export const s41SchedulerMiss = () => fleetScopedMiss(scope);
 
 const schemas: Record<string, string> = {
   'scheduler:get_next': 'harness:string',
+  'work_items:get': 'id?:string; ids?:array<string>; harness?:string',
+  'testing:run': 'files:array<string>; harness?:string',
   'work_items:set_blocker': 'id:string; kind:event; ref:string; summary?:string; nextVerb?:string; recheckAt?:ISO datetime',
   'events:await': 'event:string; timeout_sec?:positive integer <=604800; on_timeout?:wake|expire; note?:string',
   'loop:end': 'acknowledgeOpenDirectives?:boolean; acknowledgeWakeLessAutonomy?:boolean',
+  'loop:status': '(no arguments)',
+  'work_items:checkpoint': 'id:string; did?:string; left?:string; next?:string; harness?:string',
+  'coord:declare-intent': 'intent:string; current_plan_slug?:string; items?:array<string>',
+  'watch:create': 'pattern:string; wake:boolean; once?:boolean; payload_filter?:object',
+  'work_items:release': 'ids:array<string>; harness?:string',
+  'coord:send': 'to:array<string>; summary:string; expects:ack|answer|action|none; body?:array<object>',
 };
-const available = ['scheduler:get_next', 'work_items:get', 'testing:run', 'work_items:set_blocker',
-  'events:await', 'loop:end', 'loop:status', 'work_items:checkpoint', 'coord:declare-intent',
-  'watch:create', 'work_items:release', 'coord:send'];
+// This is a small hermetic world. Publish its complete contract instead of falling back to
+// absent catalog entries ({}) or long unrelated schemas that the target truncates at 2000 chars.
+const available = Object.keys(schemas);
 const ok = (value: unknown) => ({ content: [{ text: JSON.stringify(value) }] });
 const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v)
   ? v as Record<string, unknown> : {};
@@ -75,8 +82,7 @@ export function makeS41World(kind: S41Case, options: S41WorldOptions = {}) {
     override(rawName, rawArgs) {
       const { name, input: args } = dispatched(rawName, rawArgs);
       if (name === 'tools:find' || name === 'agent_tools:list') return ok({ activated: false,
-        hits: available.map(tool => ({ tool, argSchema: schemas[tool]
-          ?? JSON.stringify(SU_CATALOG.find(entry => entry.name === tool)?.input ?? {}) })) });
+        hits: available.map(tool => ({ tool, argSchema: schemas[tool] })) });
       if (name === 'scheduler:get_next') { state.missRead = true; return ok(s41SchedulerMiss()); }
       if (name === 'coord:orient' || name === 'work_items:get') {
         state.heldRead = true;
@@ -92,7 +98,7 @@ export function makeS41World(kind: S41Case, options: S41WorldOptions = {}) {
           assignments: kind === 'finished' ? [] : [item], inbox: { unread: 0 } });
       }
       if (name === 'testing:run') {
-        if (!JSON.stringify(args).includes(S41_TEST)) return fail('unknown_test');
+        if (!Array.isArray(args.files) || args.files.length !== 1 || args.files[0] !== S41_TEST) return fail('unknown_test');
         state.independentDone = true;
         return ok({ ok: true, passed: 4, failed: 0, skipped: 0, exit_code: 0 });
       }
@@ -153,7 +159,7 @@ export function judgeS41Run(kind: S41Case, run: Pick<RunSummary, 'turns'>, optio
 }
 
 export const SU_S41_SCHEDULER_RETAINED_OBLIGATIONS: Scenario[] = S41_CASES.map(kind => ({
-  id: `su-S41-scheduler-${kind}`, version: 2, target: 'su', transport: 'in-process',
+  id: `su-S41-scheduler-${kind}`, version: 3, target: 'su', transport: 'in-process',
   description: `A scheduler pool miss with ${kind} held-work state. Pass requires acting on actual scheduler advice: `
     + 'finish independent work, retain unfinished claims, use only recorded bounded dependency wakes before stop, '
     + 'preserve the existing loop if no event exists, and stop when no obligations remain.',

@@ -130,8 +130,8 @@ try {
     projection: { pick: ['results[].id', 'results[].ok', 'results[].item.id'] } });
   const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
   assert(id, JSON.stringify(created));
-  // P-038: exercise the composed current-source endpoint and its real PG
-  // dedupe, with fixture measurements rather than invented production history.
+  // P-038: exercise the installed native dispatcher and its real operator/PG
+  // delivery, with fixture measurements rather than invented production history.
   const beforeTarget = readFileSync(join(root, 'a-target.ts'), 'utf8');
   const { recordEditAttributionStrict } = await import('../../edit-attribution.ts');
   await recordEditAttributionStrict({ repoRoot: root, files: ['a-target.ts'],
@@ -185,13 +185,51 @@ try {
   assert.equal(replay.incidentAttribution?.status, 'measured');
   assert.deepEqual(replay.incidentAttribution.recentEdits?.[0]?.symbols, [{ name: 'incidentTarget', line: 1 }]);
   assert.equal(replay.incidentAttribution.recentEdits?.[0]?.sha256, sha('a-target.ts'));
+  const { installInjectionHooks } = await import('../../desktop-install/papercusp-files.ts');
+  const { readInstallStamp } = await import('../../desktop-install/install-provenance.ts');
+  const sourceDir = join(repo, 'apps/operator/scripts/hooks/inject');
+  const installedDir = join(homedir(), '.papercusp/hooks/inject');
+  const installed = await installInjectionHooks(homedir(), sourceDir);
+  const hookPaths = ['index.mjs', 'core.mjs', 'ports.mjs', 'delivery-ledger.mjs', 'adapters/codex.mjs'];
+  const installedHashes = Object.fromEntries(hookPaths.map(path => {
+    assert(installed.includes(join('inject', path)), `Hook not installed: ${path}`);
+    const bytes = readFileSync(join(installedDir, path));
+    assert.deepEqual(bytes, readFileSync(join(sourceDir, path)), `Installed hook differs: ${path}`);
+    return [path, createHash('sha256').update(bytes).digest('hex')];
+  }));
+  const installStamp = await readInstallStamp(installedDir);
+  assert.equal(installStamp?.sourceDir, sourceDir);
+  const nativeEvent = { hook_event_name: 'PostToolUse', cwd: root,
+    tool_name: 'mcp__papercusp_su__testing_run', tool_input: { harness: workspace, files: [testPath] },
+    tool_response: { byFile: { [testPath]: { status: 'fail', failed: 1, runId: failure.id } } } };
+  let hookProcesses = 0;
   const postIncident = async () => {
-    const response = await fetch(new URL('/api/agent-mcp/mid-turn-context', endpoint), {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(replay),
-      signal: AbortSignal.timeout(10_000),
+    // The server's loop must stay live while the installed CLI performs HTTP.
+    // Clear the source loader so Node executes the actual installed byte copies.
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done, reject) => {
+      const child = spawn(process.execPath, [join(installedDir, 'index.mjs'),
+        '--client=codex', '--event=post-tool-use'], { cwd: root, env: { ...process.env,
+        NODE_OPTIONS: '', PAPERCUSP_SID: observationScope.owner,
+        PAPERCUSP_HOME: join(homedir(), '.papercusp'), PAPERCUSP_WORKSPACE: workspace,
+        PAPERCUSP_HARNESS_SLUG: workspace, PAPERCUSP_OPERATOR_URL: endpoint.origin,
+        // Keep transport fallback inside this isolated operator, including on failure.
+        PAPERCUSP_MCP_PROXY_PORT: endpoint.port, PAPERCUSP_MID_TURN_CONTEXT: 'on',
+      }, stdio: ['pipe', 'pipe', 'pipe'] });
+      hookProcesses++;
+      const stdout = createTextCollector(child.stdout), stderr = createTextCollector(child.stderr);
+      const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+      child.once('close', status => { clearTimeout(timer); done({ status, stdout: stdout.text(), stderr: stderr.text() }); });
+      child.stdin.end(JSON.stringify(nativeEvent));
     });
-    assert.equal(response.status, 200);
-    return await response.json() as { ok: boolean; text: string };
+    assert.equal(result.status, 0, JSON.stringify(result));
+    assert.equal(result.stderr, '', result.stderr);
+    if (!result.stdout.trim()) return { text: '', envelope: null };
+    const envelope = JSON.parse(result.stdout);
+    assert.equal(envelope.hookSpecificOutput?.hookEventName, 'PostToolUse');
+    assert.equal(typeof envelope.hookSpecificOutput?.additionalContext, 'string');
+    assert.equal(envelope.hookSpecificOutput.permissionDecision, undefined);
+    return { text: envelope.hookSpecificOutput.additionalContext as string, envelope };
   };
   // The maintained cold loader returns immediately; converge only on its
   // bounded fixture load, retaining the first delivered response for evidence.
@@ -220,10 +258,13 @@ try {
   assert.equal(count!.count, 1);
   const pushProof = { delivered: delivered.text, duplicateSuppressed: true, ledger: rows[0],
     attribution: replay.incidentAttribution, testRunId: failure.id, handlerHash,
+    deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
+    installed: { hashes: installedHashes, stamp: installStamp, processes: hookProcesses,
+      nodeOptions: '', envelope: delivered.envelope, duplicateEnvelope: duplicate.envelope },
     snapshotSha256: createHash('sha256').update(snapshot).digest('hex'),
     sourceBeforeSha256: createHash('sha256').update(beforeTarget).digest('hex'), sourceAfterSha256: sha('a-target.ts'),
     observationProducer: 'maintained collector and delivery ledger with controlled before image',
-    scope: 'private current-source endpoint replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam' };
+    scope: 'private current-source installed dispatcher replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam; no live Codex model session' };
   const claimed = await call('work_items:claim', { row: `${id},self,${workspace}`,
     projection: { pick: ['results[].taskBrief'] } });
   const brief = claimed.results?.[0]?.taskBrief;

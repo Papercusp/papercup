@@ -410,6 +410,75 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('keeps a structural scorecards:get fallback when the primary spill times out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let releaseWrite!: () => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockRejectedValue(new Error('test spool unavailable'));
+    const evidence = 'e'.repeat(BUDGET_CHARS * 2);
+    const originalText = JSON.stringify({
+      ok: true,
+      scorecard: {
+        issueId: 'EI-structural-timeout',
+        criteria: [{ key: 'traceability', rating: 'pass', evidence }],
+      },
+      evidenceRead: { complete: true, scope: 'selected-criterion', offset: 0, totalChars: evidence.length },
+    });
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(
+        { content: [{ type: 'text' as const, text: originalText }], _meta: { explicitFullRequest: true } },
+        {
+          ...OPTS,
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'scorecards:get',
+          ownerId: 'su-1',
+        },
+      );
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const cursor = volatileCursorFrom(result);
+      const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
+      const body = JSON.parse(text) as { _projection?: { cursor?: Record<string, unknown> } };
+      const meta = result._meta?.resultDoor as {
+        spillPending?: boolean;
+        spillFailed?: boolean;
+        pendingSpill?: { cursor?: Record<string, unknown> };
+      };
+
+      // Before fallbackRecoveryCursor(), the old code returned pendingResult here because
+      // scorecards:get stores its recovery cursor in the model-facing _projection.
+      expect(cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(body._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page' });
+      expect(meta).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(readVolatileText(cursor, 'ws-1', 'su-1')).toContain(evidence);
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseWrite();
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('attaches the pending spill cursor to a durable reference-envelope fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();

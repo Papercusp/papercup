@@ -1824,7 +1824,7 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
       'bash() { printf "%s\\n" "$SETUP_OUTPUT"; return "$SETUP_STATUS"; }',
       'systemd-notify() { printf "NOTIFY:%s\\n" "$*"; }',
       'prepare_staging_candidate 0123456789abcdef',
-    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status), TEST_CANDIDATE: candidate } });
+    ].join('\n'), { env: { NOTIFY_SOCKET: '@test-staging-notify', SETUP_OUTPUT: output, SETUP_STATUS: String(status), TEST_CANDIDATE: candidate, PAPERCUSP_HOME: join(candidate, 'private-home') } });
     } finally { rmSync(candidate, { recursive: true, force: true }); }
   }
 
@@ -1867,18 +1867,20 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
         // Accelerate only the fixture duration; run the real GNU timeout and child group.
         'timeout() { printf "BOUND:%s\\n" "$*"; shift 2; command timeout --kill-after=1s 1s "$@"; }',
         'prepare_staging_candidate 0123456789abcdef',
-      ].join('\n'), { env: { INTEGRATION_ROOT: fixture, NOTIFY_SOCKET: '' } });
-      expect(result.status).toBe(1);
+      ].join('\n'), { env: { INTEGRATION_ROOT: fixture, NOTIFY_SOCKET: '', PAPERCUSP_HOME: join(fixture, 'private-home') } });
+      expect(result.status).toBe(124);
       expect(result.stdout).toContain('SETUP_ENTERED');
       expect(result.stdout).toContain('failed in --source-only');
+      expect(result.stdout).toContain('exit 124');
       expect(result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'))).toHaveLength(1);
     } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 
   it('stops before later phases and publication on a setup failure', () => {
     const result = prepareWithOutput('[setup-release] source failure', 17);
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(17);
     expect(result.stdout).toContain('candidate checkout preparation failed');
+    expect(result.stdout).toContain('exit 17');
     expect(result.stdout.split('\n').filter((line) => line.startsWith('BOUND:'))).toHaveLength(1);
     expect(result.stdout).not.toContain('--ready');
   });
@@ -1930,6 +1932,50 @@ describe('sync-staging-checkout.sh completed-phase startup budget (WI-10006606)'
     expect(dropIn).toContain('RuntimeMaxSec=90min');
     expect(dropIn).toContain('TimeoutStartSec=15min');
     expect(readFileSync(SCRIPT_PATH, 'utf8')).toContain('trap finish_staging_sync EXIT');
+  });
+});
+
+describe('staging setup failure evidence survives cleanup (EI-26150720787099786)', () => {
+  it('retains the failed SPA phase status and raw output outside the removed candidate', () => {
+    const fixture = mkdtempSync(join(tmpdir(), 'staging-setup-evidence-'));
+    const candidateHome = join(fixture, '.candidate-fixture');
+    const candidateRoot = join(candidateHome, 'checkout');
+    const home = join(fixture, 'private-home');
+    const scripts = join(fixture, 'apps/operator/scripts/systemd');
+    const setup = join(fixture, 'apps/operator/bin/release');
+    mkdirSync(candidateRoot, { recursive: true });
+    mkdirSync(scripts, { recursive: true });
+    mkdirSync(setup, { recursive: true });
+    writeFileSync(join(scripts, 'papercusp-script-snapshot.sh'), 'exec bash "$@"\n');
+    writeFileSync(join(setup, 'setup-release-checkout.sh'), [
+      'printf "SETUP_PHASE=%s\\n" "${!#}"',
+      'if [ "${!#}" = --spa-only ]; then',
+      '  printf "PRIVATE_ERROR_MARKER\\0hidden tail\\n" >&2',
+      '  exit 23',
+      'fi',
+    ].join('\n'));
+    try {
+      const result = runFn(['staging_sync_checkpoint', 'prepare_staging_candidate', 'cleanup_staging_candidate'], [
+        'log() { printf "%s\\n" "$*"; }',
+        'create_staging_candidate() { STAGING_CANDIDATE_HOME="$FIXTURE_CANDIDATE"; STAGING_CANDIDATE_ROOT="$FIXTURE_ROOT"; }',
+        'STAGING_CANDIDATE_PUBLISHED=0; STAGING_ROOT=/absent-staging-test',
+        'status=0',
+        'prepare_staging_candidate 0123456789abcdef || status=$?',
+        'cleanup_staging_candidate',
+        'printf "SETUP_STATUS=%s\\n" "$status"',
+      ].join('\n'), { env: { INTEGRATION_ROOT: fixture, PAPERCUSP_HOME: home,
+        FIXTURE_ROOT: candidateRoot, FIXTURE_CANDIDATE: candidateHome, INVOCATION_ID: 'fixture-invocation', NOTIFY_SOCKET: '' } });
+      expect(result.stdout).toContain('SETUP_STATUS=23');
+      expect(result.stdout).toContain('failed in --spa-only');
+      expect(existsSync(candidateHome)).toBe(false);
+      const logs = join(home, 'checkpoint-logs');
+      expect(existsSync(logs)).toBe(true);
+      expect(readdirSync(logs)).toEqual(['staging-setup-fixture-invocation-spa-only.log']);
+      const evidence = readFileSync(join(logs, 'staging-setup-fixture-invocation-spa-only.log'));
+      expect(evidence.includes(Buffer.from('PRIVATE_ERROR_MARKER\0hidden tail\n'))).toBe(true);
+      expect(evidence.toString()).toContain('setup exit status: 23');
+      expect(evidence.toString()).toContain('source: 0123456789abcdef');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
   });
 });
 

@@ -2201,7 +2201,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
           },
         ],
       }),
-      'coord:declare-intent': () => ({ ok: true }),
+      'coord:declare-intent': () => ({ ok: true, taskBrief: { status: 'unknown', sourceFingerprint: 'intent-pin' } }),
       // WI-5228: planSlug is passed below, so the new orient-first plan-now leg
       // calls plans:get — register a benign empty-items response so this test
       // (which doesn't assert on r.planNow) stays focused on the intent/recipes
@@ -2213,6 +2213,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         intent: 'implement P-005',
         planSlug: 'tool-call-batching-wrappers-2026-06-21',
         planItems: ['P-005'],
+        currentFiles: ['lib/target.ts'],
         harness: 'h',
       },
       call,
@@ -2226,6 +2227,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       note: ORIENT_MEMORY_NOTE,
     });
     expect(r.intentDeclared).toBe(true);
+    expect(r.taskBrief).toMatchObject({ status: 'unknown', sourceFingerprint: 'intent-pin' });
     // memory uses intent as the query + harness_slug; declare carries the lane.
     const mem = calls.find((c) => c.name === 'memory:search')!;
     expect(mem.args).toMatchObject({ query: 'implement P-005', harness_slug: 'h', limit: 5 });
@@ -2234,6 +2236,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       intent: 'implement P-005',
       current_plan_slug: 'tool-call-batching-wrappers-2026-06-21',
       items: ['P-005'],
+      current_files: ['lib/target.ts'],
     });
     // recipes:search uses intent plus the live lane identity as a hard authority filter.
     expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({
@@ -4701,6 +4704,47 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       });
       expect(warnSpy).toHaveBeenCalled();
       warnSpy.mockRestore();
+    });
+
+    it('aborts a timed-out core child instead of leaving the in-process query running', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let seenSignal: AbortSignal | undefined;
+      let childAborted = false;
+      const call: InnerCall = async (name, args, signal) => {
+        if (name === 'work_items:claimable') {
+          seenSignal = signal;
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              childAborted = true;
+              reject(new Error('child aborted'));
+            }, { once: true });
+          });
+        }
+        const handler = (CORE as Record<string, ((input: Record<string, unknown>) => unknown) | undefined>)[name];
+        if (!handler) throw new Error(`unexpected sub-call: ${name}`);
+        return handler(args as Record<string, unknown>);
+      };
+
+      try {
+        const resultPromise = composeOrient({
+          harness: 'h',
+          claimableLimit: 1,
+          inboxLimit: 0,
+          includePlanEvents: false,
+          includeFleetCatchUp: false,
+          includeFleetHealth: false,
+          includeRecipes: false,
+          includePeersKnow: false,
+        }, call, 'me');
+
+        await vi.advanceTimersByTimeAsync(8_000);
+        const result = await resultPromise;
+        expect(seenSignal).toBeDefined();
+        expect(childAborted).toBe(true);
+        expect(result.claimable).toEqual(expect.any(Array));
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it('preserves recovered self membership when the fleet assignment roster exceeds orient budget', async () => {

@@ -20,6 +20,8 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/sessions/list.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({
@@ -39,7 +41,11 @@ vi.mock('../../search/self-session', () => ({
   resolveSelfSession: (...a: unknown[]) => resolveSelfSession(...a),
 }));
 
-const tool = (await import('./list')).default;
+const { default: tool, HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS } = await import('./list');
+const HISTORICAL_CENSUS_MIGRATION = fileURLToPath(new URL(
+  '../../../../../libs/papercusp/libs/db/sql/1529-session-list-historical-census-bounds.sql',
+  import.meta.url,
+));
 
 interface ParsedResult {
   ok: boolean;
@@ -66,13 +72,20 @@ interface ParsedResult {
 function makeTx(results: unknown[][]) {
   let i = 0;
   const queries: string[] = [];
+  const unsafeQueries: string[] = [];
   const tx = vi.fn(async (strings: unknown) => {
     if (Array.isArray(strings)) queries.push(strings.join(' '));
     const r = results[i] ?? [];
     i += 1;
     return r;
   });
-  return { tx, calledTimes: () => tx.mock.calls.length, queries };
+  Object.assign(tx, {
+    unsafe: vi.fn(async (query: string) => {
+      unsafeQueries.push(query);
+      return [];
+    }),
+  });
+  return { tx, calledTimes: () => tx.mock.calls.length, queries, unsafeQueries };
 }
 
 function callTool(args: Record<string, unknown>, tx: unknown) {
@@ -84,9 +97,14 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
-  const { tx, calledTimes, queries } = makeTx(results);
+  const { tx, calledTimes, queries, unsafeQueries } = makeTx(results);
   const res = await callTool(args, tx);
-  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, txCalls: calledTimes(), queries };
+  return {
+    parsed: JSON.parse(res.content[0].text) as ParsedResult,
+    txCalls: calledTimes(),
+    queries,
+    unsafeQueries,
+  };
 }
 
 describe('sessions:list EI-11403 active-session fallback', () => {
@@ -261,6 +279,23 @@ describe('sessions:list EI-11403 active-session fallback', () => {
 });
 
 describe('sessions:list historical bounded census', () => {
+  it('sets a transaction-local statement deadline before the cross-workspace scan', async () => {
+    const { parsed, txCalls, unsafeQueries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[]],
+    );
+
+    expect(parsed.ok).toBe(true);
+    expect(txCalls).toBe(1);
+    expect(unsafeQueries).toEqual([
+      `SET LOCAL statement_timeout = ${HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS}`,
+    ]);
+  });
+
   it('requires an explicit finite [since, until) window', async () => {
     const { parsed, txCalls } = await run(
       { mode: 'historical', since: '2026-07-13T13:30:00Z' },
@@ -523,6 +558,20 @@ describe('sessions:list historical bounded census', () => {
     const untilMs = Date.parse(w.until);
     expect(Math.abs(sinceMs - (before - 3 * 3_600_000))).toBeLessThan(10_000);
     expect(Math.abs(untilMs - (before - 1 * 3_600_000))).toBeLessThan(10_000);
+  });
+
+  it('ships timestamp-window indexes for every historical event source', () => {
+    const sql = readFileSync(HISTORICAL_CENSUS_MIGRATION, 'utf8').replace(/\s+/g, ' ');
+
+    expect(sql).toContain('session_turns_workspace_ts_historical_idx');
+    expect(sql).toContain('(workspace_id, ts DESC)');
+    expect(sql).toContain('session_turns_workspace_ingested_historical_idx');
+    expect(sql).toContain('(workspace_id, ingested_at DESC)');
+    expect(sql).toContain('agent_activity_workspace_created_historical_idx');
+    expect(sql).toContain('(workspace_id, created_at DESC)');
+    expect(sql).toContain('tool_invocations_workspace_invoked_historical_idx');
+    expect(sql).toContain('(workspace_id, invoked_at DESC)');
+    expect(sql).toContain('INCLUDE (coord_owner_id)');
   });
 
   it('rejects an unrecognized window value NAMING the accepted forms', async () => {

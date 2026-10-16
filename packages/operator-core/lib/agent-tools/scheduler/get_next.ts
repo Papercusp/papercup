@@ -79,6 +79,7 @@ import {
   diagnoseFleetScopePlanTerminality,
   diagnoseFleetScopeLeaderLiveness,
   reconcileFleetScopeLeaderSuccession,
+  resumeFleetLeaderWithLaunchAgent,
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
@@ -1676,6 +1677,10 @@ export default defineTool({
           const leaderSuccession = await reconcileFleetScopeLeaderSuccession({
             scope: reconciliation.scope,
             identity: ident,
+            resumeLeader: (resume) => resumeFleetLeaderWithLaunchAgent({
+              ...resume,
+              ctx: ctx as unknown as Record<string, unknown>,
+            }),
           });
           if (leaderSuccession === 'unavailable') return { kind: 'leader-unavailable', reconciliation };
         }

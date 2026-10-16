@@ -22,8 +22,16 @@ if (assertionPath === '--command') {
   const shell = shellCommandIndex > 0;
   const command = shell ? args[shellCommandIndex + 1] ?? '' : args.join(' ');
   const sourceFailure = () => fail('Playwright assertions must use the effective owned OPERATOR_SOURCE_ROOT: use bash -c with cd "$OPERATOR_SOURCE_ROOT/apps/operator" and an owned --config; only literal cd commands joined by && are supported before playwright test');
+  // Recognize alternate CLI spellings before applying the supported grammar.
+  // Otherwise an absolute executable, package alias/version, or node cli.js
+  // silently bypasses the source check instead of being refused before boot.
+  const isPlaywrightCli = word => typeof word === 'string' && (
+    /^(?:playwright(?:-core)?|@playwright\/test)(?:@[^/]+)?$/.test(word) ||
+    /\/(?:playwright(?:-core)?)(?:\.cmd)?$/.test(word) ||
+    /(?:^|\/)(?:playwright(?:-core)?|@playwright\/test)\/cli\.[cm]?js$/.test(word));
+  const hasPlaywrightTest = words => words.some((word, i) => isPlaywrightCli(word) && words[i + 1] === 'test');
   if (!shell) {
-    if (args.some((arg, i) => arg === 'playwright' && args[i + 1] === 'test')) sourceFailure();
+    if (hasPlaywrightTest(args)) sourceFailure();
   } else {
     // shell-quote treats a comment as lasting to the end of its input. Do not
     // let a leading comment hide a later unsupported multiline invocation.
@@ -39,7 +47,7 @@ if (assertionPath === '--command') {
     } catch {
       fail('OPERATOR_SOURCE_ROOT command preflight requires an installed shell-quote parser and valid shell quoting');
     }
-    if (tokens.some((token, i) => token === 'playwright' && tokens[i + 1] === 'test')) {
+    if (hasPlaywrightTest(tokens)) {
       // This is a deliberately small, verifiable command grammar. Branches,
       // substitutions and arbitrary shell builtins can change cwd or the root.
       if (/[\r\n`]|\$\(/.test(command)) sourceFailure();

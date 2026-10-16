@@ -312,6 +312,7 @@ function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
   check("complete-original-abba-cohort-population", complete);
   let qualified = Boolean(complete);
   const executionWalls = [];
+  const observedMaxTasksBySide = { baseline: [], candidate: [] };
   for (const row of rows) {
     if (!pinned) { qualified = false; break; }
     const policy = row.side === "baseline" ? prepared.baseline : prepared.candidate;
@@ -366,8 +367,20 @@ function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
       remaining.delete(child.task);
     }
     qualified &&= valid;
+    if (row.side in observedMaxTasksBySide)
+      observedMaxTasksBySide[row.side].push(row.stats?.observedMaxTasks);
     executionWalls.push(row.wallMs - queuedMs);
   }
+  // R12's measured concurrency clause is distinct from the configured ceiling: a receipt that
+  // merely repeats a larger candidate maxConcurrentTasks can still hide a serial scheduler. The
+  // candidate must demonstrate a higher observed task concurrency than the baseline population;
+  // otherwise the longest-first and ratio checks do not prove raised headroom was exercised.
+  const baselineObservedMaxTasks = Math.max(...observedMaxTasksBySide.baseline.map(Number));
+  const measuredHeadroom = Boolean(complete) &&
+    observedMaxTasksBySide.baseline.every(Number.isSafeInteger) &&
+    observedMaxTasksBySide.candidate.every(observed => Number.isSafeInteger(observed) &&
+      observed > baselineObservedMaxTasks && observed <= prepared.candidate.maxConcurrentTasks);
+  qualified &&= measuredHeadroom;
   check("unchanged-contained-no-skip-paired-headroom-longest-first-cohorts", qualified);
   const baselineWallMs = qualified ? executionWalls[0] + executionWalls[3] : null;
   const candidateWallMs = qualified ? executionWalls[1] + executionWalls[2] : null;

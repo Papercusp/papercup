@@ -11,13 +11,14 @@ describe('macOS exact-window focus', () => {
     const processes = Object.assign(() => [process], { whose: () => () => process.frontmost ? [process] : [] });
     let observations = 0;
     const delay = vi.fn();
+    const bindFunction = vi.fn();
     const evaluate = runInNewContext(`${MAC_WINDOW_SCRIPT}; run`, {
-      ObjC: { import: () => {}, deepUnwrap: (value: unknown) => value },
+      ObjC: { import: () => {}, bindFunction, deepUnwrap: (value: unknown) => value },
       Application: () => ({ uiElementsEnabled: () => options.permission !== false, applicationProcesses: processes }),
       $: { CGWindowListCopyWindowInfo: () => observations++ >= (options.revealAfter ?? 0) ? [{ kCGWindowOwnerPID: 42, kCGWindowName: 'Agent', kCGWindowLayer: 0 }] : [] },
       delay,
     });
-    return { evaluate: (query: object) => JSON.parse(evaluate([JSON.stringify(query)])), minimized, raise, delay };
+    return { evaluate: (query: object) => JSON.parse(evaluate([JSON.stringify(query)])), minimized, raise, delay, bindFunction };
   }
 
   it('executes the shipped script to restore/raise the exact window and wait for Space visibility', () => {
@@ -26,6 +27,7 @@ describe('macOS exact-window focus', () => {
     expect(script.minimized.value).toBe(false);
     expect(script.raise).toHaveBeenCalledTimes(1);
     expect(script.delay).toHaveBeenCalledTimes(2);
+    expect(script.bindFunction).toHaveBeenCalledWith('CGWindowListCopyWindowInfo', ['id', ['uint32_t', 'uint32_t']]);
   });
 
   it('rejects AX focus alone on an invisible Space and a different focused window', () => {

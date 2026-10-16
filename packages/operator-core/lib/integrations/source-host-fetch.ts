@@ -11,11 +11,13 @@
  */
 import type postgres from 'postgres';
 import { normalizeProviderInstanceOrigin, type HostFetch } from '@papercusp/plugin-sdk';
-import { getExternalTriggerSource } from '../external-triggers/source-store';
+import { getExternalTriggerSource, sourceTokenHarness } from '../external-triggers/source-store';
 import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
 import { connectionAccessToken, descriptorOAuthPlugin } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
+import { providerOAuthUserAgent } from './oauth-client-registration';
 import {
+  providerCredentialSession,
   providerSetupStoreKey,
   readProviderCredentialValue,
   readProviderPrincipalCredentialValue,
@@ -59,6 +61,23 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
   return createHostFetch(opts.providerId, {
     registry,
     fetchImpl: opts.fetchImpl,
+    async credentialSession(source) {
+      const entry = registry.get(source.providerId);
+      if (!entry || source.ownCredential) throw new HostFetchError('credential-unavailable', 'host.fetch: source does not own the pasted session');
+      const row = await getExternalTriggerSource(sql, opts.workspaceId, source.sourceId);
+      if (!row || row.credentialRef !== providerSetupStoreKey(source.providerId)) {
+        throw new HostFetchError('credential-unavailable', 'host.fetch: source does not own the pasted session');
+      }
+      const session = await providerCredentialSession(entry.descriptor, sourceTokenHarness(row.config, opts.harness), { fetchImpl: opts.fetchImpl });
+      if (source.config?.accountId !== session.identity.providerAccountId) {
+        throw new HostFetchError('credential-unavailable', 'host.fetch: reconnect source to its current session account');
+      }
+      return session;
+    },
+    async userAgent(source) {
+      const descriptor = registry.get(source.providerId)?.descriptor;
+      return descriptor ? providerOAuthUserAgent(descriptor, registry.list().map((entry) => entry.descriptor), descriptor.oauth?.instance ? source.config?.connectionOrigin : undefined) : null;
+    },
     // Owner-pasted setup credentials live in the same install's token store (P-001).
     async pastedCredential(key) {
       const registered = registry.get(opts.providerId);

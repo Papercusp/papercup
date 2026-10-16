@@ -29,7 +29,7 @@ import { bindProviderInstance, normalizeProviderInstanceOrigin, providerEgressAl
 import { getProvider, loadAndRegisterProvidersFromDisk, type OAuthProvider, type TokenResponse } from '../oauth/providers';
 import type { OAuthFlowPrivateContext } from '../oauth/state';
 import { fsTokenStorage } from '../oauth/storage-fs';
-import { clientRegistrationRefOf, credentialGroupOf, defaultOAuthRedirectUri, instanceClientRegistrationRef, readOAuthClientRegistration } from './oauth-client-registration';
+import { clientRegistrationRefOf, credentialGroupOf, defaultOAuthRedirectUri, instanceClientRegistrationRef, normalizeOAuthUserAgent, providerOAuthUserAgent, readOAuthClientRegistration } from './oauth-client-registration';
 import {
   disconnectOwnedExternalTriggerSources,
   listOwnedExternalTriggerSources,
@@ -424,7 +424,8 @@ async function resolveDescriptorAccount(
 ): Promise<ConnectionAccount> {
   const holder = members.find((entry) => entry.descriptor.oauth?.identity);
   if (!holder) throw new Error(`${errorPrefix}_identity_endpoint_missing`);
-  const account = await fetchProviderIdentity(holder.descriptor, accessToken, errorPrefix);
+  const userAgent = await providerOAuthUserAgent(holder.descriptor, members.map((entry) => entry.descriptor), instanceOrigin);
+  const account = await fetchProviderIdentity(holder.descriptor, accessToken, errorPrefix, fetch, userAgent);
   return instanceOrigin ? { ...account,
     providerAccountId: `${new URL(instanceOrigin).hostname}:${account.providerAccountId}`,
     sourceConfig: { connectionOrigin: instanceOrigin, connectionAccountId: account.providerAccountId },
@@ -508,17 +509,25 @@ function tokenResponseFrom(body: Record<string, unknown>, fallbackRefresh?: stri
 export function makeDescriptorOAuthProvider(
   id: string,
   oauth: NonNullable<ProviderDescriptor['oauth']>,
-  client: { clientId: string; clientSecret?: string; redirectUri: string },
+  client: { clientId: string; clientSecret?: string; redirectUri: string; userAgent?: string },
 ): OAuthProvider {
+  const userAgent = normalizeOAuthUserAgent(client.userAgent);
+  if (oauth.userAgentRequired && !userAgent) throw new Error(`${id}_user_agent_required`);
   const clientIdParameter = oauth.clientIdParameter ?? 'client_id';
+  const basic = oauth.tokenEndpointAuthMethod === 'client_secret_basic';
+  // RFC 6749 section 2.3.1: form-encode each credential before joining with a colon.
+  const basicPart = (value: string) => new URLSearchParams({ value }).toString().slice('value='.length);
   const postToken = async (form: Record<string, string>, fallbackRefresh?: string): Promise<TokenResponse> => {
     const response = await fetch(oauth.tokenUrl, {
       method: 'POST',
       redirect: 'manual',
-      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+      headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded',
+        ...(userAgent ? { 'user-agent': userAgent } : {}),
+        ...(basic ? { authorization: `Basic ${Buffer.from(`${basicPart(client.clientId)}:${basicPart(client.clientSecret ?? '')}`).toString('base64')}` } : {}),
+      },
       body: new URLSearchParams({
-        [clientIdParameter]: client.clientId,
-        ...(client.clientSecret ? { client_secret: client.clientSecret } : {}),
+        ...(!basic ? { [clientIdParameter]: client.clientId,
+          ...(client.clientSecret ? { client_secret: client.clientSecret } : {}) } : {}),
         ...form,
       }),
     });
@@ -608,7 +617,8 @@ export async function resolveOAuthProvider(providerId: string): Promise<OAuthPro
   // Default to the operator's one provider-neutral OAuth callback; a provider that
   // needs another redirect declares it in its client registration.
   const redirectUri = client.redirectUri ?? defaultOAuthRedirectUri();
-  return makeDescriptorOAuthProvider(providerId, { ...lead.oauth, scopes }, { clientId: client.clientId, clientSecret, redirectUri });
+  if (members.some((entry) => entry.descriptor.oauth?.userAgentRequired) && !normalizeOAuthUserAgent(client.userAgent)) return null;
+  return makeDescriptorOAuthProvider(providerId, { ...lead.oauth, scopes }, { clientId: client.clientId, clientSecret, redirectUri, userAgent: client.userAgent });
 }
 
 /** Scopes to request for a managed connection, per the adapter's policy. */

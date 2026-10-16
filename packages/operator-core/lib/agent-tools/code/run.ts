@@ -1988,10 +1988,21 @@ function minimalCodeRunSummaryProjection(
       projected[key] = candidate;
       retainedEntries.push({ key, value: entry, stats: scratch });
     } else {
-      mergeCodeRunSummaryArrayLengths(stats, scratch);
-      stats.valuesTruncated++;
-      stats.omittedItems++;
-      noteCodeRunSummaryPath(stats, `summary.${key}`);
+      // A large nested record must not disappear just because its first bounded
+      // projection is wider than the remaining top-level budget. Re-project it
+      // with a fair share of the remaining bytes, retaining child keys and
+      // scalar leaves recursively before declaring the whole field omitted.
+      const remainingBudget = Math.max(1, budget - codeRunSummarySerializedChars(projected));
+      const bounded = projectCodeRunSummaryValueWithinBudget(entry, `summary.${key}`, remainingBudget);
+      if (bounded !== undefined && codeRunSummarySerializedChars({ ...projected, [key]: bounded.value }) <= budget) {
+        projected[key] = bounded.value;
+        retainedEntries.push({ key, value: entry, stats: bounded.stats });
+      } else {
+        mergeCodeRunSummaryArrayLengths(stats, scratch);
+        stats.valuesTruncated++;
+        stats.omittedItems++;
+        noteCodeRunSummaryPath(stats, `summary.${key}`);
+      }
     }
   }
   // Preserve the minimal projection's field selection and ordering, then grow strings only in
@@ -2061,6 +2072,161 @@ function mergeCodeRunSummaryStats(
   target.valuesTruncated += source.valuesTruncated;
   target.omittedItems += source.omittedItems;
   for (const path of source.paths) noteCodeRunSummaryPath(target, path);
+}
+
+/**
+ * Keep a nested value when the last-resort object projection cannot fit the
+ * value produced by the ordinary ladder as one unit. The old fallback admitted
+ * each top-level non-scalar field atomically; a wide nested record therefore
+ * consumed more than the remaining budget and disappeared wholesale. This
+ * bounded projector shares the remaining bytes across child fields and recurses
+ * until scalar leaves can be clipped, so the parent shape remains useful.
+ */
+function projectCodeRunSummaryValueWithinBudget(
+  value: unknown,
+  path: string,
+  budget: number,
+): { value: unknown; stats: CodeRunSummaryProjectionStats } | undefined {
+  if (budget <= 0) return undefined;
+
+  if (typeof value === 'string') {
+    let low = 0;
+    let high = value.length;
+    let best: { value: string; stats: CodeRunSummaryProjectionStats } | undefined;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidateStats = newCodeRunSummaryProjectionStats();
+      const candidate = clipCodeRunSummaryString(value, path, mid, candidateStats);
+      if (codeRunSummarySerializedChars(candidate) <= budget) {
+        best = { value: candidate, stats: candidateStats };
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best;
+  }
+
+  if (isCodeRunSummaryScalar(value)) {
+    return codeRunSummarySerializedChars(value) <= budget
+      ? { value, stats: newCodeRunSummaryProjectionStats() }
+      : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const stats = newCodeRunSummaryProjectionStats();
+    const indices = value.length > 0 ? [0] : [];
+    const projected: unknown[] = [];
+    for (const index of indices) {
+      const remaining = Math.max(1, budget - codeRunSummarySerializedChars(projected));
+      const child = projectCodeRunSummaryValueWithinBudget(value[index], `${path}[${index}]`, remaining);
+      if (child === undefined) {
+        stats.valuesTruncated++;
+        stats.omittedItems++;
+        noteCodeRunSummaryPath(stats, `${path}[${index}]`);
+        continue;
+      }
+      projected.push(child.value);
+      mergeCodeRunSummaryStats(stats, child.stats);
+    }
+    const bounded = projectCodeRunSummaryArray(
+      value.length,
+      path,
+      indices.slice(0, projected.length),
+      projected,
+      stats,
+      true,
+    );
+    if (codeRunSummarySerializedChars(bounded) <= budget) {
+      return { value: bounded, stats };
+    }
+    return value.length === 0 && budget >= 2
+      ? { value: [], stats }
+      : undefined;
+  }
+
+  if (!isCodeRunSummaryRecord(value)) {
+    const stringValue = String(value);
+    return projectCodeRunSummaryValueWithinBudget(stringValue, path, budget);
+  }
+
+  const projected: Record<string, unknown> = {};
+  const stats = newCodeRunSummaryProjectionStats();
+  const entries = Object.entries(value);
+  const scalarEntries = entries.filter(([, entry]) => isCodeRunSummaryScalar(entry));
+  const nestedEntries = entries.filter(([, entry]) => !isCodeRunSummaryScalar(entry));
+
+  const addScalar = (key: string, entry: unknown): boolean => {
+    if (typeof entry !== 'string') {
+      const candidate = { ...projected, [key]: entry };
+      if (codeRunSummarySerializedChars(candidate) <= budget) {
+        projected[key] = entry;
+        return true;
+      }
+      return false;
+    }
+
+    let low = 0;
+    let high = Math.min(entry.length, CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS);
+    let best: { value: string; stats: CodeRunSummaryProjectionStats } | undefined;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidateStats = newCodeRunSummaryProjectionStats();
+      const clipped = clipCodeRunSummaryString(entry, `${path}.${key}`, mid, candidateStats);
+      if (codeRunSummarySerializedChars({ ...projected, [key]: clipped }) <= budget) {
+        best = { value: clipped, stats: candidateStats };
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    if (best === undefined) return false;
+    projected[key] = best.value;
+    mergeCodeRunSummaryStats(stats, best.stats);
+    return true;
+  };
+
+  for (const [key, entry] of scalarEntries) {
+    if (!addScalar(key, entry)) {
+      stats.valuesTruncated++;
+      stats.omittedItems++;
+      noteCodeRunSummaryPath(stats, `${path}.${key}`);
+    }
+  }
+
+  for (let index = 0; index < nestedEntries.length; index += 1) {
+    const [key, entry] = nestedEntries[index];
+    const remainingFields = nestedEntries.length - index;
+    const remainingBudget = Math.max(1, budget - codeRunSummarySerializedChars(projected));
+    const childBudget = Math.max(1, Math.floor(remainingBudget / remainingFields));
+    let child = projectCodeRunSummaryValueWithinBudget(entry, `${path}.${key}`, childBudget);
+    if (child !== undefined && codeRunSummarySerializedChars({ ...projected, [key]: child.value }) > budget) {
+      child = projectCodeRunSummaryValueWithinBudget(
+        entry,
+        `${path}.${key}`,
+        Math.max(1, budget - codeRunSummarySerializedChars(projected)),
+      );
+    }
+    if (child !== undefined && codeRunSummarySerializedChars({ ...projected, [key]: child.value }) <= budget) {
+      projected[key] = child.value;
+      mergeCodeRunSummaryStats(stats, child.stats);
+      continue;
+    }
+    stats.valuesTruncated++;
+    stats.omittedItems++;
+    noteCodeRunSummaryPath(stats, `${path}.${key}`);
+  }
+
+  if (stats.valuesTruncated > 0) {
+    const marker = '__truncated';
+    const markerValue = 'nested value omitted; see summaryNotice.paths';
+    if (!(marker in projected) && codeRunSummarySerializedChars({ ...projected, [marker]: markerValue }) <= budget) {
+      projected[marker] = markerValue;
+    }
+  }
+
+  if (Object.keys(projected).length === 0 && Object.keys(value).length > 0) return undefined;
+  return { value: projected, stats };
 }
 
 /**

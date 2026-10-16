@@ -15,6 +15,12 @@ credentials. Each agent first builds a history of real tool results (WARM prompt
       --arm none --arm zram --arm pd-balanced=/dev/disk/by-id/google-swapbal ...
   swap-tier.py report --out DIR            (also runs at the end of `run`)
 
+P-544 minimum-resource runs add --active 1 --active 5 --active 10 --active-rounds 3
+with --agents 50 --single 0 --cli codex and ONE --arm. Each active cohort performs
+verified native file-hash tasks; the final storm still wakes all fifty agents.
+The one swap arm is enabled before launch and kept until the agents stop, so
+small-RAM runs never have to pull a live cohort out of swap just to start an arm.
+
 Per arm: swap device on -> reclaim every agent (one at a time, like parking) -> drop page cache ->
 idle IDLE_SEC (does an idle TUI page itself back?) -> wake --single agents one at a time ->
 wake the rest at once (storm) -> settle -> record what is still in swap -> swapoff.
@@ -669,10 +675,15 @@ def reclaim(name):
     return time.time() - t0
 
 
-def run_arm(arm, names, single, ram_gb, rec, stub_log):
-    swap_off()
-    device = swap_on(arm, ram_gb)
-    rec.rec("arm-start", arm=arm["name"], device=device, host=host_stats(), agents={n: agent_stats(n) for n in names})
+def run_arm(arm, names, single, ram_gb, rec, stub_log, active=None, active_rounds=3,
+            swap_ready=False, keep_swap=False):
+    if not swap_ready:
+        swap_off()
+        device = swap_on(arm, ram_gb)
+    else:
+        device = arm.get("device")
+    rec.rec("arm-start", arm=arm["name"], device=device, assignedAgents=len(names),
+            host=host_stats(), agents={n: agent_stats(n) for n in names})
     if arm["kind"] != "none":
         rec.rec("phase", arm=arm["name"], phase="reclaim", edge="start")
         for name in names:
@@ -689,23 +700,36 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log):
         rec.rec("phase", arm=arm["name"], phase="idle", edge="end")
     nonce = f"{re.sub('[^A-Za-z0-9]', '', arm['name'])[:6]}{int(time.time()) % 100000}"
 
-    def wake(group, phase, emit_phase=True):
+    def wake(group, phase, emit_phase=True, task_round=None):
         pre = {n: agent_stats(n) for n in group}
         host_pre = host_stats()
+        # Reuse WARM native evidence validation for real shell work; WAKE remains
+        # the separate light model-response burst. Include width/round identity
+        # so a previous completion can never satisfy another active round.
+        marker = (lambda n: f"WARM-{nonce}c{len(group)}{n}-{task_round}") if task_round is not None else (
+            lambda n: f"WAKE-{nonce}{n}")
         if emit_phase:
             rec.rec("phase", arm=arm["name"], phase=phase, edge="start")
-        state = prompt_all(group, lambda n: f"WAKE-{nonce}{n}", lambda n: (
-            f"Dummy wake task WAKE-{nonce}{n}. Compute 17+25 mentally. Reply exactly DONE-WAKE-{nonce}{n} with no other text."
-            if REAL_MODEL else f"Wake up WAKE-{nonce}{n} please"), WAKE_TIMEOUT)
+        state = prompt_all(group, marker, lambda n: (
+            f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
+            f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
+            if task_round is not None else (
+                f"Dummy wake task {marker(n)}. Compute 17+25 mentally. Reply exactly DONE-{marker(n)} with no other text."
+                if REAL_MODEL else f"Wake up {marker(n)} please")), WAKE_TIMEOUT)
         if emit_phase:
             rec.rec("phase", arm=arm["name"], phase=phase, edge="end")
         time.sleep(2)
         for n in group:
             s = state[n]
             rec.rec("wake", arm=arm["name"], phase=phase, agent=n, **s,
-                    tRequest=stub_request_times(stub_log, f"WAKE-{nonce}{n}"), pre=pre[n], post=agent_stats(n))
+                    concurrentAgents=len(group), assignedAgents=len(names),
+                    nativeToolVerified=task_round is not None and s["tDone"] is not None and not s.get("error"),
+                    tRequest=stub_request_times(stub_log, marker(n)), pre=pre[n], post=agent_stats(n))
         rec.rec("wake-host", arm=arm["name"], phase=phase, pre=host_pre, post=host_stats())
 
+    for width in active or []:
+        for round_index in range(active_rounds):
+            wake(names[:width], f"active-{width}", task_round=round_index)
     for n in names[:single]:
         wake([n], "single")
         time.sleep(1)
@@ -716,12 +740,13 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log):
             wake(storm[offset:offset + arm["batch"]], "storm", emit_phase=False)
         rec.rec("phase", arm=arm["name"], phase="storm", edge="end")
     else:
-        wake(storm, "storm")
+        wake(storm, "storm", task_round=active_rounds if active else None)
     time.sleep(20)
     rec.rec("arm-end", arm=arm["name"], host=host_stats(), agents={n: agent_stats(n) for n in names})
     t0 = time.time()
-    swap_off()
-    rec.rec("swapoff", arm=arm["name"], seconds=time.time() - t0)
+    if not keep_swap:
+        swap_off()
+        rec.rec("swapoff", arm=arm["name"], seconds=time.time() - t0)
 
 
 # ---------------------------------------------------------------- disk benchmark
@@ -791,12 +816,13 @@ def summarize(rows, probe):
         k = r["kind"]
         if k == "arm-start":
             s["device"] = r.get("device")
+            s["assignedAgents"] = r.get("assignedAgents")
         elif k == "reclaimed":
             s["reclaimed"].append(r)
         elif k == "idle":
             s["idleRegainedMiB"] = mib(sum(regained(r["before"][n], r["after"][n]) for n in r["before"]))
         elif k == "wake":
-            s["wakes"][r["phase"]].append(r)
+            s["wakes"].setdefault(r["phase"], []).append(r)
         elif k == "arm-end":
             s["swapAfterMiB"] = mib(sum(v["swap"] or 0 for v in r["agents"].values()))
             s["residentAfterMiB"] = mib(sum(v["anon"] or 0 for v in r["agents"].values()))
@@ -804,7 +830,11 @@ def summarize(rows, probe):
             if zr:
                 s["zramEnd"] = zr
         elif k == "phase" and r.get("edge") in ("start", "end"):
-            phases.setdefault((a, r["phase"]), {})[r["edge"]] = r["t"]
+            windows = phases.setdefault((a, r["phase"]), [])
+            if r["edge"] == "start":
+                windows.append({"start": r["t"]})
+            elif windows and "end" not in windows[-1]:
+                windows[-1]["end"] = r["t"]
         elif k == "phase" and r.get("phase") == "reclaim":
             pass
         if k == "phase" and r.get("phase") == "reclaim" and r.get("edge") == "end":
@@ -815,7 +845,7 @@ def summarize(rows, probe):
     out = []
     for a, s in arms.items():
         rc = s["reclaimed"]
-        res = {"arm": a, "device": s.get("device")}
+        res = {"arm": a, "device": s.get("device"), "assignedAgents": s.get("assignedAgents")}
         if rc:
             swapped = [r["after"]["swap"] or 0 for r in rc]
             res["reclaim"] = {
@@ -828,8 +858,7 @@ def summarize(rows, probe):
             }
             res["idleRegainedMiB"] = s.get("idleRegainedMiB")
             res["zram"] = s.get("zramAfterReclaim")
-        for ph in ("single", "storm"):
-            ws = s["wakes"][ph]
+        for ph, ws in s["wakes"].items():
             if not ws:
                 continue
             total = [(w["tDone"] - w["t0"]) if w.get("tDone") else None for w in ws]
@@ -837,19 +866,21 @@ def summarize(rows, probe):
             submit = [(w["tDone"] - w["tEnter"]) if w.get("tDone") and w.get("tEnter") else None for w in ws]
             back = [regained(w["pre"], w["post"]) for w in ws]
             majflt = [max(0, (w["post"]["majflt"] or 0) - (w["pre"]["majflt"] or 0)) for w in ws]
-            block = {"agents": len(ws), "failed": sum(1 for t in total if t is None),
-                     "totalSec": {"p50": _r(pctl(total, 50)), "p90": _r(pctl(total, 90)), "max": _r(pctl(total, 100))},
-                     "echoSec": {"p50": _r(pctl(echo, 50)), "max": _r(pctl(echo, 100))},
-                     "submitToReplySec": {"p50": _r(pctl(submit, 50)), "max": _r(pctl(submit, 100))},
+            block = {"agents": len({w["agent"] for w in ws}), "tasks": len(ws),
+                     "failed": sum(1 for t in total if t is None),
+                     "totalSec": {"p50": _r(pctl(total, 50)), "p90": _r(pctl(total, 90)), "p95": _r(pctl(total, 95)), "max": _r(pctl(total, 100))},
+                     "echoSec": {"p50": _r(pctl(echo, 50)), "p95": _r(pctl(echo, 95)), "max": _r(pctl(echo, 100))},
+                     "submitToReplySec": {"p50": _r(pctl(submit, 50)), "p95": _r(pctl(submit, 95)), "max": _r(pctl(submit, 100))},
                      "regainedMiBPerAgent": mib(statistics.mean(back)),
                      "majfltPerAgent": round(statistics.mean(majflt))}
             if ph == "storm":
                 done = [w["tDone"] for w in ws if w.get("tDone")]
                 block["allDoneSec"] = _r(max(done) - min(w["t0"] for w in ws)) if len(done) == len(ws) else None
-            win = phases.get((a, ph), {})
-            samples = [p for p in probe if win.get("start") is not None and win.get("end") is not None and win["start"] <= p[0] <= win["end"]]
+            windows = phases.get((a, ph), [])
+            samples = [p for p in probe if any(w.get("start") is not None and w.get("end") is not None
+                                              and w["start"] <= p[0] <= w["end"] for w in windows)]
             if samples:
-                block["probeExecMs"] = {"p50": _r(pctl([p[1] for p in samples], 50)), "p99": _r(pctl([p[1] for p in samples], 99)),
+                block["probeExecMs"] = {"p50": _r(pctl([p[1] for p in samples], 50)), "p95": _r(pctl([p[1] for p in samples], 95)), "p99": _r(pctl([p[1] for p in samples], 99)),
                                         "max": _r(pctl([p[1] for p in samples], 100)), "samples": len(samples)}
             res[ph] = block
         res["swapAfterStormMiB"] = s.get("swapAfterMiB")
@@ -929,20 +960,24 @@ def run(a):
                                      "--warm-files", *warm_files], stdout=open(os.path.join(a.out, "stub.out"), "a"), stderr=subprocess.STDOUT))
     try:
         time.sleep(1)
-        swap_off()
-        rec.rec("run-start", agents=a.agents, warm=a.warm, warmConcurrency=a.warm_concurrency or a.agents,
+        warm_width = a.warm_concurrency or (min(a.active) if a.active else a.agents)
+        rec.rec("run-start", agents=a.agents, warm=a.warm, warmConcurrency=warm_width,
                 resumeNative=a.resume_native,
-                single=a.single, arms=arms, idleSec=IDLE_SEC,
+                single=a.single, active=a.active, activeRounds=a.active_rounds, arms=arms, idleSec=IDLE_SEC,
                 kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
                 effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
         stop_agents()
+        swap_off()
+        if a.active:
+            arms[0]["device"] = swap_on(arms[0], a.ram_gb)
         if REAL_MODEL:
             gateway_preflight(a.gateway_url, a.owner, rec)
             codex_sandbox_preflight(a.user, rec)
         names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner, a.resume_native)
-        warm(names, a.warm, rec, a.warm_concurrency)
+        warm(names, a.warm, rec, warm_width)
         for arm in arms:
-            run_arm(arm, names, a.single, a.ram_gb, rec, stub_log)
+            run_arm(arm, names, a.single, a.ram_gb, rec, stub_log, active=a.active, active_rounds=a.active_rounds,
+                    swap_ready=bool(a.active), keep_swap=bool(a.active))
         rec.rec("run-end")
     finally:
         stop_agents()
@@ -962,6 +997,8 @@ def main(argv=None):
     r.add_argument("--warm-concurrency", type=int, help="limit warm-up requests; wake storm still uses all agents")
     r.add_argument("--resume-native", action="store_true", help="resume recorded native sessions, then verify fresh warm turns")
     r.add_argument("--single", type=int, default=8)
+    r.add_argument("--active", type=int, action="append", help="active native tool cohort width; repeat for moderate-load scenarios")
+    r.add_argument("--active-rounds", type=int, default=3, help="verified tool rounds per active cohort")
     r.add_argument("--ram-gb", type=int, default=16)
     r.add_argument("--user", default="agent")
     r.add_argument("--arm", action="append", required=True)
@@ -981,6 +1018,11 @@ def main(argv=None):
     q.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "run":
+        if a.active and (a.cli != "codex" or a.warm < 1 or a.single != 0 or len(a.arm) != 1 or
+                         a.active_rounds < 1 or len(set(a.active)) != len(a.active) or
+                         any(not 1 <= width <= a.agents for width in a.active) or
+                         any(parse_arm(spec).get("batch") for spec in a.arm)):
+            ap.error("active cohort requires Codex, fresh warm>=1, --single 0, one unbatched arm, unique widths between 1 and --agents, and positive rounds")
         if a.resume_native and (a.cli != "codex" or a.warm < 1):
             ap.error("--resume-native requires Codex and at least one fresh verified warm round")
         if a.warm_concurrency is not None and not 1 <= a.warm_concurrency <= a.agents:

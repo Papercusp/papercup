@@ -14,6 +14,9 @@ async function run(command: string, args: string[]): Promise<CommandResult> {
 
 export const MAC_WINDOW_SCRIPT = `
 ObjC.import('CoreGraphics');
+if (typeof ObjC.bindFunction === 'function') {
+  ObjC.bindFunction('CGWindowListCopyWindowInfo', ['id', ['uint32_t', 'uint32_t']]);
+}
 function run(argv) {
   const request = JSON.parse(argv[0]);
   const se = Application('System Events');

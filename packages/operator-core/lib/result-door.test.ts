@@ -2422,6 +2422,58 @@ describe('applyResultDoor', () => {
       expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
     });
 
+    it('preserves every canonical rating through the outer tools:invoke result door', () => {
+      const canonicalRatingKeys = [
+        'base-rate-check',
+        'instrument-split',
+        'terminal-re-rate',
+        'platform-telemetry-excluded',
+        're-runnable-evidence',
+        'degenerate-distribution',
+      ] as const;
+      const canonicalRatings = Object.fromEntries(
+        canonicalRatingKeys.map((key) => [key, {
+          rating: `${key}:pass`,
+          evidence: 'e'.repeat(1_100),
+        }]),
+      );
+      const source = {
+        ok: true,
+        committed: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-all-ratings-1' },
+        canonicalRatings,
+        created: true,
+        issueId: 'scorecard-all-ratings-1',
+        detail: 'd'.repeat(BUDGET_CHARS * 2),
+      };
+      const original = JSON.stringify(source);
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        {
+          content: [{ type: 'text' as const, text: original }],
+          structuredContent: source,
+        },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'scorecards:emit',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+        },
+      );
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        canonicalRatings: Record<string, { rating?: string }>;
+        _projection?: { truncated?: boolean };
+      };
+
+      expect(output._projection?.truncated).toBe(true);
+      for (const key of canonicalRatingKeys) {
+        expect(output.canonicalRatings[key]).toMatchObject({ rating: `${key}:pass` });
+      }
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+      expect(readSpill('ws-1', 'tools:invoke', RUN_ID)).toContain('scorecard-all-ratings-1');
+    });
+
     it.each([
       { label: 'direct', toolName: 'scorecards:emit' },
       { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },

@@ -114,6 +114,13 @@ interface HistoricalCensusOptions {
 }
 
 /**
+ * Historical census reads run on the shared cross-workspace pool. Keep the
+ * read-only transaction finite so a large event window cannot retain an xmin
+ * indefinitely and block maintenance (EI-26085092190939594).
+ */
+export const HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS = 8_000;
+
+/**
  * Read a bounded historical session census. This is intentionally a separate
  * query path from the indexed transcript list below: a historical census must
  * begin with append-only events, not with a mutable live-session roster.
@@ -122,6 +129,10 @@ async function readHistoricalCensusRows(
   tx: Sql,
   options: HistoricalCensusOptions,
 ): Promise<HistoricalSessionListRow[]> {
+  // `ctx.tx` is a shared-pool transaction for cross-workspace tools. SET LOCAL
+  // scopes the deadline to this transaction and is reset when it settles; a
+  // timed-out statement aborts the read and releases its snapshot promptly.
+  await tx.unsafe(`SET LOCAL statement_timeout = ${HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS}`);
   const activityScopes = [...new Set([options.workspaceId, '*'])];
   return tx<HistoricalSessionListRow[]>`
     WITH raw_events AS (

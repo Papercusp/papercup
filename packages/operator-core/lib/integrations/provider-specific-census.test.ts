@@ -134,17 +134,9 @@ export const CENSUS: readonly CensusEntry[] = [
   p('packages/operator-core/lib/capability-verbs/social-read.ts', 'social'),
   p('packages/operator-core/lib/capability-verbs/social.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/adapter-contract.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/bluesky-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/bluesky-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/conformance.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/cursor-freshness.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/linkedin-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/linkedin-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/mastodon-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/mastodon-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/platform-registry.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/reddit-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/reddit-write-adapter.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/social-egress.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/social-watermark.ts', 'social'),
   p('packages/operator-core/lib/external-triggers/social/storm-policy.ts', 'social'),
@@ -159,7 +151,7 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 27;
+export const CENSUS_HIGH_WATERMARK = 19;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.
