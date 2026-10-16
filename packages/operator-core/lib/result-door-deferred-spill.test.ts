@@ -458,6 +458,83 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('keeps a durable fallback on an under-budget partial conversations:get envelope after spill timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durableUri = scratchReference.DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'c'.repeat(64);
+    let persistedFallbackText: string | undefined;
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockImplementation(async (uri, caller) => {
+      persistedFallbackText = readVolatileText({ uri }, caller.workspaceId ?? 'ws-1', caller.ownerId ?? undefined);
+      return { uri: durableUri, manifest: readVolatileScratchReference(uri, caller).manifest };
+    });
+    const sourceText = JSON.stringify({ results: [{ id: 'thread-post:1182706', post: { body: 'review evidence' } }] });
+    const original: DoorableResult = {
+      content: [{ type: 'text', text: sourceText }],
+      _meta: { payloadProjection: { truncated: true, originalChars: 4_000, returnedChars: sourceText.length, omittedCount: 1 } },
+    };
+    expect(Buffer.byteLength(sourceText, 'utf8')).toBeLessThan(BUDGET_CHARS);
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(original, {
+        ...OPTS,
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'conversations:get',
+        effect: 'read',
+        ownerId: 'su-1',
+      });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const envelope = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text) as {
+        state: string;
+        content: Array<{ uri?: string }>;
+        incomplete: { reason: string; recoverable: boolean; note: string };
+      };
+      const meta = result._meta?.resultDoor as {
+        spillUri?: string;
+        durableFallbackUri?: string;
+        recoveryCursor?: Record<string, unknown>;
+        pendingSpill?: { uri?: string; cursor?: Record<string, unknown> };
+      };
+      const referenceUris = envelope.content.map((item) => item.uri).filter((uri): uri is string => Boolean(uri));
+
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+      expect(envelope.incomplete.note).toContain('exact workspace-scoped durable copy');
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      expect(meta).toMatchObject({
+        durableFallbackUri: durableUri,
+        recoveryCursor: { kind: 'durable-scratch-page', uri: durableUri },
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(referenceUris).toContain(durableUri);
+      expect(referenceUris).not.toContain(meta.spillUri);
+      expect(meta.pendingSpill?.uri).toBe(meta.spillUri);
+      expect(persistedFallbackText).toContain(sourceText);
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('keeps volatile recovery when durable timeout persistence exceeds its separate bound', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
