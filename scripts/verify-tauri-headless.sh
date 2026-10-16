@@ -1790,11 +1790,19 @@ prepare_verifier_spa() {
   # Reset inherited build seams and pin output to this run's private work tree.
   (
     cd "$OPERATOR_SOURCE_ROOT" || exit 1
-    env -u VITE_BUILD_CMD -u VITE_BUILD_LOCK -u VITE_BUILD_SNAPSHOT_DIR \
-      VITE_BUILD_OUT_ROOT="$build_root" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
+    unset VITE_BUILD_CMD VITE_BUILD_LOCK VITE_BUILD_SNAPSHOT_DIR
+    export VITE_BUILD_OUT_ROOT="$build_root" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
       PAPERCUSP_RETAIN_DIST_CHUNKS=0 \
-      PAPERCUSP_VITE_OUT_DIR="$build_root/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$build_root/dist" \
-      bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run build
+      PAPERCUSP_VITE_OUT_DIR="$build_root/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$build_root/dist"
+    bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run prebuild || exit $?
+    # Prebuild materializes runtime mirrors inside the archive. Validate the
+    # source boundary NOW, before spending a full Vite build on a tree that the
+    # subsequent host bundler would reject. Do not regenerate the source receipt.
+    node scripts/source-preview.mjs verifier-verify \
+      --out "$OPERATOR_SOURCE_ROOT" --receipt "$VERIFY_TAURI_SOURCE_RECEIPT" \
+      --runtime-artifacts || exit $?
+    # npm still runs the explicit build script, without repeating prebuild.
+    bash scripts/pc-heavy.sh -- npm --ignore-scripts --workspace @papercusp/operator-vite run build
   ) || return $?
   if [ ! -s "$build_root/dist/index.html" ] || [ ! -d "$build_root/dist/assets" ] \
     || [ -z "$(find "$build_root/dist/assets" -type f -size +0c -print -quit)" ]; then

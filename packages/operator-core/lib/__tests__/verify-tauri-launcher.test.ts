@@ -109,19 +109,29 @@ function checkPreflight(candidate: string) {
 
 describe('frozen native SPA preparation', () => {
   function prepare(options: { pinned?: boolean; missingBuilder?: boolean; buildExit?: number;
-    incomplete?: boolean; external?: boolean; sourceVolumeFull?: boolean } = {}) {
+    incomplete?: boolean; external?: boolean; sourceVolumeFull?: boolean;
+    prebuildExit?: number; sourceExit?: number } = {}) {
     const dir = mkdtempSync(resolve(tmpdir(), 'tauri-spa-preflight-'));
     const frozen = resolve(dir, 'frozen');
     const app = resolve(frozen, 'apps/operator-vite');
     const capture = resolve(dir, 'build.json');
+    const events = resolve(dir, 'events.jsonl');
     const preparation = source.match(/prepare_verifier_spa\(\) \{[\s\S]*?\n\}/)?.[0];
     if (!preparation) throw new Error('Frozen SPA preparation was not found');
     mkdirSync(resolve(app, 'bin'), { recursive: true });
     mkdirSync(resolve(frozen, 'scripts'), { recursive: true });
     if (!options.missingBuilder) writeFileSync(resolve(app, 'bin/vite-build-singleflight'), '#!/bin/sh\n', { mode: 0o755 });
     writeFileSync(resolve(frozen, 'scripts/pc-heavy.sh'), '#!/bin/bash\n[ "$1" != -- ] || shift\nexec "$@"\n');
+    writeFileSync(resolve(frozen, 'scripts/source-preview.mjs'), `
+import { appendFileSync } from 'node:fs';
+appendFileSync(process.env.FIXTURE_EVENTS, JSON.stringify({ step: 'verify', args: process.argv.slice(2) }) + '\\n');
+process.exit(${options.sourceExit ?? 0});
+`);
     writeFileSync(resolve(dir, 'npm'), `#!/usr/bin/env node
 const fs = require('node:fs');
+const step = process.argv.at(-1);
+fs.appendFileSync(process.env.FIXTURE_EVENTS, JSON.stringify({ step }) + '\\n');
+if (step === 'prebuild') process.exit(${options.prebuildExit ?? 0});
 fs.writeFileSync(process.env.FIXTURE_CAPTURE, JSON.stringify({ cwd: process.cwd(), args: process.argv.slice(2),
   out: process.env.VITE_BUILD_OUT_ROOT, command: process.env.VITE_BUILD_CMD ?? null,
   viteOut: process.env.PAPERCUSP_VITE_OUT_DIR, finalOut: process.env.PAPERCUSP_VITE_FINAL_OUT_DIR,
@@ -142,13 +152,16 @@ ${preparation}
 prepare_verifier_spa
 printf '%s' "$VERIFIER_SPA_DIST"
 `], { encoding: 'utf8', timeout: 15_000, env: { ...process.env, PATH: `${dir}:${process.env.PATH}`,
-        FIXTURE_DIR: dir, FIXTURE_FROZEN: frozen, FIXTURE_CAPTURE: capture,
+        FIXTURE_DIR: dir, FIXTURE_FROZEN: frozen, FIXTURE_CAPTURE: capture, FIXTURE_EVENTS: events,
+        VERIFY_TAURI_SOURCE_RECEIPT: resolve(dir, 'source-receipt.json'),
         VERIFY_TAURI_SOURCE_REF: options.pinned === false ? '' : 'committed-pin',
         PAPERCUSP_SHARED_SPA_DIST: options.external ? resolve(dir, 'unbound-donor-dist') : '',
         VITE_BUILD_CMD: 'unbound-command', VITE_BUILD_LOCK: 'donor-lock', VITE_BUILD_SNAPSHOT_DIR: 'donor-snapshot' } });
       return { status: result.status, stderr: result.stderr, selected: result.stdout,
         expected: resolve(dir, 'verifier-spa/dist'), outputRoot: resolve(dir, 'verifier-spa'), frozen, app,
         sourceOutputExists: existsSync(resolve(app, 'dist')),
+        events: existsSync(events) ? readFileSync(events, 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [],
+        receipt: resolve(dir, 'source-receipt.json'),
         build: existsSync(capture) ? JSON.parse(readFileSync(capture, 'utf8')) : null };
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }
@@ -157,9 +170,12 @@ printf '%s' "$VERIFIER_SPA_DIST"
     const result = prepare();
     expect(result.status, result.stderr).toBe(0);
     expect(result.selected).toBe(result.expected);
-    expect(result.build).toEqual({ cwd: result.frozen, args: ['--workspace', '@papercusp/operator-vite', 'run', 'build'],
+    expect(result.build).toEqual({ cwd: result.frozen, args: ['--ignore-scripts', '--workspace', '@papercusp/operator-vite', 'run', 'build'],
       out: result.outputRoot, viteOut: result.expected, finalOut: result.expected,
       command: null, lock: null, snapshot: null, retain: '0' });
+    expect(result.events).toEqual([{ step: 'prebuild' }, { step: 'verify',
+      args: ['verifier-verify', '--out', result.frozen, '--receipt', result.receipt, '--runtime-artifacts'] },
+    { step: 'build' }]);
     expect(result.sourceOutputExists).toBe(false);
     expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_run_step verifier-host-bundle'));
     expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
@@ -170,6 +186,17 @@ printf '%s' "$VERIFIER_SPA_DIST"
     expect(result.status, result.stderr).toBe(0);
     expect(result.selected).toBe(result.expected);
     expect(result.sourceOutputExists).toBe(false);
+  });
+
+  it.each([
+    [{ prebuildExit: 19 }, ['prebuild']],
+    [{ sourceExit: 23 }, ['prebuild', 'verify']],
+  ] as const)('rejects prebuild/source failures before the expensive SPA build (%j)', (options, steps) => {
+    const result = prepare(options);
+    expect(result.status).toBe('prebuildExit' in options ? options.prebuildExit : options.sourceExit);
+    expect(result.events.map(event => event.step)).toEqual(steps);
+    expect(result.build).toBeNull();
+    expect(result.selected).toBe('');
   });
 
   it.each([
