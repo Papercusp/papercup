@@ -149,7 +149,7 @@ export interface HostedFirstWorkspaceDependencies {
    */
   createAdmission(
     resolveDesiredSpec: ResolveFirstWorkspaceSpec,
-    options?: { bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'> },
+    options?: { bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'>; pooled?: boolean },
   ): HostedOnboardingWorkspacePort;
   /** Rotate the caller's session onto the new workspace; null when the session moved on. */
   selectWorkspace(input: {
@@ -621,9 +621,8 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       // connection's own role (D-015 rule 3, WI-10005354).
       const admission = deps.createAdmission(
         resolveSpec,
-        hostedBringUpSupportsProvider(provider)
-          ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } }
-          : {},
+        { ...(hosting === 'papercusp' ? { pooled: true } : {}), ...(hostedBringUpSupportsProvider(provider)
+          ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {}) },
       );
       let admitted: { workspaceId: string; provisionOperationId: string };
       try {
@@ -642,7 +641,9 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
           return failure('organization_already_has_workspace', 409, false);
         }
         console.error(`[hosted-first-workspace] admission failed for host ${identity.hostId}`, safeCloudError('provisioning_failure', error));
-        return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
+        return failure('workspace_admission_failed',
+          error instanceof HostedWorkspaceAdmissionError && error.code === 'lifecycle_admission_unavailable' ? 503 : 500,
+          true, { connectionId: identity.connectionId });
       }
       if (hosting === 'papercusp') {
         // An organization holds ONE reservation, so a concurrent attempt under another key can

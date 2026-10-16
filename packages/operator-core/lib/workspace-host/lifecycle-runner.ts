@@ -87,6 +87,8 @@ export interface RunWorkspaceHostLifecycleInput {
   canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
+  /** Internal hosted reservation identity; public lifecycle parsers omit it. */
+  hostedCustomerWorkspaceId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostLifecycleStore;
   controllerAuthority?: WorkspaceHostControllerAuthority;
@@ -1138,6 +1140,10 @@ export async function runWorkspaceHostLifecycle(
     action: input.action,
     status: 'running',
     message: `Workspace-host ${input.action} started`,
+    ...(input.hostedCustomerWorkspaceId ? { hostedAdmission: {
+      customerWorkspaceId: input.hostedCustomerWorkspaceId, actorId: input.actorId ?? '',
+      request: { hostId, action: input.action },
+    } } : {}),
     request: {
       sourceHostId: hostId,
       ...(input.action === 'restore' && input.canary ? { canary: input.canary } : {}),

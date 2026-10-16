@@ -74,6 +74,8 @@ export interface StartWorkspaceHostProvisioningInput {
   canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
+  /** Server-derived hosted reservation; never copied from an HTTP body. */
+  hostedCustomerWorkspaceId?: string;
   /**
    * D-401: set up the machine once it is built (initialize -> desktop pack -> workspace active).
    * Only the hosted doors set this: first-workspace for every GCP host, and the hosted provision

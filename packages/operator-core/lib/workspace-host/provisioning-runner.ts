@@ -300,6 +300,8 @@ export interface RunWorkspaceHostProvisioningInput {
   canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
+  /** Internal hosted reservation identity; the runner derives the request proof itself. */
+  hostedCustomerWorkspaceId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostProvisioningStore;
   controllerAuthority?: WorkspaceHostControllerAuthority;
@@ -1168,6 +1170,10 @@ export async function runWorkspaceHostProvisioning(
     action: 'provision',
     status: 'running',
     message: 'Workspace-host provisioning started',
+    ...(input.hostedCustomerWorkspaceId ? { hostedAdmission: {
+      customerWorkspaceId: input.hostedCustomerWorkspaceId, actorId: input.actorId ?? '',
+      request: { connectionId, name, desired: input.desired },
+    } } : {}),
     request: {
       connectionId,
       name,

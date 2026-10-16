@@ -1110,6 +1110,8 @@ export interface WorkspaceHostOperationInput {
   percent?: number;
   message?: string;
   request?: unknown;
+  /** Internal handoff from hosted admission; never accepted by an HTTP request parser. */
+  hostedAdmission?: { customerWorkspaceId: string; actorId: string; request: unknown };
   /** First write of an operation may take over only with a strictly newer fencing token. */
   controllerAuthority?: WorkspaceHostControllerAuthority;
   /** Provision uses revision 1; later lifecycle operations default to the next revision. */
@@ -1121,6 +1123,12 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
   const invalidatesHealth = lifecycleActionInvalidatesHealth(input.action);
   await withWorkspace(input.workspaceId, async (tx) => {
     let desiredRevision = input.desiredRevision ?? null;
+    let admittedPending = false;
+    let reservedGeneration: number | null = null;
+    let reservedFence: number | null = null;
+    if (input.hostedAdmission && !input.controllerAuthority) {
+      throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted admission requires controller authority');
+    }
     if (input.controllerAuthority) {
       const existing = await tx<
         Array<{
@@ -1131,25 +1139,45 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
           controller_fence: number | null;
           request_matches: boolean;
           error_code: string | null;
+          pending_admission_matches: boolean;
+          reserved_generation: number | null;
+          reserved_fence: number | null;
         }>
       >`
         SELECT host_id, action, desired_revision, controller_id, controller_fence,
                error->>'code' AS error_code,
+               (${input.hostedAdmission !== undefined} AND status = 'queued'
+                 AND controller_id IS NULL AND desired_revision IS NULL
+                 AND admission_receipt->'input'->>'actorId' = ${input.hostedAdmission?.actorId ?? null}
+                 AND admission_receipt->'result'->>'customerWorkspaceId' = ${input.hostedAdmission?.customerWorkspaceId ?? null}
+                 AND admission_receipt->'result'->>'hostId' = ${input.hostId}
+                 AND coalesce(admission_receipt->'controllerRequest', admission_receipt->'input'->'request') IS NOT DISTINCT FROM ${input.hostedAdmission ? tx.json(json(input.hostedAdmission.request) as never) : null}::jsonb
+                 AND EXISTS (SELECT 1 FROM harness_shared.customer_workspaces customer
+                   WHERE customer.workspace_id = ${input.workspaceId}
+                     AND customer.id = ${input.hostedAdmission?.customerWorkspaceId ?? null}
+                     AND customer.workspace_host_id = ${input.hostId}
+                     AND customer.state NOT IN ('deleted', 'offboarding'))
+               ) AS pending_admission_matches,
+               (admission_receipt->'result'->'placement'->>'generation')::bigint AS reserved_generation,
+               (admission_receipt->'result'->'placement'->>'controllerFence')::bigint AS reserved_fence,
                request IS NOT DISTINCT FROM ${input.request === undefined ? null : tx.json(json(input.request) as never)}::jsonb AS request_matches
         FROM harness_shared.workspace_host_operations
         WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
-        LIMIT 1
+        LIMIT 1 FOR UPDATE
       `;
       if (existing[0]) {
+        admittedPending = existing[0].pending_admission_matches === true;
+        reservedGeneration = existing[0].reserved_generation;
+        reservedFence = existing[0].reserved_fence;
         const differs = [
           existing[0].host_id !== input.hostId ? 'host' : null,
           existing[0].action !== input.action ? 'action' : null,
-          existing[0].controller_id !== input.controllerAuthority.controllerId ? 'controller' : null,
-          existing[0].controller_fence !== input.controllerAuthority.fence ? 'fence' : null,
-          input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision
+          !admittedPending && existing[0].controller_id !== input.controllerAuthority.controllerId ? 'controller' : null,
+          !admittedPending && existing[0].controller_fence !== input.controllerAuthority.fence ? 'fence' : null,
+          !admittedPending && input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision
             ? 'desired revision'
             : null,
-          !existing[0].request_matches ? 'request' : null,
+          !admittedPending && !existing[0].request_matches ? 'request' : null,
         ].filter((field): field is string => field !== null);
         if (differs.length > 0) {
           throw new WorkspaceHostControllerFenceError(
@@ -1160,7 +1188,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
         // A refused row records an earlier attempt of THIS request that never began. A retry
         // (DBOS re-runs a failed step with the same input) runs the fence again below, and an
         // admitted retry replaces the refusal in place via the INSERT's conflict clause.
-        if (existing[0].error_code !== WORKSPACE_HOST_FENCE_REFUSED_CODE) {
+        if (!admittedPending && existing[0].error_code !== WORKSPACE_HOST_FENCE_REFUSED_CODE) {
           await requireWorkspaceHostControllerAuthority(
             tx,
             input.workspaceId,
@@ -1170,6 +1198,8 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
           );
           return;
         }
+      } else if (input.hostedAdmission) {
+        throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted admission receipt is missing');
       }
 
       const controlled = await tx<Array<{ desired_revision: number }>>`
@@ -1183,6 +1213,8 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
             updated_at = now()
         WHERE workspace_id = ${input.workspaceId}
           AND id = ${input.hostId}
+          AND (${reservedGeneration}::bigint IS NULL OR host_generation = ${reservedGeneration})
+          AND (${reservedFence}::bigint IS NULL OR controller_fence = ${reservedFence})
           AND (
             ${desiredRevision}::bigint IS NULL
             OR ${desiredRevision}::bigint > desired_revision
@@ -1244,6 +1276,8 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
         updated_at = now()
       -- Only an earlier refusal of this same request is replaced; a live row is never touched.
       WHERE workspace_host_operations.error->>'code' = ${WORKSPACE_HOST_FENCE_REFUSED_CODE}
+         OR (${admittedPending} AND workspace_host_operations.status = 'queued'
+             AND workspace_host_operations.controller_id IS NULL)
     `;
   });
 }
