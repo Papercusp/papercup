@@ -74,7 +74,7 @@ export interface AutobindLiveBinding {
 }
 
 export type AutobindDecision =
-  | { kind: 'noop'; target: AutobindTarget; reason: 'no-terminal-run' | 'run-not-committed' | 'already-bound' | 'nothing-to-retract' }
+  | { kind: 'noop'; target: AutobindTarget; reason: 'no-terminal-run' | 'run-not-committed' | 'already-bound' | 'newer-proof-bound' | 'nothing-to-retract' }
   | { kind: 'bind'; target: AutobindTarget; run: AutobindLedgerRun }
   | { kind: 'retract'; target: AutobindTarget; run: AutobindLedgerRun; bindingIds: number[] };
 
@@ -101,6 +101,9 @@ export function decideAutobind(
   if (latestRun.status === 'pass') {
     if (latestRun.worktreeDirty !== false || !/^[0-9a-f]{40,64}$/i.test(latestRun.commitSha ?? '')) {
       return { kind: 'noop', target, reason: 'run-not-committed' };
+    }
+    if (live.some((binding) => binding.testRunId != null && binding.testRunId > latestRun.id)) {
+      return { kind: 'noop', target, reason: 'newer-proof-bound' };
     }
     return live.some((binding) => binding.testRunId === latestRun.id)
       ? { kind: 'noop', target, reason: 'already-bound' }
@@ -190,6 +193,17 @@ export async function runSpecEvidenceAutobind(
     const dirty = await deps.uncommittedPaths(measured.root, measured.paths);
     if (dirty.length > 0) {
       outcomes.push({ kind: 'deferred', target: decision.target, runId: decision.run.id, reason: 'code-not-committed', paths: dirty });
+      continue;
+    }
+    // Source measurement can take long enough for an explicit proof to arrive.
+    // Re-read at the write boundary instead of appending from the sweep snapshot.
+    // The reader also guards the remaining race without mutating audit history.
+    const current = await deps.loadLiveBindings(workspaceId, [decision.target]);
+    const refreshed = decideAutobind(decision.target, decision.run,
+      bindingsForTarget(decision.target, current.get(clauseKey(decision.target)) ?? []));
+    if (refreshed.kind === 'noop') {
+      counts.bind -= 1;
+      counts.noop += 1;
       continue;
     }
     const bound = await deps.bind(decision.target, decision.run);

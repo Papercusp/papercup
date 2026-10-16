@@ -96,7 +96,7 @@ export interface SyncBatchDeltaDepsConfig {
   /** Log label retained for the lint guard's existing retry diagnostics. */
   notificationLogLabel?: string;
   /** Process seam — defaults to the real async argv spawn below. Tests inject a
-   *  recorder to assert WHICH legs run at idle priority without spawning anything. */
+   *  recorder to assert WHICH legs run at low CPU / best-effort I/O priority without spawning anything. */
   exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
 }
 
@@ -214,9 +214,10 @@ export async function readSyncDeltaKnownGood(installSlug: string): Promise<strin
 export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatchDeltaDeps {
   const script = (rel: string): string => path.join(cfg.root, rel);
   const exec = cfg.exec ?? run;
-  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs at idle
-   *  CPU + IO priority (P-001): that, not skipping, is what keeps the check from
-   *  competing with the green-checkpoint suite. git and proc-guard stay normal —
+  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs at low
+   *  CPU + best-effort I/O priority (P-001): that, not skipping, is what keeps the
+   *  check from competing with the green-checkpoint suite without starving it in the
+   *  idle I/O class. git and proc-guard stay normal —
    *  they are millisecond reads and a starved cursor read would only add latency. */
   const heavy = (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => {
     const wrapped = idlePriorityArgv(cmd, args);

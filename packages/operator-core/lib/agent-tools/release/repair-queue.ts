@@ -38,6 +38,7 @@ import {
   settleFrozenRepairAdmission,
   summarizeAdmissionRadius,
   type FrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueueRead,
   type FrozenRepairAdmission,
   type FrozenRepairAdmissionPrecheck,
 } from '../../release/frozen-candidate-repair-queue';
@@ -604,6 +605,137 @@ async function reconcileQueueRowWithLineage(
       ledger: { status: 'reconcile-failed', reconciled: 0, detail: err instanceof Error ? err.message : String(err) },
     };
   }
+}
+
+type AdmissionRetractionProof = 'recorded' | 'parent' | 'head-moved' | 'unknown';
+
+type AdmissionRetractionDecision = {
+  /** The admission is already represented by the fresh row, so the ref must stay published. */
+  persisted: boolean;
+  /** `null` means no compensating ref write was attempted. */
+  retracted: boolean | null;
+  proof: AdmissionRetractionProof;
+  detail: string;
+  fresh: FrozenCandidateRepairQueue | null;
+};
+
+/**
+ * Decide whether a published admission may be compensated after its queue-row write became
+ * ambiguous. Retracting is safe only when a fresh, readable row still proves it is at the
+ * admission's parent. A recorded admission and every other fresh head preserve the ref, and an
+ * unreadable/absent row is unknown rather than evidence that nothing was written.
+ */
+async function settleFailedAdmissionRef(
+  queueTarget: ReturnType<typeof target>,
+  root: string,
+  candidate: string,
+  published: string,
+  previousRepairHead: string,
+  freshHint?: FrozenCandidateRepairQueue | null,
+): Promise<AdmissionRetractionDecision> {
+  let fresh = freshHint;
+  if (fresh === undefined) {
+    let read: FrozenCandidateRepairQueueRead;
+    try {
+      read = await readFrozenCandidateRepairQueueState(queueTarget);
+    } catch (err) {
+      return {
+        persisted: false,
+        retracted: null,
+        proof: 'unknown',
+        detail: `fresh queue re-read failed: ${err instanceof Error ? err.message : String(err)}`,
+        fresh: null,
+      };
+    }
+    if (read.status !== 'value') {
+      return {
+        persisted: false,
+        retracted: null,
+        proof: 'unknown',
+        detail:
+          read.status === 'absent'
+            ? 'fresh queue re-read found no row; the admission state is unknown'
+            : `fresh queue re-read was unreadable (${read.reason}); the admission state is unknown`,
+        fresh: null,
+      };
+    }
+    fresh = read.queue;
+  }
+
+  if (fresh === null) {
+    return {
+      persisted: false,
+      retracted: null,
+      proof: 'unknown',
+      detail: 'fresh queue state was absent; the admission state is unknown',
+      fresh: null,
+    };
+  }
+
+  const recorded = (fresh.admissions ?? []).some(
+    (admission) =>
+      admission.toRepairHead === published && admission.fromRepairHead === previousRepairHead,
+  );
+  if (fresh.repairHead === published && recorded) {
+    return {
+      persisted: true,
+      retracted: null,
+      proof: 'recorded',
+      detail: `fresh row records admission ${published.slice(0, 12)}; preserved the published lineage ref`,
+      fresh,
+    };
+  }
+
+  if (recorded) {
+    return {
+      persisted: false,
+      retracted: null,
+      proof: 'unknown',
+      detail:
+        `fresh row carries admission ${published.slice(0, 12)} but its repairHead is ` +
+        `${fresh.repairHead.slice(0, 12)}; preserved the published lineage ref`,
+      fresh,
+    };
+  }
+
+  if (fresh.repairHead !== previousRepairHead) {
+    return {
+      persisted: false,
+      retracted: null,
+      proof: 'head-moved',
+      detail:
+        `fresh row is at ${fresh.repairHead.slice(0, 12)}, not the admission parent ` +
+        `${previousRepairHead.slice(0, 12)}; preserved the published lineage ref`,
+      fresh,
+    };
+  }
+
+  let retracted: boolean;
+  try {
+    retracted = await runAdmissionJob({
+      kind: 'retract',
+      input: { root, candidate, published, previousRepairHead },
+    });
+  } catch (err) {
+    return {
+      persisted: false,
+      retracted: null,
+      proof: 'parent',
+      detail:
+        `fresh row still proves the admission parent, but retraction failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      fresh,
+    };
+  }
+  return {
+    persisted: false,
+    retracted,
+    proof: 'parent',
+    detail: retracted
+      ? `fresh row still proves the admission parent ${previousRepairHead.slice(0, 12)}; retracted the published lineage ref`
+      : `fresh row still proves the admission parent ${previousRepairHead.slice(0, 12)}, but the lineage ref CAS did not retract`,
+    fresh,
+  };
 }
 
 /**
@@ -2022,7 +2154,8 @@ export default defineTool({
         });
       }
       // Published: the lineage ref now points at the admission. The queue row is the second
-      // store; if it cannot be written, retract the ref so the two never disagree.
+      // store; if its write is ambiguous, reconcile a fresh row before deciding whether a
+      // compensating ref update is safe.
       let next: FrozenCandidateRepairQueue;
       try {
         next = markFrozenRepairAdmitted(queue, entry);
@@ -2047,9 +2180,10 @@ export default defineTool({
       // WI-10006866: a missed write is NOT "nothing moved". Any repair-queue read in the window
       // since the ref moved reconciles the row from that ref, so the CAS can miss because the
       // admission IS already recorded. Retracting then leaves the row ahead of the ref. Settle
-      // against the FRESH row first; retract only when the row genuinely lacks this admission.
+      // against the FRESH row first; retract only when it proves the row is still at the parent.
       let persistError: string | null = null;
       let persistSettlement: string | null = null;
+      let settlementFresh: FrozenCandidateRepairQueue | null | undefined;
       try {
         if (expectedQueueIdentity) {
           await writeFrozenCandidateRepairQueue(inspected.target, next, {
@@ -2070,6 +2204,7 @@ export default defineTool({
             settle.detail = s.kind === 'diverged' ? s.detail : null;
             return s.queue ?? fresh;
           });
+          settlementFresh = settled.fresh;
           persisted = settled.status !== 'absent' && settle.kind !== 'diverged';
           if (persisted && settled.queue) next = settled.queue;
           persistSettlement = settled.status === 'absent'
@@ -2079,17 +2214,33 @@ export default defineTool({
           persisted = false;
           persistSettlement = `settle-failed: ${settleErr instanceof Error ? settleErr.message : String(settleErr)}`;
         }
-        console.warn(
-          `[repair-queue] admit ${outcome.commit.slice(0, 12)}: queue-row write failed (${persistError}); ` +
-            `settled against the fresh row as ${persistSettlement} → persisted=${persisted}`,
-        );
       }
       let retracted: boolean | null = null;
+      let retractionProof: AdmissionRetractionProof | null = null;
+      let retractionDetail: string | null = null;
       if (!persisted) {
-        retracted = await runAdmissionJob({
-          kind: 'retract',
-          input: { root, candidate: queue.candidate, published: outcome.commit, previousRepairHead: queue.repairHead },
-        });
+        const decision = await settleFailedAdmissionRef(
+          inspected.target,
+          root,
+          queue.candidate,
+          outcome.commit,
+          queue.repairHead,
+          settlementFresh,
+        );
+        retractionProof = decision.proof;
+        retractionDetail = decision.detail;
+        retracted = decision.retracted;
+        if (decision.persisted) {
+          persisted = true;
+          if (decision.fresh) next = decision.fresh;
+        }
+      }
+      if (persistError !== null) {
+        console.warn(
+          `[repair-queue] admit ${outcome.commit.slice(0, 12)}: queue-row write failed (${persistError}); ` +
+            `settled against the fresh row as ${persistSettlement} → persisted=${persisted}` +
+            (retractionProof ? `; retraction ${retractionProof}: ${retractionDetail}` : ''),
+        );
       }
       const auditRecorded = await recordAudit(identity.ownerId, {
         op: 'admit',
@@ -2113,6 +2264,7 @@ export default defineTool({
         persisted,
         ...(persistError ? { persistError, persistSettlement } : {}),
         ...(retracted === null ? {} : { retracted }),
+        ...(retractionProof ? { retractionProof, retractionDetail } : {}),
       });
       const judgedSha = persisted ? outcome.commit : queue.repairHead;
       stampActionEffect({ status: persisted ? 'repair-head-published' : 'publish-failed',
@@ -2179,11 +2331,21 @@ export default defineTool({
           : {
               refused: true,
               reason: 'persist_failed',
-              note: retracted
-                ? 'The queue row could not be written, so the lineage ref was retracted to the previous repairHead; nothing moved. Re-run.'
-                : 'The queue row could not be written AND the lineage ref could not be retracted: the ref is at the admission but the row is not. Re-read the queue before relying on the judged sha.',
+              note:
+                retractionProof === 'recorded'
+                  ? 'The fresh queue row already records this admission; the published lineage ref was preserved. Re-read op:get before relying on the judged sha.'
+                  : retractionProof === 'parent' && retracted === true
+                    ? 'The fresh queue row proved it was still at the admission parent, so the lineage ref was retracted; nothing moved. Re-run.'
+                    : retractionProof === 'parent'
+                      ? 'The fresh queue row proved it was still at the admission parent, but the lineage ref could not be retracted. Re-read the queue and ref before relying on the judged sha.'
+                      : retractionProof === 'head-moved'
+                        ? 'The fresh queue row had moved away from the admission parent, so the lineage ref was preserved. Re-read the queue and ref before relying on the judged sha.'
+                        : retractionProof === 'unknown'
+                          ? 'The queue-row write and its fresh re-read were inconclusive, so the lineage ref was preserved. Re-read the queue and ref before relying on the judged sha.'
+                          : 'The queue row could not be written and the lineage ref was not compensated. Re-read the queue and ref before relying on the judged sha.',
             }),
         ...(persistError ? { persistError, persistSettlement } : {}),
+        ...(retractionProof ? { retractionProof, retractionDetail } : {}),
       });
     }
     if (args.op === 'claim-leg') {

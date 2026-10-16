@@ -122,6 +122,9 @@ test('a dead/hanging egress proxy on one account FAILS OVER to a healthy account
   assert.equal(s.egressAttemptsByAccount.OK, 1, 'OK got one egress attempt');
   assert.equal(s.egressFailRateByAccount.DEAD, 1, 'DEAD: 1 fail / 1 attempt = 1.0');
   assert.equal(s.egressFailRateByAccount.OK, 0, 'OK: 0 fail / 1 attempt = 0.0 (served), even though it carried the same traffic');
+  assert.equal(s.egressProxyAttemptsByAccount.DEAD, 1, 'proxy-only denominator records the dead proxy route');
+  assert.equal(s.egressProxyFailsByAccount.DEAD, 1, 'proxy-only failures record the dead proxy route');
+  assert.equal(s.egressProxyFailRateByAccount.DEAD, 1, 'proxy-only rate preserves the dead-proxy signal');
 });
 
 test('N consecutive transport failures OPEN the egress circuit (account paused + stat) and return a retryable 503 — never a wedge', async () => {

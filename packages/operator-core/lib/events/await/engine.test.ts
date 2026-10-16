@@ -42,6 +42,7 @@ const h = vi.hoisted(() => ({
     reconcileFiredWakeDeliveries: vi.fn(async () => 0),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
     listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
+    refreshStandingClaimableAwaitPayloadFilters: vi.fn(async (): Promise<AwaitRow[]> => []),
     claimSpecificOnceAwaits: vi.fn(async (ids: number[]): Promise<AwaitRow[]> =>
       ids.map((id) => awaitRow({ id })),
     ),
@@ -596,6 +597,48 @@ describe('wakeClaimableAwaitersForSubscribers — EI-20079462322478221', () => {
         wakeClaimableAwaitersForSubscribers({ subscriberIds: ['su-target'], specId: 'lane', revision: 2 }),
       ).resolves.toBe(0);
       expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+    } finally {
+      setAutoPumpEnabledForTests(previousAutoPump);
+    }
+  });
+
+  it('refreshes and wakes a standing filtered watch when the claim spec changes', async () => {
+    const previousAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      const payloadFilter = {
+        all: [{ harness: { equals: 'papercusp' } }, { id: { in: ['EI-new'] } }],
+      };
+      const standing = awaitRow({
+        id: 31,
+        eventKey: 'work-item:claimable',
+        subscriberId: 'su-target',
+        once: false,
+        firedAt: null,
+        firedReason: null,
+        payloadFilter: { id: { in: ['EI-old'] } },
+      });
+      h.store.listActiveAwaitsForKey.mockResolvedValueOnce([standing]);
+      h.store.refreshStandingClaimableAwaitPayloadFilters.mockResolvedValueOnce([standing]);
+
+      await expect(
+        wakeClaimableAwaitersForSubscribers({
+          subscriberIds: ['su-target'],
+          specId: 'bugs-lane',
+          revision: 8,
+          payloadFilter,
+        }),
+      ).resolves.toBe(1);
+      expect(h.store.refreshStandingClaimableAwaitPayloadFilters).toHaveBeenCalledWith({
+        subscriberIds: ['su-target'],
+        payloadFilter,
+      });
+      expect(h.store.claimSpecificOnceAwaits).not.toHaveBeenCalled();
+      expect(h.store.insertDeliveries).toHaveBeenCalledWith({
+        awaits: [expect.objectContaining({ id: 31, once: false })],
+        payload: { reason: 'claim-spec-revision', specId: 'bugs-lane', revision: 8 },
+        summary: 'Claim spec bugs-lane@8 changed; re-run scheduler:get_next to re-evaluate the live lane.',
+        source: 'scheduler:set_claim_spec',
+      });
     } finally {
       setAutoPumpEnabledForTests(previousAutoPump);
     }

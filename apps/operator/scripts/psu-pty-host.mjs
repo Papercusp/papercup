@@ -8856,6 +8856,19 @@ export function headlessRoleMcpVerifyWorstCaseMs() {
     mcpReconnectMacroWorstCaseMs({ maxArrows: HEADLESS_ROLE_MCP_MAX_ARROWS });
 }
 
+/**
+ * Bound the fresh headless role kickoff long enough for its required MCP
+ * reconnect and the prompt to settle afterward. The ordinary Claude startup
+ * budget is 20s, while two worst-case reconnect attempts are ~71s; using the
+ * ordinary budget for a role kickoff made every slow-but-healthy `/mcp`
+ * preparation fail as `prewrite-agent-busy` before the task turn was written.
+ * Keep this below the 120s parent proof window so a successful native proof
+ * still has room to settle.
+ */
+export function headlessRoleMcpKickoffBudgetMs() {
+  return Math.max(90_000, headlessRoleMcpVerifyWorstCaseMs() + 10_000);
+}
+
 /** WI-10006598: the host refused a headless kickoff, but its negative receipt
  *  never reached the detached caller (the caller timed out and removed the
  *  request, so publication failed). Nobody will reap this process and it can
@@ -12488,9 +12501,11 @@ export function hostThroughPty(o) {
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
       const isResumeLaunch = args.some((arg) => arg === 'resume' || arg === 'fork');
-      const kickoffBudgetMs = headlessClaudeOnboardingEnabled(env)
-        ? Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS)
-        : recycleCarryInjectBudgetMs;
+      const kickoffBudgetMs = requireRoleMcp
+        ? headlessRoleMcpKickoffBudgetMs()
+        : headlessClaudeOnboardingEnabled(env)
+          ? Math.min(recycleCarryInjectBudgetMs, HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS)
+          : recycleCarryInjectBudgetMs;
       // WI-10004943: a plain fresh Codex launch whose child is still at the
       // `Starting` footer after the stuck threshold gets a fresh child and the
       // same kickoff (the WI-10005106 carry remedy). The (d) hold alone rescued
@@ -15232,6 +15247,23 @@ export function hostThroughPty(o) {
       // unexpected throw can never surface as an unhandled promise rejection.
       void deliverAfterUnpark(msg.mode, runGatedDelivery)
         .then((deliveryOutcome) => {
+          if (deliveryOutcome?.ok === false) {
+            appendHostEvent(ownerId, 'gated-delivery-refused', {
+              mode: msg.mode,
+              deliveryId: msg.deliveryId ?? null,
+              deliveryIds: [...coalescedDeliveryIds],
+              reason: typeof deliveryOutcome.reason === 'string'
+                ? deliveryOutcome.reason.slice(0, 160)
+                : 'unspecified',
+              ...(typeof deliveryOutcome.error === 'string'
+                ? { error: deliveryOutcome.error.slice(0, 300) }
+                : {}),
+              expectedHostStartedAt: msg.expectedHostStartedAt ?? null,
+              hostStartedAt: baseMeta.startedAt ?? null,
+              expectedChildGeneration: msg.expectedChildGeneration ?? null,
+              childGeneration,
+            });
+          }
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
             const rearmOwnsDelivery =

@@ -232,7 +232,7 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
 }
 
 async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string, includeProcessLinks = false): Promise<OpenWriterScan> {
-  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const require = createRequire(join(repoRoot, 'package.json'));
   // Reuse the scanner from canonical source; the elevated child only reads /proc.
   // Both namespaces and the ORIGINAL caller's PID are positive controls.

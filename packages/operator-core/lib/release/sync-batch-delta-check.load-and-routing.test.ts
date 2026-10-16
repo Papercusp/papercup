@@ -3,7 +3,7 @@
  *
  * R-1: the per-sync delta check runs under load — the soft load band and a running
  *      green-checkpoint suite shrink its budget instead of skipping it, every heavy
- *      leg runs at idle CPU/IO priority, and only a hard ceiling still skips.
+ *      leg runs at low CPU / best-effort I/O priority, and only a hard ceiling still skips.
  * R-2: every tick records whether it judged its window; coverage below the
  *      threshold over the alarm window files ONE condition-keyed alarm, which
  *      clears when coverage recovers.
@@ -283,15 +283,15 @@ describe('runSyncBatchDeltaCheck under load (R-1)', () => {
   });
 });
 
-describe('idle-priority legs (R-1)', () => {
-  it('idlePriorityArgv wraps a command in nice 19 + ionice idle', () => {
+describe('deprioritized legs (R-1)', () => {
+  it('idlePriorityArgv wraps a command in nice 19 + best-effort ionice 7', () => {
     expect(idlePriorityArgv('node', ['x.mjs', '--a'])).toEqual({
       cmd: 'nice',
-      args: ['-n', '19', 'ionice', '-c', '3', 'node', 'x.mjs', '--a'],
+      args: ['-n', '19', 'ionice', '-c', '2', '-n', '7', 'node', 'x.mjs', '--a'],
     });
   });
 
-  it('every heavy leg spawns through idle priority; the millisecond git/proc-guard reads do not', async () => {
+  it('every heavy leg spawns through low CPU + best-effort I/O priority; the millisecond git/proc-guard reads do not', async () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const exec = async (cmd: string, args: string[]): Promise<RunResult | null> => {
       calls.push({ cmd, args });
@@ -306,7 +306,7 @@ describe('idle-priority legs (R-1)', () => {
     expect(heavy).toHaveLength(4);
     for (const c of heavy) {
       expect(c.cmd).toBe('nice');
-      expect(c.args.slice(0, 6)).toEqual(['-n', '19', 'ionice', '-c', '3', 'node']);
+      expect(c.args.slice(0, 8)).toEqual(['-n', '19', 'ionice', '-c', '2', '-n', '7', 'node']);
     }
     const affectedRun = heavy.find(
       (c) => c.args.includes('--changed-paths') && !c.args.includes('--print-affected'),

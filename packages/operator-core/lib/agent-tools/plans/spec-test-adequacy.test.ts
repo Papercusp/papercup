@@ -925,6 +925,36 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
 });
 
 describe('spec-test-adequacy per-clause evaluator', () => {
+  it.each([41, 43])('preserves explicit proof over a late automatic receipt %i in either input order', (testRunId) => {
+    const explicit = evidence({ id: 70, evidenceKind: 'test', createdBy: 'su-reviewer',
+      createdAt: '2026-10-16T21:36:00Z', testRunId: 43 });
+    const automatic = evidence({ ...explicit, id: 71, createdBy: 'system:spec-evidence-autobind',
+      createdAt: '2026-10-16T21:42:00Z', testRunId, details: { adequacy: { executed: true } } });
+    for (const rows of [[explicit, automatic], [automatic, explicit]]) {
+      expect(latestLogicalEvidence(rows)).toEqual([explicit]);
+      expect(activeSpecEvidence(rows)[0]?.details.adequacy).toEqual(explicit.details.adequacy);
+    }
+  });
+
+  it('allows a genuinely newer automatic receipt to replace explicit proof without inheriting calibration', () => {
+    const explicit = evidence({ id: 70, evidenceKind: 'test', createdBy: 'su-reviewer',
+      createdAt: '2026-10-16T21:36:00Z', testRunId: 43 });
+    const automatic = evidence({ ...explicit, id: 71, createdBy: 'system:spec-evidence-autobind',
+      createdAt: '2026-10-16T21:42:00Z', testRunId: 44, details: { adequacy: { executed: true } } });
+    expect(latestLogicalEvidence([explicit, automatic])).toEqual([automatic]);
+    expect(activeSpecEvidence([explicit, automatic])[0]?.details.adequacy).toEqual(automatic.details.adequacy);
+  });
+
+  it('preserves the latest explicit correction rather than reviving richer explicit history', () => {
+    const original = evidence({ id: 70, evidenceKind: 'test', createdBy: 'su-reviewer',
+      createdAt: '2026-10-16T21:36:00Z', testRunId: 43 });
+    const corrected = evidence({ ...original, id: 71, createdAt: '2026-10-16T21:40:00Z',
+      details: { adequacy: { executed: true, fixtureCalibrated: false } } });
+    const automatic = evidence({ ...original, id: 72, createdBy: 'system:spec-evidence-autobind',
+      createdAt: '2026-10-16T21:42:00Z', details: { adequacy: { executed: true } } });
+    expect(latestLogicalEvidence([automatic, original, corrected])).toEqual([corrected]);
+  });
+
   it('grades the newest server-created version even when an older row has a future observedAt', () => {
     const evidenceRef = 'test/reconnect.integration.ts#recorded';
     const older = evidence({
@@ -2699,6 +2729,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(missing.ratings['correct-layer'].rating).toBe('fail');
     expect(missing.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(missing.ratings['correct-layer'].suggestion).toContain('details.evidencePlane');
+    expect(missing.ratings['correct-layer'].suggestion).toContain('environmentFingerprint');
     expect(missing.wouldBlock).toContain('correct-layer');
 
     const liveProof = evidence({
@@ -5024,6 +5056,17 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     const result = evaluateSpecTestAdequacy({ clause: clause(),
       evidence: [evidence({ details: { ...base.details, observations } })], classRef: 'plan-class-feature-ship' });
     expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+  });
+
+  it.each([
+    'Clean as-committed re-proof after P-016 at e0c02c627b (lint:as-committed --materialize-only root, worktree clean): same test file as the superseded binding.',
+    'The probe ran with --dry-run-only and the same test fixture remained green.',
+  ])('does not treat a CLI flag ending in -only as a coverage limitation: %s', observations => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })], classRef: 'plan-class-feature-ship' });
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
   });
 
   it.each([

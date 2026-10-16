@@ -7,8 +7,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { scorecardRatingEntrySchema } from './evaluate';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 
 const getRubric = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
@@ -575,6 +577,45 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
       ok: false,
       code: 'scorecard_emit_timeout',
       pgCode: '57014',
+      retryable: true,
+    });
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+  });
+
+  it('returns a retryable no-write envelope when the database pool acquisition misses its deadline', async () => {
+    captureImprovement.mockRejectedValueOnce(
+      new DbCallDeadlineError('boundedPgReadTxn:acquire(admin)', 8_000, 8_000, 'org-admin'),
+    );
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'scorecard_emit_timeout',
+      retryable: true,
+    });
+    expect((result as { pgCode?: string }).pgCode).toBeUndefined();
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+  });
+
+  it('returns a retryable no-write envelope when a bounded read misses its whole-call deadline', async () => {
+    captureImprovement.mockRejectedValueOnce(
+      new PgReadQueryTimeoutError(
+        'Query call did not complete within 16000ms of the WHOLE call (connect + acquire + execute)',
+      ),
+    );
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'scorecard_emit_timeout',
       retryable: true,
     });
     expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');

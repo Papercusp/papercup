@@ -19160,7 +19160,7 @@
           "POST"
         ]
       },
-      "description": "List all memories for the current user. Supports filtering by kind and harness scope.",
+      "description": "List memories for the current user in a bounded page. Supports filtering by kind and harness scope; use next_offset while truncated is true.",
       "capabilities": [
         "memory:read"
       ],

@@ -890,6 +890,7 @@ function required(value: string | null | undefined, field: string): string {
 function normalizedStormPolicy(raw: Record<string, unknown> = {}): Record<string, unknown> {
   const parsed = parseStormPolicy(raw);
   return {
+    ...(raw.mode === undefined ? {} : { mode: parsed.mode }),
     windowSeconds: parsed.windowSeconds,
     maxRuns: parsed.maxRuns,
     maxAgeSeconds: parsed.maxAgeSeconds,
@@ -1965,11 +1966,12 @@ export async function updateExternalTriggerBindingStormPolicy(
   // `maxRuns: null` stays ACCEPTED at the boundary (the admin route's schema
   // still nulls it) but no longer MEANS unbounded — parseStormPolicy resolves
   // it to the bounded default, and the row is written with that cap.
-  input: { maxRuns: number | null; windowSeconds: number; maxAgeSeconds?: number },
+  input: { maxRuns: number | null; windowSeconds: number; maxAgeSeconds?: number; mode?: string },
 ): Promise<{ id: string; stormPolicy: Record<string, unknown>; updatedAt: string } | null> {
   const normalized = normalizedStormPolicy({
     maxRuns: input.maxRuns,
     windowSeconds: input.windowSeconds,
+    ...(input.mode === undefined ? {} : { mode: input.mode }),
     ...(input.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: input.maxAgeSeconds }),
   });
   // An update that does not mention maxAgeSeconds must not reset a stored custom
@@ -1977,7 +1979,8 @@ export async function updateExternalTriggerBindingStormPolicy(
   // keep whatever the row already carries.
   const stormPolicy: Record<string, unknown> =
     input.maxAgeSeconds === undefined
-      ? { windowSeconds: normalized.windowSeconds, maxRuns: normalized.maxRuns }
+      ? { windowSeconds: normalized.windowSeconds, maxRuns: normalized.maxRuns,
+          ...(input.mode === undefined ? {} : { mode: normalized.mode }) }
       : normalized;
   const rows = await sql<
     Array<{

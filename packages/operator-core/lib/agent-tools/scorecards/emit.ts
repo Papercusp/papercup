@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import {
   parseJsonWithTrailer,
   trackPhase,
@@ -35,6 +36,7 @@ import { readVettingConsultCritique } from '../../consult/get-feedback-core';
 import { getWorkItem, readVettingWorkItemCritique, type WorkItem } from '../../work-items';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -4198,6 +4200,21 @@ export async function emitScorecard(
         retryable: true as const,
         error:
           `scorecards:emit write hit transient database contention (${error.pgCode}): ${error.message}. ` +
+          'No scorecard was persisted by this attempt; retry shortly.',
+      };
+    }
+    // Bounded read paths use the same database pool as the emit write. Both a
+    // measured pool-acquisition deadline and a whole-call read deadline are
+    // transient, no-write outcomes; keep them typed and retryable so a pool or
+    // operator outage cannot escape as the generic MCP `handler_error` envelope
+    // (EI-25927264403638822, EI-25813947184793874).
+    if (error instanceof DbCallDeadlineError || error instanceof PgReadQueryTimeoutError) {
+      return {
+        ok: false as const,
+        code: 'scorecard_emit_timeout' as const,
+        retryable: true as const,
+        error:
+          `scorecards:emit read hit transient database contention: ${error.message}. ` +
           'No scorecard was persisted by this attempt; retry shortly.',
       };
     }

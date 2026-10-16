@@ -1935,6 +1935,11 @@ export interface GatewayStats {
    *  95% of its few attempts is the true dead proxy. Sort DESC by this to pick the Rayobyte proxy to fix/pull.
    *  Only accounts with ≥1 attempt appear. */
   egressFailRateByAccount: Record<string, number>;
+  /** Proxy-only transport counters. The broader egress counters also include direct routes, so watchdogs must
+   *  use these fields before calling a failure a DEAD-PROXY. Optional for deploy-skew readers of older gateways. */
+  egressProxyFailsByAccount?: Record<string, number>;
+  egressProxyAttemptsByAccount?: Record<string, number>;
+  egressProxyFailRateByAccount?: Record<string, number>;
   /** Count of in-process self-heal slot-reclaims (EI-2086) — how many times the release valve pre-empted
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
@@ -3203,6 +3208,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // dead proxy — a low-traffic account failing 95% of its few attempts. Counts every attempt that reaches the
   // egress dial (post token-refresh), so a single bee request that failover-rotates increments once per account.
   const egressAttemptsByAccount = new Map<string, number>();
+  // Proxy-only counters mirror the broad counters above but exclude direct routes. The watchdog uses these
+  // counters for DEAD-PROXY attribution; direct transport failures remain visible in the broad counters and
+  // are classified separately by the watchdog.
+  const egressProxyFailsByAccount = new Map<string, number>();
+  const egressProxyAttemptsByAccount = new Map<string, number>();
   /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
    *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
   const egressPauseUntil = new Map<string, number>();
@@ -5019,6 +5029,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         [...egressAttemptsByAccount].map(([id, attempts]) => [
           id,
           attempts > 0 ? Math.round(((egressFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
+        ]),
+      ),
+      egressProxyFailsByAccount: Object.fromEntries(egressProxyFailsByAccount),
+      egressProxyAttemptsByAccount: Object.fromEntries(egressProxyAttemptsByAccount),
+      egressProxyFailRateByAccount: Object.fromEntries(
+        [...egressProxyAttemptsByAccount].map(([id, attempts]) => [
+          id,
+          attempts > 0 ? Math.round(((egressProxyFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
         ]),
       ),
       maintenance: { requests: maintenanceRequests, errors: maintenanceErrors, carried: maintenanceCarried },
@@ -7073,6 +7091,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // Counted only once the token resolved — a token stall never reached
             // the proxy and must not count as an egress attempt.
             egressAttemptsByAccount.set(active.accountId, (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1);
+            const routeEgress = context.route.value.egress.entry;
+            const proxyUrl = (routeEgress as AccountEgress | undefined)?.proxyUrl;
+            if (egressIsSupportedProxy(proxyUrl)) {
+              egressProxyAttemptsByAccount.set(active.accountId, (egressProxyAttemptsByAccount.get(active.accountId) ?? 0) + 1);
+            }
             return prepared;
           },
         };
@@ -7228,6 +7251,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   lastTransportHadProxy = hasEgressProxy;
                   if (!hasEgressProxy) return;
                   egressFailsByAccount.set(account.accountId, (egressFailsByAccount.get(account.accountId) ?? 0) + 1);
+                  egressProxyFailsByAccount.set(account.accountId, (egressProxyFailsByAccount.get(account.accountId) ?? 0) + 1);
                   // ESCALATING per-IP cooldown: a FIXED one re-admitted a
                   // permanently-dead egress on a constant cycle forever, so a
                   // hard-down host got no worse treatment than a one-off blip.
@@ -9056,9 +9080,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const parsed = parseCodexRateReset(headers);
           return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs, transient: parsed.transient };
         },
-        onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
-        onEgressFailure: (id, error) => {
+        onEgressAttempt: (id, egress) => {
+          egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1);
+          const proxyUrl = (egress as AccountEgress | undefined)?.proxyUrl;
+          if (egressIsSupportedProxy(proxyUrl)) {
+            egressProxyAttemptsByAccount.set(id, (egressProxyAttemptsByAccount.get(id) ?? 0) + 1);
+          }
+        },
+        onEgressFailure: (id, error, egress) => {
           egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1);
+          const proxyUrl = (egress as AccountEgress | undefined)?.proxyUrl;
+          if (egressIsSupportedProxy(proxyUrl)) {
+            egressProxyFailsByAccount.set(id, (egressProxyFailsByAccount.get(id) ?? 0) + 1);
+          }
           // WI-6554700010009426: an ADMITTED codex attempt that died on the wire (TTFB
           // deadline / connect / DNS / reset — downstream cancels and local terminal
           // decisions never reach this hook) is a measured upstream fault (D-005), the

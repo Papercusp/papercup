@@ -73,6 +73,7 @@ const {
   resetCorpusEmbedderWarmup,
   CORPUS_RECENCY_HALF_LIFE_MS,
   CORPUS_RECENCY_WEIGHT,
+  corpusSearchStageBudgetMs,
 } = await import('./corpus-recall-io');
 
 const hit = (over: Record<string, unknown> = {}) => ({
@@ -232,6 +233,12 @@ it('uses the owning SQL client cache so a second session_turn call skips only th
 });
 
 describe('recallCorpusContext — the contract handed to the search engine', () => {
+  it('budgets each search stage for the actual cascade shape', () => {
+    expect(corpusSearchStageBudgetMs(1_000, false)).toBe(500);
+    expect(corpusSearchStageBudgetMs(1_000, true)).toBe(250);
+    expect(corpusSearchStageBudgetMs(0, false)).toBe(1);
+  });
+
   it('reads the registered session/work-item and complete knowledge sources', async () => {
     runHybridSearch.mockResolvedValue(ok());
     await recallCorpusContext(base);

@@ -21,6 +21,7 @@ import coordDispatch from './coordination/tools/dispatch';
 import agentReview from './improvements/agent-review';
 import storagePrune from './storage/prune';
 import bindSpecEvidence from './plans/bind-spec-evidence';
+import buildTypecheck, { buildTypecheckAbortCompletionReceipt } from './build/typecheck';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -72,6 +73,8 @@ const LATE_RETURN_MUTATORS = {
   'storage:prune': storagePrune,
   // EI-25965568135498194: bind can return after dispatch aborts with durable evidence rows.
   'plans:bind-spec-evidence': bindSpecEvidence,
+  // EI-25833565319673625: the long compiler tail needs an attempt receipt so a late verdict is not retried blindly.
+  'build:typecheck': buildTypecheck,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */
@@ -134,6 +137,32 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
       detachedRunId: 'run-undurable',
       detachedDurable: false,
     }), attempt)).toMatchObject({ status: 'recovery-incomplete' });
+  });
+
+  it('build:typecheck distinguishes a completed verdict, a timeout, and a refusal', () => {
+    const attempt = { callId: 'typecheck-call-coverage', toolName: 'build:typecheck' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: true, project: 'packages/operator-core', errorCount: 0 }),
+      attempt,
+    )).toMatchObject({
+      status: 'recorded',
+      effectRef: 'build-typecheck:typecheck-call-coverage:packages/operator-core',
+    });
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: false, error: 'timeout', project: 'packages/operator-core' }),
+      attempt,
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['typecheck-timeout'] });
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: false, error: 'scope_requires_files' }),
+      attempt,
+    )).toMatchObject({ status: 'not-recorded' });
   });
 
   it('storage:prune reports the effect or fails closed when an aborted attempt is unclear', () => {

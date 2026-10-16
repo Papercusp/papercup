@@ -589,6 +589,7 @@ const {
   shutdownRefusalReason,
   mcpDialogShowsServerDetail,
   headlessRoleMcpVerifyWorstCaseMs,
+  headlessRoleMcpKickoffBudgetMs,
   unreportedKickoffRefusalStrandsHost,
 } = host;
 import * as nodeFs from 'node:fs';
@@ -6251,6 +6252,16 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       const worst = headlessRoleMcpVerifyWorstCaseMs();
       expect(worst).toBeGreaterThan(30_000); // the old window — the measured strand
       expect(KICKOFF_PROOF_WINDOW_MS).toBeGreaterThan(worst);
+    });
+
+    it('allocates a longer role kickoff budget than the 20s Claude startup window', () => {
+      const worst = headlessRoleMcpVerifyWorstCaseMs();
+      const budget = headlessRoleMcpKickoffBudgetMs();
+      expect(budget).toBeGreaterThan(worst);
+      expect(budget).toBeGreaterThan(HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS);
+      // Native transcript proof runs after the kickoff write; preserve its
+      // 30s settlement margin inside the parent's 120s proof rendezvous.
+      expect(KICKOFF_PROOF_WINDOW_MS - budget).toBeGreaterThanOrEqual(30_000);
     });
 
     it('a refused headless kickoff whose receipt could not be published strands the host', () => {

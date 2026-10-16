@@ -382,7 +382,11 @@ describe('capability:git-evidence', () => {
       { repositoryDir: root, signal: controller.signal, runner },
     );
 
-    expect(result).toMatchObject({ ok: false, reason: 'git_command_interrupted' });
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'git_command_interrupted',
+      message: expect.not.stringContaining('pinned contents'),
+    });
   });
 
   it('reads external evidence from the registered workspace repository without substituting HEAD', async () => {
@@ -468,7 +472,10 @@ describe('capability:git-evidence', () => {
 
   it('pages oversized pinned UTF-8 blobs as exact bounded bytes', async () => {
     const root = repository();
-    const largeContent = '€'.repeat(Math.ceil((MAX_GIT_EVIDENCE_INLINE_BYTES + 1) / 3));
+    // Exercise the upper page-chain cache bound. Before the cache floor was
+    // raised, this size was evicted after every page and each cursor repeated
+    // all repository discovery and blob reads.
+    const largeContent = '€'.repeat(Math.ceil((1024 * 1024 + 1) / 3));
     const expectedBytes = Buffer.from(largeContent, 'utf8');
     writeFileSync(join(root, 'large.txt'), largeContent);
     git(root, ['add', 'large.txt']);

@@ -1877,6 +1877,45 @@ export async function findMatchingActiveStandingWatch(input: {
   return rows.length > 0 ? mapAwait(rows[0]) : null;
 }
 
+/**
+ * Refresh the value-derived filter on a member's standing claimable watch after
+ * scheduler:set_claim_spec advances the lane revision (EI-25851070245349413).
+ *
+ * The scheduler payload_filter is a conservative snapshot of the claim spec. A
+ * standing watch survives each fire, so leaving that snapshot in place after a
+ * spec replacement can permanently suppress newly admitted ids. Only filtered
+ * rows are touched: an explicitly unscoped watch is a caller-owned broad
+ * subscription and already observes every claimable emit.
+ */
+export async function refreshStandingClaimableAwaitPayloadFilters(input: {
+  subscriberIds: readonly string[];
+  payloadFilter: unknown;
+}): Promise<AwaitRow[]> {
+  const subscriberIds = [...new Set(input.subscriberIds.filter((id) => typeof id === 'string' && id.length > 0))];
+  if (subscriberIds.length === 0 || input.payloadFilter == null) return [];
+
+  const ws = eventsWs();
+  const payloadFilter = JSON.stringify(input.payloadFilter);
+  const rows = await boundedOrgTxn((tx) => tx`
+    UPDATE harness_shared.event_awaits
+       SET payload_filter = ${payloadFilter}::text::jsonb
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ANY(${tx.array(subscriberIds)}::text[])
+       AND event_key = 'work-item:claimable'
+       AND policy = 'wake'
+       AND once = false
+       AND root_id IS NULL
+       AND fired_at IS NULL
+       AND cancelled_at IS NULL
+       AND superseded_at IS NULL
+       AND (expires_ts IS NULL OR expires_ts > now())
+       AND payload_filter IS NOT NULL
+       AND payload_filter IS DISTINCT FROM ${payloadFilter}::text::jsonb
+     RETURNING *
+  `);
+  return rows.map(mapAwait);
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all).
  *

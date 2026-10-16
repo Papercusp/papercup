@@ -9541,6 +9541,13 @@ export async function observeWorkItem(
   // through getWorkItem's mapping layer (normalizeTakenBy already applied there), so this
   // is belt-and-suspenders — mirrors classifyClaimFailure's own defense-in-depth call.
   const unclaimed = !normalizeTakenBy(wi.assignee);
+  // WI-6554700010009219: lifecycle terminality is a claim floor, not an admission
+  // gate. A settled row has no claimable seat even when it is unassigned; return
+  // before the caller-relative admission checks so observe agrees with the claim
+  // paths' `not-claimable-status` floor.
+  if (isSettledWorkItemState(wi.state)) {
+    return { item: wi, available: false, claimedBy: wi.assignee };
+  }
   // Dispatch replay preserves ownership but must re-read admission/trust/origin.
   // Ordinary rd callers retain the historical holder-only observation contract.
   const checkAdmission = unclaimed || opts.revalidateHeld === true;

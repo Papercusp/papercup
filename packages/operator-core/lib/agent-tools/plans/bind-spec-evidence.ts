@@ -218,7 +218,9 @@ export const bindingSchema = z
     testFingerprint: fingerprint.nullable().optional(),
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
-    environmentFingerprint: fingerprint.nullable().optional(),
+    environmentFingerprint: fingerprint.nullable().optional().describe(
+      "Fingerprint the runtime/environment observed by live or deployed evidence. For details.evidencePlane 'live' or 'deployed', omitting this leaves environment currentness unknown unless details.currentMeasurement is a validated ledger-only measurement with no runtimeUnits.",
+    ),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
     measurement: evidenceMeasurementSchema
@@ -226,7 +228,9 @@ export const bindingSchema = z
       .describe(
         "Server-measured basis, discriminated on `kind`: 'repo-files' hashes bounded source/test files; 'work-items' hashes a bounded work-item id set, which is how a NON-CODE outcome reaches source=current. Stores the recipe, so later reads recompute it and a reopened row goes stale.",
       ),
-    details: bindingDetailsSchema.optional(),
+    details: bindingDetailsSchema.optional().describe(
+      "For a clause declaring requiredEvidence, set details.evidencePlane to a matching plane (for example { evidencePlane: 'live' }); details.adequacy.evidencePlane is accepted as a fallback. A matching live/deployed label alone is not enough for currentness: provide environmentFingerprint above.",
+    ),
     observedAt: z.string().datetime({ offset: true }).optional(),
     verifiesBindingId: z
       .number()

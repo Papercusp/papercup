@@ -39,6 +39,7 @@ import {
   expireLapsedAwaits,
   fireAwaitsForKey,
   listActiveAwaitsForKey,
+  refreshStandingClaimableAwaitPayloadFilters,
   keyFireId,
   recordKeyFire,
   stampAnnouncementsFired,
@@ -280,6 +281,8 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
   subscriberIds: readonly string[];
   specId?: string | null;
   revision?: number | null;
+  /** New value-derived filter from the replacement claim spec. */
+  payloadFilter?: unknown;
 }): Promise<number> {
   const subscribers = new Set(input.subscriberIds.filter((id) => typeof id === 'string' && id.length > 0));
   if (subscribers.size === 0) return 0;
@@ -288,18 +291,29 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
   const candidateIds = active
     .filter((row) => row.policy === 'wake' && row.once && subscribers.has(row.subscriberId))
     .map((row) => row.id);
-  if (candidateIds.length === 0) return 0;
+  const refreshedStanding = input.payloadFilter !== undefined
+    ? await refreshStandingClaimableAwaitPayloadFilters({
+        subscriberIds: [...subscribers],
+        payloadFilter: input.payloadFilter,
+      })
+    : [];
+  if (candidateIds.length === 0 && refreshedStanding.length === 0) return 0;
 
   // The row-level claim is atomic, so a real claimable emit racing this control
-  // wake wins one row and the other path simply sees no pending await.
-  const fired = await claimSpecificOnceAwaits(candidateIds, 'claim-spec-revision');
-  if (fired.length === 0) return 0;
+  // wake wins one row and the other path simply sees no pending await. Standing
+  // rows remain active, but their value-derived filter has been refreshed before
+  // this control delivery is queued.
+  const fired = candidateIds.length > 0
+    ? await claimSpecificOnceAwaits(candidateIds, 'claim-spec-revision')
+    : [];
+  const deliveries = [...fired, ...refreshedStanding];
+  if (deliveries.length === 0) return 0;
 
   const ref = input.specId
     ? `${input.specId}${input.revision == null ? '' : `@${input.revision}`}`
     : 'the updated claim spec';
   await insertDeliveries({
-    awaits: fired,
+    awaits: deliveries,
     payload: {
       reason: 'claim-spec-revision',
       ...(input.specId ? { specId: input.specId } : {}),
@@ -316,7 +330,7 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
     const ws = activeWorkspaceId();
     void pumpWakeDeliveries(ws).catch((e) => log(`claim-spec wake pump failed: ${e instanceof Error ? e.message : e}`));
   }
-  return fired.length;
+  return deliveries.length;
 }
 
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {

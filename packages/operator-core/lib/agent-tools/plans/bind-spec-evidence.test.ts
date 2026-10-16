@@ -364,6 +364,12 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     ).toBe(true);
   });
 
+  it('documents required evidence planes and live environment currentness on the binding schema', () => {
+    expect(bindingSchema.shape.details.description).toContain('details.evidencePlane');
+    expect(bindingSchema.shape.details.description).toContain('environmentFingerprint');
+    expect(bindingSchema.shape.environmentFingerprint.description).toContain('runtime/environment');
+  });
+
   it('accepts stable scenario and causal-pair ids on executable proof', () => {
     const parsed = bindingSchema.safeParse({
       ...measuredBinding,

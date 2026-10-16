@@ -102,6 +102,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/connectors/heartbeat',
   'GET /hosted/connectors/events',
   'GET /hosted/connectors/socket',
+  'POST /hosted/connectors/agent-admission',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/onboard',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/verify',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/rotate',

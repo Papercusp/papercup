@@ -26,6 +26,32 @@ import {
   type ProviderDescriptor,
 } from './provider';
 
+describe('provider rate budget declarations', () => {
+  const base: ProviderDescriptor = { id: 'neutral-provider', contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.reply'], egressHosts: ['example.test'] };
+  const budget = () => ({ verifiedAt: '2026-08-23', sources: ['https://example.test/limits'], requestsPerMinute: 60,
+    buckets: { shared: { appliesTo: 'list and reply', perDay: 10000, unit: 'units', verbs: ['read', 'reply'] } },
+    dynamicQuota: { formula: '4800 * engaged members', driver: 'engaged members', assumedDailyFloor: 4800, retryExtendsBlock: true } });
+  const validate = (rateBudget: unknown) => validateProviderDescriptor({ ...base, rateBudget });
+  it('accepts separately dated evidence and non-fungible budgets without a usage header', () => {
+    expect(validate(budget())).toEqual([]);
+    expect(validateProviderDescriptor(base)).toEqual([]);
+  });
+  it.each([0, -1, NaN, Infinity, '60'])('refuses invalid numeric allowance %s', (requestsPerMinute) => {
+    expect(validate({ ...budget(), requestsPerMinute })).toContain('provider.rateBudget.requestsPerMinute must be a finite positive number');
+  });
+  it.each([
+    { verifiedAt: '2026-02-30' }, { verifiedAt: '2026-08-23', sources: [] }, { sources: ['http://example.test/limits'] },
+    { buckets: {} }, { buckets: { one: { appliesTo: 'write', perDay: 0, unit: 'calls' } } },
+    { buckets: { one: { appliesTo: 'write', perDay: 1, unit: 'unknown' } } },
+    { buckets: { one: { appliesTo: 'write', perDay: 1, unit: 'calls', verbs: ['post', 'post'] } } },
+    { dynamicQuota: { formula: 'x', driver: 'members', assumedDailyFloor: 0 } },
+    { dynamicQuota: { formula: 'x', driver: 'members', assumedDailyFloor: 1, retryExtendsBlock: 'true' } },
+    { budgetHeaders: ['X-Usage\r\nInjected'] }, { unrecognizedAllowance: 1000 },
+  ])('refuses malformed or unaccountable quota metadata %j', (mutation) => {
+    expect(validate({ ...budget(), ...mutation }).length).toBeGreaterThan(0);
+  });
+});
+
 describe('provider sync progress', () => {
   it('reads committed sync freshness without interpreting opaque provider cursors', () => {
     const now = Date.parse('2026-10-01T01:00:00Z');

@@ -1353,6 +1353,8 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(res.status).toBe(200);
     await res.text();
     expect(gw.stats().egressFailsByAccount).not.toEqual({});
+    expect(gw.stats().egressProxyAttemptsByAccount).toEqual({});
+    expect(gw.stats().egressProxyFailsByAccount).toEqual({});
     if (contracts) expect(gw.stats().codexAdmission.maxConcurrent).toBeLessThan(initial);
     else expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
   });

@@ -610,10 +610,14 @@ describe('external-trigger admin shared seam', () => {
   it('validates and persists the binding-engine storm-policy vocabulary', async () => {
     expect(
       await updateExternalTriggerBindingStormPolicy(sql, WS, bindingId, {
+        mode: 'coalesce-with-cap',
         maxRuns: 5,
         windowSeconds: 300,
       }),
-    ).toMatchObject({ stormPolicy: { maxRuns: 5, windowSeconds: 300 } });
+    ).toMatchObject({ stormPolicy: { mode: 'coalesce-with-cap', maxRuns: 5, windowSeconds: 300 } });
+    await expect(updateExternalTriggerBindingStormPolicy(sql, WS, bindingId, {
+      mode: 'invented', maxRuns: 5, windowSeconds: 300,
+    })).rejects.toThrow('external_trigger_invalid_storm_mode');
     await expect(
       updateExternalTriggerBindingStormPolicy(sql, WS, bindingId, {
         maxRuns: 0,

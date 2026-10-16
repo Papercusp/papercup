@@ -2462,7 +2462,13 @@ export function preExistingChangedPathsInCompletion(
 const PRESCRIBED_GUARD_RE =
   /\b(?:recurrence\s+guard|regression\s+(?:guard|test)|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
 const PRESCRIBED_TEST_RE =
-  /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|point(?:ed)?|cover(?:ed)?)\b[\s\S]{0,70}\b(?:test|coverage|assert(?:ion|ing)?)\b/i;
+  /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|point(?:ed)?|cover(?:ed)?)\b[\s\S]{0,70}\b(?:test|coverage|assert(?:ion|ing)?)\b/i;
+// A completion-field shape correction can mention a "test path" without prescribing
+// a test. Keep the detector focused on obligations rather than payload-format guidance;
+// this exact `only ... test path` form was misclassified as a required test on
+// EI-25804407018443026.
+const FIELD_SHAPE_TEST_PATH_GUIDANCE_RE =
+  /\b(?:filesChanged|testsRun|testResult|verifiedHow)\b[\s\S]{0,50}\b(?:should|must)\b[\s\S]{0,50}\bonly\b[\s\S]{0,50}\btest\s+path\b/i;
 const COMPLETION_GUARD_RE = /\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
 // EI-21447362440754444: the SECOND alternative (guard-word THEN negation) must not fire on a
 // contrastive "X, not Y" clause. In that construction the negation attaches to Y — what FOLLOWS
@@ -2523,9 +2529,10 @@ export function prescribedRecurrenceGuardCoverageGap(
       // prescription; otherwise the detector turns its own explanatory prose
       // into the warning it is meant to avoid.
       if (HISTORICAL_NON_PRESCRIPTIVE_RE.test(line)) return false;
+      if (FIELD_SHAPE_TEST_PATH_GUIDANCE_RE.test(line)) return false;
       const guardPrescription =
         PRESCRIBED_GUARD_RE.test(line) &&
-        /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|assert(?:ing|ion)?|falsifier)\b/i.test(
+        /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|assert(?:ing|ion)?|falsifier)\b/i.test(
           line,
         );
       return guardPrescription || PRESCRIBED_TEST_RE.test(line);

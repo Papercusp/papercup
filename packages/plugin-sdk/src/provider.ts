@@ -123,6 +123,9 @@ export interface ProviderDescriptor {
   /** Dated API-contract evidence shipped with this package. This is neither account consent
    * nor live-account acceptance. Capability declarations alone do not verify a write contract. */
   verification?: ProviderVerificationDescriptor;
+  /** Declared vendor budgets, with their own dated evidence. These are inputs to
+   * host admission policy, never permission to perform an undeclared capability. */
+  rateBudget?: ProviderRateBudget;
   /** OAuth connection descriptor; omitted for providers that need no account grant. */
   oauth?: ProviderOAuthDescriptor;
   /** Hosts `host.fetch` may reach for this provider. Everything else is refused. */
@@ -174,6 +177,80 @@ export interface ProviderDescriptor {
    * Provider code never sees the credential or the socket.
    */
   ingress?: ProviderIngressDescriptor;
+}
+
+export interface ProviderQuotaBucket {
+  appliesTo: string;
+  perDay: number;
+  unit: 'calls' | 'units';
+  /** Content operations drawing on this non-fungible bucket (e.g. read, reply). */
+  verbs?: string[];
+  notes?: string;
+}
+
+export interface ProviderRateBudget {
+  verifiedAt: string | null;
+  sources: string[];
+  requestsPerMinute?: number;
+  quotaUnitsPerDay?: number;
+  budgetHeaders?: string[];
+  buckets?: Record<string, ProviderQuotaBucket>;
+  dynamicQuota?: {
+    formula: string;
+    driver: string;
+    usageHeader?: string;
+    assumedDailyFloor: number;
+    throttleCodes?: number[];
+    retryExtendsBlock?: boolean;
+  };
+  notes?: string;
+}
+
+function providerRateBudgetIssues(value: unknown): string[] {
+  const prefix = 'provider.rateBudget';
+  const object = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v));
+  if (!object(value)) return [`${prefix} must be an object`];
+  const issues: string[] = [];
+  const keys = (v: Record<string, unknown>, allowed: string[], path: string) => {
+    for (const key of Object.keys(v)) if (!allowed.includes(key)) issues.push(`${path}.${key} is not supported`);
+  };
+  const positive = (v: unknown, path: string) => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) issues.push(`${path} must be a finite positive number`);
+  };
+  const text = (v: unknown, path: string) => { if (!isNonEmptyString(v)) issues.push(`${path} must be a nonempty string`); };
+  keys(value, ['verifiedAt', 'sources', 'requestsPerMinute', 'quotaUnitsPerDay', 'budgetHeaders', 'buckets', 'dynamicQuota', 'notes'], prefix);
+  issues.push(...providerVerificationIssues({ verifiedAt: value.verifiedAt, sources: value.sources }, []).map((issue) => issue.replace('provider.verification', prefix)));
+  for (const key of ['requestsPerMinute', 'quotaUnitsPerDay']) if (value[key] !== undefined) positive(value[key], `${prefix}.${key}`);
+  if (value.notes !== undefined) text(value.notes, `${prefix}.notes`);
+  if (value.budgetHeaders !== undefined && (!Array.isArray(value.budgetHeaders) || value.budgetHeaders.some((header) => typeof header !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header)))) issues.push(`${prefix}.budgetHeaders must contain HTTP header names`);
+  if (value.buckets !== undefined) {
+    if (!object(value.buckets) || Object.keys(value.buckets).length === 0) issues.push(`${prefix}.buckets must be a nonempty object`);
+    else for (const [name, bucket] of Object.entries(value.buckets)) {
+      const path = `${prefix}.buckets.${name}`;
+      if (!isNonEmptyString(name) || !object(bucket)) { issues.push(`${path} must be a named quota bucket`); continue; }
+      keys(bucket, ['appliesTo', 'perDay', 'unit', 'verbs', 'notes'], path);
+      text(bucket.appliesTo, `${path}.appliesTo`);
+      positive(bucket.perDay, `${path}.perDay`);
+      if (!['calls', 'units'].includes(String(bucket.unit))) issues.push(`${path}.unit must be calls or units`);
+      if (bucket.verbs !== undefined && (!Array.isArray(bucket.verbs) || bucket.verbs.some((verb) => !isNonEmptyString(verb)) || new Set(bucket.verbs).size !== bucket.verbs.length)) issues.push(`${path}.verbs must contain distinct nonempty operations`);
+      if (bucket.notes !== undefined) text(bucket.notes, `${path}.notes`);
+    }
+  }
+  if (value.dynamicQuota !== undefined) {
+    const path = `${prefix}.dynamicQuota`;
+    const dynamic = value.dynamicQuota;
+    if (!object(dynamic)) issues.push(`${path} must be an object`);
+    else {
+      keys(dynamic, ['formula', 'driver', 'usageHeader', 'assumedDailyFloor', 'throttleCodes', 'retryExtendsBlock'], path);
+      text(dynamic.formula, `${path}.formula`);
+      text(dynamic.driver, `${path}.driver`);
+      positive(dynamic.assumedDailyFloor, `${path}.assumedDailyFloor`);
+      if (dynamic.usageHeader !== undefined && (typeof dynamic.usageHeader !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(dynamic.usageHeader))) issues.push(`${path}.usageHeader must be an HTTP header name`);
+      if (dynamic.retryExtendsBlock !== undefined && typeof dynamic.retryExtendsBlock !== 'boolean') issues.push(`${path}.retryExtendsBlock must be a boolean`);
+      if (dynamic.throttleCodes !== undefined && (!Array.isArray(dynamic.throttleCodes) || dynamic.throttleCodes.some((code) => !Number.isSafeInteger(code) || code < 0))) issues.push(`${path}.throttleCodes must contain nonnegative integer codes`);
+    }
+  }
+  return issues;
 }
 
 export interface ProviderVerificationDescriptor {
@@ -1173,6 +1250,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   for (const dup of duplicates(capabilities.filter(isNonEmptyString))) issues.push(`provider.capabilities repeats "${dup}"`);
   if (d.verification !== undefined) issues.push(...providerVerificationIssues(d.verification, capabilities));
+  if (d.rateBudget !== undefined) issues.push(...providerRateBudgetIssues(d.rateBudget));
   const egress = Array.isArray(d.egressHosts) ? d.egressHosts : [];
   if (egress.length === 0 && d.oauth?.instance !== true) issues.push('provider.egressHosts must declare at least one host');
   if (d.oauth?.instance === true && egress.length !== 0) issues.push('provider.egressHosts must be empty for an instance-scoped OAuth grant');

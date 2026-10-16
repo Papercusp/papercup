@@ -55,6 +55,7 @@ const {
   listActiveAwaits,
   listLifecycleBoundAwaits,
   listActiveAwaitsForKey,
+  refreshStandingClaimableAwaitPayloadFilters,
   fireAwaitsForKey,
   listParkedAwaitsForSubscribers,
   hasPendingDeliberateWakeDelivery,
@@ -1362,6 +1363,31 @@ describe('await-event store (PG)', () => {
     // standing — still active + still matches on a second qualifying emit
     const second = await fireAwaitsForKey({ eventKey: 'k:standing-threshold', payload: { severity: 5 } });
     expect(second.map((a) => a.subscriberId)).toEqual(['standing-filtered']);
+  });
+
+  it('refreshes only filtered standing claimable watches when a claim spec revision lands', async () => {
+    const filtered = await registerAwait({
+      subscriberId: 'claim-spec-member',
+      eventKey: 'work-item:claimable',
+      once: false,
+      payloadFilter: { id: { in: ['EI-old'] } },
+    });
+    const unscoped = await registerAwait({
+      subscriberId: 'claim-spec-member',
+      eventKey: 'work-item:claimable',
+      once: false,
+    });
+    const nextFilter = { all: [{ harness: { equals: 'papercusp' } }, { id: { in: ['EI-new'] } }] };
+
+    const refreshed = await refreshStandingClaimableAwaitPayloadFilters({
+      subscriberIds: ['claim-spec-member'],
+      payloadFilter: nextFilter,
+    });
+
+    expect(refreshed.map((row) => row.id)).toEqual([filtered.id]);
+    const active = await listActiveAwaitsForKey('work-item:claimable');
+    expect(active.find((row) => row.id === filtered.id)?.payloadFilter).toEqual(nextFilter);
+    expect(active.find((row) => row.id === unscoped.id)?.payloadFilter).toBeNull();
   });
 
   it('a pattern (glob) watch combines key-glob matching with a payload_filter', async () => {

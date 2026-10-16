@@ -1839,6 +1839,8 @@ export type {
   ProviderOAuthIdentity,
   ProviderOAuthResourceToken,
   ProviderDescriptor,
+  ProviderRateBudget,
+  ProviderQuotaBucket,
   ProviderVerificationDescriptor,
   ProviderSetupDescriptor,
   ProviderIngressDescriptor,

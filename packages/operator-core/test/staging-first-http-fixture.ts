@@ -11,6 +11,7 @@ import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -291,6 +292,17 @@ async function main() {
     await sql.end();
     console.log('REPORT_JOURNAL_HTTP_RECEIPT ' + JSON.stringify({ ...receipt, hostPid: host.pid,
       hostStopped: true, bundleSha256, health }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-unrelated-write') {
+    const receipt = await measurePrivateUnrelatedCheckpointScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_UNRELATED_WRITE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
     return;
   }
   if (committedReader) {

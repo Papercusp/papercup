@@ -643,9 +643,7 @@ export function evaluatePlanSpecQuality(input: {
   const draftSourceBarExcludedCount = draftSourceBarProjections.length;
   const atomicityCoverage =
     ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} active behavioral clause(s) evaluated` +
-    (activeSourceBarExcludedCount
-      ? `; ${activeSourceBarExcludedCount} active sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)`
-      : '') +
+    `; ${activeSourceBarExcludedCount} active sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)` +
     (draftSourceBarExcludedCount
       ? `; ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) excluded from the active population`
       : '') +

@@ -124,6 +124,51 @@
         "datatypes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "sync": { "type": "boolean", "description": "Whether inbound sync is supported. Omitted means true; false declares a write-only provider that the host does not poll." },
         "capabilities": { "type": "array", "items": { "type": "string" } },
+        "rateBudget": {
+          "type": "object", "additionalProperties": false,
+          "description": "Vendor budget declarations with independent dated evidence. Admission and retry policy remain host-owned.",
+          "required": ["verifiedAt", "sources"],
+          "properties": {
+            "verifiedAt": {
+              "type": ["string", "null"],
+              "description": "Actual ISO calendar date, including Gregorian leap-year validation; independent of the provider API-contract date.",
+              "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$"
+            },
+            "sources": { "type": "array", "items": { "type": "string", "pattern": "^https://" } },
+            "requestsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
+            "quotaUnitsPerDay": { "type": "number", "exclusiveMinimum": 0 },
+            "budgetHeaders": { "type": "array", "items": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" } },
+            "notes": { "type": "string", "minLength": 1 },
+            "buckets": {
+              "type": "object", "minProperties": 1,
+              "propertyNames": { "minLength": 1 },
+              "additionalProperties": {
+                "type": "object", "additionalProperties": false,
+                "required": ["appliesTo", "perDay", "unit"],
+                "properties": {
+                  "appliesTo": { "type": "string", "minLength": 1 },
+                  "perDay": { "type": "number", "exclusiveMinimum": 0 },
+                  "unit": { "enum": ["calls", "units"] },
+                  "verbs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+                  "notes": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "dynamicQuota": {
+              "type": "object", "additionalProperties": false,
+              "required": ["formula", "driver", "assumedDailyFloor"],
+              "properties": {
+                "formula": { "type": "string", "minLength": 1 },
+                "driver": { "type": "string", "minLength": 1 },
+                "usageHeader": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" },
+                "assumedDailyFloor": { "type": "number", "exclusiveMinimum": 0 },
+                "throttleCodes": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+                "retryExtendsBlock": { "type": "boolean" }
+              }
+            }
+          },
+          "allOf": [{ "if": { "properties": { "verifiedAt": { "type": "string" } } }, "then": { "properties": { "sources": { "minItems": 1 } } } }]
+        },
         "verification": {
           "type": "object",
           "additionalProperties": false,

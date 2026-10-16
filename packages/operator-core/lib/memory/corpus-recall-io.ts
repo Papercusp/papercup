@@ -158,6 +158,19 @@ export function corpusEmbedBudgetMs(): number {
 }
 
 /**
+ * Per-search budget inside the corpus leg's remaining lifetime.
+ *
+ * The normal cascade has at most two search calls (the AND stage and the
+ * coverage-graded fill stage), so each call can use half of the remaining
+ * lifetime. A rerank adds another bounded stage between those searches; keep
+ * the tighter quarter allocation in that mode so reranking cannot starve the
+ * second search or consume the whole-leg bound.
+ */
+export function corpusSearchStageBudgetMs(remainingMs: number, rerank: boolean): number {
+  return Math.max(1, remainingMs / (rerank ? 4 : 2));
+}
+
+/**
  * Wall-clock bound for the STAGE-1 rerank alone (P-008).
  *
  * ⚠ MUST stay STRICTLY BELOW `corpusRecallTimeoutMs()` (2s). The two bounds fail
@@ -755,7 +768,7 @@ async function recallCorpusContextInner(
         input.signal?.throwIfAborted();
         // Reserve time for embedding, source queries, selection and the optional cascade.
         // Each query uses the remaining request lifetime, never a fresh whole-leg budget.
-        const stageBudget = Math.max(1, remainingMs() / 4);
+        const stageBudget = corpusSearchStageBudgetMs(remainingMs(), input.rerank === true);
         const result = await runHybridSearch(sources, {
           signal: input.signal,
           caller: 'midturn:related-context',

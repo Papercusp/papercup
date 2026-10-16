@@ -211,9 +211,9 @@ export interface CodexOAuthAdapterOptions {
   /** Parses `x-ratelimit-reset*` / `retry-after` into an epoch-ms instant + delay. */
   rateReset(headers: Record<string, string>): { resetAt: number | null; retryAfterMs: number | null; transient?: boolean };
   /** Per-account upstream ATTEMPT tally (the denominator for egress fail rate). */
-  onEgressAttempt?(accountId: string): void;
+  onEgressAttempt?(accountId: string, egress?: unknown): void;
   /** Per-account transport-FAILURE tally. `error` is the fetch rejection (WI-10007199: reachability). */
-  onEgressFailure?(accountId: string, error?: unknown): void;
+  onEgressFailure?(accountId: string, error?: unknown, egress?: unknown): void;
   /**
    * An HTTP response of ANY status arrived from the upstream (WI-10007199). It proves the network
    * path works, which is what separates "this machine cannot reach the upstream" from "the accounts
@@ -886,7 +886,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       context: GatewayKernelAttemptContext<CodexOAuthRouteValue>,
     ): Promise<CodexOAuthUpstream> {
       const { account, egress, modelMode } = context.route.value;
-      opts.onEgressAttempt?.(account.accountId);
+      opts.onEgressAttempt?.(account.accountId, egress.entry);
 
       let upstream: CodexOAuthFetchResponse;
       try {
@@ -909,7 +909,7 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
         // Local terminal admission decisions must not penalize the egress or
         // turn into a retryable upstream failure.
         if (error instanceof GatewayRequestKernelError && !error.retryable) throw error;
-        opts.onEgressFailure?.(account.accountId, error);
+        opts.onEgressFailure?.(account.accountId, error, egress.entry);
         opts.coolIp(egress.key, opts.transportCooldownMs);
         throw new GatewayRequestKernelError(
           `inference-gateway: codex OAuth upstream failed: ${describeFetchError(error)}`,

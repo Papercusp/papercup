@@ -75,6 +75,10 @@ describe('decideAutobind', () => {
   it('rebinds when a newer pass lands over an older bound run', () => {
     expect(decideAutobind(target, run(11, 'pass'), [binding(1, 10)])).toMatchObject({ kind: 'bind', run: { id: 11 } });
   });
+  it('does not backfill an older pass over newer bound proof', () => {
+    expect(decideAutobind(target, run(10, 'pass'), [binding(1, 11)]))
+      .toMatchObject({ kind: 'noop', reason: 'newer-proof-bound' });
+  });
   it('retracts proof older than a later failing run, including a hand-bound row without a run id', () => {
     const failed = run(12, 'fail', '2026-10-15T18:00:00.000Z');
     const decision = decideAutobind(target, failed, [binding(1, 10), binding(2, null, '2026-10-15T17:30:00.000Z')]);
@@ -144,6 +148,17 @@ describe('runSpecEvidenceAutobind over fixture ledger rows', () => {
     const { deps, writes } = fixture({ runs: [run(10, 'pass')], live: [binding(7, 10)] });
     const result = await runSpecEvidenceAutobind('ws', deps);
     expect(writes).toEqual([]);
+    expect(result.decisions).toEqual({ noop: 1, bind: 0, retract: 0 });
+  });
+
+  it.each([10, 11])('rechecks live proof before appending a stale sweep snapshot (run %i)', async (newRunId) => {
+    const { deps, writes } = fixture({ runs: [run(10, 'pass')] });
+    let reads = 0;
+    deps.loadLiveBindings = async () => new Map([[clauseKey(target), ++reads === 1 ? [] : [binding(7, newRunId)]]]);
+    const result = await runSpecEvidenceAutobind('ws', deps);
+    expect(reads).toBe(2);
+    expect(writes).toEqual([]);
+    expect(result.outcomes).toEqual([]);
     expect(result.decisions).toEqual({ noop: 1, bind: 0, retract: 0 });
   });
 

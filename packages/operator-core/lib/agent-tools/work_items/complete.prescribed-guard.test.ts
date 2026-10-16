@@ -61,6 +61,39 @@ describe('prescribedRecurrenceGuardCoverageGap', () => {
     ).toBeUndefined();
   });
 
+  it('ignores filesChanged path-shape guidance that mentions a test path', () => {
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        {
+          title: 'Completion guard detector mistakes filesChanged path guidance for a required test',
+          summary:
+            'The source item text said only: "filesChanged should contain only the source test path" — ' +
+            'a path-format correction for an invalid caller payload, not a recurrence-test prescription.',
+        },
+        {
+          summary: 'corrected the completion payload shape',
+          testsRun: 'existing completion suite',
+          testResult: 'passed',
+          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+        },
+      ),
+    ).toBeUndefined();
+  });
+
+  it('still warns on a real explicit regression-test prescription', () => {
+    expect(
+      prescribedRecurrenceGuardCoverageGap(
+        { title: 'Completion integrity', summary: 'Add a regression test for this detector.' },
+        {
+          summary: 'updated the detector',
+          testsRun: 'existing completion suite',
+          testResult: 'passed',
+          filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
+        },
+      ),
+    ).toBeDefined();
+  });
+
   it('ignores a quoted historical anecdote instead of treating it as a live prescription', () => {
     expect(
       prescribedRecurrenceGuardCoverageGap(

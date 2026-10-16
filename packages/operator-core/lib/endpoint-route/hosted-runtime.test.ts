@@ -100,6 +100,21 @@ describe('hosted runtime composition', () => {
     expect((await plane.app.request('/api/zero-harness/rest-query?name=workspaceHosts.control')).status).toBe(404);
     expect((await plane.app.request('/api/workspace-hosts/action', { method: 'POST' })).status).toBe(404);
 
+    // Connector admissions use their own credential boundary, even though the
+    // public route must be present in the exact production mount manifest.
+    for (const authorization of [undefined, 'Bearer invalid-connector']) {
+      const admission = await plane.app.request('/api/hosted/connectors/agent-admission', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(authorization ? { authorization } : {}),
+        },
+        body: JSON.stringify({ action: 'reserve', processKey: 'runtime-composition-test' }),
+      });
+      expect(admission.status).toBe(401);
+      expect(await admission.json()).toMatchObject({ ok: false, error: { code: 'connector_credential_invalid' } });
+    }
+
     const webhook = await plane.app.request('/api/auth/workos/webhook', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

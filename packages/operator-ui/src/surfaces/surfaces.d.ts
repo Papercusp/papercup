@@ -48,6 +48,7 @@ export type OperatorSurfaceKind =
   | 'plans'
   | 'inbox'
   | 'overview'
+  | 'enterprise'
   | 'hud'
   | 'work'
   | 'learning'

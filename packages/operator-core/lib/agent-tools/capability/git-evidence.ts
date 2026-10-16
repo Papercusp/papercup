@@ -23,7 +23,11 @@ const fullCommitSha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i);
 export const MAX_GIT_EVIDENCE_INLINE_BYTES = 128 * 1024;
 export const MAX_GIT_EVIDENCE_PAGE_BYTES = 4 * 1024;
 const PAGE_RESPONSE_MARGIN_CHARS = 256;
-const MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES = 1024 * 1024;
+// Keep the page-chain cache bounded, while covering the multi-megabyte source
+// blobs that are common in grading evidence. Without this floor, a blob just
+// over 1 MiB was evicted immediately and every cursor repeated ls-tree plus
+// cat-file for the entire file.
+const MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES = 8 * 1024 * 1024;
 const GIT_EVIDENCE_CACHE_MAX_ENTRIES = 16;
 const GIT_EVIDENCE_CACHE_TTL_MS = 5 * 60_000;
 
@@ -31,7 +35,7 @@ const GIT_EVIDENCE_CACHE_TTL_MS = 5 * 60_000;
 // blob so following its cursor does not repeat repository discovery, commit/type/
 // size probes, or re-read the complete blob for every page. The generic cache and
 // module-singleton helpers keep the working set bounded across operator module
-// graphs; 16 entries × 1 MiB is the maximum retained payload.
+// graphs; 16 entries × 8 MiB is the maximum retained payload.
 const gitEvidenceCacheState = pinModuleState<{ cache: Cache | null }>(
   '@papercusp/operator-core.gitEvidenceBlobCache',
   () => ({ cache: null }),
@@ -256,10 +260,10 @@ async function runJudgeGitEvidenceInner(
       options.sandboxRequired,
     );
     if (options.signal.aborted && result.code !== 0) {
-      const message = result.output.slice(0, 300);
-      throw new Error(
-        `git_command_interrupted: ${message || `git ${argv.join(' ')} was aborted before returning a result`}`,
-      );
+      // Git's stdout is the blob itself for cat-file blob. Never copy combined
+      // stdout/stderr into an interruption diagnostic: a killed read can expose
+      // the first bytes of the file as the error message.
+      throw new Error(`git_command_interrupted: git ${argv.join(' ')} was aborted before returning a result`);
     }
     return result;
   };

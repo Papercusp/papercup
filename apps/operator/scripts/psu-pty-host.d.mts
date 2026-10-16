@@ -4657,6 +4657,16 @@ export function mcpReconnectMacroWorstCaseMs(overrides?: Partial<McpReconnectMac
  *  parent's KICKOFF_PROOF_WINDOW_MS must exceed it, or the parent gives up and
  *  deletes the receipt before the host can report a refusal. */
 export function headlessRoleMcpVerifyWorstCaseMs(): number;
+/**
+ * Bound the fresh headless role kickoff long enough for its required MCP
+ * reconnect and the prompt to settle afterward. The ordinary Claude startup
+ * budget is 20s, while two worst-case reconnect attempts are ~71s; using the
+ * ordinary budget for a role kickoff made every slow-but-healthy `/mcp`
+ * preparation fail as `prewrite-agent-busy` before the task turn was written.
+ * Keep this below the 120s parent proof window so a successful native proof
+ * still has room to settle.
+ */
+export function headlessRoleMcpKickoffBudgetMs(): number;
 /** WI-10006598: the host refused a headless kickoff, but its negative receipt
  *  never reached the detached caller (the caller timed out and removed the
  *  request, so publication failed). Nobody will reap this process and it can

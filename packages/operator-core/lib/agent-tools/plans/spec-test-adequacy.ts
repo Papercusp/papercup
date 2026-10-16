@@ -266,24 +266,46 @@ export function latestLogicalEvidence<T extends SpecEvidenceForAdequacy>(rows: r
     const value = Date.parse(row.createdAt ?? '');
     return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
   };
-  rows.forEach((row, index) => {
+  const keyOf = (row: T): string => {
     // A mutation target is a distinct claim even when bindings cite the same
     // mutant run. Keep each target so measured failed cases can corroborate them
     // independently instead of letting the newest target replace its sibling.
     const targeted = row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample'
       ? detailsOf(row).targeted ?? null
       : null;
-    const key = JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef, targeted]);
+    return JSON.stringify([row.planSlug, row.specId, row.specRevision, row.evidenceKind, row.evidenceRef, targeted]);
+  };
+  const newer = (row: T, index: number, prior: { row: T; index: number }): boolean => {
+    const rowTs = appendTimestamp(row);
+    const priorTs = appendTimestamp(prior.row);
+    const rowId = row.id ?? Number.NEGATIVE_INFINITY;
+    const priorId = prior.row.id ?? Number.NEGATIVE_INFINITY;
+    return rowTs > priorTs || (rowTs === priorTs && (rowId > priorId || (rowId === priorId && index > prior.index)));
+  };
+  // Only the server-attributed backfill writer gets this exception. It may have
+  // loaded its ledger snapshot before an explicit calibrated proof was bound.
+  // Preserve the LATEST explicit correction, never an older richer annotation,
+  // and never transplant calibration across different receipts/fingerprints.
+  // Keep this identity literal here to avoid the autobind -> binder -> adequacy cycle.
+  const automatic = (row: T) => row.evidenceKind === 'test' && row.createdBy === 'system:spec-evidence-autobind';
+  const explicit = new Map<string, { row: T; index: number }>();
+  rows.forEach((row, index) => {
+    if (automatic(row)) return;
+    const key = keyOf(row);
+    const prior = explicit.get(key);
+    if (!prior || newer(row, index, prior)) explicit.set(key, { row, index });
+  });
+  rows.forEach((row, index) => {
+    const key = keyOf(row);
+    const correction = explicit.get(key)?.row;
+    if (automatic(row) && row.testRunId != null && correction?.testRunId != null &&
+      correction.testRunId >= row.testRunId) return;
     const prior = selected.get(key);
     if (!prior) {
       selected.set(key, { row, index });
       return;
     }
-    const rowTs = appendTimestamp(row);
-    const priorTs = appendTimestamp(prior.row);
-    const rowId = row.id ?? Number.NEGATIVE_INFINITY;
-    const priorId = prior.row.id ?? Number.NEGATIVE_INFINITY;
-    if (rowTs > priorTs || (rowTs === priorTs && (rowId > priorId || (rowId === priorId && index > prior.index)))) {
+    if (newer(row, index, prior)) {
       selected.set(key, { row, index });
     }
   });
@@ -744,6 +766,11 @@ const EXPLICIT_COVERAGE_LIMITATION_PATTERNS = [
   /\bdisclosures?\b[^.;]{0,40}\b(?:remains?|is|are)\s+(?:live|open|unresolved)\b/i,
 ];
 
+// CLI switches are often hyphenated (`--materialize-only`, `--dry-run-only`).
+// Strip the token before applying the prose heuristic so its flag suffix cannot
+// be mistaken for the coverage phrase "only ... test/cover".
+const CLI_FLAG_TOKEN_PATTERN = /--[a-z0-9][a-z0-9-]*/gi;
+
 // Evidence-ledger replacement scope is operational bookkeeping, not a claim about
 // which behavior the proof covers. Strip only that clause before applying the broad
 // prose heuristic so a separate proof limitation in the same note remains visible.
@@ -777,6 +804,7 @@ function explicitCoverageLimitations(value: unknown): string[] {
         .filter((entry) => {
           if (entry.length === 0) return false;
           const coverageProse = entry
+            .replace(CLI_FLAG_TOKEN_PATTERN, ' ')
             .replace(EVIDENCE_SUPERSESSION_SCOPE_PATTERN, ' ')
             .replace(BEHAVIOR_GUARD_CONDITION_PATTERN, '$1$2');
           return EXPLICIT_COVERAGE_LIMITATION_PATTERNS.some((pattern) => pattern.test(coverageProse));
@@ -2442,8 +2470,9 @@ function appendRatingRerunProbes(
  *  31 — a requiredEvidence:'tree' declaration requires a current tree-plane binding; binder-authored targeting cannot substitute for it.
  *  33 — nested adequacy planes participate in required-plane checks, attempt identity, traceability and runtime freshness.
  *  34 — durable test-run references in resolved-gap notes do not imply a live limitation.
+ *  35 — late automatic same/older receipts cannot hide the latest explicit proof correction.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 34;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 35;
 
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
@@ -3380,7 +3409,7 @@ export function evaluateSpecTestAdequacy(input: {
             ? 'Non-current or plane-mismatched manual/operational binding(s) are listed below for inspection.'
             : 'No current binding declares one of the required planes.'),
         planeBlockerRows,
-        'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
+        'Bind a current row with details.evidencePlane matching each requiredEvidence plane (for example, details: { evidencePlane: "live" }); live/deployed evidence also needs environmentFingerprint, or a validated ledger-only currentMeasurement, so environment currentness is known.',
       )
     : boundCorrectLayerPart(
         'pass',

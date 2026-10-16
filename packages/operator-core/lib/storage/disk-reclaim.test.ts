@@ -334,6 +334,29 @@ describe('retention holder evidence', () => {
     expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
     expect(JSON.parse(input)).toEqual([...paths, process.cwd()]);
   });
+
+  it('resolves privileged scanner source independently of the caller working directory', async () => {
+    const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url)).replace(/\/$/, '');
+    const control = '/unrelated-holder-caller';
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(control);
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', undefined);
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
+      expect(command).toBe('/usr/bin/sudo');
+      expect(options.spawnOptions.cwd).toBe(repoRoot);
+      expect(args.at(-1)).toBe(`${repoRoot}/packages/operator-core/lib/native-bg-task-ledger.ts`);
+      options.onSpawn(child as unknown as ChildProcess, 'source-root-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[control, [String(process.pid)]]] }));
+      child.emit('close', 0, null);
+      return { child, taskId: 'source-root-holder-task' };
+    });
+    try {
+      expect((await scanRetentionHolders(['/scratch'], {
+        uid: () => 1000, readStatus: async () => 'NSpid:\t1\n',
+      })).complete).toBe(true);
+      expect(delegateSpawn).toHaveBeenCalledTimes(1);
+    } finally { cwd.mockRestore(); vi.unstubAllEnvs(); }
+  });
 });
 
 describe('per-pass kernel holder transport', () => {
