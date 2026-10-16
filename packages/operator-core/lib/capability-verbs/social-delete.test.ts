@@ -226,7 +226,7 @@ describe('deleteCanonicalSocialPost — through the installed provider package (
     expect(installed.invokes[0]!.request.source).toBe('src-mastodon-1');
     const [args] = invokedArgs<{ externalId: string; target: unknown; idempotencyKey: string }>(installed);
     expect(args!.externalId).toBe('109999');
-    expect(args!.target).toEqual({ platform: 'mastodon', inReplyToId: '109999', instanceHost: 'mastodon.social' });
+    expect(args!.target).toEqual({ platform: 'mastodon', externalId: '109999', payload: MASTODON_ROW.metadata });
     expect(args!.idempotencyKey).toBe(socialDeleteIdempotencyKey(MASTODON_REF));
   });
 

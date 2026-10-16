@@ -5030,6 +5030,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ["events:status", { event: "unit:liveness" }],
     ["facts:list", { scope: "workspace" }],
     ["loop:status", {}],
+    // Recording a typed external blocker parks the claim and frees a scheduler slot.
+    ["work_items:set_blocker", { id: "WI-1", kind: "event", ref: "event:unit" }],
   ])(
     "keeps tools:invoke %s available while ordinary admission is saturated",
     async (reservedTool, reservedArgs) => {

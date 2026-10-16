@@ -26,7 +26,6 @@ import { providerSocialWriteResultIssue } from '@papercusp/plugin-sdk';
 import {
   assertSocialPlatformUsable,
   assertSocialWriteAllowed,
-  SocialPlatformUnusableError,
   type SocialPlatformId,
   type SocialPlatformRow,
   type SocialWriteVerb,
@@ -255,76 +254,12 @@ export function resolveReplyVisibility(
 /* Rail 1 — reply coordinates derived from the stored document alone          */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Platform-native reply target, discriminated so each adapter receives exactly
- * the fields its API needs and cannot silently read a field meant for another.
- */
-export type SocialReplyTarget =
-  | {
-      platform: 'bluesky';
-      /** Thread root strong ref — atproto requires BOTH root and parent. */
-      rootUri: string;
-      rootCid: string;
-      parentUri: string;
-      parentCid: string;
-    }
-  | { platform: 'mastodon'; inReplyToId: string; instanceHost: string }
-  | { platform: 'reddit'; parentFullname: string; subreddit: string }
-  | { platform: 'x-twitter'; objectId: string }
-  | {
-      /** Stored document handle; vendor selectors are derived inside the package. */
-      platform: 'youtube' | 'instagram' | 'threads';
-      externalId: string;
-      payload: Record<string, unknown>;
-    }
-  | {
-      platform: 'facebook-pages';
-      /**
-       * The object the reply attaches to. Facebook's `/comments` edge is
-       * "common to multiple Graph API nodes" and a Comment node carries its own
-       * `/comments` edge for replies, so this is a POST id when replying to a
-       * post and a COMMENT id when replying to a comment. One field rather than
-       * two on purpose: the API makes no distinction, and a `postId`/`commentId`
-       * pair would invite a caller to supply both and leave the adapter guessing
-       * which the reply was meant for.
-       */
-      objectId: string;
-      /** Only for the permalink; a reply works without it. */
-      pageId?: string;
-      /**
-       * `can_comment` — "indicates whether it is possible to reply to that
-       * comment". A definite `false` is refused locally. An ABSENT value still
-       * attempts, matching the YouTube `canReply` posture: treating a missing
-       * optional field as a refusal turns a gap in the response into a dropped
-       * reply.
-       */
-      canComment?: boolean;
-    }
-  | {
-      /**
-       * ⚠ LINKEDIN CANNOT REPLY, so this variant exists ONLY to address an
-       * existing post for DELETE — `SocialDeleteRequest.target` reuses this
-       * union, so a delete-capable platform must appear here even when it has
-       * no reply path.
-       *
-       * A future reader adding LinkedIn reply support needs more than this
-       * field: LinkedIn's self-serve grant does not include the Comments API's
-       * `w_member_social_feed` scope at all. See the LinkedIn provider package README.
-       */
-      platform: 'linkedin';
-      /**
-       * The post's own URN, VERBATIM as LinkedIn issued it in the `x-restli-id`
-       * response header — `urn:li:share:{id}` or `urn:li:ugcPost:{id}`.
-       *
-       * Both spellings are live and the API returns either one for the same
-       * create call, so this is stored as issued rather than normalised to a
-       * preferred form. Rewriting `ugcPost` to `share` (or the reverse) to make
-       * ids look uniform would address a different entity — LinkedIn treats
-       * them as distinct URN types and answers INVALID_URN_TYPE.
-       */
-      postUrn: string;
-    };
-
+/** Stored document handle. Native reply and delete selectors belong to the package. */
+export interface SocialReplyTarget {
+  platform: SocialPlatformId;
+  externalId: string;
+  payload: Record<string, unknown>;
+}
 export interface SocialReplyCoordinates {
   ref: SocialPostRef;
   target: SocialReplyTarget;
@@ -345,110 +280,12 @@ export interface SocialReplyCoordinates {
 export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialReplyCoordinates {
   const platform = doc.source as SocialPlatformId;
   const row = assertSocialPlatformUsable(platform);
-  const payload = doc.payload;
-  const ref: SocialPostRef = { platform, externalId: doc.externalId };
-  const parentVisibility = normalizeSocialVisibility(payload.visibility);
-
-  switch (platform) {
-    case 'bluesky': {
-      const parentUri = string(payload.uri) || doc.externalId;
-      const parentCid = string(payload.cid);
-      // A reply to a root post IS the thread root, so root falls back to parent.
-      const rootUri = string(payload.rootUri) || parentUri;
-      const rootCid = string(payload.rootCid) || parentCid;
-      if (!parentUri || !parentCid) {
-        throw new Error(
-          'social_reply_coordinates_missing:bluesky — atproto needs a strong ref (uri AND cid) for both parent and root',
-        );
-      }
-      return {
-        ref,
-        target: { platform: 'bluesky', rootUri, rootCid, parentUri, parentCid },
-        parentVisibility,
-        label: `${row.label} · ${string(payload.authorHandle) || parentUri}`,
-      };
-    }
-
-    case 'mastodon': {
-      const inReplyToId = string(payload.statusId) || doc.externalId;
-      const instanceHost = string(payload.instanceHost);
-      if (!inReplyToId) throw new Error('social_reply_coordinates_missing:mastodon — no status id');
-      if (!instanceHost) {
-        // Mastodon has no single API host; the credential is per instance, so
-        // an absent host is unrecoverable rather than defaultable.
-        throw new Error(
-          'social_reply_coordinates_missing:mastodon — no instanceHost on the stored status; Mastodon is federated, so there is no default host to fall back to',
-        );
-      }
-      return {
-        ref,
-        target: { platform: 'mastodon', inReplyToId, instanceHost },
-        parentVisibility,
-        label: `${row.label} · ${instanceHost} · ${string(payload.authorHandle) || inReplyToId}`,
-      };
-    }
-
-    case 'reddit': {
-      const parentFullname = string(payload.fullname) || doc.externalId;
-      const subreddit = string(payload.subreddit);
-      if (!parentFullname || !/^t\d_/.test(parentFullname)) {
-        throw new Error(
-          `social_reply_coordinates_missing:reddit — expected a fullname like t3_abc123, got ${JSON.stringify(parentFullname.slice(0, 32))}`,
-        );
-      }
-      return {
-        ref,
-        target: { platform: 'reddit', parentFullname, subreddit },
-        parentVisibility,
-        label: `${row.label} · ${subreddit ? `r/${subreddit}` : parentFullname}`,
-      };
-    }
-
-    case 'facebook-pages': {
-      if (!/^\d+(?:_\d+)*$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:facebook-pages');
-      if (payload.canComment === false) throw new Error('social_reply_refused:facebook-pages:cannot_comment');
-      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
-    }
-
-    case 'x-twitter': {
-      if (!/^\d{1,19}$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:x-twitter');
-      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
-    }
-
-    case 'youtube':
-    case 'instagram':
-    case 'threads':
-      return {
-        ref,
-        target: { platform, externalId: doc.externalId, payload },
-        parentVisibility,
-        label: `${row.label} · ${doc.externalId}`,
-      };
-
-    case 'linkedin':
-      // NOT a missing derivation, which is what the default branch below would
-      // wrongly imply. LinkedIn is verified and usable — it simply cannot reply
-      // at any grant tier we hold, because its self-serve permission covers
-      // posting while the Comments API requires `w_member_social_feed`.
-      //
-      // Cased explicitly because this seam runs BEFORE the write gate, so
-      // without it the accurate refusal is masked by a message reading "no
-      // coordinate derivation for it YET" — which would send a reader off to
-      // implement coordinates that no scope would ever let them use.
-      throw new SocialPlatformUnusableError(
-        'linkedin',
-        'write-verb-unsupported',
-        "LinkedIn's self-serve grant (w_member_social) posts but does not comment; the Comments API requires w_member_social_feed, which is not an open permission",
-      );
-
-    default:
-      // Wave B/C platforms are refused by assertSocialPlatformUsable above
-      // (unverified or owner-blocked), so reaching here means a row was
-      // verified without its reply coordinates being taught to this seam.
-      throw new Error(
-        `social_reply_platform_unsupported:${platform} — the registry row is usable but this seam has no coordinate derivation for it yet`,
-      );
-  }
+  return {
+    ref: { platform, externalId: doc.externalId },
+    target: { platform, externalId: doc.externalId, payload: doc.payload },
+    parentVisibility: normalizeSocialVisibility(doc.payload.visibility),
+    label: `${row.label} · ${doc.externalId}`,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

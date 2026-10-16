@@ -1957,6 +1957,23 @@ export function computeAcceptanceBarSetHash(
 }
 
 /**
+ * Classify an acceptance amendment from the server-owned complete BAR-set pin.
+ *
+ * A legacy rubric may contain continuity probes pinned to a retired projected
+ * tool revision. Rebuilding that old snapshot through the current writer schema
+ * can reject before the replacement migrates the probe. Acceptance rubrics
+ * already persist the complete-set hash, so compare that identity directly.
+ * `null` tells non-BAR callers to retain their deep canonical comparison.
+ */
+export function acceptanceBarMeaningUnchanged(
+  storedBarSetHash: string | null | undefined,
+  nextBarSetHash: string | null | undefined,
+): boolean | null {
+  if (!storedBarSetHash) return null;
+  return nextBarSetHash === storedBarSetHash;
+}
+
+/**
  * Canonicalize one acceptance BAR at the central writer. `bar` is only an alias:
  * it is removed before persistence, and a mismatching model+bar pair is refused.
  * Caller-supplied barHash is discarded and recomputed from normalized meaning.
@@ -4680,7 +4697,16 @@ async function amendAcceptanceBarRubric(
         stored.criteria.map(normalizeAcceptanceBarCriterion),
       );
       const built = buildRubricTemplateData(amended);
-      const canonicalUnchanged = isDeepStrictEqual(built.data, buildRubricTemplateData({
+      // The stored acceptance BAR can contain continuity probes pinned to a
+      // projected-tool revision that has since rolled forward. Rebuilding the
+      // old snapshot through the current writer schema here made the amendment
+      // door reject the very replacement that would migrate those probes. The
+      // BAR contract already carries the canonical complete-set hash, so use
+      // that identity to classify meaning changes without re-validating the
+      // stale legacy snapshot. Standard/non-BAR amendments retain the deep
+      // canonical comparison used before the acceptance transaction exists.
+      const barMeaningUnchanged = acceptanceBarMeaningUnchanged(stored.barSetHash, built.data.barSetHash);
+      const canonicalUnchanged = barMeaningUnchanged ?? isDeepStrictEqual(built.data, buildRubricTemplateData({
         ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
         criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
       }).data);
@@ -4740,6 +4766,13 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
+      // Provenance corrections need the authenticated amendment capability too.
+      // Sending them through the generic METHOD writer makes its boundary guard
+      // correctly preserve the old declaration and silently loses the correction.
+      const provenanceChanged = (guard.data.criteria as Array<Record<string, unknown>>).some((criterion) => {
+        const prior = stored.criteria.find((candidate) => (candidate.barKey ?? candidate.key) === (criterion.barKey ?? criterion.key));
+        return !isDeepStrictEqual(prior?.barProvenance, criterion.barProvenance);
+      });
       // D-002 (review-routing-through-relevance-router-2026-09-26): an amendment whose every change
       // only adds a check or grows required test layers skips the outside-lineage review; any
       // removal, new BAR, or rewording keeps it. A supplied approval is still validated and recorded.
@@ -5022,7 +5055,7 @@ async function amendAcceptanceBarRubric(
 
       // An identical canonical contract can repair an older writer's projection
       // without creating an amendment, rubric revision, or fresh proof cohort.
-      const projectionOnly = canonicalUnchanged && changedBars.length === 0;
+      const projectionOnly = canonicalUnchanged && changedBars.length === 0 && !provenanceChanged;
       if (projectionOnly && !preview) {
         if (requirementsRerender.rerendered.length === 0) return {
           rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
@@ -5071,7 +5104,7 @@ async function amendAcceptanceBarRubric(
         };
       }
 
-      if (changedBars.length === 0 && requirementsRerender.rerendered.length === 0 && !preview) return {
+      if (changedBars.length === 0 && !provenanceChanged && requirementsRerender.rerendered.length === 0 && !preview) return {
         rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
         subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
         changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },

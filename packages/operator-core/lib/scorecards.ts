@@ -25,8 +25,9 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
-import { getOrgPg } from '@papercusp/db-org';
+import { DbCallDeadlineError, getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
+import { isRetriablePgConnectError } from './pg-transient-retry';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
@@ -3119,17 +3120,66 @@ const GRADING_AUDIT_SUBJECT_MUTEX_POOL = 'grading-audit-subject';
 
 /** Keep scorecard mutex waits below the MCP caller's 300s deadline. */
 export const SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS = 240_000;
+/** Bound the pool reservation that precedes every scorecard mutex lock. */
+export const SCORECARD_MUTEX_POOL_ACQUIRE_TIMEOUT_MS = 30_000;
 
 export class ScorecardEmitMutexWaitTimeoutError extends Error {
   readonly code = 'scorecard_emit_mutex_timeout';
+  readonly phase: 'pool-reservation' | 'advisory-lock';
 
-  constructor(mutex: 'dedup' | 'grading-audit-subject', timeoutMs: number) {
+  constructor(
+    mutex: 'dedup' | 'grading-audit-subject',
+    timeoutMs: number,
+    phase: 'pool-reservation' | 'advisory-lock' = 'advisory-lock',
+  ) {
+    const waitingFor = phase === 'pool-reservation' ? 'pool connection' : 'mutex';
     super(
-      `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} mutex. ` +
+      `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} ${waitingFor}. ` +
         'No scorecard was persisted by this attempt; retry after the current emitter settles.',
     );
     this.name = 'ScorecardEmitMutexWaitTimeoutError';
+    this.phase = phase;
   }
+}
+
+export function scorecardMutexPoolAcquireTimeoutMs(timeoutMs: number): number {
+  return Math.max(1, Math.min(SCORECARD_MUTEX_POOL_ACQUIRE_TIMEOUT_MS, Math.trunc(timeoutMs)));
+}
+
+/**
+ * Reserve a session-pinned mutex connection with a deadline. `reserve()` is a
+ * pool operation, so PG statement/lock timeouts do not apply until after this
+ * promise resolves. If the deadline wins, a late reservation is released as
+ * soon as it arrives so the timed-out call cannot leak a pool slot.
+ */
+export async function reserveScorecardMutexConnection<T extends { release: () => void }>(
+  reserve: () => Promise<T>,
+  phases: PhaseTracker | undefined,
+  phase: string,
+  timeoutMs: number,
+): Promise<T> {
+  return trackPhase(phases, phase, () =>
+    withAcquisitionDeadline<T>(
+      ({ disarm, expired }) =>
+        reserve().then((connection) => {
+          if (expired()) {
+            connection.release();
+            throw new Error(`${phase} acquisition expired before use`);
+          }
+          disarm();
+          return connection;
+        }),
+      { label: phase, ms: scorecardMutexPoolAcquireTimeoutMs(timeoutMs) },
+    ),
+  );
+}
+
+/** Reserve failures happen before a scorecard query can reach PostgreSQL. */
+export function isScorecardMutexPoolAcquisitionError(error: unknown): boolean {
+  if (error instanceof DbCallDeadlineError || isRetriablePgConnectError(error)) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' &&
+    ['ECONNREFUSED', 'ECONNRESET', 'CONNECTION_CLOSED', 'CONNECTION_DESTROYED', 'CONNECTION_ENDED'].includes(code);
 }
 
 function gradingAuditSubjectMutexSql(): postgres.Sql {
@@ -3162,32 +3212,40 @@ export async function acquireGradingAuditSubjectMutex(input: {
   subjectIssueId: string;
 }, phases?: PhaseTracker, waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS): Promise<() => Promise<void>> {
   const key = gradingAuditSubjectMutexKey(input);
-  const reserved = await trackPhase(
-    phases,
-    'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
-    () => gradingAuditSubjectMutexSql().reserve(),
-  );
+  const poolPhase = 'scorecards:emit:mutex:grading-audit-subject:pool-reservation';
+  const reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitTimeoutMs);
+  let reserved: Awaited<ReturnType<ReturnType<typeof gradingAuditSubjectMutexSql>['reserve']>> | undefined;
   let acquired = false;
   try {
-    await reserved.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
-    await reserved.unsafe('SET statement_timeout = 0');
+    const connection = await reserveScorecardMutexConnection(
+      () => gradingAuditSubjectMutexSql().reserve(),
+      phases,
+      poolPhase,
+      waitTimeoutMs,
+    );
+    reserved = connection;
+    await connection.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
+    await connection.unsafe('SET statement_timeout = 0');
     await trackPhase(phases, 'scorecards:emit:mutex:grading-audit-subject:advisory-lock', () =>
-      reserved.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
+      connection.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
     );
     acquired = true;
     return async () => {
       if (!acquired) return;
       acquired = false;
       try {
-        await reserved
+        await connection
           .unsafe('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
           .catch(() => {});
       } finally {
-        reserved.release();
+        connection.release();
       }
     };
   } catch (error) {
-    reserved.release();
+    reserved?.release();
+    if (isScorecardMutexPoolAcquisitionError(error)) {
+      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', reservationTimeoutMs, 'pool-reservation');
+    }
     if ((error as { code?: string } | null)?.code === '55P03') {
       throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', waitTimeoutMs);
     }

@@ -70,6 +70,23 @@ export function isolatedWorkerFailureDetail(output: string): string {
   return fatal >= 0 ? lines.slice(fatal, fatal + 12).join('\n').slice(0, 4_000) : output.slice(-4_000);
 }
 
+/** Prefer semantic work over cleanup chatter when an execute deadline fires. */
+export function isolatedWorkerPendingStage(evidenceDir: string) {
+  const path = join(evidenceDir, 'worker-progress.ndjson');
+  if (!existsSync(path)) return null;
+  const active = new Map<string, Record<string, unknown>>();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    try {
+      const row = JSON.parse(line) as Record<string, unknown>;
+      if (typeof row.stage !== 'string') continue;
+      if (row.stage.endsWith('-start')) active.set(row.stage.slice(0, -6), row);
+      else if (row.stage.endsWith('-complete')) active.delete(row.stage.slice(0, -9));
+      else if (row.stage.endsWith('-failed')) active.delete(row.stage.slice(0, -7));
+    } catch { /* A killed writer may leave an incomplete final line. */ }
+  }
+  return [...active.values()].at(-1) ?? null;
+}
+
 /** Persist at the observation boundary, before a timeout can erase private state. */
 export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string, evidence: Record<string, unknown> = {}) {
   appendFileSync(join(evidenceDir, 'worker-progress.ndjson'), JSON.stringify({
@@ -276,7 +293,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       child.off('error', onError);
       closeSync(fd);
       const result = { code: child.exitCode, signal: child.signalCode, timedOut, timeoutPhase, exitWaitTimedOut, stdioDrainTimedOut };
-      writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result, error: error?.message ?? null }), { flag: 'wx' });
+      writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result,
+        pendingStage: isolatedWorkerPendingStage(evidenceDir), error: error?.message ?? null }), { flag: 'wx' });
       if (error) reject(error);
       else resolve({ ...result, output });
     };

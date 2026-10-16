@@ -97,14 +97,14 @@ describe('social:reply — rail 1', () => {
     expect(installed.invokes[0]!.request.source).toBe('src-1');
     expect(seen()[0]!.target).toEqual({
       platform: 'mastodon',
-      inReplyToId: '109999',
-      instanceHost: 'mastodon.social',
+      externalId: '109999',
+      payload: MASTODON_DOC.metadata,
     });
     expect(seen()[0]!.text).toBe('thanks!');
     expect((seen()[0] as SocialReplyRequest & { payload: unknown }).payload).toMatchObject(MASTODON_DOC.metadata);
     expect(result.inReplyTo).toBe('mastodon:109999');
     expect(result.ref).toBe('mastodon:110000');
-    expect(result.label).toContain('mastodon.social');
+    expect(result.label).toBe('Mastodon · 109999');
   });
 
   it('INHERITS the parent audience when none is requested', async () => {

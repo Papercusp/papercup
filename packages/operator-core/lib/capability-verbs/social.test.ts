@@ -148,34 +148,30 @@ describe('visibility rail — a reply never widens its parent', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('rail 1 — reply coordinates come from the document alone', () => {
-  it('derives a Bluesky strong ref for both parent and root', () => {
+  it('passes Bluesky strong-ref metadata intact to the package', () => {
     const coordinates = resolveSocialReplyCoordinates(
       doc('bluesky', BLUESKY_PARENT.uri, { ...BLUESKY_PARENT, visibility: 'public' }),
     );
     expect(coordinates.target).toEqual({
       platform: 'bluesky',
-      rootUri: BLUESKY_PARENT.rootUri,
-      rootCid: BLUESKY_PARENT.rootCid,
-      parentUri: BLUESKY_PARENT.uri,
-      parentCid: BLUESKY_PARENT.cid,
+      externalId: BLUESKY_PARENT.uri,
+      payload: { ...BLUESKY_PARENT, visibility: 'public' },
     });
-    expect(coordinates.label).toContain('alice.bsky.social');
+    expect(coordinates.label).toContain(BLUESKY_PARENT.uri);
   });
 
-  it('treats a root post as its own thread root', () => {
+  it('leaves root fallback to the package', () => {
     const coordinates = resolveSocialReplyCoordinates(
       doc('bluesky', BLUESKY_PARENT.uri, { uri: BLUESKY_PARENT.uri, cid: BLUESKY_PARENT.cid }),
     );
     expect(coordinates.target).toMatchObject({
-      rootUri: BLUESKY_PARENT.uri,
-      parentUri: BLUESKY_PARENT.uri,
+      externalId: BLUESKY_PARENT.uri,
+      payload: { uri: BLUESKY_PARENT.uri, cid: BLUESKY_PARENT.cid },
     });
   });
 
-  it('refuses a Bluesky post missing its cid — a strong ref needs both halves', () => {
-    expect(() =>
-      resolveSocialReplyCoordinates(doc('bluesky', BLUESKY_PARENT.uri, { uri: BLUESKY_PARENT.uri })),
-    ).toThrow(/coordinates_missing:bluesky/);
+  it('passes incomplete vendor metadata for package validation', () => {
+    expect(resolveSocialReplyCoordinates(doc('bluesky', BLUESKY_PARENT.uri, { uri: BLUESKY_PARENT.uri })).target.payload).toEqual({ uri: BLUESKY_PARENT.uri });
   });
 
   it('carries the parent visibility through, so the rail has something to check', () => {
@@ -188,24 +184,18 @@ describe('rail 1 — reply coordinates come from the document alone', () => {
     );
   });
 
-  it('refuses a Mastodon status with no instance host rather than defaulting one', () => {
-    // Mastodon is federated: there is no platform-wide API host to fall back
-    // to, so a missing host is unrecoverable, not defaultable.
-    expect(() =>
-      resolveSocialReplyCoordinates(doc('mastodon', '109999', { statusId: '109999' })),
-    ).toThrow(/mastodon.*federated/s);
+  it('does not invent a missing Mastodon instance host', () => {
+    expect(resolveSocialReplyCoordinates(doc('mastodon', '109999', { statusId: '109999' })).target.payload).toEqual({ statusId: '109999' });
   });
 
-  it('requires a Reddit fullname, not a bare id', () => {
+  it('passes Reddit fullnames and metadata without deriving a vendor selector', () => {
     const ok = resolveSocialReplyCoordinates(
       doc('reddit', 't3_abc123', { fullname: 't3_abc123', subreddit: 'papercusp' }),
     );
-    expect(ok.target).toEqual({ platform: 'reddit', parentFullname: 't3_abc123', subreddit: 'papercusp' });
-    expect(ok.label).toContain('r/papercusp');
+    expect(ok.target).toEqual({ platform: 'reddit', externalId: 't3_abc123', payload: { fullname: 't3_abc123', subreddit: 'papercusp' } });
+    expect(ok.label).toContain('t3_abc123');
 
-    expect(() =>
-      resolveSocialReplyCoordinates(doc('reddit', 'abc123', { fullname: 'abc123' })),
-    ).toThrow(/expected a fullname/);
+    expect(resolveSocialReplyCoordinates(doc('reddit', 'abc123', { fullname: 'abc123' })).target.externalId).toBe('abc123');
   });
 
   it('is a PURE function of the document — no caller argument can steer it', () => {
@@ -462,7 +452,7 @@ describe('controls — deliberately wrong implementations, kept so the guards st
     // … while the real one stays on the host recorded in the stored payload.
     expect(resolveSocialReplyCoordinates(injected).target).toMatchObject({
       platform: 'mastodon',
-      instanceHost: 'mastodon.social',
+      payload: { instanceHost: 'mastodon.social' },
     });
   });
 

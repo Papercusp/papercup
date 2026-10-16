@@ -890,6 +890,33 @@
       },
       "verification": "On2026-10-16, the exact original receipt and census, existing DONE/committed repair and its corrected root-cause comparison, four exact retained ledger rows, containing source blobs, source-changing history and ancestry established this match. The test blob remains identical in HEAD; the whole host file has later changes, so current host equality is not asserted. No test was replayed and no terminal repair was claimed or reclosed.",
       "proofBoundary": "This maps the original MCP owner-resolution failure to the existing committed repair and its retained causal controls. Retained completion proof, released-reader metadata limits and the intentional mutation failure remain distinct. The original receipt stays failed; no full affected PASS, current gate verdict, live auth acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116631,
+      "testFile": "packages/operator-core/lib/agent-tools/trimmed-contract.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116631 fails the live-catalog classification assertion solely on improvements:capture: it declares shape.trimmed but has neither shape.contract nor a SHAPER_CONTRACT_EXEMPT entry.",
+      "repairId": "WI-6554700010009725",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "f48649970c4d3a9ad693de56b7b12a7d27186b37",
+      "rootConnection": "The existing completed repair classifies improvements:capture as a reasoned exemption in the maintained SHAPER_CONTRACT_EXEMPT registry. Its shapeCaptureWriteEcho spreads the envelope and replaces only the nested issue with compactWorkItemRef; the row-fields contract cannot express that nested reduction. The source-changing commit adds the reason and separately classifies scheduler:get_next. The original failing receipt names only improvements:capture. The capture shaper function is byte-identical at originalf419, the repair commit and HEAD; the classification guard is unchanged. This connects the original missing registration to the completed repair without weakening or replaying the guard.",
+      "retainedProof": {
+        "sourceCommit": "f48649970c4d3a9ad693de56b7b12a7d27186b37",
+        "sourceBlob": "f07aa212f15211fa35f0494fd5b7ff30f2d16131",
+        "sourceSha256": "d908c799ac70774e07e5d5de4d5efcd5a6b88dbb6e77888b251969a467a200d8",
+        "testBlob": "4ae8c81dc7d1ccf7c32ad16072bfd230a8cc8e1e",
+        "testSha256": "c05b7e19da9cc20dbb39bfe851a73fc942b9b6e4372cff644a7a09a2bde553ee",
+        "captureShaperFunctionSha256": "c626e1b3c6185c9fa64e88a09855207c786fe3fe6c06d33fd335cb0e3edea20f",
+        "completionEvidence": "The committed completion records the guard failing before the exemptions and then Test Files1passed with TEST_EXIT_TRIMMED=0. It cites .papercusp/scratch/p006-write-echo-verify.log and .papercusp/scratch/p006-echo-contract-verify.log. It does not supply measured guard case counts or an immutable committed guard run.",
+        "testRunId": 21179692,
+        "recordedCommit": "44f253b7b91a9502cd5c89eb9156961fe93b2798",
+        "testResult": "Exact historical LOCAL21179692 is pass, worktreeDirty=true and isScratchConfig=false. Its recorded commit still has the pre-repair registry blob220878cc; the dirty result must not be attributed to those committed source bytes. Released-reader root is null and executionDetails are omitted. This supports the retained working-tree completion evidence only.",
+        "sourceEquivalentHistoricalTestRunId": 21230602,
+        "sourceEquivalentHistoricalCommit": "09b03f6f38c5e69a5a05c4ebdbf7ac11a7b63b30",
+        "sourceEquivalentHistoricalResult": "Exact historical LOCAL21230602 is pass, worktreeDirty=true and isScratchConfig=false, with root=null and executionDetails omitted. Its committed registry and test blobs match the repair and HEAD, but the dirty run is not an immutable source qualification. The09b commit is not an ancestor of currentHEAD; only file equivalence is established."
+      },
+      "verification": "On2026-10-16, exact original and retained receipt reads, the existing DONE/committed completion, source-changing history, source/test blob comparisons and repair-to-HEAD ancestry established this mapping. The registry and guard remain identical between the repair commit and HEAD. No test was replayed and no terminal repair was claimed or reclosed.",
+      "proofBoundary": "This attributes the original missing-classification failure to an existing committed repair. Both retained passing runs are dirty and lack full qualification metadata; no clean immutable complete-suite proof is asserted. The original receipt stays failed; no full affected PASS, current gate verdict, runtime acceptance or tutorial shipment is established."
     }
   ],
   "sourceReconciliations": [

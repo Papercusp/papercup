@@ -50,6 +50,7 @@ import {
   ScratchQuotaError,
   RETENTION_MS,
   SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
+  USAGE_REFRESH_MS,
   _resetScratchGcCountersForTests,
   scratchEvictionBytes,
   refreshScratchUsage,
@@ -563,6 +564,66 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
       releaseScan();
       readdirMock.mockImplementation(originalRead);
       await Promise.allSettled([...(write ? [write] : []), ...(probe ? [probe] : [])]);
+    }
+  });
+
+  it('does not wait for a stale but valid shared ledger before publishing a spill', async () => {
+    const workspaceId = 'ws-stale-ledger-write';
+    const runDir = makeRunDir(workspaceId, 'result-door', UUID(7), 8);
+    await refreshScratchUsage(workspaceId);
+
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    const wsRoot = scratchRootForWorkspace(workspaceId);
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === wsRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const staleNow = Date.now() + USAGE_REFRESH_MS + 1;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(staleNow);
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(runDir, 'spill.bin');
+    let writeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { writeStarted = resolve; });
+    let write: Promise<void> | undefined;
+    try {
+      write = writeWithScratchQuota({
+        workspaceId,
+        filePath,
+        bytes: 16,
+        onTiming: (row) => timings.push(row),
+      }, async () => {
+        await writeFile(filePath, Buffer.alloc(16));
+        writeStarted();
+      });
+
+      // The stale reconciliation is gated, but the payload reaches the writer first. This is the
+      // publication-deadline regression: a result-door spill must not wait on the full scan.
+      await started;
+      await write;
+      await atRoot;
+      expect(readFileSync(filePath)).toHaveLength(16);
+      expect(timings.find((row) => !row.progress)).toMatchObject({
+        refreshWaitMs: 0,
+        writeMs: expect.any(Number),
+      });
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      now.mockRestore();
+      await Promise.allSettled([...(write ? [write] : [])]);
+      await refreshScratchUsage(workspaceId);
     }
   });
 

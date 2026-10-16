@@ -37,6 +37,23 @@ async function drain(fetch: HostFetch, cursor: string | null = null, chosen = co
   throw new Error('fixture did not settle');
 }
 describe('Reddit provider package (P-031)', () => {
+  it('derives stored comment and submission fullnames without accepting messages or bare ids', async () => {
+    const w = world();
+    for (const payload of [{ parentFullname: 't1_a' }, { fullname: 't1_a' }, {}]) {
+      await adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'reply',
+        target: { platform: 'reddit', externalId: 't1_a', payload } } }, { fetch: w.fetch });
+      expect(new URLSearchParams(w.calls.at(-1)!.request.body).get('thing_id')).toBe('t1_a');
+    }
+    w.calls.length = 0;
+    for (const externalId of ['t4_message', 'abc', '../other']) {
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'reply',
+        target: { platform: 'reddit', externalId, payload: {} } } }, { fetch: w.fetch })).rejects.toThrow('invalid_content_target');
+    }
+    expect(w.calls).toHaveLength(0);
+    await adapter.invoke({ source: 's', config, capability: 'social.delete', args: {
+      target: { platform: 'reddit', externalId: 't1_a', payload: {} } } }, { fetch: w.fetch });
+    expect(new URL(w.calls[0].request.url).searchParams.get('id')).toBe('t1_a');
+  });
   it('requires host-held Basic OAuth and truthful owner-supplied identification', async () => {
     const d = await adapter.describe(); expect(validateProviderDescriptor(d)).toEqual([]);
     expect(d.oauth).toMatchObject({ tokenEndpointAuthMethod: 'client_secret_basic', userAgentRequired: true, identity: { displayNameField: 'name' } });

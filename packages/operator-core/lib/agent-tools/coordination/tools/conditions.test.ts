@@ -214,6 +214,25 @@ describe("computeConditionStates (pure)", () => {
     });
   });
 
+  it("preserves the latest emitter process identity for one-shot reconciliation", () => {
+    const emitter = {
+      pid: 4242,
+      startedAt: "2026-07-01T09:00:00.000Z",
+      uptimeSec: 60,
+      cwd: "/repo",
+      host: "host-a",
+      processIdentity: "linux:boot:4242",
+    };
+    const [s] = computeConditionStates([
+      { ...alarm(1, "origin-freshness:papercusp"), one_shot: true, emitter },
+    ]);
+    expect(s).toMatchObject({
+      condition_key: "origin-freshness:papercusp",
+      one_shot: true,
+      latest_emitter: emitter,
+    });
+  });
+
   it("alarm + later resolution ⇒ RESOLVED; re-alarm after ⇒ re-OPEN", () => {
     const resolved = computeConditionStates([alarm(1, "k"), resolution(2, "k")]);
     // resolved ⇒ no current open episode.

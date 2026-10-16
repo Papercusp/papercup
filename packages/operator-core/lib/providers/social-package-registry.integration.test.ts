@@ -157,9 +157,35 @@ describe('installed social packages use the generic Integrations model', () => {
       else await entry.adapter!.syncPage({ source: 'installed-source', cursor: null, mode: 'incremental', config }, host);
     } catch (error) { failure = error; }
     expect(providerSyncErrorOf(failure)).toMatchObject({ kind: 'rate-limited', retryAfterSeconds: 37 });
+    if (['facebook-pages', 'x', 'reddit', 'bluesky'].includes(id)) {
+      const externalId = id === 'reddit' ? 't1_parent' : id === 'bluesky' ? 'at://did:plc:other/app.bsky.feed.post/parent' : '202';
+      const payload = id === 'bluesky' ? { parentCid: 'parent-cid' } : { id: '999', replyToId: '999' };
+      const writes: Array<{ url: string; body?: string }> = [];
+      const result = await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.reply', args: {
+        text: 'installed reply', idempotencyKey: 'installed-key', target: { platform: providerId, externalId, payload },
+      } }, { fetch: async ({ request }) => {
+        writes.push(request);
+        const body = id === 'bluesky' ? { uri: `at://did:plc:owner/app.bsky.feed.post/${JSON.parse(request.body!).rkey}`, cid: 'created-cid' }
+          : id === 'reddit' ? { json: { errors: [], data: { things: [{ data: { name: 't1_new', permalink: '/r/test/comments/post/title/new' } }] } } }
+          : id === 'x' ? { data: { id: '303' } } : { id: '303' };
+        return { status: 200, headers: {}, bodyEncoding: 'utf8' as const, body: JSON.stringify(body) };
+      } });
+      expect(result).toBeDefined(); expect(writes).toHaveLength(1);
+      if (id === 'facebook-pages') expect(new URL(writes[0].url).pathname).toBe('/v23.0/202/comments');
+      else if (id === 'x') expect(JSON.parse(writes[0].body!).reply.in_reply_to_tweet_id).toBe('202');
+      else if (id === 'reddit') expect(new URLSearchParams(writes[0].body).get('thing_id')).toBe('t1_parent');
+      else expect(JSON.parse(writes[0].body!).record.reply).toEqual({ parent: { uri: externalId, cid: 'parent-cid' }, root: { uri: externalId, cid: 'parent-cid' } });
+      let calls = 0; let refused: unknown;
+      const invalidId = id === 'reddit' ? 't4_message' : id === 'bluesky' ? externalId : '../other';
+      try { await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.reply', args: {
+        text: 'refused reply', idempotencyKey: 'refused-key', target: { platform: providerId, externalId: invalidId, payload: {} },
+      } }, { fetch: async () => { calls++; return { status: 200, headers: {}, bodyEncoding: 'utf8', body: '{}' }; } }); }
+      catch (error) { refused = error; }
+      expect(refused).toBeDefined(); expect(calls).toBe(0);
+    }
     if (id === 'mastodon') {
       expect(model.oauthClient).toMatchObject({ instanceRequired: true, configured: false });
-      const target = { platform: 'mastodon', instanceHost: 'mastodon.social', inReplyToId: 'local' };
+      const target = { platform: 'mastodon', externalId: 'https://mastodon.social/users/owner/statuses/local', payload: { instanceHost: 'mastodon.social', statusId: 'local' } };
       const calls: Array<{ url: string; method?: string; body?: string; headers?: Record<string, string> }> = [];
       const actualHost = { fetch: async ({ request }: { request: typeof calls[number] }) => {
         calls.push(request); return { status: 200, headers: {}, bodyEncoding: 'utf8' as const,

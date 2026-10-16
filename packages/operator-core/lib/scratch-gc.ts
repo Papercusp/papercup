@@ -1797,11 +1797,19 @@ export async function writeWithScratchQuota(
     for (;;) {
       const outcome = await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
         const cachedState = await readSharedScratchQuotaState(opts.workspaceId, observeAwait);
-        if (!cachedState || Date.now() - cachedState.updatedAt > USAGE_REFRESH_MS) {
+        if (!cachedState) {
           // A whole-tree measurement can take seconds. Drop the mutex before starting the
           // existing shared refresh; it measures outside the lock and revalidates before publish.
+          // With no ledger there is no safe cached total to reserve against, so the first writer
+          // still waits for that measurement to establish the cross-process accounting base.
           return SCRATCH_USAGE_REFRESH_REQUIRED;
         }
+        // A valid ledger is the cross-process reservation fence even when its measurement is old.
+        // Waiting for a full-tree refresh here made every result-door spill inherit the scan's
+        // unbounded filesystem latency (21–246s in production telemetry). The refresh runs after
+        // this reservation and revalidates its shared revision before adopting any walk, so a
+        // concurrent writer cannot be erased by the eventual reconciliation.
+        const sharedStateStale = Date.now() - cachedState.updatedAt > USAGE_REFRESH_MS;
         const shared = {
           bytes: cachedState.bytes,
           measuredAt: cachedState.measuredAt,
@@ -1905,6 +1913,7 @@ export async function writeWithScratchQuota(
           }
           throw error;
         }
+        return sharedStateStale;
       }, onMutexWaiting, ({ waitedMs, localWaitMs, fsMutexAdmissionMs, admissionSubphaseTimingsMs }) => {
         if (opts.captureSubphaseTimings) {
           timings.localMutexWaitMs = localWaitMs;
@@ -1921,6 +1930,13 @@ export async function writeWithScratchQuota(
       if (outcome === SCRATCH_USAGE_REFRESH_REQUIRED) {
         await timed('refreshWaitMs', () => refreshScratchUsage(opts.workspaceId));
         continue;
+      }
+      if (outcome === true) {
+        // Keep stale-ledger reconciliation off the publication critical path. The current write
+        // is still reserved in `entry.writes`, so scheduleDeferredUsageRefresh starts the walk
+        // only after the payload settles and can no longer be mistaken for a complete snapshot.
+        entry.refreshDeferred = true;
+        entry.runBytesValid = false;
       }
       break;
     }

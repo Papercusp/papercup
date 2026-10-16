@@ -68,8 +68,13 @@ describe("persistent machine selection", () => {
 
   it("offers personal terminal and GUI connection instructions without a hosted workspace", () => {
     render(<MachineSwitcher localMode={false} workspaceSelected={false} />);
-    fireEvent.click(screen.getByRole("button", { name: "Connect your computer" }));
+    const help = screen.getByRole("button", { name: "Connect your computer" });
+    expect(help.dataset.connectionClass).toBe("ssh-profile");
+    expect(help.title).toBe("SSH connection profile");
+    fireEvent.click(help);
     const dialog = screen.getByRole("dialog", { name: "Connect your computer" });
+    expect(screen.getByTestId("machine-connection-authority").textContent).toContain("SSH machine access");
+    expect(dialog.textContent).toContain("portal relay and phone pairing are managed separately");
     expect(dialog.textContent).toContain("--connect-add-ssh=my-computer");
     expect(dialog.textContent).toContain("--connect-gui");
     expect(dialog.textContent).toContain("Forgetting an entry alone does not revoke");

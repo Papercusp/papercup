@@ -21,6 +21,101 @@ import type { CommittedReaderObservationCohort, CommittedReaderObservationIdenti
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
 import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 
+export interface PrivateUnrelatedCheckpointObservation {
+  workspace: string;
+  base: string;
+  expectedBuildSha: string;
+  healthBefore: { service: string; sha: string; bundleStale?: unknown };
+  healthAfter: { service: string; sha: string; bundleStale?: unknown };
+  itemId: string;
+  harness: string;
+  checkpoint: string;
+  /** All times use the observing worker's monotonic clock, including body drainage. */
+  startedAtMs: number;
+  completedAtMs: number;
+  response: { status: number; envelope: unknown };
+  /** Correlate this backend with the fixture's held row before collecting these samples. */
+  stallBefore: PrivateCheckpointStallSample;
+  stallAfter: PrivateCheckpointStallSample;
+  readback: { observedAtMs: number; workspace: string; harness: string; itemId: string; checkpoint: string };
+}
+
+interface PrivateCheckpointStallSample {
+  observedAtMs: number;
+  itemId: string;
+  pid: number;
+  backendStart: string;
+  queryStart: string;
+  state: string;
+  waitEventType: string;
+}
+
+/** D-007/R-003's unrelated-write detector for the existing private HTTP worker.
+ * This validates observations, never manufactures them. Unit inputs are not HTTP
+ * acceptance evidence; the real caller still owes original source/preparation,
+ * backend correlation, lifecycle cleanup, and the rest of the fault matrix.
+ */
+export function assertPrivateUnrelatedCheckpointObservation(o: PrivateUnrelatedCheckpointObservation) {
+  assert.match(o.workspace, /^test-runtime-[a-z0-9-]+$/);
+  const base = new URL(o.base);
+  assert.equal(base.protocol, 'http:');
+  assert.ok(['127.0.0.1', 'localhost'].includes(base.hostname), 'private HTTP host must be loopback');
+  assert.ok(base.port && !['3070', '3170', '3055'].includes(base.port), 'use the existing disposable HTTP host');
+  assert.equal(base.pathname, '/');
+  assert.ok(!base.username && !base.password && !base.search && !base.hash);
+  assert.match(o.expectedBuildSha, /^[a-f0-9]{10,40}$/);
+  for (const health of [o.healthBefore, o.healthAfter]) {
+    assert.equal(health.service, 'papercusp-operator');
+    assert.equal(health.sha, o.expectedBuildSha, 'serving build changed or is not the selected build');
+    assert.equal(health.bundleStale, undefined, 'stale bundle cannot qualify');
+  }
+  assert.ok(o.itemId && o.harness && o.checkpoint, 'select the exact item, canonical harness and nonempty checkpoint');
+  const times = [o.startedAtMs, o.completedAtMs, o.stallBefore?.observedAtMs,
+    o.stallAfter?.observedAtMs, o.readback?.observedAtMs];
+  assert.ok(times.every(value => Number.isFinite(value) && value >= 0), 'finite monotonic observations required');
+  const elapsedMs = o.completedAtMs - o.startedAtMs;
+  assert.ok(elapsedMs >= 0 && elapsedMs <= 20_000, 'unrelated checkpoint must finish within D-007 20 seconds');
+  for (const sample of [o.stallBefore, o.stallAfter]) {
+    assert.ok(sample.itemId && sample.itemId !== o.itemId, 'stall must belong to another item');
+    assert.ok(Number.isSafeInteger(sample.pid) && sample.pid > 0 && sample.backendStart && sample.queryStart,
+      'retain the observed PostgreSQL backend and query identity');
+    assert.equal(sample.state, 'active', 'stalled query must still be active');
+    assert.equal(sample.waitEventType, 'Lock', 'retain an actual PostgreSQL lock wait');
+  }
+  for (const key of ['itemId', 'pid', 'backendStart', 'queryStart'] as const)
+    assert.equal(o.stallAfter[key], o.stallBefore[key], 'the same stalled query must span the HTTP write');
+  assert.ok(o.stallBefore.observedAtMs <= o.startedAtMs && o.stallAfter.observedAtMs >= o.completedAtMs,
+    'stall observations must bracket the complete HTTP write');
+  assert.equal(o.response.status, 200, 'an HTTP error is not a successful mutation receipt');
+  const envelope = o.response.envelope as any;
+  assert.equal(envelope?.ok, true, 'HTTP dispatch must succeed');
+  assert.notEqual(envelope.result?.isError, true, 'tool refusal is not a successful mutation receipt');
+  let receipt = envelope.result?.structuredContent;
+  if (!receipt) {
+    const json = envelope.result?.content?.filter((part: any) =>
+      part.type === 'text' && typeof part.text === 'string' && part.text.trim().startsWith('{'));
+    assert.equal(json?.length, 1, 'one unambiguous authoritative JSON receipt required');
+    receipt = JSON.parse(json[0].text);
+  }
+  assert.equal(receipt?.ok, true, 'unavailable or outcome-unknown is not write success');
+  assert.deepEqual(receipt.counts, { ok: 1, failed: 0 });
+  assert.equal(receipt.results?.length, 1, 'receipt must name only the requested mutation');
+  const row = receipt.results[0];
+  assert.equal(row.ok, true);
+  assert.ok(!row.error && !row.errorCode, 'a failed or ambiguous write cannot qualify');
+  assert.equal(row.id, o.itemId);
+  assert.equal(row.harness, o.harness);
+  assert.equal(row.cleared, false);
+  assert.equal(row.verified, true, 'checkpoint writer must verify persistence through its reader');
+  assert.equal(row.length, o.checkpoint.length);
+  assert.equal(row.contentHash, createHash('sha256').update(o.checkpoint, 'utf8').digest('hex').slice(0, 12));
+  assert.ok(o.readback.observedAtMs >= o.completedAtMs, 'readback must follow the completed response');
+  assert.equal(o.readback.workspace, o.workspace);
+  assert.equal(o.readback.harness, o.harness);
+  assert.equal(o.readback.itemId, o.itemId);
+  assert.equal(o.readback.checkpoint, o.checkpoint, 'independent readback must contain the exact submitted checkpoint');
+}
+
 /** Identify a private PG socket without retaining authentication or query bytes.
  * postgres-js writes the complete startup packet before its first query. Ignore
  * SSL/cancel requests, incomplete packets and everything after that packet. */

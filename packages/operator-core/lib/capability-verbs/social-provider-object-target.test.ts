@@ -19,7 +19,7 @@ function doc(source: string, externalId: string): CanonicalDocument {
 }
 
 describe('installed provider object reply coordinates (P-023/P-027)', () => {
-  it.each(['youtube', 'instagram', 'threads'])('%s leaves native reply mapping to the installed package', (platform) => {
+  it.each(['bluesky', 'mastodon', 'reddit', 'facebook-pages', 'x-twitter', 'youtube', 'instagram', 'threads'])('%s leaves native reply mapping to the installed package', (platform) => {
     control.allowPrerequisites = true;
     try {
       const stored = doc(platform, 'stored-id');
@@ -29,14 +29,15 @@ describe('installed provider object reply coordinates (P-023/P-027)', () => {
       expect(result.parentVisibility).toBe('public');
     } finally { control.allowPrerequisites = false; }
   });
-  it.each([['facebook-pages', '123_456'], ['x-twitter', '9007199254740993']])('%s derives its target from the stored external id after prerequisites clear', (platform, id) => {
+  it.each([['facebook-pages', '123_456'], ['x-twitter', '9007199254740993']])('%s keeps the stored handle alongside its opaque payload', (platform, id) => {
     control.allowPrerequisites = true;
     try {
-      const result = resolveSocialReplyCoordinates(doc(platform, id));
-      expect(result.target).toEqual({ platform, objectId: id });
+      const stored = doc(platform, id);
+      const result = resolveSocialReplyCoordinates(stored);
+      expect(result.target).toEqual({ platform, externalId: id, payload: stored.payload });
       expect(result.ref).toEqual({ platform, externalId: id });
       expect(result.parentVisibility).toBe('public');
-      expect(JSON.stringify(result.target)).not.toContain('999');
+      expect(result.target.externalId).not.toBe('999');
     } finally { control.allowPrerequisites = false; }
   });
 
@@ -44,13 +45,13 @@ describe('installed provider object reply coordinates (P-023/P-027)', () => {
     expect(() => resolveSocialReplyCoordinates(doc('x-twitter', '55'))).toThrow(/social_platform_unusable:x-twitter/);
   });
 
-  it('refuses malformed server ids and a definite Facebook cannot-comment marker', () => {
+  it('passes vendor validation inputs to the package without interpreting them', () => {
     control.allowPrerequisites = true;
     try {
-      expect(() => resolveSocialReplyCoordinates(doc('x-twitter', '../elsewhere'))).toThrow('coordinates_missing:x-twitter');
-      expect(() => resolveSocialReplyCoordinates(doc('facebook-pages', 'elsewhere'))).toThrow('coordinates_missing:facebook-pages');
+      expect(resolveSocialReplyCoordinates(doc('x-twitter', '../elsewhere')).target.externalId).toBe('../elsewhere');
+      expect(resolveSocialReplyCoordinates(doc('facebook-pages', 'elsewhere')).target.externalId).toBe('elsewhere');
       const parent = doc('facebook-pages', '123_456'); parent.payload.canComment = false;
-      expect(() => resolveSocialReplyCoordinates(parent)).toThrow('cannot_comment');
+      expect(resolveSocialReplyCoordinates(parent).target.payload.canComment).toBe(false);
     } finally { control.allowPrerequisites = false; }
   });
 });

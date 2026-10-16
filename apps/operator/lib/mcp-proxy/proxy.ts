@@ -2282,6 +2282,10 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     "work_items:get",
     "work_items:search",
     "work_items:release",
+    // EI-26075003767019614 — recording a typed external blocker parks the active
+    // claim and frees its scheduler slot, so keep this recovery write available
+    // when ordinary admission is saturated.
+    "work_items:set_blocker",
     "work_items:set_state",
   ].map(normalizeMcpName),
 );

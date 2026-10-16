@@ -7,6 +7,7 @@ import { Select } from "@/app/harness/Select";
 import { Modal } from "@/app/harness/Modal";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from "./workspace-view-model";
+import { normalizeSshProfile } from "../settings/remote-access/connection-inventory";
 
 export interface MachineSwitcherProps {
   localMode?: boolean;
@@ -89,11 +90,14 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
 /** Same personal-machine instructions in both shells; credentials stay with OpenSSH. */
 function MachineConnectionHelp() {
   const [open, setOpen] = useState(false);
+  const connection = normalizeSshProfile({ id: "local-ssh", label: "Connect your computer", scope: "Private network" });
   return <>
-    <button type="button" onClick={() => setOpen(true)}>Connect your computer</button>
+    <button type="button" data-connection-class={connection.class} title="SSH connection profile"
+      onClick={() => setOpen(true)}>Connect your computer</button>
     <Modal open={open} onOpenChange={setOpen} title="Connect your computer"
       contentStyle={{ maxWidth: 560, padding: 24, background: "var(--surface-1, #151922)" }}>
       <h2>Connect your computer</h2>
+      <p data-testid="machine-connection-authority"><strong>{connection.authoritySummary}</strong> — this is the SSH profile path. The portal relay and phone pairing are managed separately under Remote access.</p>
       <p>Use the psu utility on this computer to reach a desktop or laptop over your private network or VPN.</p>
       <ol>
         <li>On the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.</li>

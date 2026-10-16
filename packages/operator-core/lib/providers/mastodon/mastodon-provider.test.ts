@@ -39,6 +39,22 @@ async function drain(fetch: HostFetch, cursor: string | null = null, chosen = co
   throw new Error('Mastodon fixture failed to settle');
 }
 describe('Mastodon provider package (P-001, D-019)', () => {
+  it('derives instance-local selectors from stored records and refuses absent or foreign hosts before fetching', async () => {
+    const w = world();
+    const target = { platform: 'mastodon', externalId: `${origin}/users/ada/statuses/local-status`,
+      payload: { statusId: 'local-status', instanceHost: 'mastodon.social' } };
+    await adapter.invoke({ source: 's', config, capability: 'social.reply', args: { ...postArgs, target } }, { fetch: w.fetch });
+    expect(new URLSearchParams(w.calls[0].request.body).get('in_reply_to_id')).toBe('local-status');
+    w.calls.length = 0;
+    for (const capability of ['social.reply', 'social.delete']) {
+      for (const payload of [{ statusId: 'local-status' }, { statusId: 'local-status', instanceHost: 'foreign.example' }]) {
+        await expect(adapter.invoke({ source: 's', config, capability, args: { ...postArgs, target: { ...target, payload } } }, { fetch: w.fetch })).rejects.toThrow('instance_mismatch');
+      }
+    }
+    expect(w.calls).toHaveLength(0);
+    await adapter.invoke({ source: 's', config, capability: 'social.delete', args: { target } }, { fetch: w.fetch });
+    expect(new URL(w.calls[0].request.url).pathname).toBe('/api/v1/statuses/local-status');
+  });
   it('declares a generic instance OAuth grant and all three actual write capabilities', async () => {
     const d = await adapter.describe(); expect(validateProviderDescriptor(d)).toEqual([]);
     expect(d.egressHosts).toEqual([]); expect(d.oauth).toMatchObject({ instance: true, tokenUrl: '/oauth/token', identity: { idField: 'id' } });

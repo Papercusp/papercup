@@ -44,6 +44,29 @@ async function drain(fetch: HostFetch, cursor: string | null = null, chosen = co
   throw new Error('fixture did not settle');
 }
 describe('Bluesky provider package (P-030)', () => {
+  it('derives strong refs from stored package records and legacy metadata before writes', async () => {
+    for (const payload of [
+      { parentUri: uri('parent'), parentCid: 'parent-cid', rootUri: uri('root'), rootCid: 'root-cid' },
+      { uri: uri('parent'), cid: 'parent-cid', rootUri: uri('root'), rootCid: 'root-cid' },
+      { cid: 'parent-cid' },
+    ]) {
+      const w = world();
+      await adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'reply', idempotencyKey: 'stored',
+        target: { platform: 'bluesky', externalId: uri('parent'), payload } } }, { fetch: w.fetch });
+      const record = JSON.parse(w.calls[0].request.body!).record;
+      expect(record.reply).toEqual({ parent: { uri: uri('parent'), cid: 'parent-cid' },
+        root: { uri: 'rootUri' in payload ? uri('root') : uri('parent'), cid: 'rootCid' in payload ? 'root-cid' : 'parent-cid' } });
+    }
+    const w = world();
+    for (const payload of [{}, { cid: 'parent-cid', rootUri: uri('root') }]) {
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'reply', idempotencyKey: 'stored',
+        target: { platform: 'bluesky', externalId: uri('parent'), payload } } }, { fetch: w.fetch })).rejects.toThrow('invalid_strong_ref');
+    }
+    expect(w.calls).toHaveLength(0);
+    await adapter.invoke({ source: 's', config, capability: 'social.delete', args: { target: {
+      platform: 'bluesky', externalId: uri('parent'), payload: { parentCid: 'exact-cid' } } } }, { fetch: w.fetch });
+    expect(JSON.parse(w.calls[0].request.body!)).toMatchObject({ repo: DID, rkey: 'parent', swapRecord: 'exact-cid' });
+  });
   it('uses generic app-password sessions without an OAuth descriptor or package access to tokens', async () => {
     const d = await adapter.describe(); expect(validateProviderDescriptor(d)).toEqual([]);
     expect(d.oauth).toBeUndefined(); expect(d.setup!.session!.parameters).toEqual({ identifier: 'identifier', password: 'app_password' });
