@@ -16,6 +16,25 @@ export function awsEbsNvmeDevicePathCore(volumeId) {
   return `/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${volumeId.replace('-', '')}`;
 }
 
+/** Shared by both provider renderers: probe failure is never blank-media proof. */
+export function renderDurableDataProbeCore(dataMode = 'fresh') {
+  if (!['fresh', 'existing'].includes(dataMode)) throw new Error('durable data mode must be fresh or existing');
+  return [
+    `data_mode='${dataMode}'`,
+    'data_probe_status=0',
+    'data_type=$(blkid -p -s TYPE -o value "$data_device") || data_probe_status=$?',
+    'if [[ "$data_probe_status" == 0 && "$data_type" == ext4 ]]; then',
+    '  : # Existing ext4 is mounted without formatting.',
+    'elif [[ "$data_mode" == fresh && "$data_probe_status" == 2 && -z "$data_type" ]]; then',
+    '  data_signatures=$(wipefs --no-act --noheadings --output TYPE "$data_device") || { echo "durable data signature probe failed" >&2; exit 1; }',
+    '  [[ -z "${data_signatures//[[:space:]]/}" ]] || { echo "durable data device has existing signatures" >&2; exit 1; }',
+    '  mkfs.ext4 "$data_device"',
+    'else',
+    '  echo "durable data filesystem unavailable or unsupported; refusing to format" >&2; exit 1',
+    'fi',
+  ];
+}
+
 export function renderDurableFilesystemScriptCore(input) {
   if (!/^\/dev\/disk\/by-id\/[A-Za-z0-9._:-]+$/.test(input.devicePath)) {
     throw new Error(`durable data device must be a /dev/disk/by-id path, got ${JSON.stringify(input.devicePath)}`);
@@ -35,7 +54,7 @@ export function renderDurableFilesystemScriptCore(input) {
     `data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`,
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,
     'test -b "$data_device"',
-    'if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.ext4 -F "$data_device"; fi',
+    ...renderDurableDataProbeCore(input.dataMode),
     'data_uuid=$(blkid -s UUID -o value "$data_device")',
     'install -d -m 0750 "$data_mount"',
     'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
@@ -72,6 +91,7 @@ export function renderAwsHostBootstrapPushCore(input) {
     devicePath: awsEbsNvmeDevicePathCore(input.volumeId),
     deviceWaitSec: input.deviceWaitSec ?? AWS_DATA_DEVICE_WAIT_SEC,
     hostBootstrapScript: input.hostBootstrapScript,
+    dataMode: input.dataMode,
     ...(input.workspaceDataRoot ? { workspaceDataRoot: input.workspaceDataRoot } : {}),
   });
   const scriptSha256 = createHash('sha256').update(script, 'utf8').digest('hex');

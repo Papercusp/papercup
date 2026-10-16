@@ -26,12 +26,38 @@ describe('renderDurableFilesystemScript', () => {
     expect(script).toContain(`data_device='${AWS_DEVICE}'`);
     expect(script).toContain(`data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`);
     expect(script).toContain('for attempt in $(seq 1 180); do test -b "$data_device"');
-    expect(script).toContain('if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.ext4 -F "$data_device"; fi');
+    expect(script).toContain('wipefs --no-act --noheadings --output TYPE "$data_device"');
+    expect(script).not.toContain('mkfs.ext4 -F');
     // Survives a reboot without re-running: every mount is in fstab, and the data mount is nofail.
     expect(script).toContain('defaults,nofail,discard');
     expect(script).toContain('none bind 0 0\\n" "$data_mount/home" "$home_target" >> /etc/fstab');
     expect(script).toContain(`${WORKSPACE_HOST_DATA_ROOT} none bind 0 0`);
   });
+
+  it.each([
+    ['fresh', 0, 'ext4', 0, '', false, 0],
+    ['existing', 0, 'ext4', 0, '', false, 0],
+    ['fresh', 2, '', 0, '', true, 0],
+    ['existing', 2, '', 0, '', false, 1],
+    ['fresh', 8, '', 0, '', false, 1],
+    ['existing', 4, '', 0, '', false, 1],
+    ['fresh', 2, '', 1, '', false, 1],
+    ['fresh', 2, '', 0, 'ext4', false, 1],
+    ['fresh', 0, 'xfs', 0, '', false, 1],
+    ['existing', 0, 'xfs', 0, '', false, 1],
+  ] as const)('executes safe %s probe (blkid=%s,type=%s,wipefs=%s,signatures=%s)',
+    (dataMode, probeStatus, type, wipeStatus, signatures, formatted, exitStatus) => {
+      const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30, dataMode });
+      const probe = script.slice(script.indexOf('data_mode='), script.indexOf('data_uuid='));
+      const run = spawnSync('bash', ['-c', [
+        'set -euo pipefail', 'data_device=/dev/fixture',
+        `blkid() { printf '%s' '${type}'; return ${probeStatus}; }`,
+        `wipefs() { printf '%s' '${signatures}'; return ${wipeStatus}; }`,
+        'mkfs.ext4() { echo FORMATTED; }', probe,
+      ].join('\n')], { encoding: 'utf8', timeout: 5000 });
+      expect(run.status, run.stderr).toBe(exitStatus);
+      expect(run.stdout.includes('FORMATTED')).toBe(formatted);
+    });
 
   it('binds the canonical home on a bootc image, where /home is a symlink to var/home (WI-10006838)', () => {
     // Measured 2026-10-06 on AMI A-r62b (CentOS Stream 10 bootc): /home -> var/home. The script

@@ -1,4 +1,5 @@
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
+import { renderDurableDataProbeCore } from './aws-host-bootstrap-push-core.mjs';
 
 /**
  * Where a workspace host's durable data disk is mounted, on every provider. The host bootstrap
@@ -8,6 +9,8 @@ import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
 export const WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT = '/var/lib/papercusp';
 
 export interface DurableFilesystemScriptInput {
+  /** Only a newly provisioned blank volume may be formatted. Retained/restored data never may. */
+  dataMode?: 'fresh' | 'existing';
   /**
    * The data disk's block device by a STABLE identity (`/dev/disk/by-id/...`), never a guessed
    * kernel name: the script formats the device when it carries no filesystem, so a wrong path
@@ -44,7 +47,7 @@ export function renderDurableFilesystemScript(input: DurableFilesystemScriptInpu
     `data_mount='${WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT}'`,
     `for attempt in $(seq 1 ${input.deviceWaitSec}); do test -b "$data_device" && break; sleep 1; done`,
     'test -b "$data_device"',
-    'if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.ext4 -F "$data_device"; fi',
+    ...renderDurableDataProbeCore(input.dataMode),
     'data_uuid=$(blkid -s UUID -o value "$data_device")',
     'install -d -m 0750 "$data_mount"',
     'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',

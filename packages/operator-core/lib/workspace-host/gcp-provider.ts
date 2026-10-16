@@ -1536,6 +1536,7 @@ function metadata(
   settings: GcpWorkspaceHostDesiredProviderSettings,
   hostId: string,
   hostBootstrapScript?: string,
+  dataMode: 'fresh' | 'existing' = 'fresh',
 ): readonly { key: string; value: string }[] {
   const entries = new Map<string, string>(Object.entries(settings.metadata));
   entries.set('block-project-ssh-keys', 'TRUE');
@@ -1543,7 +1544,7 @@ function metadata(
   entries.set('enable-oslogin', 'TRUE');
   entries.set('papercusp-host-id', hostId);
   entries.set('papercusp-data-resize-policy', settings.dataDiskResizePolicy);
-  entries.set('startup-script', durableFilesystemStartupScript(settings.dataDeviceName, hostBootstrapScript));
+  entries.set('startup-script', durableFilesystemStartupScript(settings.dataDeviceName, hostBootstrapScript, dataMode));
   return [...entries.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
@@ -1564,11 +1565,12 @@ function metadata(
  * re-runs the startup script on every boot, and `planUpgrade` recreates the boot disk while
  * retaining only the data disk (`{ ...dataDisk, autoDelete: false }`).
  */
-function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScript?: string): string {
+function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScript?: string, dataMode: 'fresh' | 'existing' = 'fresh'): string {
   return renderDurableFilesystemScript({
     devicePath: `/dev/disk/by-id/google-${dataDeviceName}`,
     deviceWaitSec: GCP_DATA_DEVICE_WAIT_SEC,
     hostBootstrapScript,
+    dataMode,
   });
 }
 
@@ -1581,7 +1583,7 @@ function refreshedInstanceMetadata(
   const dataDisk = observed.recreateInput.disks.find((disk) => disk.boot === false);
   const dataDeviceName = requireString(dataDisk?.deviceName, 'GCP data disk deviceName');
   const entries = new Map(observed.recreateInput.metadata.items.map(({ key, value }) => [key, value]));
-  entries.set('startup-script', durableFilesystemStartupScript(dataDeviceName, hostBootstrapScript));
+  entries.set('startup-script', durableFilesystemStartupScript(dataDeviceName, hostBootstrapScript, 'existing'));
   return {
     fingerprint,
     items: [...entries.entries()]
@@ -2346,7 +2348,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           ...(settings.serviceAccountEmail
             ? { serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }] as const }
             : {}),
-          metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript) },
+          metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript, sourceSnapshotName ? 'existing' : 'fresh') },
           ...(settings.provisioningModel === 'spot' ? { scheduling: GCP_SPOT_SCHEDULING } : {}),
         },
       } satisfies GcpStepInput,

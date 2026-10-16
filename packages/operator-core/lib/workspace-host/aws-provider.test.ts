@@ -1376,7 +1376,7 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
       id: 'start-host-bootstrap',
       dependsOn: ['attach-data-volume'],
       destructive: false,
-      input: { op: 'start-host-bootstrap', hostId: 'host-aws-1', script: HOST_BOOTSTRAP },
+      input: { op: 'start-host-bootstrap', hostId: 'host-aws-1', script: HOST_BOOTSTRAP, dataMode: 'fresh' },
     });
   });
 
@@ -1409,6 +1409,7 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
       { id: 'repair-instance', dependsOn: [] },
       { id: 'start-host-bootstrap', dependsOn: ['repair-instance'] },
     ]);
+    expect(repair.steps.find(step => step.id === 'start-host-bootstrap')?.input.dataMode).toBe('existing');
     // Lifecycle actions that keep the boot disk need no bootstrap — and do not demand one.
     for (const action of ['start', 'stop', 'restart'] as const) {
       const plan = await provider.plan({ action, operationId: action, idempotencyKey: action, host }, context({}, null));
@@ -1749,6 +1750,7 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     const attach = plan.steps.find((step) => step.id === `attach-replacement-volume:${original}`)!;
     const bootstrap = plan.steps.find((step) => step.id === 'start-host-bootstrap')!;
     const reinstate = { op: 'reinstate-instance', instanceId: original, volumeId: volume, retireReplacement: true };
+    expect(bootstrap.input.dataMode).toBe('existing');
     expect(attach.rollback?.input).toMatchObject(reinstate);
     expect(bootstrap.rollback?.input).toMatchObject(reinstate);
     // lifecycle-runner strandedByFailure() rolls back only a step that depends on an applied
