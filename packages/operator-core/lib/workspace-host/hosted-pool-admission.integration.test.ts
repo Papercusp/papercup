@@ -69,7 +69,8 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
         bundles: [{ schemaVersion: 1, bundleId: 'pool-fixture', bundleVersion: 1, record,
           entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 100, members: 100 },
             browserAccess: { pty: true, files: true }, supportTier: 'trial', rolloutFlags: {},
-            quotas: { 'pool.hosts': 100, 'pool.cpu-millicores': 1000000, 'pool.memory-mib': 1000000, ...quotas },
+            quotas: { 'pool.hosts': 100, 'pool.cpu-millicores': 1000000, 'pool.memory-mib': 1000000,
+              'pool.db-gib': 100000, 'pool.workspace-gib': 100000, ...quotas },
             budgets: { 'pool.cost.usd.minor': budget } } }],
         assignments: [{ schemaVersion: 1, assignmentId: `fixture:${organizationId}`, organizationId,
           bundleId: 'pool-fixture', bundleVersion: 1,
@@ -101,7 +102,8 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
          desired_revision, observed_revision)
       VALUES (${ws}, ${id}, ${id}, 'pool-connection', 'gcp', 'pool-project', 'us-central1',
         'test-4', 'test-image', 256, 'default', 'running', ${options.placeholder ? 'provisioning' : options.state ?? 'running'},
-        ${JSON.stringify({ scope, zone: 'us-central1-a' })}::jsonb, 1, 'controller-a', 7,
+        ${JSON.stringify({ scope, zone: 'us-central1-a', data: { volumeGiB: 256,
+          allocation: { dbGiB: 256, workspaceGiB: 0 }, encrypted: true } })}::jsonb, 1, 'controller-a', 7,
         ${JSON.stringify(release)}::jsonb, ${o ? JSON.stringify(o) : null}::jsonb,
         ${options.placeholder ? null : 'healthy'}, now(), 1, 1)`;
   }
@@ -133,6 +135,136 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
   async function operations(ws: string) {
     return db.adminSql`SELECT id, host_id, admission_receipt FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws}`;
   }
+
+  async function pinDiskAllocation(ws: string, operationId: string, capacity = { dbGiB: 256, workspaceGiB: 0 }) {
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations
+      SET admission_receipt = ${JSON.stringify({ result: { resourceAdmission: { storage: { capacity } } } })}::jsonb
+      WHERE workspace_id = ${ws} AND id = ${operationId}`;
+  }
+
+  it('charges an explicit split once and pins storage in the immutable replay receipt', async () => {
+    const ws = fresh();
+    await customer(ws, 'storage');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{data}',
+      ${JSON.stringify({ volumeGiB: 320, allocation: { dbGiB: 256, workspaceGiB: 64 }, encrypted: true })}::jsonb)
+      WHERE workspace_id = ${ws} AND id = 'storage-placeholder'`;
+    await allowance(organization(ws, 'storage'), { 'pool.db-gib': 256, 'pool.workspace-gib': 64 });
+    const request = { ...input(ws, 'storage'), action: 'provision' as const };
+    const receipt = await admitHostedLifecycleJob(request);
+    expect(receipt.resourceAdmission).toMatchObject({ storage: {
+      allocated: { dbGiB: 0, workspaceGiB: 0 }, pending: { dbGiB: 0, workspaceGiB: 0 },
+      requested: { dbGiB: 256, workspaceGiB: 64 }, capacity: { dbGiB: 256, workspaceGiB: 64 },
+    } });
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = '{}'::jsonb WHERE workspace_id = ${ws}`;
+    await allowance(organization(ws, 'storage'), { 'pool.db-gib': 0, 'pool.workspace-gib': 0 });
+    expect(await admitHostedLifecycleJob(request)).toEqual({ ...receipt, created: false });
+  });
+
+  it.each([
+    { volumeGiB: 256 },
+    { volumeGiB: 256, allocation: { dbGiB: 256, workspaceGiB: 256 } },
+    { volumeGiB: 256, allocation: { dbGiB: -1, workspaceGiB: 257 } },
+    { volumeGiB: 256, allocation: { dbGiB: '256', workspaceGiB: 0 } },
+    { volumeGiB: 256, allocation: { dbGiB: 255.5, workspaceGiB: 0.5 } },
+  ])('refuses unknown or invalid storage allocation before any reservation: %j', async data => {
+    const ws = fresh();
+    await customer(ws, 'invalid-storage');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{data}', ${JSON.stringify(data)}::jsonb)
+      WHERE workspace_id = ${ws}`;
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'invalid-storage'), action: 'provision' }))
+      .rejects.toThrow('hosted_pool_storage_allocation_invalid');
+    expect(await operations(ws)).toHaveLength(0);
+  });
+
+  it.each(['pool.db-gib', 'pool.workspace-gib'])('enforces %s on real allocation admission', async quota => {
+    const ws = fresh();
+    await customer(ws, 'storage-limit');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{data}',
+      ${JSON.stringify({ volumeGiB: 320, allocation: { dbGiB: 256, workspaceGiB: 64 }, encrypted: true })}::jsonb)
+      WHERE workspace_id = ${ws}`;
+    await allowance(organization(ws, 'storage-limit'), { [quota]: quota === 'pool.db-gib' ? 255 : 63 });
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'storage-limit'), action: 'provision' }))
+      .rejects.toThrow(`quota_exceeded:${quota}`);
+    expect(await operations(ws)).toHaveLength(0);
+  });
+
+  it('includes pending storage across customer directories and moves it to allocated only once', async () => {
+    const ws = fresh();
+    const org = randomUUID();
+    await customer(ws, 'disk-one', undefined, org);
+    await allowance(org, { 'pool.db-gib': 256 });
+    const first = await admitHostedLifecycleJob({ ...input(ws, 'disk-one'), action: 'provision' });
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'deleted', deleted_at = now()
+      WHERE workspace_id = ${ws} AND id = 'disk-one'`;
+    await customer(ws, 'disk-two', undefined, org);
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'disk-two'), action: 'provision' }))
+      .rejects.toThrow('quota_exceeded:pool.db-gib');
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_resources
+      (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id)
+      VALUES (${ws}, ${first.hostId}, 'create-data-disk', ${first.operationId}, 'applied', 'disk', 'volume-disk-one')`;
+    // A later desired-spec edit must not shrink the ORIGINAL disk charge.
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_spec = jsonb_set(desired_spec, '{data}',
+      ${JSON.stringify({ volumeGiB: 1, allocation: { dbGiB: 1, workspaceGiB: 0 } })}::jsonb)
+      WHERE workspace_id = ${ws} AND id = ${first.hostId}`;
+    await allowance(org, { 'pool.db-gib': 511 });
+    await expect(admitHostedLifecycleJob({ ...input(ws, 'disk-two'), action: 'provision' }))
+      .rejects.toThrow('quota_exceeded:pool.db-gib');
+    await allowance(org, { 'pool.db-gib': 512 });
+    const second = await admitHostedLifecycleJob({ ...input(ws, 'disk-two'), action: 'provision' });
+    expect(second.resourceAdmission).toMatchObject({ storage: {
+      allocated: { dbGiB: 256, workspaceGiB: 0 }, pending: { dbGiB: 0, workspaceGiB: 0 },
+      requested: { dbGiB: 256, workspaceGiB: 0 },
+    } });
+  });
+
+  it.each(['active', 'expired', 'revoked', 'unconfigured'] as const)(
+    'handles a pre-policy signed-in tenant at admission: %s', async state => {
+      const ws = fresh();
+      await customer(ws, 'legacy');
+      await host(ws, 'warm');
+      const org = organization(ws, 'legacy');
+      const createdAt = new Date(Date.now() - (state === 'expired' ? 2 * 86_400_000 : 3_600_000));
+      await db.adminSql`UPDATE papercusp_auth.hosted_entitlements SET authority = NULL,
+        authority_revision = ${state === 'revoked' ? 2 : 0}, created_at = ${createdAt}
+        WHERE organization_id = ${org}::uuid`;
+      const record = { source: 'trial', actor: { kind: 'service', principalId: 'service:trial-policy' },
+        auditReceiptId: 'trial-policy:admission-fixture', effectiveFrom: '2020-01-01', effectiveUntil: null };
+      const trial = { assignmentDurationMs: 86_400_000, bundle: {
+        schemaVersion: 1, bundleId: 'admission-trial-fixture', bundleVersion: 1, record,
+        entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 1 },
+          browserAccess: { pty: true, files: true }, supportTier: 'trial', rolloutFlags: {},
+          quotas: { 'pool.agents': 50, 'pool.hosts': 1, 'pool.cpu-millicores': 4000,
+            'pool.memory-mib': 16384, 'pool.db-gib': 256, 'pool.workspace-gib': 100 },
+          budgets: { 'pool.cost.usd.minor': 10000 } },
+      } };
+      const previous = process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT;
+      try {
+        if (state === 'unconfigured') delete process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT;
+        else process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT = JSON.stringify(trial);
+        if (state === 'active') {
+          const receipt = await admitHostedLifecycleJob(input(ws, 'legacy'));
+          expect(receipt.resourceAdmission).toMatchObject({ authorityRevision: 1, bundleId: 'admission-trial-fixture' });
+          const [grant] = await db.adminSql`SELECT authority FROM papercusp_auth.hosted_entitlements
+            WHERE organization_id = ${org}::uuid`;
+          expect(grant.authority.assignments[0].record).toMatchObject({ effectiveFrom: createdAt.toISOString(),
+            effectiveUntil: new Date(createdAt.getTime() + 86_400_000).toISOString() });
+        } else {
+          await expect(admitHostedLifecycleJob(input(ws, 'legacy')))
+            .rejects.toThrow(state === 'expired' ? 'no_active_assignment' : 'authority_missing');
+          expect(await operations(ws)).toHaveLength(0);
+          const [grant] = await db.adminSql`SELECT authority, authority_revision FROM papercusp_auth.hosted_entitlements
+            WHERE organization_id = ${org}::uuid`;
+          // Rejected admission also rolls back any attempted legacy backfill.
+          expect(grant).toMatchObject({ authority: null, authority_revision: state === 'revoked' ? 2 : 0 });
+          const [bound] = await db.adminSql`SELECT workspace_host_id FROM harness_shared.customer_workspaces
+            WHERE workspace_id = ${ws} AND id = 'legacy'`;
+          expect(bound.workspace_host_id).toBe('legacy-placeholder');
+        }
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT;
+        else process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT = previous;
+      }
+    });
 
   it('refuses missing or revoked authority before rebinding a warm VM and replays an existing receipt after revocation', async () => {
     const ws = fresh();
@@ -415,6 +547,7 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await customer(ws, 'reuse', 'owned');
     await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'running', pool_observation = ${JSON.stringify(observation())}::jsonb, health_status = 'healthy', health_attested_at = now() WHERE workspace_id = ${ws} AND id = 'owned'`;
     await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status) VALUES (${ws}, 'prior', 'owned', 'provision', 'succeeded')`;
+    await pinDiskAllocation(ws, 'prior');
     await db.adminSql`INSERT INTO harness_shared.workspace_host_resources (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id) VALUES (${ws}, 'owned', 'create-data-disk', 'prior', 'applied', 'disk', 'volume-reuse')`;
     const receipt = await admitHostedLifecycleJob(input(ws, 'reuse', 'owned'));
     expect(receipt).toMatchObject({ placement: { kind: 'reuse' }, hostDesiredRevision: 1 });
@@ -426,7 +559,7 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await expect(completeHostedPoolReuse(ws, receipt)).rejects.toThrow('fenced_or_stale');
   });
 
-  async function stoppedOwner(ws: string, customerId = 'sleeper', hostId = 'owned', organizationId = randomUUID()) {
+  async function stoppedOwner(ws: string, customerId = 'sleeper', hostId = 'owned', organizationId = randomUUID(), pinnedStorage = true) {
     const priorId = customerId === 'sleeper' ? 'prior' : `prior-${customerId}`;
     const volumeId = `volume-${customerId}`;
     await customer(ws, customerId, hostId, organizationId);
@@ -435,12 +568,30 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
       WHERE workspace_id = ${ws} AND id = ${hostId}`;
     await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status)
       VALUES (${ws}, ${priorId}, ${hostId}, 'provision', 'succeeded')`;
+    if (pinnedStorage) await pinDiskAllocation(ws, priorId);
     await db.adminSql`INSERT INTO harness_shared.workspace_host_resources
       (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id)
       VALUES (${ws}, ${hostId}, 'create-data-disk', ${priorId}, 'applied', 'disk', ${volumeId})`;
     return observation({ observedAtMs: Date.now(), cleanAttestationRef: null,
       stoppedOwner: { customerWorkspaceId: customerId, dataVolumeId: volumeId } });
   }
+
+  it('retains the original disk allocation on stopped wake after downgrade and refuses unpinned legacy disks', async () => {
+    const ws = fresh();
+    const proof = await stoppedOwner(ws);
+    await recordHostedPoolObservation({ workspaceId: ws, hostId: 'owned', controllerId: 'controller-a', observation: proof });
+    await allowance(organization(ws, 'sleeper'), { 'pool.db-gib': 0, 'pool.workspace-gib': 0 });
+    const receipt = await admitHostedLifecycleJob(input(ws, 'sleeper', 'owned'));
+    expect(receipt.resourceAdmission).toMatchObject({ storage: { allocated: { dbGiB: 256, workspaceGiB: 0 },
+      pending: { dbGiB: 0, workspaceGiB: 0 }, requested: { dbGiB: 0, workspaceGiB: 0 },
+      capacity: { dbGiB: 256, workspaceGiB: 0 } } });
+    const legacy = fresh();
+    const legacyProof = await stoppedOwner(legacy, 'sleeper', 'owned', randomUUID(), false);
+    await recordHostedPoolObservation({ workspaceId: legacy, hostId: 'owned', controllerId: 'controller-a', observation: legacyProof });
+    await expect(admitHostedLifecycleJob(input(legacy, 'sleeper', 'owned')))
+      .rejects.toThrow('storage_allocation_invalid');
+    expect(await operations(legacy)).toHaveLength(1);
+  });
 
   it.each(['pool.cpu-millicores', 'pool.memory-mib'] as const)(
     'reserves %s for a pending stopped-owner start across directory replacement', async quota => {

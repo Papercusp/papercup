@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { withWorkspace } from '@papercusp/db-org';
-import { lockHostedEntitlementAuthority, readHostedEntitlementAuthority } from '../auth/hosted-entitlement-store';
+import { backfillHostedTrialEntitlementAuthority, lockHostedEntitlementAuthority,
+  parseHostedTrialEntitlementPolicy, readHostedEntitlementAuthority } from '../auth/hosted-entitlement-store';
 import { checkHostedEntitlement } from '../auth/hosted-entitlements';
 import {
   appendWorkspaceHostSpendObservation,
@@ -15,6 +17,7 @@ import {
   type WorkspaceHostPoolRequest,
   type WorkspaceHostSpendFinality,
   type WorkspaceHostSpendObservation,
+  type WorkspaceHostDataPolicy,
 } from '@papercusp/deployment-driver';
 import type { Sql } from 'postgres';
 import { notifyAttentionOnce } from '../attention-notify';
@@ -163,7 +166,7 @@ export interface HostedLifecycleAdmissionReceipt {
   hostId: string;
   hostDesiredRevision?: number;
   placement?: WorkspaceHostPoolPlacement;
-  /** Host capacity only; agent/storage admission is a separate, required check. */
+  /** Host and storage allocation admission; agent and guest filesystem enforcement remain separate. */
   resourceAdmission?: HostedPoolHostResourceAdmission;
 }
 
@@ -180,6 +183,115 @@ interface HostedPoolHostResourceAdmission {
   /** Full selected capacity, including a zero-increment running reuse. Older receipts omit it. */
   capacity?: { hosts: number; cpuMillicores: number; memoryMiB: number };
   budget: { currency: string; committedMinor: number; requestedMinor: number };
+  /** Disjoint retained disks and pending allocations, never two full-volume charges. */
+  storage?: HostedPoolStorageAdmission;
+}
+
+type HostedPoolStorageCapacity = { dbGiB: number; workspaceGiB: number };
+interface HostedPoolStorageAdmission {
+  allocated: HostedPoolStorageCapacity;
+  pending: HostedPoolStorageCapacity;
+  requested: HostedPoolStorageCapacity;
+  capacity: HostedPoolStorageCapacity;
+}
+
+function storageCapacity(value: unknown): HostedPoolStorageCapacity {
+  const allocation = value as HostedPoolStorageCapacity | undefined;
+  if (!allocation || !Number.isSafeInteger(allocation.dbGiB) || allocation.dbGiB < 0 ||
+      !Number.isSafeInteger(allocation.workspaceGiB) || allocation.workspaceGiB < 0 ||
+      !Number.isSafeInteger(allocation.dbGiB + allocation.workspaceGiB) ||
+      allocation.dbGiB + allocation.workspaceGiB === 0) {
+    throw new Error('hosted_pool_storage_allocation_invalid');
+  }
+  return { dbGiB: allocation.dbGiB, workspaceGiB: allocation.workspaceGiB };
+}
+
+/** Requested allocation comes from persisted desired state. Allocated disk sizes
+ * come from their ORIGINAL immutable admission, never a later edited desired spec.
+ * The organization lock held by the caller serializes both counters and insertion.
+ */
+async function admitHostedPoolStorage(
+  tx: Sql, input: AdmitHostedLifecycleJobInput, organizationId: string,
+  resolution: Parameters<typeof checkHostedEntitlement>[0],
+): Promise<HostedPoolStorageAdmission> {
+  const [host] = await tx<Array<{ data: WorkspaceHostDataPolicy | null }>>`
+    SELECT desired_spec->'data' AS data FROM harness_shared.workspace_hosts
+     WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}`;
+  const desired = storageCapacity(host?.data?.allocation);
+  if (!Number.isSafeInteger(host?.data?.volumeGiB) ||
+      host!.data!.volumeGiB !== desired.dbGiB + desired.workspaceGiB) {
+    throw new Error('hosted_pool_storage_allocation_invalid');
+  }
+  const disks = await tx<Array<{ host_id: string; provider_id: string; target: string;
+    scope: unknown; zone: string | null; capacity: unknown; tenant_owned: boolean }>>`
+    SELECT resource.host_id, resource.provider_id, host.target,
+           host.desired_spec->'scope' AS scope, host.desired_spec->>'zone' AS zone,
+           origin.admission_receipt->'result'->'resourceAdmission'->'storage'->'capacity' AS capacity,
+           (EXISTS (SELECT 1 FROM harness_shared.customer_workspaces customer
+              WHERE customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+                AND customer.organization_id = ${organizationId})
+            OR EXISTS (SELECT 1 FROM harness_shared.workspace_host_operations history
+              WHERE history.workspace_id = host.workspace_id AND history.host_id = host.id
+                AND history.organization_id = ${organizationId})) AS tenant_owned
+      FROM harness_shared.workspace_host_resources resource
+      JOIN harness_shared.workspace_hosts host
+        ON host.workspace_id = resource.workspace_id AND host.id = resource.host_id
+      LEFT JOIN harness_shared.workspace_host_operations origin
+        ON origin.workspace_id = resource.workspace_id AND origin.id = resource.operation_id
+     WHERE resource.workspace_id = ${input.workspaceId} AND resource.kind = 'disk'
+       AND resource.provider_id IS NOT NULL AND resource.state NOT IN ('absent', 'compensated')`;
+  const allocated = { dbGiB: 0, workspaceGiB: 0 };
+  const pending = { dbGiB: 0, workspaceGiB: 0 };
+  const add = (total: HostedPoolStorageCapacity, next: HostedPoolStorageCapacity) => {
+    for (const key of ['dbGiB', 'workspaceGiB'] as const) {
+      total[key] = safeInt(total[key] + next[key], `pool_${key}`);
+    }
+  };
+  const chargedDisks = new Map<string, HostedPoolStorageCapacity>();
+  const diskHosts = new Set<string>();
+  let retained: HostedPoolStorageCapacity | undefined;
+  for (const disk of disks) {
+    const requestedDisk = disk.target === input.providerTarget && disk.provider_id === input.pool!.dataVolumeId &&
+      isDeepStrictEqual(disk.scope, input.pool!.scope) && disk.zone === input.pool!.zone;
+    if (requestedDisk && !disk.tenant_owned) throw new Error('hosted_pool_storage_foreign');
+    if (!disk.tenant_owned) continue;
+    const capacity = storageCapacity(disk.capacity);
+    const scope = disk.scope as { kind?: string; id?: string } | null;
+    if (!scope?.kind || !scope.id || !disk.zone) throw new Error('hosted_pool_storage_identity_unknown');
+    const identity = JSON.stringify([disk.target, scope.kind, scope.id, disk.zone, disk.provider_id]);
+    const prior = chargedDisks.get(identity);
+    if (prior && (prior.dbGiB !== capacity.dbGiB || prior.workspaceGiB !== capacity.workspaceGiB)) {
+      throw new Error('hosted_pool_storage_capacity_conflict');
+    }
+    if (!prior) add(allocated, capacity);
+    chargedDisks.set(identity, capacity);
+    diskHosts.add(disk.host_id);
+    if (requestedDisk) retained = capacity;
+  }
+  const operations = await tx<Array<{ host_id: string; capacity: unknown }>>`
+    SELECT host_id, admission_receipt->'result'->'resourceAdmission'->'storage'->'capacity' AS capacity
+      FROM harness_shared.workspace_host_operations
+     WHERE workspace_id = ${input.workspaceId} AND organization_id = ${organizationId}
+       AND status IN ('queued', 'running') AND action IN ('provision', 'start', 'restore')`;
+  const pendingHosts = new Set<string>();
+  for (const operation of operations) {
+    if (diskHosts.has(operation.host_id)) continue;
+    if (pendingHosts.has(operation.host_id)) throw new Error('hosted_pool_storage_pending_ambiguous');
+    pendingHosts.add(operation.host_id);
+    add(pending, storageCapacity(operation.capacity));
+  }
+  if (retained && (desired.dbGiB !== retained.dbGiB || desired.workspaceGiB !== retained.workspaceGiB)) {
+    throw new Error('hosted_pool_storage_retained_allocation_changed');
+  }
+  const requested = retained ? { dbGiB: 0, workspaceGiB: 0 } : desired;
+  for (const key of ['dbGiB', 'workspaceGiB'] as const) {
+    if (requested[key] === 0) continue;
+    const quota = key === 'dbGiB' ? 'pool.db-gib' : 'pool.workspace-gib';
+    const check = checkHostedEntitlement(resolution, { kind: 'quota', key: quota,
+      used: safeInt(allocated[key] + pending[key], `pool_${key}`), requested: requested[key] });
+    if (!check.allowed) throw new Error(`hosted_pool_quota_exceeded:${quota}:${check.reason}`);
+  }
+  return { allocated, pending, requested, capacity: retained ?? desired };
 }
 
 /** Queue/provision outcomes have no reservation and must not launch a provider workflow. */
@@ -513,8 +625,18 @@ async function admitHostedPoolHostResources(
   tx: Sql, input: AdmitHostedLifecycleJobInput, organizationId: string, placement: WorkspaceHostPoolPlacement,
 ): Promise<HostedPoolHostResourceAdmission> {
   await lockHostedEntitlementAuthority(tx, organizationId);
+  let authority = await readHostedEntitlementAuthority(tx, organizationId);
+  // Existing sessions can predate trial-policy rollout. A login observer is
+  // optional and cannot be this admission's prerequisite. Backfill only from
+  // the server policy and this persisted tenant, inside the SAME transaction;
+  // the helper preserves the original clock, prior revocations and paid grants.
+  const trialPolicy = process.env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT?.trim();
+  if (!authority.ok && authority.reason === 'authority_missing' && trialPolicy) {
+    await backfillHostedTrialEntitlementAuthority(tx, { organizationId,
+      policy: parseHostedTrialEntitlementPolicy(JSON.parse(trialPolicy)) });
+    authority = await readHostedEntitlementAuthority(tx, organizationId);
+  }
   const now = new Date();
-  const authority = await readHostedEntitlementAuthority(tx, organizationId, now);
   if (!authority.ok) throw new Error(`hosted_pool_entitlement_${authority.reason}`);
   if (!['gcp', 'aws', 'azure'].includes(input.providerTarget) ||
       !checkHostedEntitlement(authority.resolution, { kind: 'provider',
@@ -622,11 +744,12 @@ async function admitHostedPoolHostResources(
       key: `pool.cost.${input.estimate.currency.toLowerCase()}.minor`, used: committedMinor, requested: requestedMinor });
     if (!check.allowed) throw new Error(`hosted_pool_budget_exceeded:${check.reason}`);
   }
+  const storage = await admitHostedPoolStorage(tx, input, organizationId, authority.resolution);
   return { schemaVersion: 1, authorityRevision: authority.authorityRevision,
     bundleId: authority.resolution.bundleId, bundleVersion: authority.resolution.bundleVersion,
     auditReceiptIds: authority.resolution.auditReceiptIds, measuredAt: now.toISOString(), allocated, pending, requested,
     capacity: { hosts: 1, cpuMillicores: size.cpuCount * 1000, memoryMiB: size.memoryMiB },
-    budget: { currency: input.estimate.currency, committedMinor, requestedMinor } };
+    budget: { currency: input.estimate.currency, committedMinor, requestedMinor }, storage };
 }
 
 /**
