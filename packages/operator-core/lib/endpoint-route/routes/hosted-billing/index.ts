@@ -106,6 +106,8 @@ export interface HostedBillingPlan {
   readonly priceId: string;
   readonly label: string;
   readonly description: string | null;
+  /** Server-authored resource policy, excluded from the public plan list. */
+  readonly entitlementBundle?: import('../../../auth/hosted-entitlement-schema').HostedEntitlementBundle;
 }
 
 /** Everything that exists only once Stripe is configured. */
