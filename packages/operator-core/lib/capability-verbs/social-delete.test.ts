@@ -251,9 +251,9 @@ describe('deleteCanonicalSocialPost — through the installed provider package (
     const sql = fakeSql();
 
     await expect(del(sql, CONFIRMED, installed.deps)).rejects.toThrow(
-      /^outbound_source_not_connected:social-post:mastodon — no installed provider package serves mastodon$/,
+      /social_platform_unusable:mastodon:unknown-platform.*no installed/,
     );
-    expect(sql.calls()).toBe(1);
+    expect(sql.calls()).toBe(0);
     expect(installed.invokes).toHaveLength(0);
     expect(installed.hostFetchesBuilt).toBe(0);
   });
@@ -264,7 +264,7 @@ describe('deleteCanonicalSocialPost — through the installed provider package (
     ]);
 
     await expect(del(fakeSql(), CONFIRMED, installed.deps)).rejects.toThrow(
-      /^provider_capability_unsupported:mastodon:social\.delete$/,
+      /social_platform_unusable:mastodon:write-verb-unsupported/,
     );
     expect(installed.invokes).toHaveLength(0);
     expect(installed.hostFetchesBuilt).toBe(0);

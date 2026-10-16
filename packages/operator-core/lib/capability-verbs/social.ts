@@ -24,12 +24,9 @@
 import type postgres from 'postgres';
 import { providerSocialWriteResultIssue } from '@papercusp/plugin-sdk';
 import {
-  assertSocialPlatformUsable,
-  assertSocialWriteAllowed,
-  type SocialPlatformId,
-  type SocialPlatformRow,
-  type SocialWriteVerb,
-} from '../external-triggers/social/platform-registry';
+  providerRegistry, readyProviderRegistry, verifiedProviderForCapability, ProviderVerificationError,
+  type ProviderRegistry,
+} from '../integrations/provider-registry';
 import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressee, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import {
@@ -40,6 +37,40 @@ import {
   type OutboundTarget,
 } from './provider-dispatch';
 import { resolveCanonicalDocument, string, type CanonicalDocument, type OutboundContext } from './resolve';
+
+/** Installed package ids are open-ended; the registry validates their syntax. */
+export type SocialPlatformId = string;
+export type SocialWriteVerb = 'reply' | 'post' | 'delete';
+
+export class SocialPlatformUnusableError extends Error {
+  constructor(
+    readonly platformId: string,
+    readonly reason: 'unknown-platform' | 'unverified' | 'owner-blocked' | 'write-unverified' | 'write-verb-unsupported',
+    detail: string,
+  ) {
+    super(`social_platform_unusable:${platformId}:${reason}: ${detail}`);
+    this.name = 'SocialPlatformUnusableError';
+  }
+}
+
+/** Display and verification come from the currently installed social package. */
+export interface SocialProviderInfo { id: SocialPlatformId; label: string }
+
+export function socialProviderInfo(id: string, registry: ProviderRegistry = providerRegistry(), capability?: string): SocialProviderInfo {
+  const entry = registry.get(id);
+  if (!entry || !entry.descriptor.datatypes.includes('social-post')) {
+    throw new SocialPlatformUnusableError(id, 'unknown-platform', 'no installed social-post provider');
+  }
+  try { verifiedProviderForCapability(registry, id, capability); }
+  catch (error) {
+    if (!(error instanceof ProviderVerificationError)) throw error;
+    const reason = error.reason === 'capability-unsupported' ? 'write-verb-unsupported'
+      : error.reason === 'capability-unverified' ? 'write-unverified'
+      : error.reason === 'not-installed' ? 'unknown-platform' : error.reason;
+    throw new SocialPlatformUnusableError(id, reason, error.message);
+  }
+  return { id: entry.descriptor.id as SocialPlatformId, label: entry.descriptor.displayName || entry.descriptor.id };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Post references                                                            */
@@ -95,7 +126,7 @@ function splitPlatformToken(
   return { platform, tail };
 }
 
-export function parseSocialPostRef(ref: string): SocialPostRef {
+export function parseSocialPostRef(ref: string, registry: ProviderRegistry = providerRegistry()): SocialPostRef {
   const { platform, tail } = splitPlatformToken(ref, {
     required: 'social_post_ref_required',
     malformed: 'social_post_ref_malformed',
@@ -104,7 +135,7 @@ export function parseSocialPostRef(ref: string): SocialPostRef {
   });
   // Validate through the registry so an unknown platform fails here, with the
   // registry's reason, rather than as a confusing vault miss further down.
-  assertSocialPlatformUsable(platform);
+  socialProviderInfo(platform, registry);
   return { platform: platform as SocialPlatformId, externalId: tail };
 }
 
@@ -140,14 +171,14 @@ export interface SocialDestinationRef {
  * Splits on the FIRST colon, via the shared splitter above, for the AT-URI
  * reason recorded in D-006.
  */
-export function parseSocialDestinationRef(ref: string): SocialDestinationRef {
+export function parseSocialDestinationRef(ref: string, registry: ProviderRegistry = providerRegistry()): SocialDestinationRef {
   const { platform, tail } = splitPlatformToken(ref, {
     required: 'social_destination_ref_required',
     malformed: 'social_destination_ref_malformed',
     shape: '<platform>:<destination>',
     tailName: 'destination',
   });
-  assertSocialPlatformUsable(platform);
+  socialProviderInfo(platform, registry);
   return { platform: platform as SocialPlatformId, destination: tail };
 }
 
@@ -277,9 +308,9 @@ export interface SocialReplyCoordinates {
  * caller argument", and a function whose only input is the document makes that
  * claim mechanically checkable instead of merely asserted.
  */
-export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialReplyCoordinates {
+export function resolveSocialReplyCoordinates(doc: CanonicalDocument, registry: ProviderRegistry = providerRegistry()): SocialReplyCoordinates {
   const platform = doc.source as SocialPlatformId;
-  const row = assertSocialPlatformUsable(platform);
+  const row = socialProviderInfo(platform, registry);
   return {
     ref: { platform, externalId: doc.externalId },
     target: { platform, externalId: doc.externalId, payload: doc.payload },
@@ -294,7 +325,7 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
 
 export interface ResolvedSocialPost {
   ref: SocialPostRef;
-  row: SocialPlatformRow;
+  row: SocialProviderInfo;
   doc: CanonicalDocument;
 }
 
@@ -307,9 +338,11 @@ export interface ResolvedSocialPost {
 export async function resolveSocialPost(
   sql: postgres.Sql | postgres.TransactionSql,
   params: { workspaceId: string; userId: string; ref: string | SocialPostRef },
+  deps: Pick<OutboundDispatchDeps, 'registry'> = {},
 ): Promise<ResolvedSocialPost> {
-  const ref = typeof params.ref === 'string' ? parseSocialPostRef(params.ref) : params.ref;
-  const row = assertSocialPlatformUsable(ref.platform);
+  const registry = deps.registry ?? await readyProviderRegistry();
+  const ref = typeof params.ref === 'string' ? parseSocialPostRef(params.ref, registry) : params.ref;
+  const row = socialProviderInfo(ref.platform, registry);
   const doc = await resolveCanonicalDocument(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
@@ -339,9 +372,10 @@ export async function resolveSocialWriteTarget(
   sql: postgres.Sql,
   params: { workspaceId: string; userId: string; platform: SocialPlatformId; verb: SocialWriteVerb },
   deps: Pick<OutboundDispatchDeps, 'registry'> = {},
-): Promise<{ row: SocialPlatformRow; target: OutboundTarget; capability: string }> {
-  const row = assertSocialWriteAllowed(params.platform, params.verb);
+): Promise<{ row: SocialProviderInfo; target: OutboundTarget; capability: string }> {
+  const registry = deps.registry ?? await readyProviderRegistry();
   const capability = SOCIAL_CAPABILITY_BY_VERB[params.verb];
+  const row = socialProviderInfo(params.platform, registry, capability);
   const target = await resolveCapabilitySource(
     sql,
     {
@@ -351,7 +385,7 @@ export async function resolveSocialWriteTarget(
       capabilities: [capability],
       providerId: params.platform,
     },
-    deps,
+    { registry },
   );
   return { row, target, capability };
 }
@@ -607,11 +641,12 @@ export async function replyToCanonicalSocialPost(
   if (!text) throw new Error('social_reply_text_required');
   if (text.length > 10_000) throw new Error('social_reply_text_too_long');
 
+  const registry = deps.registry ?? await readyProviderRegistry();
   const { ref, doc } = await resolveSocialPost(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
     ref: params.ref,
-  });
+  }, { registry });
   await assertDisclosurePermits(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
@@ -619,7 +654,7 @@ export async function replyToCanonicalSocialPost(
     recipients: null,
     sink: `${ref.platform}:reply`,
   });
-  const coordinates = resolveSocialReplyCoordinates(doc);
+  const coordinates = resolveSocialReplyCoordinates(doc, registry);
   const visibility = resolveReplyVisibility(coordinates.parentVisibility, params.visibility);
 
   const { target, capability } = await resolveSocialWriteTarget(
@@ -751,9 +786,10 @@ export async function postToCanonicalSocialDestination(
   if (!text) throw new Error('social_post_text_required');
   if (text.length > 10_000) throw new Error('social_post_text_too_long');
 
+  const registry = deps.registry ?? await readyProviderRegistry();
   const ref =
     typeof params.destination === 'string'
-      ? parseSocialDestinationRef(params.destination)
+      ? parseSocialDestinationRef(params.destination, registry)
       : params.destination;
 
   // A create has no parent to inherit from, so the widening rail (D-006 ruling

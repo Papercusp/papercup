@@ -44,6 +44,7 @@ function nativeFixtureFailureDiagnostic(
     })),
   };
   return `${label} child exit=${JSON.stringify({ code: result.code, signal: result.signal, timing: timingSummary })}\n` +
+    `primary child failure:\n${result.failureOutput}\n` +
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 

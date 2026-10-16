@@ -29,7 +29,7 @@ describe('BM25 latency canary path', () => {
     const source = RANK_SOURCE.slice(start, end);
 
     expect(start).toBeGreaterThanOrEqual(0);
-    expect(source).toContain('runBm25TopK(');
+    expect(source).toMatch(/runBm25TopK(?:<[^>]+>)?\(/);
     expect(source).toContain('scanScore');
     expect(source).not.toContain('leg.score');
     expect(source).not.toContain('leg.match');

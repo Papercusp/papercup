@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { expect, it } from 'vitest';
+import { expect, it, type TestContext } from 'vitest';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFailureDetail,
   recordIsolatedIntegrationProof } from '../../test/isolated-integration-proof';
@@ -48,7 +48,8 @@ const buildSelected = [
 const buildSelectedCount = 7;
 const options = isolatedTestFileWorkerOptions(process.env, 1);
 
-it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime', async context => {
+type RuntimeSelection = { reclaimTitles: string[]; expectedReclaimCases: number; census: boolean };
+const runSelection = async (selection: RuntimeSelection, context: TestContext) => {
   let environmentObserved = false;
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({
@@ -62,12 +63,14 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
       'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/worker-result.json',
       'phases/execute/reclaim-test-receipts.ndjson',
-      'phases/execute/executed-source-map.json', 'phases/execute/executed-source-map.1.json'],
+      'phases/execute/executed-source-map.json',
+      ...(selection.census ? ['phases/execute/executed-source-map.1.json'] : [])],
     execute: async (observe, evidenceDir) => {
       const receipts = join(evidenceDir, 'reclaim-test-receipts.ndjson');
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime', '--', process.execPath, join(root, 'scripts/test-files.mjs'),
-        assertion, censusAssertion, '--', '-t', [...selected, ...buildSelected, ...censusSelected].join('|')], {
+        assertion, ...(selection.census ? [censusAssertion] : []), '--', '-t',
+        [...selection.reclaimTitles, ...(selection.census ? censusSelected : [])].join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
           // Each runner owns its map. Inheriting the outer path loses the
@@ -104,10 +107,11 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
           timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
         expect(environmentError).toBeUndefined();
         expect(environmentObserved).toBe(true);
-        for (const [mapFile, testFile, sourceFile] of [
+        const sourceMaps = [
           ['executed-source-map.json', assertion, reclaimSource],
-          ['executed-source-map.1.json', censusAssertion, censusSource],
-        ]) {
+          ...(selection.census ? [['executed-source-map.1.json', censusAssertion, censusSource]] : []),
+        ];
+        for (const [mapFile, testFile, sourceFile] of sourceMaps) {
           const map = JSON.parse(readFileSync(join(evidenceDir, mapFile), 'utf8'));
           const original = map.rows.find((value: any) => value.testFile === testFile)?.sourceEvidence;
           expect(original?.status, mapFile).toBe('stable');
@@ -118,16 +122,18 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const row = rows.find(value => value.filePath === assertion);
         expect(row).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-          passed: selected.length + buildSelectedCount, failed: 0, collectionFailed: false,
+          passed: selection.expectedReclaimCases, failed: 0, collectionFailed: false,
         } } });
-        for (const title of [...selected, ...buildSelected]) expect(row.row.executionDetails.passedCaseTitles.some(
+        for (const title of selection.reclaimTitles) expect(row.row.executionDetails.passedCaseTitles.some(
           (passed: string) => passed.includes(title))).toBe(true);
-        const census = rows.find(value => value.filePath === censusAssertion);
-        expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
-          passed: 6, failed: 0, collectionFailed: false,
-        } } });
-        for (const title of censusSelected) expect(census.row.executionDetails.passedCaseTitles.some(
-          (passed: string) => passed.includes(title))).toBe(true);
+        if (selection.census) {
+          const census = rows.find(value => value.filePath === censusAssertion);
+          expect(census).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
+            passed: 6, failed: 0, collectionFailed: false,
+          } } });
+          for (const title of censusSelected) expect(census.row.executionDetails.passedCaseTitles.some(
+            (passed: string) => passed.includes(title))).toBe(true);
+        }
         expect(result.output).toMatch(/TEST_FILE_RESULT[^\n]*status=passed[^\n]*childSubstituted=0/);
       } finally {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
@@ -137,4 +143,10 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
   // The maintained proof helper independently checks child identity, private
   // state writes, and runtimeRemoved/pgDataRemoved before returning this id.
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
-}, options.testTimeoutMs);
+};
+it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime',
+  context => runSelection({ reclaimTitles: [...selected, ...buildSelected], expectedReclaimCases: selected.length + buildSelectedCount, census: true }, context),
+  options.testTimeoutMs);
+it('persists bounded delegate diagnostics in the observed private background runtime',
+  context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
+  options.testTimeoutMs);

@@ -224,13 +224,13 @@ function providerVerificationIssues(value: unknown, capabilities: readonly strin
 /** Fail closed for absent or malformed contract evidence, even before registration. */
 export function providerCapabilityVerificationIssue(
   descriptor: ProviderDescriptor,
-  capability: string,
+  capability?: string,
 ): 'capability-unsupported' | 'unverified' | 'owner-blocked' | 'capability-unverified' | null {
-  if (!descriptor.capabilities.includes(capability)) return 'capability-unsupported';
+  if (capability !== undefined && !descriptor.capabilities.includes(capability)) return 'capability-unsupported';
   const verification = descriptor.verification;
   if (!verification || providerVerificationIssues(verification, descriptor.capabilities).length || !verification.verifiedAt) return 'unverified';
   if (verification.blockedOn) return 'owner-blocked';
-  if (!verification.capabilities?.[capability]) return 'capability-unverified';
+  if (capability !== undefined && !verification.capabilities?.[capability]) return 'capability-unverified';
   return null;
 }
 

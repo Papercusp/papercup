@@ -103,6 +103,15 @@ describe('package-owned API contract evidence', () => {
     const d = verified(); d.verification!.blockedOn = 'owner: API access authorization';
     expect(validateProviderDescriptor(d)).toEqual([]);
     expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('owner-blocked');
+    expect(providerCapabilityVerificationIssue(d)).toBe('owner-blocked');
+  });
+
+  it('verifies sync/read evidence independently from any write capability', () => {
+    const d = verified(); d.capabilities = []; d.verification!.capabilities = {};
+    expect(providerCapabilityVerificationIssue(d)).toBeNull();
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('capability-unsupported');
+    d.verification!.verifiedAt = null;
+    expect(providerCapabilityVerificationIssue(d)).toBe('unverified');
   });
 
   it.each([

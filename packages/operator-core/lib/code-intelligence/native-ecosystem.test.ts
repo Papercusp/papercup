@@ -58,6 +58,25 @@ describe('native P021 required BAR captured source bundle boundary', () => {
 });
 
 describe('native CLI fixture runtime and deadline guards', () => {
+  it('retains a primary assertion between noisy startup and cleanup output', async () => {
+    const script = `
+      process.stdout.write('startup '.repeat(2000) + '\\n');
+      process.stderr.write('AssertionError [ERR_ASSERTION]: installed dispatcher returned empty context\\n    at fixtureAssertion (fixture.ts:42:3)\\n');
+      setTimeout(() => {
+        process.stdout.write('[with-test-pg] cleanup '.repeat(2500) + '\\n');
+        process.exitCode = 1;
+      }, 20);
+    `;
+    const result = await nativeFixtureProcess(process.execPath, ['-e', script], {
+      cwd: process.cwd(), timeoutMs: 10_000,
+    });
+    expect(result.code).toBe(1);
+    expect(result.failureOutput).toContain('AssertionError [ERR_ASSERTION]: installed dispatcher returned empty context');
+    expect(result.output).toContain('AssertionError [ERR_ASSERTION]: installed dispatcher returned empty context');
+    expect(result.output).toContain('at fixtureAssertion (fixture.ts:42:3)');
+    expect(result.output.length).toBeLessThan(50_000);
+  });
+
   it('keeps built artifacts outside the scoped TypeScript fixture loader', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-scoped-fixture-'));
     try {

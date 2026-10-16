@@ -501,6 +501,8 @@ export function nativePushFollowThrough(input: {
 /**
  * P-041 historical reader. Reuses transcript prompt timestamps and the Stop-hook journal's
  * native final-message timestamp. The random current identity_hook_turns UUID is not history.
+ * Native file prompts use the legacy default corpus partition (as in sessions:read); the
+ * tenant-scoped journal, exact owner and native session/source kind anchor those reads.
  * A missing/overlapping native session, intervening prompt, or earlier completion fails closed.
  * No elapsed-time fallback, launch-time membership, or journal prose enters the measurement.
  */
@@ -527,7 +529,7 @@ export async function readNativePushOutcomes(window: NativeAdoptionWindow, sql: 
         ORDER BY session_id, source_kind, turn_ts
       ) j CROSS JOIN LATERAL (
         SELECT ts FROM harness_shared.session_turns
-        WHERE workspace_id = p.workspace_id AND owner = p.owner_id
+        WHERE (workspace_id = p.workspace_id OR workspace_id = 'default') AND owner = p.owner_id
           AND session_id = j.session_id AND source_kind = j.source_kind
           AND speaker = 'user' AND ts <= p.pushed_at
         ORDER BY ts DESC, turn_idx DESC LIMIT 1
@@ -539,7 +541,7 @@ export async function readNativePushOutcomes(window: NativeAdoptionWindow, sql: 
           AND before_push.phase = 'post' AND before_push.created_at >= u.ts AND before_push.created_at <= p.pushed_at
       ) AND NOT EXISTS (
         SELECT 1 FROM harness_shared.session_turns n
-        WHERE n.workspace_id = p.workspace_id AND n.owner = p.owner_id
+        WHERE (n.workspace_id = p.workspace_id OR n.workspace_id = 'default') AND n.owner = p.owner_id
           AND n.session_id = j.session_id AND n.source_kind = j.source_kind
           AND n.speaker = 'user' AND n.ts > p.pushed_at AND n.ts <= j.turn_ts
       ) AND NOT EXISTS (

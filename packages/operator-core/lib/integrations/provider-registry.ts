@@ -75,11 +75,11 @@ export class ProviderVerificationError extends Error {
 
 /** Resolve evidence from the installed descriptor on EVERY call. Unload/reinstall cannot
  * leave a built-in row or cached attestation authorizing a capability the package lacks. */
-export function verifiedProviderForCapability(registry: ProviderRegistry, providerId: string, capability: string): RegisteredProvider {
+export function verifiedProviderForCapability(registry: ProviderRegistry, providerId: string, capability?: string): RegisteredProvider {
   const entry = registry.get(providerId);
-  if (!entry) throw new ProviderVerificationError(providerId, capability, 'not-installed');
+  if (!entry) throw new ProviderVerificationError(providerId, capability ?? 'syncPage', 'not-installed');
   const reason = providerCapabilityVerificationIssue(entry.descriptor, capability);
-  if (reason) throw new ProviderVerificationError(providerId, capability, reason, entry.descriptor.verification?.blockedOn);
+  if (reason) throw new ProviderVerificationError(providerId, capability ?? 'syncPage', reason, entry.descriptor.verification?.blockedOn);
   return entry;
 }
 

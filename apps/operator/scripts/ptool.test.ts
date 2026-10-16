@@ -66,6 +66,7 @@ import {
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_GIT_EVIDENCE_TIMEOUT_MS,
   PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
   PTOOL_PG_HOT_QUERIES_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
@@ -1041,6 +1042,15 @@ describe('ptool call deadlines', () => {
       args: { agent: 'claude', headless: false },
     })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
+    // EI-26161087677172506: git-evidence's 30s handler can be followed by
+    // the result-door's 30s scratch-spill wait. Keep both transport shapes
+    // beyond that combined path so a pending spill cursor is observable.
+    expect(timeoutForTool('capability:git-evidence')).toBe(PTOOL_GIT_EVIDENCE_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'capability:git-evidence',
+      args: { op: 'readFileAtCommit', commitSha: 'a'.repeat(40), path: 'packages/example.ts' },
+    })).toBe(PTOOL_GIT_EVIDENCE_TIMEOUT_MS);
+    expect(PTOOL_GIT_EVIDENCE_TIMEOUT_MS).toBeGreaterThan(65_000);
     // EI-22778035061732249: events:emit can complete its durable fire after
     // the old 30s client cutoff. Cover direct and deferred routes so a fired
     // event cannot be reported as outcome-unknown before its receipt returns.

@@ -673,10 +673,26 @@ def swap_off():
         sh(["zramctl", "--reset", "/dev/zram0"], check=False)
 
 
+def configured_swap_devices(path="/proc/swaps"):
+    """Read the kernel inventory; Ubuntu's swapon does not support --json."""
+    devices = []
+    with open(path) as f:
+        header = next(f, "").split()
+        if header != ["Filename", "Type", "Size", "Used", "Priority"]:
+            raise RuntimeError("invalid kernel swap inventory header")
+        for line in f:
+            fields = line.split()
+            if len(fields) != 5:
+                raise RuntimeError("invalid kernel swap inventory row")
+            name = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[0])
+            devices.append({"name": name, "size": int(fields[2]) * 1024,
+                            "prio": int(fields[4])})
+    return devices
+
+
 def active_swap(arm, ram_gb):
     """Validate externally provisioned swap without draining a live Server."""
-    devices = json.loads(sh(["swapon", "--show", "--json", "--bytes",
-                             "--output", "NAME,SIZE,PRIO"]).stdout).get("swapdevices", [])
+    devices = configured_swap_devices()
     if arm["kind"] == "none":
         if devices:
             raise RuntimeError("active none arm requires no configured swap")

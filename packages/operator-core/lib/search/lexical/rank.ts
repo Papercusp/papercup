@@ -632,17 +632,16 @@ export async function measureBm25Latency(
   const corpus = bm25Corpus(table);
   if (!(await readBm25Indexes(sql)).has(corpus.indexName)) return null;
   const scanScore = (await readBm25ScanScore(sql)) ? sql`bm25_get_current_score()` : null;
-  const from = sql.unsafe(`${SCHEMA}.${corpus.table}`);
   const run = async (query: string) => {
     const leg = bm25Leg(sql, corpus, query);
-    return runBm25TopK(
+    return runBm25TopK<{ bm25_d: number }>(
       sql,
       sql,
       {
         distance: leg.distance!,
         scanScore,
         columns: sql`1 AS one`,
-        from,
+        from: sql.unsafe(`${SCHEMA}.${corpus.table}`),
         where: sql`TRUE`,
         limit: 10,
       },
@@ -653,7 +652,7 @@ export async function measureBm25Latency(
       (row) => Number(row.bm25_d),
       // Health canaries exercise the same query path without counting as user-search
       // fallback telemetry.
-      () => undefined,
+      () => false,
     );
   };
   const samplesMs = await measureWarmBm25QueryLatencies(queries, run);

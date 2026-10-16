@@ -1748,6 +1748,14 @@ export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-26161087677172506: capability:git-evidence has a 30s handler budget,
+// and an oversized historical blob can spend another 30s in the result-door
+// scratch-spill wait before the pending cursor is returned. Keep the client
+// beyond that combined 65s MCP path so a read-only result-door timeout remains
+// observable instead of becoming an upstream-died/outcome-unknown failure at
+// ptool's flat 30s deadline.
+export const PTOOL_GIT_EVIDENCE_TIMEOUT_MS = 70_000;
+
 // EI-26107428212758754: release:cut reclaim previews declare a 120s handler budget
 // because their authored-work scan can exceed the flat MCP transport floor under host
 // pressure. Keep ptool beyond the 125s effective MCP deadline (+5s settlement) so the
@@ -1983,6 +1991,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['capability:git-evidence', PTOOL_GIT_EVIDENCE_TIMEOUT_MS],
   // EI-22780156976598155 (building on EI-21314560074357302): capability:launch-agent
   // resolves the target/profile and may run headless boot, kickoff-proof, and
   // fresh-launch verification before returning. Keep the client outside the

@@ -451,6 +451,18 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
       'lists the index of a temp repo it just built and reads two files it wrote — never the shared tree.',
     ],
     [
+      'apps/operator/scripts/__tests__/systemd-script-snapshot.test.ts',
+      'unit census catches each asynchronous read and skips a tracked unit deleted before read; inherited-unit reads also catch absence.',
+    ],
+    [
+      'packages/operator-core/lib/agent-tools/capability/git.test.ts',
+      'ls-files asserts a synthetic clone index contains its pinned submodule file; file reads use separately named fixture paths, never entries from that listing.',
+    ],
+    [
+      'packages/operator-core/lib/source-preview-export.test.ts',
+      'ls-files asserts synthetic verifier checkout index membership; file reads use independently named fixture paths, never entries from those listings.',
+    ],
+    [
       'apps/operator/lib/release/runtime-workspace-build-coverage.ts',
       'release code (must not import scripts/); every manifest read is try/catch → continue.',
     ],

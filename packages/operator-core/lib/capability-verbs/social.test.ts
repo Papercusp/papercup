@@ -15,7 +15,8 @@
  * guard that has never failed is a guard nobody has tested, and these controls
  * are what stop this suite from passing because the property became untestable.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { installDefaultSocialPackages } from './social-provider.fixture';
 import {
   SocialVisibilityWidened,
   formatSocialPostRef,
@@ -33,7 +34,8 @@ import {
   socialWriteRefusal,
   type SocialPlatformRow,
 } from '../external-triggers/social/platform-registry';
-import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
+const anUnverifiedPlatformId = () => 'unverified-social';
+beforeEach(installDefaultSocialPackages);
 import type { CanonicalDocument } from './resolve';
 
 function doc(source: string, externalId: string, payload: Record<string, unknown>): CanonicalDocument {

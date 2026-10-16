@@ -26,7 +26,10 @@
  * first item re-runs verification for its own platforms and fills its rows in.
  */
 
-/** Platforms whose unit of content normalizes to the canonical `social-post` datatype (D-001). */
+import { SocialPlatformUnusableError } from '../../capability-verbs/social';
+export { SocialPlatformUnusableError } from '../../capability-verbs/social';
+
+/** Legacy rows only; live capability code accepts every installed social-post provider. */
 export type SocialPlatformId =
   | 'bluesky'
   | 'mastodon'
@@ -1360,23 +1363,6 @@ export function listSocialPlatformsByWave(wave: SocialPlatformRow['wave']): Soci
 /** True when the row has been verified against its cited sources. */
 export function isSocialPlatformVerified(row: SocialPlatformRow): boolean {
   return typeof row.verifiedAt === 'string' && row.verifiedAt.length > 0 && row.sources.length > 0;
-}
-
-export class SocialPlatformUnusableError extends Error {
-  readonly platformId: string;
-  readonly reason:
-    | 'unknown-platform'
-    | 'unverified'
-    | 'owner-blocked'
-    | 'write-unverified'
-    | 'write-verb-unsupported';
-
-  constructor(platformId: string, reason: SocialPlatformUnusableError['reason'], detail: string) {
-    super(`social_platform_unusable:${platformId}:${reason}: ${detail}`);
-    this.name = 'SocialPlatformUnusableError';
-    this.platformId = platformId;
-    this.reason = reason;
-  }
 }
 
 /**

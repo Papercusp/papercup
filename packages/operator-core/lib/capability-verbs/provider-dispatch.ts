@@ -31,7 +31,7 @@ import {
   sourceTokenHarness,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
-import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import { readyProviderRegistry, verifiedProviderForCapability, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
@@ -236,6 +236,12 @@ export async function invokeOutboundProvider(
   if (!provider.entry.descriptor.capabilities.includes(capability)) {
     throw new ProviderCapabilityUnsupported(provider.id, capability);
   }
+  const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
+  if (target.datatype === 'social-post') {
+    const registry = deps.registry ?? await readyProviderRegistry();
+    const current = verifiedProviderForCapability(registry, provider.id, capability);
+    if (current !== provider.entry) throw new Error(`provider_changed:${provider.id}: resolve the source again`);
+  }
   const fetch =
     deps.hostFetchFor?.(sql, target) ??
     createSourceHostFetch(sql, {
@@ -246,7 +252,6 @@ export async function invokeOutboundProvider(
       fetchImpl: deps.hostFetchImpl,
       sourceIds: [target.source.id],
     });
-  const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
   const result = await provider.entry.adapter.invoke(
     { source: target.source.id, capability, args, config: target.source.config, ...(services ? { services } : {}) },
     { fetch },

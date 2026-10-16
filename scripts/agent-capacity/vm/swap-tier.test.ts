@@ -540,10 +540,8 @@ describe('minimum-resource active cohorts', () => {
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
       'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
       `devices=json.loads(${JSON.stringify(JSON.stringify(devices))})`,
-      'def read_swap(cmd):',
-      ' assert cmd==["swapon","--show","--json","--bytes","--output","NAME,SIZE,PRIO"], cmd',
-      ' return types.SimpleNamespace(stdout=json.dumps({"swapdevices":devices}))',
-      'm.sh=read_swap',
+      'm.configured_swap_devices=lambda:devices',
+      'm.sh=lambda *a: (_ for _ in ()).throw(AssertionError("unexpected swap command"))',
       `m.open=lambda *a:io.StringIO(${JSON.stringify(algorithm)})`,
       `try: result=m.active_swap(m.parse_arm(${JSON.stringify(arm)}),4); print(json.dumps({"ok":True,"result":result}))`,
       'except RuntimeError as e: print(json.dumps({"ok":False,"error":str(e)}))',
@@ -560,13 +558,44 @@ describe('minimum-resource active cohorts', () => {
       'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
       'def forbidden(*a, **kw): raise AssertionError("unexpected mutation")',
       'm.Recorder=forbidden; m.stop_agents=forbidden; m.subprocess.Popen=forbidden',
-      'm.sh=lambda *a:types.SimpleNamespace(stdout=\'{"swapdevices":[]}\')',
+      'm.configured_swap_devices=lambda:[]',
       'try: m.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
       'except RuntimeError as e: print(str(e))',
     ].join('\n');
     const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('must be configured before');
+  });
+
+  it('reads kernel swap sizes in bytes and escaped paths without a swapon subprocess', () => {
+    const fixture = 'Filename\tType\tSize\tUsed\tPriority\n/dev/zram0 partition 4194300 0 100\n/swap\\040file file 8388608 12 -2\n';
+    const code = [
+      'import importlib.util,io,json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `m.open=lambda path:io.StringIO(${JSON.stringify(fixture)})`,
+      'm.sh=lambda *a: (_ for _ in ()).throw(AssertionError("swapon JSON unsupported"))',
+      'print(json.dumps(m.configured_swap_devices()))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual([
+      { name: '/dev/zram0', size: 4 * 2 ** 30 - 4096, prio: 100 },
+      { name: '/swap file', size: 8 * 2 ** 30, prio: -2 },
+    ]);
+  });
+
+  it.each(['', 'Filename Type Size Used Priority\ninvalid\n'])('fails closed on an unreadable kernel swap inventory: %j', (fixture) => {
+    const code = [
+      'import importlib.util,io',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `m.open=lambda path:io.StringIO(${JSON.stringify(fixture)})`,
+      'm.configured_swap_devices()',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('invalid kernel swap inventory');
   });
 });
 

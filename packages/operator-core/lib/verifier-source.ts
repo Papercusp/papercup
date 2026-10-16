@@ -39,7 +39,8 @@ function processGone(pid: number): boolean {
 /** The existing terminal close retries IO failures before losing the live ledger row.
  * Only an empty/released confined task can own this destructive cleanup. */
 export async function cleanupEndedVerifierDirectories(row: TaskRow): Promise<void> {
-  if (row.class !== 'bash-job' || !row.cwd || !isAbsolute(row.cwd) || !row.scopeUnit) return;
+  const scopeUnit = row.scopeUnit;
+  if (row.class !== 'bash-job' || !row.cwd || !isAbsolute(row.cwd) || !scopeUnit) return;
   // All descendants are checked: the launcher may have exited before its payload.
   async function scopeEmpty(path: string): Promise<boolean> {
     try {
@@ -59,45 +60,45 @@ export async function cleanupEndedVerifierDirectories(row: TaskRow): Promise<voi
     repoRoot = parent;
   }
   repoRoot = await realpath(repoRoot);
-  async function cleanupScratch(scratch: string): Promise<void> {
+  async function cleanupScratch(scratch: string, scopeUnit: string): Promise<void> {
     try {
-    // Reject redirected scratch roots, receipts and owned directories.
-    if ((await realpath(scratch)) !== scratch) return;
-    for (const entry of await readdir(scratch, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !/^verifier-command-[A-Za-z0-9]+$/.test(entry.name)) continue;
-      const owned = join(scratch, entry.name), receiptPath = join(owned, TASK_RECEIPT);
-      let receipt;
-      try {
-        const info = await lstat(owned);
-        if (!info.isDirectory() || info.isSymbolicLink()) continue;
-        if (!lstatSync(receiptPath).isFile() || lstatSync(receiptPath).isSymbolicLink()) continue;
-        receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
-      } catch (error) {
-        if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
-        throw error;
+      // Reject redirected scratch roots, receipts and owned directories.
+      if ((await realpath(scratch)) !== scratch) return;
+      for (const entry of await readdir(scratch, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^verifier-command-[A-Za-z0-9]+$/.test(entry.name)) continue;
+        const owned = join(scratch, entry.name), receiptPath = join(owned, TASK_RECEIPT);
+        let receipt;
+        try {
+          const info = await lstat(owned);
+          if (!info.isDirectory() || info.isSymbolicLink()) continue;
+          if (!lstatSync(receiptPath).isFile() || lstatSync(receiptPath).isSymbolicLink()) continue;
+          receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+        } catch (error) {
+          if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw error;
+        }
+        if (receipt?.schemaVersion !== 'verifier-task-v1' || receipt.taskId !== row.taskId ||
+            receipt.repoRoot !== repoRoot || typeof receipt.processIdentity !== 'string' ||
+            !receipt.processIdentity || !processGone(receipt.pid)) continue;
+        // A reserved unit alone is not proof of confinement. Only a pending row
+        // may recover missing enrollment facts from this payload's kernel receipt.
+        const scopePath = row.confined && row.cgroupPath ? row.cgroupPath
+          : row.state === 'pending' && !row.cgroupPath && taskIdFromScopeUnit(scopeUnit) === row.taskId
+            ? receipt.cgroupPath : null;
+        if (typeof scopePath !== 'string' || !scopePath.startsWith('/') ||
+            resolve(scopePath) !== scopePath || basename(scopePath) !== scopeUnit ||
+            (scopePath === receipt.cgroupPath && !row.confined && !scopePath.includes('/papercusp.slice/'))) continue;
+        const cgroup = resolve('/sys/fs/cgroup', '.' + scopePath);
+        if (!cgroup.startsWith('/sys/fs/cgroup/')) continue;
+        // Re-check the scope and path at the deletion boundary; never follow peer links.
+        if (!(await scopeEmpty(cgroup)) || (await realpath(owned)) !== owned || !processGone(receipt.pid)) continue;
+        await rm(owned, { recursive: true, force: true });
       }
-      if (receipt?.schemaVersion !== 'verifier-task-v1' || receipt.taskId !== row.taskId ||
-          receipt.repoRoot !== repoRoot || typeof receipt.processIdentity !== 'string' ||
-          !receipt.processIdentity || !processGone(receipt.pid)) continue;
-      // A reserved unit alone is not proof of confinement. Only a pending row
-      // may recover missing enrollment facts from this payload's kernel receipt.
-      const scopePath = row.confined && row.cgroupPath ? row.cgroupPath
-        : row.state === 'pending' && !row.cgroupPath && taskIdFromScopeUnit(row.scopeUnit) === row.taskId
-          ? receipt.cgroupPath : null;
-      if (typeof scopePath !== 'string' || !scopePath.startsWith('/') ||
-          resolve(scopePath) !== scopePath || basename(scopePath) !== row.scopeUnit ||
-          (scopePath === receipt.cgroupPath && !row.confined && !scopePath.includes('/papercusp.slice/'))) continue;
-      const cgroup = resolve('/sys/fs/cgroup', '.' + scopePath);
-      if (!cgroup.startsWith('/sys/fs/cgroup/')) continue;
-      // Re-check the scope and path at the deletion boundary; never follow peer links.
-      if (!(await scopeEmpty(cgroup)) || (await realpath(owned)) !== owned || !processGone(receipt.pid)) continue;
-      await rm(owned, { recursive: true, force: true });
-    }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
-  await cleanupScratch(join(repoRoot, '.papercusp', 'scratch'));
+  await cleanupScratch(join(repoRoot, '.papercusp', 'scratch'), scopeUnit);
   if (process.platform === 'linux') {
     try {
       // runVerifierCommand places root-device donors here. Retain the same
@@ -107,7 +108,7 @@ export async function cleanupEndedVerifierDirectories(row: TaskRow): Promise<voi
       const scratch = join(data, 'tmp');
       const dataDevice = (await stat(data)).dev;
       if (dataDevice !== (await stat('/')).dev && (await stat(scratch)).dev === dataDevice)
-        await cleanupScratch(scratch);
+        await cleanupScratch(scratch, scopeUnit);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }

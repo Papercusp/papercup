@@ -8,7 +8,7 @@
   "originalCensus": "/tmp/tutorial-f419-original-root-ledger-census-20261012T1634.json",
   "priorCandidateMap": "/tmp/tutorial-original-receipt-repair-map-20261012T1822.json",
   "repairInventory": "/tmp/tutorial-original-current-repairs-20261012T1819.json",
-  "scope": "Original receipts matched to existing completed repairs. Additional source reconciliations retain their individual attribution and qualification limits. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
+  "scope": "Original receipts matched to existing completed repairs. Additional source reconciliations retain their individual attribution and qualification limits. Mapping21116235 covers its demonstrated producer defect only; it does not settle the entire original two-failure receipt. Original failed verdicts and the partial affected census remain unchanged. This document supplies no full affected PASS, production, voice, novice or accessibility acceptance.",
   "mappings": [
     {
       "originalTestRunId": 21103368,
@@ -944,6 +944,34 @@
       },
       "verification": "On2026-10-16, exact original and current before/after receipt reads, production singleton and scheduler source, the unchanged full conventional suite, the committed source hash and authoritative completion receipt established this repair. Scoped diff checking passed. No broad affected or live-gate run was launched.",
       "proofBoundary": "This is a committed source repair with observed working-tree17PASS proof. The dirty receipt is not relabeled clean or immutable; the original21116630 remains failed. No full affected PASS, current gate verdict, UI/runtime acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116235,
+      "testFile": "packages/operator-core/lib/tracked-files-helper.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116235 records28PASS2FAIL0SKIP. Its retained failure tail names graph snapshot recursive enumeration without submodule coverage. The original second-offender details remain unavailable; this mapping covers only the demonstrated producer defect.",
+      "repairId": "WI-6554700010016569",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "ecc6ef4ac900c25bdb8551baa0570e8ef7600981",
+      "rootConnection": "The first-party graph snapshot CLI still used raw recursive git ls-files, bypassing shared disk-presence filtering and coverage reporting. The repair reuses listTrackedFiles and describeUnscanned. A conventional real-CLI regression creates an archive-shaped unenumerable submodule and an indexed source deleted from disk; it checks unreadable0, explicit coverage0/1 and the unenumerated path, plus the expected snapshot edge. ExistingDONE WI-10005805 addressed an earlier detector prose false positive and is not attributed this producer repair.",
+      "retainedProof": {
+        "sourceSha256": "ce62a5426be274a0d816cc0eb1bd16cc238367e0797085b55346770da3ee412c",
+        "testSha256": "e947bfd0d99fd7c38c39a8113b4cab8bf034fc417aa40254acd8d4edbebd91af",
+        "beforeTestRunId": 21290161,
+        "unqualifiedFailedTestRunIds": [
+          21290176,
+          21290177
+        ],
+        "testRunId": 21290224,
+        "recordedCommit": "ecc6ef4ac900c25bdb8551baa0570e8ef7600981",
+        "command": "npm run test:file -- packages/operator-core/lib/__tests__/gen-graph-dependency-snapshot.test.ts",
+        "logPath": "/tmp/tutorial-21116235-16569-producer-committed-20261016.log",
+        "testResult": "Before-fix focused21290161 failed the fixture with unreadable1 and absent coverage;44other tests were skipped by that selector. Earlier complete two-suite21290176/77 failed72PASS2FAIL0SKIP; six child substitutions executed the old committed producer, so those failed receipts do not qualify the edit. After git-sync committed the exact saved source/test hashes, complete producer21290224 passed45FAIL0SKIP0 with terminal exit0, requested1/executed1/matched1, uncommittedPaths0/1 and childSubstituted0. Its exact LOCAL ledger remains worktreeDirty=true,isScratchConfig=false,root=null; no immutable full-import-graph qualification is inferred.",
+        "sourceSettlement": "Both named working files matched their committed HEAD hashes before the complete producer run. The authoritative repair completion returned completionAuthority=committed, countsTowardBurnDown=true and finish.complete=true. No settled historical repair was reclaimed or reclosed."
+      },
+      "ownedResidue": "WI-6554700010016573 remains assigned to this session for four additional current raw-index guard paths. LOCAL21290177 stays failed; the producer is absent from that four-path offender list. The original second offender has not been identified from retained evidence.",
+      "verification": "On2026-10-16, exact-id original/before/failed/after ledger reads, canonical real-CLI regression, committed source/test hash equality, terminal log and authoritative completion established this scoped producer repair. Scoped diff checking passed. No broad affected or live-gate run was launched.",
+      "proofBoundary": "Partial original-receipt reconciliation only: the demonstrated producer defect is repaired and its complete conventional producer suite passes45. Original21116235 remains failed and its second failure remains unresolved. Dirty working-tree evidence is not relabeled clean or immutable. No full tracked-files guard PASS, full affected PASS, current gate verdict, parent acceptance or tutorial shipment is established."
     }
   ],
   "sourceReconciliations": [
