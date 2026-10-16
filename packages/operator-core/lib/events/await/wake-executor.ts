@@ -1989,7 +1989,10 @@ async function readLoopDeliverySupersession(
   }
 }
 
-type DeliveryCarryNoteMeta = Awaited<ReturnType<typeof defaultGetLoopCarryNoteWithMeta>>;
+type DeliveryCarryNoteMeta = Awaited<ReturnType<typeof defaultGetLoopCarryNoteWithMeta>> & {
+  /** Delivery-local results from this snapshot; cold transports must retain them. */
+  carriedChangesBlock?: string;
+};
 
 type CarryNoteSnapshotIdentity = {
   bodyHash: string | null;
@@ -2210,6 +2213,13 @@ export async function rehydrateLoopWakeText(
           readAtIso: deliveryReadAtIso,
         })
       : null;
+    const carriedChangesBlock =
+      (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
+      (refsNow ? `## Carried reference changes\n${refsNow}\n\n` : '');
+    // The cold branch rebuilds its narrative rather than injecting warmText.
+    // Carry these already-evaluated results across that boundary, without a
+    // second probe run or another copy of the warm checkpoint narrative.
+    deps.captureLoopCarryNoteMeta?.({ ...meta, carriedChangesBlock });
     const ageMs = readableNote && meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
 
@@ -2321,8 +2331,7 @@ export async function rehydrateLoopWakeText(
       // Delivery deltas need their own sections ahead of the narrative. Otherwise the
       // packer inherits the note's final heading and can spill a changed/failed check
       // together with historical prose while keeping the stale claim visible.
-      (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
-      (refsNow ? `## Carried reference changes\n${refsNow}\n\n` : '') +
+      carriedChangesBlock +
       checkpointState +
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
@@ -3755,7 +3764,8 @@ async function injectPsuHostWake(
     );
     const coldText = await tagWakeText(
       d,
-      mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake,
+      (capturedCarryNoteMeta?.carriedChangesBlock ?? '') +
+        (mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake),
       deps.tagTurn ?? tagTurnForInjection,
     );
     // Codex's cold reset is host-mapped to a hard recycle, and the fresh Codex

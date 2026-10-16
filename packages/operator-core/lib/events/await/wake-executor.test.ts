@@ -5780,6 +5780,77 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(msg.systemPromptAddendum).toContain('(fire #8)');
   });
 
+  it.each([
+    ['claude', 1, 'reset'],
+    ['claude', 8, 'recycle'],
+    ['codex', 1, 'carry-respawn'],
+    ['codex', 8, 'carry-respawn'],
+  ] as const)('cold transport preserves delivery-time changes for %s fire %s (%s)', async (agent, wakeCount, mode) => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Await the controlled wake.',
+      checks: [
+        {
+          id: 'cold-probe',
+          claim: 'control is green',
+          probe: {
+            kind: 'state-cell',
+            cell: 'gate.greenCheckpoint.verdict',
+            schemaRevision: 'test-revision',
+            expect: { path: '$.value', op: 'eq', value: 'green' },
+          },
+        },
+      ],
+    });
+    for (const result of ['changed', 'could-not-run', 'unchanged'] as const) {
+      const probeLine =
+        result === 'changed'
+          ? 'CHANGED [#cold-probe]: observed "red"'
+          : result === 'could-not-run'
+            ? 'COULD NOT RUN [#cold-probe]: unavailable'
+            : null;
+      const refLine = result === 'changed' ? 'CHANGED work-item:WI-control: open → done' : null;
+      const carriedProbeBlockFn = vi.fn(async () => probeLine);
+      const carryRefBlockFn = vi.fn(async () => refLine);
+      const injectPsuHost = vi.fn(async () => true);
+      const updatedAtMs = Date.now() - 1_000;
+      await executeWake(
+        work({ wakeHandle: advHandle({ agent }), payload: coldPayload({ wakeCount }) }),
+        coldDeps({
+          getLoopCarryNoteFn: undefined,
+          getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs })) as never,
+          carriedProbeBlockFn,
+          carryRefBlockFn,
+          injectPsuHost: injectPsuHost as never,
+        }),
+      );
+      expect(carriedProbeBlockFn).toHaveBeenCalledTimes(1);
+      expect(carryRefBlockFn).toHaveBeenCalledTimes(1);
+      expect(injectPsuHost).toHaveBeenCalledTimes(1);
+      const msg = (
+        injectPsuHost.mock.calls[0] as unknown as [
+          string,
+          {
+            mode: string;
+            data: string;
+            systemPromptAddendum?: string;
+          },
+        ]
+      )[1];
+      expect(msg.mode).toBe(mode);
+      if (agent === 'codex') expect(msg.systemPromptAddendum).toBe(msg.data);
+      if (probeLine) {
+        expect(msg.data).toContain(probeLine);
+        expect(msg.data.indexOf(probeLine)).toBeLessThan(msg.data.indexOf('COLD LOOP WAKE'));
+        expect(msg.data.split(probeLine)).toHaveLength(2);
+      } else {
+        expect(msg.data).not.toContain('## Carried probe changes');
+      }
+      if (refLine) expect(msg.data).toContain(refLine);
+      else expect(msg.data).not.toContain('## Carried reference changes');
+    }
+  });
+
   it('EI-18224278118395857: the production read (meta variant, no getLoopCarryNoteFn seam) threads the note write-time into the injection so a late-flushed stale note is self-evident', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const updatedAtMs = Date.parse('2026-07-21T03:10:00.000Z');
