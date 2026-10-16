@@ -824,6 +824,7 @@ export default defineTool({
   guidance: {
     when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact full checkpoint text, use the standalone `checkpointOnly:true` page mode. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
+      "{ ok, results, counts, read, receipt? } — correlate rows by id, not position. " +
       "For a batch, `receipt` has one `{ id, delivered, reason? }` entry per requested ID before shaping. `delivered:false` means that ID's result row is absent from `results`; `read.receiptComplete` says whether the manifest itself still covers every requested ID. An absent or unavailable item can still have `delivered:true` when its status row is present.\\n\\n" +
       "When `checkpointTruncated:true`, recover exact text with `work_items:get { id, checkpointOnly:true, offset:0, limit:512 }`; continue at `checkpointPage.nextOffset`, and restart at offset 0 if `checkpointContentHash` changes between pages. Offsets count Unicode code points. A null page means no checkpoint unless `checkpointReadFailed:true`. Each page is capped at 768 code points.\\n\\n" +
       "When present, read.baseReadDiagnostics reports per-ID base-read status and elapsed time for unavailable calls, pending/rejected reads, or reads taking at least 1000ms; baseReadDiagnosticsOmitted counts entries beyond the 32-row cap. These diagnostics carry no arguments or result bodies.\\n\\n" +
@@ -1087,7 +1088,9 @@ export default defineTool({
     let projectedBatchStatus: WorkItemsGetBaseReadStatus | null = null;
     let projectedBatchStartedAtMs: number | null = null;
     const projectedAmbiguity = { ambiguous: [] as WorkItemIdAmbiguousError[] };
-    if (canBatchProjectedBaseRead) {
+    // Check before constructing the promise: the budget race cannot stop a
+    // storage read that was already launched for an expired caller.
+    if (canBatchProjectedBaseRead && !ctx.signal?.aborted) {
       const batchStartedAt = Date.now();
       projectedBatchStartedAtMs = batchStartedAt;
       projectedBatchStatus = 'pending';
@@ -1130,6 +1133,11 @@ export default defineTool({
           enrichmentStages: [],
         };
         stageSamples[index] = stage;
+        // Also covers queued IDs whose worker starts after cancellation and
+        // preserves cancellation instead of relabelling a batch as a timeout.
+        if (ctx.signal?.aborted) {
+          return workItemsGetUnavailableResult(id, remainingBudgetMs, 'cancelled');
+        }
         if (canBatchProjectedBaseRead) {
           stage.baseReadMs = projectedBatchElapsedMs;
           stage.baseReadStatus = projectedBatchStatus;

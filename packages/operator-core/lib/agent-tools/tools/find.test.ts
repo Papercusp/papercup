@@ -40,6 +40,7 @@ import workItemsCheckpoint from '../work_items/checkpoint';
 import workItemsSetBlocker from '../work_items/set_blocker';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
+import coordConditions from '../coordination/tools/conditions';
 import sessionsRead from '../sessions/read';
 import ompSessions from '../omp/sessions';
 import sessionCarryDrill from '../session/carry-drill';
@@ -441,6 +442,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(text).toContain('query');
   });
 
+  it('publishes coord:conditions exact-key lookup in tools:find', async () => {
+    expect(coordConditions.name).toBe('coord:conditions');
+    const result = await callHandler({ query: 'coord:conditions', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'coord:conditions');
+
+    expect(hit).toBeDefined();
+    expect(hit?.argSchema).toContain('condition_key?:string(1-2000)');
+  });
+
   it('publishes capability:launch-agent conditional brief requirements in discovery output', async () => {
     expect(launchAgent.name).toBe('capability:launch-agent');
     const result = await callHandler({ query: 'capability:launch-agent', limit: 1 });
@@ -620,10 +630,13 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const entry = corpus.find((candidate) => candidate.tool === 'release:cut');
     const branchRule =
       'when op in (preflight|prepare-tag|status|handoff|abort-leg|gate-status|reclaim) => work_item_id';
+    const rootRule = 'when op in (abort-leg|reclaim) => root forbidden';
 
     expect(entry?.argSchema).toContain(branchRule);
+    expect(entry?.argSchema).toContain(rootRule);
     expect(entry?.argSchema).toContain('forbidden');
     expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(branchRule);
+    expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(rootRule);
   });
 
   it('advertises session:carry-drill fields only on the operation variants that accept them', () => {

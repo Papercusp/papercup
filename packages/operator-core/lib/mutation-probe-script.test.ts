@@ -337,6 +337,9 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     writeFileSync(launched, readFileSync(SCRIPT));
     const env = { ...process.env };
     delete env.MUTATION_PROBE_FROZEN_SOURCE;
+    // This fixture launches a copied script outside the repository, so supply
+    // the supported explicit sink instead of requiring its source-tree resolver.
+    env.PAPERCUSP_TEST_RUNS_DB_URL = 'postgresql://ledger.example:5444/papercusp';
     const guard = `test -f "$MUTATION_PROBE_FROZEN_SOURCE" && bash -n "$MUTATION_PROBE_FROZEN_SOURCE" && if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then touch ${JSON.stringify(marker)}; sleep 1; fi; grep -q '^beta$' {}`;
     const child = spawn('bash', [launched, '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard], {
       env,
@@ -382,6 +385,57 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(code).toBe(0);
     expect(out).toMatch(/MUTANT CAUGHT/);
     expect(read()).toBe(ORIGINAL);
+  });
+
+  describe('test-run ledger sink routing', () => {
+    const resolvedSink = 'postgresql://harness_admin:harness_admin_pwd@localhost:6543/papercusp';
+
+    it.each([
+      ['unset', undefined],
+      ['blank', ' \t '],
+    ] as const)('resolves the reporter sink from pg-url.mjs when the caller value is %s', (_label, supplied) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PAPERCUSP_PG_PORT: '6543',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        EXPECTED_TEST_RUNS_DB_URL: resolvedSink,
+      };
+      delete env.HARNESS_ADMIN_DATABASE_URL;
+      if (supplied === undefined) delete env.PAPERCUSP_TEST_RUNS_DB_URL;
+      else env.PAPERCUSP_TEST_RUNS_DB_URL = supplied;
+
+      const { code, out } = runProbeIO([
+        '--file', subject,
+        '--mutate', 's/beta/BETA/',
+        '--test', 'test "$PAPERCUSP_TEST_RUNS_DB_URL" = "$EXPECTED_TEST_RUNS_DB_URL" && grep -q "^beta$" {}',
+      ], env);
+
+      expect(code, out).toBe(0);
+      expect(out).toContain('verdict=caught');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('preserves a caller-supplied nonblank reporter sink', () => {
+      const explicitSink = 'postgresql://ledger.example:5444/papercusp';
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PAPERCUSP_PG_PORT: '6543',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        PAPERCUSP_TEST_RUNS_DB_URL: explicitSink,
+        EXPECTED_TEST_RUNS_DB_URL: explicitSink,
+      };
+      delete env.HARNESS_ADMIN_DATABASE_URL;
+
+      const { code, out } = runProbeIO([
+        '--file', subject,
+        '--mutate', 's/beta/BETA/',
+        '--test', 'test "$PAPERCUSP_TEST_RUNS_DB_URL" = "$EXPECTED_TEST_RUNS_DB_URL" && grep -q "^beta$" {}',
+      ], env);
+
+      expect(code, out).toBe(0);
+      expect(out).toContain('verdict=caught');
+      expect(read()).toBe(ORIGINAL);
+    });
   });
 
   describe('mutant_ledger: whether the mutant test_runs row exists (WI-10006245)', () => {

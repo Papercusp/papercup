@@ -657,6 +657,11 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
+  // EI-26091338602477791: pinned replay cohorts can spend longer than the flat
+  // ~55s MCP transport floor in server-side evidence and test measurements. Give
+  // nested tools:invoke calls a real budget so a slow read returns its verdict
+  // instead of an opaque request_timeout while the handler is still running.
+  timeoutSec: 120,
   agentRoles: [...AGENT_ROLES],
   ignoreSessionPayloadTier: true,
   modality: ['text'],
@@ -980,6 +985,49 @@ export default defineTool({
           remedy: 'Narrow workItemIds/specIds/evidenceRefs/bindingIds or raise limit; a capped evidence set cannot produce an adequacy verdict.',
         },
       };
+    }
+    const requestedBindingIds = args.bindingIds === undefined
+      ? undefined
+      : [...new Set(args.bindingIds)].sort((a, b) => a - b);
+    if (requestedBindingIds !== undefined) {
+      const returnedBindingIds = new Set(
+        allEvidence
+          .map((row) => row.id)
+          .filter((id): id is number => Number.isSafeInteger(id)),
+      );
+      const matchedBindingIds = requestedBindingIds.filter((id) => returnedBindingIds.has(id));
+      const missingBindingIds = requestedBindingIds.filter((id) => !returnedBindingIds.has(id));
+      // A non-empty subset is just as unsafe as an empty selection: a withdrawn or
+      // superseded binding must not silently disappear from a pinned replay and let
+      // the remaining rows produce an apparently complete adequacy verdict.
+      if (matchedBindingIds.length > 0 && missingBindingIds.length > 0) {
+        return {
+          data: {
+            ok: false,
+            error: 'binding_selection_incomplete',
+            evaluatorBuild: liveEvaluatorBuild,
+            ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+            slug: args.slug,
+            harnessSlug,
+            classRef,
+            declaredClassRef: classRef,
+            classRefSource: classResolution.source,
+            count: allEvidence.length,
+            selectedEvidenceCount: allEvidence.length,
+            requestedBindingIds,
+            matchedBindingIds,
+            missingBindingIds,
+            selection: {
+              specIds: args.specIds ?? null,
+              workItemIds: args.workItemIds ?? null,
+              evidenceRefs: args.evidenceRefs ?? null,
+              bindingIds: args.bindingIds ?? null,
+              planItemIds: args.planItemIds ?? null,
+            },
+            remedy: `Only ${matchedBindingIds.length} of the ${requestedBindingIds.length} requested bindingIds are current. Missing ids may be absent, retracted, or superseded; inspect their history before changing the selector. Nothing was graded.`,
+          },
+        };
+      }
     }
     const explicitSelection =
       args.specIds !== undefined ||

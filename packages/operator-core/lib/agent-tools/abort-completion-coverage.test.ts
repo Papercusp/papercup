@@ -12,6 +12,7 @@ import repairQueue from './release/repair-queue';
 import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
 import workItemsSetBlocker from './work_items/set_blocker';
+import workItemsCheckpoint from './work_items/checkpoint';
 import codeRun from './code/run';
 import testingRun, { testingRunAbortCompletionReceipt } from './testing/run';
 import docsAuthor from './docs/author';
@@ -59,6 +60,8 @@ const LATE_RETURN_MUTATORS = {
   'work_items:create': workItemsCreate,
   // EI-25996559668652955: a completed blocker mutation exceeded its dispatch deadline after persisting.
   'work_items:set_blocker': workItemsSetBlocker,
+  // EI-26067444415170093: checkpoint writes can commit before the verify/advisory tail returns.
+  'work_items:checkpoint': workItemsCheckpoint,
   // EI-25288245178425318: a delivered coord:send must expose its persisted message id after a late return.
   'coord:send': coordSend,
   // EI-25922563546988521: dispatch must receipt only proven message and assignment effects.

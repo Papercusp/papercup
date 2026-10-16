@@ -139,6 +139,10 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('declares a nested replay budget above the flat MCP transport deadline', () => {
+    expect((tool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
+
   it('records timings for class, evidence, clause, disclosure, and evaluation stages', async () => {
     listClauses.mockResolvedValue([clause('active')]);
     const metadata = vi.fn();
@@ -1459,6 +1463,33 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(result).toMatchObject({ ok: true, governing: false, count: 1 });
     expect(result.rows[0].specId).toBe(selected.specId);
     expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
+  });
+
+  it('fails closed when requested bindingIds resolve to only a current subset', async () => {
+    // A retracted or superseded row is filtered from the current evidence read. The
+    // surviving row must not be mistaken for the complete pinned cohort.
+    listEvidence.mockResolvedValue([{ id: 38382, specId: 'SPEC-001' } as never]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      bindingIds: [38382, 38344],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'binding_selection_incomplete',
+      count: 1,
+      selectedEvidenceCount: 1,
+      requestedBindingIds: [38344, 38382],
+      matchedBindingIds: [38382],
+      missingBindingIds: [38344],
+      selection: { bindingIds: [38382, 38344] },
+    });
+    expect(result.rows).toBeUndefined();
+    expect(listClauses).not.toHaveBeenCalled();
   });
 
   it.each([1, 29])('replays a %s-binding diagnostic cohort with a larger clause-wide disclosure population', async (selectedCount) => {

@@ -18,6 +18,7 @@ import postgres from 'postgres';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import {
   apiStoreConsumers,
+  diskCensusPassInFlight,
   pruneDiskCensus,
   readDiskConsumerCensus,
   runDiskConsumerCensusOnce,
@@ -27,6 +28,7 @@ import {
   type CensusSql,
 } from './disk-consumer-census';
 import { devToMajorMinor, type CensusConsumer } from './usage';
+import { detectDiskGrowthWarnings, runDiskHeadroomAlarmOnce } from './storage-growth-alarm';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1472-disk-consumer-census.sql');
@@ -131,6 +133,7 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(listed.get(unattributedKey(fixture))).toMatchObject({ kind: 'unattributed', bytes: 5 * MIB });
     // No baseline 24h earlier yet: growth is unknown, never a made-up zero.
     expect(view.baselineAt).toBeNull();
+    expect(view.baselineAvailBytes).toBeNull();
     expect(view.consumers!.every((c) => c.growth24hBytes === null)).toBe(true);
   }, 120_000);
 
@@ -138,17 +141,20 @@ describe('disk consumer census (real du, real PG)', () => {
     const host = 'growth-host';
     const dev = device({ device: '/g' });
     const latestAt = new Date('2026-10-12T12:00:00Z');
-    const write = (runId: string, at: Date, consumers: CensusConsumer[], complete = true) =>
-      writeCensusRun(sql, { runId, host, device: dev, startedAt: at, finishedAt: at, attributedBytes: 40 * G, complete, note: null, consumers });
+    const write = (runId: string, at: Date, consumers: CensusConsumer[], complete = true, availBytes = 50 * G) =>
+      writeCensusRun(sql, { runId, host, device: { ...dev, availBytes, usedBytes: dev.sizeBytes - availBytes }, startedAt: at, finishedAt: at, attributedBytes: 40 * G, complete, note: null, consumers });
     await write('00000000-0000-4000-8000-000000000001', new Date(latestAt.getTime() - 40 * HOUR), [dir('/g/a', 1 * G)]);
-    await write('00000000-0000-4000-8000-000000000002', new Date(latestAt.getTime() - 23 * HOUR), [dir('/g/a', 10 * G), dir('/g/b', 8 * G)]);
+    await write('00000000-0000-4000-8000-000000000002', new Date(latestAt.getTime() - 23 * HOUR), [dir('/g/a', 10 * G), dir('/g/b', 8 * G)], true, 80 * G);
     // Closer to 24h but incomplete: never a baseline.
-    await write('00000000-0000-4000-8000-000000000003', new Date(latestAt.getTime() - 24 * HOUR), [dir('/g/a', 2 * G)], false);
+    await write('00000000-0000-4000-8000-000000000003', new Date(latestAt.getTime() - 24 * HOUR), [dir('/g/a', 2 * G)], false, 90 * G);
     await write('00000000-0000-4000-8000-000000000004', latestAt, [dir('/g/a', 25 * G), dir('/g/b', 6 * G), dir('/g/new', 3 * G)]);
 
     const { devices } = await readDiskConsumerCensus(sql, { host, orderBy: 'growth', now: latestAt });
     const view = devices[0]!;
     expect(view.baselineAt).toBe(new Date(latestAt.getTime() - 23 * HOUR).toISOString());
+    expect(view.availBytes).toBe(50 * G);
+    expect(view.baselineAvailBytes).toBe(80 * G);
+    expect(view.baselineSizeBytes).toBe(100 * G);
     expect(view.consumers!.map((c) => [c.consumer, c.bytes, c.growth24hBytes])).toEqual([
       ['/g/a', 25 * G, 15 * G],
       ['/g/b', 6 * G, -2 * G],
@@ -156,10 +162,46 @@ describe('disk consumer census (real du, real PG)', () => {
     ]);
     expect(view.stale).toBe(false);
     expect(view.coverageGap).toBe(true); // used 50 GiB − attributed 40 GiB = 10 GiB unattributed
+    // The forecast uses the selected clean baseline's filesystem delta and actual
+    // 23h interval, not the latest free space or the overlapping consumer totals.
+    const warnings = detectDiskGrowthWarnings(devices);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.growthBytesPerDay).toBeCloseTo(30 * G * 24 / 23);
+    expect(warnings[0]!.daysToFull).toBeCloseTo(50 / (30 * 24 / 23));
+    expect(warnings[0]!.topGrowers).toEqual([{ consumer: '/g/a', growthBytes: 15 * G }]);
+    const notifications: string[] = [];
+    const alarm = await runDiskHeadroomAlarmOnce({
+      readDiskCensus: async () => (await readDiskConsumerCensus(sql, { host, orderBy: 'growth', now: latestAt })).devices,
+      emitToast: async toast => { notifications.push(toast.description); },
+    });
+    expect(alarm.diskGrowth).toEqual(warnings);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain('full in 1.6d');
+    expect(notifications[0]).toContain('/g/a');
 
     // Only a 40h-old run besides the latest: outside the window, so no baseline.
     const only = await readDiskConsumerCensus(sql, { host, now: latestAt, device: '/g' });
     expect(only.devices).toHaveLength(1);
+  });
+
+  it('admits the oldest census pass and sheds overlapping hourly starts without wedging on stale or terminal rows', async () => {
+    await rootSql.unsafe('CREATE SCHEMA IF NOT EXISTS dbos');
+    // Only the SDK-owned columns read by the guard are needed in this private database.
+    await rootSql.unsafe('CREATE TABLE dbos.workflow_status (workflow_uuid text PRIMARY KEY, name text, status text, created_at bigint, started_at_epoch_ms bigint)');
+    const now = Date.now();
+    const add = (id: string, name: string, status: string, createdAt: number) => rootSql`
+      INSERT INTO dbos.workflow_status VALUES (${id}, ${name}, ${status}, ${createdAt}, ${status === 'ENQUEUED' ? null : createdAt})`;
+    await add('old', 'diskConsumerCensus', 'PENDING', now - 75 * HOUR / 60);
+    await add('self', 'diskConsumerCensus', 'PENDING', now);
+    expect(await diskCensusPassInFlight(sql, 'self', 2, now)).toBe(true);
+    expect(await diskCensusPassInFlight(sql, 'old', 2, now)).toBe(false);
+    await rootSql`UPDATE dbos.workflow_status SET status = 'ENQUEUED', started_at_epoch_ms = NULL WHERE workflow_uuid = 'old'`;
+    expect(await diskCensusPassInFlight(sql, 'self', 2, now)).toBe(true);
+    await rootSql`UPDATE dbos.workflow_status SET status = 'SUCCESS' WHERE workflow_uuid = 'old'`;
+    await add('unrelated', 'anotherWorkflow', 'PENDING', now - HOUR);
+    await add('stale', 'diskConsumerCensus', 'PENDING', now - 4 * HOUR);
+    expect(await diskCensusPassInFlight(sql, 'self', 2, now)).toBe(false);
+    await rootSql.unsafe('DROP TABLE dbos.workflow_status');
   });
 
   it('never reports newly visible bytes as growth across a denied or differently privileged baseline', async () => {
@@ -174,6 +216,7 @@ describe('disk consumer census (real du, real PG)', () => {
     await write('00000000-0000-4000-8000-000000000083', 0, 'du walked as root (sudo -n)', 40 * G);
     const unknown = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
     expect(unknown.baselineAt).toBeNull(); expect(unknown.consumers![0]!.growth24hBytes).toBeNull();
+    expect(unknown.baselineAvailBytes).toBeNull();
     await write('00000000-0000-4000-8000-000000000084', 22, 'du walked as root (sudo -n)', 38 * G);
     const calibrated = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
     expect(calibrated.baselineAt).toBe(new Date(at.getTime() - 22 * HOUR).toISOString());

@@ -2628,6 +2628,54 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(covered.ratings['correct-layer'].evidence).toContain('ref="live:verified-report"');
   });
 
+  it('requires tree evidence when binder-authored falsifiability targets a tree clause', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/tree-plane-proof.integration.test.ts';
+    const treeClause = clause({
+      requiredEvidence: ['tree'],
+      requiredTestLayers: [],
+      falsifier: { observation: 'A verb missing from the agent-tools tree is reported.' },
+    });
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation:tree-plane-proof',
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          targeted: treeClause.specId,
+          outcome: 'killed',
+          falsifiable: true,
+          oracleIndependent: true,
+        },
+      },
+    });
+    const baseline = successfulTestBinding(testPath, { targeted: treeClause.specId });
+    const missingTree = evaluateSpecTestAdequacy({
+      clause: treeClause,
+      evidence: [baseline, mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(missingTree.ratings.falsifiability.rating).toBe('pass');
+    expect(missingTree.ratings['correct-layer'].rating).toBe('fail');
+    expect(missingTree.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(missingTree.verdict).not.toBe('pass');
+
+    const treeProof = evidence({
+      evidenceKind: 'operational',
+      evidenceRef: 'tree:measured-proof',
+      testRunId: null,
+      coverageEvidenceRef: null,
+      details: { evidencePlane: 'tree' },
+    });
+    const covered = evaluateSpecTestAdequacy({
+      clause: treeClause,
+      evidence: [baseline, mutation, treeProof],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+  });
+
   it('names active non-mutation bindings when correct-layer is not applicable', () => {
     const activeTest = successfulTestBinding('packages/example/no-layer.test.ts');
     activeTest.id = 41696;
@@ -3342,6 +3390,37 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(conflict.ratings['correct-layer'].evidence).toContain('testLayer-claim-mismatch:integration!=unit');
   });
 
+  it('does not count a BAR case for a sibling clause when the binding target was rewritten', () => {
+    const barClause = clause({
+      planSlug: 'pui-first-party-public-release-2026-09-07',
+      specId: 'AUTO-BAR-R-03-P-006',
+      contentHash: 'sha256:pui-p006',
+    });
+    const siblingCase =
+      'PUI P-008 sessions and context (spec clauses) > AUTO-BAR-R-03-P-008: Context follows the selected session';
+    const mismatched = successfulTestBinding('packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts', {
+      targeted: barClause.specId,
+      testCases: [siblingCase],
+    });
+    mismatched.planSlug = barClause.planSlug;
+    mismatched.specId = barClause.specId;
+    mismatched.specFingerprint = barClause.contentHash;
+
+    const result = evaluateSpecTestAdequacy({
+      clause: barClause,
+      evidence: [mismatched],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.traceability.rating).toBe('unknown');
+    expect(result.ratings.traceability.evidence).toContain('AUTO-BAR-R-03-P-008');
+    expect(result.ratings.traceability.evidence).toContain('targets AUTO-BAR-R-03-P-006');
+    expect(result.ratings['correct-layer'].rating).toBe('unknown');
+    expect(result.ratings['correct-layer'].evidence).toContain('binding target does not identify the exact clause');
+    expect(result.ratings['correct-layer'].evidence).toContain('AUTO-BAR-R-03-P-008');
+    expect(result.wouldBlock).toContain('correct-layer');
+  });
+
   describe('canonical LLM scenario reachability (EI-25409108464228474)', () => {
     const scenarioId = 'su-S38-reports-capture';
     const filePath = 'packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts';
@@ -3535,7 +3614,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(30);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(32);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {

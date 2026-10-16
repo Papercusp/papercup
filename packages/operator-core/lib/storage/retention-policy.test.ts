@@ -46,6 +46,17 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
     expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
   });
 
+  it('keeps historical and data-side release evidence under the same native retention owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'vh-release-runs')!;
+    expect(cls.keep).toEqual({ kind: 'newest', keep: 30 });
+    expect(cls.enforcers).toEqual([expect.objectContaining({ kind: 'existing' })]);
+    for (const root of [`${HOME}/.local/state/verification-harness/release-local`,
+      '/mnt/data/offload/verification-harness/release-local']) {
+      expect(classifyPath(`${root}/20261016T000000Z-1/result.json`, policy)).toMatchObject({ classId: cls.id });
+      expect(del(`${root}/20261016T000000Z-1/result.json`)).toBe(cls.id);
+    }
+  });
+
   it('derives every named shell enforcer from the registry and pins its reviewed executable source', () => {
     const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
     const scripts = RETENTION_POLICY.flatMap((cls) => cls.enforcers.flatMap((enforcer) => {

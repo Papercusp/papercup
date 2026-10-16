@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { scorecardRatingEntrySchema } from './evaluate';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
 const getRubric = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
@@ -562,6 +563,23 @@ describe('CRM canonical producer independence (P-012)', () => {
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
+  it('returns a retryable no-write envelope for a bounded PG statement timeout', async () => {
+    captureImprovement.mockRejectedValueOnce(new OrgTxnTimeoutError('57014', new Error('statement timeout')));
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'scorecard_emit_timeout',
+      pgCode: '57014',
+      retryable: true,
+    });
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+  });
+
   it('pins only the newly emitted card audit while preserving the caller identity and context', async () => {
     const launchContext: UnifiedToolContext = {
       log: vi.fn(),

@@ -1436,14 +1436,18 @@ function isReadOnlyToolCall(m: unknown): boolean {
   if (isLoopCheckpointReadOnlyContinuationArgs(name, forwardedToolArgs(m)))
     return true;
   // release:cut is a mixed-effect tool. Only its status operation reads local
-  // markers/logs and systemd state; every other operation must keep the keyed path.
+  // markers/logs and systemd state. A reclaim without confirm is also a dry-run
+  // planner read; replaying it cannot remove a worktree. Confirmed reclaim and
+  // every other operation must keep the keyed path.
   if (name === RELEASE_CUT_NAME) {
     const args = forwardedToolArgs(m);
     return (
       !!args &&
       typeof args === "object" &&
       !Array.isArray(args) &&
-      (args as { op?: unknown }).op === "status"
+      ((args as { op?: unknown }).op === "status" ||
+        ((args as { op?: unknown; confirm?: unknown }).op === "reclaim" &&
+          (args as { confirm?: unknown }).confirm !== true))
     );
   }
   return (

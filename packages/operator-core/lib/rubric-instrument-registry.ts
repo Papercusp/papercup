@@ -38,6 +38,7 @@ import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import {
   NATIVE_ADOPTION_INSTRUMENT_KEYS, measureNativeAdoptionWindow,
   nativeAdoptionCriterionForInstrument, rateNativeAdoption,
+  NATIVE_PUSH_INSTRUMENT_KEYS, measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
 } from './code-intelligence/native-adoption';
 import {
   WORK_OVERHEAD_INSTRUMENT_KEYS, measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
@@ -678,6 +679,7 @@ export function platformComputedInstrumentKeys(): string[] {
     ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
     // native-code-intelligence-ecosystem-and-dream-2026-10-09 P-033 (R-30/R-31).
     ...Object.values(NATIVE_ADOPTION_INSTRUMENT_KEYS),
+    ...Object.values(NATIVE_PUSH_INSTRUMENT_KEYS),
     ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
   ];
 }
@@ -694,6 +696,7 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
   for (const key of platformComputedInstrumentKeys()) {
     if (registry.has(key)) continue;
     const adoptionCriterion = nativeAdoptionCriterionForInstrument(key);
+    const pushCriterion = nativePushCriterionForInstrument(key);
     const overheadCriterion = workOverheadCriterionForInstrument(key);
     const coldEvidence = key === COLD_MOUNTS_INSTRUMENT_KEY || key === COLD_MOVES_INSTRUMENT_KEY || key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY;
     registry.set(key, {
@@ -724,6 +727,14 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
           const rating = rateNativeAdoption(metrics)[adoptionCriterion];
           return { verdict: rating.verdict,
             detail: `${window.windowStart}..${window.windowEnd}: ${rating.reason}` };
+        },
+      } } : pushCriterion ? { rescore: {
+        windowMs: 72 * 60 * 60_000,
+        unit: 'count' as const,
+        resolve: async window => {
+          const metrics = await measureNativePushOutcomesWindow(window);
+          const rating = rateNativePushOutcomes(metrics, pushCriterion);
+          return { verdict: rating.verdict, detail: `${window.windowStart}..${window.windowEnd}: ${rating.reason}` };
         },
       } } : overheadCriterion ? { rescore: {
         windowMs: 24 * 60 * 60_000,

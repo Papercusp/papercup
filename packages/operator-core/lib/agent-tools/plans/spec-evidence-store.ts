@@ -1,6 +1,6 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
@@ -27,6 +27,7 @@ import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-s
 import type { SpecClauseSql } from './spec-clauses-store';
 import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import { resolvePlanScope } from './source';
+import { trackDetached } from '../../detached-imports';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
@@ -1207,6 +1208,16 @@ export type BindSpecEvidenceResult =
       status: 'test_cases_not_in_run';
       testRunId: number;
       declaredCaseCount: number;
+      failedCaseTitleCount: number;
+      source: 'mutation-failed-case-titles';
+      /** Declared titles that are not exact identities in this mutant run's measured failures. */
+      unmatchedTestCases: string[];
+      message: string;
+    }
+  | {
+      status: 'test_cases_not_in_run';
+      testRunId: number;
+      declaredCaseCount: number;
       passedCaseTitleCount: number;
       /** Which record judged the declared cases: the per-case ledger, or the run's capped title list. */
       source?: 'case-ledger' | 'passed-case-titles';
@@ -1404,8 +1415,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
     const runtimeUnits = runtimeRecipe?.runtimeUnits;
     if (input.testRunId != null) {
-      const rows = await tx<{ id: number; status: string | null; execution_details?: unknown }[]>`
-        SELECT id, status, execution_details FROM harness_shared.test_runs
+      const rows = await tx<{ id: number; status: string | null; source: string | null; execution_details?: unknown }[]>`
+        SELECT id, status, source, execution_details FROM harness_shared.test_runs
          WHERE id = ${input.testRunId}
            AND workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}`;
@@ -1447,6 +1458,37 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
             .filter((title): title is string => typeof title === 'string' && title.trim().length > 0)
             .map((title) => title.trim())
         : [];
+      const mutationCases =
+        (input.evidenceKind === 'mutation' || input.evidenceKind === 'counterexample') &&
+        rows[0].source === 'mutation-probe' &&
+        parsedRunExecution?.mutationPhase === 'mutant'
+          ? mutationFailedCaseTitles(rows[0].execution_details)
+          : undefined;
+      // A mutation binding claims a measured failing assertion, so its adequacy.testCases
+      // must name the failed mutant's canonical case identities. The evaluator already uses
+      // these same identities; checking only evidenceKind='test' here let a binder attach an
+      // unrelated passing title and have it accepted as mutation evidence.
+      if (mutationCases !== undefined && declaredTestCases.length > 0) {
+        const unmatched = declaredTestCases.filter(
+          (testName) => !mutationCases.some((measuredTitle) => hasSameCaseTitleIdentity(testName, measuredTitle)),
+        );
+        if (unmatched.length > 0) {
+          return {
+            status: 'test_cases_not_in_run',
+            testRunId: input.testRunId,
+            declaredCaseCount: declaredTestCases.length,
+            failedCaseTitleCount: mutationCases.length,
+            source: 'mutation-failed-case-titles',
+            unmatchedTestCases: unmatched,
+            message:
+              unmatched.length + ' of ' + declaredTestCases.length +
+              ' declared details.adequacy.testCases entries matched no exact measured failed case among the ' +
+              mutationCases.length + ' failedCaseTitles in mutation test-run ' + input.testRunId + ' (' +
+              unmatched.map((title) => JSON.stringify(title)).join(', ') +
+              '). A mutation binding must name a measured failing case; correct the title or bind a run that failed it.',
+          };
+        }
+      }
       // P-002 / R-2: when the per-case ledger (migration 1478) recorded this run's cases,
       // EVERY declared case must resolve to an executed recorded case through the shared
       // resolver. The capped passedCaseTitles list below could only check "at least one
@@ -2589,7 +2631,7 @@ export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const reason = options.reason.trim();
   const actorId = options.actorId.trim();
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const result = await withWorkspace(scope.workspaceId, async (tx) => {
     const [existing] = await tx<RetractedBindingRow[]>`
       SELECT id, work_item_id, plan_slug, spec_id, spec_revision,
              evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason
@@ -2613,8 +2655,38 @@ export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
       RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
                 evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
     if (!updated) return { status: 'already_retracted' as const, bindingId: existing.id, binding: existing };
-    return { status: 'retracted' as const, bindingId: updated.id, binding: updated };
+    // The binding row is withdrawn before the audit row is fenced, but both writes
+    // share this transaction. A dispatcher cannot win a reservation in the gap
+    // between the evidence update and cancellation (EI-26089859582727160).
+    // Keep this import lazy: scorecards' evaluator path consumes this store's
+    // schemas, so a static edge would make the schema undefined during module
+    // initialization (the cancellation runs only after the store is ready).
+    const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
+    const cancelledAuditIssueIds = await cancelPendingGradingAuditsForBindingInTransaction(
+      tx,
+      scope.workspaceId,
+      updated.id,
+    );
+    return {
+      status: 'retracted' as const,
+      bindingId: updated.id,
+      binding: updated,
+      cancelledAuditIssueIds,
+    };
   });
+  // Notify readers only after the transaction has committed. The cancellation is
+  // part of the same transaction as the binding retraction, so a pushed read can
+  // never observe the binding withdrawn while its audit lease remains pending.
+  if (result.status === 'retracted') {
+    void trackDetached(import('../../sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return result;
 }
 
 export interface SupersedeSpecEvidenceOptions {
@@ -3420,7 +3492,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const path = await resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe, dimension);
       recordMaxPhase('measurementRootRegistryLookupMaxMs', registryLookupStartedAt);
       const realpathStartedAt = diagnostics ? Date.now() : 0;
-      const resolved = await realpath(path);
+      // Root canonicalization is metadata-only. Keep it off libuv's shared
+      // threadpool so a busy operator cannot turn one symlink lookup into a
+      // multi-minute evidence request; the returned value is still a fresh
+      // realpath for every evaluation and preserves symlink identity.
+      const resolved = realpathSync(path);
       recordMaxPhase('measurementRootRealpathMaxMs', realpathStartedAt);
       return resolved;
     })();
@@ -3537,7 +3613,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           const fixtureRoot = hasRepoFixturePaths(recipe)
             ? await measurementRootFor(recipe, 'fixture')
             : measurementRoot;
-          const fixtureRootHarnessSlug = recipe.fixtureRootHarnessSlug;
+          // A historical recipe may omit fixtureRootHarnessSlug even though its
+          // measurement pin recorded the default/explicit fixture root identity.
+          // Reusing that pin identity keeps diffMeasuredFiles keyed to the same
+          // root instead of reporting one changed file as an added + removed pair.
+          const pinnedFixtureRootHarnesses = new Set(
+            (readMeasurementPin(row.details)?.files ?? [])
+              .filter((file) => file.dimension === 'fixture' && typeof file.rootHarnessSlug === 'string')
+              .map((file) => file.rootHarnessSlug as string),
+          );
+          const fixtureRootHarnessSlug = recipe.fixtureRootHarnessSlug ?? (
+            pinnedFixtureRootHarnesses.size === 1 ? [...pinnedFixtureRootHarnesses][0] : undefined
+          );
           measuredAtCommit = await measurementCommitFor(measurementRoot);
           const fixtureCommit = fixtureRoot === measurementRoot
             ? measuredAtCommit
@@ -3614,7 +3701,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   ...primary.files,
                   ...fixtureFiles.map((file) => ({
                     ...file,
-                    ...(recipe.fixtureRootHarnessSlug ? { rootHarnessSlug: recipe.fixtureRootHarnessSlug } : {}),
+                    ...(fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {}),
                     dimension: 'fixture' as const,
                   })),
                 ],

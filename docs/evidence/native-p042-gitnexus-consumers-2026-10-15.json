@@ -188,9 +188,29 @@
     "priorOutcomeEvidence": [
       "docs/evidence/gitnexus-p017-backend-bakeoff-2026-10-06.md",
       "docs/evidence/gitnexus-p017-backend-bakeoff-2026-10-06.json",
-      "docs/evidence/gitnexus-first-party-snapshot-2026-10-06.json"
+      "docs/evidence/gitnexus-first-party-snapshot-2026-10-06.json",
+      "docs/evidence/gitnexus-outcome-remeasure-2026-10-12.json",
+      "docs/evidence/gitnexus-r1-deployed-snapshot-health-2026-10-06.json"
     ],
-    "limitations": "Prior bakeoff and snapshot comparison are dated frozen-corpus evidence. They do not replace the original P012 live-outcome measures."
+    "limitations": "Prior bakeoff and snapshot comparison are dated frozen-corpus evidence. They do not replace the original P012 live-outcome measures.",
+    "recoveredHistoricalRemeasure": {
+      "source": "docs/evidence/gitnexus-outcome-remeasure-2026-10-12.json",
+      "decision": "gitnexus-deterministic-integration-2026-10-05#D-029",
+      "windowStart": "2026-10-06T05:25:00Z",
+      "windowEnd": "2026-10-11T09:43:00Z",
+      "disposition": "Provisional KEEP, not a final benefit or shipment verdict.",
+      "unavailable": [
+        "Comparable strand-caused reds per week: incomplete root-cause population",
+        "Gate time to first red: missing historical roundPhases and baseline measures verdict time",
+        "Graph-added true catches: historical selector receipts and snapshot unrecovered",
+        "Complete retracted code-caller absence census",
+        "Correctly attributed post-change S37/W01 native behaviour battery"
+      ],
+      "existingAccountableFollowup": "WI-6554700010008509",
+      "recordedFollowupAssignee": "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2",
+      "followupLiveness": "not queried; recorded attribution only",
+      "interpretation": "Missing measures are unknown, not zero or evidence of no value. The dated snapshot-health witness proves one loaded routine fire; it does not prove the inherited 48-hour continuity requirement."
+    }
   },
   "consumers": [
     {
@@ -237,17 +257,20 @@
       ],
       "disposition": "retain existing internal route pending final outcome ruling",
       "behavior": "Recent ledger rows demonstrate active direct context use. Existing D005 authority persists; D004 forbids product/installer dependencies.",
-      "remaining": "Complete benefit and raw plugin operation inventory; do not infer permission or usefulness from dispatch ok."
+      "remaining": "Complete benefit and raw plugin operation inventory; do not infer permission or usefulness from dispatch ok.",
+      "sourceAudit": "index.ts getDynamicTools derives operation definitions from the upstream tools/list, filters mutating tools before registration and applies per-operation role/quota, repository scope, freshness and response-budget guards. Its static capability list is not an exhaustive runtime operation census. makeHandler refuses query before spawning or dispatch under D-065; do not rerun the known failing query as a probe."
     },
     {
       "id": "dream-neighbors",
       "paths": [
         "packages/operator-core/lib/dream/capability-packets.ts",
-        "packages/operator-core/lib/dream/capability-contracts.ts"
+        "packages/operator-core/lib/dream/capability-contracts.ts",
+        "packages/operator-core/lib/dream/dream-cycle-action.ts"
       ],
-      "disposition": "pending exact dependency verification",
-      "behavior": "Default graph packet uses first-party queryCapabilityGraph; legacy neighbors port still calls gitnexusFacade for callers/callees.",
-      "remaining": "Trace active capability packet consumers and preserve the frozen Dream trials; do not label the whole packet first-party without checking this path."
+      "disposition": "retain existing internal neighbors route pending measured consumer ruling",
+      "behavior": "Default graph packet uses first-party queryCapabilityGraph. Separately, buildCapabilityPacket always calls inspectCodeContext; after a compiler definition resolves at the cited location, that function calls deps.neighbors for both callers and callees. The default neighbors callback dispatches gitnexusFacade. A first-party graph field therefore does not remove the optional engine dependency.",
+      "remaining": "Measure this bounded discovery consumer separately before a final keep/narrow ruling. Preserve the frozen Dream trials and verify the loaded implementation.",
+      "sourceWitness": "capability-packets.ts defaultDeps:88-96, inspectCodeContext:345-411 and buildCapabilityPacket:498-499; dream-cycle-action.ts loads packets.buildCapabilityPacket for each selected capability. Study run-one-cycle, run-blender, replay-rerank and prepare-graph-comparison also call the builder. This is source reachability, not a newly observed live invocation."
     },
     {
       "id": "selective-assist-and-bench",
@@ -326,5 +349,29 @@
     "Complete P042 consumer/outcome inventory and final decisions.",
     "Verify loaded background runtime before routine acceptance; original P018 deployed freshness evidence remains open.",
     "Continue P034-P036 push/runtime witnesses and P037-P039/P041 source implementation. D019 clears the obsolete schema prerequisite; preserve the host backup owner's lane."
-  ]
+  ],
+  "sourceAudit20261016": {
+    "scope": "Read-only source census in apps, packages, scripts and libs/papercusp/plugins; direct facade imports/calls and their immediate production consumers were inspected. Inventory remains partial; dynamic discovery and historical outcomes are separate evidence planes.",
+    "directFacadeFamilies": [
+      "agent-tools/gitnexus/query.ts: optional health dispatch; native topology operations use first-party routes",
+      "dream/capability-packets.ts: conditional one-hop discovery through default neighbors",
+      "code-intelligence/selective-assist.ts: explicit optional assist port; no production caller established by this census",
+      "code-intelligence/code-intel-bench.ts and engine-comparison-cli.ts: controlled comparison execution"
+    ],
+    "additionalSurfacesToClassify": [
+      "Plugin loader and host bootstrap discovery/lifecycle",
+      "Project-history refresh health/context consumption",
+      "Release selector and dependency-snapshot health/retention",
+      "Native client LSP routing, source/documentation claims and installed fallback text",
+      "Registered S37/W01 scenario and target catalogues",
+      "Process/resource guards, benchmark admission and packaging checks"
+    ],
+    "governingRecovery": "D-021 dropped the original P-006/P-010 integrations after an unresolved replay threshold, so their unshipped behaviour cannot be credited as a live benefit. D-026 selects the first-party comparison arm without retiring GitNexus; D-029 is provisional. D-018 narrows only hourly maintenance so far.",
+    "claimsExcluded": [
+      "No complete current consumer inventory or current root-cause census",
+      "No invocation-count-to-benefit inference",
+      "No final per-consumer disposition, original-plan close or 48-hour continuity claim",
+      "No new benchmark, native behaviour battery, runtime restart or test run in this source-audit continuation"
+    ]
+  }
 }

@@ -16,6 +16,7 @@ import {
 } from '../../scorecards';
 import { getRubricWithoutSeeding } from '../../rubrics';
 import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
+import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
@@ -185,6 +186,86 @@ const scorecardRubricCurrentnessSchema = z.object({
   currentCriteriaHash: z.string().nullable(),
 }).passthrough();
 
+const scorecardEvaluatorBuildCurrentnessSchema = z.object({
+  state: z.enum(['current', 'stale', 'unknown']),
+  reason: z.string(),
+  recordedSha: z.string().nullable(),
+  recordedVersion: z.string().nullable(),
+  liveSha: z.string().nullable(),
+  liveVersion: z.string().nullable(),
+}).passthrough();
+
+export type ScorecardEvaluatorBuildCurrentness = z.infer<typeof scorecardEvaluatorBuildCurrentnessSchema>;
+
+/**
+ * Read the evaluator identity from either recipe location. New cards pin it in
+ * both places; older cards may only retain the executable args pin. A missing
+ * pin is omitted (legacy cards remain auditable), while an invalid or
+ * unresolvable identity is explicit unknown so a judge cannot mistake it for a
+ * current replay (EI-26082605254422690).
+ */
+export function classifyEvaluatorBuildCurrentness(
+  recipe: unknown,
+  liveBuild: BuildInfo = getBuildInfo(),
+): ScorecardEvaluatorBuildCurrentness | undefined {
+  if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) return undefined;
+  const source = recipe as { evaluatorBuild?: unknown; args?: unknown };
+  const candidate = source.evaluatorBuild ??
+    (source.args && typeof source.args === 'object' && !Array.isArray(source.args)
+      ? (source.args as { evaluatorBuild?: unknown }).evaluatorBuild
+      : undefined);
+  if (candidate === undefined) return undefined;
+  const recorded = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+    ? candidate as { sha?: unknown; version?: unknown }
+    : null;
+  const recordedSha = typeof recorded?.sha === 'string' ? recorded.sha.trim() || null : recorded?.sha === null ? null : null;
+  const recordedVersion = typeof recorded?.version === 'string' ? recorded.version.trim() || null : null;
+  const liveSha = typeof liveBuild.sha === 'string' ? liveBuild.sha.trim() || null : null;
+  const liveVersion = typeof liveBuild.version === 'string' ? liveBuild.version.trim() || null : null;
+  if (!recorded || recordedVersion === null || (recorded?.sha !== null && typeof recorded?.sha !== 'string')) {
+    return {
+      state: 'unknown',
+      reason: 'recorded-identity-invalid',
+      recordedSha,
+      recordedVersion,
+      liveSha,
+      liveVersion,
+    };
+  }
+  if (liveSha === null || liveVersion === null) {
+    return {
+      state: 'unknown',
+      reason: 'live-identity-missing',
+      recordedSha,
+      recordedVersion,
+      liveSha,
+      liveVersion,
+    };
+  }
+  if (recordedSha === liveSha && recordedVersion === liveVersion) {
+    return {
+      state: 'current',
+      reason: 'current',
+      recordedSha,
+      recordedVersion,
+      liveSha,
+      liveVersion,
+    };
+  }
+  return {
+    state: 'stale',
+    reason: recordedSha !== liveSha && recordedVersion !== liveVersion
+      ? 'sha-and-version-mismatch'
+      : recordedSha !== liveSha
+        ? 'sha-mismatch'
+        : 'version-mismatch',
+    recordedSha,
+    recordedVersion,
+    liveSha,
+    liveVersion,
+  };
+}
+
 const scorecardEvidenceSchema = z.object({
   issueId: z.string(),
   createdAt: z.string(),
@@ -247,6 +328,7 @@ const scorecardEvidenceSchema = z.object({
     recordedCriteriaHash: z.string().nullable(),
     currentCriteriaHash: z.string().nullable(),
   }).passthrough().optional(),
+  evaluatorBuildCurrentness: scorecardEvaluatorBuildCurrentnessSchema.optional(),
   provisional: z.object({
     violatableKeys: z.array(z.string()),
     stampedAt: z.string(),
@@ -273,6 +355,11 @@ const scorecardRecipeHeaderSchema = scorecardEvidenceSchema.omit({
   missingKeys: true,
   extraKeys: true,
   rubricResolved: true,
+}).extend({
+  // Header responses may emit criteria: [] to distinguish omitted evidence
+  // from an absent field, while some header-only reads omit it. Keep the
+  // declared array empty-only; full criterion data uses the other union arm.
+  criteria: z.array(scorecardEvidenceCriterionSchema).length(0).optional(),
 });
 
 const scorecardEvidenceReadSchema = z.object({
@@ -505,7 +592,7 @@ export default defineTool({
     chaining:
       'Spec-test-adequacy audit: call plans:evaluate-spec-test-adequacy { harness, slug, scorecardId: issueId } with no direct selectors, compare rows[].ratings to the card, and confirm historicalAuditOnly.asOf matches its creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Concatenate complete pages as exact JSON chunks and parse only when complete. Emit the grading-integrity audit last.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
+    'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded, `evaluatorBuildCurrentness` when the recipe pins an evaluator build, and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',
@@ -595,15 +682,19 @@ export default defineTool({
                   () => getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF),
                 ).catch(() => null)
               : null;
-            const scorecard = result.scorecard.gradingAudit
-              ? {
-                  ...result.scorecard,
-                  gradingAuditCurrentness: classifyGradingAuditCurrentness(
-                    result.scorecard.gradingAudit,
-                    gradingAuditRubric,
-                  ),
-                }
-              : result.scorecard;
+            const evaluatorBuildCurrentness = classifyEvaluatorBuildCurrentness(result.scorecard.rerunRecipe);
+            const scorecard = {
+              ...result.scorecard,
+              ...(evaluatorBuildCurrentness ? { evaluatorBuildCurrentness } : {}),
+              ...(result.scorecard.gradingAudit
+                ? {
+                    gradingAuditCurrentness: classifyGradingAuditCurrentness(
+                      result.scorecard.gradingAudit,
+                      gradingAuditRubric,
+                    ),
+                  }
+                : {}),
+            };
             if (recipePage) {
               return respond(boundedRerunRecipeHeaderRead(
                 scorecard as ScorecardRecipeHeader & {

@@ -1705,6 +1705,12 @@ export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-26107428212758754: release:cut reclaim previews declare a 120s handler budget
+// because their authored-work scan can exceed the flat MCP transport floor under host
+// pressure. Keep ptool beyond the 125s effective MCP deadline (+5s settlement) so the
+// structured dry-run result wins instead of an upstream-died/outcome-unknown transport error.
+export const PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS = 130_000;
+
 // dev:pg_hot_queries accepts a 600s sample and declares a 660s handler budget;
 // MCP adds 5s for settlement. Keep ptool past that deadline on direct and
 // tools:invoke-wrapped calls so its ordinary 30s cutoff cannot hide the result.
@@ -2221,17 +2227,16 @@ export function timeoutForTool(toolName, callArgs) {
   if (effectiveToolName === 'work_items:list' && effectiveArgs?.prDeliveryAudit) {
     return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
   }
-  // EI-25376635449301072: an unconfirmed release:cut reclaim is a read-only
-  // preview. A measured preview took 46.7s on the server, so ptool's flat 30s
-  // deadline discarded a valid result before the bounded MCP request finished.
-  // Keep direct and tools:invoke routes above the transport cap; confirmed
+  // EI-25376635449301072 / EI-26107428212758754: an unconfirmed release:cut reclaim is a
+  // read-only preview. Its handler declares 120s because the authored-work scan can exceed
+  // the transport floor; keep the client beyond the effective 125s server deadline. Confirmed
   // reclamation and unrelated release:cut operations retain the normal limit.
   if (
     effectiveToolName === 'release:cut' &&
     effectiveArgs?.op === 'reclaim' &&
     effectiveArgs?.confirm !== true
   ) {
-    return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+    return PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS;
   }
   if (
     effectiveToolName === 'release:repair-queue' &&

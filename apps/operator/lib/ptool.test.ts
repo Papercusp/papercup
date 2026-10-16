@@ -40,6 +40,7 @@ import {
   PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_SCORECARD_REPAIR_TIMEOUT_MS,
+  PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
   timeoutForTool,
   isLoopPressureShed,
   callToolWithPressureRetry,
@@ -832,6 +833,19 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
 
   it('the override genuinely covers the transport cap with real margin (not a bare inequality)', () => {
     expect(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS - MCP_TRANSPORT_CAP_MS).toBeGreaterThanOrEqual(3_000);
+  });
+});
+
+describe('ptool timeoutForTool — release:cut reclaim budget (EI-26107428212758754)', () => {
+  it('keeps dry-run reclaim beyond the declared 120s handler deadline', () => {
+    expect(timeoutForTool('release:cut', { op: 'reclaim' })).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: { op: 'reclaim' } }))
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
+    expect(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS).toBeGreaterThan(125_000);
+  });
+
+  it('does not widen confirmed reclaim writes', () => {
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 });
 

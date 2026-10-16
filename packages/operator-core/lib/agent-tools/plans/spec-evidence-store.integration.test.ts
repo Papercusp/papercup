@@ -220,7 +220,12 @@ beforeAll(async () => {
       harness_slug text NOT NULL,
       feature_id text NOT NULL,
       status text,
+      taken_by text,
+      origin text NOT NULL DEFAULT 'local',
+      item_kind text NOT NULL DEFAULT 'bug',
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb,
       source_plan_slug text,
+      source_plan_item_ids text[],
       admission text, admitted_at timestamptz, admitted_by text,
       PRIMARY KEY (harness_slug, feature_id)
     );
@@ -2823,9 +2828,19 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         ${over.workspaceId === undefined ? WORKSPACE : over.workspaceId},
         ${over.harnessSlug === undefined ? HARNESS : over.harnessSlug},
         ${DERIVE_TEST}, ${over.status ?? 'pass'}, now(), 'c0ffee1234567890', false,
-        ${over.source ?? 'local'}, ${db.sql.json({ collectionFailed: false })})
+        ${over.source ?? 'local'}, ${db.sql.json({ collectionFailed: false, runStartedAt: new Date().toISOString() })})
       RETURNING id`;
     return Number(row.id);
+  }
+
+  async function setRunExecutionDetails(runId: number, details: Record<string, unknown>) {
+    const candidate = details.runStartedAt;
+    const runStartedAt = typeof candidate === 'string' && Number.isFinite(Date.parse(candidate))
+      ? candidate
+      : new Date().toISOString();
+    await db.sql`UPDATE harness_shared.test_runs
+      SET execution_details = ${db.sql.json({ ...details, runStartedAt })}
+      WHERE id = ${runId}`;
   }
 
   async function bindFromRun(
@@ -2935,9 +2950,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       testLayer: 'integration',
       passedCaseTitles: [exactTitle],
     };
-    await db.sql`UPDATE harness_shared.test_runs
-      SET execution_details = ${db.sql.json(executionDetails)}
-      WHERE id = ${runId}`;
+    await setRunExecutionDetails(runId, executionDetails);
 
     const bound = await bindFromRun(runId, 'WI-101', {
       adequacy: {
@@ -3017,9 +3030,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       testLayer: 'integration',
       passedCaseTitles: ['outer > suite > selected case'],
     };
-    await db.sql`UPDATE harness_shared.test_runs
-      SET execution_details = ${db.sql.json(executionDetails)}
-      WHERE id = ${runId}`;
+    await setRunExecutionDetails(runId, executionDetails);
 
     const accepted = await bindFromRun(runId, 'WI-101', {
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['selected case'] },
@@ -3052,9 +3063,7 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
       passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
       passedCaseTitlesTruncated: true,
     };
-    await db.sql`UPDATE harness_shared.test_runs
-      SET execution_details = ${db.sql.json(incompleteDetails)}
-      WHERE id = ${incompleteRunId}`;
+    await setRunExecutionDetails(incompleteRunId, incompleteDetails);
     const incomplete = await bindFromRun(incompleteRunId, 'WI-102', {
       adequacy: { collected: true, skipped: false, executed: true, outcome: 'passed', testCases: ['case omitted from title cap'] },
     });
@@ -3079,16 +3088,14 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     // titles recorded, so the declared case is invisible to the title list. Here the run
     // ALSO recorded every case in the ledger, which is the authority when present.
     const runId = await recordRun();
-    await db.sql`UPDATE harness_shared.test_runs
-      SET execution_details = ${db.sql.json({
+    await setRunExecutionDetails(runId, {
         schemaVersion: 1, root: h.repoRoot, filePath: DERIVE_TEST, runGroupId: null,
         workspaceId: WORKSPACE, harnessSlug: HARNESS, testNamePattern: null,
         passed: 65, failed: 0, skipped: 0, collectionFailed: false, mutationPhase: null,
         commitSha: 'c0ffee1234567890', worktreeDirty: false, testLayer: 'integration',
         passedCaseTitles: Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
         passedCaseTitlesTruncated: true,
-      })}
-      WHERE id = ${runId}`;
+      });
     const keys = [
       ...Array.from({ length: 64 }, (_, index) => 'outer > recorded case ' + index),
       'outer > case beyond the title cap',
@@ -3132,6 +3139,58 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     ).toEqual([]);
   });
 
+  it('refuses mutation adequacy cases that contradict the measured failed mutant case', async () => {
+    await specs.setSpecClause(clause());
+    const runId = await recordRun({ status: 'fail', source: 'mutation-probe' });
+    const failedCaseTitle =
+      'R-10: a probe that is not provably read-only is refused without being dispatched > reports a write-capable tool probe as could-not-run (not_read_only) and never calls the dispatcher';
+    const unrelatedPassingTitle =
+      'R-1 / R-25: changed and could-not-run probes get a line; matching probes print nothing > renders nothing for probes that still match their expect value';
+    await setRunExecutionDetails(runId, {
+        schemaVersion: 1,
+        root: h.repoRoot,
+        filePath: DERIVE_TEST,
+        runGroupId: null,
+        workspaceId: WORKSPACE,
+        harnessSlug: HARNESS,
+        testNamePattern: null,
+        passed: 10,
+        failed: 1,
+        skipped: 0,
+        collectionFailed: false,
+        mutationPhase: 'mutant',
+        commitSha: 'c0ffee1234567890',
+        worktreeDirty: false,
+        testLayer: 'unit',
+        runStartedAt: new Date().toISOString(),
+        failedCaseTitles: [failedCaseTitle],
+      });
+
+    const accepted = await bindFromRun(runId, 'WI-101', {
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCaseTitle] },
+    });
+    expect(accepted).toMatchObject({ ok: true, status: 'created' });
+
+    const rejected = await bindFromRun(runId, 'WI-102', {
+      adequacy: { targeted: 'SPEC-003-01', testCases: [failedCaseTitle, unrelatedPassingTitle] },
+    });
+    expect(rejected).toMatchObject({
+      ok: false,
+      error: 'test_cases_not_in_run',
+      status: 'test_cases_not_in_run',
+      testRunId: runId,
+      declaredCaseCount: 2,
+      failedCaseTitleCount: 1,
+      source: 'mutation-failed-case-titles',
+      unmatchedTestCases: [unrelatedPassingTitle],
+    });
+    expect(await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-102'],
+    })).toEqual([]);
+  });
+
   it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {
     await specs.setSpecClause(clause());
     const mirror = '/tmp/mutation-probe-removed/mirror';
@@ -3140,7 +3199,12 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
         (workspace_id, harness_slug, file_path, status, finished_at, commit_sha, worktree_dirty, source, execution_details)
       VALUES (
         ${WORKSPACE}, ${HARNESS}, ${DERIVE_TEST}, 'fail', now(), 'c0ffee1234567890', false,
-        'mutation-probe', ${db.sql.json({ root: mirror, mutationPhase: 'mutant', collectionFailed: false })})
+        'mutation-probe', ${db.sql.json({
+          root: mirror,
+          mutationPhase: 'mutant',
+          collectionFailed: false,
+          runStartedAt: new Date().toISOString(),
+        })})
       RETURNING id`;
     const out = (await bindTool.handler(
       {

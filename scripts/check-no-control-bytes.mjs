@@ -75,6 +75,14 @@ export const ALLOW_PREFIXES = [
   'apps/operator/dist-sidecar/',
 ];
 
+// Native host parity fixtures are emitted by the maintained bundle producer into a
+// run-specific `dist-host-native-fixture-debug-<id>/` directory. The bundle is a
+// wholesale build artifact (and can be nested under a duplicated apps/operator
+// prefix when the producer receives a relative outfile), so it is not hand-authored
+// source to rewrite. Keep this as a path-shape exclusion so every future fixture id
+// and either producer layout receives the same policy as the sibling source guards.
+const GENERATED_NATIVE_FIXTURE_RE = /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/;
+
 /**
  * Vendored dependency trees are never hand-authored source.
  *
@@ -125,7 +133,11 @@ function extensionOf(file) {
 // the very byte that red-pins the fleet gate an hour later.
 export function isScannedPath(file) {
   if (isVendoredDependencyPath(file)) return false;
-  return SOURCE_EXTENSIONS.has(extensionOf(file)) && !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix));
+  return (
+    SOURCE_EXTENSIONS.has(extensionOf(file)) &&
+    !GENERATED_NATIVE_FIXTURE_RE.test(file) &&
+    !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix))
+  );
 }
 
 function gitLines(args, cwd = ROOT) {

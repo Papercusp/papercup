@@ -4031,6 +4031,25 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
     });
 
+    it('detects code:run middle-elision markers with lower-case text and a space after the ellipsis', () => {
+      const text = withMarker(
+        'result head … [truncated 1227 chars] … result tail\n',
+        BUDGET_CHARS * 3,
+      );
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = boundedBody(doored)._projection.next;
+      const spill = readSpill('ws-1', 'code:run', RUN_ID);
+
+      expect(pointer).toContain('TOOL ITSELF already truncated');
+      expect(pointer).toContain('textTruncated');
+      expect(pointer).not.toContain('No upstream truncation marker was detected');
+      expect(spill).toContain('TOOL ITSELF already truncated');
+      expect(spill).toContain('truncated 1227 chars');
+    });
+
     it('code:run summaryNotice.truncated points to the raw summary spill and marks the outer spill partial', () => {
       const text = JSON.stringify({
         summary: 'S'.repeat(3_500),

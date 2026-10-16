@@ -60,10 +60,18 @@ import {
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
 import { gatherViewerAttachedOwners } from '../../pty-viewer-heartbeat';
 import type { Watermark } from '@papercusp/coordination/core';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
  *  any doubt and are swept on read so the roster stays bounded. */
 const PRESENCE_GC_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Optional attribution must never hold the roster hostage. This is the caller
+ * deadline for desktop, coupling, and mode enrichment; the base presence rows
+ * remain useful when any one of those legs is slow or wedged.
+ */
+export const PRESENCE_OPTIONAL_LEG_TIMEOUT_MS = 5_000;
 
 export interface PresenceSnapshotDiagnostic {
   phase: 'source' | 'enrichment' | 'post-enrichment' | 'derivation' | 'detail';
@@ -695,25 +703,30 @@ export async function assemblePresenceSnapshot(
     // ancestry traversal; normal presence reads retain the desktop enrichment.
     opts.includeDesktopEnrichment === false
       ? Promise.resolve()
-      : timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
-          gatherOnDesktopSessions({
-            // This snapshot already knows its complete local owner set. Keep
-            // desktop attribution within those rows instead of making a broad
-            // presence read scan every PSU-PTY discovery record on disk. The
-            // reaper still uses the unfiltered census because it must protect
-            // desktop sessions that are absent from the current presence rows.
-            ownerIds: localAllIds,
-            onDiagnostic: (diagnostic) => reportDiagnostic({
-              phase: 'enrichment',
-              name: `gatherOnDesktopSessions.${diagnostic.name}`,
-              elapsedMs: diagnostic.elapsedMs,
-              status: diagnostic.status,
+      : timeAsync('enrichment', 'gatherOnDesktopSessions', async () => {
+          const bounded = await withBoundedTimeout(
+            () => gatherOnDesktopSessions({
+              // This snapshot already knows its complete local owner set. Keep
+              // desktop attribution within those rows instead of making a broad
+              // presence read scan every PSU-PTY discovery record on disk. The
+              // reaper still uses the unfiltered census because it must protect
+              // desktop sessions that are absent from the current presence rows.
+              ownerIds: localAllIds,
+              onDiagnostic: (diagnostic) => reportDiagnostic({
+                phase: 'enrichment',
+                name: `gatherOnDesktopSessions.${diagnostic.name}`,
+                elapsedMs: diagnostic.elapsedMs,
+                status: diagnostic.status,
+              }),
             }),
-          }))
-          .then((s) => {
-            onDesktopOwners = s.owners;
-          })
-          .catch(() => {}),
+            {
+              fallback: null,
+              timeoutMs: PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+              label: 'coord:presence:gatherOnDesktopSessions',
+            },
+          );
+          if (bounded.value) onDesktopOwners = bounded.value.owners;
+        }).catch(() => {}),
     // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
     // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
     // the other joins.

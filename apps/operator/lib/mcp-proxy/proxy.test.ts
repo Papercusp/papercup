@@ -636,7 +636,7 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
-  it.each(["run", "prepare-tag", "handoff", "run-leg", "abort-leg", "reclaim"])(
+  it.each(["run", "prepare-tag", "handoff", "run-leg", "abort-leg"])(
     "tools:invoke wrapping release:cut %s remains keyed",
     (op) => {
       const body = Buffer.from(
@@ -3105,6 +3105,42 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toContain('"state":"running"');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-26107428212758754: tools:invoke-wrapped dry-run release:cut reclaim is replay-safe", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"op":"reclaim","dryRun":true}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "release:cut",
+            args: JSON.stringify({ op: "reclaim", minIdleHours: 24 }),
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toContain('"dryRun":true');
     expect(upstream.hits()).toBe(2);
   });
 

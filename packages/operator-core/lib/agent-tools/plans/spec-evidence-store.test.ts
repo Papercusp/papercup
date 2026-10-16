@@ -52,6 +52,11 @@ vi.mock('./source', async (importOriginal) => {
   };
 });
 
+// Retraction pushes scorecard invalidations after commit in production. Keep this
+// unit suite on its in-memory seam; the sync server's own integration tests cover
+// the transport and must not be opened by this store test.
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+
 // A replay that MEASURES resolves a real harness checkout. Point that resolution at this
 // suite's temp fixture root so the measuring path can be observed end to end; without this
 // the measurement can only ever fail with repo_measurement_harness_root_unavailable, which
@@ -82,6 +87,7 @@ import {
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
   hasMatchingDeclaredCaseTitle,
+  retractSpecEvidence,
 } from './spec-evidence-store';
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
@@ -1864,6 +1870,67 @@ describe('listSpecEvidence timestamp normalization', () => {
     ]));
   });
 
+  it('preserves the default harness identity when diffing fixture files against a pinned measurement', async () => {
+    const fixturePath = 'fixture/root-identity.ts';
+    await mkdir(join(measurementRoot, 'fixture'), { recursive: true });
+    await writeFile(join(measurementRoot, fixturePath), 'export const fixtureVersion = 1;\n');
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+      fixturePaths: [fixturePath],
+    };
+    try {
+      const pinned = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe, {
+        fixtureRootHarnessSlug: 'papercusp',
+      });
+      expect(pinned.pin.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: fixturePath, dimension: 'fixture', rootHarnessSlug: 'papercusp' }),
+      ]));
+      await writeFile(join(measurementRoot, fixturePath), 'export const fixtureVersion = 2;\n');
+      h.rows = [{
+        id: 57,
+        work_item_id: 'WI-fixture-root-identity',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-fixture-root-identity',
+        source_val_id: null,
+        spec_revision: 1,
+        current_revision: 1,
+        spec_fingerprint: 'sha256:spec-fixture-root-identity',
+        evidence_kind: 'test',
+        evidence_ref: 'vitest:fixture-root-identity',
+        source_fingerprint: pinned.sourceFingerprint,
+        test_fingerprint: pinned.testFingerprint,
+        fixture_fingerprint: pinned.fixtureFingerprint,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: { currentMeasurement: recipe, measurementPin: pinned.pin },
+        observed_at: '2026-08-20T21:10:00.000Z',
+        binding_fingerprint: 'sha256:fixture-root-identity-binding',
+        created_by: 'su-test',
+        created_at: '2026-08-20T21:10:01.000Z',
+        spec_is_current: true,
+      }];
+
+      const [stale] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      expect(stale.currentness).toMatchObject({
+        overall: 'stale',
+        dimensions: { fixture: 'stale' },
+        staleReasons: ['fixture-stale'],
+      });
+      expect(stale).toHaveProperty('serverMeasurement.movedPaths', [
+        { path: fixturePath, dimension: 'fixture', rootHarnessSlug: 'papercusp', change: 'changed' },
+      ]);
+    } finally {
+      await rm(join(measurementRoot, fixturePath), { force: true });
+    }
+  });
+
   it('matches scoped currentness by clause identity when two specs share one artifact reference', async () => {
     const shared = {
       work_item_id: 'WI-shared-proof',
@@ -2692,5 +2759,44 @@ describe('ledger-state server measurement', () => {
     expect(
       evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: ['not a ref'] }).success,
     ).toBe(false);
+  });
+});
+
+describe('spec evidence retraction and grading-audit cancellation', () => {
+  beforeEach(() => {
+    h.rows = [{
+      id: 30308,
+      work_item_id: 'WI-101',
+      plan_slug: 'reconnect-plan',
+      spec_id: 'SPEC-003-01',
+      spec_revision: 1,
+      evidence_kind: 'coverage-census',
+      evidence_ref: 'surface:POST /events',
+      retracted_at: null,
+      retracted_by: null,
+      retraction_reason: null,
+      feature_id: 'EI-TARGET',
+    }];
+    h.queries = [];
+  });
+
+  it('cancels pending grading audits in the retraction transaction before notifying readers', async () => {
+    const result = await retractSpecEvidence({
+      harnessSlug: 'papercusp',
+      bindingId: 30308,
+      reason: 'withdrawn fixture evidence',
+      actorId: 'su-retractor',
+    });
+
+    expect(result).toMatchObject({ status: 'retracted', bindingId: 30308 });
+    const bindingUpdateIndex = h.queries.findIndex(({ sql }) => sql.includes('UPDATE harness_shared.spec_evidence_bindings'));
+    const auditCancellationIndex = h.queries.findIndex(({ sql }) => sql.includes('UPDATE harness_shared.work_items'));
+    expect(bindingUpdateIndex).toBeGreaterThanOrEqual(0);
+    expect(auditCancellationIndex).toBeGreaterThan(bindingUpdateIndex);
+    const cancellation = h.queries[auditCancellationIndex]!;
+    expect(cancellation.sql).toContain("gradingAudit'->>'state' = 'pending'");
+    expect(cancellation.sql).toContain('jsonb_array_elements_text');
+    expect(cancellation.sql).toContain("cited.binding_id =");
+    expect(cancellation.values).toEqual(expect.arrayContaining(['workspace-test', '30308']));
   });
 });

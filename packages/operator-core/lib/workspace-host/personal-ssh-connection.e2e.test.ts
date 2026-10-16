@@ -1,10 +1,11 @@
 /** E2E: real OpenSSH between the test client and an isolated private-network computer.
  * The remote psu/HTTP fixtures observe transport behavior; this is not release GUI proof. */
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, inject, test } from 'vitest';
 import { startDockerAllocationOwner } from '../../../../scripts/with-documenso-sandbox.mjs';
 import {
@@ -46,6 +47,47 @@ async function ssh(command: string, args: string[]) {
   });
 }
 
+// Exercise the production entrypoint and its real child-process transport.
+// Only OpenSSH configuration is supplied by the fixture; no controller,
+// command runner, PTY implementation or connection dependency is injected.
+async function nativePsu(args: string[], input?: string) {
+  return new Promise<{ code: number | null; output: string }>((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(new URL(
+      '../../../../apps/operator/scripts/psu-launcher.mjs', import.meta.url)), ...args], {
+      cwd: root,
+      env: {
+        HOME: root, PATH: `${join(root, 'bin')}:${process.env.PATH}`,
+        TERM: 'xterm-256color', LANG: 'C.UTF-8',
+        PERSONAL_SSH_FIXTURE_CONFIG: config,
+        // Preserve the suite's source-identity enforcement in the native child.
+        ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}),
+        ...Object.fromEntries(Object.entries(process.env).filter(([key, value]) =>
+          key.startsWith('PAPERCUSP_COMMITTED_SOURCE_') && value != null)),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let output = '';
+    let sent = false;
+    const capture = (data: Buffer) => {
+      output += data.toString('utf8');
+      if (input != null && !sent && output.includes('PERSONAL_SSH_INPUT_READY')) {
+        sent = true;
+        child.stdin.write(`${input}\n`);
+      }
+    };
+    child.stdout.on('data', capture);
+    child.stderr.on('data', capture);
+    child.stdin.on('error', () => { /* refusal can close stdin before input */ });
+    const timeout = setTimeout(() => child.kill('SIGTERM'), 30_000);
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('close', (code, signal) => {
+      clearTimeout(timeout);
+      if (signal) reject(new Error(`Native psu ended on ${signal}: ${output}`));
+      else resolve({ code, output });
+    });
+  });
+}
+
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'pc-personal-ssh-'));
   container = `pc-personal-ssh-${randomUUID()}`;
@@ -60,7 +102,7 @@ beforeAll(async () => {
   for (const name of ['client', 'host']) {
     execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(root, name)], { timeout: 10_000 });
   }
-  writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,sys\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd()}),flush=True)\n`);
+  writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,sys,time\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd()}),flush=True)\nif '--transport-stdin' in sys.argv:\n print('PERSONAL_SSH_INPUT_READY',flush=True)\n print(json.dumps({'stdin':sys.stdin.readline()}),flush=True)\ntime.sleep(0.2)\n`);
   writeFileSync(join(root, 'gui.py'), `from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write(b'personal-computer-gui')\nHTTPServer(('127.0.0.1',3070),H).serve_forever()\n`);
   process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
   await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
@@ -82,6 +124,8 @@ beforeAll(async () => {
   writeFileSync(join(root, 'known_hosts'), `[127.0.0.1]:${port} ${readFileSync(join(root, 'host.pub'), 'utf8')}`);
   config = join(root, 'ssh_config');
   writeFileSync(config, `Host personal-fixture\n HostName 127.0.0.1\n Port ${port}\n User root\n IdentityFile ${root}/client\n IdentitiesOnly yes\n StrictHostKeyChecking yes\n UserKnownHostsFile ${root}/known_hosts\n GlobalKnownHostsFile /dev/null\n`);
+  mkdirSync(join(root, 'bin'));
+  writeFileSync(join(root, 'bin', 'ssh'), '#!/bin/sh\nexec /usr/bin/ssh -F "$PERSONAL_SSH_FIXTURE_CONFIG" "$@"\n', { mode: 0o700 });
   let ready = false;
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline) {
@@ -99,6 +143,20 @@ afterAll(async () => {
   }
   if (allocations) expect(await allocations.close()).toBe('cleanup-verified');
 }, 200_000);
+
+test('native psu entrypoint selects the saved machine and preserves remote argv, stdin/stdout and cwd over pinned SSH', async () => {
+  savePsuConnectionStore({ version: PSU_CONNECTION_STORE_VERSION,
+    profiles: [normalizeSshProfile({ name: 'native-desktop', host: 'personal-fixture' })],
+  }, defaultPsuConnectionStorePath(root));
+  const result = await nativePsu(['--connect=native-desktop', '--resume=native session',
+    '--label=quoted $value', '--transport-stdin'], 'native input $value');
+  expect(result.code, result.output).toBe(0);
+  expect(result.output).toContain('native-desktop');
+  expect(result.output).toContain('"argv": ["--resume=native session", "--label=quoted $value", "--transport-stdin"]');
+  expect(result.output).toContain('"forwarded": "1"');
+  expect(result.output).toContain('"cwd": "/root"');
+  expect(result.output).toContain('"stdin": "native input $value\\n"');
+}, 40_000);
 
 test('runs remote psu, serves the private GUI and refuses a revoked or offline computer', async () => {
   savePsuConnectionStore({ version: PSU_CONNECTION_STORE_VERSION,
@@ -131,6 +189,10 @@ test('runs remote psu, serves the private GUI and refuses a revoked or offline c
   // Revocation includes closing existing SSH connections, not just deleting a key.
   await docker(['exec', container, 'sh', '-c', ': > /root/.ssh/authorized_keys']);
   for (const socket of masters) await ssh('ssh', ['-S', socket, '-O', 'exit', '--', 'personal-fixture']);
+  const revoked = await nativePsu(['--connect=desktop', '--resume=revoked-native']);
+  expect(revoked.code, revoked.output).not.toBe(0);
+  expect(revoked.output).toContain('OpenSSH host-key and authentication policy');
+  expect(revoked.output).not.toContain('"forwarded": "1"');
   browserUrl = '';
   await expect(runPsuConnectionFrontController(['--connect=desktop', '--connect-gui'], browser)).rejects.toThrow(/OpenSSH host-key and authentication policy/);
   expect(browserUrl).toBe('');

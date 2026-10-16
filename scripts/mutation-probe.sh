@@ -1396,6 +1396,38 @@ test_run_receipt_file() {
   printf '%s/test-run-receipts.%s.jsonl' "$SCRATCH" "$1"
 }
 
+# The reporter must write probe receipts to the same database this script
+# resolves for other test-run tooling. In particular, with-test-pg sets
+# PAPERCUSP_PG_PORT and intentionally leaves HARNESS_ADMIN_DATABASE_URL unset;
+# without this explicit sink the reporter falls through to its localhost:5432
+# fallback and the receipt can disappear with the private test database.
+ensure_test_runs_db_url() {
+  local supplied="${PAPERCUSP_TEST_RUNS_DB_URL-}"
+  local resolved
+  if [[ "$supplied" =~ [^[:space:]] ]]; then
+    export PAPERCUSP_TEST_RUNS_DB_URL="$supplied"
+    return 0
+  fi
+
+  [ -n "$RUNNER_ROOT" ] && [ -f "$RUNNER_ROOT/scripts/lib/pg-url.mjs" ] \
+    || die "cannot resolve the test-run receipt sink without scripts/lib/pg-url.mjs in the repository root"
+  if ! resolved="$(node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { resolveScriptPgUrl } = await import(pathToFileURL(process.argv[1]).href);
+    const result = resolveScriptPgUrl();
+    if (typeof result?.url !== "string" || !result.url.trim()) {
+      console.error("resolveScriptPgUrl returned no PostgreSQL URL");
+      process.exit(2);
+    }
+    process.stdout.write(result.url);
+  ' "$RUNNER_ROOT/scripts/lib/pg-url.mjs")"; then
+    die "could not resolve the test-run receipt sink with scripts/lib/pg-url.mjs"
+  fi
+  [[ "$resolved" =~ [^[:space:]] ]] \
+    || die "scripts/lib/pg-url.mjs returned a blank test-run receipt sink"
+  export PAPERCUSP_TEST_RUNS_DB_URL="$resolved"
+}
+
 summarize_ledger_receipts() {
   local file="$1"
   if [ ! -s "$file" ]; then
@@ -2489,6 +2521,7 @@ BASELINE_RC=0
 if [ "$IN_TREE" -eq 1 ] && [ "$SWEEP_ACK" = "lock-held" ]; then
   verify_sweep_fence
 fi
+ensure_test_runs_db_url
 if run_guard baseline "baseline guard" "$BASE_CMD" "$BASELINE_LOG"; then
   :
 else

@@ -420,7 +420,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     id: 'vh-release-runs',
     title: 'Verification-harness release runs',
     origin: 'agent',
-    roots: ['~/.local/state/verification-harness/release-local'],
+    roots: ['~/.local/state/verification-harness/release-local', '/mnt/data/offload/verification-harness/release-local'],
     keep: { kind: 'newest', keep: 30 },
     enforcers: [
       {

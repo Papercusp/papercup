@@ -30,11 +30,9 @@
  *      passing a weaker suite while still reporting "conformance" — the failure
  *      mode clause 1 is written against, arrived at from the other direction.
  *
- * NOT asserted here, deliberately: that every kit check is exercised somewhere
- * in Wave A. That is already carried by bluesky-adapter.test.ts, which asserts
- * `checksSkipped` is empty — one adapter running the complete suite covers the
- * whole check universe on its own. Restating it here would be a second copy of
- * a truth that file already owns.
+ * Provider migration binds Wave A's actual package suites to the SDK kit.
+ * Broken-adapter controls remain in the shared conformance suites; transport
+ * behavior is exercised by each package's real API fixtures.
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
@@ -130,10 +128,9 @@ describe('P-014 Wave A gate — there is one kit, and all three adapters use it'
     ).toEqual(['conformance.ts']);
   });
 
-  it.each(WAVE_A_PLATFORMS)('the %s adapter is run against the shared kit', (platform) => {
-    const source = read(`${platform}-adapter.test.ts`);
-
-    expect(source).toContain("from './conformance'");
-    expect(source).toContain('runSocialAdapterConformance(');
+  it.each(WAVE_A_PLATFORMS)('the %s package is run against the shared SDK kit', (platform) => {
+    const source = readFileSync(join(HERE, '../../providers', platform, `${platform}-provider.test.ts`), 'utf8');
+    expect(source).toMatch(/import\s*\{[^}]*\brunProviderConformance\b[^}]*\}\s*from\s*['"]@papercusp\/plugin-sdk(?:\/provider-conformance)?['"]/s);
+    expect(source).toContain('runProviderConformance(');
   });
 });

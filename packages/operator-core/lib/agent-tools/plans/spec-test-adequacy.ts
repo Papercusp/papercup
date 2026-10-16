@@ -949,12 +949,59 @@ export function clauseSelfTargetIds(clause: { specId: string }): string[] {
   return [...new Set([clause.specId, clause.specId.toLowerCase()])];
 }
 
+/**
+ * BAR-generated test titles sometimes carry the immutable clause id in their name
+ * (for example `AUTO-BAR-R-03-P-008: ...`). When a binding targets a different
+ * clause, that selected case is proof for the named sibling even though the
+ * binding row's spec identity was rewritten to the target clause. Keep this
+ * check deliberately narrow: free-form case titles without an embedded BAR id
+ * remain valid and are still corroborated by the test-run ledger.
+ */
+const EMBEDDED_BAR_CLAUSE_ID_RE = /\bAUTO-BAR(?:-[A-Z0-9]+)+-P-\d{3,}\b/gi;
+
+function embeddedBarClauseIds(caseTitle: string): string[] {
+  return [...new Set(caseTitle.match(EMBEDDED_BAR_CLAUSE_ID_RE) ?? [])];
+}
+
+function clauseCaseTargetMismatches(
+  row: SpecEvidenceForAdequacy,
+  clause: SpecClauseRevision,
+): Array<{ caseTitle: string; embeddedIds: string[] }> {
+  if (!/^AUTO-BAR(?:-[A-Z0-9]+)+-P-\d{3,}$/i.test(clause.specId)) return [];
+  const target = clause.specId.toLowerCase();
+  return (detailsOf(row).testCases ?? []).flatMap((caseTitle) => {
+    const embeddedIds = embeddedBarClauseIds(caseTitle);
+    return embeddedIds.length > 0 && !embeddedIds.some((id) => id.toLowerCase() === target)
+      ? [{ caseTitle, embeddedIds }]
+      : [];
+  });
+}
+
+/** True only when every declared case explicitly names a different BAR clause. */
+function bindingHasOnlyMismatchedClauseCases(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
+  const declaredCases = detailsOf(row).testCases ?? [];
+  const mismatches = clauseCaseTargetMismatches(row, clause);
+  return declaredCases.length > 0 && mismatches.length === declaredCases.length;
+}
+
+function clauseCaseTargetMismatchSummary(
+  rows: readonly SpecEvidenceForAdequacy[],
+  clause: SpecClauseRevision,
+): string {
+  const entries = rows.flatMap((row) => clauseCaseTargetMismatches(row, clause).map(({ caseTitle, embeddedIds }) =>
+    `binding ${row.id ?? '?'} declares ${JSON.stringify(caseTitle)} for ${embeddedIds.join(', ')} but targets ${clause.specId}`,
+  ));
+  const shown = entries.slice(0, 3);
+  return `${shown.join('; ')}${entries.length > shown.length ? `; +${entries.length - shown.length} more` : ''}`;
+}
+
 function bindingTargetsClause(row: SpecEvidenceForAdequacy, clause: SpecClauseRevision): boolean {
   const targeted = detailsOf(row).targeted;
   return (
     bindingIdentityMatchesClause(row, clause) &&
     typeof targeted === 'string' &&
-    clauseSelfTargetIds(clause).includes(targeted)
+    clauseSelfTargetIds(clause).includes(targeted) &&
+    !bindingHasOnlyMismatchedClauseCases(row, clause)
   );
 }
 
@@ -1823,9 +1870,13 @@ function sourceBarTestSuiteRating(
     );
   }
 
+  // A binding whose every declared case names a sibling BAR clause is not a
+  // source-suite proof for this clause, even when the run used the same file.
+  const relevantEvidence = evidence.filter((row) => !bindingHasOnlyMismatchedClauseCases(row, clause));
+
   const rowsByFile = new Map<string, SpecEvidenceForAdequacy[]>();
   const ambiguousFiles = new Set<string>();
-  for (const row of evidence) {
+  for (const row of relevantEvidence) {
     if (row.evidenceKind !== 'test') continue;
     const measuredPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath;
     if (typeof measuredPath !== 'string' || measuredPath.trim().length === 0) continue;
@@ -2361,8 +2412,9 @@ function appendRatingRerunProbes(
  *  28 — binder-authored fixtureFree=true no longer establishes fixture absence for test-backed evidence without a fixture fingerprint.
  *  29 — outside-lineage re-observations can establish fixture absence for the same measured executable proof and selected cases.
  *  30 — shared mutation metadata stays target-scoped; unambiguous explicit measured-case associations need no title convention.
+ *  31 — a requiredEvidence:'tree' declaration requires a current tree-plane binding; binder-authored targeting cannot substitute for it.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 30;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 32;
 
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.
@@ -2493,6 +2545,7 @@ function clauseBoundCurrentTests(
       row.specFingerprint === clause.contentHash &&
       canonicalTestSourceKey(row) === sourceKey &&
       row.currentness.overall === 'current' &&
+      !bindingHasOnlyMismatchedClauseCases(row, clause) &&
       isSuccessfulRepairedEvidence(row),
   );
 }
@@ -2743,24 +2796,38 @@ export function evaluateSpecTestAdequacy(input: {
         : exactEvidence;
   const ratings = {} as Record<AdequacyCriterion, AdequacyRatingEntry>;
 
-  const lineageAssessments = evidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));
+  const caseTargetMismatchEvidence = evidence.filter((row) => bindingHasOnlyMismatchedClauseCases(row, clause));
+  const traceabilityEvidence = evidence.filter((row) => !bindingHasOnlyMismatchedClauseCases(row, clause));
+  const caseTargetMismatchNote = caseTargetMismatchEvidence.length > 0
+    ? ` Explicitly clause-labeled case(s) were excluded from this clause's traceability cohort because they name a sibling clause: ${clauseCaseTargetMismatchSummary(caseTargetMismatchEvidence, clause)}.`
+    : '';
+  const lineageAssessments = traceabilityEvidence.map((row) => ({ row, assessment: classifySpecEvidenceLineage(row) }));
   const ephemeralEvidence = lineageAssessments
     .filter(({ assessment }) => assessment.lineage === 'ephemeral')
     .map(({ row }) => row);
   const unknownLineageEvidence = lineageAssessments
     .filter(({ assessment }) => assessment.lineage === 'unknown')
     .map(({ row }) => row);
-  ratings.traceability = !evidence.length
-    ? {
-        rating: 'fail',
-        evidence: `No immutable evidence binding resolves ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
-        suggestion: 'Bind the work item and proof through plans:bind-spec-evidence.',
-      }
+  ratings.traceability = !traceabilityEvidence.length
+    ? caseTargetMismatchEvidence.length > 0
+      ? {
+          rating: 'unknown',
+          evidence: evidenceWithBindings(
+            `No declared case in the active evidence cohort identifies ${clauseIdentity(clause)}; ${clauseCaseTargetMismatchSummary(caseTargetMismatchEvidence, clause)}.`,
+            caseTargetMismatchEvidence,
+          ),
+          suggestion: 'Bind a test run whose declared adequacy.testCases identify this clause, or remove the sibling-clause case selection.',
+        }
+      : {
+          rating: 'fail',
+          evidence: `No immutable evidence binding resolves ${clauseIdentity(clause)}. ${clauseProbe(clause, input.harness)}`,
+          suggestion: 'Bind the work item and proof through plans:bind-spec-evidence.',
+        }
     : ephemeralEvidence.length > 0
       ? {
           rating: 'fail',
           evidence: evidenceWithBindings(
-            `Ephemeral-only evidence cannot establish independently rerunnable traceability for ${clauseIdentity(clause)}.`,
+            `Ephemeral-only evidence cannot establish independently rerunnable traceability for ${clauseIdentity(clause)}.${caseTargetMismatchNote}`,
             ephemeralEvidence,
           ),
           suggestion:
@@ -2770,7 +2837,7 @@ export function evaluateSpecTestAdequacy(input: {
         ? {
             rating: 'unknown',
             evidence: evidenceWithBindings(
-              `Evidence lineage is not anchored to a durable rerunnable record for ${clauseIdentity(clause)}.`,
+              `Evidence lineage is not anchored to a durable rerunnable record for ${clauseIdentity(clause)}.${caseTargetMismatchNote}`,
               unknownLineageEvidence,
             ),
             suggestion:
@@ -2779,12 +2846,12 @@ export function evaluateSpecTestAdequacy(input: {
         : {
             rating: 'pass',
             evidence: evidenceWithBindings(
-              `${new Set(evidence.map((row) => row.testRunId !== null
+              `${new Set(traceabilityEvidence.map((row) => row.testRunId !== null
                 ? `test-run:${row.testRunId}`
                 : row.coverageEvidenceRef !== null
                   ? `coverage:${row.coverageEvidenceRef}`
-                  : `${row.evidenceKind}:${row.evidenceRef}`)).size} distinct immutable proof record(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.`,
-              evidence,
+                  : `${row.evidenceKind}:${row.evidenceRef}`)).size} distinct immutable proof record(s) have durable rerunnable lineage for ${clauseIdentity(clause)}.${caseTargetMismatchNote}`,
+              traceabilityEvidence,
             ),
           };
 
@@ -3248,13 +3315,13 @@ export function evaluateSpecTestAdequacy(input: {
           'pass',
           `Active bindings at revision ${clause.revision} cover the required evidence kind(s) for ${clauseIdentity(clause)}: ${requiredEvidenceKinds.join(', ')}.`,
         );
-  // A standalone clause can require a live or deployed observation without a source BAR.
+  // A standalone clause can require a tree, live, or deployed observation without a source BAR.
   // The BAR ship gate checks its own evidence plane, but cannot cover such a clause.
   // Inspect only current-cohort bindings and use the same explicit plane metadata as
-  // the BAR snapshot; a tree test cannot satisfy a declared live observation.
+  // the BAR snapshot; a binding from another plane cannot satisfy the declared requirement.
   const requiredPlanes = [...new Set(clause.requiredEvidence
     .map((entry) => entry.trim().toLowerCase())
-    .filter((entry) => entry === 'live' || entry === 'deployed'))];
+    .filter((entry) => entry === 'tree' || entry === 'live' || entry === 'deployed'))];
   const planeBindings = currentEvidence.filter((row) => {
     const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
     return typeof plane === 'string' && requiredPlanes.some((requiredPlane) => requiredPlane === plane.trim().toLowerCase());

@@ -233,6 +233,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
 // retained clause revisions and the fixed proof WI leaking between runs.
 describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', () => {
   let fx: PlanPgFixture;
+  let previousWorkspaceId: string | undefined;
   const slug = 'converge-real-pg-fixture';
   const ctx = { isSuperuser: true, uiClientId: 'su-converge-pg', ownerId: 'su-converge-pg',
     workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp', log: () => {}, metadata: () => {},
@@ -251,6 +252,11 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
     return evaluateTool.handler(evaluateTool.args.parse(toolArgs) as never, ctx);
   };
   beforeAll(async () => {
+    // setup-hermetic-env clears inherited workspace pins so tests cannot leak a
+    // fleet runner's scope. This fixture intentionally seeds the operator-home
+    // sentinel below; pin the same scope while the real handlers read it.
+    previousWorkspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = PAPERCUSP_WORKSPACE_ID;
     fx = await setupPlanPgFixture({ isolated: true });
     expect(await fx.admin`SELECT spec_id FROM harness_shared.plan_spec_clauses
       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`)
@@ -280,7 +286,11 @@ describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', 
       falsifier: { observation: 'Unproved completion succeeds.', probeMethod: 'Attempt completion without proof.' } });
     expect(written, JSON.stringify(written)).toMatchObject({ status: 'created' });
   }, 120_000);
-  afterAll(async () => { await fx?.dispose(); }, 30_000);
+  afterAll(async () => {
+    await fx?.dispose();
+    if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+    else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
+  }, 30_000);
   it('reads a persisted unbound clause through all three real handlers and writes no gap in default preview', async () => {
     const evaluate = vi.fn((args: Body) => call(evaluateTool, args));
     const audit = vi.fn((args: Body) => call(auditTool, args));

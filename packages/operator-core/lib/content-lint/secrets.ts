@@ -51,6 +51,17 @@ import { createTimeSlice } from '../event-loop-lag-monitor';
 export const EXEMPTION_CACHE_TTL_MS = 60_000;
 
 /**
+ * Native host parity fixtures are generated bundles, not maintained source.
+ * Their producer emits a run-specific `dist-host-native-fixture-debug-<id>/`
+ * directory and can nest it under a duplicated `apps/operator` prefix when
+ * given a relative outfile.  Keep the exclusion path-shaped so every future
+ * fixture id and either producer layout gets the same policy while a similarly
+ * named maintained source file remains scanned.
+ */
+export const isGeneratedNativeFixturePath = (file: string): boolean =>
+  /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/.test(file);
+
+/**
  * The findings that should BLOCK a commit for `file`.
  *
  * Two exemption layers, deliberately both consulted here rather than only one:
@@ -90,7 +101,7 @@ export async function findCommitBlockingSecretsSliced(
 
 /** The static fixture set plus the runtime exemption rows: one rule for both scanners. */
 function isCommitScanExempt(file: string, exemptions: ReadonlySet<string>): boolean {
-  return isFixtureFile(file) || isPathExempt(exemptions, file);
+  return isGeneratedNativeFixturePath(file) || isFixtureFile(file) || isPathExempt(exemptions, file);
 }
 
 /**

@@ -2,13 +2,14 @@ import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod } from 'nod
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
+import { once } from 'node:events';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readlink } from 'node:fs/promises';
 import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm';
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
@@ -43,6 +44,78 @@ vi.mock('../workspace-registry', async (original) => ({
 vi.mock('../task-manager/enabled', async (original) => ({
   ...await original<typeof import('../task-manager/enabled')>(), isTaskManagerEnabled: async () => true,
 }));
+
+const managedProbe = vi.hoisted(() => ({ active: false }));
+vi.mock('../task-manager/managed-spawn', async (original) => {
+  const actual = await original<typeof import('../task-manager/managed-spawn')>();
+  return { ...actual, managedSpawn: (...args: Parameters<typeof actual.managedSpawn>) => {
+    if (!managedProbe.active) return actual.managedSpawn(...args);
+    const [command, argv, spec, opts] = args;
+    return actual.managedSpawn(command, argv, spec, { ...opts, onSpawn: (child, taskId) => {
+      opts?.onSpawn?.(child, taskId);
+      console.info('NATIVE_RETENTION_SPAWN', JSON.stringify({ command, taskId, pid: child.pid }));
+      const timer = setTimeout(async () => {
+        const processes: unknown[] = [];
+        const inspect = async (pid: number, depth: number): Promise<void> => {
+          try {
+            const base = `/proc/${pid}`;
+            const [name, wait, children, status, input, cgroup] = await Promise.all([
+              readFile(`${base}/comm`, 'utf8'), readFile(`${base}/wchan`, 'utf8'),
+              readFile(`${base}/task/${pid}/children`, 'utf8'),
+              readFile(`${base}/status`, 'utf8'),
+              readlink(`${base}/fd/0`).catch(error => `unavailable:${error.code}`),
+              readFile(`${base}/cgroup`, 'utf8'),
+            ]);
+            // wchan can be zero for an elevated child we cannot ptrace. State
+            // and signal masks distinguish a stopped child from that unknown.
+            processes.push({ pid, name: name.trim(), wait: wait.trim(), input,
+              cgroup: cgroup.trim(), status: status.split('\n').filter(line =>
+                /^(State|PPid|TracerPid|Uid|SigPnd|ShdPnd|SigBlk|SigIgn|SigCgt):/.test(line)) });
+            if (depth < 3) for (const next of children.trim().split(/\s+/).filter(Boolean).slice(0, 4)) await inspect(Number(next), depth + 1);
+          } catch (error) { processes.push({ pid, unavailable: String(error) }); }
+        };
+        if (child.pid) await inspect(child.pid, 0);
+        console.info('NATIVE_RETENTION_CHILD_STATE', JSON.stringify({ taskId, processes,
+          stdinFinished: child.stdin?.writableFinished, stdinDestroyed: child.stdin?.destroyed }));
+        if (command === '/usr/bin/sudo' && child.pid) {
+          // Elevated children hide their wait channel from this UID. Read only
+          // the freshly observed task's scope; never inspect a recycled PID.
+          const probe = `
+import json, pathlib, sys
+pending = [(sys.argv[1], 0)]
+observations = []
+while pending and len(observations) < 8:
+    pid, depth = pending.pop(0)
+    p = pathlib.Path('/proc') / pid
+    try:
+        scope = (p / 'cgroup').read_text().strip().rsplit('/', 1)[-1]
+        if scope != 'pc-' + sys.argv[2] + '.scope':
+            observations.append({'pid': pid, 'scopeMismatch': True})
+            continue
+        stack = (p / 'stack').read_text().splitlines()
+        observations.append({'pid': pid, 'name': (p / 'comm').read_text().strip(),
+            'wait': (p / 'wchan').read_text().strip(),
+            'stackFunctions': [s.split('] ', 1)[-1].split('+', 1)[0] for s in stack][:12],
+            'syscallNumber': (p / 'syscall').read_text().split()[0]})
+        if depth < 3:
+            children = (p / 'task' / pid / 'children').read_text().split()[:4]
+            pending.extend((child, depth + 1) for child in children)
+    except (OSError, IndexError) as error:
+        observations.append({'pid': pid, 'unavailable': type(error).__name__})
+print(json.dumps(observations))
+`;
+          execFile('/usr/bin/sudo', ['-n', '/usr/bin/timeout', '--signal=KILL', '5s',
+            '/usr/bin/python3', '-I', '-c', probe, String(child.pid), taskId],
+          { encoding: 'utf8', timeout: 7_000, maxBuffer: 8192 }, (error, stdout) => {
+            console.info('NATIVE_RETENTION_KERNEL_WAIT', JSON.stringify({ taskId,
+              error: error?.message, observation: stdout.trim() }));
+          });
+        }
+      }, 1_000);
+      child.once('close', () => clearTimeout(timer));
+    } });
+  } };
+});
 
 const fixtureMutex = vi.hoisted(() => ({
   name: `disk-retention-fixture-${crypto.randomUUID()}`,
@@ -458,6 +531,8 @@ describe('retention on a real fixture tree', () => {
   });
 
   it('runs the native cargo delegate repeatedly with captured receipts and no missed completion', async () => {
+    const phase = (name: string) => console.info('NATIVE_RETENTION_PHASE', name);
+    phase('fixture');
     fixture = await mkdtemp(join(tmpdir(), 'disk-retention-cargo-'));
     const shared = join(fixture, 'target');
     const dead = join(fixture, 'target-pid99999999');
@@ -484,11 +559,14 @@ describe('retention on a real fixture tree', () => {
       `PATH=${dirname(cargo)}:${process.env.PATH ?? ''}`,
       `PAPERCUSP_DESKTOP_TARGET_ROOT=${fixture}`,
       `PAPERCUSP_RELEASE_RETENTION_ROOT=${join(fixture, 'retention')}`,
+      `PAPERCUSP_FS_MUTEX_LOCK_DIR=${join(fixture, 'mutex')}`,
       '/bin/bash', join(repoRoot, 'papercusp-desktop/bin/reap-private-target-slots.sh'),
     ];
     const db = await createFreshPgDb('disk-retention-native');
     nativeDb.sql = db.sql;
+    managedProbe.active = true;
     try {
+      phase('migrations');
       await applyEventSubstrateMigrationsForTest(db.sql, {
         label: 'disk-reclaim.integration.test.ts native delegate', ...COORD_SUBSCRIPTION_SUBSTRATE,
         extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
@@ -496,6 +574,7 @@ describe('retention on a real fixture tree', () => {
       });
       // Check the same task control route before admitting privileged work.
       const { getTask: getNativeTask } = await import('../task-manager/store');
+      phase('timeout-control');
       const stalled = await nativeRetentionCommand(repoRoot, '/bin/sh', ['-c', 'echo $$; exec /bin/sleep 30'],
         { timeoutMs: 2_000, stdoutOnly: true });
       expect(stalled, JSON.stringify(stalled)).toMatchObject({ ok: false, detail: { error: 'delegate timeout' } });
@@ -506,30 +585,35 @@ describe('retention on a real fixture tree', () => {
       expect(await getNativeTask(stalledDetail.taskId)).toMatchObject({ state: 'killed' });
       // Measure the actual fd-safe privileged remover, including enrollment and
       // terminal persistence. A no-op child cannot establish unlink cost.
-      const nativePath = join(fixture, 'native-expired');
-      await writeFile(nativePath, 'expired native fixture');
-      const nativeStat = await stat(nativePath);
-      const nativeTimings: NativeRetentionTiming[] = [];
-      try {
-        await removePrivilegedRetentionEntry({ path: nativePath, root: fixture, classId: 'fixture',
-          newestWriteMs: nativeStat.mtimeMs, bytes: nativeStat.size, dev: nativeStat.dev, ino: nativeStat.ino },
-        20_000, nativeRetentionCommand, (timing) => nativeTimings.push(timing));
-      } finally { console.info('NATIVE_RETENTION_REMOVER_TIMING', JSON.stringify(nativeTimings)); }
-      await expect(stat(nativePath)).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(nativeTimings).toHaveLength(1);
-      const timing = nativeTimings[0];
-      expect(timing.taskId).toEqual(expect.any(String));
-      for (const offset of [timing.spawnedAfterMs, timing.childClosedAfterMs,
-        timing.launchReturnedAfterMs, timing.completedAfterMs]) {
-        expect(offset).toEqual(expect.any(Number));
-        expect(offset).toBeGreaterThanOrEqual(0);
-        expect(offset).toBeLessThanOrEqual(timing.totalMs);
+      // Repeated launches exercise privilege startup and terminal persistence
+      // without rebuilding a database or replaying the whole fixture suite.
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const nativePath = join(fixture, `native-expired-${attempt}`);
+        await writeFile(nativePath, 'expired native fixture');
+        const nativeStat = await stat(nativePath);
+        const nativeTimings: NativeRetentionTiming[] = [];
+        phase(`native-removal-${attempt}`);
+        try {
+          await removePrivilegedRetentionEntry({ path: nativePath, root: fixture, classId: 'fixture',
+            newestWriteMs: nativeStat.mtimeMs, bytes: nativeStat.size, dev: nativeStat.dev, ino: nativeStat.ino },
+          20_000, nativeRetentionCommand, (timing) => nativeTimings.push(timing));
+        } finally { console.info('NATIVE_RETENTION_REMOVER_TIMING', JSON.stringify({ attempt, timings: nativeTimings })); }
+        await expect(stat(nativePath)).rejects.toMatchObject({ code: 'ENOENT' });
+        expect(nativeTimings).toHaveLength(1);
+        const timing = nativeTimings[0];
+        expect(timing.taskId).toEqual(expect.any(String));
+        for (const offset of [timing.spawnedAfterMs, timing.childClosedAfterMs,
+          timing.launchReturnedAfterMs, timing.completedAfterMs]) {
+          expect(offset).toEqual(expect.any(Number));
+          expect(offset).toBeGreaterThanOrEqual(0);
+          expect(offset).toBeLessThanOrEqual(timing.totalMs);
+        }
+        expect(timing.childClosedAfterMs!).toBeGreaterThanOrEqual(timing.spawnedAfterMs!);
+        expect(timing.completedAfterMs!).toBeGreaterThanOrEqual(timing.childClosedAfterMs!);
+        expect(timing.completedAfterMs!).toBeGreaterThanOrEqual(timing.launchReturnedAfterMs!);
+        expect(timing.stages.length).toBeGreaterThan(0);
+        expect(await getNativeTask(timing.taskId!)).toMatchObject({ state: 'exited', exitCode: 0 });
       }
-      expect(timing.childClosedAfterMs!).toBeGreaterThanOrEqual(timing.spawnedAfterMs!);
-      expect(timing.completedAfterMs!).toBeGreaterThanOrEqual(timing.childClosedAfterMs!);
-      expect(timing.completedAfterMs!).toBeGreaterThanOrEqual(timing.launchReturnedAfterMs!);
-      expect(timing.stages.length).toBeGreaterThan(0);
-      expect(await getNativeTask(timing.taskId!)).toMatchObject({ state: 'exited', exitCode: 0 });
       // Exercise build batch stdin, JSON output and terminal persistence through
       // the production enrolled remover as well as the owner-only fixture path.
       const buildRoot = join(fixture, 'native-build-root'); await mkdir(buildRoot);
@@ -539,7 +623,11 @@ describe('retention on a real fixture tree', () => {
       await writeFile(join(buildSource, 'source.ts'), 'retained source');
       const buildPolicy: RetentionClass[] = [{ id: 'fixture-build', title: 'fixture', origin: 'agent', roots: [buildRoot],
         keep: { kind: 'max-age', maxAgeHours: 72, buildDirMaxAgeHours: 24 }, enforcers: [{ kind: 'standing-reclaim' }] }];
+      phase('native-build-removal');
       const buildReceipt = await runDiskReclaimOnce({ nowMs: Date.now() + 48 * 3_600_000,
+        // A tiny fixture must report its own blocked phase before Vitest's
+        // outer deadline, rather than inherit the production 15-minute wait.
+        runBudgetMs: 20_000, budgetMs: 10_000, effectBudgetMs: 10_000,
         policy: buildPolicy, roots: [{ path: buildRoot, classId: 'fixture-build' }],
         registeredWorkspaces: () => [], expectedDevices: [], sample: async () => [],
         scanHolders: async () => ({ complete: true, byPath: new Map() }),
@@ -556,15 +644,39 @@ describe('retention on a real fixture tree', () => {
       // A single argv argument of this size fails with E2BIG on Linux.
       const input = JSON.stringify(Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`));
       expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
+      phase('streamed-input');
       const streamed = await nativeRetentionCommand(repoRoot, process.execPath, ['--input-type=module', '-e',
       "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length,mutexHeld:process.env.PAPERCUSP_DISK_RETENTION_MUTEX_HELD}));"],
       { stdin: input, stdoutOnly: true, timeoutMs: 10_000, env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' } });
       expect(streamed, JSON.stringify(streamed)).toMatchObject({ ok: true });
       expect(JSON.parse((streamed.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000, mutexHeld: '1' });
-      const listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run'], { timeoutMs: 10_000 });
-      expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true });
-      expect(listed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`would reap: ${dead}`) });
+      // Simulate another host actor holding the inherited lock domain without
+      // touching the account's real mutex. The fixture delegate must use its
+      // own domain even when the private runtime preserves that host setting.
+      const inheritedMutexRoot = join(fixture, 'inherited-mutex');
+      const holder = spawn(process.execPath, ['--input-type=module', '-e',
+        `import { withFsMutex } from ${JSON.stringify(new URL('../../../../scripts/lib/fs-mutex.mjs', import.meta.url).href)};
+        const released = new Promise(resolve => { process.stdin.once('end', resolve); process.stdin.resume(); });
+        await withFsMutex('papercusp-disk-retention', async () => { process.stdout.write('LOCKED\\n'); await released; });`],
+      { env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: inheritedMutexRoot }, stdio: ['pipe', 'pipe', 'pipe'] });
+      const holderClosed = once(holder, 'close');
+      let listed: Awaited<ReturnType<typeof nativeRetentionCommand>>;
+      try {
+        phase('inherited-lock-ready');
+        const [ready] = await once(holder.stdout, 'data', { signal: AbortSignal.timeout(5_000) });
+        expect(String(ready)).toBe('LOCKED\n');
+        phase('cargo-preview');
+        listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run'], {
+          timeoutMs: 10_000, env: { ...process.env, PAPERCUSP_FS_MUTEX_LOCK_DIR: inheritedMutexRoot },
+        });
+        expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true });
+        expect(listed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`would reap: ${dead}`) });
+      } finally {
+        holder.stdin.end();
+        await holderClosed;
+      }
       await expect(stat(dead)).resolves.toBeDefined();
+      phase('cargo-removal');
       const removed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args, { timeoutMs: 10_000 });
       expect(removed, JSON.stringify(removed)).toMatchObject({ ok: true });
       expect(removed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`reaped dead private target slot ${dead}`) });
@@ -578,7 +690,10 @@ describe('retention on a real fixture tree', () => {
         // where a short-lived caller could exit and lose the terminal write.
         expect(await getTask(id)).toMatchObject({ state: 'exited', exitCode: 0 });
       }
+      phase('complete');
     } finally {
+      phase('database-cleanup');
+      managedProbe.active = false;
       await db.cleanup(); nativeDb.sql = undefined;
     }
   }, 120_000);

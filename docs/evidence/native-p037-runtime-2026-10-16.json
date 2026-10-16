@@ -204,6 +204,62 @@
       "guard": "packages/operator-core/lib/desktop-install/claude-hooks.test.ts"
     }
   ],
+  "sourceRequalification": {
+    "checkedAt": "2026-10-16T18:32:37Z",
+    "scope": "Saved focused runs checked against current original source bytes. Historical runtime and installed-copy observations above retain their original source/build scope; these checks do not establish a new installed runtime or final-release verdict.",
+    "rerunForRecall": false,
+    "runs": [
+      {
+        "capture": "/tmp/native-p037-p038-hooks-v4-source-20261016.json",
+        "captureSha256": "8b3040c7ac84dfd55f77d081faf53d6291a6aec06f8f45d275f7ae0e2a93b1ea",
+        "log": "/tmp/native-p037-p038-hooks-v4-tests-20261016.log",
+        "passed": 125,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 4,
+        "suites": { "delivery-ledger": 13, "operator-fallback": 23, "omp-inject": 61, "cc-required-field": 28 },
+        "matchingOriginalSources": {
+          "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts": "3c32de5ea25ce46a256c758c7bea31adbe29cd01dad7661e992466e8d4870807",
+          "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts": "645719ad5f6bbf846bd1c4e7d70c4b45b4489754f89508dbe40e3af0265cdd24",
+          "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec"
+        },
+        "limit": "Four config-support child substitutions remain disclosed. Matching original production sources qualify the named focused behavior, without a closed execution-graph claim."
+      },
+      {
+        "capture": "/tmp/native-p038-attribution-green-source-20261016.json",
+        "captureSha256": "8cd1939b938e45108820d8b3f73e797b1db37cee356a15b6da3138470776357e",
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0,
+        "suite": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+        "matchingOriginalSources": { "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4" },
+        "limit": "Focused real-PG attribution qualification retained from P038; not a new installed hook observation."
+      },
+      {
+        "capture": "/tmp/native-p037-unit-current-source-20261016.json",
+        "captureSha256": "a3dcb07f5752cea5e761c8b278e3b3f6add0e4c66230d5a5b892a647c99cf0f6",
+        "log": "/tmp/native-p037-unit-current-tests-20261016.log",
+        "passed": 22,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "matchingOriginalSources": {
+          "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts": "9ed074e920cc1a71a46f0600f6c37a2ee985570c3e691dda817210abe4876ad5"
+        },
+        "reasonForRun": "The previous unit capture predated the SQL grouping change; only this affected suite was requalified. This continuation read the completed result without rerunning it."
+      }
+    ],
+    "unchangedInstallerAndTestSources": [
+      "packages/operator-core/lib/desktop-install/papercusp-files.ts",
+      "packages/operator-core/lib/desktop-install/claude-hooks.test.ts",
+      "packages/operator-core/lib/desktop-install/orphaned-cc-hooks.test.ts",
+      "packages/operator-core/lib/desktop-install/inject-hooks-provenance.test.ts",
+      "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts"
+    ]
+  },
   "limits": [
     "The requests replay an earlier real source change against an explicit pinned baseline; no newly observed Edit is claimed.",
     "Initial server-empty replies and the later warm positive response are consistent with asynchronous cold loading; this sequence alone does not isolate that cause.",

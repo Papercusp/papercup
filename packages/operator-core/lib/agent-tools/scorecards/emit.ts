@@ -34,6 +34,7 @@ import { OperationHandleSchema, getBlueprintOperationTerminalWorker } from '../.
 import { readVettingConsultCritique } from '../../consult/get-feedback-core';
 import { getWorkItem, readVettingWorkItemCritique, type WorkItem } from '../../work-items';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -4186,6 +4187,17 @@ export async function emitScorecard(
         code: error.code,
         error: error.message,
         retryable: true as const,
+      };
+    }
+    if (error instanceof OrgTxnTimeoutError) {
+      return {
+        ok: false as const,
+        code: 'scorecard_emit_timeout' as const,
+        pgCode: error.pgCode,
+        retryable: true as const,
+        error:
+          `scorecards:emit write hit transient database contention (${error.pgCode}): ${error.message}. ` +
+          'No scorecard was persisted by this attempt; retry shortly.',
       };
     }
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };

@@ -66,6 +66,7 @@ import {
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
   PTOOL_PG_HOT_QUERIES_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
@@ -896,11 +897,11 @@ describe('ptool call deadlines', () => {
 
   it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
     const preview = { op: 'reclaim', confirm: false };
-    expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: preview }))
-      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
     expect(timeoutForTool('release:cut', { op: 'reclaim' }))
-      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
 
     expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true }))
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);

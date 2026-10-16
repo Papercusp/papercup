@@ -43,6 +43,8 @@ import {
   nativeAdoptionCriterionForInstrument,
   rateNativeAdoption,
   type NativeAdoptionMetrics,
+  measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
+  type NativePushOutcomeMetrics,
 } from './code-intelligence/native-adoption';
 import {
   measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
@@ -422,6 +424,7 @@ export async function resolveScorecardInstrumentSnapshots(
     pgTableGrowth?: (input: Parameters<typeof measurePgTableGrowthWindow>[1]) => ReturnType<typeof measurePgTableGrowthWindow>;
     /** Native code-intelligence adoption for one workspace window (P-033). */
     nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
+    nativePushOutcomes?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativePushOutcomeMetrics>;
     workOverhead?: (window: WorkOverheadWindow) => Promise<WorkOverheadMetrics>;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
     holderMetrics?: (input: {
@@ -504,6 +507,10 @@ export async function resolveScorecardInstrumentSnapshots(
     })();
     return nativeAdoptionMeasured;
   };
+  // All three P-041 criteria consume the same snapshot (including a shared read failure).
+  let nativePushesMeasured: Promise<NativePushOutcomeMetrics> | null = null;
+  const measureNativePushes = (window: { workspaceId: string; windowStart: string; windowEnd: string }) =>
+    nativePushesMeasured ??= (deps.nativePushOutcomes ?? measureNativePushOutcomesWindow)(window);
   const keys = new Set(input.rubric.criteria.map((criterion) =>
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
   ));
@@ -714,6 +721,26 @@ export async function resolveScorecardInstrumentSnapshots(
           cannotObserve: measured.metrics.cannotObserve,
         },
       };
+      continue;
+    }
+    const pushCriterion = nativePushCriterionForInstrument(key);
+    if (pushCriterion) {
+      const workspaceId = input.rubric.workspaceId;
+      const scopedWindow = { ...window, workspaceId };
+      const evidenceRef = 'harness_shared.code_intel_pushes+session_turns+session_turn_journal+agent_activity+tool_invocations+test_runs:native-push-outcomes';
+      if (!workspaceId || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('A canonical workspace and a completed, non-empty subject window are required.'), evidenceRef, window: scopedWindow };
+        continue;
+      }
+      try {
+        const metrics = await measureNativePushes({ workspaceId, windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        const rating = rateNativePushOutcomes(metrics, pushCriterion);
+        snapshots[key] = { verdict: rating.verdict, measuredAt, provenance: 'platform-computed', evidenceRef, window: scopedWindow,
+          value: { resolver: key, resolverVersion: 1, criterion: pushCriterion, reason: rating.reason,
+            byLeg: metrics.byLeg, cannotObserve: metrics.cannotObserve } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Native push outcome instrument unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef, window: scopedWindow };
+      }
       continue;
     }
     const holderCriterion = holderBehaviorCriterionForInstrument(key);
@@ -2499,6 +2526,46 @@ export async function cancelStaleEvidencePendingGradingAuditAtomically(
       .catch(() => {});
   }
   return true;
+}
+
+/**
+ * Cancel every pending grading audit that cites one binding while the binding
+ * retraction transaction is still open.  Retraction updates the binding first,
+ * then calls this helper on the same transaction, so a dispatcher cannot commit
+ * a lease between the withdrawal and its cancellation.
+ */
+export async function cancelPendingGradingAuditsForBindingInTransaction(
+  tx: OrgSql,
+  workspaceId: string,
+  bindingId: number,
+): Promise<string[]> {
+  if (!workspaceId.trim() || !Number.isSafeInteger(bindingId) || bindingId <= 0) return [];
+  const updated = await tx<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items AS target
+       SET payload = jsonb_set(
+             COALESCE(target.payload, '{}'::jsonb),
+             '{observation,gradingAudit}',
+             (
+               target.payload->'observation'->'gradingAudit'
+               || jsonb_build_object('state', 'cancelled')
+             ) #- '{dispatchReservation}' #- '{dispatchBackoff}',
+           true
+         ),
+         origin = 'local',
+         updated_ts = ${Date.now()}
+     WHERE target.workspace_id = ${workspaceId}
+       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
+       AND jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'
+       AND EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements_text(
+             target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds'
+           ) AS cited(binding_id)
+          WHERE cited.binding_id = ${String(bindingId)}
+       )
+    RETURNING target.feature_id`;
+  return updated.map((row) => row.feature_id);
 }
 
 /** Return the subject observation with a withdrawn audit's settlement cleared. */

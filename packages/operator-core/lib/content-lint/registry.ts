@@ -30,6 +30,7 @@ import {
   describeCommitBlockingSecrets,
   cachedExemptionLoader,
   defaultExemptionLoader,
+  isGeneratedNativeFixturePath,
   type ExemptionLoader,
 } from './secrets';
 import { findIdentityLeakError, identityLeakScopeMatches } from './identity-leak';
@@ -590,7 +591,7 @@ export const focusedTestDetector: ContentDetector = {
 export const secretsDetector: ContentDetector = {
   key: 'secrets',
   glob: '**/*',
-  matches: (f) => !isExcludedPath(f),
+  matches: (f) => !isExcludedPath(f) && !isGeneratedNativeFixturePath(f),
   detect: async (file, text) => {
     const findings = await findCommitBlockingSecretsSliced(file, text, await loadContentLintExemptions());
     if (findings.length === 0) return null;

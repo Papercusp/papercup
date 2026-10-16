@@ -126,7 +126,7 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v2',
+  version: 'work-items-completion-v3',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
@@ -138,7 +138,10 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     },
     { key: 'self-review', description: 'Pilot self-review evidence is present and ledger-visible when applicable.' },
     { key: 'gate-red-lineage', description: 'A claimed red-gate repair is admitted on the judged lineage.' },
-    { key: 'spec-conformance-closure', description: 'Mapped requirements are named, discharged checks pass, and drift alarms have approved deviations.' },
+    {
+      key: 'spec-conformance-closure',
+      description: 'Linked-plan mapped requirements are declared, discharged checks pass, and drift alarms have approved deviations.',
+    },
     {
       key: 'conformance-review-independence',
       description: 'A conformance-review work-item is not closed by its plan implementer.',
@@ -249,6 +252,7 @@ import { untouchedPathsInCompletion } from './untouched-paths';
 import { requirementDispositionShortfall } from './requirement-disposition';
 import {
   MAX_TEST_BINDING_LOOKBACK_MS,
+  TEST_BINDING_WINDOW_SLACK_MS,
   testResultContradictedByRun,
   type TestRunLedgerRow,
   type TestingRunInvocation,
@@ -276,7 +280,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { isGitTrackedPath, repoRelativePathUnderRoot, type GitTrackednessProbe } from '../../git-trackedness';
 import { getOrgPg } from '@papercusp/db-org';
 import { conformanceReviewClosureRefusal, conformanceReviewFromPayload } from '../../spec-conformance/conformance-review';
-import { conformanceClosureRefusal } from '../../spec-conformance/closure-guard';
+import { conformanceClosureAssessment } from '../../spec-conformance/closure-guard';
 import {
   itemIsArmB,
   judgeSelfReview,
@@ -361,6 +365,12 @@ const completionCoverageField = CompletionRecordSchema.shape.coverage.meta({
 
 const completionInputSchema = CompletionRecordSchema.extend({
   coverage: completionCoverageField,
+  discharges: CompletionRecordSchema.shape.discharges.describe(
+    'For a linked-plan terminal close, declare mapped R-* keys shown in the spec-conformance-closure row of the returned completionContract.',
+  ),
+  contributesTo: CompletionRecordSchema.shape.contributesTo.describe(
+    'For a linked-plan terminal close, declare mapped R-* keys shown in the spec-conformance-closure row of the returned completionContract.',
+  ),
   workItem: z.string().min(1).optional(),
   // The preprocess below owns the default so Zod 4 does not publish this
   // defaulted field as required to completion callers.
@@ -3357,7 +3367,47 @@ async function completeOne(
   if (nulBytesStripped) it.completion = sanitizedCompletion;
 
   const existing = await getWorkItem(it.id, it.harness);
-  if (!existing) return { ok: false, id: it.id, error: `work_item '${it.id}' not found` };
+  if (!existing) {
+    // EI-26068584723658382: a model copied a shortened WI id from its live context and
+    // received only `not found`, even though the exact item was still held by that same
+    // caller. A bare absence leaves the agent guessing again; recover the caller's own
+    // open claims and name the exact ids, without auto-correcting (a guessed correction
+    // would be an unsafe completion of a different item). The dynamic import keeps this
+    // diagnostic leaf out of complete.ts's eager work-items dependency graph and fails
+    // open to the original not-found response when the advisory read cannot answer.
+    const heldIdHint = await (async (): Promise<string | undefined> => {
+      try {
+        const { listWorkItems } = await import('../../work-items');
+        const owners = [...new Set([ident.ownerId, ident.adoptedName].filter((owner): owner is string => Boolean(owner)))];
+        const rows = (
+          await Promise.all(
+            owners.map((assignee) =>
+              listWorkItems({
+                assignee,
+                harness: it.harness,
+                notTerminal: true,
+                limit: 20,
+              }),
+            ),
+          )
+        ).flat();
+        const ids = [...new Set(rows.map((row) => row.id).filter((id): id is string => Boolean(id)))];
+        if (ids.length === 0) return undefined;
+        const shown = ids.slice(0, 8);
+        const more = ids.length - shown.length;
+        return (
+          ` The id did not resolve, but your current open claim${ids.length === 1 ? '' : 's'} ` +
+          `include${ids.length === 1 ? 's' : ''} the exact item id${ids.length === 1 ? '' : 's'} ` +
+          `${shown.join(', ')}${more > 0 ? `, plus ${more} more` : ''}. ` +
+          're-read the exact id from scheduler:get_next or work_items:get and re-call `work_items:complete`; do not shorten or infer an id.'
+        );
+      } catch {
+        return undefined;
+      }
+    })();
+    const notFound = `work_item '${it.id}' not found`;
+    return { ok: false, id: it.id, error: heldIdHint ? `${notFound}.${heldIdHint}` : notFound };
+  }
   // D-035 (WI-10005358): before ANY completion record, evidence or state write — a row that is
   // not agent work by category (record, document, event, human-audience) is refused exactly as
   // the by-id claim refuses it (D-024). Typed, no agent-passable override.
@@ -3716,16 +3766,29 @@ async function completeOne(
   // complete.*.test.ts assertions — and any agent that learned a message by heart —
   // valid. Keep each gate's message verbatim when editing one.
   const gateRefusals: Array<{ error: string; fields?: Record<string, unknown> }> = [];
+  type ConformanceContractDetails = {
+    mappedRequirements: string[];
+    declaredRequirements: string[];
+    declarationFields: ['completion.discharges', 'completion.contributesTo'];
+    declarationSatisfied: boolean | null;
+  };
   const completionContractRequirements = WORK_ITEMS_COMPLETION_CONTRACT.requirements.map((requirement) => ({
     ...requirement,
     applicable: false,
     satisfied: null as boolean | null,
+    details: undefined as ConformanceContractDetails | undefined,
   }));
-  const setContractRequirement = (key: CompletionContractRequirementKey, applicable: boolean, error?: string): void => {
+  const setContractRequirement = (
+    key: CompletionContractRequirementKey,
+    applicable: boolean,
+    error?: string,
+    details?: ConformanceContractDetails,
+  ): void => {
     const requirement = completionContractRequirements.find((candidate) => candidate.key === key);
     if (!requirement) return;
     requirement.applicable = applicable;
     requirement.satisfied = applicable ? !error : null;
+    if (details) requirement.details = details;
   };
   const completionContract = () => ({
     version: WORK_ITEMS_COMPLETION_CONTRACT.version,
@@ -4255,18 +4318,30 @@ async function completeOne(
     const planItemIds = existing.sourcePlanItemIds?.length ? existing.sourcePlanItemIds : stamp ? [stamp.item_id] : [];
     if (planSlug) {
       try {
-        const refusal = await conformanceClosureRefusal({
+        const assessment = await conformanceClosureAssessment({
           workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
           harnessSlug: existing.harness ?? stamp?.harness_slug ?? '',
           planSlug, planItemIds, completion: it.completion, item: existing,
           skipConformance: duplicateCloseCoverageException,
         });
+        const refusal = assessment.refusal;
+        const details: ConformanceContractDetails = {
+          mappedRequirements: assessment.mappedRequirements,
+          declaredRequirements: assessment.declaredRequirements,
+          declarationFields: ['completion.discharges', 'completion.contributesTo'],
+          declarationSatisfied: assessment.declarationSatisfied,
+        };
         if (refusal) refuseGate(refusal.error, { specConformanceRefusal: refusal });
-        setContractRequirement('spec-conformance-closure', true, refusal?.error);
+        setContractRequirement('spec-conformance-closure', true, refusal?.error, details);
       } catch (error) {
         const message = `Cannot establish linked-plan conformance at close: ${error instanceof Error ? error.message : String(error)}. No completion write was made.`;
         refuseGate(message, { specConformanceRefusal: { code: 'conformance_check_unavailable', retryable: true } });
-        setContractRequirement('spec-conformance-closure', true, message);
+        setContractRequirement('spec-conformance-closure', true, message, {
+          mappedRequirements: [],
+          declaredRequirements: [...new Set([...(it.completion.discharges ?? []), ...(it.completion.contributesTo ?? [])])],
+          declarationFields: ['completion.discharges', 'completion.contributesTo'],
+          declarationSatisfied: null,
+        });
       }
     } else setContractRequirement('spec-conformance-closure', false);
   } else setContractRequirement('spec-conformance-closure', false);
@@ -5707,6 +5782,34 @@ async function completeOne(
       ? `${it.id} is CLOSED. If you hold no other claim right now, do NOT settle — call scheduler:get_next immediately to pull the next unit before ending this turn (EI-19312103118112942: completing is the midpoint of a wake, not the end).`
       : undefined;
 
+  // P-039: advisory source consequences on successful closes. The canonical
+  // completion and its acceptance verdict have already landed; this cannot gate them.
+  const completionBrief = closeLanded && !stateError && !finishFailed && completionEvidenceForGate?.filesChanged?.length
+    && await getFlag(FLAGS.CODE_INTEL_PUSH_COMPLETION, ident.ownerId).catch(() => false)
+    ? (await withBoundedTimeout(async signal => {
+      const { getCompletionTimeBrief } = await import('../../code-intelligence/task-brief');
+      if (signal.aborted) return null;
+      return getCompletionTimeBrief({ workspaceId: ctx.workspaceId ?? activeWorkspaceId(),
+        harness: it.harness ?? existing.harness ?? '', paths: completionEvidenceForGate.filesChanged ?? [] }, {
+        runs: async paths => {
+          const run = await latestTestingRunForOwner(ident.ownerId, it.id, ctx.workspaceId ?? null,
+            it.harness ?? existing.harness ?? null);
+          if (signal.aborted || run === undefined) return null;
+          if (run === null) return [];
+          if (run.workItemId !== it.id || !Number.isFinite(run.invokedAt.getTime())
+            || Date.now() - run.invokedAt.getTime() > MAX_TEST_BINDING_LOOKBACK_MS) return null;
+          const rows = await testRunLedgerRowsInWindow(run.files, run.invokedAt,
+            new Date(run.invokedAt.getTime() + Math.max(0, run.durationMs ?? 0) + TEST_BINDING_WINDOW_SLACK_MS));
+          if (!rows) return null;
+          const groups = new Set(rows.map(row => row.runGroupId));
+          if (groups.size > 1 || groups.has(null)) return null;
+          return rows.filter(row => paths.includes(row.filePath) && row.runGroupId)
+            .map(row => ({ path: row.filePath, status: row.status, runGroupId: row.runGroupId! }));
+        },
+      });
+    }, { timeoutMs: 6_000, fallback: null, label: 'work_items:complete:change-brief', signal: ctx.signal })).value
+    : null;
+
   // EI-15982: every LOUD signal (anything the caller must not miss — a hard failure
   // OR a soft "recorded but not closed"/"evidence dropped"/etc warning) is placed
   // BEFORE the bulky echoed data (`workItem`, `completion`, `reflect`, `finish`).
@@ -5728,6 +5831,7 @@ async function completeOne(
     ...(stateWarning ? { stateWarning } : {}),
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
     ...(completionPrefill ? { completionPrefill } : {}),
+    ...(completionBrief ? { completionBrief } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
     // The text is written in the future tense ("will red the next checkpoint"),
     // which is true of a terminal row and false of a close that was rejected — and
@@ -5897,6 +6001,7 @@ const workItemsCompleteTool = defineTool({
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
     seeAlso: [
       COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
+      'For linked-plan closes, the spec-conformance-closure row in completionContract reports mapped and declared R-* keys; validateOnly:true previews it with the other completion requirements.',
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
