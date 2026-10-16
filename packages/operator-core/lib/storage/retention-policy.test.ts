@@ -342,6 +342,10 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
       }
       expect(classifyPath('/mnt/cold-a/meta/kopia-seed.log', policy)).toMatchObject({ classId: 'cold-tier' });
       expect(del('/mnt/cold-b/anything-else')).toBeNull();
+      for (const root of ['/mnt/data/papercusp-backups', '/mnt/cold-a/papercusp-backups']) {
+        expect(classifyPath(`${root}/workspace/snapshot.dump`, policy)).toMatchObject({ classId: 'papercusp-backups' });
+        expect(del(`${root}/workspace/snapshot.dump`)).toBeNull();
+      }
     });
 
     it('build dirs go after 1 day without a write to their entry; only node_modules or a CACHEDIR.TAG dir counts', () => {
