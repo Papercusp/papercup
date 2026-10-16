@@ -131,14 +131,28 @@ describe('disposable operator-api device lifecycle', () => {
       let hostError;
       host.once('error', error => { hostError = error; });
       try {
-        await waitForFixtureHost(host, logPath, async () => {
-          if (hostError) throw hostError;
-          const health = await fetch(identity.base + '/api/health', { signal: AbortSignal.timeout(2000) });
-          assert.equal((await health.json()).service, 'papercusp-operator');
-          const registry = await (await fetch(identity.base + '/api/workspaces')).json();
-          assert.equal(registry.current, identity.workspaceId);
-          assert.deepEqual(registry.workspaces.map(w => w.id), [identity.workspaceId]);
-        }, { timeoutMs: 180000, pollMs: 500, record: () => {} });
+        try {
+          await waitForFixtureHost(host, logPath, async () => {
+            if (hostError) throw hostError;
+            const health = await fetch(identity.base + '/api/health', { signal: AbortSignal.timeout(2000) });
+            assert.equal((await health.json()).service, 'papercusp-operator');
+            const registry = await (await fetch(identity.base + '/api/workspaces')).json();
+            assert.equal(registry.current, identity.workspaceId);
+            assert.deepEqual(registry.workspaces.map(w => w.id), [identity.workspaceId]);
+          }, { timeoutMs: 180000, pollMs: 500, record: () => {} });
+        } catch (error) {
+          // The disposable runtime removes its HOME, including this log. Retain
+          // bounded startup evidence before teardown, before any token is minted.
+          let diagnostic = readFileSync(logPath, 'utf8').split('\\n')
+            .filter(line => /error|fatal|refus|withheld|missing/i.test(line)).slice(-12).join('\\n');
+          for (const [key, value] of Object.entries(e)) {
+            if (/secret|token|password|key|url/i.test(key) && typeof value === 'string' && value.length >= 8)
+              diagnostic = diagnostic.split(value).join('[REDACTED]');
+          }
+          console.error('PRIVATE_ADVERTISED_ROUTE_STARTUP=' + JSON.stringify({
+            exitCode: host.exitCode, signal: host.signalCode, diagnostic: diagnostic.slice(-3000) }));
+          throw error;
+        }
         // Exercise real HTTP, the maintained protected listener, real one-shot
         // tokens/JWTs and disposable Postgres. Only DNS/TLS transport is mapped;
         // this test makes no claim about a public provider or native UI.
