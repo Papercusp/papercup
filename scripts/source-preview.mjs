@@ -717,10 +717,13 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
     'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']));
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');
-  await runPhase('deps.inputs', () => run(process.execPath, [script, 'verifier-inputs-check', '--repo', dest,
+  // The CLI imports workspace TypeScript, including extensionless and directory
+  // imports. Resolve its loader from the private snapshot, never ambient options.
+  const nodeArgs = ['--import', 'tsx', script];
+  await runPhase('deps.inputs', () => run(process.execPath, [...nodeArgs, 'verifier-inputs-check', '--repo', dest,
     '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
   await runPhase('deps.measure', () => {
-    const bytes = run(process.execPath, [script, 'verifier-measure', '--repo', dest,
+    const bytes = run(process.execPath, [...nodeArgs, 'verifier-measure', '--repo', dest,
       '--ref', receipt.sourceCommit]).trim();
     if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
