@@ -67,6 +67,16 @@ function runWrapper(commands: readonly string[], activeState = 'inactive'): Wrap
 }
 
 describe('renderAwsHostBootstrapPush', () => {
+  it('delivers the tenant guard inside the verified AWS payload', () => {
+    const push = renderAwsHostBootstrapPush({ volumeId: VOLUME_ID, hostBootstrapScript: BOOTSTRAP,
+      tenantIdentity: 'a'.repeat(64) });
+    const run = runWrapper(push.commands);
+    expect(run.status, run.stderr).toBe(0);
+    const installed = readFileSync(join(run.staged, 'bootstrap.sh'), 'utf8');
+    expect(installed).toContain(`data_expected_tenant='${'a'.repeat(64)}'`);
+    expect(installed.indexOf('durable tenant identity mismatch')).toBeLessThan(installed.indexOf('echo papercusp-bootstrap'));
+  });
+
   it('installs exactly the durable mount + bootstrap for the attached volume and starts it as a unit', () => {
     const push = renderAwsHostBootstrapPush({ volumeId: VOLUME_ID, hostBootstrapScript: BOOTSTRAP });
     // The redirections the harness rewrites must be real, or the run proves nothing.

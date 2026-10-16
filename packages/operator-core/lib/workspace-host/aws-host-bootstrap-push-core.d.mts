@@ -7,6 +7,7 @@ export declare const AWS_DATA_DEVICE_WAIT_SEC: number;
 export declare const AWS_HOST_BOOTSTRAP_PUSH_EXECUTION_TIMEOUT_SEC: number;
 
 export interface DurableFilesystemScriptCoreInput {
+  tenantIdentity?: string;
   dataMode?: 'fresh' | 'existing';
   devicePath: string;
   deviceWaitSec: number;
@@ -14,6 +15,7 @@ export interface DurableFilesystemScriptCoreInput {
   workspaceDataRoot?: string;
 }
 export interface AwsHostBootstrapPushCoreInput {
+  tenantIdentity?: string;
   dataMode?: 'fresh' | 'existing';
   volumeId: string;
   hostBootstrapScript: string;
@@ -29,6 +31,8 @@ export interface AwsHostBootstrapPushCore {
   encodedPayloadBytes: number;
 }
 export declare function awsEbsNvmeDevicePathCore(volumeId: string): string;
+export declare function workspaceHostDurableTenantIdentity(workspaceId: string, customerWorkspaceId: string): string;
+export declare function renderDurableTenantGuardCore(tenantIdentity?: string): string[];
 export declare function renderDurableDataProbeCore(dataMode?: 'fresh' | 'existing'): string[];
 export declare function renderDurableFilesystemScriptCore(input: DurableFilesystemScriptCoreInput): string;
 export declare function renderAwsHostBootstrapPushCore(input: AwsHostBootstrapPushCoreInput): AwsHostBootstrapPushCore;

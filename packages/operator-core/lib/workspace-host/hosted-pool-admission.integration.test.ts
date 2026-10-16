@@ -20,7 +20,7 @@ vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation, completeHostedPoolReuse } =
   await import('./hosted-lifecycle-store');
-const { beginWorkspaceHostOperation } = await import('./observability-store');
+const { beginWorkspaceHostOperation, readWorkspaceHostDestroyTarget } = await import('./observability-store');
 
 const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1522-workspace-host-pool-admission.sql', import.meta.url));
 const migrationSql = readFileSync(existsSync(migration) ? migration : `${migration}.DRAFT`, 'utf8');
@@ -93,6 +93,19 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
   async function operations(ws: string) {
     return db.adminSql`SELECT id, host_id, admission_receipt FROM harness_shared.workspace_host_operations WHERE workspace_id = ${ws}`;
   }
+
+  it('reads the durable tenant from the exact persisted host binding under workspace RLS', async () => {
+    const ws = fresh();
+    const foreignWs = fresh();
+    await customer(ws, 'customer-1', 'same-host-name');
+    await customer(foreignWs, 'customer-2', 'same-host-name');
+    await expect(readWorkspaceHostDestroyTarget(ws, 'same-host-name')).resolves.toMatchObject({
+      id: 'same-host-name', hostedCustomerWorkspaceId: 'customer-1',
+    });
+    await expect(readWorkspaceHostDestroyTarget(foreignWs, 'same-host-name')).resolves.toMatchObject({
+      id: 'same-host-name', hostedCustomerWorkspaceId: 'customer-2',
+    });
+  });
 
   it('reserves and binds once on concurrent duplicate wake, even with tenant cap one', async () => {
     const ws = fresh();

@@ -895,6 +895,18 @@ describe('GCP workspace-host provider planning', () => {
     expect(script).not.toContain('# User-supplied bootstrap follows the durable mount.');
   });
 
+  it('puts the trusted tenant guard before bootstrap in the GCP startup script', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'tenant', idempotencyKey: 'tenant', desired: desired() },
+      { ...context({}, '#!/usr/bin/env bash\necho TENANT_BOOTSTRAP'), durableTenantIdentity: 'a'.repeat(64) },
+    );
+    const instance = plan.steps.find(({ id }) => id === 'create-instance')!.input.request as unknown as GcpInstanceInsertInput;
+    const script = instance.metadata.items.find(({ key }) => key === 'startup-script')!.value;
+    expect(script).toContain(`data_expected_tenant='${'a'.repeat(64)}'`);
+    expect(script.indexOf('durable tenant identity mismatch')).toBeLessThan(script.indexOf('echo TENANT_BOOTSTRAP'));
+  });
+
   it('binds workspace and agent homes onto the DURABLE disk before the bootstrap runs', async () => {
     const { provider } = providerAndClient();
     const plan = await provider.plan(

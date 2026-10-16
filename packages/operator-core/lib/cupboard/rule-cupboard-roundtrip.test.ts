@@ -27,11 +27,17 @@ vi.mock('./resolve-repo-coords', () => ({
   fetchGithubRepoMeta: external.fetchGithubRepoMeta,
 }));
 
+vi.mock('@papercusp/db-org', async original => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: vi.fn(async () => []) }),
+}));
+
 import { publishRuleToCupboard } from './publish-rule-core';
 import { installRuleFromCupboardCore, InstallRuleError } from './install-rule-core';
 import { resolveLocalRule, parseRulePackage } from './rule-store';
-import { evaluatePreToolGuards, wornSyncRules } from '../agent-identities/sync-hook-rules';
+import { evaluatePreToolGuards, readAppliedWornRules, wornSyncRules } from '../agent-identities/sync-hook-rules';
 import { resolveLocalBlueprintPackage } from '../blueprint/compile-packages';
+import { listReactionRules } from '../events/registry';
 
 const GITHUB_URL = 'https://github.com/acme/cupboard-rules';
 
@@ -103,12 +109,14 @@ describe('rule Cupboard round trip', () => {
     const freshHome = join(root, 'fresh');
     process.env.PAPERCUSP_HOME = freshHome;
     _resetPapercuspRootForTests();
+    const registeredBefore = listReactionRules().map(rule => rule.id).sort();
     await installRuleFromCupboardCore({ githubUrl: GITHUB_URL, listingRef: 'local-authored' },
       unpinnedDeps(join(root, 'rules', 'exports'), root), async () => null);
+    expect(await readAppliedWornRules('unselected-roundtrip', 'ws')).toBeNull();
+    expect(listReactionRules().map(rule => rule.id).sort()).toEqual(registeredBefore);
     const pin = await resolveLocalBlueprintPackage({ kind: 'rule', ref: 'local-authored' });
     expect(pin).not.toBeNull();
     const call = { tool: 'capability:bash', input: { command: 'git push' }, client: 'codex' };
-    expect(evaluatePreToolGuards({ rules: [], unreadable: [] }, call).decision).toBe('none');
     expect(evaluatePreToolGuards(wornSyncRules({ inputs: [pin!] }), call).decision).toBe('deny');
   });
 

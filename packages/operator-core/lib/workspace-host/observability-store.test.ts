@@ -267,6 +267,7 @@ describe('workspace-host observability store', () => {
         connection_id: 'connection-1',
         target: 'gcp',
         observed_state: 'running',
+        hosted_customer_workspace_ids: ['customer-1'],
         desired_spec: { hostId: 'host-1', target: 'gcp', region: 'us-central1' },
       },
     ]);
@@ -294,6 +295,7 @@ describe('workspace-host observability store', () => {
     await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({
       id: 'host-1',
       connectionId: 'connection-1',
+      hostedCustomerWorkspaceId: 'customer-1',
       resources: [
         {
           resource: {
@@ -306,6 +308,12 @@ describe('workspace-host observability store', () => {
         },
       ],
     });
+  });
+
+  it('refuses multiple canonical customer bindings instead of choosing a tenant for the data disk', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [{ id: 'host-1',
+      desired_spec: { hostId: 'host-1' }, hosted_customer_workspace_ids: ['customer-1', 'customer-2'] }]);
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).rejects.toThrow('ambiguous hosted customer bindings');
   });
 
   it('un-registers a resource whose LATEST row confirms it absent, even when an older row registered it', async () => {

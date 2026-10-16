@@ -69,4 +69,44 @@ function fixture() {
     expect(socket.destroyed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('closes a default TCP socket terminated before its connect event', async () => {
+    const accepted = new Set<net.Socket>();
+    const server = net.createServer(socket => {
+      accepted.add(socket);
+      socket.on('error', () => {});
+      socket.once('close', () => accepted.delete(socket));
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    const sql = postgres(`postgres://test:test@127.0.0.1:${port}/test`);
+    const connection = Connection(sql.options);
+    let resolveConnecting!: (socket: net.Socket) => void;
+    const connecting = new Promise<net.Socket>(resolve => { resolveConnecting = resolve; });
+    const originalConnect = net.Socket.prototype.connect;
+    const connect = vi.spyOn(net.Socket.prototype, 'connect').mockImplementation(function(this: net.Socket, ...args) {
+      const result = Reflect.apply(originalConnect, this, args);
+      if (args[0] === port) resolveConnecting(this);
+      return result;
+    });
+    let socket: net.Socket | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      connection.connect({ reserve: true, reject: vi.fn() });
+      socket = await connecting;
+      expect(socket.connecting).toBe(true);
+      const closed = new Promise<boolean>(resolve => socket!.once('close', () => resolve(true)));
+      connection.terminate();
+      const closedAfterTermination = await Promise.race([closed,
+        new Promise<boolean>(resolve => { deadline = setTimeout(() => resolve(false), 250); })]);
+      expect(closedAfterTermination, 'terminate must close a socket still opening, before any PostgreSQL startup').toBe(true);
+    } finally {
+      clearTimeout(deadline);
+      connect.mockRestore();
+      connection.terminate();
+      socket?.destroy();
+      for (const client of accepted) client.destroy();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
 });

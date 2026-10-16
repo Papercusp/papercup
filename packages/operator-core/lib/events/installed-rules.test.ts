@@ -12,9 +12,10 @@ vi.mock('@papercusp/db-org', async (original) => ({
 import { installRuleFromCupboardCore } from '../cupboard/install-rule-core';
 import { resolveLocalBlueprintPackage } from '../blueprint/compile-packages';
 import { _resetPapercuspRootForTests } from '../papercusp-root';
-import { evaluatePreToolGuards, evaluateHookContextSink, memoryHookTurnStore, wornRulePins, wornSyncRules } from '../agent-identities/sync-hook-rules';
-import { identityRuleSubscriberId, type IdentityWearer } from '../agent-identities/identity-async-rules';
+import { evaluatePreToolGuards, evaluateHookContextSink, memoryHookTurnStore, readAppliedWornRules, wornRulePins, wornSyncRules } from '../agent-identities/sync-hook-rules';
+import { identityRuleSubscriberId, readIdentityWearer, type IdentityWearer } from '../agent-identities/identity-async-rules';
 import { executeIdentityReaction, planIdentityReactions, type IdentityReactionDeps } from './identity-reaction';
+import { listReactionRules } from './registry';
 
 let root: string;
 let priorHome: string | undefined;
@@ -32,6 +33,7 @@ afterEach(async () => {
 });
 
 async function install(id: string, definition: Record<string, unknown>) {
+  const registeredBefore = listReactionRules().map(rule => rule.id).sort();
   const repo = join(root, 'mirror');
   const dir = join(repo, id);
   await fs.mkdir(dir, { recursive: true });
@@ -43,6 +45,11 @@ async function install(id: string, definition: Record<string, unknown>) {
     fetchAtSha: async () => { throw new Error('unpinned fixture'); },
     listTreeBlobs: async () => { throw new Error('unpinned fixture'); }, tmpDir: () => root,
   }, async () => null);
+  // Read the production runtime after installation, before selecting any pin.
+  // These must fail if installing starts activating packages globally.
+  expect(await readAppliedWornRules('unselected-' + id, 'ws')).toBeNull();
+  expect(await readIdentityWearer('unselected-' + id, 'ws')).toBeNull();
+  expect(listReactionRules().map(rule => rule.id).sort()).toEqual(registeredBefore);
   const pin = await resolveLocalBlueprintPackage({ kind: 'rule', ref: id });
   expect(pin).not.toBeNull();
   return { inputs: [pin!] };
@@ -53,7 +60,6 @@ describe('installed rules are inert until selected by a wearer', () => {
     const artifact = await install('guard', { delivery: 'sync', sink: 'pre-tool', tools: ['capability:bash'],
       guard: { deny: { 'input.command': { equals: 'git push' } }, reason: 'no push' } });
     const worn = wornSyncRules(artifact);
-    expect(evaluatePreToolGuards({ rules: [], unreadable: [] }, { tool: 'capability:bash', input: { command: 'git push' }, client: 'codex' })).toEqual({ decision: 'none' });
     expect(evaluatePreToolGuards(worn, { tool: 'capability:bash', input: { command: 'git push' }, client: 'codex' })).toMatchObject({ decision: 'deny', ruleId: 'guard', reason: 'no push' });
     expect(evaluatePreToolGuards(worn, { tool: 'coord:send', input: { command: 'git push' }, client: 'codex' })).toEqual({ decision: 'none' });
   });

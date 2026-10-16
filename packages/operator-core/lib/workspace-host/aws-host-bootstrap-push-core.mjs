@@ -16,11 +16,20 @@ export function awsEbsNvmeDevicePathCore(volumeId) {
   return `/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_${volumeId.replace('-', '')}`;
 }
 
+/** Customer identity comes from the controller's binding, never provider metadata or a guest. */
+export function workspaceHostDurableTenantIdentity(workspaceId, customerWorkspaceId) {
+  if (![workspaceId, customerWorkspaceId].every((value) => typeof value === 'string' && value.trim())) {
+    throw new Error('durable tenant identity requires workspace and customer workspace');
+  }
+  return createHash('sha256').update(JSON.stringify(['papercusp-durable-tenant-v1', workspaceId, customerWorkspaceId])).digest('hex');
+}
+
 /** Shared by both provider renderers: probe failure is never blank-media proof. */
 export function renderDurableDataProbeCore(dataMode = 'fresh') {
   if (!['fresh', 'existing'].includes(dataMode)) throw new Error('durable data mode must be fresh or existing');
   return [
     `data_mode='${dataMode}'`,
+    'data_freshly_formatted=0',
     // This is on the boot disk, outside the durable mount. A provision script
     // persists across GCP reboots; its fresh-format permission must not persist.
     'data_probe_state_dir=/var/lib/papercusp-host-bootstrap/data-identity',
@@ -39,6 +48,7 @@ export function renderDurableDataProbeCore(dataMode = 'fresh') {
     '  data_signatures=$(wipefs --no-act --noheadings --output TYPE "$data_device") || { echo "durable data signature probe failed" >&2; exit 1; }',
     '  [[ -z "${data_signatures//[[:space:]]/}" ]] || { echo "durable data device has existing signatures" >&2; exit 1; }',
     '  mkfs.ext4 "$data_device"',
+    '  data_freshly_formatted=1',
     'else',
     '  echo "durable data filesystem unavailable or unsupported; refusing to format" >&2; exit 1',
     'fi',
@@ -50,6 +60,36 @@ export function renderDurableDataProbeCore(dataMode = 'fresh') {
     '  (set -o noclobber; printf "%s\\n" "$data_uuid" > "$data_probe_marker")',
     'fi',
     // Do not let agents/services launched by the later bootstrap inherit the lock.
+    'flock -u 9',
+    'exec 9>&-',
+  ];
+}
+
+/** Validate the actual mount and on-volume tenant before touching any customer state. */
+export function renderDurableTenantGuardCore(tenantIdentity) {
+  if (tenantIdentity !== undefined && !/^[a-f0-9]{64}$/.test(tenantIdentity)) {
+    throw new Error('durable tenant identity must be a controller-derived sha256');
+  }
+  return [
+    'data_mounted_uuid=$(findmnt -rn -M "$data_mount" -o UUID)',
+    '[[ "$data_mounted_uuid" == "$data_uuid" && "$(findmnt -rn -M "$data_mount" -o FSROOT)" == / ]] || { echo "durable data mount identity mismatch" >&2; exit 1; }',
+    'data_tenant_marker="$data_mount/.papercusp-tenant"',
+    '[[ ! -L "$data_tenant_marker" ]] || { echo "durable tenant marker is a symlink" >&2; exit 1; }',
+    `data_expected_tenant='${tenantIdentity ?? ''}'`,
+    'exec 9>"${data_probe_marker}.lock"',
+    'flock -n 9 || { echo "durable tenant initialization is already running" >&2; exit 1; }',
+    'if [[ -n "$data_expected_tenant" ]]; then',
+    '  data_expected_marker="papercusp-tenant-v1:${data_expected_tenant}:${data_uuid}"',
+    '  if [[ -e "$data_tenant_marker" ]]; then',
+    '    [[ -f "$data_tenant_marker" && "$(stat -c %u:%a "$data_tenant_marker")" == 0:600 && "$(cat "$data_tenant_marker")" == "$data_expected_marker" ]] || { echo "durable tenant identity mismatch" >&2; exit 1; }',
+    '  else',
+    '    [[ "$data_freshly_formatted" == 1 ]] || { echo "existing durable volume has no tenant marker; refusing empty initialization" >&2; exit 1; }',
+    '    (umask 077; set -o noclobber; printf "%s\\n" "$data_expected_marker" > "$data_tenant_marker")',
+    '    sync -f "$data_tenant_marker"',
+    '  fi',
+    'elif [[ -e "$data_tenant_marker" ]]; then',
+    '  echo "controller tenant identity required for bound durable volume" >&2; exit 1',
+    'fi',
     'flock -u 9',
     'exec 9>&-',
   ];
@@ -78,6 +118,7 @@ export function renderDurableFilesystemScriptCore(input) {
     'install -d -m 0750 "$data_mount"',
     'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
     'mountpoint -q "$data_mount" || mount "$data_mount"',
+    ...renderDurableTenantGuardCore(input.tenantIdentity),
     'resize2fs "$data_device"',
     'if command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled; then restorecon -F "$data_mount"; fi',
     'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
@@ -111,6 +152,7 @@ export function renderAwsHostBootstrapPushCore(input) {
     deviceWaitSec: input.deviceWaitSec ?? AWS_DATA_DEVICE_WAIT_SEC,
     hostBootstrapScript: input.hostBootstrapScript,
     dataMode: input.dataMode,
+    tenantIdentity: input.tenantIdentity,
     ...(input.workspaceDataRoot ? { workspaceDataRoot: input.workspaceDataRoot } : {}),
   });
   const scriptSha256 = createHash('sha256').update(script, 'utf8').digest('hex');

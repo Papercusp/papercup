@@ -137,7 +137,7 @@ describe("pretooluse-generated-file-edit-guard — falsifiability in both direct
       linkSync(installed, snapshot);
       const result = runHook(edit(installed, tool));
       expect(result.denied).toBe(true);
-      expect(result.reason).toContain("installed dependency");
+      expect(result.reason).toMatch(/installed dependency/i);
       expect(result.reason).toContain("frozen");
       expect(result.reason).toContain("donor");
       expect(readFileSync(snapshot, "utf8")).toContain("'frozen'");

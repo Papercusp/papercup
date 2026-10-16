@@ -1537,6 +1537,7 @@ function metadata(
   hostId: string,
   hostBootstrapScript?: string,
   dataMode: 'fresh' | 'existing' = 'fresh',
+  tenantIdentity?: string,
 ): readonly { key: string; value: string }[] {
   const entries = new Map<string, string>(Object.entries(settings.metadata));
   entries.set('block-project-ssh-keys', 'TRUE');
@@ -1544,7 +1545,7 @@ function metadata(
   entries.set('enable-oslogin', 'TRUE');
   entries.set('papercusp-host-id', hostId);
   entries.set('papercusp-data-resize-policy', settings.dataDiskResizePolicy);
-  entries.set('startup-script', durableFilesystemStartupScript(settings.dataDeviceName, hostBootstrapScript, dataMode));
+  entries.set('startup-script', durableFilesystemStartupScript(settings.dataDeviceName, hostBootstrapScript, dataMode, tenantIdentity));
   return [...entries.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
@@ -1565,25 +1566,27 @@ function metadata(
  * re-runs the startup script on every boot, and `planUpgrade` recreates the boot disk while
  * retaining only the data disk (`{ ...dataDisk, autoDelete: false }`).
  */
-function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScript?: string, dataMode: 'fresh' | 'existing' = 'fresh'): string {
+function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScript?: string, dataMode: 'fresh' | 'existing' = 'fresh', tenantIdentity?: string): string {
   return renderDurableFilesystemScript({
     devicePath: `/dev/disk/by-id/google-${dataDeviceName}`,
     deviceWaitSec: GCP_DATA_DEVICE_WAIT_SEC,
     hostBootstrapScript,
     dataMode,
+    tenantIdentity,
   });
 }
 
 function refreshedInstanceMetadata(
   observed: GcpInstanceObservation,
   hostBootstrapScript: string,
+  tenantIdentity?: string,
 ): GcpInstanceMetadataInput {
   const fingerprint = requireString(observed.metadataFingerprint, 'GCP instance metadata fingerprint');
   if (!observed.recreateInput) throw new Error('GCP lifecycle bootstrap refresh requires a fresh instance read');
   const dataDisk = observed.recreateInput.disks.find((disk) => disk.boot === false);
   const dataDeviceName = requireString(dataDisk?.deviceName, 'GCP data disk deviceName');
   const entries = new Map(observed.recreateInput.metadata.items.map(({ key, value }) => [key, value]));
-  entries.set('startup-script', durableFilesystemStartupScript(dataDeviceName, hostBootstrapScript, 'existing'));
+  entries.set('startup-script', durableFilesystemStartupScript(dataDeviceName, hostBootstrapScript, 'existing', tenantIdentity));
   return {
     fingerprint,
     items: [...entries.entries()]
@@ -1833,7 +1836,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       if (refName(dataDisk.source) !== refName(disk.providerId) || dataDisk.autoDelete) {
         throw new Error('GCP upgrade refused because the retained data disk identity is ambiguous');
       }
-      const metadata = { items: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript).items };
+      const metadata = { items: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript, ctx.durableTenantIdentity).items };
       // The same recreate, parameterized only by boot image, so the rollback is exactly the
       // forward insert pointed at the prior image — never a second, drifting description.
       const recreateFrom = (sourceImage: string, sourceImageDiskSizeGb: number): GcpInstanceInsertInput => ({
@@ -2002,7 +2005,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             instanceName: instance.providerId,
             requestId: gcpWorkspaceHostRequestUuid(refreshKey),
             hostId: request.host.hostId,
-            request: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript),
+            request: refreshedInstanceMetadata(observed, ctx.hostBootstrapScript, ctx.durableTenantIdentity),
           } satisfies GcpStepInput,
         },
         {
@@ -2348,7 +2351,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           ...(settings.serviceAccountEmail
             ? { serviceAccounts: [{ email: settings.serviceAccountEmail, scopes: settings.serviceAccountScopes }] as const }
             : {}),
-          metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript, sourceSnapshotName ? 'existing' : 'fresh') },
+          metadata: { items: metadata(settings, desired.hostId, ctx.hostBootstrapScript, sourceSnapshotName ? 'existing' : 'fresh', ctx.durableTenantIdentity) },
           ...(settings.provisioningModel === 'spot' ? { scheduling: GCP_SPOT_SCHEDULING } : {}),
         },
       } satisfies GcpStepInput,

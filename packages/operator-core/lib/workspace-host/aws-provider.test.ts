@@ -1380,6 +1380,17 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
     });
   });
 
+  it('persists the controller tenant identity in its replayable bootstrap step', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'tenant', idempotencyKey: 'tenant', desired: desired() },
+      { ...context(), hostBootstrapScript: HOST_BOOTSTRAP, durableTenantIdentity: 'a'.repeat(64) },
+    );
+    expect(plan.steps.find(({ id }) => id === 'start-host-bootstrap')!.input).toMatchObject({
+      dataMode: 'fresh', tenantIdentity: 'a'.repeat(64),
+    });
+  });
+
   it('refuses to plan a provision or a repair without a controller-rendered bootstrap', async () => {
     const { client, provider } = providerAndClient();
     await expect(

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
@@ -156,6 +157,17 @@ function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostProvision
 }
 
 describe('workspace-host provisioning bootstrap release selection', () => {
+  it('derives the on-volume tenant identity from the admitted customer and control workspace', async () => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness([planStep('create-instance')]);
+    apply.mockResolvedValue({ operationId: 'op-1', stepId: 'create-instance', state: 'applied',
+      observedAt: '2026-08-25T00:00:05Z', resource: { target: 'gcp', kind: 'vm', providerId: 'vm' } });
+    await runWorkspaceHostProvisioning({ ...runInput(provider, store), hostedCustomerWorkspaceId: 'customer-1' });
+    expect(provider.plan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      durableTenantIdentity: workspaceHostDurableTenantIdentity('ws-1', 'customer-1'),
+    }));
+  });
+
   it('forwards an operation-scoped release pin through the provision runner', async () => {
     const bootstrapReleaseOverride = {
       manifestPath: '/var/lib/papercusp/releases/aws-canary.json',

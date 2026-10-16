@@ -805,6 +805,8 @@ export interface StoredWorkspaceHostDestroyTarget extends Pick<
   connectionId: string;
   target: string;
   observedState: string;
+  /** Trusted customer binding used by the durable-volume tenant guard. */
+  hostedCustomerWorkspaceId?: string;
   recoverability?: {
     kind: 'snapshot' | 'backup' | 'none';
     label: string;
@@ -849,7 +851,10 @@ export async function readWorkspaceHostDestroyTarget(
       SELECT id, name, connection_id, target, observed_state, desired_spec,
              recoverability_kind, recoverability_label, recoverability_updated_at,
              host_generation, desired_revision, observed_revision, runtime_release,
-             controller_id, controller_fence
+             controller_id, controller_fence,
+             ARRAY(SELECT customer.id FROM harness_shared.customer_workspaces customer
+               WHERE customer.workspace_id = ${workspaceId} AND customer.workspace_host_id = ${hostId}
+                 AND customer.kind = 'hosted' ORDER BY customer.id) AS hosted_customer_workspace_ids
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
       LIMIT 1
@@ -869,9 +874,13 @@ export async function readWorkspaceHostDestroyTarget(
       runtime_release: WorkspaceHostRuntimeRelease | null;
       controller_id: string | null;
       controller_fence: number;
+      hosted_customer_workspace_ids?: string[];
     }>;
     const host = hosts[0];
     if (!host) return null;
+    if ((host.hosted_customer_workspace_ids?.length ?? 0) > 1) {
+      throw new Error(`Workspace host '${hostId}' has ambiguous hosted customer bindings`);
+    }
     if (!host.desired_spec || typeof host.desired_spec !== 'object' || Array.isArray(host.desired_spec)) {
       throw new Error(`Workspace host '${hostId}' has no recorded desired spec`);
     }
@@ -927,6 +936,7 @@ export async function readWorkspaceHostDestroyTarget(
       connectionId: host.connection_id,
       target: host.target,
       observedState: host.observed_state,
+      ...(host.hosted_customer_workspace_ids?.[0] ? { hostedCustomerWorkspaceId: host.hosted_customer_workspace_ids[0] } : {}),
       recoverability: {
         kind: host.recoverability_kind,
         label: host.recoverability_label,

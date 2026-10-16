@@ -54,6 +54,7 @@ import {
   type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
 import type { WorkspaceHostProvisionBootstrapReleaseOverride } from './provision-bootstrap';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   WorkspaceHostInitializationReplayInFlightError,
   createWorkspaceHostInitializationReplayStore,
@@ -937,6 +938,9 @@ export async function runWorkspaceHostLifecycle(
   if (target.id !== hostId || target.desired.hostId !== hostId) {
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match hostId']);
   }
+  if (input.hostedCustomerWorkspaceId && input.hostedCustomerWorkspaceId !== target.hostedCustomerWorkspaceId) {
+    throw new WorkspaceHostProvisioningRequestError(['hosted customer reservation does not match stored host binding']);
+  }
   if (input.connection.target !== target.target || input.provider.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError([
       'workspace-host provider and connection must match stored target',
@@ -991,6 +995,8 @@ export async function runWorkspaceHostLifecycle(
     workspaceId,
     requestId: operationId,
     connection: { ...input.connection, scope: target.desired.scope },
+    ...(target.hostedCustomerWorkspaceId ? { durableTenantIdentity:
+      workspaceHostDurableTenantIdentity(workspaceId, target.hostedCustomerWorkspaceId) } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

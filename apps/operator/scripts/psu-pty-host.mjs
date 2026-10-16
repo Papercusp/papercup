@@ -10503,6 +10503,26 @@ export function hostThroughPty(o) {
     if (recorded) adoptedCarryDrillTerminalRecorded = true;
     return recorded;
   };
+  let adoptedCarryDropRecorded = false;
+  const recordAdoptedCarryDrop = (extra = {}) => {
+    if (!adoptedCarryRespawn || adoptedCarryDropRecorded) return false;
+    if (recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', extra)) {
+      adoptedCarryDropRecorded = true;
+      return true;
+    }
+    const row = {
+      mode: 'carry-respawn',
+      nativeId: adoptedCarryRespawn.nativeId ?? null,
+      turnStartVerified: false,
+      nativeRef: null,
+      ...extra,
+      adopted: true,
+    };
+    appendHostEvent(ownerId, 'respawn-carry-dropped', row);
+    appendSharedDrillLedgerEvent(ownerId, 'respawn-carry-dropped', row);
+    adoptedCarryDropRecorded = true;
+    return true;
+  };
   if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
   const managedKickoff = kickoffFile
     ? (() => {
@@ -10938,7 +10958,7 @@ export function hostThroughPty(o) {
   // turn as a CLI positional argument and do not pass through this gate.
   const launchKickoff = managedKickoff?.text ?? kickoff;
   if (adoptedCarryRespawn && !launchKickoff) {
-    recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+    recordAdoptedCarryDrop({
       reason: 'missing-first-turn-text',
       attempts: 0,
       outputSeen: childStartupOutput.length > 0,
@@ -12558,7 +12578,7 @@ export function hostThroughPty(o) {
       }
       if (!managedKickoff) {
         if (!r.delivered) {
-          recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+          recordAdoptedCarryDrop({
             reason: r.reason ?? 'kickoff-not-submitted',
             attempts: r.attempts,
             budgetMs: kickoffBudgetMs,
@@ -12727,7 +12747,7 @@ export function hostThroughPty(o) {
           reason: proof.persisted ? null : proof.reason,
         });
         if (!proof.persisted) {
-          recordAdoptedCarryDrillTerminal('carry-drill-carry-dropped', {
+          recordAdoptedCarryDrop({
             reason: proof.reason ?? 'turn-start-unverified',
             attempts: r.attempts,
             budgetMs: kickoffBudgetMs,

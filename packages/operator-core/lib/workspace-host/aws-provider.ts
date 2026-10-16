@@ -447,7 +447,7 @@ type AwsStepInput =
   | { op: 'run-instance'; request: AwsRunInstancesInput; hostId: string; vpcId: string }
   | { op: 'attach-data-volume'; device: string; hostId: string; replacesInstanceId?: string }
   // D-013: the controller-rendered bootstrap, pushed over SSM once the data volume is attached.
-  | { op: 'start-host-bootstrap'; hostId: string; script: string; dataMode?: 'fresh' | 'existing'; replacesInstanceId?: string }
+  | { op: 'start-host-bootstrap'; hostId: string; script: string; dataMode?: 'fresh' | 'existing'; tenantIdentity?: string; replacesInstanceId?: string }
   // Upgrade (WI-10005971): move the data volume off the stopped original instance.
   | { op: 'detach-data-volume'; volumeId: string; instanceId: string; hostId: string }
   // Upgrade rollback: put the data volume back on the original instance and start it.
@@ -691,6 +691,7 @@ function hostBootstrapStep(
       hostId,
       script,
       dataMode: action === 'provision' ? 'fresh' : 'existing',
+      ...(ctx.durableTenantIdentity ? { tenantIdentity: ctx.durableTenantIdentity } : {}),
       ...(replacesInstanceId ? { replacesInstanceId } : {}),
     } satisfies AwsStepInput,
   };
@@ -1522,6 +1523,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         // records the step against the instance it seeded at plan time, which is the original.
         const stepResource = input.replacesInstanceId ? instance : undefined;
         const push = renderAwsHostBootstrapPush({ volumeId: volume.providerId, hostBootstrapScript: input.script,
+          tenantIdentity: input.tenantIdentity ?? ctx.durableTenantIdentity,
           dataMode: input.dataMode ?? (request.step.action === 'provision' ? 'fresh' : 'existing') });
         if (!(await this.client.waitForSsmOnline(instance.providerId, ctx.signal))) return this.inProgress(request);
         const sent = await this.client.sendShellCommand({

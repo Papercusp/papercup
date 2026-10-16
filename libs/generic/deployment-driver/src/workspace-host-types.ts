@@ -563,6 +563,8 @@ export interface WorkspaceHostProviderContext {
    * startup state MUST re-render this value; ordinary start/stop/restart/snapshot actions omit it.
    */
   hostBootstrapScript?: string;
+  /** Controller-derived hash of the persisted customer workspace, stable across VM replacement. */
+  durableTenantIdentity?: string;
   log?: (
     level: WorkspaceHostLogLevel,
     message: string,

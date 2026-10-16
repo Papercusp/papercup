@@ -44,6 +44,7 @@ import {
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
 import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   resolveGcpWorkspaceHostManagedNetworkInventoryNames,
   type GcpWorkspaceHostInventoryRequest,
@@ -1088,6 +1089,8 @@ export async function runWorkspaceHostProvisioning(
     workspaceId,
     requestId: operationId,
     connection: input.connection,
+    ...(input.hostedCustomerWorkspaceId ? { durableTenantIdentity:
+      workspaceHostDurableTenantIdentity(workspaceId, input.hostedCustomerWorkspaceId) } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

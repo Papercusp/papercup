@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   renderDurableFilesystemScript,
   WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT,
@@ -17,6 +18,23 @@ import {
  */
 
 const AWS_DEVICE = '/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_vol0123456789abcdef0';
+const DATA_UUID = '01234567-89ab-cdef-0123-456789abcdef';
+const TENANT = workspaceHostDurableTenantIdentity('workspace', 'customer');
+
+function executeTenantGuard(input: { root: string; tenant?: string; formatted?: boolean;
+  mountedUuid?: string; uuid?: string; fsroot?: string; owner?: number; newBoot?: boolean }) {
+  const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30, tenantIdentity: input.tenant });
+  const block = script.slice(script.indexOf('data_mounted_uuid='), script.indexOf('resize2fs'));
+  return spawnSync('bash', ['-c', [
+    'set -euo pipefail', `data_mount='${input.root}'`,
+    `data_probe_marker='${input.root}/${input.newBoot ? 'replacement' : 'original'}-boot'`,
+    `data_uuid='${input.uuid ?? DATA_UUID}'`, `data_freshly_formatted=${input.formatted ? 1 : 0}`,
+    `findmnt() { if [[ "$*" == *FSROOT* ]]; then printf '%s' '${input.fsroot ?? '/'}'; else printf '%s' '${input.mountedUuid ?? input.uuid ?? DATA_UUID}'; fi; }`,
+    // Hosts run this block as root; preserve the real mode while emulating only the uid.
+    `stat() { printf '${input.owner ?? 0}:%s' "$(command stat -c %a "\${@: -1}")"; }`,
+    block, 'flock -n "${data_probe_marker}.lock" true', 'echo BOOTSTRAP',
+  ].join('\n')], { encoding: 'utf8', timeout: 5000 });
+}
 
 function executeProbe(input: { dataMode: 'fresh' | 'existing'; probeStatus: number; type: string;
   wipeStatus: number; signatures: string; stateDir: string; uuid?: string }) {
@@ -34,6 +52,69 @@ function executeProbe(input: { dataMode: 'fresh' | 'existing'; probeStatus: numb
 }
 
 describe('renderDurableFilesystemScript', () => {
+  it('binds a newly formatted volume once and preserves its tenant across a replacement boot disk', () => {
+    const root = mkdtempSync(join(tmpdir(), 'durable-tenant-'));
+    try {
+      const first = executeTenantGuard({ root, tenant: TENANT, formatted: true });
+      expect(first.status, first.stderr).toBe(0);
+      const marker = readFileSync(join(root, '.papercusp-tenant'), 'utf8');
+      expect(marker).toBe(`papercusp-tenant-v1:${TENANT}:${DATA_UUID}\n`);
+      const resumed = executeTenantGuard({ root, tenant: TENANT, newBoot: true });
+      expect(resumed.status, resumed.stderr).toBe(0);
+      expect(resumed.stdout).toContain('BOOTSTRAP');
+      expect(readFileSync(join(root, '.papercusp-tenant'), 'utf8')).toBe(marker);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    ['foreign tenant', { tenant: 'b'.repeat(64) }, 'tenant identity mismatch'],
+    ['missing controller binding', { tenant: undefined }, 'controller tenant identity required'],
+    ['changed UUID', { uuid: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }, 'tenant identity mismatch'],
+    ['wrong mount', { mountedUuid: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }, 'mount identity mismatch'],
+    ['subdirectory bind', { fsroot: '/foreign' }, 'mount identity mismatch'],
+    ['non-root marker', { owner: 1000 }, 'tenant identity mismatch'],
+  ])('refuses %s before starting the runtime', (_name, overrides, error) => {
+    const root = mkdtempSync(join(tmpdir(), 'durable-foreign-'));
+    try {
+      const marker = `papercusp-tenant-v1:${TENANT}:${DATA_UUID}\n`;
+      writeFileSync(join(root, '.papercusp-tenant'), marker, { mode: 0o600 });
+      const run = executeTenantGuard({ root, tenant: TENANT, ...overrides });
+      expect(run.status, run.stderr).toBe(1);
+      expect(run.stderr).toContain(error);
+      expect(run.stdout).not.toContain('BOOTSTRAP');
+      expect(readFileSync(join(root, '.papercusp-tenant'), 'utf8')).toBe(marker);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('refuses unmarked existing data, symlink markers and writable markers without adopting them', () => {
+    const root = mkdtempSync(join(tmpdir(), 'durable-unmarked-'));
+    const marker = join(root, '.papercusp-tenant');
+    try {
+      const unmarked = executeTenantGuard({ root, tenant: TENANT });
+      expect(unmarked.status).toBe(1);
+      expect(unmarked.stderr).toContain('refusing empty initialization');
+      expect(existsSync(marker)).toBe(false);
+      symlinkSync(join(root, 'missing'), marker);
+      expect(executeTenantGuard({ root, tenant: TENANT, formatted: true }).stderr).toContain('marker is a symlink');
+      rmSync(marker);
+      writeFileSync(marker, `papercusp-tenant-v1:${TENANT}:${DATA_UUID}\n`, { mode: 0o600 });
+      chmodSync(marker, 0o644);
+      expect(executeTenantGuard({ root, tenant: TENANT }).stderr).toContain('tenant identity mismatch');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('derives distinct tenant identities across control workspaces and rejects shell payloads', () => {
+    expect(TENANT).not.toBe(workspaceHostDurableTenantIdentity('other-workspace', 'customer'));
+    expect(TENANT).not.toBe(workspaceHostDurableTenantIdentity('workspace', 'other-customer'));
+    expect(() => workspaceHostDurableTenantIdentity('', 'customer')).toThrow(/requires/);
+    expect(() => renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30,
+      tenantIdentity: "'; echo foreign" })).toThrow(/sha256/);
+    const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30,
+      tenantIdentity: TENANT, hostBootstrapScript: 'echo BOOTSTRAP' });
+    expect(script.indexOf('durable tenant identity mismatch')).toBeLessThan(script.indexOf('resize2fs'));
+    expect(script.indexOf('durable tenant identity mismatch')).toBeLessThan(script.indexOf('echo BOOTSTRAP'));
+  });
+
   it('renders valid bash that waits for, formats-if-blank, and mounts the named device', () => {
     const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 180 });
     const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });

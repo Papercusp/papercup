@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
@@ -318,6 +319,8 @@ describe('runWorkspaceHostLifecycle', () => {
 
   it('renders the current controller bootstrap before a repair plan and passes it only through provider context', async () => {
     const { store } = storeHarness();
+    const target = await store.readTarget('workspace-1', 'host-1');
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1' });
     const { provider, apply } = providerHarness(true);
     apply.mockResolvedValue({
       operationId: 'op-1',
@@ -337,8 +340,20 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(renderHostBootstrap).toHaveBeenCalledWith('host-1');
     expect(provider.plan).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'repair' }),
-      expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired' }),
+      expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired',
+        durableTenantIdentity: workspaceHostDurableTenantIdentity('workspace-1', 'customer-1') }),
     );
+  });
+
+  it('refuses a reservation for a different customer before any provider call', async () => {
+    const { store } = storeHarness();
+    const { provider } = providerHarness();
+    const target = await store.readTarget('workspace-1', 'host-1');
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1' });
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), hostedCustomerWorkspaceId: 'foreign' }))
+      .rejects.toThrow('does not match stored host binding');
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(provider.apply).not.toHaveBeenCalled();
   });
 
   it('forwards an operation-scoped release pin through the lifecycle runner', async () => {
