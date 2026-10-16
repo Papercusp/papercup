@@ -40,6 +40,7 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
       'scripts/lib/retention-pins.mjs', 'scripts/lib/fs-mutex.mjs',
+      'libs/generic/verification-harness/src/runner.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/worker-result.json',
