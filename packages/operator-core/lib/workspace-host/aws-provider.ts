@@ -912,7 +912,8 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     if (!observed || isVolumeAbsent(observed) || observed.volumeId !== volume.providerId ||
         (observed.availabilityZone && volume.zone !== observed.availabilityZone) ||
         observed.encrypted === false || observed.multiAttachEnabled === true ||
-        (ctx.durableTenantIdentity && (!observed.availabilityZone || observed.encrypted !== true || !observed.tags))) {
+        (ctx.durableTenantIdentity && (!observed.availabilityZone || observed.encrypted !== true || !observed.tags ||
+          !observed.attachedInstanceIds || observed.multiAttachEnabled !== false))) {
       throw new Error('aws_workspace_host_retained_volume_identity_mismatch');
     }
     if (observed.tags && (observed.tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed] !== 'true' ||
@@ -1559,7 +1560,8 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         const before = await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, instance.providerId);
         if (before.state === 'in-use' && before.attachedInstanceId === instance.providerId) return this.unchanged(request);
         const observedInstance = await this.client.describeInstance(instance.providerId);
-        if (observedInstance?.availabilityZone && volume.zone !== observedInstance.availabilityZone) {
+        if ((observedInstance?.availabilityZone && volume.zone !== observedInstance.availabilityZone) ||
+            (ctx.durableTenantIdentity && !observedInstance?.availabilityZone)) {
           throw new Error('aws_workspace_host_attachment_zone_mismatch');
         }
         const result = await this.client.attachVolume({
@@ -1856,6 +1858,13 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     request: WorkspaceHostReconcileRequest,
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
+    return this.report(request, ctx, await this.reconcileStep(request, ctx));
+  }
+
+  private async reconcileStep(
+    request: WorkspaceHostReconcileRequest,
+    ctx: WorkspaceHostProviderContext,
+  ): Promise<WorkspaceHostApplyResult> {
     const input = stepInput(request.step);
     if (input.op === 'create-data-volume') {
       const found = await this.client.findVolumeByClientToken(input.request.ClientToken);
@@ -1942,7 +1951,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         return this.unchanged(request, resource(AWS_INSTANCE_RESOURCE_KIND, found.instanceId));
       }
     }
-    return this.apply(request, ctx);
+    return this.applyStep(request, ctx);
   }
 
   private unchanged(

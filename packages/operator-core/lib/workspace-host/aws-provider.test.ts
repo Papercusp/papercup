@@ -1706,6 +1706,16 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     expect(known.map((item) => item.providerId).sort()).toEqual([replacement, volume].sort());
   });
 
+  it('persists the exact AWS scope when reconciling an ambiguously created volume', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan({ action: 'provision', operationId: 'scope-reconcile', idempotencyKey: 'scope-reconcile', desired: desired() }, context());
+    const request = { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] };
+    await provider.apply(request, context());
+    const result = await provider.reconcile({ ...request, reason: 'ambiguous-timeout' }, context());
+    expect(result.state).toBe('unchanged');
+    expect(requireAppliedResource(result)).toMatchObject({ parentProviderId: '123456789012', region: 'us-east-1', zone: 'us-east-1a' });
+  });
+
   it.each(['account', 'zone', 'multi-writer', 'tenant'])('refuses an AWS replacement with foreign %s before quiescing', async (mismatch) => {
     const { client, provider } = providerAndClient();
     const { host } = await provision(client, provider);
