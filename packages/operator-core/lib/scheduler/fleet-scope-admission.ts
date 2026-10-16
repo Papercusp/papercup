@@ -2105,18 +2105,23 @@ export async function diagnoseFleetScopeTerminalExhaustion(args: {
 }
 
 /**
- * P-008 (parked-agent-census-resumption-and-root-cause-2026-10-09): every miss response that tells a
- * member to "release remaining lane resources" and call loop:end must not be read as "drop the
- * blocked item you still hold". A held blocked item stays held. Its wake is NOT restated here:
- * loop:end refuses a claim holder with no bounded wake source and returns the exact bounded await
- * (keyed to the item's recorded blocker) in recovery.steps. Naming that await's tool here would sit
- * beside this response's own `watch:create` work-item:claimable instruction and invite the
- * conflation EI-15185 guards against (fleet-scope-admission.test.ts asserts no events:await).
+ * P-008 / WI-6554700010015848: a pool miss cannot establish that the caller's held work is done.
+ * Give every wind-down branch the same obligation check BEFORE any stop instruction. D-009's
+ * refusal remains a safety net, not the way to discover a blocker wake: it may offer claim release
+ * when no actionable event is recorded. Distinguish the held item's bounded dependency await
+ * from the standing backlog-interest watch (EI-15185); neither substitutes for the other.
  */
-const HELD_BLOCKED_ITEM_STAYS_HELD =
-  '(a blocked item you still hold stays held: record work_items:set_blocker on it first — that frees its ' +
-  'concurrent-claim slot without releasing it, and loop:end then refuses ' +
-  'the stop and returns the bounded wake to register in recovery.steps)';
+const FLEET_MISS_WIND_DOWN_ADVICE =
+  'First finish independent work on held items. If work remains blocked, a blocked item you still hold stays held: ' +
+  'record its typed blocker with work_items:set_blocker, then register events:await for the exact recorded blocker event ' +
+  'with a positive timeout_sec matched to its recheckAt and on_timeout:"wake". Keep the existing loop armed until registration succeeds. ' +
+  'If no independently actionable blocker event is recorded, checkpoint the missing dependency and keep the loop armed, ' +
+  'or arrange an authorized handoff before releasing claims; do not invent an event from blocked status or await a ' +
+  'lifecycle transition that this session itself must perform. A standing work-item:claimable watch is backlog interest only; ' +
+  'it does not provide the bounded wake for retained work. Only after a guaranteed wake is registered, no unfinished obligations ' +
+  'remain, or a verified stop/handoff has disposed of them, checkpoint progress and release only finished lane resources ' +
+  '(retained blocked claims stay held), ' +
+  'call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, then end your turn. ';
 
 export function fleetScopedMiss(
   scope: FleetScopeContext,
@@ -2807,10 +2812,10 @@ export function fleetScopedMiss(
             'read, and is the ONLY case where standing down on this lane is correct. Do NOT re-author the claim spec: your spec is ' +
             'fine, and widening it would only pull the same blocked rows in under a different filter.'
           : planComplete
-          ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. Checkpoint any final progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
+          ? 'PLAN COMPLETE (EI-20260781488788952): every plan named by the claim spec is terminal. ' + FLEET_MISS_WIND_DOWN_ADVICE + 'Report the successful completed-plan wind-down. Do NOT escalate, widen, or re-author the claim spec.'
           : specExhausted
           ? 'LANE COMPLETE: the status-floor-free check found only terminal rows for this spec (reason: "spec_exhausted"). ' +
-            'Checkpoint any final progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the successful drain to your ' +
+            FLEET_MISS_WIND_DOWN_ADVICE + 'Report the successful drain to your ' +
             'fleet leader. ' +
             (claimablePayloadFilter
               ? 'If new work later enters your scope, park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — do not pass targetKind with wake:true; the watch remains armed after a re-miss, the wake is a HINT, and scheduler:get_next remains authoritative.'
@@ -2818,8 +2823,7 @@ export function fleetScopedMiss(
             ' Do NOT escalate, widen, or re-author the claim spec.'
           : specInFlight
           ? 'NOTHING TO CLAIM, NOT A SPEC BUG (reason: "spec_in_flight"): every row your spec matches is terminal, held by an ' +
-            'agent, or parked (blocked/needs-human) — see terminalExhaustion. Checkpoint any final progress, release remaining lane ' +
-            'resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. ' +
+            'agent, or parked (blocked/needs-human) — see terminalExhaustion. ' + FLEET_MISS_WIND_DOWN_ADVICE +
             'A held or parked row re-enters the pool only through a release or a cleared blocker. ' +
             (claimablePayloadFilter
               ? 'To be woken when that happens, park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn — do not pass targetKind with wake:true; the wake is a HINT and scheduler:get_next remains authoritative.'
@@ -2832,31 +2836,28 @@ export function fleetScopedMiss(
           : nonIssueSpecEmpty
           ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
             'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
-            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', and call ' +
-            'loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } if AUTO (or another autonomy-implying mode) remains active without ' +
-            'a deliberate independent event await — otherwise the wake-less stop will be refused. Quote `reason: "ordinary_drain"` ' +
+            'not a sign the spec is broken. ' + FLEET_MISS_WIND_DOWN_ADVICE + 'Quote `reason: "ordinary_drain"` ' +
             'if you report it. If you have reason to believe real work should exist, verify ' +
             'directly with plans:items / work_items:claimable before escalating.'
           : specEmpty
           ? opts?.leaderLiveness === false
-            ? 'The registered fleet leader is not live (EI-20260781488788952), so do not route this miss to a dead leader. This remains a leader-alert-worthy spec-authoring bug: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision, then take leadership as the sole live member or escalate to the fleet launcher/owner. You may checkpoint any atomic progress, release lane resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } while that handoff is made — but do NOT quietly treat this as "the queue is drained"; unlike a genuine drain, a zero-match spec never clears on its own.'
+            ? 'The registered fleet leader is not live (EI-20260781488788952), so do not route this miss to a dead leader. This remains a leader-alert-worthy spec-authoring bug: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision, then take leadership as the sole live member or escalate to the fleet launcher/owner. ' + FLEET_MISS_WIND_DOWN_ADVICE + 'Do NOT quietly treat this as "the queue is drained"; unlike a genuine drain, a zero-match spec never clears on its own.'
             : 'ESCALATE to your fleet leader NOW (EI-18663622382734446) — this is a leader-alert-worthy spec-authoring bug, not a ' +
               'normal drain: quote `reason: "spec_matches_nothing"` and excludedBreakdown.matchedByFilter=0 plus your spec id/revision. ' +
               'The leader\'s remedy is scheduler:set_claim_spec { fleet, spec: <a revision whose view.filter actually admits work> } — ' +
-              'see fleetScopeLeaderRemedy for the exact one-call widen. You may checkpoint any atomic progress, release remaining lane ' +
-              'resources, and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true } while you wait — but do NOT quietly treat this as "the queue is drained"; unlike a genuine ' +
+              'see fleetScopeLeaderRemedy for the exact one-call widen. ' + FLEET_MISS_WIND_DOWN_ADVICE + 'Do NOT quietly treat this as "the queue is drained"; unlike a genuine ' +
               'drain, a zero-match spec never clears on its own no matter how long you wait.'
         : cooldown
           ? 'Cooldown-only miss (EI-13520): the row(s) excluding you are held off ONLY by your own recent-release cooldown (PAPERCUSP_RELEASE_COOLDOWN_SEC, default 300s), not a scope/spec mismatch — for a NORMAL one-time cooldown, re-poll ONCE after cooldownExpiryAt (or park on the standing work-item:claimable watch) and the row clears (or any OTHER fleet member can claim it immediately); do NOT re-author the claim spec for that. ' +
           '`cooldownEarliestRowId` names the SPECIFIC row driving `cooldownExpirySec` — compare it, not just the number, across polls (EI-16519): a mere advancing/never-shrinking `~Ns` is NOT by itself a livelock signal — `last_released_at` can only change via a genuine release-of-a-claimed-row (EI-16475), so when `cooldownExcluded > 1` the reported expiry is a MIN over MULTIPLE rows YOU released at different times, and it legitimately jumps to a LATER instant as the earlier one ages out and a fresher row becomes the new earliest (ordinary churn from actively completing/releasing several in-spec items, not a bug — keep polling, no escalation needed). Only escalate to your leader as a genuine EI-14615 livelock when `cooldownEarliestRowId` stays the SAME id across successive polls while its expiry keeps advancing — that combination is the one that cannot happen without something repeatedly re-claiming and re-releasing that exact row out from under you.'
         : breakdown
           ? (reviewable ? `${reviewable.advice} ` : '') +
-            'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). Do NOT re-author the claim spec. See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. Checkpoint, release, call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
+            'This is a FLOOR-GATED miss (WI-5561 / EI-18741523426513509), not a scope/spec mismatch — quote `reason: "all_matches_gated"` if you report it (do NOT quote spec_matches_nothing; that is a different, spec-authoring problem with the opposite remedy). Do NOT re-author the claim spec. See `excludedBreakdownSummary` for which floors (federation-detector / owner-action / claim-hold / observation-lane / plan-lane externalBlocker / …) are excluding your spec\'s matched rows — these floors are commonly TRANSIENT (e.g. an uncleared plan-lane gate that clears the moment a dependency plan-item closes) and often self-resolve within seconds to minutes with no intervention. ' + FLEET_MISS_WIND_DOWN_ADVICE + 'Report the breakdown to your fleet leader if it persists — a floor-gated pool needs a DIFFERENT lane/scope (or the gating condition itself resolved by whoever owns it), not a claim-spec re-author. ' +
             (claimablePayloadFilter
               ? 'You may still park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` in case a floor lifts (a claim-hold or owner-action gate clears) and end your turn — do not pass targetKind with wake:true; its wake is a HINT and the watch remains armed.'
               : 'Do NOT park an UNSCOPED work-item:claimable await — it would fire on every system-wide release for nothing (EI-15185).')
           : claimablePayloadFilter
-            ? 'Checkpoint any atomic progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', and call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }. To wake on payload candidates matching your claim spec (and the caller harness when present), rather than every system-wide release (EI-15185), park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn. This is a CANDIDATE HINT, not a full admission predicate: claim floors, rig availability, and lifecycle races may still reject a matching wake, so scheduler:get_next stays the authoritative claim; do not pass targetKind with wake:true, and a re-miss does not require re-registering the watch.'
-            : 'Checkpoint any atomic progress, release remaining lane resources ' + HELD_BLOCKED_ITEM_STAYS_HELD + ', call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }, and report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
+            ? FLEET_MISS_WIND_DOWN_ADVICE + 'To wake on payload candidates matching your claim spec (and the caller harness when present), rather than every system-wide release (EI-15185), park the standing watch `watch:create { pattern: "work-item:claimable", wake:true, once:false, payload_filter: <the `payloadFilter` returned in this response> }` and end your turn. This is a CANDIDATE HINT, not a full admission predicate: claim floors, rig availability, and lifecycle races may still reject a matching wake, so scheduler:get_next stays the authoritative claim; do not pass targetKind with wake:true, and a re-miss does not require re-registering the watch.'
+            : FLEET_MISS_WIND_DOWN_ADVICE + 'Report the scoped miss to the fleet leader. Do NOT park an UNSCOPED work-item:claimable await — your spec narrows only on fields the claimable event payload does not carry, so an unscoped await would fire (and waste a full wake) on every system-wide release (EI-15185). Resume only after a claim-spec revision or a leader/inbox wake.',
   };
 }
