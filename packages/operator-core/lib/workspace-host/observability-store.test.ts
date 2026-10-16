@@ -320,6 +320,17 @@ describe('workspace-host observability store', () => {
     await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).rejects.toThrow('ambiguous hosted customer bindings');
   });
 
+  it('retains an unknown original pool allocation for fail-closed launch while keeping teardown readable', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [{ id: 'host-1',
+      desired_spec: { hostId: 'host-1', data: { allocation: { dbGiB: 999, workspaceGiB: 999 } } },
+      hosted_customer_workspace_ids: ['customer-1'] }]);
+    H.rows.set('FROM harness_shared.workspace_host_operations origin', [{ id: 'original-pool-operation',
+      customer_workspace_id: 'customer-1', allocation: null }]);
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({
+      durableStorageAdmission: { operationId: 'original-pool-operation', customerWorkspaceId: 'customer-1', allocation: null },
+    });
+  });
+
   it('un-registers a resource whose LATEST row confirms it absent, even when an older row registered it', async () => {
     // WI-10005971: an AWS upgrade terminates the original instance on its own step row; the
     // provision row that registered it stays `applied`. The newest row per identity decides.

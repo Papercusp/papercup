@@ -44,7 +44,8 @@ import {
   type WorkspaceHostSpendSettlement,
 } from '@papercusp/deployment-driver';
 import { describeFetchError, isTransientNetworkError } from '../loopback-fetch';
-import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
+import { validateDurableStorageAllocationCore, workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
+import { readHostedLifecycleAdmission } from './hosted-lifecycle-store';
 import {
   resolveGcpWorkspaceHostManagedNetworkInventoryNames,
   type GcpWorkspaceHostInventoryRequest,
@@ -256,6 +257,7 @@ export async function assertProviderConnectionUsable(
 }
 
 export interface WorkspaceHostProvisioningStore {
+  readHostedAdmission?: typeof readHostedLifecycleAdmission;
   upsertHost: typeof upsertWorkspaceHost;
   beginOperation: typeof beginWorkspaceHostOperation;
   updateOperation: typeof updateWorkspaceHostOperation;
@@ -266,6 +268,7 @@ export interface WorkspaceHostProvisioningStore {
 }
 
 const DEFAULT_STORE: WorkspaceHostProvisioningStore = {
+  readHostedAdmission: readHostedLifecycleAdmission,
   upsertHost: upsertWorkspaceHost,
   beginOperation: beginWorkspaceHostOperation,
   updateOperation: updateWorkspaceHostOperation,
@@ -1085,12 +1088,31 @@ export async function runWorkspaceHostProvisioning(
     }
   }
 
+  let durableStorageAllocation: WorkspaceHostProviderContext['durableStorageAllocation'];
+  if (input.hostedCustomerWorkspaceId) {
+    if (!store.readHostedAdmission) throw new WorkspaceHostProvisioningRequestError(['hosted admission reader is required']);
+    const admission = await store.readHostedAdmission({ workspaceId, operationId,
+      customerWorkspaceId: input.hostedCustomerWorkspaceId, actorId: input.actorId ?? '',
+      request: { connectionId, name, desired: input.desired } });
+    if (!admission || admission.hostId !== hostId || admission.action !== 'provision' ||
+        admission.customerWorkspaceId !== input.hostedCustomerWorkspaceId || admission.providerTarget !== input.desired.target) {
+      throw new WorkspaceHostProvisioningRequestError(['hosted storage admission does not match provision']);
+    }
+    if (admission.placement) {
+      const allocation = admission.resourceAdmission?.storage?.capacity;
+      if (!allocation) throw new WorkspaceHostProvisioningRequestError(['pooled storage admission allocation is required']);
+      try { validateDurableStorageAllocationCore(allocation); }
+      catch (error) { throw new WorkspaceHostProvisioningRequestError([describeFetchError(error)]); }
+      durableStorageAllocation = { ...allocation };
+    }
+  }
   const context: WorkspaceHostProviderContext = {
     workspaceId,
     requestId: operationId,
     connection: input.connection,
     ...(input.hostedCustomerWorkspaceId ? { durableTenantIdentity:
       workspaceHostDurableTenantIdentity(workspaceId, input.hostedCustomerWorkspaceId) } : {}),
+    ...(durableStorageAllocation ? { durableStorageAllocation } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

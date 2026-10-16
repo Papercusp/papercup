@@ -54,7 +54,7 @@ import {
   type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
 import type { WorkspaceHostProvisionBootstrapReleaseOverride } from './provision-bootstrap';
-import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
+import { validateDurableStorageAllocationCore, workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   WorkspaceHostInitializationReplayInFlightError,
   createWorkspaceHostInitializationReplayStore,
@@ -991,12 +991,22 @@ export async function runWorkspaceHostLifecycle(
     }
   }
 
+  const storageAdmission = target.durableStorageAdmission;
+  if (storageAdmission) {
+    if (!target.hostedCustomerWorkspaceId || storageAdmission.customerWorkspaceId !== target.hostedCustomerWorkspaceId ||
+        !storageAdmission.allocation) {
+      throw new WorkspaceHostProvisioningRequestError(['pooled storage admission allocation or tenant is invalid']);
+    }
+    try { validateDurableStorageAllocationCore(storageAdmission.allocation); }
+    catch (error) { throw new WorkspaceHostProvisioningRequestError([message(error)]); }
+  }
   const context: WorkspaceHostProviderContext = {
     workspaceId,
     requestId: operationId,
     connection: { ...input.connection, scope: target.desired.scope },
     ...(target.hostedCustomerWorkspaceId ? { durableTenantIdentity:
       workspaceHostDurableTenantIdentity(workspaceId, target.hostedCustomerWorkspaceId) } : {}),
+    ...(storageAdmission?.allocation ? { durableStorageAllocation: { ...storageAdmission.allocation } } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),

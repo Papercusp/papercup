@@ -359,7 +359,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
   });
 
   it("recovers a capped live self turn from the current source before archive fallback", async () => {
-    resolveSearchFilters.mockResolvedValueOnce({
+    resolveSearchFilters.mockResolvedValue({
       filters: { owners: ['su-self'] },
       selfSession: {
         sourceKind: 'codex',
@@ -367,7 +367,9 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
         filePath: '/managed/sess-live-self.jsonl',
       },
     });
-    const fullText = 'live-source '.repeat(900);
+    const emissionContract = 'gradingEmissionContract: emit=true';
+    const prefix = 'live-source '.repeat(600);
+    const fullText = `${prefix}${'x'.repeat(8_000 - prefix.length)}${emissionContract}${' tail'.repeat(1_000)}`;
     readLiveSessionTurns.mockReset();
     readLiveSessionTurns.mockResolvedValue({
       sourceKind: 'codex',
@@ -384,24 +386,25 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
     readArchivedSessionTurns.mockReset();
     readArchivedSessionTurns.mockResolvedValue(null);
-    const indexed = fullText.slice(0, 8_000);
-    const dispatched = await dispatchProjectedTool(
+    const dispatch = (textOffset: number) => dispatchProjectedTool(
       projected,
       'sessions:read',
-      { session: 'self', from_idx: 3, to_idx: 3, text_limit: 4_000 },
+      { session: 'self', from_idx: 3, to_idx: 3, text_offset: textOffset, text_limit: 4_000 },
       {
         log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
-        workspaceId: 'default', runId: 'read-live-self-capped-test', role: 'operator',
+        workspaceId: 'default', runId: `read-live-self-capped-test-${textOffset}`, role: 'operator',
         gateBypass: { role: true, capability: true, quota: true },
         transport: 'mcp', requestedFormat: 'json', requestedStructured: true,
         tx: makeTx([{
           source_kind: 'codex', session_id: 'sess-live-self', turn_idx: 3,
           speaker: 'assistant', owner: 'su-self', ts: null,
-          text: indexed, text_full_chars: 8_000, text_offset: 0,
+          text: textOffset < 8_000 ? fullText.slice(textOffset, Math.min(textOffset + 4_000, 8_000)) : '',
+          text_full_chars: 8_000, text_offset: textOffset,
         }]),
       },
       {},
     );
+    const dispatched = await dispatch(4_000);
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     expect(readLiveSessionTurns).toHaveBeenCalledWith(
@@ -414,12 +417,23 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       ok: true,
       turn_count: 1,
       turns: [{
-        text: fullText.slice(0, 4_000),
+        text: fullText.slice(4_000, 8_000),
         text_full_chars: fullText.length,
         source_completeness: 'complete',
         text_truncated: true,
-        readMore: { args: { text_offset: 4_000, text_limit: 4_000 } },
+        text_offset: 4_000,
+        readMore: { args: { text_offset: 8_000, text_limit: 4_000 } },
       }],
+    });
+    const tail = await dispatch(8_000);
+    const tailTurn = (tail.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
+    expect(tailTurn).toMatchObject({
+      text: expect.stringContaining(emissionContract),
+      text_full_chars: fullText.length,
+      text_offset: 8_000,
+      text_truncated: true,
+      source_completeness: 'complete',
+      readMore: { args: { text_offset: 12_000, text_limit: 4_000 } },
     });
     expect(readArchivedSessionTurns).not.toHaveBeenCalled();
   });

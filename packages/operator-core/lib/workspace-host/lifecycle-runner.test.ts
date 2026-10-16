@@ -320,7 +320,9 @@ describe('runWorkspaceHostLifecycle', () => {
   it('renders the current controller bootstrap before a repair plan and passes it only through provider context', async () => {
     const { store } = storeHarness();
     const target = await store.readTarget('workspace-1', 'host-1');
-    vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1' });
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1',
+      durableStorageAdmission: { operationId: 'original-provision', customerWorkspaceId: 'customer-1',
+        allocation: { dbGiB: 12, workspaceGiB: 8 } } });
     const { provider, apply } = providerHarness(true);
     apply.mockResolvedValue({
       operationId: 'op-1',
@@ -341,9 +343,24 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(provider.plan).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'repair' }),
       expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired',
-        durableTenantIdentity: workspaceHostDurableTenantIdentity('workspace-1', 'customer-1') }),
+        durableTenantIdentity: workspaceHostDurableTenantIdentity('workspace-1', 'customer-1'),
+        durableStorageAllocation: { dbGiB: 12, workspaceGiB: 8 } }),
     );
   });
+
+  it.each([null, { dbGiB: 20, workspaceGiB: 0 }, { dbGiB: -1, workspaceGiB: 21 }])(
+    'refuses an unknown or unbootable original pool allocation before provider calls: %j', async allocation => {
+      const { store } = storeHarness();
+      const target = await store.readTarget('workspace-1', 'host-1');
+      vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1',
+        durableStorageAdmission: { operationId: 'original-provision', customerWorkspaceId: 'customer-1', allocation } });
+      const { provider } = providerHarness();
+      await expect(runWorkspaceHostLifecycle(input(provider, store))).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+      expect(provider.validateConnection).not.toHaveBeenCalled();
+      expect(provider.plan).not.toHaveBeenCalled();
+      expect(provider.apply).not.toHaveBeenCalled();
+    },
+  );
 
   it('refuses a reservation for a different customer before any provider call', async () => {
     const { store } = storeHarness();

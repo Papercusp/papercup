@@ -807,6 +807,13 @@ export interface StoredWorkspaceHostDestroyTarget extends Pick<
   observedState: string;
   /** Trusted customer binding used by the durable-volume tenant guard. */
   hostedCustomerWorkspaceId?: string;
+  /** Original immutable pool receipt, including an explicit missing allocation for old receipts.
+   * Kept readable for teardown; launch controllers validate it before provider calls. */
+  durableStorageAdmission?: {
+    operationId: string;
+    customerWorkspaceId: string | null;
+    allocation: { dbGiB: number; workspaceGiB: number } | null;
+  };
   recoverability?: {
     kind: 'snapshot' | 'backup' | 'none';
     label: string;
@@ -932,6 +939,36 @@ export async function readWorkspaceHostDestroyTarget(
         registeredAt: iso(row.updated_at) ?? new Date(0).toISOString(),
       });
     }
+    // Follow the registered disk back through earlier resource checkpoints, including
+    // a previous host after replacement. Later repair/start rows do not own its quota.
+    // The host's first pool admission also covers a never-assigned warm disk before
+    // its first tenant operation writes a resource checkpoint. Never read desired.data.
+    const admissions = host.hosted_customer_workspace_ids?.length ? await query<Array<{
+      id: string; customer_workspace_id: string | null;
+      allocation: { dbGiB: number; workspaceGiB: number } | null;
+    }>>`
+      SELECT origin.id, origin.admission_receipt->'result'->>'customerWorkspaceId' AS customer_workspace_id,
+             CASE WHEN origin.admission_receipt->'input'->'pool'->'scope' =
+                 ${JSON.stringify((host.desired_spec as WorkspaceHostDesiredSpec).scope ?? null)}::jsonb
+               THEN origin.admission_receipt->'result'->'resourceAdmission'->'storage'->'capacity'
+               ELSE NULL END AS allocation
+        FROM harness_shared.workspace_host_operations origin
+       WHERE origin.workspace_id = ${workspaceId}
+         AND origin.admission_receipt->'result'->'placement' IS NOT NULL
+         AND (origin.host_id = ${hostId} OR EXISTS (
+           SELECT 1 FROM harness_shared.workspace_host_resources disk
+           JOIN jsonb_to_recordset(${JSON.stringify(resources.filter(entry => entry.resource.kind === 'disk').map(({ resource }) => ({
+             target: resource.target, provider_id: resource.providerId, zone: resource.zone ?? null,
+             parent_provider_id: resource.parentProviderId ?? null,
+           })))}::jsonb) AS selected(target text, provider_id text, zone text, parent_provider_id text)
+             ON selected.target = disk.target AND selected.provider_id = disk.provider_id
+               AND selected.zone IS NOT DISTINCT FROM disk.zone
+               AND selected.parent_provider_id IS NOT DISTINCT FROM disk.parent_provider_id
+           WHERE disk.workspace_id = origin.workspace_id AND disk.operation_id = origin.id AND disk.kind = 'disk'))
+       ORDER BY origin.created_at, origin.id
+       LIMIT 1
+    ` : [];
+    const storageAdmission = admissions[0];
     return {
       id: host.id,
       name: host.name,
@@ -939,6 +976,8 @@ export async function readWorkspaceHostDestroyTarget(
       target: host.target,
       observedState: host.observed_state,
       ...(host.hosted_customer_workspace_ids?.[0] ? { hostedCustomerWorkspaceId: host.hosted_customer_workspace_ids[0] } : {}),
+      ...(storageAdmission ? { durableStorageAdmission: { operationId: storageAdmission.id,
+        customerWorkspaceId: storageAdmission.customer_workspace_id, allocation: storageAdmission.allocation } } : {}),
       recoverability: {
         kind: host.recoverability_kind,
         label: host.recoverability_label,
