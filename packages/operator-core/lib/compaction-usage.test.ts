@@ -889,6 +889,52 @@ describe('resolveCodexRolloutPathForRef (WI-42507 — row/home identity mismatch
     ).resolves.toBe(keyed);
   });
 
+  it('adopts one fresh parseable sibling home when the newest adv row points at a stale parked home', async () => {
+    const staleKeyed = namedRollout(OTHER_SID, 90 * 60_000);
+    const freshSibling = siblingRollout('active-row', 5_000);
+    const tokenEvent = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { last_token_usage: { total_tokens: 42_000 }, model_context_window: 258_400 },
+      },
+    });
+    writeFileSync(freshSibling, `${tokenEvent}\n`);
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-duplicate-rows', {
+        findCodexRollout: async () => staleKeyed,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => null,
+        findCodexRolloutForSessionKey: async () => freshSibling,
+      }),
+    ).resolves.toBe(freshSibling);
+  });
+
+  it('keeps the keyed home when two sibling homes are fresh and parseable', async () => {
+    const staleKeyed = namedRollout(OTHER_SID, 90 * 60_000);
+    const freshA = siblingRollout('active-a', 5_000);
+    const freshB = siblingRollout('active-b', 5_000);
+    const tokenEvent = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { last_token_usage: { total_tokens: 42_000 }, model_context_window: 258_400 },
+      },
+    });
+    writeFileSync(freshA, `${tokenEvent}\n`);
+    writeFileSync(freshB, `${tokenEvent}\n`);
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-ambiguous-rows', {
+        findCodexRollout: async () => staleKeyed,
+        codexSiblingSessionKeys: async () => [19993, 20001],
+        findCodexRolloutByUuid: async () => null,
+        findCodexRolloutForSessionKey: async (key) => key === 19993 ? freshA : freshB,
+      }),
+    ).resolves.toBe(staleKeyed);
+  });
+
   it('adopts a sibling rollout when the keyed home has NOTHING — but only a fresh one', async () => {
     const fresh = siblingRollout('fresh', 5_000);
     await expect(

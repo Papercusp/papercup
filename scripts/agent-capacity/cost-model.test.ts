@@ -8,6 +8,7 @@ import {
   dedicatedHosts,
   evaluate,
   hostMonthUsd,
+  onDemandMonthUsd,
   renderMarkdown,
   SCENARIOS,
   serverMonthUsd,
@@ -152,5 +153,40 @@ describe('cost-model rendering', () => {
     expect(md).toMatch(/\| H2 \|[^\n]*\| <=\d/);
     expect(md).toMatch(/\| M5 \|[^\n]*PENDING P-532 \|$/m);
     expect(md).not.toMatch(/\| M4 \|[^\n]*PENDING/);
+  });
+});
+
+describe('on-demand workspace month', () => {
+  const profile = { computeHourlyUsd: 0.06, retainedDiskGiB: 52, diskGiBMonthUsd: 0.1,
+    backupMonthUsd: 0.8, controlMonthUsd: 1, networkMonthUsd: 2, activeIpv4HourlyUsd: 0.005 };
+
+  it('retains disks, backups and control costs when the VM never runs', () => {
+    const idle = onDemandMonthUsd({ ...profile, activeHours: 0 });
+    expect(idle.computeUsd).toBe(0);
+    expect(idle.ipv4Usd).toBe(0);
+    expect(idle.retainedUsd).toBeCloseTo(7);
+    expect(idle.totalUsd).toBeCloseTo(9);
+  });
+
+  it.each([[60, 12.9], [120, 16.8], [240, 24.6]])('prices %s active hours without prorating retained storage', (activeHours, total) => {
+    const result = onDemandMonthUsd({ ...profile, activeHours });
+    expect(result.storageUsd).toBeCloseTo(5.2);
+    expect(result.totalUsd).toBeCloseTo(total);
+  });
+
+  it('accounts for growing storage independently of running hours', () => {
+    const before = onDemandMonthUsd({ ...profile, activeHours: 60 });
+    const after = onDemandMonthUsd({ ...profile, activeHours: 60, retainedDiskGiB: 104 });
+    expect(after.computeUsd).toBe(before.computeUsd);
+    expect(after.totalUsd - before.totalUsd).toBeCloseTo(5.2);
+  });
+
+  it('rejects missing, negative and non-finite inputs and hours beyond one month', () => {
+    for (const key of ['computeHourlyUsd', 'retainedDiskGiB', 'backupMonthUsd'] as const) {
+      for (const bad of [-1, NaN, Infinity, undefined]) {
+        expect(() => onDemandMonthUsd({ ...profile, activeHours: 60, [key]: bad } as Parameters<typeof onDemandMonthUsd>[0])).toThrow(/finite/);
+      }
+    }
+    expect(() => onDemandMonthUsd({ ...profile, activeHours: 731 })).toThrow(/month/);
   });
 });

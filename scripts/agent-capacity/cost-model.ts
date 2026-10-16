@@ -94,6 +94,36 @@ export function hostMonthUsd(machineType: string, spot: boolean): number {
   return hourlyPriceUsd(machineType, HOST_DISK_GB, { spot }) * HOURS_PER_MONTH;
 }
 
+/** P-544: a stopped workspace keeps its storage, but does not rent running compute. */
+export interface OnDemandMonthInput {
+  activeHours: number;
+  /** Compute only: exclude retained disks and other monthly charges from this rate. */
+  computeHourlyUsd: number;
+  retainedDiskGiB: number;
+  diskGiBMonthUsd: number;
+  backupMonthUsd: number;
+  controlMonthUsd: number;
+  networkMonthUsd: number;
+  /** An ephemeral address released on stop; reserved addresses belong in controlMonthUsd. */
+  activeIpv4HourlyUsd: number;
+}
+
+/** Provider-neutral arithmetic; a priced profile still needs independent capacity evidence. */
+export function onDemandMonthUsd(input: OnDemandMonthInput) {
+  for (const [key, value] of Object.entries(input)) {
+    if (!Number.isFinite(value) || value < 0) throw new Error(`${key} must be finite and non-negative`);
+  }
+  if (input.activeHours > HOURS_PER_MONTH) throw new Error('activeHours exceeds the modeled month');
+  const computeUsd = input.activeHours * input.computeHourlyUsd;
+  const ipv4Usd = input.activeHours * input.activeIpv4HourlyUsd;
+  const storageUsd = input.retainedDiskGiB * input.diskGiBMonthUsd;
+  const retainedUsd = storageUsd + input.backupMonthUsd + input.controlMonthUsd;
+  const totalUsd = computeUsd + ipv4Usd + retainedUsd + input.networkMonthUsd;
+  return { activeHours: input.activeHours, computeUsd, ipv4Usd, storageUsd,
+    backupUsd: input.backupMonthUsd, controlUsd: input.controlMonthUsd,
+    networkUsd: input.networkMonthUsd, retainedUsd, totalUsd };
+}
+
 export function capacity(id: string): Capacity {
   const c = CAPACITY.find((x) => x.id === id);
   if (!c) throw new Error(`unknown capacity row '${id}'`);

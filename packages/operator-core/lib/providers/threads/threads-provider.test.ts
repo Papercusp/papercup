@@ -30,6 +30,18 @@ async function drain(fetch: HostFetch, cursor: string | null = null) {
 const postArgs = { destination: '42', text: 'hello' };
 const replyArgs = { target: { platform: 'threads', replyToId: '202', rootPostOwnerId: '42' }, text: 'reply' };
 describe('Threads provider package (P-001)', () => {
+  it('derives the exact nested reply id and ownership from the stored document', async () => {
+    const world = fake();
+    await adapter.invoke({ source: 's', config, capability: 'social.reply', args: {
+      text: 'reply', target: { platform: 'threads', externalId: '202', payload: { id: '203', replyToId: '100', subjectOwnerId: '42' }, replyToId: 'attacker', rootPostOwnerId: 'attacker' },
+    } }, world);
+    expect(new URLSearchParams(world.calls[0].request.body).get('reply_to_id')).toBe('202');
+    const fetch = vi.fn(async () => jsonResponse(200, {}));
+    for (const payload of [{}, { subjectOwnerId: 'other' }, null]) await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: {
+      text: 'reply', target: { platform: 'threads', externalId: '202', payload, rootPostOwnerId: '42' },
+    } }, { fetch })).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('declares separate OAuth and only approved account-root post/reply capabilities', async () => {
     const d = await adapter.describe();
     expect(validateProviderDescriptor(d)).toEqual([]);

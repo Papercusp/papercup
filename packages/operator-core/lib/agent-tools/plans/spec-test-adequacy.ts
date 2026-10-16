@@ -1256,7 +1256,7 @@ function scorecardBindingEvidence(
         rating.evidence,
       ).replace(
         ratingRerunProbeText(criterion as AdequacyCriterion, rerunRecipe),
-        ratingRerunProbeReference(criterion as AdequacyCriterion),
+        ratingRerunProbeReference(criterion as AdequacyCriterion, rerunRecipe),
       ),
     }])) as typeof ratings,
     table: references.length > 0
@@ -2356,8 +2356,32 @@ function ratingRerunProbeText(
   );
 }
 
-function ratingRerunProbeReference(criterion: AdequacyCriterion): string {
-  return `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`;
+function ratingRerunProbeReference(
+  criterion: AdequacyCriterion,
+  rerunRecipe: SpecTestAdequacyRerunRecipe,
+): string {
+  // A shared recipe alone is not an executable criterion-local probe. Reuse the
+  // judge-readable evidence instrument with the SAME immutable row selectors,
+  // rather than repeating the large replay fingerprint payload in every rating.
+  const { harness, slug, specIds, bindingIds, evidenceRefs } = rerunRecipe.args;
+  const args = {
+    ...(harness !== undefined ? { harness } : {}),
+    slug,
+    specIds,
+    ...(bindingIds !== undefined
+      ? { bindingIds, ...(bindingIds.length > 0 ? { includeRetracted: true } : {}) }
+      : { evidenceRefs }),
+    detail: 'full',
+    limit: 1_000,
+  };
+  return (
+    `Evidence probe: plans:get-spec-evidence ${JSON.stringify(args)}. ` +
+    `Inspect evidence[] at specRevision=${rerunRecipe.selection.specRevision}, ` +
+    `specFingerprint=${JSON.stringify(rerunRecipe.selection.specFingerprint)}; ` +
+    'compare details, fingerprints, currentness, testRunExecution and testRunProvenance with this criterion\'s claim. ' +
+    'Require bounded.truncatedByLimit=false before treating the read as complete. ' +
+    `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`
+  );
 }
 
 function appendRatingRerunProbes(

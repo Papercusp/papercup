@@ -965,17 +965,27 @@ export async function removePrivilegedRetentionEntry(entry: RetentionEntry, time
   const root = await lstat(entry.root);
   if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('unsafe privileged retention root');
   const worker = `
-import json, os, shutil, stat, sys
+import json, os, shutil, stat, sys, time
+started = time.monotonic()
+def progress(phase, **detail):
+    # stderr remains separate from the build-removal JSON receipt. Bound scan
+    # samples below so a stalled worker cannot flood its enrolled task log.
+    print('RETENTION_WORKER ' + json.dumps(dict(phase=phase,
+          elapsedMs=round((time.monotonic() - started) * 1000), **detail)), file=sys.stderr, flush=True)
+progress('started')
 e = json.load(sys.stdin)
+progress('input-read')
 fd = os.open(e['root'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 try:
     root = os.fstat(fd)
     if (root.st_dev, root.st_ino) != (e['rootDev'], e['rootIno']):
         raise RuntimeError('retention root identity changed')
+    progress('root-verified')
     name = os.path.basename(e['path'])
     s = os.stat(name, dir_fd=fd, follow_symlinks=False)
     if (s.st_dev, s.st_ino) != (e['dev'], e['ino']) or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
         raise RuntimeError('retention candidate identity changed')
+    progress('candidate-verified')
     if e.get('buildOnly'):
         parent = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
         try:
@@ -1032,14 +1042,21 @@ try:
             # Recheck the source after tag reads and inside the native effect.
             # This single walk also accounts only selected build bytes, so
             # nested targets never double-subtract from the source/root cap.
-            newest, total = 0, 0
+            progress('source-scan-started', targets=len(selected))
+            newest, total, nodes, scan_samples = 0, 0, 0, 0
+            next_sample = time.monotonic() + 1
             def account(path, s):
-                global newest, total
+                global newest, total, nodes, scan_samples, next_sample
                 if s.st_dev != e['dev'] or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
                     raise RuntimeError('unsafe source descendant')
                 newest = max(newest, s.st_mtime_ns / 1000000, s.st_ctime_ns / 1000000)
                 size = s.st_blocks * 512
                 total += size
+                nodes += 1
+                if nodes % 1024 == 0 and scan_samples < 16 and time.monotonic() >= next_sample:
+                    progress('source-scan', nodes=nodes)
+                    scan_samples += 1
+                    next_sample = time.monotonic() + 1
                 for target in selected:
                     if path == target['path'] or path.startswith(target['path'] + '/'):
                         target['bytes'] += size
@@ -1058,10 +1075,12 @@ try:
             current = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if (current.st_dev, current.st_ino) != (e['dev'], e['ino']):
                 raise RuntimeError('retention source identity changed')
+            progress('source-scan-verified', nodes=nodes)
             # Validate the whole batch before the first effect. Reopen each
             # parent from the original source descriptor immediately at unlink.
             if not shutil.rmtree.avoids_symlink_attacks:
                 raise RuntimeError('fd-safe retention removal unavailable')
+            progress('effect-started', targets=len(selected), dryRun=e['dryRun'])
             for target in selected:
                 pfd, leaf = open_parent(target['path'][len(e['path']) + 1:])
                 try:
@@ -1072,15 +1091,20 @@ try:
                         shutil.rmtree(leaf, dir_fd=pfd)
                 finally:
                     os.close(pfd)
+            progress('effect-completed', targets=len(selected), dryRun=e['dryRun'])
             print(json.dumps({'removed': [{'path': t['path'], 'bytes': t['bytes']} for t in selected]}))
         finally:
             os.close(parent)
     elif stat.S_ISDIR(s.st_mode):
         if not shutil.rmtree.avoids_symlink_attacks:
             raise RuntimeError('fd-safe retention removal unavailable')
+        progress('effect-started')
         shutil.rmtree(name, dir_fd=fd)
+        progress('effect-completed')
     else:
+        progress('effect-started')
         os.unlink(name, dir_fd=fd)
+        progress('effect-completed')
 finally:
     os.close(fd)
 `;

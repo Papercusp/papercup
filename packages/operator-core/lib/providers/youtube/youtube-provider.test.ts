@@ -30,6 +30,22 @@ async function drain(fetch: HostFetch, cursor: string | null = null) {
 }
 const replyArgs = { target: { platform: 'youtube', parentCommentId: 'c1', videoId: 'video', canReply: true }, text: 'hello' };
 describe('YouTube provider package (P-001)', () => {
+  it('derives top-level comment coordinates from the stored document inside the package', async () => {
+    for (const [externalId, payload] of [['c1', {}], ['nested', { replyToId: 'c1' }]] as const) {
+      const world = fake();
+      await adapter.invoke({ source: 's', config, capability: 'social.reply', args: {
+        text: 'hello', target: { platform: 'youtube', externalId, payload: { ...payload, videoId: 'video', canReply: true }, parentCommentId: 'attacker' },
+      } }, world);
+      expect(JSON.parse(world.calls[0].request.body!)).toEqual({ snippet: { parentId: 'c1', textOriginal: 'hello' } });
+    }
+    const fetch = vi.fn(async () => jsonResponse(200, {}));
+    for (const target of [
+      { platform: 'youtube', externalId: 'nested', payload: { replyToId: 'c1', canReply: false }, canReply: true },
+      { platform: 'youtube', externalId: '', payload: { videoId: 'video', threadId: 'thread' } },
+      { platform: 'youtube', externalId: 'c1', payload: null, parentCommentId: 'c1' },
+    ]) await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'hello', target } }, { fetch })).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('declares only the implemented reply write and reuses Google account consent', async () => {
     const d = await adapter.describe(); expect(validateProviderDescriptor(d)).toEqual([]);
     expect(d.capabilities).toEqual(['social.reply']);

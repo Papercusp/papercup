@@ -685,7 +685,8 @@ function hostedUnreachableState(workspace, now) {
 }
 
 function defaultCommandAvailable(command) {
-  const probe = nodeSpawnSync(command, ["--version"], {
+  // OpenSSH uses -V; --version exits 255 even when ssh is installed.
+  const probe = nodeSpawnSync(command, [command === "ssh" ? "-V" : "--version"], {
     stdio: "ignore",
     shell: false,
   });

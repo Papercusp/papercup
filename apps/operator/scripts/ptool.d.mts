@@ -494,11 +494,12 @@ export function canBypassMissingServingGeneration(toolName: any, inputKind: any,
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName: any, error: any): string;
-export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, sleep, }?: {
+export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, sleep, schemaNeutral, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     timeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
+    schemaNeutral?: boolean | undefined;
 }): Promise<any>;
 /**
  * The MCP SDK uses these error codes for a request whose stream closed or whose
@@ -542,13 +543,14 @@ export function formatOperatorConnectFailure(operatorUrl: any, error: any): stri
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
-export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, onStaleToolContract, }?: {
+export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, replayProof, schemaNeutral, onStaleToolContract, }?: {
     reconnect?: () => Promise<any>;
     maxAttempts?: number;
     timeoutMs?: number;
     replayProof?: unknown;
+    schemaNeutral?: boolean;
     onStaleToolContract?: (context: {
         client: any;
         params: any;

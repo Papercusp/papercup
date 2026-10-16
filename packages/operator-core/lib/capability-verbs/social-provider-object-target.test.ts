@@ -7,7 +7,7 @@ vi.mock('../external-triggers/social/platform-registry', async (original) => {
   return { ...real, assertSocialPlatformUsable: (id: string) => {
     // Only the account prerequisite is simulated. The production resolver and canonical
     // document are real; no outbound function or provider is invoked by this suite.
-    if (control.allowPrerequisites && ['facebook-pages', 'x-twitter'].includes(id)) return real.getSocialPlatform(id)!;
+    if (control.allowPrerequisites && ['facebook-pages', 'x-twitter', 'youtube', 'instagram', 'threads'].includes(id)) return real.getSocialPlatform(id)!;
     return real.assertSocialPlatformUsable(id);
   } };
 });
@@ -19,6 +19,16 @@ function doc(source: string, externalId: string): CanonicalDocument {
 }
 
 describe('installed provider object reply coordinates (P-023/P-027)', () => {
+  it.each(['youtube', 'instagram', 'threads'])('%s leaves native reply mapping to the installed package', (platform) => {
+    control.allowPrerequisites = true;
+    try {
+      const stored = doc(platform, 'stored-id');
+      const result = resolveSocialReplyCoordinates(stored);
+      expect(result.target).toEqual({ platform, externalId: 'stored-id', payload: stored.payload });
+      expect(result.ref).toEqual({ platform, externalId: 'stored-id' });
+      expect(result.parentVisibility).toBe('public');
+    } finally { control.allowPrerequisites = false; }
+  });
   it.each([['facebook-pages', '123_456'], ['x-twitter', '9007199254740993']])('%s derives its target from the stored external id after prerequisites clear', (platform, id) => {
     control.allowPrerequisites = true;
     try {

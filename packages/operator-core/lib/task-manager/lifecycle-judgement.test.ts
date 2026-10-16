@@ -560,7 +560,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).not.toContain('When live.unaccountedGroups is empty, that same-kind control prerequisite is structurally unavailable');
     expect(brief).toContain('independently walk the complete, readable Papercusp slice subtree under /sys/fs/cgroup by exact scopeUnit');
     expect(brief).toContain('a populated peer pc-*.scope elsewhere in that subtree');
-    expect(brief).toContain('Never substitute stored cgroupPath, /proc absence, a detector reason, or empty filtered output');
+    expect(brief).toContain('Never use stored cgroupPath, /proc absence, detector reason, or empty filtered output');
     expect(brief).toContain('inspect only live.exactScopeUnitMatches entries with kind "unaccounted"');
     expect(brief).toContain('When an addressable control exists, require a known-present same-kind unaccounted control from the census, read it twice');
     expect(brief).toContain('live.ownedTruncated=false');
@@ -574,7 +574,7 @@ describe('evaluateLifecycleCandidates', () => {
     expect(brief).toContain('pids.current counts kernel tasks (including threads), not task-manager process rows');
     expect(brief).toContain('HTTP 502 is not ECONNREFUSED (curl exit 7)');
     expect(brief).toContain('readlink /proc/self/ns/pid, the visible numeric /proc PID count, and $$ in that same call');
-    expect(brief).toContain('read it twice, and confirm tasks[].ageSec advances by elapsed wall time');
+    expect(brief).toContain('read it twice with processes:list { scopeUnit, live:true, includeEnded:true }, and confirm tasks[].ageSec advances by elapsed wall time');
     expect(brief).toContain('confined:false does not prove abandonment');
   });
 

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -274,6 +274,41 @@ describe("personal computer connections", () => {
   ])("rejects mixed or silently ignored personal connection options %j", async (...argv) => {
     await expect(runPsuConnectionFrontController(argv, { home: tempHome(), interactive: true }))
       .rejects.toThrow();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("native SSH prerequisite detection", () => {
+  it.each([0, 1])("checks OpenSSH's supported version flag and respects exit status %s", async (status) => {
+    const home = tempHome();
+    const bin = join(home, "bin");
+    mkdirSync(bin);
+    // Match OpenSSH: an unsupported version argument must fail even though
+    // the executable is on PATH. Do not inject commandAvailable here.
+    writeFileSync(join(bin, "ssh"), `#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = -V ] || exit 255\nexit ${status}\n`, { mode: 0o700 });
+    const storePath = savedStore(home, [normalizeSshProfile({ name: "desktop", host: "private-computer" })]);
+    const runCommand = vi.fn(async (_command: string, args: string[]) => ({
+      code: args.includes("check") ? 1 : 0, signal: null,
+    }));
+    const runInteractive = vi.fn(async () => ({ code: 0, signal: null }));
+    vi.stubEnv("PATH", bin);
+    try {
+      const result = runPsuConnectionFrontController(["--connect=desktop"], {
+        home, storePath, interactive: false, notice: vi.fn(),
+        runCommand, runInteractive,
+        async reservePort() { return { port: 45124, async release() {} }; },
+        async probeOperator() {},
+      });
+      if (status === 0) {
+        await expect(result).resolves.toMatchObject({ handled: true, exitCode: 0 });
+        expect(runInteractive).toHaveBeenCalledOnce();
+      } else {
+        await expect(result).rejects.toThrow("requires 'ssh' on the local PATH");
+        expect(runCommand).not.toHaveBeenCalled();
+        expect(runInteractive).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

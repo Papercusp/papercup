@@ -111,45 +111,88 @@ export function resolvePtoolOperatorBase(env = process.env) {
   const base = resolvedBase
     ? resolveOperatorBase({ operatorUrl: resolvedBase }, env)
     : resolveOperatorBase({}, resolutionEnv, { preferSelfPort: true });
-  return routeStagingOperatorThroughProxy(base, env);
+  return routeOperatorThroughProxy(base, env);
 }
 
 /**
- * Keep ptool on the selected staging runtime while avoiding the :3170 listener
- * that is restarted by staging sync. The configured :9171 proxy is dedicated
- * to :3170, so this is a same-vintage route change, not a fallback to green.
- * Honor the proxy opt-outs and leave every other explicit endpoint untouched.
+ * Keep ptool on the selected runtime while avoiding listeners that are
+ * restarted by staging sync or background-host recovery. The configured
+ * same-vintage proxies front the exact selected runtime, so this is a route
+ * change within the same build, not a fallback to green. Honor the proxy
+ * opt-outs and leave every other explicit endpoint untouched.
  * @param {string} operatorUrl
  * @param {EnvironmentMap} env
  */
-function routeStagingOperatorThroughProxy(operatorUrl, env) {
-  if (env.PAPERCUSP_MCP_PROXY === '0' || env.PAPERCUSP_MCP_STAGING_PROXY === '0') return operatorUrl;
+function routeOperatorThroughProxy(operatorUrl, env) {
+  if (env.PAPERCUSP_MCP_PROXY === '0') return operatorUrl;
+  const stagingProxyEnabled = env.PAPERCUSP_MCP_STAGING_PROXY !== '0';
   const rawProxyPort = typeof env.PAPERCUSP_MCP_STAGING_PROXY_PORT === 'string'
     ? env.PAPERCUSP_MCP_STAGING_PROXY_PORT.trim()
     : '';
   const proxyPort = Number(rawProxyPort);
-  if (
-    !/^[0-9]+$/.test(rawProxyPort) ||
-    !Number.isInteger(proxyPort) ||
-    proxyPort < 1 ||
-    proxyPort > 65535 ||
-    String(proxyPort) !== rawProxyPort ||
-    proxyPort === 3170
-  ) return operatorUrl;
+  const validStagingProxy =
+    stagingProxyEnabled &&
+    /^[0-9]+$/.test(rawProxyPort) &&
+    Number.isInteger(proxyPort) &&
+    proxyPort > 0 &&
+    proxyPort <= 65535 &&
+    String(proxyPort) === rawProxyPort &&
+    proxyPort !== 3170;
 
-  try {
-    const url = new URL(operatorUrl);
-    if (
-      url.protocol !== 'http:' ||
-      !['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase()) ||
-      url.port !== '3170'
-    ) return operatorUrl;
-    url.hostname = '127.0.0.1';
-    url.port = String(proxyPort);
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return operatorUrl;
+  if (validStagingProxy) {
+    try {
+      const url = new URL(operatorUrl);
+      if (
+        url.protocol === 'http:' &&
+        ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase()) &&
+        url.port === '3170'
+      ) {
+        url.hostname = '127.0.0.1';
+        url.port = String(proxyPort);
+        return url.toString().replace(/\/$/, '');
+      }
+    } catch {
+      // Leave malformed URLs for the connection layer's normal diagnostic.
+    }
   }
+
+  // EI-26138586847950442: the request-only operator directs mutating calls to
+  // the background host at :3271. When the host is restarting, a direct ptool
+  // pin spends its entire 20s local retry budget waiting for a listener that
+  // the paired :9271 same-vintage proxy can hold across the restart. Derive
+  // that proxy only when its configured target is exactly :3271; never route
+  // current-build traffic through the live :9071 proxy.
+  const backgroundProxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+    ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+    : '';
+  if (backgroundProxyBase && String(env.PAPERCUSP_MCP_PROXY_TARGET_PORT || '').trim() === '3271') {
+    try {
+      const url = new URL(operatorUrl);
+      const parsedProxy = new URL(backgroundProxyBase);
+      const localHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase());
+      const proxyHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsedProxy.hostname.toLowerCase());
+      const proxyPortNumber = Number(parsedProxy.port);
+      const validProxy =
+        parsedProxy.protocol === 'http:' &&
+        proxyHost &&
+        !parsedProxy.username &&
+        !parsedProxy.password &&
+        parsedProxy.pathname === '/' &&
+        !parsedProxy.search &&
+        !parsedProxy.hash &&
+        parsedProxy.port.length > 0 &&
+        Number.isInteger(proxyPortNumber) &&
+        proxyPortNumber > 0 &&
+        proxyPortNumber <= 65535 &&
+        proxyPortNumber !== 3271;
+      if (url.protocol === 'http:' && localHost && url.port === '3271' && validProxy) {
+        return parsedProxy.origin;
+      }
+    } catch {
+      // An invalid proxy base cannot safely replace the explicit operator pin.
+    }
+  }
+  return operatorUrl;
 }
 
 /**
@@ -166,7 +209,7 @@ function routeStagingOperatorThroughProxy(operatorUrl, env) {
  */
 export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = null) {
   const explicit = typeof explicitUrl === 'string' ? explicitUrl.trim() : '';
-  if (explicit) return [routeStagingOperatorThroughProxy(explicit, env)];
+  if (explicit) return [routeOperatorThroughProxy(explicit, env)];
 
   const primary = resolvePtoolOperatorBase(env);
   const selfPort = typeof env.PAPERCUSP_HONO_PORT === 'string'
@@ -241,7 +284,7 @@ export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
   let pinnedUrl = '';
   try {
     pinnedUrl = typeof args.url === 'string' && args.url.trim()
-      ? routeStagingOperatorThroughProxy(args.url.trim(), env)
+      ? routeOperatorThroughProxy(args.url.trim(), env)
       : resolvePtoolOperatorBase(env);
     if (ptoolConnectAttemptTimeoutMs(pinnedUrl, env) < PTOOL_CONNECT_TIMEOUT_MS) {
       return {
@@ -2608,6 +2651,7 @@ export async function callToolWithPressureRetry(
     retryDelayMs = 1_000,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    schemaNeutral = false,
   } = {},
 ) {
   let lastError;
@@ -2622,16 +2666,19 @@ export async function callToolWithPressureRetry(
         !Array.isArray(params.arguments) &&
         Object.hasOwn(params.arguments, 'projection'),
       );
-      if (projected) {
+      if (projected || schemaNeutral) {
         // EI-20335329169958057: Client.callTool() performs a SECOND semantic
         // validation using the outputSchema cached from tools/list. A
         // dispatch projection intentionally removes structuredContent (the
         // complete, unprojected payload), so that validator throws
         // "has an output schema but did not return structured content" after
-        // the server already returned a valid reduced result. Use the SDK's
-        // ordinary request primitive with the protocol CallToolResult schema:
-        // wire-shape validation remains, while the incompatible cached
-        // full-output-schema check is correctly skipped for this partial view.
+        // the server already returned a valid reduced result. EI-26145438867981679
+        // has the same shape when tools/list is a legacy catalog without a
+        // serving-generation marker: the cached outputSchema is known to the
+        // SDK, but the catalog-bypass request cannot negotiate structuredContent.
+        // Use the SDK's ordinary request primitive with the protocol
+        // CallToolResult schema: wire-shape validation remains, while the
+        // incompatible cached full-output-schema check is skipped.
         const { CallToolResultSchema } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js');
         return await client.request(
           { method: 'tools/call', params },
@@ -2782,7 +2829,7 @@ async function closeClientQuietly(client) {
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
@@ -2792,6 +2839,7 @@ export async function callToolWithReplayRecovery(
     maxAttempts = PTOOL_POST_CONNECT_RETRIES,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
     replayProof,
+    schemaNeutral = false,
     onStaleToolContract,
   } = {},
 ) {
@@ -2809,7 +2857,7 @@ export async function callToolWithReplayRecovery(
   let preConnectRetriesUsed = 0;
   while (true) {
     try {
-      const result = await callToolWithPressureRetry(activeClient, activeParams, { timeoutMs });
+      const result = await callToolWithPressureRetry(activeClient, activeParams, { timeoutMs, schemaNeutral });
       return { client: activeClient, result };
     } catch (error) {
       if (
@@ -2927,6 +2975,7 @@ export async function dispatchScriptedToolWithoutCatalog(
     {
       timeoutMs: timeoutMs ?? timeoutForTool(toolName, callArgs),
       reconnect,
+      schemaNeutral: true,
     },
   );
 }

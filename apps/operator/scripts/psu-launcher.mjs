@@ -16374,7 +16374,7 @@ export function codexForkMcpUrlForOwner(codexHome, ownerId) {
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string}) => void, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -16398,16 +16398,30 @@ export async function ensureCodexHomeViaOperator(
     onFailure,
     token = null,
     timeoutMs = 10_000,
+    now = Date.now,
   } = {},
 ) {
   let stage = 'scope';
   let status = null;
+  const attemptId = randomUUID();
+  const startedAtMs = now();
+  /** @type {{kind: string, protocol: string, port: number} | null} */
+  let requestTarget = null;
+  /** @type {Record<string, number>} */
+  const phaseTimingsMs = {};
+  const traceStep = createStartupStepRunner({ now, record: (row) => {
+    if (row.phase === 'finished' || row.phase === 'failed')
+      phaseTimingsMs[row.step] = row.elapsedMs;
+  } });
   // Preserve the null-return contract without losing the cause at the PTY
-  // boundary. Never include response bodies, URLs, credentials or error text.
+  // boundary. Extend the existing host-event evidence, not a second log.
+  // Never include response bodies, URLs, hostnames, credentials or error text.
   const failed = (reason, err = null) => {
     const errorName = ['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'].includes(err?.name)
       ? err.name : undefined;
-    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}) }); } catch { /* diagnostics cannot block recovery */ }
+    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}),
+      diagnostic: { attemptId, startedAtMs, elapsedMs: Math.max(0, now() - startedAtMs),
+        target: requestTarget, phaseTimingsMs: { ...phaseTimingsMs } } }); } catch { /* diagnostics cannot block recovery */ }
     return null;
   };
   if (!owner || !codexHome || advSessionId == null) return failed('missing-scope');
@@ -16423,22 +16437,33 @@ export async function ensureCodexHomeViaOperator(
   if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return failed('foreign-home');
   try {
     stage = 'operator-route';
-    const resolvedOperatorUrl =
+    const resolvedOperatorUrl = await traceStep('operator-route', () =>
       operatorUrl ??
-      (await resolveOmpOperatorUrl(undefined, {
+      resolveOmpOperatorUrl(undefined, {
         env: env ?? process.env,
         probe,
         onRecovery,
       }));
+    try {
+      const target = new URL(resolvedOperatorUrl);
+      if (target.protocol === 'http:' || target.protocol === 'https:')
+        requestTarget = {
+          kind: target.hostname === 'localhost' || /^127\./.test(target.hostname) || target.hostname === '[::1]'
+            ? 'loopback' : 'remote',
+          protocol: target.protocol.slice(0, -1),
+          port: Number(target.port || (target.protocol === 'https:' ? 443 : 80)),
+        };
+    } catch { /* invalid targets are classified by the actual request below */ }
     const tok = token ?? readToken();
     stage = 'request';
-    const res = await fetchImpl(
+    const res = await traceStep('request', () => fetchImpl(
       resolvedOperatorUrl + "/api/adv/sessions/ensure-codex-home",
       {
         method: "POST",
         signal: AbortSignal.timeout(timeoutMs),
         headers: {
           "content-type": "application/json",
+          "x-papercusp-repair-attempt": attemptId,
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
         body: JSON.stringify({
@@ -16449,11 +16474,11 @@ export async function ensureCodexHomeViaOperator(
           ...(typeof headless === "boolean" ? { headless } : {}),
         }),
       },
-    );
+    ));
     status = Number.isInteger(res.status) ? res.status : null;
     stage = 'response';
     if (res.ok === false) return failed('http-error');
-    const r = await res.json().catch(() => null);
+    const r = await traceStep('response', () => res.json().catch(() => null));
     if (!r || typeof r !== 'object') return failed('invalid-response');
     if (r.ok !== true) return failed('operator-refused');
     // The canonical writer refreshes config.toml and may remove the launch's
@@ -16461,9 +16486,10 @@ export async function ensureCodexHomeViaOperator(
     // Default/unspecified launches keep their existing provider semantics.
     if (routeMode === "auto" || routeMode === "pin" || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined) {
       stage = 'home-route';
-      if (routeMode === "pin" && !accountId)
-        throw new Error("Codex carry cannot restore a pin without an account id");
-      applyCodexGatewayRoute(codexHome, {
+      traceStep('home-route', () => {
+        if (routeMode === "pin" && !accountId)
+          throw new Error("Codex carry cannot restore a pin without an account id");
+        applyCodexGatewayRoute(codexHome, {
         mode: routeMode,
         id: accountId,
         ownerId: owner,
@@ -16471,6 +16497,7 @@ export async function ensureCodexHomeViaOperator(
         ...(env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined
           ? { gateway: snapshotScopedInferenceGateway(JSON.parse(env[SCOPED_INFERENCE_GATEWAY_ENV])) }
           : {}),
+        });
       });
     }
     if (r.repaired) {

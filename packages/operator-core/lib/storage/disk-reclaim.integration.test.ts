@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod } from 'nod
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFile, execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { once } from 'node:events';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
@@ -157,6 +157,36 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it('reports worker phases before effects while preserving the build JSON receipt and identity refusal', async () => {
+    const { root } = await setup();
+    const source = join(root, 'source');
+    await mkdir(source); await mkdir(join(source, 'node_modules'));
+    await writeFile(join(source, 'node_modules', 'payload'), 'rebuildable');
+    const census = await inspectRetentionTrees(root, { retainAfterMs: Number.POSITIVE_INFINITY,
+      includeRecent: true, collectBuildDirs: true });
+    expect(census.error).toBeUndefined();
+    const entry = { ...census.entries.find(candidate => candidate.path === source)!, root, classId: 'fixture', buildOnly: true };
+    expect(entry.buildDirs).toEqual([expect.objectContaining({ path: join(source, 'node_modules') })]);
+    const phases: string[] = [];
+    const execute: typeof nativeRetentionCommand = async (_repo, _command, args, opts) => {
+      const result = spawnSync(args[1]!, args.slice(2), { input: opts?.stdin, timeout: 10_000, encoding: 'utf8' });
+      expect(result.error).toBeUndefined();
+      phases.push(...result.stderr.trim().split('\n').filter(line => line.startsWith('RETENTION_WORKER '))
+        .map(line => JSON.parse(line.slice('RETENTION_WORKER '.length)).phase));
+      return { ok: result.status === 0, detail: { output: result.stdout, stderr: result.stderr } };
+    };
+    const result = await removePrivilegedRetentionEntry(entry, 10_000, execute, undefined, true);
+    expect(result).toMatchObject({ removed: [{ path: join(source, 'node_modules'), bytes: expect.any(Number) }] });
+    expect(phases).toEqual(['started', 'input-read', 'root-verified', 'candidate-verified',
+      'source-scan-started', 'source-scan-verified', 'effect-started', 'effect-completed']);
+    expect(await readFile(join(source, 'node_modules', 'payload'), 'utf8')).toBe('rebuildable');
+    phases.length = 0;
+    await expect(removePrivilegedRetentionEntry({ ...entry, ino: entry.ino + 1 }, 10_000, execute))
+      .rejects.toThrow('retention candidate identity changed');
+    expect(phases).toEqual(['started', 'input-read', 'root-verified']);
+    expect(await readFile(join(source, 'node_modules', 'payload'), 'utf8')).toBe('rebuildable');
+  });
+
   it('waits for first mutex admission within the whole run deadline', async () => {
     const { root, options } = await setup();
     const path = join(root, 'old');

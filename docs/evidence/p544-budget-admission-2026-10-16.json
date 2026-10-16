@@ -74,12 +74,12 @@
     "provisioning": "STANDARD",
     "maximumHours": 2,
     "bootDiskGb": 32,
-    "dataDiskGb": 8,
-    "overflowDiskGb": 8,
+    "dataDiskGb": 10,
+    "overflowDiskGb": 10,
     "allDisks": "pd-balanced, auto-delete",
     "allInReservedUsd": 1,
     "remainingProgrammeHeadroomAfterReservationUsd": 39,
-    "conditions": ["Refresh provider census immediately before create.", "Use maintained gcp-rails admission plus provider-enforced DELETE deadline.", "Verify teardown census, including orphan disks and snapshots.", "No minimum-resource, capacity, customer-price or shipped claim follows from this admission estimate."]
+    "conditions": ["Extra disks use the maintained 10 GiB minimum; the first 8 GiB request was rejected before provider creation.", "Refresh provider census immediately before create.", "Use maintained gcp-rails admission plus provider-enforced DELETE deadline.", "Verify teardown census, including orphan disks and snapshots.", "No minimum-resource, capacity, customer-price or shipped claim follows from this admission estimate."]
   },
   "limitations": [
     "No BigQuery billing export exists in the dedicated project; exact actual spend and credit balance remain unknown.",

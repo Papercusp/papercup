@@ -211,6 +211,8 @@ export interface EstimateContextDeps {
   findCodexRolloutByUuid?: typeof findCodexRolloutPathByUuid;
   /** WI-42507 seam: the owner's OTHER codex adv-session row ids, newest first. */
   codexSiblingSessionKeys?: (ownerId: string, exceptKey: number | string) => Promise<number[]>;
+  /** EI-26134257119546348 seam: newest rollout in one sibling adv-session home. */
+  findCodexRolloutForSessionKey?: (sessionKey: number) => Promise<string | null>;
   /** WI-42507 seam: mtime of a resolved path (null ⇒ vanished / unreadable). */
   statMtimeMs?: (p: string) => number | null;
 }
@@ -245,6 +247,11 @@ export function codexRolloutSessionId(rolloutPath: string): string | null {
  *  still bounds the miss path to a handful of home walks — a blanket scan is not
  *  an option (1302 codex homes existed on this box at the time). */
 const CODEX_SIBLING_HOME_LIMIT = 6;
+/** A fresh rollout in exactly one sibling home is evidence of the live Codex row
+ *  when the newest adv row points at an idle/stale home. Keep this bounded to the
+ *  same grace used for a newly-written successor; older files are indistinguishable
+ *  from parked predecessors and must not be adopted. */
+const CODEX_ACTIVE_ROLLOUT_FRESH_MS = 10 * 60_000;
 
 /** The owner's OTHER codex adv-session row ids, newest first. */
 async function codexSiblingSessionKeysForOwner(ownerId: string, exceptKey: number | string): Promise<number[]> {
@@ -345,6 +352,39 @@ export async function resolveCodexRolloutPathForRef(
     }
     // (b): strictly fresher only. A tie or an older file keeps the keyed answer.
     if (candidateMtime > keyedMtime) return candidate;
+  }
+
+  // EI-26134257119546348: an owner can accumulate multiple non-ended Codex rows
+  // without a native-session-id match between them. `resolveSessionRef` chooses the
+  // newest row by started_at, but that row can be a parked successor whose home has
+  // no token_count events while an older row's home is still receiving the live
+  // rollout. Returning the stale keyed path leaves the watchdog with null telemetry
+  // (or a frozen predecessor) even though a single sibling has fresh, parseable
+  // usage. Adopt that sibling only when it is BOTH newer than the keyed file and
+  // freshly written, and only when exactly one candidate qualifies; ambiguity stays
+  // on the incumbent so this repair cannot silently bind two live sessions together.
+  const now = Date.now();
+  const keyedFresh = keyedMtime != null && now - keyedMtime <= CODEX_ACTIVE_ROLLOUT_FRESH_MS;
+  if (!keyedFresh) {
+    const findSiblingRollout =
+      deps.findCodexRolloutForSessionKey ?? ((key: number) => findCodexRolloutPath(key));
+    const freshCandidates: Array<{ path: string; mtime: number }> = [];
+    for (const key of siblingKeys) {
+      let candidate: string | null = null;
+      try {
+        candidate = await findSiblingRollout(key);
+      } catch {
+        continue;
+      }
+      if (!candidate || candidate === keyed) continue;
+      const candidateMtime = statMtime(candidate);
+      if (candidateMtime == null || now - candidateMtime > CODEX_ACTIVE_ROLLOUT_FRESH_MS ||
+          (keyedMtime != null && candidateMtime <= keyedMtime)) continue;
+      if (!(await codexContextSnapshotFromRollout(candidate))) continue;
+      freshCandidates.push({ path: candidate, mtime: candidateMtime });
+      if (freshCandidates.length > 1) break;
+    }
+    if (freshCandidates.length === 1) return freshCandidates[0].path;
   }
   return keyed;
 }

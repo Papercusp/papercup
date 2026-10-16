@@ -593,8 +593,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
-  it('freezes materialized committed source beside its physical dependency donor', async () => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-materialized-dependencies'));
+  it.each([false, true])('freezes materialized committed source without cloning on root (root donor=%s)', async rootDonor => {
+    const fixtureParent = rootDonor && process.platform === 'linux'
+      ? mkdtempSync('/var/tmp/source-preview-root-donor-') : tmp;
+    try {
+    const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + rootDonor));
+    const copiesDependencies = process.platform === 'linux' && statSync(fixture.repo).dev === statSync('/').dev;
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -602,7 +606,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Keep the physical-donor precondition and real independent Node resolution;
     // substitute only the expensive production dependency census/copy.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ntest ! -L "$2/node_modules/.bin"\ncase "$3" in "$2"/.papercusp/scratch/*) ;; *) echo "snapshot must be on physical donor filesystem" >&2; exit 1 ;; esac\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = ' + (copiesDependencies ? 'copy' : 'hardlink') + '\ntest ! -L "$2/node_modules/.bin"\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
@@ -612,18 +616,18 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
     installVerifierTsx(fixture.repo);
-    const materialized = join(tmp, 'materialized-dependency-source');
+    const materialized = join(tmp, 'materialized-dependency-source-' + rootDonor);
     git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
     const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
     shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
     expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
-    const receiptPath = join(tmp, 'materialized-dependency-source-receipt.json');
+    const receiptPath = join(tmp, 'materialized-dependency-source-receipt-' + rootDonor + '.json');
     const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
       command: [process.execPath, script, 'verifier-measure'] };
     // The donor must pass the ignored-source-scratch guard, not accidentally
     // be admitted because both fixture repositories are beneath OS tmpdir.
-    const restrictedTemp = join(tmp, 'materialized-source-only-temp');
+    const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + rootDonor);
     await fsPromises.mkdir(restrictedTemp);
     vi.stubEnv('TMPDIR', restrictedTemp);
     try {
@@ -631,13 +635,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     } finally { vi.unstubAllEnvs(); }
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
     const dependencyReceipt = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
-    expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);
+    if (copiesDependencies) {
+      expect(dependencyReceipt.root).toMatch(/^\/mnt\/data\/tmp\/verifier-command-/);
+      expect(statSync(fixture.repo).dev).not.toBe(statSync('/mnt/data/tmp').dev);
+    } else expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);
     expect(dependencyReceipt.sourceCommit).toBe(sha);
     // The recorded donor must never make a mismatched source identity acceptable.
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
-    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt.json') }))
+    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt-' + rootDonor + '.json') }))
       .rejects.toThrow('retained source commit does not match');
-    expect(existsSync(join(tmp, 'refused-donor-receipt.json'))).toBe(false);
+    expect(existsSync(join(tmp, 'refused-donor-receipt-' + rootDonor + '.json'))).toBe(false);
+    } finally {
+      if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
+    }
   });
 
   it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal'] as const)

@@ -124,6 +124,32 @@ describe('installed social packages use the generic Integrations model', () => {
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched).toEqual(expect.arrayContaining([expect.objectContaining({ source: 'installed-source' })]));
     expect(page.records).toEqual([]);
+    if (['youtube', 'instagram', 'threads'].includes(id)) {
+      const writes: Array<{ url: string; body?: string }> = [];
+      const payload = { replyToId: '101', subjectOwnerId: '42', canReply: true };
+      const result = await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.reply', args: {
+        text: 'installed reply', target: { platform: providerId, externalId: '202', payload },
+      } }, {
+        fetch: async ({ request }) => {
+          writes.push(request);
+          const path = new URL(request.url).pathname;
+          return { status: 200, headers: {}, bodyEncoding: 'utf8' as const,
+            body: JSON.stringify(id === 'threads' && path.endsWith('/42/threads') ? { id: 'container-1' }
+              : id === 'threads' && path.endsWith('/container-1') ? { status: 'FINISHED' } : { id: '303' }) };
+        },
+      });
+      expect(result).toMatchObject({ externalId: '303' });
+      if (id === 'youtube') expect(JSON.parse(writes[0].body!).snippet.parentId).toBe('101');
+      else if (id === 'instagram') expect(new URL(writes[0].url).pathname).toBe('/v26.0/101/replies');
+      else expect(new URLSearchParams(writes[0].body).get('reply_to_id')).toBe('202');
+      let calls = 0; let refused: unknown;
+      try { await entry.adapter!.invoke({ source: 'installed-source', config, capability: 'social.reply', args: {
+        text: 'refused reply', target: { platform: providerId, externalId: '202', payload: { ...payload, canReply: false, hidden: true, subjectOwnerId: 'another' } },
+      } }, { fetch: async () => { calls++; return { status: 200, headers: {}, bodyEncoding: 'utf8', body: '{}' }; } }); }
+      catch (error) { refused = error; }
+      expect(refused).toBeDefined();
+      expect(calls).toBe(0);
+    }
     let failure: unknown;
     try {
       const host = { fetch: async () => ({ status: 429, headers: { 'retry-after': '37' }, body: '{}', bodyEncoding: 'utf8' as const }) };

@@ -517,6 +517,17 @@ describe('ptool operator routing', () => {
     expect(resolvePtoolOperatorCandidates(managed)).toEqual(['http://127.0.0.1:9271']);
   });
 
+  it('routes an explicit local :3271 pin through the same-vintage :9271 proxy', () => {
+    const env = {
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+    };
+    expect(resolvePtoolOperatorCandidates(env, 'http://127.0.0.1:3271')).toEqual(['http://127.0.0.1:9271']);
+    expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:3271' }, env)).toEqual({
+      maxAttempts: 1,
+    });
+  });
+
   it.each(['0', '65536', 'not-a-port'])('ignores an undialable managed proxy target %s', target => {
     expect(resolvePtoolOperatorBase({
       PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
@@ -1585,11 +1596,12 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', new Error('other catalog error'))).toBe(false);
   });
 
-  it('dispatches supplied arguments without asking the client for tools/list', async () => {
+  it('dispatches supplied arguments with protocol-only validation when the catalog is bypassed', async () => {
     const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
     const client = {
       listTools: vi.fn(),
-      callTool: vi.fn().mockResolvedValue(result),
+      callTool: vi.fn(),
+      request: vi.fn().mockResolvedValue(result),
     };
 
     await expect(dispatchScriptedToolWithoutCatalog(
@@ -1600,15 +1612,18 @@ describe('ptool catalog-independent scripted dispatch', () => {
     )).resolves.toEqual({ client, result });
 
     expect(client.listTools).not.toHaveBeenCalled();
-    expect(client.callTool).toHaveBeenCalledWith(
-      {
+    expect(client.callTool).not.toHaveBeenCalled();
+    expect(client.request).toHaveBeenCalledTimes(1);
+    expect(client.request.mock.calls[0][0]).toEqual({
+      method: 'tools/call',
+      params: {
         name: 'rubrics:get',
         arguments: { rubricRef: 'pot-coordination-health' },
         _meta: { format: 'json', idempotencyKey: 'catalog-bypass-1' },
       },
-      undefined,
-      { timeout: 1, maxTotalTimeout: 1 },
-    );
+    });
+    expect(client.request.mock.calls[0][1]).toBeDefined();
+    expect(client.request.mock.calls[0][2]).toEqual({ timeout: 1, maxTotalTimeout: 1 });
   });
 
   it('retries the exact pre-dispatch bearer refusal with the next implicit token and same key', async () => {
@@ -1617,8 +1632,8 @@ describe('ptool catalog-independent scripted dispatch', () => {
       content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
     };
     const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
-    const firstClient = { callTool: vi.fn().mockResolvedValue(rejected), close: vi.fn() };
-    const secondClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const firstClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(rejected), close: vi.fn() };
+    const secondClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(success), close: vi.fn() };
     const reconnectWithTokenPath = vi.fn().mockResolvedValue(secondClient);
     const tokenPaths = ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'];
 
@@ -1638,8 +1653,8 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(reconnectWithTokenPath).toHaveBeenCalledOnce();
     expect(reconnectWithTokenPath).toHaveBeenCalledWith(tokenPaths[1]);
     expect(firstClient.close).toHaveBeenCalledOnce();
-    expect(firstClient.callTool.mock.calls).toEqual(secondClient.callTool.mock.calls);
-    expect(secondClient.callTool.mock.calls[0][0]._meta.idempotencyKey)
+    expect(firstClient.request.mock.calls).toEqual(secondClient.request.mock.calls);
+    expect(secondClient.request.mock.calls[0][0].params._meta.idempotencyKey)
       .toBe('catalog-bypass-auth-retry-1');
   });
 
@@ -1649,7 +1664,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
       content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
     };
     const reconnectWithTokenPath = vi.fn();
-    const pinnedClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+    const pinnedClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
 
     await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
       pinnedClient,
@@ -1669,7 +1684,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
       isError: true,
       content: [{ type: 'text', text: 'request_rejected: tool_not_available' }],
     };
-    const genericClient = { callTool: vi.fn().mockResolvedValue(genericResult), close: vi.fn() };
+    const genericClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(genericResult), close: vi.fn() };
     await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
       genericClient,
       'rubrics:get',
@@ -1688,7 +1703,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
       isError: true,
       content: [{ type: 'text', text: 'mcp_auth_failed: superuser_invalid_bearer' }],
     };
-    const listStyleClient = { callTool: vi.fn().mockResolvedValue(listStyleBearerFailure), close: vi.fn() };
+    const listStyleClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(listStyleBearerFailure), close: vi.fn() };
     await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
       listStyleClient,
       'rubrics:get',
@@ -1710,8 +1725,8 @@ describe('ptool catalog-independent scripted dispatch', () => {
       content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
     };
     const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
-    const firstClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
-    const finalClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const firstClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+    const finalClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(success), close: vi.fn() };
     const tokenPaths = [
       '/workspace/superuser-token',
       '/home/tester/.papercusp/superuser-token',
@@ -1738,7 +1753,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
 
     expect(reconnectWithTokenPath.mock.calls).toEqual([[tokenPaths[1]], [tokenPaths[2]]]);
     expect(firstClient.close).toHaveBeenCalledOnce();
-    expect(firstClient.callTool.mock.calls).toEqual(finalClient.callTool.mock.calls);
+    expect(firstClient.request.mock.calls).toEqual(finalClient.request.mock.calls);
   });
 
   it('labels the fallback as pre-dispatch while keeping scripted output on stdout', () => {

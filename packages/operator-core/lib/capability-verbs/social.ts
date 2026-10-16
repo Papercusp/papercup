@@ -272,20 +272,10 @@ export type SocialReplyTarget =
   | { platform: 'reddit'; parentFullname: string; subreddit: string }
   | { platform: 'x-twitter'; objectId: string }
   | {
-      platform: 'youtube';
-      /**
-       * `comments.insert`'s REQUIRED `snippet.parentId` — the TOP-LEVEL comment
-       * of the thread, never the video and never the commentThread id.
-       */
-      parentCommentId: string;
-      /** Only for the permalink; a document stored without one still replies fine. */
-      videoId?: string;
-      /**
-       * `commentThread.snippet.canReply`. A definite `false` is refused locally,
-       * because the vendor page names this flag as the remedy for the
-       * `operationNotSupported` 400 the insert would otherwise return.
-       */
-      canReply?: boolean;
+      /** Stored document handle; vendor selectors are derived inside the package. */
+      platform: 'youtube' | 'instagram' | 'threads';
+      externalId: string;
+      payload: Record<string, unknown>;
     }
   | {
       platform: 'facebook-pages';
@@ -309,77 +299,6 @@ export type SocialReplyTarget =
        * reply.
        */
       canComment?: boolean;
-    }
-  | {
-      platform: 'instagram';
-      /**
-       * The TOP-LEVEL comment the reply attaches to — never a reply's own id.
-       *
-       * ⚠ THE PLATFORM SILENTLY RE-PARENTS RATHER THAN REFUSING, which is why
-       * this is derived here instead of being left to the adapter to pass
-       * through. Verbatim from the `/replies` edge reference: "You can only
-       * reply to top-level comments; replies to a reply will be added to the
-       * top-level comment." So addressing a reply does not fail — it SUCCEEDS,
-       * returns a real id, and lands the comment somewhere other than where it
-       * was aimed. A silent redirect is worse than an error precisely because
-       * nothing in the response says it happened, so the correction has to be
-       * made before the call rather than detected after it.
-       *
-       * This is YouTube's two-level shape reached independently (a reply's
-       * stored `replyToId` IS the top-level parent), and the same field name is
-       * used by the Instagram comments adapter for the same vendor concept.
-       */
-      topLevelCommentId: string;
-      /** Only for the label; a reply works without it. */
-      mediaId?: string;
-      /**
-       * `hidden`. A definite `true` is refused locally — "You cannot reply to
-       * hidden comments." An ABSENT value still attempts, matching the YouTube
-       * `canReply` / Pages `canComment` posture: a missing optional field is a
-       * gap in the response, not a denial.
-       */
-      hidden?: boolean;
-    }
-  | {
-      platform: 'threads';
-      /**
-       * The container's `reply_to_id` — THE EXACT THING BEING REPLIED TO, which
-       * on Threads may be a reply as readily as a root post.
-       *
-       * ⚠ THE OPPOSITE OF THE INSTAGRAM FIELD ABOVE, AND THE CONTRAST IS THE
-       * WHOLE REASON BOTH ARE DERIVED HERE RATHER THAN PASSED THROUGH.
-       * Instagram silently RE-PARENTS a reply-to-a-reply up to the top-level
-       * comment, so its target must be normalised UP or the reply lands
-       * somewhere it was not aimed. Threads honours the exact id: "Use the
-       * reply_to_id parameter to reply to a specific reply under the root
-       * post." So the correct Threads value is the stored document's OWN
-       * external id — normalising it up to a parent, by symmetry with
-       * Instagram, would post a visible public reply in the wrong place on
-       * every nested conversation (D-035).
-       */
-      replyToId: string;
-      /**
-       * The root post of the reply tree. Carried for the label, and — more
-       * importantly — as the subject of the ownership gate below.
-       */
-      rootPostId?: string;
-      /**
-       * The profile that owns the ROOT post.
-       *
-       * ⚠ NOT DECORATION: Threads gates replying on "You are the owner of the
-       * root thread post" OR holding threads_keyword_search /
-       * threads_manage_mentions, neither of which this integration requests
-       * (D-039). This carries the fact the adapter checks that gate against.
-       *
-       * OPTIONAL IN THE TYPE AND REFUSED WHEN ABSENT — the opposite posture to
-       * the `canReply` / `canComment` / `hidden` flags above, deliberately.
-       * Those are permissions the provider affirmatively DENIED, so a missing
-       * value means "not reported" and attempting is right. This is a
-       * precondition we must affirmatively ESTABLISH, so a missing value means
-       * "unknown", and attempting on an unknown would publish a public reply on
-       * the strength of a guess.
-       */
-      rootPostOwnerId?: string;
     }
   | {
       /**
@@ -413,125 +332,6 @@ export interface SocialReplyCoordinates {
   parentVisibility: SocialVisibility;
   /** Human-readable destination, echoed back so the caller reports where it went. */
   label: string;
-}
-
-/**
- * YouTube's reply target, split out as its own exported function.
- *
- * WHY THIS ONE IS SEPARATE WHEN THE OTHER THREE ARE INLINE. YouTube's registry
- * row carries `blockedOn` (the owner's Google incremental-consent wall), so
- * `assertSocialPlatformUsable` throws `owner-blocked` at the top of
- * `resolveSocialReplyCoordinates` and this branch is UNREACHABLE through the
- * public function today. Leaving the derivation inline would therefore ship it
- * untested until the day the wall lifts — which is the worst possible day to
- * discover it wrong, because it is also the first day anyone tries to reply.
- * Exported, it is directly testable now; the switch calls it, so there is still
- * exactly one implementation.
- *
- * ⚠ THE PARENT IS ALWAYS THE TOP-LEVEL COMMENT. `comments.insert` requires
- * `snippet.parentId`, and YouTube's comment model is two-level: a thread has one
- * top-level comment and a flat list of replies. So replying to a REPLY still
- * addresses that reply's parent, which is why `replyToId` (the stored
- * `snippet.parentId`, carried verbatim by the comments read adapter) is
- * preferred over the document's own id. A document with no `replyToId` IS a
- * top-level comment, so its own external id is the parent.
- */
-export function resolveYouTubeReplyTarget(
-  payload: Record<string, unknown>,
-  externalId: string,
-): Extract<SocialReplyTarget, { platform: 'youtube' }> {
-  const parentCommentId = string(payload.replyToId) || externalId;
-  if (!parentCommentId) {
-    throw new Error(
-      'social_reply_coordinates_missing:youtube — comments.insert REQUIRES snippet.parentId and the stored document carries neither a replyToId nor an external id',
-    );
-  }
-  const videoId = string(payload.videoId);
-  const target: Extract<SocialReplyTarget, { platform: 'youtube' }> = { platform: 'youtube', parentCommentId };
-  if (videoId) target.videoId = videoId;
-  // Only a definite boolean is carried. An ABSENT flag must stay absent rather
-  // than defaulting either way: defaulting to false would disable replies for
-  // every document stored before the field existed, and defaulting to true would
-  // manufacture a permission the provider never granted.
-  if (typeof payload.canReply === 'boolean') target.canReply = payload.canReply;
-  return target;
-}
-
-/**
- * Instagram's reply target, split out for the same reason YouTube's is: the
- * registry row carries `blockedOn` (Meta app review), so this branch is
- * unreachable through the public function today and would otherwise ship
- * untested until the wall lifts — which is the first day anyone replies, and so
- * the worst day to discover it wrong.
- *
- * ⚠ THE DERIVATION IS LOAD-BEARING, NOT A CONVENIENCE. Instagram does not refuse
- * a reply aimed at a reply; it re-parents it to the top-level comment and
- * returns a normal success. So the choice of id made here is the ONLY point at
- * which the intended target and the actual target can still be made to agree.
- * A stored reply carries `replyToId` (the vendor's `parent_id`), which IS the
- * top-level comment; a document without one already IS top-level, so its own
- * external id is the parent.
- */
-export function resolveInstagramReplyTarget(
-  payload: Record<string, unknown>,
-  externalId: string,
-): Extract<SocialReplyTarget, { platform: 'instagram' }> {
-  const topLevelCommentId = string(payload.replyToId) || externalId;
-  if (!topLevelCommentId) {
-    throw new Error(
-      'social_reply_coordinates_missing:instagram — POST /{ig-comment-id}/replies needs a comment id and the stored document carries neither a replyToId nor an external id',
-    );
-  }
-  const target: Extract<SocialReplyTarget, { platform: 'instagram' }> = { platform: 'instagram', topLevelCommentId };
-  const mediaId = string(payload.subjectId);
-  if (mediaId) target.mediaId = mediaId;
-  // Only a definite boolean is carried, for the reason given on the field: the
-  // comments adapter writes `hidden` ONLY when it is true, so an absent value
-  // means "not reported", and defaulting it either way would either drop every
-  // reply to a document stored before the field existed or manufacture a
-  // permission the provider never gave.
-  if (typeof payload.hidden === 'boolean') target.hidden = payload.hidden;
-  return target;
-}
-
-/**
- * Threads reply coordinates.
- *
- * ⚠ READ THIS BESIDE `resolveInstagramReplyTarget` — THEY LOOK ALIKE AND DO THE
- * OPPOSITE THING, which is exactly the trap two Meta platforms under one app
- * identity set for an author working from the previous adapter. Instagram
- * normalises the target UP to the top-level comment because the platform
- * silently re-parents anything else. Threads addresses the EXACT id, because it
- * honours nested targets: "Use the reply_to_id parameter to reply to a specific
- * reply under the root post." So here the stored document's OWN external id is
- * the answer, and reaching for its `replyToId` — the shape that is correct one
- * file away — would land every nested reply one level too high (D-035).
- *
- * The ownership fields are carried but NOT enforced here: this function is pure
- * and derives coordinates, while the refusal belongs at the call site where the
- * credential is in hand (`assertThreadsMayReply`). Deriving without enforcing is
- * deliberate — a resolver that threw on an unowned root would make the same
- * decision without the credential that actually determines it.
- */
-export function resolveThreadsReplyTarget(
-  payload: Record<string, unknown>,
-  externalId: string,
-): Extract<SocialReplyTarget, { platform: 'threads' }> {
-  const replyToId = externalId || string(payload.id);
-  if (!replyToId) {
-    throw new Error(
-      'social_reply_coordinates_missing:threads — the container needs a reply_to_id and the stored document carries no external id',
-    );
-  }
-  const target: Extract<SocialReplyTarget, { platform: 'threads' }> = { platform: 'threads', replyToId };
-  const rootPostId = string(payload.subjectId);
-  if (rootPostId) target.rootPostId = rootPostId;
-  // Written by the conversation adapter at ingestion, where root ownership is
-  // established by construction. Absent for a document stored by any other
-  // path, and absent is refused rather than assumed at the call site.
-  const rootPostOwnerId = string(payload.subjectOwnerId);
-  if (rootPostOwnerId) target.rootPostOwnerId = rootPostOwnerId;
-  return target;
 }
 
 /**
@@ -616,27 +416,13 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
     }
 
     case 'youtube':
-      return {
-        ref,
-        target: resolveYouTubeReplyTarget(payload, doc.externalId),
-        parentVisibility,
-        label: `${row.label} · ${string(payload.videoId) || string(payload.threadId) || doc.externalId}`,
-      };
-
     case 'instagram':
-      return {
-        ref,
-        target: resolveInstagramReplyTarget(payload, doc.externalId),
-        parentVisibility,
-        label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
-      };
-
     case 'threads':
       return {
         ref,
-        target: resolveThreadsReplyTarget(payload, doc.externalId),
+        target: { platform, externalId: doc.externalId, payload },
         parentVisibility,
-        label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
+        label: `${row.label} · ${doc.externalId}`,
       };
 
     case 'linkedin':

@@ -713,8 +713,9 @@ export async function prepareVerifierDependencies({ donor, dest, receipt, runPha
       throw new PreviewError(`verifier dependency preflight failed: ${result.error?.message || result.stderr || result.stdout || result.status}`, 2);
     return result.stdout;
   };
+  const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
   await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
-    'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']));
+    'snapshot-locked', realpathSync(donor), realpathSync(dest), copyMode]));
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');
   // The CLI imports workspace TypeScript, including extensionless and directory
@@ -797,10 +798,21 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
   const donor = committedWorkRootDependencyDonor(sourceRepo);
-  // A materialized source tree may live on another device. Dependency snapshots
-  // use hardlinks, so allocate beside the physical donor while keeping sourceRepo
-  // as the source identity passed to the freezer and task receipt.
-  const scratch = join(donor, '.papercusp', 'scratch');
+  // Keep hardlinks beside a donor on a data device. A donor on the root device
+  // must use the admitted data scratch instead; pinned-deps already supports
+  // independent cross-device copies and checks their headroom before copying.
+  let scratch = join(donor, '.papercusp', 'scratch');
+  if (process.platform === 'linux' && (await fs.stat(donor)).dev === (await fs.stat('/')).dev) {
+    const data = await fs.realpath('/mnt/data');
+    const dataDevice = (await fs.stat(data)).dev;
+    if (dataDevice === (await fs.stat('/')).dev)
+      throw new PreviewError('verifier command requires a separate /mnt/data filesystem', 2);
+    scratch = join(data, 'tmp');
+    await fs.mkdir(scratch, { recursive: true });
+    scratch = await fs.realpath(scratch);
+    if ((await fs.stat(scratch)).dev !== dataDevice)
+      throw new PreviewError('verifier command scratch resolves outside the data filesystem', 2);
+  }
   await fs.mkdir(scratch, { recursive: true });
   const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
   const root = join(owned, 'invoked-source');

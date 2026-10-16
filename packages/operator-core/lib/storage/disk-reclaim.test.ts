@@ -474,6 +474,31 @@ describe('native retention completion', () => {
     expect(child.kill).not.toHaveBeenCalled();
   });
 
+  it('retains bounded worker phase stderr on a timeout without contaminating JSON stdout', async () => {
+    vi.useFakeTimers();
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'worker-progress-task');
+      child.stdout.write('{"removed":');
+      child.stderr.write('x'.repeat(5000));
+      child.stderr.write('\nRETENTION_WORKER {"phase":"source-scan","nodes":1024}\n');
+      ready();
+      return { child, taskId: 'worker-progress-task', waitForCompletion: async () => ({ status: 'recorded' }) };
+    });
+    delegateKill.mockResolvedValueOnce({ ok: true, taskId: 'worker-progress-task', action: 'kill' });
+    const result = nativeRetentionCommand('/repo', 'fixture-worker', [], { stdoutOnly: true, timeoutMs: 50 });
+    await started; await vi.advanceTimersByTimeAsync(50);
+    const outcome = await result;
+    expect(outcome).toMatchObject({ ok: false, detail: { error: 'delegate timeout',
+      output: '{"removed":', stderr: expect.stringContaining('RETENTION_WORKER {"phase":"source-scan","nodes":1024}') } });
+    expect((outcome.detail as { stderr: string }).stderr).toHaveLength(4000);
+    expect(delegateKill).toHaveBeenCalledExactlyOnceWith('worker-progress-task', { signal: 'SIGKILL', reapTerminalResidue: true });
+  });
+
   it('uses scoped cleanup when the enrolled input pipe is unavailable', async () => {
     const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
