@@ -845,11 +845,24 @@ type TopLevelSchemaProjection = {
   conditionalHint: string;
 };
 
+/** Keep the scorecard identity and rerun selector ahead of its wide rating fields. */
+function prioritizeScorecardEmitRootFields(entries: Array<[string, unknown]>): Array<[string, unknown]> {
+  const names = new Set(entries.map(([name]) => name));
+  if (!['rubricRef', 'ratings', 'rerunRecipe'].every((name) => names.has(name))) return entries;
+
+  const preferredNames = new Set(['rubricRef', 'rerunRecipe']);
+  const preferred = ['rubricRef', 'rerunRecipe'].flatMap((name) => {
+    const entry = entries.find(([candidate]) => candidate === name);
+    return entry ? [entry] : [];
+  });
+  return [...preferred, ...entries.filter(([name]) => !preferredNames.has(name))];
+}
+
 function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjection | null {
   const directProps = root.properties;
   if (directProps && typeof directProps === 'object' && !Array.isArray(directProps)) {
     return {
-      entries: Object.entries(directProps as Record<string, unknown>),
+      entries: prioritizeScorecardEmitRootFields(Object.entries(directProps as Record<string, unknown>)),
       required: new Set<string>(
         Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : [],
       ),
@@ -895,7 +908,9 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
   for (const [name, entry] of merged) {
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
   }
-  const entries = [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]);
+  const entries = prioritizeScorecardEmitRootFields(
+    [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]),
+  );
   // Prefer the canonical completion envelope to its many legacy shorthand
   // aliases. Validator-owned constraints consume part of the root budget, so
   // merely moving controls just before completion still lets preceding legacy
