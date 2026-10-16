@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
 import { retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
@@ -21,6 +22,54 @@ const contract: HarnessContract = {
 };
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-'));
+
+let privateRetention: string;
+beforeEach(() => {
+  privateRetention = tmp();
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(privateRetention, 'mutex'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(privateRetention, 'pins'));
+  vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(privateRetention, { recursive: true, force: true });
+});
+
+describe('harness retention admission', () => {
+  it.each([true, false])('defers busy GC before and after phases while preserving the original %s verdict', async passes => {
+    const root = tmp(), mutexRoot = tmp(), pins = tmp();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', mutexRoot);
+    vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', pins);
+    vi.stubEnv('VH_KEEP_RUNS', '1');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const old = '20200101T000000Z-1';
+    mkdirSync(path.join(root, old));
+    writeFileSync(path.join(root, old, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: old,
+      endedAt: '2020-01-01T00:00:00.000Z', verdict: 'pass' }));
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        const result = await runHarness({
+          contract: { name: 'busy-retention', phases: [{ id: 'proof' }] }, evidenceRoot: root,
+          runPhase: async () => passes ? { ok: true } : { ok: false, reasonCode: 'original-failure' },
+        });
+        expect(result.verdict).toBe(passes ? 'pass' : 'fail');
+        expect(await loadRunResult(result.evidenceDir)).toEqual(result);
+        expect(readlinkSync(path.join(root, 'latest'))).toBe(result.runId);
+        expect(existsSync(path.join(root, old))).toBe(true);
+        const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+        for (const stage of ['before', 'after'])
+          expect(output).toContain(`VH_RETENTION_DEFERRED stage=${stage} reason=retention-mutex-busy`);
+        // Cancelled admissions leave neither FIFO tickets nor reader entries.
+        expect(readdirSync(path.join(mutexRoot, 'papercusp-disk-retention.queue'))).toHaveLength(0);
+      });
+      expect((await pruneEvidenceRoot(root)).runs).toEqual([old]);
+    } finally {
+      stderr.mockRestore(); vi.unstubAllEnvs();
+      for (const dir of [root, mutexRoot, pins]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 5000);
+});
 
 describe('read-only retention preview', () => {
   const now = Date.now();
