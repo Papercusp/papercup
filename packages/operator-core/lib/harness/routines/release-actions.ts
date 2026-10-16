@@ -1503,6 +1503,7 @@ export interface CheckpointVerdict {
     status: 'passed' | 'failed' | 'skipped';
     durationMs: number;
     skipReason?: string;
+    subjectPaths?: string[];
     executionIdentity?: {
       runId: string;
       candidate: string;
@@ -1612,7 +1613,7 @@ export interface CheckpointVerdict {
     atMs: number;
     ok: boolean;
     failingSignatures: string[];
-    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string }>;
+    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string; subjectPaths?: string[] }>;
   };
 }
 

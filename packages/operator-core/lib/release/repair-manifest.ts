@@ -133,7 +133,11 @@ export function repairSignatureFingerprint(signature: readonly Pick<RepairSignat
  * escaping tokens are dropped. Missing a path costs a fixer one manual `paths:[…]`; inventing one
  * would put a wrong file on the admission allowlist, which is the failure D-008 exists to stop.
  */
-export function extractSubjectPathsFromLegOutput(output: string | undefined | null): string[] {
+export function extractSubjectPathsFromLegOutput(
+  output: string | undefined | null,
+  workspaceDir?: string,
+  knownWorkspaceDirs: readonly string[] = [],
+): string[] {
   if (!output) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -147,7 +151,7 @@ export function extractSubjectPathsFromLegOutput(output: string | undefined | nu
     const normalized = normalizeRepoPath(raw);
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
-    out.push(normalized);
+    out.push(toRepoRelativeLegPath(normalized, workspaceDir, knownWorkspaceDirs));
   }
   return out;
 }

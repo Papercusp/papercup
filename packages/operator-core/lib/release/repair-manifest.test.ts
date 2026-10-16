@@ -67,6 +67,10 @@ const TSC_OUTPUT = [
 ].join('\n');
 
 describe('repair manifest — measured lint subjects survive persistence', () => {
+  it('lifts workspace diagnostics once while preserving sibling repo-relative paths', () => {
+    expect(extractSubjectPathsFromLegOutput('lib/broken.ts(1,1): error\napps/b/sibling.ts:2: error', 'apps/a', ['apps/a', 'apps/b']))
+      .toEqual(['apps/a/lib/broken.ts', 'apps/b/sibling.ts']);
+  });
   it('retains measured paths through rebuild and admission, and publishes newly actionable paths', () => {
     const empty = withRepairManifest(queue(), 1);
     const measured = withMeasuredLegSubjects(empty.queue, CANDIDATE, [
