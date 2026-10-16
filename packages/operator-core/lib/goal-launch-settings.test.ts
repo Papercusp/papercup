@@ -2455,7 +2455,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     const alpha = 'plan:papercusp/alpha';
     const beta = 'plan:papercusp/beta';
     const property_schema = {
-      worklist: { datatype: 'plan-ref-list', collection: {
+      worklist: { datatype: 'plan-ref-list', editable_by: 'both', collection: {
         source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
         selectable: true, defaultSelected: true,
       } },
@@ -2474,9 +2474,11 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         sql: mockSql({ portfolio: { 'goal-1': {
           ...portfolioRow, property_schema, plans,
           properties: { worklist: { value: [alpha, beta] },
-            worklist_policy: { value: { order: [...order], excluded: [] }, version: 1 } },
+            worklist_policy: { value: { order: [...order], excluded: [] }, version: 1,
+              edited_at: NOW.toISOString(), edited_by: 'owner', provenance: 'owner-edit' } },
         } } }),
       });
+      expect(brief?.collection).toMatchObject({ available: true, policyVersion: 1 });
       expect(brief?.worklist.map(plan => plan.slug)).toEqual([expected, other]);
       const eligible = brief?.worklist.filter(plan => plan.placement.reconciliation.toolCall?.tool === 'fleet:launch-on-plan');
       expect(eligible).toHaveLength(2);
