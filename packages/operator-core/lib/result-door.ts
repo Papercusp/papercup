@@ -2315,7 +2315,7 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
           scratchWriteFailure: { error },
         });
         const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
-        return attachPendingScratchFallback(recoveryFallback, pendingResult) ?? pendingResult;
+        return attachPendingScratchFallback(recoveryFallback, pendingResult, opts) ?? pendingResult;
       }
     }
     const failedResult = applyResultDoor(result, {
@@ -2432,14 +2432,85 @@ function promoteVolatileScratchFallback<T extends DoorableResult>(
   } as T;
 }
 
-function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pending: T): T | null {
+function fallbackRecoveryCursor(
+  fallback: DoorableResult,
+  fallbackDoor: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const declared = recordAt(fallbackDoor?.recoveryCursor);
+  if (isPendingFallbackRecoveryCursor(declared)) return declared;
+
+  // Most structural receipt projections carry the recovery cursor in the
+  // model-facing `_projection`, while the text projection path also mirrors it
+  // into resultDoor metadata. Read both forms before deciding that a fallback
+  // cannot recover the overflow.
+  for (const item of fallback.content) {
+    if (!isTextItem(item)) continue;
+    try {
+      const body = recordAt(JSON.parse(item.text));
+      const projection = recordAt(body?._projection);
+      const cursor = recordAt(projection?.cursor);
+      if (isPendingFallbackRecoveryCursor(cursor)) return cursor;
+    } catch {
+      // A non-JSON text fallback may still expose its reference in resultDoor.
+    }
+  }
+
+  // Reference envelopes expose their URI and expiry in resultDoor instead of
+  // `_projection.cursor`. A timeout fallback can be promoted from volatile to
+  // durable after it is built, so prefer that durable URI when it is present.
+  const durableUriValue = fallbackDoor?.durableFallbackUri;
+  const durableUri = typeof durableUriValue === 'string'
+    ? durableUriValue
+    : null;
+  const volatileUriValue = fallbackDoor?.volatileFallbackUri;
+  const volatileUri = typeof volatileUriValue === 'string'
+    ? volatileUriValue
+    : null;
+  const uri = durableUri ?? volatileUri;
+  if (!uri) return null;
+  const durableExpiresAt = fallbackDoor?.durableFallbackExpiresAt;
+  const volatileExpiresAt = fallbackDoor?.volatileFallbackExpiresAt;
+  const expiresAt = typeof durableExpiresAt === 'string'
+    ? durableExpiresAt
+    : typeof volatileExpiresAt === 'string'
+      ? volatileExpiresAt
+      : undefined;
+  return {
+    kind: durableUri ? 'durable-scratch-page' : 'volatile-scratch-page',
+    tool: 'capability:read',
+    uri,
+    args: { uri, byte_offset: 0, byte_limit: 3_072 },
+    maxByteLimit: CAPABILITY_READ_MAX_BYTE_PAGE,
+    dataEncoding: 'base64',
+    ...(expiresAt ? { expiresAt } : {}),
+  };
+}
+
+function isPendingFallbackRecoveryCursor(
+  cursor: Record<string, unknown> | null,
+): cursor is Record<string, unknown> {
+  return cursor?.kind === 'volatile-scratch-page' ||
+    cursor?.kind === 'durable-scratch-page' ||
+    cursor?.kind === 'release-outcome-check';
+}
+
+function attachPendingScratchFallback<T extends DoorableResult>(
+  fallback: T,
+  pending: T,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): T | null {
   const fallbackDoor = recordAt(fallback._meta?.resultDoor);
   const pendingDoor = recordAt(pending._meta?.resultDoor);
-  const fallbackCursor = recordAt(fallbackDoor?.recoveryCursor);
+  const fallbackCursor = fallbackRecoveryCursor(fallback, fallbackDoor);
   const pendingCursor = recordAt(pendingDoor?.recoveryCursor);
-  const fallbackCanRecover = fallbackCursor?.kind === 'volatile-scratch-page' ||
-    fallbackCursor?.kind === 'durable-scratch-page' ||
-    fallbackCursor?.kind === 'release-outcome-check';
+  const coordSendCall = opts.toolName === 'coord:send' ||
+    (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send');
+  // The coord:send receipt path can offer only an in-process copy while the
+  // primary spill is still pending. Returning that cursor would hide the
+  // pending-write warning and its do-not-resend instruction, so keep the
+  // primary result until a durable fallback exists.
+  if (coordSendCall && fallbackCursor?.kind === 'volatile-scratch-page') return null;
+  const fallbackCanRecover = isPendingFallbackRecoveryCursor(fallbackCursor);
   if (!fallbackCanRecover || !fallbackDoor || !pendingDoor || !pendingCursor) {
     return null;
   }
@@ -2450,8 +2521,18 @@ function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pen
       ...(fallback._meta ?? {}),
       resultDoor: {
         ...fallbackDoor,
+        ...(typeof fallbackDoor.spillPath === 'string' || typeof pendingDoor.spillPath !== 'string'
+          ? {}
+          : { spillPath: pendingDoor.spillPath }),
+        ...(typeof fallbackDoor.spillUri === 'string' || typeof pendingDoor.spillUri !== 'string'
+          ? {}
+          : { spillUri: pendingDoor.spillUri }),
         spillPending: true,
         spillFailed: false,
+        // coord:send's primary cursor carries the delivery-unknown safety
+        // contract. Its fallback envelope may still expose a readable page,
+        // but replacing this cursor would hide the instruction not to resend.
+        recoveryCursor: coordSendCall ? pendingCursor : fallbackCursor,
         pendingSpill: {
           ...(typeof pendingDoor.spillPath === 'string' ? { path: pendingDoor.spillPath } : {}),
           ...(typeof pendingDoor.spillUri === 'string' ? { uri: pendingDoor.spillUri } : {}),
