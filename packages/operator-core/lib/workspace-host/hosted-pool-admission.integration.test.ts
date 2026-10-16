@@ -165,13 +165,18 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await host(ws, 'warm');
     await admitHostedLifecycleJob(input(ws, 'previous'));
     await db.adminSql`
-      UPDATE harness_shared.workspace_host_operations SET status = ${status}
+      UPDATE harness_shared.workspace_host_operations SET status = ${status}, customer_workspace_id = NULL
        WHERE workspace_id = ${ws} AND id = 'op-previous'`;
     // Replacement moves the directory pointer; the old VM may still carry the
     // previous tenant's IAM/credentials/routes even with no registered data disk.
     await db.adminSql`
       UPDATE harness_shared.customer_workspaces SET workspace_host_id = 'previous-placeholder'
        WHERE workspace_id = ${ws} AND id = 'previous'`;
+    const [unchangedHost] = await db.adminSql`
+      SELECT host_generation, controller_fence, pool_observation->>'cleanAttestationRef' AS clean_ref
+        FROM harness_shared.workspace_hosts WHERE workspace_id = ${ws} AND id = 'warm'`;
+    expect(unchangedHost).toMatchObject({ host_generation: 1, controller_fence: 7,
+      clean_ref: 'provider:verified-empty-generation-1' });
     await expect(admitHostedLifecycleJob(input(ws, 'next'))).rejects.toMatchObject({
       placement: { kind: 'queue', rejected: expect.arrayContaining([
         expect.objectContaining({ hostId: 'warm', reasons: expect.arrayContaining(['unclean']) }),
