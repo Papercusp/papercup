@@ -172,6 +172,15 @@ describe('expandTestRunBinding re-aim check (the plans:bind-spec-evidence fromTe
 
   const row = (over: Partial<TestRunEvidenceRow> = {}): TestRunEvidenceRow => {
     const { execution_details: overrideExecutionDetails, ...rest } = over;
+    const defaultExecutionDetails = {
+      collectionFailed: false,
+      mutationPhase: 'mutant',
+      // Keep the fixture's mutable-source witness at or after the temp files' creation.
+      runStartedAt: new Date().toISOString(),
+      mutation: descriptor(),
+    };
+    const executionDetailsOverride =
+      overrideExecutionDetails && typeof overrideExecutionDetails === 'object' ? overrideExecutionDetails : {};
     return {
       id: 42,
       file_path: TEST,
@@ -182,12 +191,7 @@ describe('expandTestRunBinding re-aim check (the plans:bind-spec-evidence fromTe
       commit_sha: 'abcdef0123456789',
       worktree_dirty: false,
       execution_details: {
-        collectionFailed: false,
-        mutationPhase: 'mutant',
-        // Keep the fixture's mutable-source witness at or after the temp files' creation.
-        runStartedAt: new Date().toISOString(),
-        mutation: descriptor(),
-        ...(overrideExecutionDetails && typeof overrideExecutionDetails === 'object' ? overrideExecutionDetails : {}),
+        ...(overrideExecutionDetails === undefined ? defaultExecutionDetails : executionDetailsOverride),
       },
       finished_at: new Date().toISOString(),
       ...rest,
@@ -245,9 +249,9 @@ describe('expandTestRunBinding re-aim check (the plans:bind-spec-evidence fromTe
 
   it('skips the check for rows without a mutant-leg descriptor or test-file sha (no survivor lookup)', async () => {
     for (const r of [
-      row({ execution_details: { collectionFailed: false, mutationPhase: 'mutant' } }),
-      row({ execution_details: { collectionFailed: false, mutationPhase: 'mutant', mutation: descriptor({ testFileSha256: null }) } }),
-      row({ execution_details: { collectionFailed: false, mutationPhase: 'mutant', mutation: descriptor({ leg: 'consumption-control' }) } }),
+      row({ execution_details: { collectionFailed: false, mutationPhase: 'mutant', runStartedAt: new Date().toISOString() } }),
+      row({ execution_details: { collectionFailed: false, mutationPhase: 'mutant', runStartedAt: new Date().toISOString(), mutation: descriptor({ testFileSha256: null }) } }),
+      row({ execution_details: { collectionFailed: false, mutationPhase: 'mutant', runStartedAt: new Date().toISOString(), mutation: descriptor({ leg: 'consumption-control' }) } }),
       row({ status: 'pass' }),
     ]) {
       const { d, calls } = deps(r, [survivor(101, 's/a/b/')]);

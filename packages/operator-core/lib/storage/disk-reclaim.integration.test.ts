@@ -13,7 +13,7 @@ import { readDiskAlarmContext, runDiskSpaceAlarmOnce } from './disk-space-alarm'
 import { writeCensusRun } from './disk-consumer-census';
 import type { AttentionNotifyInput } from '../attention-notify';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
-import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type ReclaimSql } from './disk-reclaim';
+import { drainScheduledDiskReclaim, nativeRetentionCommand, readReclaimReceipt, removePrivilegedRetentionEntry, runDiskReclaimOnce, writeReclaimAudit, type DiskReclaimReceipt, type NativeRetentionTiming, type ReclaimSql } from './disk-reclaim';
 import { type RetentionClass } from './retention-policy';
 import { inspectRetentionTrees } from './disk-consumer-census';
 import { readDiskHeadroomSoakEvidence } from './retention-interval-evidence';
@@ -239,7 +239,8 @@ describe('retention on a real fixture tree', () => {
       scanHolders, protectedPaths: [leased] });
     expect(receipt.complete).toBe(true);
     expect(receipt.entries).toContainEqual(expect.objectContaining({ path: old, status: 'removed' }));
-    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: held, status: 'protected', reason: 'live process' }));
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: held, status: 'protected',
+      reason: expect.stringMatching(/live process|process evidence unavailable or held/) }));
     for (const path of [held, leased, fresh]) expect((await stat(path)).isDirectory()).toBe(true);
     await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
     const unknown = join(root, 'unknown-holder'); await writeFile(unknown, 'keep');
@@ -314,24 +315,60 @@ describe('retention on a real fixture tree', () => {
         extra: [...COORD_SUBSCRIPTION_SUBSTRATE.extra,
           '696-task-ledger.sql', '700-task-ledger-bash-job-id-idx.sql', '774-task-ledger-ended-unobserved-state.sql'],
       });
+      // Check the same task control route before admitting privileged work.
+      const { getTask: getNativeTask } = await import('../task-manager/store');
+      const stalled = await nativeRetentionCommand(repoRoot, '/bin/sh', ['-c', 'echo $$; exec /bin/sleep 30'],
+        { timeoutMs: 2_000, stdoutOnly: true });
+      expect(stalled, JSON.stringify(stalled)).toMatchObject({ ok: false, detail: { error: 'delegate timeout' } });
+      const stalledDetail = stalled.detail as { taskId: string; output: string; cleanup?: unknown };
+      expect(stalledDetail.cleanup, JSON.stringify(stalled)).toBeUndefined();
+      const stalledPid = Number(stalledDetail.output.trim()); expect(stalledPid).toBeGreaterThan(1);
+      await expect(stat(`/proc/${stalledPid}`)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await getNativeTask(stalledDetail.taskId)).toMatchObject({ state: 'killed' });
+      // Measure the actual fd-safe privileged remover, including enrollment and
+      // terminal persistence. A no-op child cannot establish unlink cost.
+      const nativePath = join(fixture, 'native-expired');
+      await writeFile(nativePath, 'expired native fixture');
+      const nativeStat = await stat(nativePath);
+      const nativeTimings: NativeRetentionTiming[] = [];
+      try {
+        await removePrivilegedRetentionEntry({ path: nativePath, root: fixture, classId: 'fixture',
+          newestWriteMs: nativeStat.mtimeMs, bytes: nativeStat.size, dev: nativeStat.dev, ino: nativeStat.ino },
+        20_000, nativeRetentionCommand, (timing) => nativeTimings.push(timing));
+      } finally { console.info('NATIVE_RETENTION_REMOVER_TIMING', JSON.stringify(nativeTimings)); }
+      await expect(stat(nativePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(nativeTimings).toHaveLength(1);
+      const timing = nativeTimings[0];
+      expect(timing.taskId).toEqual(expect.any(String));
+      for (const offset of [timing.spawnedAfterMs, timing.childClosedAfterMs,
+        timing.launchReturnedAfterMs, timing.completedAfterMs]) {
+        expect(offset).toEqual(expect.any(Number));
+        expect(offset).toBeGreaterThanOrEqual(0);
+        expect(offset).toBeLessThanOrEqual(timing.totalMs);
+      }
+      expect(timing.childClosedAfterMs!).toBeGreaterThanOrEqual(timing.spawnedAfterMs!);
+      expect(timing.completedAfterMs!).toBeGreaterThanOrEqual(timing.childClosedAfterMs!);
+      expect(timing.completedAfterMs!).toBeGreaterThanOrEqual(timing.launchReturnedAfterMs!);
+      expect(timing.stages.length).toBeGreaterThan(0);
+      expect(await getNativeTask(timing.taskId!)).toMatchObject({ state: 'exited', exitCode: 0 });
       // Exercise the input transport against this real enrolled-task database.
       // A single argv argument of this size fails with E2BIG on Linux.
       const input = JSON.stringify(Array.from({ length: 14_000 }, (_, i) => `/scratch/expired-${i}`));
       expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
       const streamed = await nativeRetentionCommand(repoRoot, process.execPath, ['--input-type=module', '-e',
       "const chunks=[]; for await(const chunk of process.stdin) chunks.push(chunk); const input=Buffer.concat(chunks).toString('utf8'); console.log(JSON.stringify({bytes:Buffer.byteLength(input),paths:JSON.parse(input).length,mutexHeld:process.env.PAPERCUSP_DISK_RETENTION_MUTEX_HELD}));"],
-      { stdin: input, stdoutOnly: true, env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' } });
+      { stdin: input, stdoutOnly: true, timeoutMs: 10_000, env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' } });
       expect(streamed, JSON.stringify(streamed)).toMatchObject({ ok: true });
       expect(JSON.parse((streamed.detail as { output: string }).output)).toEqual({ bytes: Buffer.byteLength(input), paths: 14_000, mutexHeld: '1' });
-      const listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run']);
+      const listed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', [...args, '--dry-run'], { timeoutMs: 10_000 });
       expect(listed, JSON.stringify(listed)).toMatchObject({ ok: true });
       expect(listed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`would reap: ${dead}`) });
       await expect(stat(dead)).resolves.toBeDefined();
-      const removed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args);
+      const removed = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args, { timeoutMs: 10_000 });
       expect(removed, JSON.stringify(removed)).toMatchObject({ ok: true });
       expect(removed.detail).toMatchObject({ code: 0, output: expect.stringContaining(`reaped dead private target slot ${dead}`) });
       await expect(stat(dead)).rejects.toMatchObject({ code: 'ENOENT' });
-      const repeated = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args);
+      const repeated = await nativeRetentionCommand(repoRoot, '/usr/bin/env', args, { timeoutMs: 10_000 });
       expect(repeated, JSON.stringify(repeated)).toMatchObject({ ok: true });
       const { getTask } = await import('../task-manager/store');
       for (const result of [streamed, listed, removed, repeated]) {
@@ -404,6 +441,32 @@ describe('retention on a real fixture tree', () => {
       for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { now.mockRestore(); }
   });
+  it('starts effects without an all-candidate holder census and still protects a later held path', async () => {
+    const { root, options } = await setup();
+    const paths = ['a-old', 'b-held', 'c-old'].map((name) => join(root, name));
+    for (const path of paths) await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const checks: string[][] = [];
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, effectBudgetMs: 100,
+        scanHolders: async (wanted) => {
+          checks.push([...wanted]);
+          // The standing large-root failure: a complete bulk scan alone can
+          // outlast the effect allowance before any candidate is processed.
+          clock += wanted.length > 1 ? 200 : 1;
+          return { complete: true, byPath: new Map(wanted.includes(paths[1]!) ? [[paths[1]!, ['123']]] : []) };
+        },
+      });
+      expect(receipt.complete, JSON.stringify(receipt.errors)).toBe(true);
+      expect(receipt.entries.filter((entry) => entry.status === 'removed').map((entry) => entry.path)).toEqual([paths[0], paths[2]]);
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+      // Every effect still needs its own current holder evidence, including
+      // candidates absent from the initial optimization's result.
+      for (const path of paths) expect(checks).toContainEqual([path]);
+      for (const path of [paths[0]!, paths[2]!]) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
   it('bounds effect work per root, records the remainder and resumes from a fresh policy census', async () => {
     const { root, options } = await setup();
     const secondRoot = join(fixture!, 'second-root'); await mkdir(secondRoot);
@@ -468,7 +531,8 @@ describe('retention on a real fixture tree', () => {
       expect(receipts.map((receipt) => receipt.complete)).toEqual([false, false, true]);
       expect(receipts.flatMap((receipt) => receipt.entries.filter((entry) => entry.status === 'removed').map((entry) => entry.path)))
         .toEqual([paths[0], paths[2], paths[3]]);
-      expect(checks.filter((check) => check.paths.length > 1).map((check) => check.paths)).toEqual([paths, paths.slice(1), paths.slice(1).filter((path) => path !== paths[2])]);
+      expect([...new Set(checks.map((check) => check.batch))]).toEqual([0, 1, 2]);
+      expect(checks.every((check) => check.paths.length === 1)).toBe(true);
       for (const path of [paths[0]!, paths[2]!, paths[3]!]) {
         expect(checks.some((check) => check.paths.length === 1 && check.paths[0] === path)).toBe(true);
         await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });

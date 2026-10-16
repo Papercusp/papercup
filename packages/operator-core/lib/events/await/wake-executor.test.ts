@@ -3368,6 +3368,29 @@ describe('executeWake — the liveness ladder', () => {
     expect(readPsuHostEventTailAsync).toHaveBeenCalledTimes(3);
   });
 
+  it.each([
+    'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+    'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+    'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+    'psu-host coalesced-into-pending-turn: delivery accepted before turn-start proof; retry remains durable',
+  ])('recovers a terminal host-ending receipt after incumbent park reason %s', async (lastError) => {
+    const ownerId = 'su-host-ending-cancellation';
+    const startedAt = Date.parse('2026-10-15T10:00:00.000Z');
+    const injectPsuHostWithConfirmation = vi.fn();
+    const outcome = await executeWake(work({ id: 904, subscriberId: ownerId, wakeHandle: null, lastError }), deps({
+      findPsuHost: vi.fn(async () => ({ sock: '/tmp/host-ending-cancellation.sock', ownerId, startedAt })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation,
+      readPsuHostEventTailAsync: vi.fn(async () => [{
+        kind: 'wake-rearm-dropped', mode: 'turn', reason: 'host-ending',
+        deliveryIds: ['904'], ts: '2026-10-15T10:01:00.000Z',
+      }]),
+    }));
+    expect(outcome).toMatchObject({ kind: 'park', reason: expect.stringContaining('terminal host-ending drop confirmed') });
+    expect(outcome.kind === 'park' && outcome.hostCommitPending).toBeFalsy();
+    expect(injectPsuHostWithConfirmation).not.toHaveBeenCalled();
+  });
+
   describe('turn-start proof on the confirming psu path (P-006/D-004)', () => {
     const confirmingDeps = (caps: string[] | undefined, reason: string) => {
       const injectPsuHostWithConfirmation = vi.fn(async () => ({ ok: true, confirmation: 'acked' as const, reason }));
@@ -3410,13 +3433,17 @@ describe('executeWake — the liveness ladder', () => {
     });
   });
 
-  it('sends the exact handled-message cancellation to the pending PTY delivery and waits for host confirmation', async () => {
+  it.each([
+    ['cancel-requested', 'psu-host accepted: cancellation request accepted; waiting for its exact pre-write receipt'],
+    ['pending-delivery-id', 'psu-host accepted: cancellation is unsupported; the accepted delivery remains host-owned and retryable'],
+    ['accepted', 'psu-host accepted: fail-open wake retry; waiting for its delivery outcome'],
+  ])('keeps cancellation host-owned after %s and waits for the exact pre-write receipt', async (reason, parkReason) => {
     const ownerId = 'su-inbox-cancel';
     const sock = '/tmp/inbox-cancel.sock';
     const injectPsuHostWithConfirmation = vi.fn(async () => ({
       ok: true,
       confirmation: 'acked' as const,
-      reason: 'cancel-requested',
+      reason,
     }));
     const delivery = work({
       id: 903,
@@ -3426,13 +3453,15 @@ describe('executeWake — the liveness ladder', () => {
       hostCancellation: { deliveryIds: ['901', '902'], handledMsgIds: ['m-a', 'm-b'] },
     });
 
-    await expect(executeWake(delivery, deps({
+    const wakeDeps = deps({
       findPsuHost: vi.fn(() => ({ sock, ownerId })) as never,
       injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
-    }))).resolves.toMatchObject({
+    });
+    const parked = await executeWake(delivery, wakeDeps);
+    expect(parked).toMatchObject({
       kind: 'park',
       hostCommitPending: true,
-      reason: expect.stringContaining('cancellation request'),
+      reason: parkReason,
     });
     expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
     expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(sock, expect.objectContaining({
@@ -3442,6 +3471,13 @@ describe('executeWake — the liveness ladder', () => {
       cancelDeliveryIds: ['901', '902'],
       handledMsgIds: ['m-a', 'm-b'],
     }));
+    injectPsuHostWithConfirmation.mockResolvedValueOnce({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+    await expect(executeWake({ ...delivery, attempts: 2, lastError: parkReason }, wakeDeps)).resolves.toEqual({
+      kind: 'delivered', channel: 'suppressed-redundant',
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(2);
   });
 
   it('settles a handled inbox wake only after the host confirms cancellation before any write', async () => {

@@ -175,6 +175,21 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
     expect(deps.killTask).not.toHaveBeenCalled();
   });
 
+  it('recovers the current Codex answerer from owner-bound native capacity evidence', async () => {
+    const d = dependencies();
+    d.resolveTarget.mockResolvedValue({ ...target, agent: 'codex', advSessionId: 73 } as never);
+    d.readLogTail.mockImplementation(path => path === 'answerer.jsonl'
+      ? JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+          error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } })
+      : 'Working · GPT-6.1-Sol high');
+    const findCodexTranscript = vi.fn(async () => 'answerer.jsonl');
+    const failure = await readOpenGradingAnswererTerminalFailure(input, { ...d, findCodexTranscript } as never);
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(findCodexTranscript).toHaveBeenCalledWith(target.sessionId, { homeOverride: expect.stringContaining('session-73') });
+    expect(await failure?.retire?.()).toBe(true);
+    expect(d.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
+  });
+
   it.each([
     ['already_gone', true],
     ['command_failed', false],
@@ -1450,6 +1465,53 @@ describe('launchAcceptanceGrader', () => {
     });
     expect(quoted).toHaveBeenCalledTimes(1);
     expect(quotedKill).not.toHaveBeenCalled();
+  });
+
+  it.each(['handle', 'legacy-receipt'] as const)('recovers a Codex capacity failure through the %s launch receipt', async (shape) => {
+    const ownerId = 'su-capacity-judge';
+    const sessionId = 'native-capacity-judge';
+    const launch = vi.fn().mockResolvedValueOnce({ data: { deduped: true, launch: {
+      agentStarted: true,
+      freshVerdict: { sessions: [{ ownerId, sessionId }] },
+      tasks: [{ taskId: 'task-capacity', ownerId, logPath: '/tmp/capacity.log',
+        kickoffProof: { persisted: true, nativeRef: '/tmp/capacity.jsonl' },
+        nativeSession: shape === 'handle' ? { backend: 'codex', ownerId, rolloutId: sessionId } : null }],
+    } } }).mockResolvedValue({ data: { launch: { tasks: [{ taskId: 'task-recovered' }] } } });
+    const kill = vi.fn(async () => ({ ok: true }));
+    const native = [
+      JSON.stringify({ type: 'session_meta', payload: { id: sessionId } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+        error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } }),
+    ].join('\n');
+    const result = await launchAcceptanceGrader('ship-the-thing', {
+      ...baseCtx, gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
+    } as never, { ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
+      readLogTail: path => path.endsWith('.jsonl') ? native : 'Working · GPT-6.1-Sol high' });
+    expect(kill).toHaveBeenCalledWith('task-capacity', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ state: 'launched', terminalRecovery: {
+      retiredTaskIds: ['task-capacity'], codes: ['inference_gateway_error'],
+    } });
+  });
+
+  it.each(['resumed', 'successful', 'foreign-session'] as const)('keeps a Codex launch alive after %s native evidence', async (state) => {
+    const ownerId = 'su-current-codex';
+    const sessionId = 'current-rollout';
+    const launch = vi.fn().mockResolvedValue({ data: { launch: {
+      tasks: [{ taskId: 'keep-this-task', ownerId, logPath: 'current.log',
+        kickoffProof: { nativeRef: 'current.jsonl' }, nativeSession: { backend: 'codex', ownerId, rolloutId: sessionId } }],
+    } } });
+    const native = [
+      JSON.stringify({ type: 'session_meta', payload: { id: state === 'foreign-session' ? 'foreign' : sessionId } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', error: { codex_error_info: 'server_overloaded' } } }),
+      ...(state === 'resumed' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } })] : []),
+      ...(state === 'successful' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } })] : []),
+    ].join('\n');
+    const kill = vi.fn();
+    await launchAcceptanceGrader('ship-the-thing', ctx, { ...deps(launch), killTask: kill as never,
+      terminalLogMaxRechecks: 0, readLogTail: path => path.endsWith('.jsonl') ? native : 'Working · GPT-6.1-Sol high' });
+    expect(kill).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a terminal fallback when exact task retirement fails', async () => {

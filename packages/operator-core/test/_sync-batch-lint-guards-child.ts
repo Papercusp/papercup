@@ -7,12 +7,16 @@ import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { buildSyncLintGuardDeps, SYNC_LINT_GUARDS_ROUTINE_NAME } from '../lib/release/sync-batch-lint-guards-deps';
-import { runBoundedArgv } from '../lib/release/sync-batch-delta-check-deps';
+import { buildSyncBatchDeltaDeps, runBoundedArgv, SYNC_DELTA_ROUTINE_NAME } from '../lib/release/sync-batch-delta-check-deps';
+import { runSyncBatchDeltaCheck } from '../lib/release/sync-batch-delta-check';
 import { runSyncLintGuardTick } from '../lib/release/sync-batch-lint-guards';
 import { inboxWakeKey } from '../lib/agent-tools/coordination/inbox-wake';
+import { getMessageById } from '../lib/agent-tools/coordination/messages';
 import { recordAdvSession } from '../lib/adv-sessions';
 import { listRecentDeliveries, upsertInboxWakeAwait } from '../lib/events/await/store';
 import { setAutoPumpEnabledForTests } from '../lib/events/await/engine';
+import { drainDetached, pendingDetachedCount } from '../lib/detached-imports';
+import { fallbackObservationCounters, flushFallbackObservations } from '../lib/degradation/fallback-observations';
 
 export interface SyncLintPrivateReceipt {
   build: { sourceHashes: Record<string, string> };
@@ -21,6 +25,12 @@ export interface SyncLintPrivateReceipt {
   elapsedMs: number;
   guard: string;
   wake: { eventKey: string; deliveryId: number; queued: true; pickupConfirmed: false };
+  typecheck: {
+    id: string; assignee: string; conditionKey: string; messageId: string; deliveryId: number;
+    firstNotificationError: string; tscRuns: number; affectedRuns: number;
+    cursorLeg: string; confirmations: number; gitHead: string;
+  };
+  lifecycle: { detachedRemaining: number; fallbackFailed: number };
 }
 
 async function main() {
@@ -53,6 +63,8 @@ async function main() {
   // Exercise the real event matcher and durable delivery queue. Its detached
   // execution pump is disabled: this disposable target must never launch a model.
   const previousPump = setAutoPumpEnabledForTests(false);
+  let receipt: Omit<SyncLintPrivateReceipt, 'lifecycle'> | undefined;
+  let lifecycle: SyncLintPrivateReceipt['lifecycle'] | undefined;
   try {
     const [server] = await sql`SELECT inet_server_port() AS port`;
     assert.equal(String(server!.port), pgPort);
@@ -126,20 +138,130 @@ async function main() {
     assert.equal((await runSyncLintGuardTick(deps, options)).status, 'up-to-date');
     assert.equal((await listRecentDeliveries(author)).length, 1, 'unchanged head must not wake twice');
     assert.ok(Date.now() - startedAt < 15 * 60_000);
-    const receipt: SyncLintPrivateReceipt = { build: { sourceHashes },
+
+    // P037 reuses this runtime, real PG bindings and lifecycle owner. Git/radius
+    // are controlled; the compiler, attribution, cursor, filing and wake are real.
+    const deltaRoot = join(runtimeRoot, 'typecheck-fixture');
+    const deltaAuthor = 'su-22222222-3333-4444-8555-666666666666';
+    const deltaFile = 'src/type-error.ts';
+    let deltaHead = 'c'.repeat(40);
+    let tscRuns = 0;
+    let affectedRuns = 0;
+    await mkdir(join(deltaRoot, 'src'), { recursive: true });
+    await mkdir(join(deltaRoot, 'scripts'), { recursive: true });
+    await writeFile(join(deltaRoot, deltaFile), 'export const value: number = "wrong";\n');
+    await writeFile(join(deltaRoot, 'tsconfig.json'), JSON.stringify({
+      compilerOptions: { strict: true, noEmit: true, types: [], skipLibCheck: true }, include: [deltaFile],
+    }));
+    const compiler = join(root, 'node_modules/typescript/lib/tsc.js');
+    await writeFile(join(deltaRoot, 'scripts/lint-tsc.mjs'),
+      `process.argv = [process.execPath, ${JSON.stringify(compiler)}, '--project', 'tsconfig.json', '--pretty', 'false'];\n` +
+      `await import(${JSON.stringify(pathToFileURL(compiler).href)});\n`);
+    await sql`INSERT INTO harness_shared.routines
+      (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role, concurrency, catchup, active, metadata)
+      VALUES ('rt_p037_private', ${harness}, ${workspaceId}, ${SYNC_DELTA_ROUTINE_NAME},
+      'cron', '{"cron":"0 4/5 * * * *"}'::jsonb, 'system:sync-batch-delta-check', 'skip', 'skip-old', false, '{"sibling":"preserved"}'::jsonb)`;
+    await recordAdvSession({ workspaceId, mode: 'console', agent: 'codex', coordOwnerId: deltaAuthor });
+    await sql`INSERT INTO harness_shared.edit_attribution_ledger
+      (workspace_id, repo_root, file, agent_id, intent)
+      VALUES (${workspaceId}, ${deltaRoot}, ${deltaFile}, ${deltaAuthor}, 'P037 seeded private type error')`;
+    const makeDeltaDeps = () => {
+      const delta = buildSyncBatchDeltaDeps({ installSlug: harness, workspaceId, root: deltaRoot, branch: 'staging',
+        exec: async (cmd, args, opts) => {
+          assert.ok(args.includes(join(deltaRoot, 'scripts/lint-tsc.mjs')), 'only the real tsc leg may execute');
+          tscRuns += 1;
+          return runBoundedArgv(cmd, args, opts);
+        },
+      });
+      delta.hostLoad = () => ({ load1: 1, cores: 4 });
+      delta.greenCheckpointRunning = async () => false;
+      delta.headSha = async () => deltaHead;
+      delta.listBatches = async () => [{ sha: deltaHead, committedAtMs: Date.now(), agent: null, paths: [deltaFile] }];
+      delta.probeRadius = async () => ({ workspaces: ['private-typecheck'], guards: [],
+        taskCommands: [], derivation: null });
+      delta.runAffected = async () => { affectedRuns += 1; return { ok: true, failing: [] }; };
+      delta.confirmOne = async () => { throw new Error('typecheck retry must never invoke a test confirmation'); };
+      return delta;
+    };
+    const initialDelta = makeDeltaDeps();
+    assert.equal((await runSyncBatchDeltaCheck(initialDelta)).status, 'bootstrapped');
+    deltaHead = 'd'.repeat(40);
+    // No wake await exists yet: filing and the stable message must survive this miss.
+    const firstDelta = await runSyncBatchDeltaCheck(initialDelta);
+    assert.equal(firstDelta.status, 'red', JSON.stringify(firstDelta));
+    assert.equal(firstDelta.filed.length, 1, JSON.stringify(firstDelta));
+    const firstFiling = firstDelta.filed[0]!;
+    assert.ok(firstFiling.id, JSON.stringify(firstDelta));
+    assert.match(firstFiling.notificationError ?? '', /wake not queued/);
+    assert.equal(firstFiling.conditionKey, `sync-delta-red:${deltaFile}`);
+    assert.equal((await listRecentDeliveries(deltaAuthor)).length, 0);
+    const deltaMessageId = `sync-delta-red:${workspaceId}:${firstFiling.id}`;
+    const originalMessage = await getMessageById(deltaMessageId);
+    assert.ok(originalMessage);
+    assert.deepEqual(originalMessage.to, [deltaAuthor]);
+    // Recreate production deps so tick 2 can only recover state from PG JSONB.
+    const reloadedDelta = makeDeltaDeps();
+    const persistedDelta = await reloadedDelta.readCursor();
+    assert.equal(persistedDelta?.sha, deltaHead);
+    assert.deepEqual(persistedDelta?.openReds?.map(red => [red.path, red.leg, red.assignee]),
+      [[deltaFile, 'lint-tsc', deltaAuthor]]);
+    await upsertInboxWakeAwait({ subscriberId: deltaAuthor, eventKey: inboxWakeKey(deltaAuthor), minSleepSec: 0,
+      note: 'P037 private same-HEAD retry proof' });
+    const secondDelta = await runSyncBatchDeltaCheck(reloadedDelta);
+    assert.equal(secondDelta.status, 'up-to-date', JSON.stringify(secondDelta));
+    assert.equal(secondDelta.filed.length, 1);
+    assert.equal(secondDelta.filed[0]!.id, firstFiling.id);
+    assert.equal(secondDelta.filed[0]!.conditionKey, firstFiling.conditionKey);
+    assert.equal(secondDelta.filed[0]!.notificationError, undefined);
+    assert.equal(secondDelta.filed[0]!.error, undefined);
+    const [deltaItem] = await sql`SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id = ${firstFiling.id}`;
+    assert.equal(deltaItem!.assignee, deltaAuthor);
+    assert.deepEqual(await getMessageById(deltaMessageId), originalMessage, 'retry must reuse the persisted message');
+    const deltaDeliveries = await listRecentDeliveries(deltaAuthor);
+    assert.equal(deltaDeliveries.length, 1);
+    assert.equal(Reflect.get(deltaDeliveries[0]!.payload as object, 'workItemId'), firstFiling.id);
+    const finalDelta = await reloadedDelta.readCursor();
+    assert.equal(finalDelta?.openReds?.[0]?.confirmations, 2);
+    assert.equal(tscRuns, 2, 'retry must run the typecheck leg');
+    assert.equal(affectedRuns, 1, 'same-HEAD retry must preserve the unrelated affected pass');
+    const typecheck: SyncLintPrivateReceipt['typecheck'] = {
+      id: firstFiling.id, assignee: deltaAuthor, conditionKey: firstFiling.conditionKey,
+      messageId: deltaMessageId, deliveryId: deltaDeliveries[0]!.id,
+      firstNotificationError: firstFiling.notificationError!, tscRuns, affectedRuns,
+      cursorLeg: finalDelta!.openReds![0]!.leg!, confirmations: finalDelta!.openReds![0]!.confirmations,
+      gitHead: deltaHead,
+    };
+    receipt = { build: { sourceHashes },
       runtime: { workspaceId, runtimeRoot, pgPort }, filing: { id, assignee: author, conditionKey: condition!.condition_key },
       elapsedMs: Date.now() - startedAt, guard: 'real detector and npm child',
-      wake: { eventKey: delivery.eventKey, deliveryId: delivery.id, queued: true, pickupConfirmed: false } };
-    console.log('SYNC_LINT_PRIVATE_RECEIPT ' + JSON.stringify(receipt));
+      wake: { eventKey: delivery.eventKey, deliveryId: delivery.id, queued: true, pickupConfirmed: false }, typecheck };
   } finally {
-    setAutoPumpEnabledForTests(previousPump);
-    await sql.end({ timeout: 5 });
-    await getOrgPg().sql.end({ timeout: 5 });
+    try {
+      // Filing starts tracked event work and buffers fallback observations. Own
+      // both lifetimes before closing PG; beforeExit is too late for that IO.
+      await drainDetached();
+      const flush = await flushFallbackObservations({ sql });
+      lifecycle = { detachedRemaining: pendingDetachedCount(),
+        fallbackFailed: fallbackObservationCounters().failed };
+      assert.equal(flush.failed, 0, 'P028 fallback drain must persist before PG closes');
+      assert.equal(lifecycle.detachedRemaining, 0, 'P028 detached work must settle before PG closes');
+      assert.equal(lifecycle.fallbackFailed, 0, 'P028 must not lose buffered observations');
+      // Retain the actual loaded addons before teardown. A native abort alone
+      // does not identify the embedder as its cause (WI-6554700010013376).
+      const report = process.report.getReport() as { sharedObjects?: string[] };
+      console.log('SYNC_LINT_PRIVATE_DIAGNOSTICS ' + JSON.stringify({ lifecycle,
+        nativeModules: (report.sharedObjects ?? []).filter(path => path.endsWith('.node')) }));
+    } finally {
+      setAutoPumpEnabledForTests(previousPump);
+      try { await sql.end({ timeout: 5 }); }
+      finally { await getOrgPg().sql.end({ timeout: 5 }); }
+    }
   }
+  assert.ok(receipt && lifecycle);
+  console.log('SYNC_LINT_PRIVATE_RECEIPT ' + JSON.stringify({ ...receipt, lifecycle }));
 }
 
-// Filing can load the native embedder. Forced exit interrupts its teardown and
-// aborts after a successful receipt; let its pending work and cleanup finish.
+// Preserve natural process teardown so native lifecycle failures remain visible.
 main().catch(error => {
   console.error('SYNC_LINT_PRIVATE_FAILURE ' + error.stack);
   process.exitCode = 1;

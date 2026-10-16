@@ -78,7 +78,7 @@ import {
   inboxWakeGroupHandled,
   inboxWakeMessageComponents,
 } from './inbox-wake-actionability';
-import { wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
+import { isAcceptedPsuHostDelivery, wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
   payloadIsTimeout,
   recordTimeoutFires,
@@ -1051,11 +1051,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       // suppressing the parked retry then would leave the host's old pre-rendered
       // text queued indefinitely. Retry the same delivery so the host can refresh
       // its pending payload from this delivery-time render and report commitment.
-      const hasUnconfirmedPsuHostAcceptance = group.some(
-        (d) =>
-          d.lastError?.startsWith('psu-host accepted:') ||
-          d.lastError?.startsWith('psu-host pending-delivery-id:'),
-      );
+      const hasUnconfirmedPsuHostAcceptance = group.some(isAcceptedPsuHostDelivery);
       const allInboxWakeNoUrgent = group.every(
         (d) =>
           !deliveryContainsLoopMarker(d.payload) &&
@@ -1087,10 +1083,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             )) {
               hostCancellation = {
                 deliveryIds: group
-                  .filter((d) =>
-                    d.lastError?.startsWith('psu-host accepted:') ||
-                    d.lastError?.startsWith('psu-host pending-delivery-id:'),
-                  )
+                  .filter(isAcceptedPsuHostDelivery)
                   .map((d) => String(d.id)),
                 handledMsgIds: [...new Set(msgIds)],
               };

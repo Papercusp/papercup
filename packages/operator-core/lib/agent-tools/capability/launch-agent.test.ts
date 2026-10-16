@@ -1249,6 +1249,21 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(task.nativeSession).not.toBe(ownerId);
   });
 
+  it('projects an owner-bound Codex rollout onto its task receipt', async () => {
+    const ownerId = 'su-codex-judge';
+    verifyFreshLaunchStartedMock.mockResolvedValueOnce({
+      agentStarted: true, waitedMs: 5,
+      sessions: [{ ownerId, advSessionId: 73, sessionId: 'codex-rollout', successfulCalls: 0 }],
+      note: 'native turn observed',
+    });
+    const res = await launchAgent.handler({ agent: 'codex', brief: 'grade evidence',
+      __respawnOwnerId: ownerId } as never, ctx);
+    const task = (dataOf(res)?.launch as { tasks: Array<Record<string, unknown>> }).tasks[0];
+    expect(task).toMatchObject({ ownerId, nativeSession: {
+      backend: 'codex', ownerId, rolloutId: 'codex-rollout', exactResumeSupported: true,
+    } });
+  });
+
   it('keeps an unresolved verifier handle explicitly null', async () => {
     const ownerId = 'su-judge-without-native-id';
     verifyFreshLaunchStartedMock.mockResolvedValueOnce({

@@ -189,11 +189,11 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     const cleanupStages = new Set<string>();
     const cleanupIo = new Map<string, { writes: bigint; bytes: bigint }>();
     let cleanupLine = '';
-    const capture = (chunk: Buffer) => {
-      output += String(chunk); writeSync(fd, chunk);
+    const capture = (chunk: string) => {
+      output += chunk; writeSync(fd, chunk);
       if (phase === 'execute') progressWatchdog?.noteProgress();
       if (options.cleanupFromStdout && deadlines) {
-        cleanupLine += String(chunk);
+        cleanupLine += chunk;
         const lines = cleanupLine.split('\n');
         cleanupLine = lines.pop()!;
         for (const line of lines) {
@@ -309,6 +309,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         }, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000);
       }, grace);
     };
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', capture);
     child.stderr?.on('data', capture);
     child.on('message', message);

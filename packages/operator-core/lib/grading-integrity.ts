@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { getOrgPg } from '@papercusp/db-org';
 import { observeFallback } from './degradation/fallback-observations';
 import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL } from './agent-tools/capability/launch-agent';
@@ -2454,7 +2455,7 @@ export async function dispatchPendingGradingAudits(
           data?: { deduped?: boolean; launch?: unknown };
         };
         const launchData = result.data?.launch as
-          | {
+          | (NativeTranscriptLaunchReceipt & {
               tasks?: Array<{
                 taskId?: unknown;
                 logPath?: unknown;
@@ -2462,7 +2463,7 @@ export async function dispatchPendingGradingAudits(
                 nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
               }>;
               agentStarted?: boolean | null;
-            }
+            })
           | undefined;
         const launchedTask = launchData?.tasks?.[0];
         const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
@@ -2486,12 +2487,7 @@ export async function dispatchPendingGradingAudits(
           launchData?.agentStarted !== true &&
           (launchData?.agentStarted === false || kickoffNotSubmitted);
 
-        const nativeProof = launchedTask?.nativeSession?.backend === 'claude' &&
-          typeof launchedTask.nativeSession.sessionId === 'string' &&
-          typeof launchedTask.kickoffProof?.nativeRef === 'string'
-          ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
-              nativeSessionId: launchedTask.nativeSession.sessionId }
-          : undefined;
+        const nativeProof = nativeTranscriptProofFromLaunchReceipt(launchData, launchBackend);
         let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = kickoffFailureIsConclusive
           ? {
               code: 'launch_kickoff_not_persisted',

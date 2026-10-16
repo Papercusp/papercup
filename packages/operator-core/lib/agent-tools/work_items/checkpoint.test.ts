@@ -684,7 +684,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
   it('publishes the documented structured checkpoint shape in both shorthand schemas', () => {
     const json = z.toJSONSchema(checkpoint.args as never) as {
       $defs?: Record<string, unknown>;
-      properties?: {
+      properties?: Record<string, unknown> & {
         checkpoint?: unknown;
         checks?: unknown;
         items?: { items?: unknown };
@@ -718,6 +718,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(hasStructuredCheckpoint(json.properties?.checkpoint)).toBe(true);
     expect(hasStructuredCheckpoint(json.properties?.items?.items)).toBe(true);
 
+    // EI-26041557359273233: testResult/verified are evidence aliases for check rows,
+    // not top-level checkpoint arguments. A stale generated wrapper advertised them
+    // at the root even though the current runtime accepts them only under checks[].
+    expect('testResult' in (json.properties ?? {})).toBe(false);
+    expect('verified' in (json.properties ?? {})).toBe(false);
+
     const hasProperty = (value: unknown, key: string): boolean => {
       value = resolveRef(value);
       if (!value || typeof value !== 'object') return false;
@@ -728,6 +734,8 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     };
     expect(hasProperty(json.properties?.checks, 'testResult')).toBe(true);
     expect(hasProperty(json.properties?.items?.items, 'testResult')).toBe(true);
+    expect(hasProperty(json.properties?.checks, 'verified')).toBe(true);
+    expect(hasProperty(json.properties?.items?.items, 'verified')).toBe(true);
     expect(hasProperty(json.properties?.checks, 'sinceMs')).toBe(true);
     expect(hasProperty(json.properties?.items?.items, 'sinceMs')).toBe(true);
   });

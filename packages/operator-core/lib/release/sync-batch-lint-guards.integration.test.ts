@@ -20,11 +20,13 @@ const sourcePaths = [filePath, 'packages/operator-core/test/_sync-batch-lint-gua
   'packages/operator-core/lib/events/await/store.ts',
   'packages/operator-core/lib/events/await/engine.ts',
   'packages/operator-core/lib/automation/routine-classification.ts',
+  'packages/operator-core/lib/detached-imports/index.ts',
+  'packages/operator-core/lib/degradation/fallback-observations.ts',
   'scripts/check-no-raw-setinterval.mjs', 'scripts/with-test-pg.mjs',
   'packages/operator-core/test/isolated-integration-proof.ts'];
 const workerOptions = isolatedWorkerOptions(180_000);
 
-it('runs a real guard child, files its seeded red and queues the ledgered editor wake in private PG', async context => {
+it('runs real guard/typecheck children and retries the persisted typecheck red at the same synthetic HEAD in private PG', async context => {
   const sourceHashes = Object.fromEntries(sourcePaths.map(path => [path,
     createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')]));
   const runId = await recordIsolatedIntegrationProof({ root, filePath, sourcePaths,
@@ -37,12 +39,9 @@ it('runs a real guard child, files its seeded red and queues the ledgered editor
       const childEnv = { ...process.env };
       delete childEnv.PAPERCUSP_TEST_RUN_RECEIPT_FILE;
       delete childEnv.PC_EXECUTED_SOURCE_MAP_RESULT;
-      // Filing would embed the new item, loading the native onnxruntime
-      // embedder in this child. Its teardown intermittently aborts with
-      // "corrupted double-linked list" (SIGABRT) AFTER the receipt prints, on
-      // GPU and on a CPU pin alike (WI-6554700010010481, WI-10005599). The
-      // proof is about guard filing and wakes, not embeddings, so disable the
-      // embedder as su-session-attached-live.integration.test.ts does.
+      // This proof exercises filing and wakes without embedding. Historical
+      // SIGABRTs also occurred with this disabled, so retain native diagnostics
+      // and require real lifecycle completion rather than inferring a cause.
       childEnv.PAPERCUSP_MEMORY_EMBEDDER = 'disabled';
       const child = spawn(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'), '--isolated-runtime', '--',
         process.execPath, '--import', 'tsx', resolve(root, 'packages/operator-core/test/_sync-batch-lint-guards-child.ts')], {
@@ -60,11 +59,17 @@ it('runs a real guard child, files its seeded red and queues the ledgered editor
         expect(receipt.build.sourceHashes).toEqual(sourceHashes);
         expect(receipt.runtime.workspaceId).toMatch(/^test-runtime-/);
         expect(receipt.elapsedMs).toBeLessThan(15 * 60_000);
+        expect(receipt.lifecycle).toEqual({ detachedRemaining: 0, fallbackFailed: 0 });
         expect(receipt.filing.assignee).toBe('su-11111111-2222-4333-8444-555555555555');
         expect(receipt.filing.conditionKey).toBe('sync-delta-guard:lint:no-raw-setinterval:src/timer.ts');
         expect(receipt.wake).toMatchObject({ queued: true, pickupConfirmed: false,
           eventKey: 'coord:inbox-wake:su-11111111-2222-4333-8444-555555555555' });
         expect(receipt.wake.deliveryId).toBeGreaterThan(0);
+        expect(receipt.typecheck).toMatchObject({ assignee: 'su-22222222-3333-4444-8555-666666666666',
+          conditionKey: 'sync-delta-red:src/type-error.ts', firstNotificationError: expect.stringContaining('wake not queued'),
+          cursorLeg: 'lint-tsc', confirmations: 2, tscRuns: 2, affectedRuns: 1, gitHead: 'd'.repeat(40) });
+        expect(receipt.typecheck.messageId).toBe(`sync-delta-red:${receipt.runtime.workspaceId}:${receipt.typecheck.id}`);
+        expect(receipt.typecheck.deliveryId).toBeGreaterThan(0);
         const dataDir = result.output.match(/datadir ([^\)\n]+)/)?.[1];
         expect(dataDir).toBeTruthy();
         expect(existsSync(receipt.runtime.runtimeRoot)).toBe(false);

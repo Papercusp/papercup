@@ -20,7 +20,7 @@ it.runIf(process.env.PAPERCUSP_TEST_DURABLE_QUOTA_KERNEL === '1')(
         encoding: 'utf8', timeout: 60000,
         input: [
           'set -euo pipefail', 'export LC_ALL=C', 'export PATH="$2:/usr/sbin:/usr/bin:/sbin:/bin"',
-          'for tool in setquota mkfs.ext4 tune2fs chattr lsattr findmnt fallocate; do command -v "$tool"; done',
+          'for tool in setquota mkfs.ext4 tune2fs chattr lsattr findmnt fallocate setpriv; do command -v "$tool"; done',
           'data_device="$1/data.ext4"', 'data_mount="$1/mount"', 'data_probe_marker="$1/boot"',
           'mkdir "$data_mount"',
           'trap \'mountpoint -q "$data_mount" && umount "$data_mount" || true\' EXIT',
@@ -30,11 +30,16 @@ it.runIf(process.env.PAPERCUSP_TEST_DURABLE_QUOTA_KERNEL === '1')(
           'mount -o loop,prjquota "$data_device" "$data_mount"',
           'mkdir "$data_mount"/{postgres,repositories,transcripts,workspaces,home}',
           'data_freshly_formatted=1', quota,
-          'fallocate -l 700M "$data_mount/postgres/database"',
-          'fallocate -l 700M "$data_mount/repositories/repository"',
+          // Configure as root; write as the nonprivileged guest service/agent.
+          // CAP_SYS_RESOURCE intentionally exempts a root writer from quotas.
+          'chmod 0755 "$1" "$data_mount"',
+          'chown 65534:65534 "$data_mount"/{postgres,repositories,transcripts,workspaces,home}',
+          'tenant_write() { setpriv --reuid=65534 --regid=65534 --clear-groups fallocate "$@"; }',
+          'tenant_write -l 700M "$data_mount/postgres/database"',
+          'tenant_write -l 700M "$data_mount/repositories/repository"',
           'expect_edquot() {',
           '  local path="$1" error',
-          '  if error=$(fallocate -l 400M "$path" 2>&1); then echo "quota bypass: $path" >&2; exit 1; fi',
+          '  if error=$(tenant_write -l 400M "$path" 2>&1); then echo "quota bypass: $path" >&2; exit 1; fi',
           '  [[ "$error" == *"Disk quota exceeded"* ]] || { echo "$error" >&2; exit 1; }',
           '  rm -f "$path"',
           '}',

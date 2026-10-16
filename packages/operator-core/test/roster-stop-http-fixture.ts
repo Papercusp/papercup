@@ -126,7 +126,8 @@ async function child(label: string) {
       PAPERCUSP_TURN_PROVENANCE_DIR: join(evidence, 'turn-provenance'),
       PAPERCUSP_SID: owner, PAPERCUSP_LAUNCHED_BY: 'su-private-roster-acceptance' },
   });
-  host.stdout!.on('data', chunk => { output += String(chunk); });
+  host.stdout!.setEncoding('utf8');
+  host.stdout!.on('data', (chunk: string) => { output += chunk; });
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   session.pid = host.pid;
   host.once('exit', (code, signal) => {

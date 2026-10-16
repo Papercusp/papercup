@@ -1,5 +1,7 @@
 /** Dedicated, frozen acceptance-grader launch for the plan completion gate. */
 import { createHash } from 'node:crypto';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
@@ -2043,6 +2045,7 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
 }, deps: {
   resolveTarget?: typeof import('./agent-launch-core').resolveResumeTarget;
   findTranscript?: typeof import('./claude-sessions').findSessionTranscript;
+  findCodexTranscript?: typeof import('./session-transcript-resolvers').findCodexRolloutPathByUuid;
   listTasks?: typeof listTasks;
   killTask?: typeof killTask;
   readLogTail?: AcceptanceGraderLogTailReader;
@@ -2058,19 +2061,26 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
     classes: ['agent-session'] as Array<'agent-session'>, includeEnded: true, limit: 1 };
   const target = await resolveTarget({ agentId: input.answeringOwnerId });
   if (!target.ok || target.ownerId !== input.answeringOwnerId ||
-      !['claude', 'claude-code'].includes(target.agent ?? '') || !target.sessionId) return null;
+      !['claude', 'claude-code', 'codex'].includes(target.agent ?? '') || !target.sessionId) return null;
+  const backend = target.agent === 'codex' ? 'codex' : 'claude';
+  const findCodexTranscript = deps.findCodexTranscript ??
+    (await import('./session-transcript-resolvers')).findCodexRolloutPathByUuid;
   const [path, tasks] = await Promise.all([
-    findTranscript(target.sessionId, { owner: input.answeringOwnerId }),
+    backend === 'codex'
+      ? Number.isSafeInteger(target.advSessionId) && target.advSessionId > 0
+        ? findCodexTranscript(target.sessionId, { homeOverride: codexHomeForSessionKey(target.advSessionId) })
+        : null
+      : findTranscript(target.sessionId, { owner: input.answeringOwnerId }),
     readTasks(taskFilter),
   ]);
   const task = tasks[0];
   // An unbound task, a newer incarnation, or an unreadable transcript is not failure evidence.
   if (!path || !task?.logPath || task.sessionId !== target.sessionId) return null;
   const nativeTail = await readTail(path);
-  if (!hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
+  if (backend === 'claude' && !hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
   const failure = await detectAcceptanceGraderTerminalFailure(task.logPath, {
     readLogTail: readTail, nativeTranscriptPath: path,
-    nativeSessionId: target.sessionId, maxRechecks: 0, detectStartupStall: false,
+    nativeSessionId: target.sessionId, nativeBackend: backend, maxRechecks: 0, detectStartupStall: false,
   });
   if (!failure) return null;
   return {
@@ -2082,6 +2092,7 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
       const currentTask = currentTasks[0];
       if (!current.ok || current.ownerId !== input.answeringOwnerId ||
           current.sessionId !== target.sessionId || current.agent !== target.agent ||
+          (backend === 'codex' && current.advSessionId !== target.advSessionId) ||
           currentTask?.taskId !== task.taskId || currentTask.sessionId !== target.sessionId ||
           await readTail(path) !== nativeTail) return false;
       if (currentTask.endedAt) return true;
@@ -3237,7 +3248,7 @@ export async function launchAcceptanceGrader(
         data?: { deduped?: boolean; launch?: unknown };
       };
       const launchData = result.data?.launch as
-        | {
+        | (NativeTranscriptLaunchReceipt & {
             tasks?: Array<{
               taskId?: unknown;
               logPath?: unknown;
@@ -3255,7 +3266,7 @@ export async function launchAcceptanceGrader(
             // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
             // 'assigned' launch, which never spawns.
             agentStarted?: boolean | null;
-          }
+          })
         | undefined;
       const launchedTask = launchData?.tasks?.[0];
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
@@ -3294,12 +3305,7 @@ export async function launchAcceptanceGrader(
         : logPath
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
             readLogTail,
-            ...(launchedTask?.nativeSession?.backend === 'claude' &&
-                typeof launchedTask.nativeSession.sessionId === 'string' &&
-                typeof launchedTask.kickoffProof?.nativeRef === 'string'
-              ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
-                  nativeSessionId: launchedTask.nativeSession.sessionId }
-              : {}),
+            ...nativeTranscriptProofFromLaunchReceipt(launchData, launchBackend),
             ...(sleep ? { sleep } : {}),
             ...(deps.terminalLogRecheckDelayMs !== undefined ? { delayMs: deps.terminalLogRecheckDelayMs } : {}),
             ...(deps.terminalLogMaxRechecks !== undefined ? { maxRechecks: deps.terminalLogMaxRechecks } : {}),

@@ -3656,6 +3656,28 @@ describe('dispatchPendingGradingAudits', () => {
       terminalRecovery: { retiredTaskIds: ['task-native-api-refusal'], codes: ['inference_gateway_error'] } });
   });
 
+  it('recovers a fresh Codex auditor from its exact terminal capacity error', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-codex-capacity')]);
+    d.launch.mockResolvedValueOnce(launchResult({ deduped: false, launch: {
+      agentStarted: true, tasks: [{ taskId: 'task-codex-capacity', ownerId: 'su-codex-auditor',
+        logPath: '/tmp/codex-capacity.log', kickoffProof: { persisted: true, nativeRef: '/tmp/codex-capacity.jsonl' },
+        nativeSession: { backend: 'codex', ownerId: 'su-codex-auditor', rolloutId: 'exact-codex-rollout' } }],
+    } })).mockResolvedValueOnce(launchResult({ deduped: false, launch: { agentStarted: true,
+      tasks: [{ taskId: 'task-capacity-replacement', logPath: '/tmp/healthy.log' }] } }));
+    const native = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+      error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } });
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-codex-capacity'], ctx, harness: 'papercusp' }, {
+      ...d, killTask, sleep: async () => undefined, terminalLogMaxRechecks: 0,
+      readLogTail: path => path.endsWith('.jsonl') ? native : 'Working · GPT-6.1-Sol high',
+    });
+    expect(killTask).toHaveBeenCalledWith('task-codex-capacity', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(result.receipts[0]).toMatchObject({ terminalRecovery: {
+      retiredTaskIds: ['task-codex-capacity'], codes: ['inference_gateway_error'],
+    } });
+  });
+
   it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-late-marker')]);

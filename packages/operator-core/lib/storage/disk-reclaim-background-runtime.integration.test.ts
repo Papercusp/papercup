@@ -18,6 +18,7 @@ const censusSelected = [
   'refuses unproven or incomplete disappearance evidence',
 ];
 const selected = [
+  'starts effects without an all-candidate holder census',
   'runs independent owners when a whole-root census exhausts the run deadline',
   'finishes an advancing root beyond its inspection allowance',
   'reaps an elevated census worker at its native deadline',

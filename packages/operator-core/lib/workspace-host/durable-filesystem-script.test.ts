@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
-import { workspaceHostDurableTenantIdentity, renderDurableFilesystemScriptCore, renderDurableStorageQuotaCore } from './aws-host-bootstrap-push-core.mjs';
+import { workspaceHostDurableTenantIdentity, renderDurableFilesystemScriptCore, renderDurableStorageQuotaCore, renderDurableToolPrerequisiteCore } from './aws-host-bootstrap-push-core.mjs';
 import {
   renderDurableFilesystemScript,
   WORKSPACE_HOST_DURABLE_DATA_MOUNT_POINT,
@@ -376,6 +376,75 @@ describe('renderDurableFilesystemScript', () => {
     expect(bootstrapAt).toBeGreaterThan(script.indexOf(`mount --bind "$data_mount/workspaces"`));
     expect(bootstrapAt).toBeGreaterThan(script.indexOf(`mount --bind "$data_mount/home"`));
     expect(script.match(/^#!/gm)).toHaveLength(1);
+  });
+
+  it('prepares quota tooling before probing or touching the durable device, and fails closed on bootc', () => {
+    const script = renderDurableFilesystemScript({ devicePath: AWS_DEVICE, deviceWaitSec: 30, allocation, tenantIdentity: TENANT });
+    const prerequisites = script.indexOf('required_durable_tools=');
+    expect(prerequisites).toBeGreaterThan(-1);
+    expect(prerequisites).toBeLessThan(script.indexOf('data_device='));
+    expect(prerequisites).toBeLessThan(script.indexOf('data_mode='));
+    expect(script).toContain('apt-get install --no-install-recommends -y e2fsprogs quota util-linux');
+    expect(script).toContain('durable quota prerequisites missing from immutable bootc image');
+  });
+
+  describe('durable prerequisite execution', () => {
+    function execute(missing: string, outcome: 'installed' | 'incomplete' | 'failed' | 'immutable') {
+      const root = mkdtempSync(join(tmpdir(), 'durable-prerequisite-'));
+      try {
+        if (outcome === 'immutable') writeFileSync(join(root, 'immutable'), '');
+        const prerequisites = renderDurableToolPrerequisiteCore().join('\n')
+          .replaceAll('/run/ostree-booted', join(root, 'immutable'))
+          .replaceAll('/usr/bin/bootc', join(root, 'bootc'));
+        return spawnSync('bash', ['-c', [
+          'set -euo pipefail',
+          // Model command availability without invoking apt, mounting or touching a device.
+          'command() { [[ "$1" == -v ]] || { builtin command "$@"; return; }; [[ "$2" != "$MISSING_TOOL" || -e "$FIXTURE/installed" ]]; }',
+          'timeout() { printf "TIMEOUT %s\\n" "$*"; shift 3; "$@"; }',
+          'apt-get() { printf "APT %s\\n" "$*"; [[ "$OUTCOME" != failed ]] || return 42; if [[ "$1" == install && "$OUTCOME" == installed ]]; then printf ready > "$FIXTURE/installed"; fi; return 0; }',
+          prerequisites,
+          'printf "DEVICE_TOUCHED\\n"',
+        ].join('\n')], { encoding: 'utf8', timeout: 10000,
+          env: { ...process.env, FIXTURE: root, MISSING_TOOL: missing, OUTCOME: outcome } });
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+
+    it.each(['chattr', 'lsattr', 'flock'])('installs missing %s before device access', (tool) => {
+      const run = execute(tool, 'installed');
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toContain('TIMEOUT -k 30 180 apt-get update');
+      expect(run.stdout).toContain('TIMEOUT -k 30 600 apt-get install --no-install-recommends -y e2fsprogs quota util-linux');
+      expect(run.stdout.indexOf('APT install')).toBeLessThan(run.stdout.indexOf('DEVICE_TOUCHED'));
+    });
+
+    it.each(['chattr', 'lsattr', 'flock'])('refuses immutable images missing %s without package or device mutation', (tool) => {
+      const run = execute(tool, 'immutable');
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain(`durable quota prerequisites missing from immutable bootc image: ${tool}`);
+      expect(run.stdout).not.toContain('APT');
+      expect(run.stdout).not.toContain('DEVICE_TOUCHED');
+    });
+
+    it('rechecks tools after install and refuses an incomplete package result', () => {
+      const run = execute('chattr', 'incomplete');
+      expect(run.status).toBe(1);
+      expect(run.stderr).toContain('durable quota prerequisite still missing after install: chattr');
+      expect(run.stdout).not.toContain('DEVICE_TOUCHED');
+    });
+
+    it('propagates package failures before device access', () => {
+      const run = execute('flock', 'failed');
+      expect(run.status).toBe(42);
+      expect(run.stdout).toContain('APT update');
+      expect(run.stdout).not.toContain('APT install');
+      expect(run.stdout).not.toContain('DEVICE_TOUCHED');
+    });
+
+    it('does not install packages when the required tools are already available', () => {
+      const run = execute('unused-tool', 'installed');
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toBe('DEVICE_TOUCHED\n');
+    });
   });
 
   it('emits the mount alone when there is no bootstrap', () => {

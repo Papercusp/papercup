@@ -1814,6 +1814,19 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     })).toBe('serving-generation-v1:listed');
   });
 
+  it('keeps tools:find reachable when a legacy catalog omits serving generation', () => {
+    expect(requireServingGeneration({ name: 'tools:find' })).toBeUndefined();
+    expect(buildCallToolParams('tools:find', { query: 'locks:acquire' }, {
+      outputSchema: { type: 'object' },
+      idempotencyKey: 'ptool-discovery-legacy-1',
+      servingGeneration: requireServingGeneration({ name: 'tools:find' }),
+    })).toEqual({
+      name: 'tools:find',
+      arguments: { query: 'locks:acquire' },
+      _meta: { structured: true, idempotencyKey: 'ptool-discovery-legacy-1' },
+    });
+  });
+
   it('refreshes two consecutive stale contracts and preserves the unchanged call', async () => {
     const toolName = 'coord:inbox';
     const callArgs = { directed: true };

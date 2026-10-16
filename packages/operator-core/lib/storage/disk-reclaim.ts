@@ -45,6 +45,17 @@ export interface RetentionCapReceipt {
   pinnedBytes: number; pinnedPaths: string[]; afterBytes: number;
   overByBytes: number; pinnedOverageBytes: number;
 }
+/** Offsets from one enrolled command's start, including terminal persistence.
+ * Child exit and launch bookkeeping can finish in either order. */
+export interface NativeRetentionTiming {
+  taskId: string | null;
+  totalMs: number;
+  spawnedAfterMs: number | null;
+  childClosedAfterMs: number | null;
+  launchReturnedAfterMs: number | null;
+  completedAfterMs: number | null;
+  stages: Array<{ name: string; elapsedMs: number }>;
+}
 export interface DiskReclaimReceipt {
   schemaVersion: 1; id: string; startedAt: string; finishedAt: string; dryRun: boolean;
   /** Native machine identity; legacy hostless receipts cannot certify a host soak. */
@@ -53,7 +64,7 @@ export interface DiskReclaimReceipt {
   /** Unknown for partial runs; a successful run drained every unprotected selected entry. */
   policyExhausted: boolean | null;
   devices: Array<{ path: string; beforeFreeBytes: number | null; afterFreeBytes: number | null; atTarget: boolean | null }>;
-  entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string }>;
+  entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string; nativeCommand?: NativeRetentionTiming }>;
   delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
   errors: string[];
   caps?: RetentionCapReceipt[];
@@ -93,7 +104,7 @@ export interface DiskReclaimOptions {
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
-  removeEntry?: (entry: RetentionEntry, timeoutMs: number) => Promise<void>;
+  removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void) => Promise<void>;
 }
 
 /** The workflow checkpoints each callback separately. Only safe, productive
@@ -316,7 +327,8 @@ export function createRetentionHolderScanner(deps: {
         spawned.once('error', (error) => fail(message(error)));
         spawned.once('close', () => fail('holder worker closed'));
         spawned.stdin?.on('error', (error) => fail(message(error)));
-        spawned.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+        spawned.stderr?.setEncoding('utf8');
+        spawned.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
         spawned.stdout?.setEncoding('utf8');
         spawned.stdout?.on('data', (chunk: string) => {
           buffer += chunk;
@@ -761,7 +773,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
         yield* yieldEffects();
-        const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path))));
+        // This is only an early skip for the first candidate. Every candidate
+        // still receives a fresh holder check immediately before its effect.
+        // A bulk proc scan of hundreds of thousands of paths forced the slow
+        // fallback and could consume this root's entire effect allowance.
+        const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot([selected[0]!.path])));
         if (!holders.complete) {
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
@@ -815,7 +831,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes) { outcome.status = 'changed'; continue; }
             if (receipt.dryRun) { outcome.status = 'would-remove'; if (cap) cap.afterBytes -= entry.bytes; continue; }
             await measureEffect('removalMs', () => outsideInspectionBudget(() => options.removeEntry
-              ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now())) : rm(entry.path, { recursive: true, force: false })));
+              ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; })
+              : rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
             if (cap) cap.afterBytes -= entry.bytes;
             await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', outcome)));
@@ -884,7 +901,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
  * identity change. Python's fd-based rmtree never follows swapped symlinks.
  * Reuse the existing enrolled/timeout-bounded subprocess route. */
 export async function removePrivilegedRetentionEntry(entry: RetentionEntry, timeoutMs: number,
-  execute: typeof nativeRetentionCommand = nativeRetentionCommand): Promise<void> {
+  execute: typeof nativeRetentionCommand = nativeRetentionCommand,
+  observeTiming?: (timing: NativeRetentionTiming) => void): Promise<void> {
   if (resolve(entry.root) !== entry.root || dirname(entry.path) !== entry.root || entry.path === entry.root ||
       !Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino)) throw new Error('unsafe privileged retention target');
   const root = await lstat(entry.root);
@@ -912,7 +930,7 @@ finally:
 `;
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const result = await execute(repoRoot, '/usr/bin/sudo', ['-n', '/usr/bin/python3', '-c', worker], {
-    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino }), timeoutMs,
+    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino }), timeoutMs, observeTiming,
   });
   if (!result.ok) throw new Error(`privileged retention removal failed:${JSON.stringify(result.detail)}`);
 }
@@ -924,12 +942,19 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
   /** Per-invocation context for a native owner, without mutating process.env. */
   env?: NodeJS.ProcessEnv;
   stdoutOnly?: boolean; outputLimit?: number; timeoutMs?: number;
+  /** Receipts reuse managedSpawn's existing tracer; no extra subprocess or audit write. */
+  observeTiming?: (timing: NativeRetentionTiming) => void;
 } = {}) {
   const { managedSpawn } = await import('../task-manager/managed-spawn');
+  const { killTask } = await import('../task-manager/control');
+  const started = Date.now();
+  const elapsed = () => Math.max(0, Date.now() - started);
+  const timing: NativeRetentionTiming = { taskId: null, totalMs: 0, spawnedAfterMs: null,
+    childClosedAfterMs: null, launchReturnedAfterMs: null, completedAfterMs: null, stages: [] };
   let finish!: (result: { ok: boolean; detail: unknown }) => void;
   const observed = new Promise<{ ok: boolean; detail: unknown }>((resolve) => { finish = resolve; });
   let output = '', stderr = '', taskId: string | null = null, settled = false;
-  let outputTruncated = false;
+  let outputTruncated = false, needsTermination = false;
   const timeoutMs = options.timeoutMs ?? 120_000;
   const outputLimit = options.outputLimit ?? 4000;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -939,6 +964,11 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
     finish({ ok, detail: options.stdoutOnly && detail && typeof detail === 'object'
       ? { ...detail, stderr, outputTruncated } : detail });
   };
+  const abort = (error: string) => {
+    if (settled) return;
+    needsTermination = true;
+    done(false, { error, taskId, output });
+  };
   try {
     const spawned = await managedSpawn(command, args, {
       class: 'other', title: 'scheduled disk retention delegate', argv: [command, ...args],
@@ -946,41 +976,61 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
       runtimeMaxSec: Math.ceil(timeoutMs / 1000), detail: { subsystem: 'storage', operation: 'retention-delegate' },
     }, {
       spawnOptions: { cwd: repoRoot, env: options.env, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] },
+      ...(options.observeTiming ? { stage: (name: string) => {
+        if (timing.stages.length < 32) timing.stages.push({ name, elapsedMs: elapsed() });
+      } } : {}),
       onSpawn: (child, id) => {
         taskId = id;
-        timer = setTimeout(() => {
-          done(false, { error: 'delegate timeout', taskId, output });
-          child.kill('SIGKILL');
-        }, timeoutMs);
+        timing.taskId = id; timing.spawnedAfterMs = elapsed();
+        timer = setTimeout(() => abort('delegate timeout'), timeoutMs);
         timer.unref();
-        const append = (chunk: Buffer) => {
-          const combined = output + chunk.toString();
+        child.stdout?.setEncoding('utf8');
+        child.stderr?.setEncoding('utf8');
+        const append = (chunk: string) => {
+          const combined = output + chunk;
           outputTruncated ||= combined.length > outputLimit;
           output = combined.slice(-outputLimit);
         };
         child.stdout?.on('data', append);
         if (!options.stdoutOnly) child.stderr?.on('data', append);
-        else child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+        else child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
         child.once('error', (error) => done(false, { error: message(error), taskId, output }));
-        child.once('close', (code, signal) => done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output }));
+        child.once('close', (code, signal) => {
+          timing.childClosedAfterMs = elapsed();
+          done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output });
+        });
         if (options.stdin !== undefined) {
           if (!child.stdin) {
-            done(false, { error: 'delegate input pipe unavailable', taskId, output });
-            child.kill('SIGKILL');
+            abort('delegate input pipe unavailable');
           } else {
             child.stdin.once('error', (error) => {
-              done(false, { error: `delegate input:${message(error)}`, taskId, output });
-              child.kill('SIGKILL');
+              abort(`delegate input:${message(error)}`);
             });
             child.stdin.end(options.stdin);
           }
         }
       },
     });
+    timing.launchReturnedAfterMs = elapsed();
     const result = await observed;
+    if (needsTermination) {
+      // The handle belongs to systemd-run, whose death can leave its payload
+      // live. Wait for enrollment above, then reap and verify the owned task
+      // through its existing scope/identity control before returning a receipt.
+      const cleanup = await killTask(spawned.taskId, { signal: 'SIGKILL', reapTerminalResidue: true })
+        .catch((error: unknown) => ({ ok: false as const, error: message(error) }));
+      if (!cleanup.ok && cleanup.error !== 'already_gone') {
+        return { ok: false, detail: { ...result.detail as Record<string, unknown>, cleanup } };
+      }
+    }
     await spawned.waitForCompletion();
+    timing.completedAfterMs = elapsed();
     return result;
   } catch (error) { done(false, { error: message(error), taskId, output }); }
+  finally {
+    timing.totalMs = elapsed();
+    options.observeTiming?.(timing);
+  }
   return observed;
 }
 
@@ -1060,7 +1110,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const holders = createRetentionHolderScanner();
   try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees,
-    removeEntry: removePrivilegedRetentionEntry, scanHolders: holders.scan, record: async (phase, detail) => {
+    removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
+    scanHolders: holders.scan, record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } }); } finally { await holders.close(); }

@@ -15,7 +15,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -85,6 +86,41 @@ const SPA_RUNTIME_FILES = [
 ];
 const DEPENDENCY_POLICY_PATH = 'apps/operator/bin/release/dependency-generation.sh';
 const DEPENDENCY_POLICY = readFileSync(new URL('../../../' + DEPENDENCY_POLICY_PATH, import.meta.url), 'utf8');
+
+/** Real private loader closure; no links back to the checkout's dependencies. */
+function installVerifierTsx(root: string): void {
+  const installed = new Set<string>();
+  const copy = (name: string, requireFrom: NodeJS.Require) => {
+    if (installed.has(name)) return;
+    let manifestPath: string;
+    try { manifestPath = requireFrom.resolve(name + '/package.json'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error;
+      let dir = dirname(requireFrom.resolve(name));
+      while (!existsSync(join(dir, 'package.json'))) {
+        const parent = dirname(dir);
+        if (parent === dir) throw new Error('package root missing: ' + name);
+        dir = parent;
+      }
+      manifestPath = join(dir, 'package.json');
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    expect(manifest.name).toBe(name);
+    installed.add(name);
+    cpSync(dirname(manifestPath), join(root, 'node_modules', name), { recursive: true, dereference: true });
+    const localRequire = createRequire(manifestPath);
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) copy(dependency, localRequire);
+    for (const dependency of Object.keys(manifest.optionalDependencies ?? {})) {
+      try { localRequire.resolve(dependency + '/package.json'); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'MODULE_NOT_FOUND') continue;
+        throw error;
+      }
+      copy(dependency, localRequire);
+    }
+  };
+  copy('tsx', createRequire(import.meta.url));
+}
 
 function listFiles(dir: string): string[] {
   const acc: string[] = [];
@@ -506,18 +542,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
-  it('loads Node from the invoked tree before native allocation and survives donor dependency removal', async () => {
+  it('loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-    write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, script, "import value from '@native-proof/runtime';\nimport { typed } from './schema';\nif (value !== typed) throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, 'scripts/schema/index.ts', "export const typed: string = 'private-snapshot';\n");
+    write(fixture.repo, 'scripts/schema/package.json', '{"type":"module"}\n');
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Substitute the expensive copy only; execute real Node resolution from the
     // independent source tree, with ambient loaders and NODE_PATH excluded.
     write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
-    git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+    git(fixture.repo, ['add', script, 'scripts/schema', helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
     const scratch = join(fixture.repo, '.papercusp', 'scratch');
     await fsPromises.mkdir(scratch, { recursive: true });
@@ -530,26 +568,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
         dest, inputs: [script], gitCheckout: true });
     } finally { vi.unstubAllEnvs(); }
-    const probe = () => spawnSync(process.execPath, [join(dest, script), 'verifier-measure'],
+    const probe = (loader = false) => spawnSync(process.execPath, [...(loader ? ['--import', 'tsx'] : []), join(dest, script), 'verifier-measure'],
       { cwd: dest, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });
     expect(probe().stderr).toContain('ERR_MODULE_NOT_FOUND');
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    installVerifierTsx(fixture.repo);
     const dependencies = await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
-    expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual([
-      '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json',
-    ]);
+    expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual(expect.arrayContaining([
+      '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json', 'tsx/package.json',
+    ]));
     expect(statSync(join(dest, 'node_modules/@native-proof/runtime/index.mjs')).ino)
       .toBe(statSync(join(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs')).ino);
-    rmSync(join(fixture.repo, 'node_modules/@native-proof/runtime'), { recursive: true });
-    expect(probe().status).toBe(0);
-    expect(probe().stdout.trim()).toBe('4096');
+    expect(probe().stderr).toContain('ERR_UNSUPPORTED_DIR_IMPORT');
+    rmSync(join(fixture.repo, 'node_modules'), { recursive: true });
+    expect(probe(true).status).toBe(0);
+    expect(probe(true).stdout.trim()).toBe('4096');
     expect(captureVerifierDependencies({ dest, receipt })).toEqual(dependencies);
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
-    rmSync(join(dest, 'node_modules'), { recursive: true });
-    await expect(prepareVerifierDependencies({ donor: fixture.repo, dest, receipt }))
-      .rejects.toThrow('ERR_MODULE_NOT_FOUND');
+    rmSync(join(dest, 'node_modules/tsx'), { recursive: true });
+    const missingLoader = probe(true);
+    expect(missingLoader.status).not.toBe(0);
+    expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
   it('freezes materialized committed source beside its physical dependency donor', async () => {
@@ -570,6 +611,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    installVerifierTsx(fixture.repo);
     const materialized = join(tmp, 'materialized-dependency-source');
     git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
     const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
@@ -633,6 +675,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
         name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
       write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      installVerifierTsx(fixture.repo);
       const receiptPath = join(tmp, 'verifier-command-' + mode + '.receipt.json');
       const proofPath = join(tmp, 'verifier-command-' + mode + '.proof.json');
       const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal'];

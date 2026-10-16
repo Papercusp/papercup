@@ -8,6 +8,8 @@ import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentio
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
+const delegateKill = vi.hoisted(() => vi.fn());
+vi.mock('../task-manager/control', () => ({ killTask: delegateKill }));
 
 const HOUR = 3_600_000;
 const now = 1000 * HOUR;
@@ -392,7 +394,7 @@ describe('per-pass kernel holder transport', () => {
 });
 
 describe('native retention completion', () => {
-  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); });
+  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); delegateKill.mockReset(); });
 
   it.each([0, 2])('preserves output and exit %s before the launch promise resolves', async (code) => {
     const child = Object.assign(new EventEmitter(), {
@@ -422,24 +424,68 @@ describe('native retention completion', () => {
     });
   });
 
-  it('times out a running child once and keeps the timeout verdict when kill emits close', async () => {
+  it('awaits scoped timeout cleanup and keeps the timeout verdict when termination emits close', async () => {
     vi.useFakeTimers();
     let observed!: () => void;
     const ready = new Promise<void>((resolve) => { observed = resolve; });
     const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
-    child.kill.mockImplementation(() => { child.emit('close', null, 'SIGKILL'); });
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    delegateKill.mockImplementationOnce(async () => {
+      child.emit('close', null, 'SIGKILL');
+      await cleanup;
+      return { ok: true, taskId: 'slow-retention-task', action: 'kill' };
+    });
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'slow-retention-task');
       observed();
       return { child, taskId: 'slow-retention-task', waitForCompletion: async () => ({ status: 'recorded' }) };
     });
-    const result = nativeRetentionCommand('/repo', 'sleep', ['300']);
+    let finished = false;
+    const result = nativeRetentionCommand('/repo', 'sleep', ['300']).then((value) => { finished = true; return value; });
     await ready;
     await vi.advanceTimersByTimeAsync(120_000);
+    expect(delegateKill).toHaveBeenCalledExactlyOnceWith('slow-retention-task', { signal: 'SIGKILL', reapTerminalResidue: true });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(finished).toBe(false);
+    release();
     await expect(result).resolves.toEqual({
       ok: false, detail: { error: 'delegate timeout', taskId: 'slow-retention-task', output: '' },
     });
-    expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+  });
+
+  it('reports failed scope cleanup rather than claiming the timed out payload was reaped', async () => {
+    vi.useFakeTimers();
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    const completion = vi.fn(async () => ({ status: 'delegated' }));
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'residual-task'); ready();
+      return { child, taskId: 'residual-task', waitForCompletion: completion };
+    });
+    delegateKill.mockResolvedValueOnce({ ok: false, taskId: 'residual-task', action: 'kill', error: 'incomplete', detail: 'scope still populated' });
+    const result = nativeRetentionCommand('/repo', 'sleep', ['300'], { timeoutMs: 50 });
+    await started; await vi.advanceTimersByTimeAsync(50);
+    await expect(result).resolves.toMatchObject({ ok: false, detail: {
+      error: 'delegate timeout', cleanup: { ok: false, error: 'incomplete', detail: 'scope still populated' },
+    } });
+    expect(completion).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('uses scoped cleanup when the enrolled input pipe is unavailable', async () => {
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'missing-input-task');
+      return { child, taskId: 'missing-input-task', waitForCompletion: async () => ({ status: 'recorded' }) };
+    });
+    delegateKill.mockResolvedValueOnce({ ok: true, taskId: 'missing-input-task', action: 'kill' });
+    await expect(nativeRetentionCommand('/repo', 'cat', [], { stdin: 'payload' })).resolves.toMatchObject({
+      ok: false, detail: { error: 'delegate input pipe unavailable' },
+    });
+    expect(delegateKill).toHaveBeenCalledExactlyOnceWith('missing-input-task', { signal: 'SIGKILL', reapTerminalResidue: true });
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it('keeps a successful delegate pending until its terminal evidence is persisted', async () => {
@@ -461,5 +507,35 @@ describe('native retention completion', () => {
     expect(finished).toBe(false);
     release();
     await expect(result).resolves.toMatchObject({ ok: true, detail: { code: 0, taskId: 'persisting-retention-task' } });
+  });
+
+  it('distinguishes child exit before launch bookkeeping from terminal settlement in receipt timing', async () => {
+    let clock = 1000;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let release!: () => void, entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const persistence = new Promise<void>((resolve) => { release = resolve; });
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    const observeTiming = vi.fn();
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      clock += 5; options.stage('spawn-register-task');
+      clock += 10; options.onSpawn(child as unknown as ChildProcess, 'timed-retention-task');
+      clock += 7; child.emit('close', 0, null);
+      clock += 20; options.stage('spawn-mark-running');
+      return { child, taskId: 'timed-retention-task', waitForCompletion: async () => {
+        entered(); await persistence; clock += 300; return { status: 'recorded' };
+      } };
+    });
+    try {
+      const result = nativeRetentionCommand('/repo', 'true', [], { observeTiming });
+      await waiting;
+      expect(observeTiming).not.toHaveBeenCalled();
+      release(); await expect(result).resolves.toMatchObject({ ok: true });
+      expect(observeTiming).toHaveBeenCalledExactlyOnceWith({
+        taskId: 'timed-retention-task', totalMs: 342, spawnedAfterMs: 15,
+        childClosedAfterMs: 22, launchReturnedAfterMs: 42, completedAfterMs: 342,
+        stages: [{ name: 'spawn-register-task', elapsedMs: 5 }, { name: 'spawn-mark-running', elapsedMs: 42 }],
+      });
+    } finally { release(); now.mockRestore(); }
   });
 });
