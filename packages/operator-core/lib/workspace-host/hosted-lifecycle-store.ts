@@ -35,6 +35,7 @@ import {
   type GcpBillingExportRetryReason,
 } from './gcp-api-client';
 import { readWorkspaceHostConnection, readWorkspaceHostDestroyTarget, type StoredWorkspaceHostConnection } from './observability-store';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   parseWorkspaceHostReleaseClosurePointer,
   recordWorkspaceHostBillingClosure,
@@ -229,6 +230,54 @@ export interface HostedPoolObservation {
   size: WorkspaceHostPoolCandidate['size'];
   observedAtMs: number;
   cleanAttestationRef: string | null;
+  /** Same-owner stopped VM and exact retained disk measured by the provider; not a health attestation. */
+  stoppedOwner?: { customerWorkspaceId: string; dataVolumeId: string };
+}
+
+/** On-demand reconciliation for intentionally stopped owners, excluded from standing service health. */
+export async function refreshHostedStoppedOwnerObservation(input: {
+  workspaceId: string; customerWorkspaceId: string; hostId: string; requestId: string;
+}, deps: {
+  readTarget?: typeof readWorkspaceHostDestroyTarget;
+  readConnection?: typeof readWorkspaceHostConnection;
+  resolveProvider?: (connection: StoredWorkspaceHostConnection['connection']) => WorkspaceHostProvider;
+  record?: typeof recordHostedPoolObservation;
+} = {}): Promise<HostedPoolObservation | null> {
+  const target = await (deps.readTarget ?? readWorkspaceHostDestroyTarget)(input.workspaceId, input.hostId);
+  if (!target || target.observedState !== 'stopped' || !target.controllerAuthority ||
+      target.hostedCustomerWorkspaceId !== input.customerWorkspaceId ||
+      target.observedRevision !== target.desiredRevision || !target.runtimeRelease || !target.desired.zone) return null;
+  const disks = target.resources.filter(({ resource }) => resource.kind === 'disk');
+  const vms = target.resources.filter(({ resource }) => resource.kind === 'vm');
+  if (disks.length !== 1 || vms.length !== 1) return null;
+  const stored = await (deps.readConnection ?? readWorkspaceHostConnection)(input.workspaceId, target.connectionId);
+  if (!stored) return null;
+  const provider = (deps.resolveProvider ?? resolveWorkspaceHostProvider)(stored.connection);
+  const context = { workspaceId: input.workspaceId, requestId: input.requestId,
+    connection: { ...stored.connection, scope: target.desired.scope },
+    durableTenantIdentity: workspaceHostDurableTenantIdentity(input.workspaceId, input.customerWorkspaceId) };
+  const host = { hostId: target.id, target: target.desired.target, resources: target.resources.map(value => value.resource) };
+  // Planning is read-only. The existing provider start planner proves canonical account/zone,
+  // allocation identity, encryption, managed ownership and exactly one retained-disk writer.
+  await provider.plan({ action: 'start', host, operationId: input.requestId, idempotencyKey: input.requestId }, context);
+  const observed = await provider.observe(host, context);
+  if (observed.state !== 'stopped' || observed.drift.length || observed.host.hostId !== target.id ||
+      !Number.isSafeInteger(Date.parse(observed.observedAt)) || Date.parse(observed.observedAt) > Date.now()) return null;
+  const query = { scope: target.desired.scope, region: target.desired.region };
+  const [sizes, images] = await Promise.all([provider.listSizes(query, context), provider.listImages(query, context)]);
+  const size = sizes.find(value => value.id === target.desired.size && value.available);
+  const image = images.find(value => value.id === target.desired.image.id && !value.deprecated);
+  if (!size || !image?.architecture || (size.architectures && !size.architectures.includes(image.architecture))) return null;
+  const observation: HostedPoolObservation = {
+    generation: target.hostGeneration, desiredRevision: target.desiredRevision, controllerFence: target.controllerAuthority.fence,
+    scope: target.desired.scope, zone: target.desired.zone, architecture: image.architecture,
+    runtimeBundleSha256: target.runtimeRelease.bundleSha256, size: { cpuCount: size.cpuCount, memoryMiB: size.memoryMiB },
+    observedAtMs: Date.parse(observed.observedAt), cleanAttestationRef: null,
+    stoppedOwner: { customerWorkspaceId: input.customerWorkspaceId, dataVolumeId: disks[0]!.resource.providerId },
+  };
+  await (deps.record ?? recordHostedPoolObservation)({ workspaceId: input.workspaceId, hostId: target.id,
+    controllerId: target.controllerAuthority.controllerId, observation });
+  return observation;
 }
 
 /** Refresh eligibility from controller-owned state and a real provider catalog, never browser fields. */
@@ -286,12 +335,13 @@ export async function recordHostedPoolObservation(input: {
   if (!Number.isSafeInteger(o.generation) || o.generation < 1 ||
       !Number.isSafeInteger(o.desiredRevision) || o.desiredRevision < 1 ||
       !Number.isSafeInteger(o.controllerFence) || o.controllerFence < 1 || o.observedAtMs > Date.now() ||
-      (o.cleanAttestationRef !== null && !o.cleanAttestationRef.trim())) {
+      (o.cleanAttestationRef !== null && !o.cleanAttestationRef.trim()) ||
+      (o.stoppedOwner && (!o.stoppedOwner.customerWorkspaceId?.trim() || !o.stoppedOwner.dataVolumeId?.trim() || o.cleanAttestationRef !== null))) {
     throw new Error('hosted_pool_observation_invalid');
   }
   await transaction(required(input.workspaceId, 'workspace_id'), async (tx) => {
     const rows = await tx<Array<{ id: string }>>`
-      UPDATE harness_shared.workspace_hosts
+      UPDATE harness_shared.workspace_hosts host
       SET pool_observation = ${JSON.stringify(o)}::jsonb, updated_at = now()
       WHERE workspace_id = ${input.workspaceId} AND id = ${required(input.hostId, 'host_id')}
         AND host_generation = ${o.generation} AND controller_fence = ${o.controllerFence}
@@ -300,6 +350,19 @@ export async function recordHostedPoolObservation(input: {
         AND desired_spec->'scope' = ${JSON.stringify(o.scope)}::jsonb
         AND desired_spec->>'zone' = ${o.zone}
         AND runtime_release->>'bundleSha256' = ${o.runtimeBundleSha256}
+        AND (${!o.stoppedOwner} OR (
+          desired_state = 'stopped' AND observed_state = 'stopped' AND health_status IS NULL
+          AND (SELECT count(*) FROM harness_shared.customer_workspaces customer
+            WHERE customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id) = 1
+          AND EXISTS (SELECT 1 FROM harness_shared.customer_workspaces customer
+            WHERE customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
+              AND customer.id = ${o.stoppedOwner?.customerWorkspaceId ?? null} AND customer.kind = 'hosted'
+              AND customer.state NOT IN ('deleted', 'offboarding', 'suspended'))
+          AND EXISTS (SELECT 1 FROM harness_shared.workspace_host_resources resource
+            WHERE resource.workspace_id = host.workspace_id AND resource.host_id = host.id AND resource.kind = 'disk'
+              AND resource.provider_id = ${o.stoppedOwner?.dataVolumeId ?? null} AND resource.state IN ('applied', 'unchanged'))
+          AND NOT EXISTS (SELECT 1 FROM harness_shared.workspace_host_operations operation
+            WHERE operation.workspace_id = host.workspace_id AND operation.host_id = host.id AND operation.status IN ('queued', 'running'))))
         AND (pool_observation IS NULL OR
           (pool_observation->>'generation')::bigint <> host_generation OR
           (pool_observation->>'controllerFence')::bigint <> controller_fence OR
@@ -372,6 +435,9 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
       o?.scope?.kind === host.desired_spec?.scope?.kind && o?.scope?.id === host.desired_spec?.scope?.id &&
       o?.zone === host.desired_spec?.zone;
     const reservedVolume = pending.find((operation) => operation.data_volume_id)?.data_volume_id;
+    const stoppedVerified = current && host.observed_state === 'stopped' && host.health_status === null &&
+      o?.stoppedOwner?.customerWorkspaceId === host.customer_workspace_id && disks.length === 1 &&
+      o?.stoppedOwner?.dataVolumeId === disks[0]?.provider_id;
     candidates.push({
       workspaceId: input.workspaceId, hostId: host.id, target: host.target, region: host.region,
       scope: host.desired_spec?.scope ?? { kind: '', id: '' }, zone: host.desired_spec?.zone ?? '',
@@ -379,8 +445,8 @@ async function placeHostedPoolJob(tx: Sql, input: AdmitHostedLifecycleJobInput):
       architecture: o?.architecture ?? '', runtimeBundleSha256: current ? o!.runtimeBundleSha256 : '',
       size: o?.size ?? { cpuCount: 0, memoryMiB: 0 },
       state: host.observed_state === 'running' || host.observed_state === 'stopped' ? host.observed_state : 'failed',
-      health: host.health_status === 'healthy' ? 'healthy' : 'unknown',
-      observedAtMs: Math.min(o?.observedAtMs ?? NaN, host.health_attested_at ? new Date(host.health_attested_at).getTime() : NaN),
+      health: stoppedVerified ? 'stopped-verified' : host.health_status === 'healthy' ? 'healthy' : 'unknown',
+      observedAtMs: stoppedVerified ? o!.observedAtMs : Math.min(o?.observedAtMs ?? NaN, host.health_attested_at ? new Date(host.health_attested_at).getTime() : NaN),
       customerWorkspaceId: host.customer_workspace_id,
       dataVolumeId: disks.length > 1 ? 'ambiguous-multiple-data-volumes' : disks[0]?.provider_id ?? reservedVolume ?? null,
       reservationId: pending[0]?.id ?? null,

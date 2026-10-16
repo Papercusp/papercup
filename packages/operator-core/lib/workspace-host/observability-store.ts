@@ -891,7 +891,7 @@ export async function readWorkspaceHostDestroyTarget(
     // key than the provision row that recorded it (WI-10005971). GCP's same-name re-insert is the
     // newest row for its identity, so it stays registered.
     const rows = (await query`
-      SELECT target, kind, provider_id, parent_provider_id, region, zone, state, updated_at
+      SELECT target, kind, provider_id, parent_provider_id, region, zone, incarnation_id, state, updated_at
       FROM harness_shared.workspace_host_resources
       WHERE workspace_id = ${workspaceId}
         AND host_id = ${hostId}
@@ -906,6 +906,7 @@ export async function readWorkspaceHostDestroyTarget(
       kind: string;
       provider_id: string;
       parent_provider_id: string | null;
+      incarnation_id: string | null;
       region: string | null;
       zone: string | null;
       state: string;
@@ -923,6 +924,7 @@ export async function readWorkspaceHostDestroyTarget(
           target: row.target,
           kind: row.kind,
           providerId: row.provider_id,
+          ...(row.incarnation_id ? { incarnationId: row.incarnation_id } : {}),
           ...(row.parent_provider_id ? { parentProviderId: row.parent_provider_id } : {}),
           ...(row.region ? { region: row.region } : {}),
           ...(row.zone ? { zone: row.zone } : {}),
@@ -1487,7 +1489,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
       INSERT INTO harness_shared.workspace_host_resources (
         workspace_id, host_id, logical_key, operation_id, state, attempts,
         retry_class, retry_after_ms, target, kind, provider_id,
-        parent_provider_id, region, zone, provider_request_id,
+        parent_provider_id, region, zone, incarnation_id, provider_request_id,
         deletion_confirmation, error, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.hostId}, ${checkpoint.logicalKey}, ${input.operationId},
@@ -1495,6 +1497,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
         ${checkpoint.retryAfterMs ?? null}, ${resource?.target ?? null}, ${resource?.kind ?? null},
         ${resource?.providerId ?? null}, ${resource?.parentProviderId ?? null},
         ${resource?.region ?? null}, ${resource?.zone ?? null},
+        ${resource?.incarnationId ?? null},
         ${checkpoint.providerRequestId ?? null},
         ${checkpoint.deletionConfirmation === undefined ? null : tx.json(json(checkpoint.deletionConfirmation) as never)},
         ${checkpoint.error === undefined ? null : tx.json(json({ message: checkpoint.error }) as never)}, now()
@@ -1511,6 +1514,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
         parent_provider_id = EXCLUDED.parent_provider_id,
         region = EXCLUDED.region,
         zone = EXCLUDED.zone,
+        incarnation_id = EXCLUDED.incarnation_id,
         provider_request_id = EXCLUDED.provider_request_id,
         deletion_confirmation = EXCLUDED.deletion_confirmation,
         error = EXCLUDED.error,
@@ -1529,6 +1533,7 @@ interface ResourceCheckpointDbRow {
   kind: string | null;
   provider_id: string | null;
   parent_provider_id: string | null;
+  incarnation_id: string | null;
   region: string | null;
   zone: string | null;
   provider_request_id: string | null;
@@ -1556,7 +1561,7 @@ export async function readWorkspaceHostResourceCheckpoints(
   return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<ResourceCheckpointDbRow[]>`
       SELECT logical_key, state, attempts, retry_class, retry_after_ms,
-             target, kind, provider_id, parent_provider_id, region, zone,
+             target, kind, provider_id, parent_provider_id, region, zone, incarnation_id,
              provider_request_id, deletion_confirmation, error
       FROM harness_shared.workspace_host_resources
       WHERE workspace_id = ${workspaceId}
@@ -1571,6 +1576,7 @@ export async function readWorkspaceHostResourceCheckpoints(
               target: row.target,
               kind: row.kind,
               providerId: row.provider_id,
+              ...(row.incarnation_id ? { incarnationId: row.incarnation_id } : {}),
               ...(row.parent_provider_id ? { parentProviderId: row.parent_provider_id } : {}),
               ...(row.region ? { region: row.region } : {}),
               ...(row.zone ? { zone: row.zone } : {}),

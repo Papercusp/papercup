@@ -43,7 +43,7 @@ import { createConfiguredGcpWorkspaceHostProvider } from '../../workspace-host/g
 import { resolveHostedGcpAuth } from '../../workspace-host/hosted-gcp-auth';
 import { createConfiguredAwsWorkspaceHostProvider } from '../../workspace-host/aws-configured-provider';
 import { resolveOrganizationExternalIdRef } from '../../workspace-host/hosted-aws-identity';
-import { admitHostedLifecycleJob, readHostedLifecycleAdmission, completeHostedPoolReuse,
+import { admitHostedLifecycleJob, readHostedLifecycleAdmission, completeHostedPoolReuse, refreshHostedStoppedOwnerObservation,
   type AdmitHostedLifecycleJobInput } from '../../workspace-host/hosted-lifecycle-store';
 import {
   HostedWorkspaceAdmissionError,
@@ -132,6 +132,11 @@ export async function resolveHostedPoolAdmission(
   }
   const disks = target?.resources.filter(value => value.resource.kind === 'disk') ?? [];
   if (disks.length > 1) throw new HostedWorkspaceAdmissionError('durable data volume identity is ambiguous', 'lifecycle_admission_unavailable');
+  if (target?.observedState === 'stopped') {
+    await refreshHostedStoppedOwnerObservation({ workspaceId: input.controlPlaneWorkspaceId,
+      customerWorkspaceId: input.customerWorkspaceId, hostId: target.id, requestId: input.operationId },
+    { resolveProvider: () => provider });
+  }
   return {
     pool: { scope: desired.scope, region: desired.region, zone: desired.zone,
       architecture: image.architecture, runtimeBundleSha256: bootstrap.runtimeRelease.bundleSha256,

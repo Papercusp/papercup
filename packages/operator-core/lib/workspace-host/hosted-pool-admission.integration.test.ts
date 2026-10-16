@@ -20,10 +20,13 @@ vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { admitHostedLifecycleJob, HostedLifecyclePlacementError, recordHostedPoolObservation, completeHostedPoolReuse } =
   await import('./hosted-lifecycle-store');
-const { beginWorkspaceHostOperation, readWorkspaceHostDestroyTarget } = await import('./observability-store');
+const { beginWorkspaceHostOperation, readWorkspaceHostDestroyTarget, upsertWorkspaceHostResourceCheckpoint,
+  readWorkspaceHostResourceCheckpoints } = await import('./observability-store');
 
 const migration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1522-workspace-host-pool-admission.sql', import.meta.url));
 const migrationSql = readFileSync(existsSync(migration) ? migration : `${migration}.DRAFT`, 'utf8');
+const incarnationMigration = fileURLToPath(new URL('../../../../libs/papercusp/libs/db/sql/1523-workspace-host-resource-incarnation.sql', import.meta.url));
+const incarnationSql = readFileSync(existsSync(incarnationMigration) ? incarnationMigration : `${incarnationMigration}.DRAFT`, 'utf8');
 const scope = { kind: 'project', id: 'pool-project' };
 const release = {
   version: 'pool-v1', bundleSha256: 'a'.repeat(64), signingKeySha256: 'b'.repeat(64),
@@ -37,6 +40,8 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     h.sql = db.appSql;
     await db.adminSql.unsafe(migrationSql);
     await db.adminSql.unsafe(migrationSql); // additive migration remains replayable
+    await db.adminSql.unsafe(incarnationSql);
+    await db.adminSql.unsafe(incarnationSql); // allocation identity migration is replayable too
   }, 180_000);
   afterAll(async () => { await db?.cleanup(); });
 
@@ -105,6 +110,28 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await expect(readWorkspaceHostDestroyTarget(foreignWs, 'same-host-name')).resolves.toMatchObject({
       id: 'same-host-name', hostedCustomerWorkspaceId: 'customer-2',
     });
+  });
+
+  it('round-trips provider allocation identity through durable checkpoints and a later operation target read', async () => {
+    const ws = fresh();
+    await customer(ws, 'allocation', 'owned');
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status)
+      VALUES (${ws}, 'allocation-operation', 'owned', 'provision', 'running')`;
+    const resource = { target: 'gcp', kind: 'disk', providerId: 'reusable-name', parentProviderId: 'pool-project',
+      zone: 'us-central1-a', incarnationId: '1234567890123456789' };
+    const checkpoint = { logicalKey: 'create-data-disk', state: 'applied' as const, attempts: 1, providerResource: resource };
+    await upsertWorkspaceHostResourceCheckpoint({ workspaceId: ws, hostId: 'owned', operationId: 'allocation-operation', checkpoint });
+    expect((await readWorkspaceHostResourceCheckpoints(ws, 'owned', 'allocation-operation'))[0]?.providerResource).toEqual(resource);
+    expect((await readWorkspaceHostDestroyTarget(ws, 'owned'))?.resources[0]?.resource).toEqual(resource);
+    // A changed allocation replaces the old identity; missing identity remains unknown.
+    await upsertWorkspaceHostResourceCheckpoint({ workspaceId: ws, hostId: 'owned', operationId: 'allocation-operation',
+      checkpoint: { ...checkpoint, providerResource: { ...resource, incarnationId: '9876543210' } } });
+    expect((await readWorkspaceHostDestroyTarget(ws, 'owned'))?.resources[0]?.resource.incarnationId).toBe('9876543210');
+    const { incarnationId: _removed, ...unknownAllocation } = resource;
+    await upsertWorkspaceHostResourceCheckpoint({ workspaceId: ws, hostId: 'owned', operationId: 'allocation-operation',
+      checkpoint: { ...checkpoint, providerResource: unknownAllocation } });
+    expect((await readWorkspaceHostResourceCheckpoints(ws, 'owned', 'allocation-operation'))[0]?.providerResource).not.toHaveProperty('incarnationId');
+    expect((await readWorkspaceHostDestroyTarget(ws, 'owned'))?.resources[0]?.resource).not.toHaveProperty('incarnationId');
   });
 
   it('reserves and binds once on concurrent duplicate wake, even with tenant cap one', async () => {
@@ -260,6 +287,61 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     expect(row).toEqual({ status: 'succeeded', controller_id: null });
     await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_revision = 2, observed_revision = 2 WHERE workspace_id = ${ws} AND id = 'owned'`;
     await expect(completeHostedPoolReuse(ws, receipt)).rejects.toThrow('fenced_or_stale');
+  });
+
+  async function stoppedOwner(ws: string) {
+    await customer(ws, 'sleeper', 'owned');
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_state = 'stopped', observed_state = 'stopped',
+      pool_observation = ${JSON.stringify(observation())}::jsonb, health_status = NULL, health_attested_at = NULL
+      WHERE workspace_id = ${ws} AND id = 'owned'`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status)
+      VALUES (${ws}, 'prior', 'owned', 'provision', 'succeeded')`;
+    await db.adminSql`INSERT INTO harness_shared.workspace_host_resources
+      (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id)
+      VALUES (${ws}, 'owned', 'create-data-disk', 'prior', 'applied', 'disk', 'volume-sleeper')`;
+    return observation({ observedAtMs: Date.now(), cleanAttestationRef: null,
+      stoppedOwner: { customerWorkspaceId: 'sleeper', dataVolumeId: 'volume-sleeper' } });
+  }
+
+  it('queues a normally stopped owner until measured proof exists, then reserves exactly one same-data wake', async () => {
+    const ws = fresh();
+    const proof = await stoppedOwner(ws);
+    await host(ws, 'spare');
+    const request = input(ws, 'sleeper', 'owned');
+    await expect(admitHostedLifecycleJob(request)).rejects.toBeInstanceOf(HostedLifecyclePlacementError);
+    await recordHostedPoolObservation({ workspaceId: ws, hostId: 'owned', controllerId: 'controller-a', observation: proof });
+    const results = await Promise.all([admitHostedLifecycleJob(request), admitHostedLifecycleJob(request)]);
+    expect(results.map(value => value.created).sort()).toEqual([false, true]);
+    expect(results[0]).toMatchObject({ hostId: 'owned', placement: { kind: 'start' } });
+    expect((await operations(ws)).filter(value => value.id !== 'prior')).toHaveLength(1);
+  });
+
+  it.each(['unhealthy', 'foreign-customer', 'wrong-disk', 'running', 'new-fence', 'reserved'])(
+    'rejects stopped proof after %s changes before record', async change => {
+      const ws = fresh();
+      const proof = await stoppedOwner(ws);
+      if (change === 'unhealthy') await db.adminSql`UPDATE harness_shared.workspace_hosts SET health_status = 'degraded' WHERE workspace_id = ${ws}`;
+      if (change === 'foreign-customer') proof.stoppedOwner!.customerWorkspaceId = 'foreign';
+      if (change === 'wrong-disk') proof.stoppedOwner!.dataVolumeId = 'foreign-disk';
+      if (change === 'running') await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_state = 'running', observed_state = 'running' WHERE workspace_id = ${ws}`;
+      if (change === 'new-fence') await db.adminSql`UPDATE harness_shared.workspace_hosts SET controller_fence = 8 WHERE workspace_id = ${ws}`;
+      if (change === 'reserved') await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status) VALUES (${ws}, 'competing', 'owned', 'start', 'queued')`;
+      await expect(recordHostedPoolObservation({ workspaceId: ws, hostId: 'owned', controllerId: 'controller-a', observation: proof }))
+        .rejects.toThrow('fenced_or_stale');
+    });
+
+  it('does not use stopped proof after its timestamp, disk, controller fence or observed state changes', async () => {
+    for (const change of ['stale', 'disk', 'fence', 'running', 'unhealthy']) {
+      const ws = fresh();
+      const proof = await stoppedOwner(ws);
+      await recordHostedPoolObservation({ workspaceId: ws, hostId: 'owned', controllerId: 'controller-a', observation: proof });
+      if (change === 'stale') await db.adminSql`UPDATE harness_shared.workspace_hosts SET pool_observation = jsonb_set(pool_observation, '{observedAtMs}', '1'::jsonb) WHERE workspace_id = ${ws}`;
+      if (change === 'disk') await db.adminSql`UPDATE harness_shared.workspace_host_resources SET provider_id = 'other' WHERE workspace_id = ${ws}`;
+      if (change === 'fence') await db.adminSql`UPDATE harness_shared.workspace_hosts SET controller_fence = 8 WHERE workspace_id = ${ws}`;
+      if (change === 'running') await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'running' WHERE workspace_id = ${ws}`;
+      if (change === 'unhealthy') await db.adminSql`UPDATE harness_shared.workspace_hosts SET health_status = 'degraded' WHERE workspace_id = ${ws}`;
+      await expect(admitHostedLifecycleJob(input(ws, 'sleeper', 'owned'))).rejects.toBeInstanceOf(HostedLifecyclePlacementError);
+    }
   });
 
   it('rejects a changed input reusing an operation id without charging or rebinding', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostHealthAttestation, WorkspaceHostProvider } from '@papercusp/deployment-driver';
-import { refreshHostedPoolObservation } from './hosted-lifecycle-store';
+import { refreshHostedPoolObservation, refreshHostedStoppedOwnerObservation } from './hosted-lifecycle-store';
 import type { StoredWorkspaceHostConnection, StoredWorkspaceHostDestroyTarget } from './observability-store';
 
 function fixture() {
@@ -56,6 +56,69 @@ describe('standing controller pool observations', () => {
   it('surfaces a fencing refusal if controller authority changed while the catalog was read', async () => {
     const f = fixture();
     f.record.mockRejectedValue(new Error('hosted_pool_observation_fenced_or_stale'));
+    await expect(f.run()).rejects.toThrow('fenced_or_stale');
+  });
+});
+
+describe('provider-measured stopped owner reconciliation', () => {
+  function stoppedFixture() {
+    const f = fixture();
+    Object.assign(f.target, { observedState: 'stopped', hostedCustomerWorkspaceId: 'customer-a',
+      resources: ['vm', 'disk'].map(kind => ({ registeredAt: new Date().toISOString(), resource: {
+        kind, target: 'gcp', providerId: `${kind}-a`, parentProviderId: 'project-a', zone: 'us-central1-a',
+      } })) });
+    const plan = vi.fn(async () => ({}));
+    const observed = { host: { hostId: 'host-a', target: 'gcp' }, state: 'stopped',
+      resources: f.target.resources.map(value => value.resource), observedAt: new Date().toISOString(), drift: [] as string[] };
+    const observe = vi.fn(async () => observed);
+    const provider = { ...f.deps.resolveProvider(), plan, observe } as unknown as WorkspaceHostProvider;
+    return { ...f, plan, observe, observed, run: () => refreshHostedStoppedOwnerObservation({
+      workspaceId: 'control-a', customerWorkspaceId: 'customer-a', hostId: 'host-a', requestId: 'wake-a',
+    }, { ...f.deps, resolveProvider: () => provider }) };
+  }
+
+  it('requires the strict provider start plan and actual stopped observation before publishing tenant-bound evidence', async () => {
+    const f = stoppedFixture();
+    expect(await f.run()).toMatchObject({ generation: 2, desiredRevision: 3, controllerFence: 9,
+      stoppedOwner: { customerWorkspaceId: 'customer-a', dataVolumeId: 'disk-a' }, cleanAttestationRef: null });
+    expect(f.plan).toHaveBeenCalledWith(expect.objectContaining({ action: 'start', operationId: 'wake-a' }),
+      expect.objectContaining({ durableTenantIdentity: expect.stringMatching(/^[a-f0-9]{64}$/),
+        connection: expect.objectContaining({ scope: f.target.desired.scope }) }));
+    expect(f.plan.mock.invocationCallOrder[0]).toBeLessThan(f.observe.mock.invocationCallOrder[0]!);
+    expect(f.record).toHaveBeenCalledOnce();
+  });
+
+  it.each(['running', 'foreign-tenant', 'unconverged', 'missing-disk', 'multiple-disks', 'missing-authority'])(
+    'does not even query the provider for %s canonical state', async kind => {
+      const f = stoppedFixture();
+      if (kind === 'running') f.target.observedState = 'running';
+      if (kind === 'foreign-tenant') f.target.hostedCustomerWorkspaceId = 'foreign';
+      if (kind === 'unconverged') f.target.observedRevision = 1;
+      if (kind === 'missing-authority') delete f.target.controllerAuthority;
+      if (kind === 'missing-disk') f.target.resources = f.target.resources.filter(value => value.resource.kind !== 'disk');
+      if (kind === 'multiple-disks') f.target.resources = [...f.target.resources, f.target.resources[1]!];
+      expect(await f.run()).toBeNull();
+      expect(f.plan).not.toHaveBeenCalled();
+      expect(f.record).not.toHaveBeenCalled();
+    });
+
+  it.each(['running', 'drift', 'future', 'invalid-time'])(
+    'does not publish unmeasured stopped evidence for %s provider result', async kind => {
+      const f = stoppedFixture();
+      if (kind === 'running') f.observed.state = 'running';
+      if (kind === 'drift') f.observed.drift = ['disk-detached:disk-a'];
+      if (kind === 'future') f.observed.observedAt = new Date(Date.now() + 60_000).toISOString();
+      if (kind === 'invalid-time') f.observed.observedAt = 'unknown';
+      expect(await f.run()).toBeNull();
+      expect(f.record).not.toHaveBeenCalled();
+    });
+
+  it('propagates exact-disk or competing-writer refusals and controller CAS failures', async () => {
+    const f = stoppedFixture();
+    f.plan.mockRejectedValueOnce(new Error('foreign disk writer'));
+    await expect(f.run()).rejects.toThrow('foreign disk writer');
+    expect(f.record).not.toHaveBeenCalled();
+    f.record.mockRejectedValueOnce(new Error('hosted_pool_observation_fenced_or_stale'));
     await expect(f.run()).rejects.toThrow('fenced_or_stale');
   });
 });

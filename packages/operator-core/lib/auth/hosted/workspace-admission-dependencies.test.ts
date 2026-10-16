@@ -4,6 +4,11 @@ import type { HostedWorkspaceProvisioningRequest } from './workspace-admission';
 const h = vi.hoisted(() => ({
   confidence: 'estimated' as 'estimated' | 'unknown', monthly: 1.234, architecture: 'x86_64',
   disks: [] as Array<{ resource: { kind: string; providerId: string } }>,
+  stopped: false,
+}));
+vi.mock('../../workspace-host/hosted-lifecycle-store', () => ({
+  refreshHostedStoppedOwnerObservation: vi.fn(async () => null),
+  admitHostedLifecycleJob: vi.fn(), readHostedLifecycleAdmission: vi.fn(), completeHostedPoolReuse: vi.fn(),
 }));
 vi.mock('../../dbos/workspace-host-provision-workflow', () => ({
   startWorkspaceHostProvisioningWorkflow: vi.fn(), startWorkspaceHostLifecycleWorkflow: vi.fn(),
@@ -21,10 +26,11 @@ vi.mock('../../workspace-host/gcp-provider', () => ({
 }));
 vi.mock('../../workspace-host/observability-store', () => ({
   readWorkspaceHostConnection: vi.fn(), upsertWorkspaceHost: vi.fn(),
-  readWorkspaceHostDestroyTarget: async () => ({ resources: h.disks }),
+  readWorkspaceHostDestroyTarget: async () => ({ id: 'host-a', observedState: h.stopped ? 'stopped' : 'running', resources: h.disks }),
 }));
 
 const { resolveHostedPoolAdmission } = await import('./workspace-admission-dependencies');
+const { refreshHostedStoppedOwnerObservation } = await import('../../workspace-host/hosted-lifecycle-store');
 const input: HostedWorkspaceProvisioningRequest = {
   controlPlaneWorkspaceId: 'control-a', customerWorkspaceId: 'customer-a', connectionId: 'connection-a',
   hostId: 'host-a', name: 'Trial', operationId: 'operation-a', actorId: 'user-a',
@@ -34,7 +40,7 @@ const input: HostedWorkspaceProvisioningRequest = {
 };
 
 describe('server-owned hosted pool requirements', () => {
-  beforeEach(() => { h.confidence = 'estimated'; h.monthly = 1.234; h.architecture = 'x86_64'; h.disks = []; });
+  beforeEach(() => { h.confidence = 'estimated'; h.monthly = 1.234; h.architecture = 'x86_64'; h.disks = []; h.stopped = false; vi.clearAllMocks(); });
   const stored = { connection: { target: 'gcp', cloudCredentialRef: { kind: 'cloud', ref: 'adc://fixture' } } } as const;
 
   it('uses the configured provider without a DBOS registry, rounds a nonzero estimate up, and pins tenant/data/runtime affinity', async () => {
@@ -47,6 +53,17 @@ describe('server-owned hosted pool requirements', () => {
   it('refuses an unknown zero quote rather than granting free capacity', async () => {
     h.confidence = 'unknown'; h.monthly = 0;
     await expect(resolveHostedPoolAdmission(input, stored)).rejects.toMatchObject({ code: 'lifecycle_admission_unavailable' });
+  });
+
+  it('measures an existing stopped owner before returning the pool requirements and propagates safety refusal', async () => {
+    h.stopped = true;
+    h.disks = [{ resource: { kind: 'disk', providerId: 'disk-a' } }];
+    expect((await resolveHostedPoolAdmission(input, stored)).pool?.dataVolumeId).toBe('disk-a');
+    expect(refreshHostedStoppedOwnerObservation).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'control-a', customerWorkspaceId: 'customer-a', hostId: 'host-a', requestId: 'operation-a',
+    }, expect.objectContaining({ resolveProvider: expect.any(Function) }));
+    vi.mocked(refreshHostedStoppedOwnerObservation).mockRejectedValueOnce(new Error('foreign-disk'));
+    await expect(resolveHostedPoolAdmission(input, stored)).rejects.toThrow('foreign-disk');
   });
 
   it('requires a measured architecture and unambiguous retained data volume', async () => {
