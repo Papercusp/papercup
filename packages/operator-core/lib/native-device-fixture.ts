@@ -10,10 +10,10 @@
  * Existing temporary-hostname native cases keep their original safety guards.
  */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
-import { existsSync, mkdirSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
@@ -391,6 +391,15 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       'Disposable public HTTPS fixture; no native UI, cloud relay or release acceptance claimed' };
   const save = () => saveFixtureReceipt(evidence, receipt);
   let host: ChildProcess | undefined, connector: ChildProcess | undefined;
+  // Use the maintained host bundle producer instead of loading the CommonJS
+  // TypeScript entry through tsx. The committed-source guard correctly refuses
+  // a CommonJS transform of a checkout module; this fixture must exercise the
+  // same plain-node artifact that staging and release hosts run. Keep the
+  // generated directory under the ignored dist-host-* family so its bundle is
+  // allowed by the source guard, while its import.meta-derived repo root still
+  // resolves to this checkout.
+  const fixtureBundleDir = mkdtempSync(join(ROOT, 'apps/operator/dist-host-native-fixture-'));
+  const fixtureBundlePath = join(fixtureBundleDir, 'hono-host.mjs');
   let removal: (RemovalTarget & { tunnelName: string }) | undefined;
   let stopped = false;
   const stop = () => { stopped = true; };
@@ -411,10 +420,30 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       ...process.env, MOBILE_JWT_SECRET: randomBytes(48).toString('base64url'),
       MOBILE_DESKTOP_PUBLIC_URL: String(receipt.publicBase), MOBILE_DESKTOP_HOST: hostname,
     };
-    const startHost = (log: string) => start(process.execPath,
-      ['--import', 'tsx', ...(deviceExpiry ? ['--import', resolve(ROOT,
-        'packages/operator-core/lib/native-device-fixture-clock.ts')] : []),
-      resolve(ROOT, 'apps/operator/bin/hono-host.ts')], hostEnv, log, deviceExpiry);
+    const startHost = (log: string) => {
+      const buildLog = resolve(evidence, 'host-bundle-build.log');
+      try {
+        const output = execFileSync('bash', [resolve(ROOT, 'apps/operator/bin/bundle-host.sh'),
+          'bin/hono-host.ts', fixtureBundlePath], {
+          cwd: ROOT, env: hostEnv, encoding: 'utf8', timeout: 180_000,
+          maxBuffer: 8 * 1024 * 1024,
+        });
+        writeFileSync(buildLog, output, { mode: 0o600 });
+      } catch (error) {
+        const detail = error && typeof error === 'object'
+          ? `${String((error as { stdout?: unknown }).stdout ?? '')}${String((error as { stderr?: unknown }).stderr ?? '')}`
+          : String(error);
+        writeFileSync(buildLog, detail.slice(-32_000), { mode: 0o600 });
+        // Preserve the build refusal in the conventional host log as well: the
+        // caller's bounded startup diagnostic already reads that path.
+        writeFileSync(resolve(evidence, log), detail.slice(-32_000), { mode: 0o600 });
+        throw error;
+      }
+      return start(process.execPath,
+        [...(deviceExpiry ? ['--import', resolve(ROOT,
+          'packages/operator-core/lib/native-device-fixture-clock.ts')] : []), fixtureBundlePath],
+        hostEnv, log, deviceExpiry);
+    };
     host = startHost('host.log');
     receipt.hostPid = host.pid;
     await waitForFixtureHost(host, resolve(evidence, 'host.log'), async () => {
@@ -577,6 +606,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       const input = resolve(evidence, name); if (existsSync(input)) unlinkSync(input);
     }
     for (const fd of logs) closeSync(fd);
+    rmSync(fixtureBundleDir, { recursive: true, force: true });
     receipt.cleanupVerified = receipt.processCleanupVerified === true && receipt.cloudCleanupVerified === true;
     receipt.finishedAt = new Date().toISOString(); save();
     console.log('NATIVE_HTTPS_FIXTURE_TERMINAL=' + JSON.stringify({ ready: receipt.ready, cleanupVerified: receipt.cleanupVerified,
