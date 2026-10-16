@@ -2401,6 +2401,74 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
   );
 });
 
+it('keeps repeated host cancellation requests pending until the real zero-byte receipt (WI5883)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-cancel-retry-'));
+  const ownerId = uniqueOwner('CANCEL-RETRY');
+  const sock = socketPathFor(ownerId);
+  const log = eventLogPathForOwner(ownerId);
+  const signalSource = new EventEmitter();
+  const { captured, type, io } = bridgedIo();
+  const writes: string[] = [];
+  const payload = 'MUST_NOT_REACH_THE_CHILD';
+  const done = hostThroughPty({
+    command: execPath, args: ['-e', silentChildCode(15_000)], cwd: root,
+    ownerId, io, bridgeTty: true, signalSource, onExit: () => {},
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', CLAUDE_CONFIG_DIR: root,
+      PAPERCUSP_PSU_PTY_IDLE_MS: '20',
+      PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '10000',
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20',
+    }),
+    spawnPty: (file, args, options, realSpawn) => {
+      const child = realSpawn(file, args, options);
+      const write = child.write.bind(child);
+      child.write = (data: string) => { writes.push(data); write(data); };
+      return child;
+    },
+  });
+  const events = () => existsSync(log)
+    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    : [];
+  const envelope = { mode: 'turn' as const, ownerId, data: payload, deliveryId: 'cancel-retry-1' };
+  const cancellation = { ...envelope, cancelDeliveryIds: [envelope.deliveryId], handledMsgIds: ['m-handled'] };
+  try {
+    expect(await waitForOutput(captured, 'RAW_READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    // An unsubmitted owner line holds the real host gate until we clear it.
+    // No native transcript or loop-origin proof is manufactured by this fixture.
+    type('owner draft');
+    expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({
+      ok: true, confirmation: 'acked', reason: 'accepted',
+    });
+    for (let retry = 0; retry < 2; retry++) {
+      expect(await injectIntoHostWithConfirmation(sock, cancellation)).toMatchObject({
+        ok: true, confirmation: 'acked', reason: 'cancel-requested',
+      });
+      expect(events().some((event) => event.kind === 'delivery-cancelled-before-write')).toBe(false);
+      expect(writes.join('')).not.toContain(payload);
+    }
+    type('\x15');
+    await expect.poll(() => events().find((event) => event.kind === 'delivery-cancelled-before-write'), {
+      timeout: 3000,
+    }).toMatchObject({ deliveryIds: [envelope.deliveryId], handledMsgIds: ['m-handled'], bytesWritten: 0 });
+    expect(await injectIntoHostWithConfirmation(sock, cancellation)).toMatchObject({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+    // A delayed original retry must hit the cancelled tombstone too.
+    expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+    expect(events()).toContainEqual(expect.objectContaining({
+      kind: 'duplicate-cancelled-delivery-id', deliveryId: envelope.deliveryId,
+    }));
+    expect(writes.join('')).not.toContain(payload);
+  } finally {
+    signalSource.emit('SIGTERM');
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
+
 // EI-19311270129974785: "a single wake delivery is re-attempted 4x and injects 3
 // duplicate agent turns". Root cause: the client's ack-wait can time out (or the
 // host's ack write-back can fail) even though the host is ALREADY unstoppably
