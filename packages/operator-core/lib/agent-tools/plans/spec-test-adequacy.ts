@@ -2149,7 +2149,18 @@ function rerunRecipeFor(
       : [...new Set(selection?.evidenceRefs ?? [])].sort((a, b) => a.localeCompare(b));
   const replayBindingIds =
     evidence.length > 0 && evidence.every((row) => Number.isSafeInteger(row.id) && row.id! > 0)
-      ? [...new Set(evidence.flatMap((row) => row.supportingBindingIds ?? [row.id!]))].sort((a, b) => a - b)
+      ? [
+          ...new Set(
+            evidence.flatMap((row) => [
+              ...(row.supportingBindingIds ?? [row.id!]),
+              // A certified fixture-free proof cites an independent verifier that
+              // may not be in the selected evidence cohort. Keep that verifier in
+              // the replay population or the reader cannot reconstruct the
+              // certificate and fixture-calibration degrades from N/A to unknown.
+              ...(row.fixtureAbsenceVerification?.verifierBindingIds ?? []),
+            ]),
+          ),
+        ].sort((a, b) => a - b)
       : selection?.bindingIds !== undefined
         ? [...new Set(selection.bindingIds)].sort((a, b) => a - b)
         // An empty graded population is still an exact selection. Leaving the selector
