@@ -2034,6 +2034,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       testRunProvenance: {
         filePath: testPath, commitSha: 'abc123', worktreeDirty: false,
         source: 'mutation-probe', mutationPhase: 'mutant', mutationFailedCaseTitles: cases,
+        mutationFailureLines: cases.map(title => `${title}: expected refusal`),
       },
       details: { adequacy: { targeted: targets[index], scenarioIds: [targets[index]], testCases,
         outcome: 'caught', collected: true, skipped: false, executed: true } },
@@ -2052,7 +2053,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
     it('credits exact declared colon-free cases with measured failures and passing baselines', () => {
       const result = evaluate(targets.map((_, index) => mutationFor(index, [cases[index]!])));
-      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.rating, result.ratings.falsifiability.evidence).toBe('pass');
       expect(result.ratings.falsifiability.evidence).toContain('id=40101');
       expect(result.ratings.falsifiability.evidence).toContain('id=40102');
     });
@@ -2060,6 +2061,22 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     it('refuses a measured case declared for different targets on the shared run', () => {
       const result = evaluate([mutationFor(0, [cases[0]!]), mutationFor(1, [cases[0]!])]);
       expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+
+    it('does not rescue ambiguous explicit mappings through the legacy colon fallback', () => {
+      const colonCase = 'hiring requirements > missing-amount: offer amount is refused';
+      const rows = targets.map((_, index) => mutationFor(index, [colonCase]));
+      rows.forEach(row => { row.testRunProvenance!.mutationFailedCaseTitles = [colonCase]; });
+      const result = evaluateSpecTestAdequacy({ clause: scenarioClause(),
+        evidence: [successfulTestBinding(testPath, { testCases: [colonCase] }), ...rows],
+        classRef: 'plan-class-feature-ship' });
+      expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+
+    it('recognizes the canonical full-title joiner in explicit associations', () => {
+      const rows = targets.map((_, index) => mutationFor(index, [cases[index]!.replace(' > ', ' ')]));
+      const result = evaluate(rows);
+      expect(result.ratings.falsifiability.rating, result.ratings.falsifiability.evidence).toBe('pass');
     });
 
     it.each(['unmeasured', 'off-scenario', 'missing-baseline'] as const)('refuses an explicit %s association', mode => {
@@ -2101,6 +2118,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           outcome: 'caught',
         },
       };
+      // This exercises the legacy title convention without an explicit mapping.
+      delete (mutation.details.adequacy as Record<string, unknown>).testCases;
       return mutation;
     };
     const baseline = successfulTestBinding(testPath, { testCases: [employeeCase, contractorCase] });
@@ -3516,7 +3535,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(29);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(30);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {
