@@ -668,6 +668,19 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(store.recordImage).not.toHaveBeenCalled();
   });
 
+  it.each(['start', 'restart'] as const)('defers hosted %s completion to the retained-data controller', async (action) => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue({ operationId: 'op-1', stepId: 'start-instance', state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z', resource: vm });
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), action,
+      providerCompletionMode: 'defer-to-product-controller' })).resolves.toMatchObject({
+      status: 'in-progress', lifecycleStage: 'provider-complete',
+    });
+    expect(store.updateOperation).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'running', percent: 50 }));
+    expect(store.appendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'complete', status: 'succeeded' }));
+  });
+
   it('leaves an initialization-preserving action reporting a plain completion', async () => {
     // The calibration case. Without it, a predicate stuck at `true` would pass the test above
     // while declaring every stop and restart unusable.

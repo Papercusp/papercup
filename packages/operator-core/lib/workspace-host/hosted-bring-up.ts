@@ -34,6 +34,7 @@ import {
   PostgresHostedWorkspaceConnectorStore,
 } from '../endpoint-route/hosted-workspace-connector';
 import { enrollGcpIapWorkspaceHostConnector } from './gcp-iap-connector-enrollment';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import type { WorkspaceHostInitializationAdmission } from './initialization-admission';
 import {
   resolveWorkspaceHostInitializationControllerProfile,
@@ -119,6 +120,8 @@ export function hostedBringUpInitialization(input: {
   requestedAt: string;
   desired: WorkspaceHostDesiredSpec;
   requestedAgents: readonly WorkspaceHostCanaryAgent[];
+  /** Controller-read binding for an existing customer disk; never accepted from the browser. */
+  retainedCustomerWorkspaceId?: string;
 }): WorkspaceHostInitializationAdmission {
   const { desired } = input;
   const workload = hostedBringUpWorkload(desired);
@@ -129,7 +132,9 @@ export function hostedBringUpInitialization(input: {
     hostId: desired.hostId,
     operationId: input.operationId,
     requestedAt: input.requestedAt,
-    source: { kind: 'empty' },
+    source: input.retainedCustomerWorkspaceId
+      ? { kind: 'retained', tenantIdentity: workspaceHostDurableTenantIdentity(input.workspaceId, input.retainedCustomerWorkspaceId) }
+      : { kind: 'empty' },
     credentialRefs: {
       cloudCredentialRef: {
         kind: 'cloud',

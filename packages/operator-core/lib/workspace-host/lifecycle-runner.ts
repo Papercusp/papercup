@@ -1359,7 +1359,8 @@ export async function runWorkspaceHostLifecycle(
        * so gating would replace a premature success with a permanent hang.
        */
       const requiresInitialization = workspaceHostActionInvalidatesInitialization(input.action);
-      if (requiresInitialization && input.providerCompletionMode === 'defer-to-product-controller') {
+      if (input.providerCompletionMode === 'defer-to-product-controller' &&
+          (requiresInitialization || input.action === 'start' || input.action === 'restart')) {
         const providerMessage =
           `Workspace-host ${input.action} provider steps completed; ` +
           'the durable product controller is continuing to workspace-usable';

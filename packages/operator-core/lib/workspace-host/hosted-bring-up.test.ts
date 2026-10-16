@@ -72,6 +72,16 @@ function request(desired: WorkspaceHostDesiredSpec = HOSTED) {
 }
 
 describe('hosted bring-up (D-401)', () => {
+  it('derives retained tenant identity from the exact customer binding and never selects empty creation', () => {
+    const retained = (customerWorkspaceId: string) => hostedBringUpInitialization({
+      workspaceId: 'papercusp-workspace', operationId: 'wake.initialize', requestedAt: '2026-10-16T06:00:00Z',
+      desired: HOSTED, requestedAgents: ['omp'], retainedCustomerWorkspaceId: customerWorkspaceId,
+    });
+    const first = retained('customer-1');
+    expect(first.source).toMatchObject({ kind: 'retained', tenantIdentity: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(first.source).not.toEqual(retained('customer-2').source);
+    expect(planWorkspaceHostInitialization({ ...first, deliveryCapabilities: { fileTransfer: true } }).steps[0].kind).toBe('verify-retained-workspace');
+  });
   it('builds the request that initialized a real hosted machine (op d401-probe-init-4)', () => {
     expect(request()).toMatchObject({
       hostId: HOSTED.hostId,
