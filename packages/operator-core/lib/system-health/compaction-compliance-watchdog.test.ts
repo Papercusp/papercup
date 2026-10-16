@@ -244,8 +244,11 @@ function fakeSql(opts: {
     compaction_limit_explicit?: boolean | null;
     fleet_slug?: string | null;
     fleet_role?: string | null;
-    /** Latest eligible turn call returned by the bounded tool_invocations probe. */
+    /** Latest eligible turn call returned by the bounded, session-scoped probe. */
     last_turn_at?: string | Date | null;
+    last_turn_session_id?: string | null;
+    active_session_id?: string | null;
+    active_session_started_at?: string | Date | null;
     /** Fresh hook-only presence activity used to guard against false turn evidence. */
     last_active_at?: string | null;
   }>;
@@ -294,6 +297,9 @@ function fakeSql(opts: {
     if (q.includes('fleet_membership_events')) {
       const label = opts.fleetLabels?.[String(values[0])];
       return Promise.resolve(label ? [{ owner_label: label }] : []);
+    }
+    if (q.includes('harness_shared.coord_presence cp') && q.includes('harness_shared.adv_sessions s')) {
+      return Promise.resolve(opts.seeded ?? []);
     }
     if (q.includes('harness_shared.adv_sessions') && q.includes('ended_at IS NULL')) {
       const owners = opts.legacyUnendedSessionOwners ?? [];
@@ -583,7 +589,11 @@ describe('original compaction durable episodes', () => {
       ownerIds: [h.row.owner_id],
       options: { hydrateBatch: true, psuHostPositiveAuthority: true, selfWake: true, hostCondition: true },
     });
-    expect(observedSqlQueries.some(({ query }) => query.includes('harness_shared.adv_sessions'))).toBe(false);
+    expect(observedSqlQueries.some(({ query }) =>
+      query.includes('harness_shared.adv_sessions s') &&
+      query.includes('s.ended_at IS NULL') &&
+      query.includes('s.ended_by IS NULL'),
+    )).toBe(true);
   });
   it('preserves one-shot episodes when the shared liveness read fails', async () => {
     const h = fixture();
@@ -2317,6 +2327,66 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(query!.values).toContainEqual(['session:request-compaction']);
     expect(query!.values).toContainEqual(['journal:record-turn', 'locks:acquire', 'locks:check_command', 'locks:release']);
     expect(query!.values).toContainEqual(['pre', 'post']);
+  });
+
+  it('does not treat a predecessor-session activity hook as a current active turn', async () => {
+    estimateMock.mockResolvedValue(null);
+    const sessionStartedAtMs = Date.now() - 2 * 60_000;
+    const sessionStartedAt = new Date(sessionStartedAtMs);
+    const beforeSessionStart = new Date(sessionStartedAtMs - 13_122);
+    const afterSessionStart = new Date(Date.now() - 1_000);
+    const currentRef = {
+      agent: 'codex',
+      sessionId: 'codex-current',
+      sessionKey: 45210,
+      startedAtMs: sessionStartedAtMs,
+    };
+    resolveSessionRefMock.mockResolvedValue(currentRef);
+
+    const seeded = [
+      {
+        owner_id: 'blind-before-session',
+        owner_label: 'su · blind-before-session',
+        compaction_limit: 300_000,
+        last_turn_at: beforeSessionStart,
+        last_turn_session_id: 'codex-predecessor',
+        active_session_id: 'codex-current',
+        active_session_started_at: sessionStartedAt,
+      },
+      {
+        owner_id: 'blind-late-predecessor-hook',
+        owner_label: 'su · blind-late-predecessor-hook',
+        compaction_limit: 300_000,
+        last_turn_at: afterSessionStart,
+        last_turn_session_id: 'codex-predecessor',
+        active_session_id: 'codex-current',
+        active_session_started_at: sessionStartedAt,
+      },
+      {
+        owner_id: 'blind-current-session',
+        owner_label: 'su · blind-current-session',
+        compaction_limit: 300_000,
+        last_turn_at: afterSessionStart,
+        last_turn_session_id: 'codex-current',
+        active_session_id: 'codex-current',
+        active_session_started_at: sessionStartedAt,
+      },
+    ];
+
+    for (let sweep = 0; sweep < 3; sweep++) {
+      const out = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(out.bootConfigAlerts).toEqual(sweep < 2 ? [] : [
+        { owner: 'blind-current-session', kind: 'dark-telemetry', detail: '3 null sweeps' },
+      ]);
+    }
+
+    const query = observedSqlQueries.find(({ query }) =>
+      query.includes('FROM harness_shared.coord_presence cp') && query.includes('harness_shared.tool_invocations'));
+    expect(query).toBeDefined();
+    expect(query!.query).toContain('FROM harness_shared.adv_sessions s');
+    expect(query!.query).toContain('s.coord_owner_id = cp.owner_id');
+    expect(query!.query).toContain('ti.invoked_at >= active_session.started_at');
+    expect(query!.query).toContain("ti.args_json->>'session_id' = active_session.session_id");
   });
 
   it('a resolved estimate clears the streak — a brief null run never reaches the escalation threshold', async () => {
