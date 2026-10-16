@@ -177,6 +177,8 @@ interface HostedPoolHostResourceAdmission {
   allocated: { hosts: number; cpuMillicores: number; memoryMiB: number };
   pending: { hosts: number; cpuMillicores: number; memoryMiB: number };
   requested: { hosts: number; cpuMillicores: number; memoryMiB: number };
+  /** Full selected capacity, including a zero-increment running reuse. Older receipts omit it. */
+  capacity?: { hosts: number; cpuMillicores: number; memoryMiB: number };
   budget: { currency: string; committedMinor: number; requestedMinor: number };
 }
 
@@ -533,9 +535,9 @@ async function admitHostedPoolHostResources(
         ON customer.workspace_id = host.workspace_id AND customer.workspace_host_id = host.id
      WHERE customer.workspace_id = ${input.workspaceId} AND customer.organization_id = ${organizationId}
      ORDER BY host.id`;
-  const operations = await tx<Array<{ host_id: string; status: string; estimated_cost_cents: string | number | null;
+  const operations = await tx<Array<{ host_id: string; action: string; status: string; estimated_cost_cents: string | number | null;
     cost_currency: string | null; admission_receipt: { result?: HostedLifecycleAdmissionReceipt } | null }>>`
-    SELECT operation.host_id, operation.status, operation.estimated_cost_cents,
+    SELECT operation.host_id, operation.action, operation.status, operation.estimated_cost_cents,
            operation.cost_currency, operation.admission_receipt
       FROM harness_shared.workspace_host_operations operation
      WHERE operation.workspace_id = ${input.workspaceId} AND operation.organization_id = ${organizationId}
@@ -545,7 +547,8 @@ async function admitHostedPoolHostResources(
           WHERE workspace_id = ${input.workspaceId} AND organization_id = ${organizationId}))`;
   const allocated = { hosts: 0, cpuMillicores: 0, memoryMiB: 0 };
   const pending = { hosts: 0, cpuMillicores: 0, memoryMiB: 0 };
-  const liveHosts = new Set<string>();
+  const liveHosts = new Map<string, typeof allocated>();
+  const hostCapacity = new Map<string, typeof allocated>();
   const add = (target: typeof allocated, demand: typeof allocated) => {
     for (const key of ['hosts', 'cpuMillicores', 'memoryMiB'] as const) {
       safeInt(demand[key], `pool_${key}`);
@@ -557,9 +560,12 @@ async function admitHostedPoolHostResources(
     const o = host.pool_observation;
     if (!o || o.generation !== host.host_generation || o.controllerFence !== host.controller_fence ||
         o.desiredRevision !== host.desired_revision) throw new Error('hosted_pool_allocated_capacity_unknown');
-    liveHosts.add(host.id);
-    add(allocated, { hosts: 1, cpuMillicores: host.observed_state === 'stopped' ? 0 : o.size.cpuCount * 1000,
-      memoryMiB: host.observed_state === 'stopped' ? 0 : o.size.memoryMiB });
+    const capacity = { hosts: 1, cpuMillicores: o.size.cpuCount * 1000, memoryMiB: o.size.memoryMiB };
+    const charged = { hosts: 1, cpuMillicores: host.observed_state === 'stopped' ? 0 : capacity.cpuMillicores,
+      memoryMiB: host.observed_state === 'stopped' ? 0 : capacity.memoryMiB };
+    hostCapacity.set(host.id, capacity);
+    liveHosts.set(host.id, charged);
+    add(allocated, charged);
   }
   let committedMinor = 0;
   const pendingHosts = new Set<string>();
@@ -569,13 +575,24 @@ async function admitHostedPoolHostResources(
       throw new Error('hosted_pool_budget_currency_or_cost_unknown');
     }
     committedMinor = safeInt(committedMinor + safeInt(cents, 'pool_committed_cost'), 'pool_committed_cost');
-    if (!['queued', 'running'].includes(operation.status) || liveHosts.has(operation.host_id)) continue;
+    if (!['queued', 'running'].includes(operation.status)) continue;
+    const charged = liveHosts.get(operation.host_id);
+    // A present VM covers its host slot, but a STOPPED VM covers no compute.
+    // Keep the start reservation until actual capacity represents it; never add
+    // the full VM again when the controller observes the same start as running.
+    if (charged && (charged.cpuMillicores > 0 && charged.memoryMiB > 0 ||
+        !['start', 'provision'].includes(operation.action))) continue;
     const reservation = operation.admission_receipt?.result?.resourceAdmission;
     if (!reservation || reservation.schemaVersion !== 1 || pendingHosts.has(operation.host_id)) {
       throw new Error('hosted_pool_pending_capacity_unknown');
     }
     pendingHosts.add(operation.host_id);
-    add(pending, reservation.requested);
+    const capacity = reservation.capacity ?? hostCapacity.get(operation.host_id) ?? reservation.requested;
+    const unrepresented = { hosts: 0, cpuMillicores: 0, memoryMiB: 0 };
+    for (const key of ['hosts', 'cpuMillicores', 'memoryMiB'] as const) {
+      unrepresented[key] = Math.max(0, safeInt(capacity[key], `pool_${key}`) - (charged?.[key] ?? 0));
+    }
+    add(pending, unrepresented);
   }
   let size = input.pool!.minimum;
   const selectedHostId = 'hostId' in placement ? placement.hostId : input.hostId;
@@ -608,6 +625,7 @@ async function admitHostedPoolHostResources(
   return { schemaVersion: 1, authorityRevision: authority.authorityRevision,
     bundleId: authority.resolution.bundleId, bundleVersion: authority.resolution.bundleVersion,
     auditReceiptIds: authority.resolution.auditReceiptIds, measuredAt: now.toISOString(), allocated, pending, requested,
+    capacity: { hosts: 1, cpuMillicores: size.cpuCount * 1000, memoryMiB: size.memoryMiB },
     budget: { currency: input.estimate.currency, committedMinor, requestedMinor } };
 }
 

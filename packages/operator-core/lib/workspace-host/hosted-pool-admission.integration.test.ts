@@ -426,19 +426,69 @@ describe('hosted pool admission (real Postgres + workspace RLS)', () => {
     await expect(completeHostedPoolReuse(ws, receipt)).rejects.toThrow('fenced_or_stale');
   });
 
-  async function stoppedOwner(ws: string) {
-    await customer(ws, 'sleeper', 'owned');
+  async function stoppedOwner(ws: string, customerId = 'sleeper', hostId = 'owned', organizationId = randomUUID()) {
+    const priorId = customerId === 'sleeper' ? 'prior' : `prior-${customerId}`;
+    const volumeId = `volume-${customerId}`;
+    await customer(ws, customerId, hostId, organizationId);
     await db.adminSql`UPDATE harness_shared.workspace_hosts SET desired_state = 'stopped', observed_state = 'stopped',
       pool_observation = ${JSON.stringify(observation())}::jsonb, health_status = NULL, health_attested_at = NULL
-      WHERE workspace_id = ${ws} AND id = 'owned'`;
+      WHERE workspace_id = ${ws} AND id = ${hostId}`;
     await db.adminSql`INSERT INTO harness_shared.workspace_host_operations (workspace_id, id, host_id, action, status)
-      VALUES (${ws}, 'prior', 'owned', 'provision', 'succeeded')`;
+      VALUES (${ws}, ${priorId}, ${hostId}, 'provision', 'succeeded')`;
     await db.adminSql`INSERT INTO harness_shared.workspace_host_resources
       (workspace_id, host_id, logical_key, operation_id, state, kind, provider_id)
-      VALUES (${ws}, 'owned', 'create-data-disk', 'prior', 'applied', 'disk', 'volume-sleeper')`;
+      VALUES (${ws}, ${hostId}, 'create-data-disk', ${priorId}, 'applied', 'disk', ${volumeId})`;
     return observation({ observedAtMs: Date.now(), cleanAttestationRef: null,
-      stoppedOwner: { customerWorkspaceId: 'sleeper', dataVolumeId: 'volume-sleeper' } });
+      stoppedOwner: { customerWorkspaceId: customerId, dataVolumeId: volumeId } });
   }
+
+  it.each(['pool.cpu-millicores', 'pool.memory-mib'] as const)(
+    'reserves %s for a pending stopped-owner start across directory replacement', async quota => {
+      const ws = fresh();
+      const org = randomUUID();
+      const proof = await stoppedOwner(ws, 'sleeper', 'owned', org);
+      await recordHostedPoolObservation({ workspaceId: ws, hostId: 'owned', controllerId: 'controller-a', observation: proof });
+      await allowance(org, { [quota]: quota === 'pool.cpu-millicores' ? 4000 : 8192 });
+      const wake = await admitHostedLifecycleJob(input(ws, 'sleeper', 'owned'));
+      expect(wake.resourceAdmission).toMatchObject({
+        allocated: { hosts: 1, cpuMillicores: 0, memoryMiB: 0 },
+        requested: { hosts: 0, cpuMillicores: 4000, memoryMiB: 8192 },
+      });
+      await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'deleted', deleted_at = now()
+        WHERE workspace_id = ${ws} AND id = 'sleeper'`;
+      await customer(ws, 'replacement', undefined, org);
+      await expect(admitHostedLifecycleJob({ ...input(ws, 'replacement'), action: 'provision' }))
+        .rejects.toThrow(`quota_exceeded:${quota}`);
+      expect((await operations(ws)).filter(row => row.id.startsWith('op-'))).toHaveLength(1);
+    });
+
+  it('moves a stopped-owner start from pending to allocated compute without double charging', async () => {
+    const ws = fresh();
+    const org = randomUUID();
+    const proof = await stoppedOwner(ws, 'sleeper', 'owned', org);
+    await recordHostedPoolObservation({ workspaceId: ws, hostId: 'owned', controllerId: 'controller-a', observation: proof });
+    await allowance(org, { 'pool.cpu-millicores': 6000, 'pool.memory-mib': 12288 });
+    await admitHostedLifecycleJob(input(ws, 'sleeper', 'owned'));
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'deleted', deleted_at = now()
+      WHERE workspace_id = ${ws} AND id = 'sleeper'`;
+    await customer(ws, 'replacement', undefined, org);
+    const replacement = { ...input(ws, 'replacement'), action: 'provision' as const };
+    const receipt = await admitHostedLifecycleJob(replacement);
+    expect(receipt.resourceAdmission).toMatchObject({
+      allocated: { hosts: 1, cpuMillicores: 0, memoryMiB: 0 },
+      pending: { hosts: 0, cpuMillicores: 4000, memoryMiB: 8192 },
+    });
+    // Release the second reservation, then observe the first actual VM starting.
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations SET status = 'failed'
+      WHERE workspace_id = ${ws} AND id = ${receipt.operationId}`;
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'running'
+      WHERE workspace_id = ${ws} AND id = 'owned'`;
+    const running = await admitHostedLifecycleJob({ ...replacement, operationId: 'replacement-after-running' });
+    expect(running.resourceAdmission).toMatchObject({
+      allocated: { hosts: 1, cpuMillicores: 4000, memoryMiB: 8192 },
+      pending: { hosts: 0, cpuMillicores: 0, memoryMiB: 0 },
+    });
+  });
 
   it('queues a normally stopped owner until measured proof exists, then reserves exactly one same-data wake', async () => {
     const ws = fresh();
