@@ -192,6 +192,7 @@ export interface AwsCreateSnapshotInput {
 
 export interface AwsInstanceObservation {
   instanceId: string;
+  availabilityZone?: string;
   state: AwsEc2InstanceState;
   imageId?: string;
   attachedVolumeIds: readonly string[];
@@ -247,6 +248,11 @@ export interface AwsVolumeObservation {
   volumeId: string;
   state: AwsEbsVolumeState;
   attachedInstanceId?: string;
+  attachedInstanceIds?: readonly string[];
+  availabilityZone?: string;
+  encrypted?: boolean;
+  multiAttachEnabled?: boolean;
+  tags?: Readonly<Record<string, string>>;
   observedAt: string;
 }
 
@@ -890,6 +896,37 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     return this.client.validateConnection(ctx.connection);
   }
 
+  private async verifyRetainedVolume(
+    resources: readonly WorkspaceHostResourceRef[], hostId: string, ctx: WorkspaceHostProviderContext,
+    writer?: string, requireAttached = false,
+  ): Promise<AwsVolumeObservation> {
+    const volume = requireSingleResource(resources, AWS_VOLUME_RESOURCE_KIND, 'retained-volume');
+    const account = ctx.connection.scope?.id;
+    const region = ctx.connection.provider?.region;
+    if ((volume.parentProviderId && volume.parentProviderId !== account) ||
+        (volume.region && volume.region !== region) ||
+        (ctx.durableTenantIdentity && (!account || !volume.parentProviderId || !volume.region || !volume.zone))) {
+      throw new Error('aws_workspace_host_retained_volume_scope_mismatch');
+    }
+    const observed = await this.client.describeVolume(volume.providerId);
+    if (!observed || isVolumeAbsent(observed) || observed.volumeId !== volume.providerId ||
+        (observed.availabilityZone && volume.zone !== observed.availabilityZone) ||
+        observed.encrypted === false || observed.multiAttachEnabled === true ||
+        (ctx.durableTenantIdentity && (!observed.availabilityZone || observed.encrypted !== true || !observed.tags))) {
+      throw new Error('aws_workspace_host_retained_volume_identity_mismatch');
+    }
+    if (observed.tags && (observed.tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.managed] !== 'true' ||
+        observed.tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.hostId] !== hostId ||
+        observed.tags[AWS_WORKSPACE_HOST_MANAGED_TAG_KEYS.workspaceId] !== ctx.workspaceId)) {
+      throw new Error('aws_workspace_host_retained_volume_tenant_mismatch');
+    }
+    const writers = observed.attachedInstanceIds ?? (observed.attachedInstanceId ? [observed.attachedInstanceId] : []);
+    if ((requireAttached && writers.length !== 1) || writers.length > 1 || writers.some((id) => id !== writer)) {
+      throw new Error('aws_workspace_host_retained_volume_foreign_writer');
+    }
+    return observed;
+  }
+
   listScopes(ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostScope[]> {
     return this.client.listScopes(ctx.connection);
   }
@@ -955,6 +992,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     if (request.action === 'upgrade') return this.planUpgrade(request, ctx);
 
     const instance = requireKnownResource(request.host.resources, AWS_INSTANCE_RESOURCE_KIND, request.action);
+    if (request.action === 'start' || request.action === 'repair' || request.action === 'restart') {
+      await this.verifyRetainedVolume(request.host.resources, request.host.hostId, ctx, instance.providerId, true);
+    }
     const idempotencyKey = `${request.idempotencyKey}:${request.action}:${instance.providerId}`;
     if (request.action === 'snapshot') {
       const volume = requireKnownResource(request.host.resources, AWS_VOLUME_RESOURCE_KIND, request.action);
@@ -1209,6 +1249,11 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       provider: { ...(recorded.provider ?? {}), ...(ctx.connection.provider ?? {}) },
     };
     const settings = readSettings(desired);
+    if (recorded.scope.id !== ctx.connection.scope?.id ||
+        volume.zone !== settings.availabilityZone || volume.region !== desired.region) {
+      throw new Error('aws_workspace_host_upgrade_retained_volume_affinity_mismatch');
+    }
+    await this.verifyRetainedVolume(request.host.resources, request.host.hostId, ctx, instance.providerId, true);
     const tags = stableTags(desired, ctx.workspaceId);
     const hostId = request.host.hostId;
     const key = `${request.idempotencyKey}:upgrade:${instance.providerId}`;
@@ -1431,8 +1476,8 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
    *
    * The OBSERVER's resource copy carries the connection's account (`parentProviderId`) and region:
    * the obligation row is addressed for an out-of-band delete from those two fields, and an EC2
-   * instance ref does not record its region. The returned result is left exactly as the step
-   * produced it, so persisted host resources do not change shape.
+   * instance ref does not otherwise record its region. Persist the same identity on the host
+   * checkpoint so a later wake/replacement cannot reinterpret its volume in another account.
    */
   private async report(
     request: WorkspaceHostApplyRequest,
@@ -1440,17 +1485,26 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     result: WorkspaceHostApplyResult,
   ): Promise<WorkspaceHostApplyResult> {
     const input = stepInput(request.step);
+    if ('resource' in result && result.resource) {
+      const account = ctx.connection.scope?.id;
+      const region = typeof ctx.connection.provider?.region === 'string' ? ctx.connection.provider.region : undefined;
+      result = { ...result, resource: { ...result.resource,
+        ...(account ? { parentProviderId: account } : {}),
+        ...(region ? { region } : {}),
+      } };
+    }
     const createsOwnedResource = input.op === 'create-data-volume' || input.op === 'run-instance';
     const owesCreationObligation =
       createsOwnedResource && (result.state === 'applied' || result.state === 'unchanged');
-    if (this.onResourceCreated && owesCreationObligation && result.resource) {
+    const createdResource = 'resource' in result ? result.resource : undefined;
+    if (this.onResourceCreated && owesCreationObligation && createdResource) {
       const accountId = ctx.connection.scope?.id ?? '';
       const region = typeof ctx.connection.provider?.region === 'string' ? ctx.connection.provider.region : undefined;
       await this.onResourceCreated({
         resource: {
-          ...result.resource,
-          ...(result.resource.parentProviderId || !accountId ? {} : { parentProviderId: accountId }),
-          ...(result.resource.region || !region ? {} : { region }),
+          ...createdResource,
+          ...(createdResource.parentProviderId || !accountId ? {} : { parentProviderId: accountId }),
+          ...(createdResource.region || !region ? {} : { region }),
         },
         operationId: result.operationId,
         stepId: result.stepId,
@@ -1502,6 +1556,12 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       case 'attach-data-volume': {
         const volume = requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
         const instance = requireStepInstance(request.knownResources, request.step.id, input.replacesInstanceId);
+        const before = await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, instance.providerId);
+        if (before.state === 'in-use' && before.attachedInstanceId === instance.providerId) return this.unchanged(request);
+        const observedInstance = await this.client.describeInstance(instance.providerId);
+        if (observedInstance?.availabilityZone && volume.zone !== observedInstance.availabilityZone) {
+          throw new Error('aws_workspace_host_attachment_zone_mismatch');
+        }
         const result = await this.client.attachVolume({
           InstanceId: instance.providerId,
           VolumeId: volume.providerId,
@@ -1511,6 +1571,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         if (!observed || observed.attachedInstanceId !== instance.providerId) {
           return this.inProgress(request, result.requestId);
         }
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, instance.providerId, true);
         return this.applied(request, undefined, result.requestId);
       }
       case 'start-host-bootstrap': {
@@ -1553,7 +1614,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
             `aws_workspace_host_detach_requires_stopped_instance: ${input.instanceId} is '${current.state}'`,
           );
         }
-        const before = await this.client.describeVolume(input.volumeId);
+        const before = await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId);
         if (!before || isVolumeAbsent(before)) {
           throw new Error(`aws_workspace_host_upgrade_data_volume_absent: ${input.volumeId}`);
         }
@@ -1576,6 +1637,10 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         const replacement = input.retireReplacement
           ? findReplacementInstance(request.knownResources, input.instanceId)
           : undefined;
+        const priorVolume = await this.client.describeVolume(input.volumeId);
+        // Only the original or this operation's known replacement may own the rollback disk.
+        const writer = priorVolume?.attachedInstanceId === input.instanceId ? input.instanceId : replacement;
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, writer);
         if (replacement !== undefined) {
           const observed = await this.client.describeInstance(replacement);
           if (!isInstanceAbsent(observed)) {
@@ -1616,6 +1681,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         );
       }
       case 'start-instance':
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId, true);
         return this.setInstanceState(
           request,
           input.instanceId,
@@ -1632,6 +1698,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           ctx.signal,
         );
       case 'reboot-instance':
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId, true);
         return this.setInstanceState(
           request,
           input.instanceId,
@@ -1640,6 +1707,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
           ctx.signal,
         );
       case 'repair-instance':
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId, true);
         return this.setInstanceState(
           request,
           input.instanceId,
@@ -1820,12 +1888,12 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     } else if (input.op === 'attach-data-volume') {
       const volume = requireKnownResource(request.knownResources, AWS_VOLUME_RESOURCE_KIND, request.step.id);
       const instance = requireStepInstance(request.knownResources, request.step.id, input.replacesInstanceId);
-      const found = await this.client.describeVolume(volume.providerId);
+      const found = await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, instance.providerId);
       if (found?.state === 'in-use' && found.attachedInstanceId === instance.providerId) {
         return this.unchanged(request);
       }
     } else if (input.op === 'detach-data-volume') {
-      const found = await this.client.describeVolume(input.volumeId);
+      const found = await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId);
       if (found?.state === 'available' && !found.attachedInstanceId) return this.unchanged(request);
     } else if (input.op === 'reinstate-instance') {
       const [volume, instance] = await Promise.all([
@@ -1833,6 +1901,7 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
         this.client.describeInstance(input.instanceId),
       ]);
       if (volume?.attachedInstanceId === input.instanceId && instance?.state === 'running') {
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId, true);
         return this.unchanged(request, resource(AWS_INSTANCE_RESOURCE_KIND, input.instanceId));
       }
     } else if (input.op === 'create-snapshot') {
@@ -1864,6 +1933,9 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       // No provider-side record says whether a push landed; re-push. The wrapper leaves a running
       // bootstrap alone, and the bootstrap itself is replay-safe.
     } else {
+      if (input.op !== 'stop-instance') {
+        await this.verifyRetainedVolume(request.knownResources, input.hostId, ctx, input.instanceId, true);
+      }
       const found = await this.client.describeInstance(input.instanceId);
       const wanted = input.op === 'stop-instance' ? 'stopped' : 'running';
       if (found?.state === wanted) {
@@ -1900,8 +1972,12 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
     volumeRefs.forEach((candidate, index) => {
       const observed = volumes[index];
       if (isVolumeAbsent(observed)) drift.push(`volume-absent:${candidate.providerId}`);
-      else if (instanceRef && observed?.attachedInstanceId !== instanceRef.providerId) {
-        drift.push(`volume-detached:${candidate.providerId}`);
+      else if (instanceRef && observed) {
+        const writers = observed.attachedInstanceIds ?? (observed.attachedInstanceId ? [observed.attachedInstanceId] : []);
+        if (writers.length !== 1 || writers[0] !== instanceRef.providerId || observed.multiAttachEnabled ||
+            (observed.availabilityZone && candidate.zone !== observed.availabilityZone)) {
+          drift.push(`volume-detached:${candidate.providerId}`);
+        }
       }
     });
     const resources = host.resources.filter((candidate) => {

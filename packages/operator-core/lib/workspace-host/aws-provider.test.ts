@@ -215,6 +215,9 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     this.volumeTokens.set(input.ClientToken, volumeId);
     this.volumes.set(volumeId, {
       volumeId,
+      availabilityZone: input.AvailabilityZone,
+      encrypted: input.Encrypted,
+      tags: Object.fromEntries(input.TagSpecifications[0].Tags.map((tag) => [tag.Key, tag.Value])),
       state: 'creating',
       observedAt: NOW,
     });
@@ -1701,6 +1704,26 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     expect(client.destroyMutations).toEqual([`terminate:${original}`]);
     expect(results.get(`retire-runtime-instance:${original}`)!.state).toBe('destroyed');
     expect(known.map((item) => item.providerId).sort()).toEqual([replacement, volume].sort());
+  });
+
+  it.each(['account', 'zone', 'multi-writer', 'tenant'])('refuses an AWS replacement with foreign %s before quiescing', async (mismatch) => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const disk = host.resources.find((item) => item.kind === 'disk')!;
+    const describe = client.describeVolume.bind(client);
+    client.describeVolume = async (id) => {
+      const observed = await describe(id);
+      return observed ? { ...observed,
+        ...(mismatch === 'zone' ? { availabilityZone: 'us-east-1b' } : {}),
+        ...(mismatch === 'multi-writer' ? { attachedInstanceIds: [observed.attachedInstanceId!, 'i-foreign'] } : {}),
+        ...(mismatch === 'tenant' ? { tags: { ...observed.tags, 'papercusp:host-id': 'foreign-host' } } : {}),
+      } : observed;
+    };
+    const resources = host.resources.map((item) => item === disk && mismatch === 'account'
+      ? { ...item, parentProviderId: '999999999999' } : item);
+    await expect(provider.plan({ action: 'upgrade', operationId: 'upgrade-foreign', idempotencyKey: 'upgrade-foreign',
+      host: { ...host, resources }, desired: desired(), image: { id: 'ami-0123456789abcdef0' } }, context())).rejects.toThrow(/retained_volume/);
+    expect(client.detachVolumeCalls).toHaveLength(0);
   });
 
   it('rolls a failed launch back by re-attaching the data volume to the original and starting it', async () => {

@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   statsQueue: [] as Array<{ b: number; r: number }>,
   deleteQueue: [] as number[],
   countMatched: 0,
+  statementTimeoutOnCount: false,
+  unsafeQueries: [] as string[],
   vacuumCalls: [] as string[],
   guardAcquired: true,
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
@@ -20,6 +22,10 @@ function makeSql() {
   const sql: unknown = () => Promise.resolve([h.statsQueue.shift() ?? { b: 0, r: 0 }]);
   const s = sql as { unsafe: (q: string) => Promise<unknown[]>; begin: (fn: (x: unknown) => Promise<unknown>) => Promise<unknown> };
   s.unsafe = (q: string) => {
+    h.unsafeQueries.push(q);
+    if (h.statementTimeoutOnCount && q.includes('count(*)')) {
+      return Promise.reject(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }));
+    }
     if (q.includes('WITH del')) return Promise.resolve([{ n: h.deleteQueue.shift() ?? 0 }]);
     if (q.includes('count(*)')) return Promise.resolve([{ n: h.countMatched }]);
     if (q.includes('VACUUM')) {
@@ -75,6 +81,8 @@ beforeEach(() => {
   h.statsQueue = [];
   h.deleteQueue = [];
   h.countMatched = 0;
+  h.statementTimeoutOnCount = false;
+  h.unsafeQueries = [];
   h.vacuumCalls = [];
   h.guardAcquired = true;
   h.diskEntries = [];
@@ -154,6 +162,22 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.reclaimedBytes).toBe(400); // perRow 10 * 40
     expect(r.reclaimEstimated).toBe(true);
     expect(h.deleteQueue.length).toBe(0); // nothing consumed
+    expect(h.unsafeQueries).toContain('SET LOCAL statement_timeout = 15000');
+  });
+
+  it('returns an explicit bounded timeout when the dry-run count cannot finish', async () => {
+    h.statsQueue = [{ b: 1000, r: 100 }];
+    h.statementTimeoutOnCount = true;
+    const r = await pruneStorageCategory(REQ({ dryRun: true, categoryId: 'tool-invocations', olderThanDays: 0 }));
+    expect(r).toMatchObject({
+      ok: false,
+      categoryId: 'tool-invocations',
+      dryRun: true,
+      removed: 0,
+      reason: 'dry_run_timed_out',
+    });
+    expect(r.note).toContain('no rows were deleted');
+    expect(h.deleteQueue).toHaveLength(0);
   });
 
   it('executes a chunked delete and does NOT vacuum a non-bloat table', async () => {

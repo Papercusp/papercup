@@ -91,7 +91,7 @@ describe.each(drivers.filter(([name]) => name !== 'cloudflare'))('%s postgres sh
     const originalConnect = net.Socket.prototype.connect;
     const connect = vi.spyOn(net.Socket.prototype, 'connect').mockImplementation(function(this: net.Socket, ...args) {
       const result = Reflect.apply(originalConnect, this, args);
-      if (args[0] === port) resolveConnecting(this);
+      if (Number(args[0]) === port) resolveConnecting(this);
       return result;
     });
     let socket: net.Socket | undefined;

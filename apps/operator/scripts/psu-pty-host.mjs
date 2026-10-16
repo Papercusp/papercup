@@ -12382,6 +12382,11 @@ export function hostThroughPty(o) {
     return { ok: false, reason: 'deferred-successor-unbindable' };
   };
   if (launchKickoff) {
+    // A tagged launch has a dedicated native transcript verifier below. Let
+    // that proof own terminal exhaustion instead of dropping it at the generic
+    // submit-verifier boundary before the native verifier can inspect it.
+    const launchKickoffNativeProofAvailable = Boolean(leadingTurnOriginMarker(launchKickoff)) &&
+      nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
     const requireRoleMcp = headlessRoleKickoffRequiresMcp({
       agent: env.PAPERCUSP_AGENT,
       role: env.PAPERCUSP_ROLE,
@@ -12490,7 +12495,7 @@ export function hostThroughPty(o) {
           // The managed kickoff's native transcript proof owns its failure
           // timeout and child kill. Do not let the generic submit verifier tear
           // down the host before that proof can observe a late marker.
-          terminateOnSubmitVerifyExhaustion: !managedKickoff,
+          terminateOnSubmitVerifyExhaustion: !managedKickoff && !launchKickoffNativeProofAvailable,
         });
       };
       let r = await injectLaunchKickoff();

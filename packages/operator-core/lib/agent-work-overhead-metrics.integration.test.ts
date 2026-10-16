@@ -14,6 +14,9 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.adv_sessions (
       workspace_id text NOT NULL, plan_slug text, coord_owner_id text, session_id text,
       started_at timestamptz NOT NULL, ended_at timestamptz);
+    CREATE TABLE harness_shared.coord_event_log (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, surface text NOT NULL,
+      writer_key text NOT NULL, ts timestamptz NOT NULL, body jsonb NOT NULL);
     CREATE TABLE harness_shared.session_turn_parts (
       workspace_id text NOT NULL, source_kind text NOT NULL, session_id text NOT NULL,
       owner text, part_idx int NOT NULL, ts timestamptz, speaker text NOT NULL,
@@ -23,7 +26,8 @@ beforeAll(async () => {
 }, 90_000);
 afterAll(async () => { await db?.cleanup(); });
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.adv_sessions, harness_shared.harness_plans`;
+  await db.sql`TRUNCATE harness_shared.session_turn_parts, harness_shared.adv_sessions,
+    harness_shared.harness_plans, harness_shared.coord_event_log`;
   await db.sql`
     INSERT INTO harness_shared.harness_plans VALUES
       ('ws','papercusp','plan'), ('foreign-ws','papercusp','plan'), ('ws','other-harness','other-plan')`;
@@ -48,6 +52,47 @@ beforeEach(async () => {
 });
 
 describe('work-overhead query against real Postgres', () => {
+  async function declare(plan: string | null, at: string, opts: {
+    workspace?: string; harness?: string; sender?: string;
+  } = {}) {
+    await db.sql`INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, ts, body)
+      VALUES (${opts.workspace ?? 'ws'}, 'messages', 'stable-owner', ${at},
+        ${db.sql.json({ from: opts.sender ?? 'stable-owner', lifecycle: 'intent',
+          plan_slug: plan, harness_slug: opts.harness ?? 'papercusp' })})`;
+  }
+
+  it('retains historical plan work after a planless launcher resumes beyond the window', async () => {
+    await db.sql`UPDATE harness_shared.adv_sessions SET plan_slug = NULL,
+      started_at = '2026-10-15T14:00:00Z', session_id = 'resumed-native'
+      WHERE coord_owner_id = 'stable-owner'`;
+    await declare('plan', '2026-10-15T09:00:00Z');
+    const metrics = await measureWorkOverheadWindow(window, db.sql);
+    expect(metrics.population).toMatchObject({ sessions: 2, boundarySessions: 1, toolCalls: 4 });
+    expect(metrics.medianObservedSessionMinutes).toBe(60);
+  });
+
+  it.each([
+    { plan: null, harness: 'papercusp' },
+    { plan: 'other-plan', harness: 'other-harness' },
+    { plan: 'plan', harness: 'other-harness' },
+  ])('ends historical membership at a clear or harness move: %j', async ({ plan, harness }) => {
+    await declare('plan', '2026-10-15T09:00:00Z');
+    await declare(plan, '2026-10-15T11:00:00Z', { harness });
+    const metrics = await measureWorkOverheadWindow(window, db.sql);
+    // The original plan-bound launch must not override a later explicit move.
+    expect(metrics.population).toMatchObject({ sessions: 1, boundarySessions: 1, toolCalls: 2 });
+    expect(metrics.medianObservedSessionMinutes).toBe(50);
+  });
+
+  it('does not reconstruct membership from foreign or differently authored declarations', async () => {
+    await db.sql`UPDATE harness_shared.adv_sessions SET plan_slug = NULL WHERE coord_owner_id = 'stable-owner'`;
+    await declare('plan', '2026-10-15T09:00:00Z', { workspace: 'foreign-ws' });
+    await declare('plan', '2026-10-15T09:00:00Z', { sender: 'another-owner' });
+    const metrics = await measureWorkOverheadWindow(window, db.sql);
+    expect(metrics.population.sessions).toBe(0);
+    expect(rateWorkOverhead(metrics).acceptanceShare.verdict).toBe('unknown');
+  });
+
   it('finds a native successor through owner/process membership, separates contexts and deduplicates partitions', async () => {
     const metrics = await measureWorkOverheadWindow(window, db.sql);
     expect(metrics.unavailableReason).toBeNull();

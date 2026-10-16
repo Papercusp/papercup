@@ -109,6 +109,7 @@ function num(v: unknown): number {
 type Sql = {
   (strings: TemplateStringsArray, ...vals: unknown[]): Promise<Array<Record<string, unknown>>>;
   unsafe: (q: string) => Promise<Array<Record<string, unknown>>>;
+  begin: <T>(fn: (tx: Sql) => Promise<T>) => Promise<T>;
 };
 
 function validDays(d: number | null): boolean {
@@ -139,6 +140,27 @@ async function relationStats(sql: Sql, schema: string, table: string): Promise<{
   return { bytes: num(rows[0]?.b), rows: num(rows[0]?.r) };
 }
 
+/**
+ * Keep the preview read below the MCP transport envelope. A dry-run is read-only,
+ * but its exact COUNT(*) can still scan a multi-million-row telemetry table; an
+ * unbounded scan leaves the caller with an opaque upstream reset instead of a
+ * result it can act on.
+ */
+const DRY_RUN_STATEMENT_TIMEOUT_MS = 15_000;
+
+function isStatementTimeout(error: unknown): boolean {
+  const value = error as { code?: unknown; pgCode?: unknown; message?: unknown } | null;
+  const code = value?.code ?? value?.pgCode;
+  return code === '57014' || /statement timeout|canceling statement/i.test(String(value?.message ?? error));
+}
+
+async function boundedRead<T>(sql: Sql, timeoutMs: number, run: (tx: Sql) => Promise<T>): Promise<T> {
+  return sql.begin(async (tx) => {
+    await tx.unsafe(`SET LOCAL statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
+    return run(tx);
+  });
+}
+
 async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Promise<PruneResult> {
   const result: PruneResult = {
     ok: true,
@@ -151,17 +173,34 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
   };
   const t = `${ident(cat.schema)}.${ident(cat.table)}`;
   const where = pgWhere(cat, req.olderThanDays);
-  const { bytes: sizeBefore, rows: rowsBefore } = await relationStats(sql, cat.schema, cat.table);
-  const perRow = rowsBefore > 0 ? sizeBefore / rowsBefore : 0;
 
   if (req.dryRun) {
-    const rows = await sql.unsafe(`SELECT count(*)::bigint AS n FROM ${t} ${where}`);
-    const matched = num(rows[0]?.n);
-    result.removed = matched;
-    result.reclaimedBytes = Math.round(perRow * matched);
-    result.reclaimEstimated = true;
-    return result;
+    try {
+      const preview = await boundedRead(sql, DRY_RUN_STATEMENT_TIMEOUT_MS, async (tx) => {
+        const { bytes: sizeBefore, rows: rowsBefore } = await relationStats(tx, cat.schema, cat.table);
+        const rows = await tx.unsafe(`SELECT count(*)::bigint AS n FROM ${t} ${where}`);
+        return { sizeBefore, rowsBefore, matched: num(rows[0]?.n) };
+      });
+      const perRow = preview.rowsBefore > 0 ? preview.sizeBefore / preview.rowsBefore : 0;
+      result.removed = preview.matched;
+      result.reclaimedBytes = Math.round(perRow * preview.matched);
+      result.reclaimEstimated = true;
+      return result;
+    } catch (error) {
+      if (isStatementTimeout(error)) {
+        return {
+          ...result,
+          ok: false,
+          reason: 'dry_run_timed_out',
+          note: `dry-run count exceeded the ${DRY_RUN_STATEMENT_TIMEOUT_MS / 1000}s read budget; no rows were deleted — use storage:usage for a bounded estimate or retry with a narrower age window`,
+        };
+      }
+      throw error;
+    }
   }
+
+  const { bytes: sizeBefore, rows: rowsBefore } = await relationStats(sql, cat.schema, cat.table);
+  const perRow = rowsBefore > 0 ? sizeBefore / rowsBefore : 0;
 
   // Execute — chunked deletes so no single statement takes a long lock, under a
   // wall-time budget (EI-11379): a multi-million-row trim must return a
@@ -235,7 +274,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
             workspaceId: req.workspaceId,
             userId: null,
           },
-          resource: 'db:migrate',
+          resource: 'db-schema',
           mode: 'exclusive',
           maxDrainSec: 30,
           reason: `VACUUM FULL ${cat.table} (storage trim)`,

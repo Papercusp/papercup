@@ -5,7 +5,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 
-export const WORK_OVERHEAD_VERSION = 1;
+export const WORK_OVERHEAD_VERSION = 2;
 export const WORK_OVERHEAD_INSTRUMENT_KEYS = Object.freeze({
   acceptanceShare: 'agents:acceptance-machinery-share',
   sessionMinutes: 'agents:native-session-minutes',
@@ -23,8 +23,9 @@ export interface WorkOverheadWindow {
 
 /** Parameter order: workspace, harness, inclusive start, exclusive end, row limit + sentinel.
  * The faithful-parts writer uses workspace default. Concrete tenant membership is supplied by
- * adv_sessions, never inferred from that default partition. The owner/time join retains native
- * successors whose launcher's session_id still names the predecessor. No context is merged.
+ * launch bindings or historical self-authored plan declarations, never the default partition.
+ * A resumed launch row describes its current incarnation; append-only intent intervals retain
+ * earlier plan work and explicitly end at clears/moves. No native context is merged.
  * Tool-use selection uses the existing (owner,ts) partial index; full spans use the session PK.
  */
 export const WORK_OVERHEAD_SQL = `
@@ -37,15 +38,32 @@ WITH membership AS MATERIALIZED (
      AND s.plan_slug IS NOT NULL AND s.coord_owner_id IS NOT NULL
      AND s.started_at < $4::timestamptz
      AND (s.ended_at IS NULL OR s.ended_at >= $3::timestamptz)
+), intent_history AS MATERIALIZED (
+  SELECT e.body->>'from' AS owner, e.body->>'plan_slug' AS plan_slug,
+    e.body->>'harness_slug' AS harness_slug, e.ts AS started_at,
+    lead(e.ts) OVER (PARTITION BY e.body->>'from' ORDER BY e.ts, e.id) AS ended_at
+    FROM harness_shared.coord_event_log e
+   WHERE e.workspace_id = $1 AND e.surface = 'messages'
+     AND e.body->>'lifecycle' = 'intent' AND e.body->>'from' = e.writer_key
+     AND e.ts < $4::timestamptz
+), declared_membership AS MATERIALIZED (
+  SELECT i.owner, i.started_at, i.ended_at
+    FROM intent_history i JOIN harness_shared.harness_plans h
+      ON h.workspace_id = $1 AND h.harness_slug = $2
+     AND h.plan_slug = i.plan_slug AND h.harness_slug = i.harness_slug
+   WHERE i.ended_at IS NULL OR i.ended_at > $3::timestamptz
 ), candidates AS MATERIALIZED (
   SELECT DISTINCT p.source_kind, p.session_id, p.owner
     FROM harness_shared.session_turn_parts p
-   WHERE p.owner IN (SELECT owner FROM membership)
+   WHERE p.owner IN (SELECT owner FROM membership UNION SELECT owner FROM declared_membership)
      AND p.workspace_id IN ('default', $1)
      AND p.speaker = 'assistant' AND p.part_kind = 'tool_use'
      AND p.ts >= $3::timestamptz AND p.ts < $4::timestamptz
-     AND EXISTS (SELECT 1 FROM membership m WHERE m.owner = p.owner
-       AND p.ts >= m.started_at AND (m.ended_at IS NULL OR p.ts <= m.ended_at))
+     AND (EXISTS (SELECT 1 FROM declared_membership m WHERE m.owner = p.owner
+       AND p.ts >= m.started_at AND (m.ended_at IS NULL OR p.ts < m.ended_at))
+       OR (EXISTS (SELECT 1 FROM membership m WHERE m.owner = p.owner
+         AND p.ts >= m.started_at AND (m.ended_at IS NULL OR p.ts <= m.ended_at))
+         AND NOT EXISTS (SELECT 1 FROM intent_history i WHERE i.owner = p.owner AND i.started_at <= p.ts)))
 ), spans AS MATERIALIZED (
   SELECT c.*, v.first_at, v.last_at, v.missing_timestamps,
     EXISTS (SELECT 1 FROM membership m WHERE m.owner = c.owner

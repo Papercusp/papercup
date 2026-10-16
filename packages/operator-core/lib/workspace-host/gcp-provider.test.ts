@@ -1590,6 +1590,41 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
     expect(client.insertInstanceCalls).toHaveLength(2);
   });
 
+  it('rechecks a planned replacement before deletion when its disk allocation changes', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan({ action: 'upgrade', operationId: 'upgrade-drift', idempotencyKey: 'upgrade-drift', host,
+      image: { id: 'projects/papercusp/global/images/papercusp-v2' } }, context({}, 'echo bootstrap'));
+    client.rewriteDisk('pc-host-gcp-1-data', { diskId: 'replaced-after-planning' });
+    await expect(provider.apply({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: resources }, context())).rejects.toThrow('allocation');
+    expect(client.deleteCalls).toBe(0);
+  });
+
+  it('does not adopt a different operation runtime with the same image and disk after a lost response', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan({ action: 'upgrade', operationId: 'upgrade-metadata', idempotencyKey: 'upgrade-metadata', host,
+      image: { id: 'projects/papercusp/global/images/papercusp-v2' } }, context({}, 'echo bootstrap'));
+    for (const step of plan.steps) await provider.apply({ planId: plan.planId, operationId: plan.operationId, step, knownResources: resources }, context());
+    const observed = (await client.getInstance('papercusp-dev-123', 'us-central1-a', 'pc-host-gcp-1-vm'))!;
+    client.rewriteInstance(observed.name, { recreateInput: { ...observed.recreateInput!, metadata: { items: [{ key: 'startup-script', value: 'echo other-operation' }] } } });
+    await expect(provider.reconcile({ planId: plan.planId, operationId: plan.operationId, step: plan.steps[1]!, knownResources: resources,
+      reason: 'ambiguous-timeout' }, context())).rejects.toThrow('bootstrap metadata');
+    expect(client.insertInstanceCalls).toHaveLength(2);
+  });
+
+  it('checks the exact writer again before a same-VM start and ambiguous-start adoption', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan({ action: 'start', operationId: 'wake-drift', idempotencyKey: 'wake-drift', host }, context());
+    const request = { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: resources };
+    client.rewriteDisk('pc-host-gcp-1-data', { attachedInstanceRefs: ['projects/foreign-project/zones/us-central1-a/instances/pc-host-gcp-1-vm'] });
+    await expect(provider.apply(request, context())).rejects.toThrow('writer');
+    await expect(provider.reconcile({ ...request, reason: 'ambiguous-timeout' }, context())).rejects.toThrow('writer');
+    await expect(provider.plan({ action: 'start', operationId: 'wake-other', idempotencyKey: 'wake-other', host }, context())).rejects.toThrow('writer');
+    expect(client.startCalls).toBe(0);
+  });
+
   // WI-10002490: once delete-boot-runtime applies there is no VM left to read, so the way back has
   // to be computed now — as the same re-create, pointed at the prior image.
   it('precomputes an upgrade rollback that re-creates the same VM from the prior image', async () => {

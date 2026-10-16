@@ -1623,7 +1623,7 @@ function assertInstanceBootsRequestedImage(name: string, observed: string | unde
   );
 }
 
-function sameMetadata(observed: GcpInstanceObservation, expected: GcpInstanceMetadataInput): boolean {
+function sameMetadata(observed: GcpInstanceObservation, expected: Pick<GcpInstanceMetadataInput, 'items'>): boolean {
   const actual = observed.recreateInput?.metadata.items ?? [];
   const normalize = (items: readonly { key: string; value: string }[]) =>
     [...items].sort((left, right) => left.key.localeCompare(right.key));
@@ -1812,6 +1812,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       throw new Error('GCP retained data disk identity is absent, unready or has a different allocation');
     }
     assertManagedHostResource(observed, hostId, 'retained data disk');
+    if (observed.labels?.[GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId] !== gcpWorkspaceHostLabelValue(ctx.workspaceId)) {
+      throw new Error('GCP retained data disk belongs to a different workspace');
+    }
     const users = observed.attachedInstanceRefs ?? observed.attachedInstanceNames;
     const writer = zonalResourcePath(instanceName, projectId, zone, 'instances');
     if ((requireAttached && users.length !== 1) || users.length > 1 ||
@@ -1871,6 +1874,13 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       'GCP projectId',
     );
     const requestId = gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:${request.action}:${instance.providerId}`);
+    if (request.action === 'start' || request.action === 'repair') {
+      const disk = await this.verifyRetainedDisk(request.host.resources, projectId, zone, request.host.hostId, instance.providerId, ctx, true);
+      const observed = await this.client.getInstance(projectId, zone, instance.providerId);
+      if (!observed) throw new Error('GCP wake instance is absent');
+      assertManagedHostResource(observed, request.host.hostId, 'wake instance');
+      assertInstanceRetainsDisk(observed, disk, projectId, zone);
+    }
     if (request.action === 'upgrade') {
       if (!ctx.hostBootstrapScript) {
         throw new Error('GCP upgrade requires a controller-authored host bootstrap');
@@ -2608,6 +2618,13 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
     const input = stepInput(request.step);
+    if (input.op === 'start-instance' || input.op === 'reset-instance' || input.op === 'repair-instance') {
+      const disk = await this.verifyRetainedDisk(request.knownResources, input.projectId, input.zone, input.hostId, input.instanceName, ctx, true);
+      const observed = await this.client.getInstance(input.projectId, input.zone, input.instanceName);
+      if (!observed) throw new Error('GCP wake instance is absent');
+      assertManagedHostResource(observed, input.hostId, 'wake instance');
+      assertInstanceRetainsDisk(observed, disk, input.projectId, input.zone);
+    }
     switch (input.op) {
       case 'use-existing-network': {
         const found = await this.client.getNetwork(input.projectId, input.networkName);
@@ -2874,7 +2891,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     input: Extract<GcpStepInput, { op: 'start-instance' | 'stop-instance' | 'reset-instance' | 'repair-instance' }>,
     expected: GcpComputeInstanceStatus,
     mutation: () => Promise<GcpOperationRef>,
-    ctx: WorkspaceHostProviderContext,
+    signal?: AbortSignal,
   ): Promise<WorkspaceHostApplyResult> {
     // Pool assignment may select an already-running VM. Stop/start also replay after
     // ambiguous outcomes; observe convergence before asking GCP to mutate it again.
@@ -2919,7 +2936,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           | 'delete-network';
       }
     >,
-    signal?: AbortSignal,
+    ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostApplyResult> {
     const before = await this.describeDeleteTarget(input);
     if (!before) return this.destroyed(request, input.hostId, input.resourceName, undefined, input.incarnationId);
@@ -3072,6 +3089,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         assertManagedHostResource(existing, input.hostId, 'reconciled instance');
         assertInstanceRetainsDisk(existing as GcpInstanceObservation, disk, input.projectId, input.zone);
         assertInstanceRetainsDisk({ recreateInput: input.request }, disk, input.projectId, input.zone);
+        if (!sameMetadata(existing as GcpInstanceObservation, input.request.metadata)) {
+          throw new Error('GCP replacement bootstrap metadata differs from the operation being reconciled');
+        }
         assertInstanceBootsRequestedImage(
           existing.name,
           'sourceImage' in existing ? existing.sourceImage : undefined,
@@ -3146,6 +3166,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       }
       if ('instanceName' in input) {
         const wanted = input.op === 'stop-instance' ? 'TERMINATED' : 'RUNNING';
+        if (input.op === 'start-instance' || input.op === 'reset-instance' || input.op === 'repair-instance') {
+          const disk = await this.verifyRetainedDisk(request.knownResources, input.projectId, input.zone, input.hostId, input.instanceName, ctx, true);
+          assertManagedHostResource(existing, input.hostId, 'reconciled wake instance');
+          assertInstanceRetainsDisk(existing as GcpInstanceObservation, disk, input.projectId, input.zone);
+        }
         if ('status' in existing && existing.status === wanted)
           return this.report(
             request,
