@@ -942,6 +942,17 @@ finally {
     const { _stopHubForTests } = await import('../lib/pg-listen-hub');
     await _stopHubForTests();
   });
+  // Locks owns separate transaction/LISTEN pools on papercusp_su. Closing
+  // db-org cannot retire them; the acknowledgement path opens the tx pool.
+  // Stop subscription producers before retiring the pools they can reopen.
+  await cleanupPhase('lock-listeners-stop', async () => {
+    const { _resetListenersForTests } = await import('@papercusp/locks');
+    await _resetListenersForTests();
+  });
+  await cleanupPhase('lock-pools-reset', async () => {
+    const { _resetForTests: resetLockPools } = await import('@papercusp/locks');
+    await resetLockPools();
+  });
   await cleanupPhase('database-close', () => sql.end({ timeout: 5 }));
   await cleanupPhase('db-org-pools-reset', () => _resetForTests());
   await cleanupPhase('database-resources-closed', async () => {

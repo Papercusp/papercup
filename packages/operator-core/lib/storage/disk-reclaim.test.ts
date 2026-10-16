@@ -90,6 +90,38 @@ describe('bounded scheduled retention drain', () => {
     expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
     expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
   });
+  const cappedPartial = (): DiskReclaimReceipt => partial({
+    caps: [{ root: '/scratch', classId: 'scratch', maxBytes: 10, beforeBytes: 12,
+      pinnedBytes: 0, pinnedPaths: [], afterBytes: 11, overByBytes: 1, pinnedOverageBytes: 0 }],
+    errors: [...partial().errors, 'size cap remains exceeded:/scratch:1'],
+  });
+  it('resumes a productive capped root whose exact overage accompanies its effect-budget stop', async () => {
+    const run = vi.fn().mockResolvedValueOnce(cappedPartial())
+      .mockResolvedValueOnce(partial({ id: 'done', complete: true, errors: [] }));
+    expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  it.each(['missing-cap', 'different-root', 'different-overage', 'no-budget-stop', 'pinned-only'])(
+    'refuses a cap error without matching resumable evidence: %s', async (mismatch) => {
+      const receipt = cappedPartial();
+      if (mismatch === 'missing-cap') receipt.caps = [];
+      if (mismatch === 'different-root') receipt.caps![0]!.root = '/other';
+      if (mismatch === 'different-overage') receipt.caps![0]!.overByBytes = 2;
+      if (mismatch === 'no-budget-stop') receipt.effects![0]!.stopped = false;
+      if (mismatch === 'pinned-only') receipt.caps![0]!.pinnedOverageBytes = 1;
+      const run = vi.fn().mockResolvedValue(receipt);
+      expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
+      expect(run).toHaveBeenCalledOnce();
+    },
+  );
+  it('keeps capped continuation bounded and refuses a batch that made no removal', async () => {
+    const run = vi.fn().mockResolvedValue(cappedPartial());
+    expect((await drainScheduledDiskReclaim(run, { maxElapsedMs: 1000 })).stop).toBe('time-limit');
+    expect(run).toHaveBeenCalledOnce();
+    run.mockClear().mockResolvedValue({ ...cappedPartial(), entries: [] });
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('no-progress');
+    expect(run).toHaveBeenCalledOnce();
+  });
   it.each([
     { errors: ['incomplete process-holder scan:/scratch'] },
     { errors: ['incomplete tree scan: retention scan budget exhausted'] },

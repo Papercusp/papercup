@@ -4,6 +4,94 @@
  * Persistence lives in hosted-lifecycle-store.ts. Keeping the decision layer pure makes quota,
  * budget, approval, idle-stop, and recovery behavior deterministic and cheap to falsify.
  */
+import { checkHostedEntitlement, type ResolvedHostedEntitlements } from '../auth/hosted-entitlements';
+
+/** Unit-bearing keys in the existing hosted entitlement quota map (P-537/D-067). */
+export const HOSTED_POOL_RESOURCE_QUOTAS = {
+  agents: 'pool.agents',
+  hosts: 'pool.hosts',
+  cpuMillicores: 'pool.cpu-millicores',
+  memoryMiB: 'pool.memory-mib',
+  dbGiB: 'pool.db-gib',
+  workspaceGiB: 'pool.workspace-gib',
+} as const;
+export const HOSTED_POOL_TRIAL_DB_GIB = 256;
+export type HostedPoolResources = Record<keyof typeof HOSTED_POOL_RESOURCE_QUOTAS, number>;
+
+/** Read canonical allowances and these counters under the existing tenant/provider locks.
+ * Allocated and pending are DISJOINT: a started reservation moves from one to the other.
+ * No tier/model label, subscription claim or browser counter is an authority input.
+ */
+export interface HostedPoolResourceAdmissionInput {
+  organizationId: string;
+  entitlements: ResolvedHostedEntitlements | null;
+  nowMs: number;
+  allocated: HostedPoolResources;
+  pending: HostedPoolResources;
+  requested: HostedPoolResources;
+  budget: { currency: string; usedMinor: number; pendingMinor: number; requestedMinor: number };
+  capacity: { freeHosts: number; reservedForOtherCustomers: number; olderBurstWaiters: number };
+}
+
+/** Pure resource half of admission; the caller persists its receipt atomically with reservation.
+ * Downgrade blocks NEW demand without terminating work or deleting retained data.
+ */
+export function evaluateHostedPoolResourceAdmission(input: HostedPoolResourceAdmissionInput): {
+  allowed: boolean;
+  reasons: string[];
+  guaranteed: boolean;
+  audit: ReturnType<typeof checkHostedEntitlement>['audit'][];
+} {
+  const reasons: string[] = [];
+  const audit: ReturnType<typeof checkHostedEntitlement>['audit'][] = [];
+  const entitlement = input.entitlements;
+  if (!entitlement || entitlement.organizationId !== input.organizationId || !input.organizationId.trim() ||
+      !entitlement.auditReceiptIds.length || !Number.isSafeInteger(input.nowMs) || input.nowMs < 0 ||
+      (entitlement.recheckAt !== null &&
+        (!Number.isFinite(entitlement.recheckAt.getTime()) || entitlement.recheckAt.getTime() <= input.nowMs))) {
+    return { allowed: false, reasons: ['pool entitlement authority missing, foreign or stale'], guaranteed: false, audit };
+  }
+  for (const resource of Object.keys(HOSTED_POOL_RESOURCE_QUOTAS) as Array<keyof HostedPoolResources>) {
+    const values = [input.allocated[resource], input.pending[resource], input.requested[resource]];
+    if (!values.every(finiteInteger) || !Number.isSafeInteger(values.reduce((a, b) => a + b, 0))) {
+      reasons.push(`invalid pool resource counters: ${resource}`);
+      continue;
+    }
+    // Reconnect and a downgrade must preserve existing data/work. An additive zero requests
+    // no new allowance; positive demand must include both allocated and queued reservations.
+    if (input.requested[resource] === 0) continue;
+    const decision = checkHostedEntitlement(entitlement, { kind: 'quota', key: HOSTED_POOL_RESOURCE_QUOTAS[resource],
+      used: input.allocated[resource] + input.pending[resource], requested: input.requested[resource] });
+    audit.push(decision.audit);
+    if (!decision.allowed) reasons.push(`${HOSTED_POOL_RESOURCE_QUOTAS[resource]}: ${decision.reason}`);
+  }
+  const budget = input.budget;
+  if (!/^[A-Z]{3}$/.test(budget.currency) ||
+      ![budget.usedMinor, budget.pendingMinor, budget.requestedMinor].every(finiteInteger) ||
+      !Number.isSafeInteger(budget.usedMinor + budget.pendingMinor + budget.requestedMinor)) {
+    reasons.push('invalid pool currency or budget counters');
+  } else if (budget.requestedMinor > 0) {
+    const decision = checkHostedEntitlement(entitlement, { kind: 'budget',
+      key: `pool.cost.${budget.currency.toLowerCase()}.minor`,
+      used: budget.usedMinor + budget.pendingMinor, requested: budget.requestedMinor });
+    audit.push(decision.audit);
+    if (!decision.allowed) reasons.push(`pool cost: ${decision.reason}`);
+  }
+  const capacity = input.capacity;
+  const reservedHosts = entitlement.quotas['pool.reserved-hosts'] ?? 0;
+  const guaranteed = finiteInteger(reservedHosts) && input.requested.hosts > 0 &&
+    input.allocated.hosts + input.pending.hosts + input.requested.hosts <= reservedHosts;
+  if (![capacity.freeHosts, capacity.reservedForOtherCustomers, capacity.olderBurstWaiters].every(finiteInteger) ||
+      capacity.reservedForOtherCustomers > capacity.freeHosts) {
+    reasons.push('invalid pool capacity snapshot');
+  } else if (input.requested.hosts > 0) {
+    if (input.requested.hosts > capacity.freeHosts - capacity.reservedForOtherCustomers) {
+      reasons.push('pool capacity reserved or exhausted');
+    }
+    if (!guaranteed && capacity.olderBurstWaiters > 0) reasons.push('older pool burst requests have priority');
+  }
+  return { allowed: reasons.length === 0, reasons, guaranteed, audit };
+}
 
 export type HostedLifecycleRiskTier = 'low' | 'moderate' | 'high' | 'critical';
 export type HostedLifecycleApprovalStatus = 'not-required' | 'pending' | 'approved' | 'rejected';
@@ -253,6 +341,8 @@ export interface HostedWorkspaceActivity {
   lastActivityAt?: string | null;
   idleStopAfterMinutes?: number | null;
   activeLifecycleJobs: number;
+  /** Controller observation, including admitted starts that have not spawned yet. */
+  activeWork?: { activeAgents: number; pendingAgentStarts: number; activeCommands: number };
   /**
    * Desktop viewers attached to this workspace. OMITTING it is a valid state and means the caller
    * had no viewer signal to offer — which is reported back as `desktopViewerSignal: 'absent'`
@@ -266,7 +356,7 @@ export interface HostedIdleStopDecision {
   idleForMs: number;
   reason?: string;
   /** Present only when something actively held the stop off. */
-  hold?: 'desktop-viewer';
+  hold?: 'desktop-viewer' | 'active-work';
   /**
    * Whether this verdict actually consulted a desktop-viewer signal.
    *
@@ -288,6 +378,10 @@ export function evaluateHostedIdleStop(
   if (workspace.state !== 'active') return { due: false, idleForMs: 0 };
   if (workspace.observedState !== 'running') return { due: false, idleForMs: 0 };
   if (workspace.activeLifecycleJobs > 0) return { due: false, idleForMs: 0 };
+  if (workspace.activeWork && [workspace.activeWork.activeAgents, workspace.activeWork.pendingAgentStarts,
+    workspace.activeWork.activeCommands].some(value => !finiteInteger(value) || value > 0)) {
+    return { due: false, idleForMs: 0, hold: 'active-work' };
+  }
   const minutes = workspace.idleStopAfterMinutes;
   if (minutes == null || !Number.isSafeInteger(minutes) || minutes < 1) {
     return { due: false, idleForMs: 0 };

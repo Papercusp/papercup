@@ -85,6 +85,13 @@ it('retires the roster worker auth listener before its shared database pools', (
   expect(hub, 'retain hub connection labels before closing subscriptions').toBeGreaterThan(census);
   expect(hub, 'collector LISTEN subscriptions must retire before the shared pools').toBeLessThan(pools);
   expect(phases[hub].body).toContain('await _stopHubForTests()');
+  const lockListeners = phases.findIndex(phase => phase.body.includes('await _resetListenersForTests()'));
+  const lockPools = phases.findIndex(phase => phase.body.includes('await resetLockPools()'));
+  expect(lockListeners, 'acknowledgement opens locks listeners outside db-org').toBeGreaterThan(census);
+  expect(lockPools, 'the separate su-lock-tx pool must retire after its listeners').toBeGreaterThan(lockListeners);
+  expect(lockPools, 'locks teardown must precede retirement of the shared database pools').toBeLessThan(pools);
+  expect(phases[lockListeners].body).toContain("import('@papercusp/locks')");
+  expect(phases[lockPools].body).toContain('_resetForTests: resetLockPools');
   expect(closed, 'verify referenced private sockets after pool close callbacks').toBeGreaterThan(pools);
   expect(phases[closed].body).toContain('assert.equal(retained.length, 0');
 });

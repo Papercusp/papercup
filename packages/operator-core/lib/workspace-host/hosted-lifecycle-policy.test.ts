@@ -4,8 +4,14 @@ import {
   classifyHostedLifecycleJob,
   evaluateHostedIdleStop,
   evaluateHostedLifecycleAdmission,
+  evaluateHostedPoolResourceAdmission,
+  HOSTED_POOL_RESOURCE_QUOTAS,
+  HOSTED_POOL_TRIAL_DB_GIB,
+  type HostedPoolResourceAdmissionInput,
+  type HostedPoolResources,
   type HostedLifecycleAdmissionRequest,
 } from './hosted-lifecycle-policy';
+import type { ResolvedHostedEntitlements } from '../auth/hosted-entitlements';
 
 const request: HostedLifecycleAdmissionRequest = {
   action: 'start',
@@ -20,6 +26,104 @@ const request: HostedLifecycleAdmissionRequest = {
   },
   billingOwner: { kind: 'organization', id: 'org-1' },
 };
+
+const emptyResources = (): HostedPoolResources => ({ agents: 0, hosts: 0, cpuMillicores: 0, memoryMiB: 0, dbGiB: 0, workspaceGiB: 0 });
+function poolInput(): HostedPoolResourceAdmissionInput {
+  const entitlements: ResolvedHostedEntitlements = {
+    organizationId: 'org-1', assignmentId: 'assignment-1', bundleId: 'trial', bundleVersion: 1,
+    appliedOverrides: [], auditReceiptIds: ['receipt-1'], recheckAt: null,
+    allowedProviders: ['gcp', 'aws'], limits: { workspaces: 1, members: 1 },
+    browserAccess: { pty: true, files: true }, supportTier: 'trial', rolloutFlags: {},
+    quotas: { 'pool.agents': 2, 'pool.hosts': 1, 'pool.cpu-millicores': 8000,
+      'pool.memory-mib': 32768, 'pool.db-gib': HOSTED_POOL_TRIAL_DB_GIB, 'pool.workspace-gib': 32 },
+    budgets: { 'pool.cost.usd.minor': 10000 },
+  };
+  return { organizationId: 'org-1', entitlements, nowMs: 1000,
+    allocated: emptyResources(), pending: emptyResources(),
+    requested: { agents: 1, hosts: 1, cpuMillicores: 4000, memoryMiB: 16384, dbGiB: 256, workspaceGiB: 16 },
+    budget: { currency: 'USD', usedMinor: 0, pendingMinor: 0, requestedMinor: 1500 },
+    capacity: { freeHosts: 2, reservedForOtherCustomers: 0, olderBurstWaiters: 0 } };
+}
+
+describe('hosted pool resource policy (P-537)', () => {
+  it('admits a fresh 256GiB trial with unit-bearing allowance and audit receipts', () => {
+    const decision = evaluateHostedPoolResourceAdmission(poolInput());
+    expect(decision).toMatchObject({ allowed: true, guaranteed: false, reasons: [] });
+    expect(decision.audit).toHaveLength(7);
+    expect(decision.audit.every(row => row.assignmentId === 'assignment-1' && row.organizationId === 'org-1')).toBe(true);
+  });
+
+  it.each(Object.keys(HOSTED_POOL_RESOURCE_QUOTAS) as Array<keyof HostedPoolResources>)(
+    'counts pending %s before the first reservation starts', resource => {
+      const input = poolInput();
+      input.pending[resource] = input.entitlements!.quotas[HOSTED_POOL_RESOURCE_QUOTAS[resource]];
+      expect(evaluateHostedPoolResourceAdmission(input).reasons)
+        .toContain(`${HOSTED_POOL_RESOURCE_QUOTAS[resource]}: quota_exceeded`);
+    },
+  );
+
+  it('includes pending money and refuses missing or wrong-currency budget authority', () => {
+    const input = poolInput();
+    input.budget.pendingMinor = 9000;
+    expect(evaluateHostedPoolResourceAdmission(input).reasons).toContain('pool cost: budget_exceeded');
+    input.budget.currency = 'EUR';
+    expect(evaluateHostedPoolResourceAdmission(input).reasons).toContain('pool cost: budget_missing');
+  });
+
+  it('refuses absent, foreign, expired or unaudited authority', () => {
+    for (const change of [null, { organizationId: 'org-2' }, { recheckAt: new Date(1000) }, { auditReceiptIds: [] }]) {
+      const input = poolInput();
+      input.entitlements = change === null ? null : { ...input.entitlements!, ...change };
+      expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(false);
+    }
+  });
+
+  it('uses allowances rather than a paid label, and applies upgrades and downgrades to new demand', () => {
+    const input = poolInput();
+    input.requested.agents = 3;
+    input.entitlements = { ...input.entitlements!, bundleId: 'paid', supportTier: 'paid' };
+    expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(false);
+    input.entitlements = { ...input.entitlements!, quotas: { ...input.entitlements!.quotas, 'pool.agents': 4 } };
+    expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(true);
+    input.allocated.agents = 4;
+    input.requested = emptyResources();
+    input.budget.requestedMinor = 0;
+    input.entitlements = { ...input.entitlements!, quotas: { ...input.entitlements!.quotas, 'pool.agents': 1 } };
+    expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(true);
+    input.requested.agents = 1;
+    expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(false);
+  });
+
+  it('protects other tenants reservations and admits guaranteed work ahead of burst waiters', () => {
+    const input = poolInput();
+    input.capacity = { freeHosts: 2, reservedForOtherCustomers: 2, olderBurstWaiters: 0 };
+    expect(evaluateHostedPoolResourceAdmission(input).reasons).toContain('pool capacity reserved or exhausted');
+    input.capacity = { freeHosts: 2, reservedForOtherCustomers: 1, olderBurstWaiters: 1 };
+    expect(evaluateHostedPoolResourceAdmission(input).reasons).toContain('older pool burst requests have priority');
+    input.entitlements = { ...input.entitlements!, quotas: { ...input.entitlements!.quotas, 'pool.reserved-hosts': 1 } };
+    expect(evaluateHostedPoolResourceAdmission(input)).toMatchObject({ allowed: true, guaranteed: true });
+  });
+
+  it.each([NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER])('fails closed on malformed or overflowing demand %s', value => {
+    const input = poolInput();
+    input.pending.agents = value;
+    expect(evaluateHostedPoolResourceAdmission(input).allowed).toBe(false);
+  });
+
+  it('holds idle scale-in for running or pending work and unknown work counters', () => {
+    const base = { state: 'active', observedState: 'running', lastActivityAt: new Date(0).toISOString(),
+      idleStopAfterMinutes: 1, activeLifecycleJobs: 0 };
+    for (const activeWork of [
+      { activeAgents: 1, pendingAgentStarts: 0, activeCommands: 0 },
+      { activeAgents: 0, pendingAgentStarts: 1, activeCommands: 0 },
+      { activeAgents: 0, pendingAgentStarts: 0, activeCommands: 1 },
+      { activeAgents: NaN, pendingAgentStarts: 0, activeCommands: 0 },
+      { activeAgents: 0, pendingAgentStarts: 0, activeCommands: undefined as unknown as number },
+    ]) expect(evaluateHostedIdleStop({ ...base, activeWork }, 120000))
+      .toMatchObject({ due: false, hold: 'active-work' });
+    expect(evaluateHostedIdleStop({ ...base, activeWork: { activeAgents: 0, pendingAgentStarts: 0, activeCommands: 0 } }, 120000).due).toBe(true);
+  });
+});
 
 describe('hosted lifecycle policy', () => {
   it('admits a provenance-backed job within tenant, provider, budget, and risk limits', () => {

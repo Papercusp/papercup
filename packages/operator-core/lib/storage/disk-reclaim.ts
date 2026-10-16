@@ -29,6 +29,7 @@ export const DISK_HEADROOM_BYTES = 100 * 1024 ** 3;
 const HOUR = 3_600_000;
 const EFFECT_BUDGET_SUFFIX = ': effect budget exhausted; resume with a fresh policy census';
 const effectBudgetError = (root: string) => `incomplete retention effects:${root}${EFFECT_BUDGET_SUFFIX}`;
+const sizeCapError = (root: string, overByBytes: number) => `size cap remains exceeded:${root}:${overByBytes}`;
 
 export interface RetentionEntry {
   path: string; root: string; classId: string;
@@ -123,6 +124,14 @@ export async function drainScheduledDiskReclaim(
     notAfterMs ??= started + maxElapsedMs;
     const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)
       .map((effect) => effectBudgetError(effect.root)));
+    // A budget-stopped capped root reports its measured remaining overage too.
+    // Resume only that exact companion error; permanent or unrelated cap
+    // failures still stop, and the original deadline and safety checks apply.
+    for (const cap of receipt.caps ?? []) {
+      if (budgetErrors.has(effectBudgetError(cap.root)) && cap.overByBytes > cap.pinnedOverageBytes) {
+        budgetErrors.add(sizeCapError(cap.root, cap.overByBytes));
+      }
+    }
     if (!receipt.errors.length || receipt.errors.some((error) => !budgetErrors.has(error)) ||
         receipt.delegates.some((delegate) => !delegate.ok) || receipt.entries.some((entry) => entry.status === 'failed')) {
       return { ...result, stop: 'error' };
@@ -707,7 +716,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
         }
         if (!selected.length) {
-          if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
+          if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
           continue;
         }
         const effectStarted = Date.now();
@@ -819,7 +828,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           cap.pinnedBytes = entries.filter((entry) => cap.pinnedPaths.includes(entry.path)).reduce((sum, entry) => sum + entry.bytes, 0);
           cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - cap.maxBytes);
           cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
-          if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
+          if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
         }
       }
       for (const delegate of options.delegates ?? []) {

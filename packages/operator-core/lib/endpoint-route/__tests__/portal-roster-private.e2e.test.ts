@@ -1,5 +1,5 @@
 import { fork } from 'node:child_process';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -73,6 +73,18 @@ it('private Health HTTP reader observes a shared publication after its acknowled
       expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
         timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
       expect(result.output).toContain('ROSTER_HEALTH_PUBLICATION_RECEIPT ');
+      const resources = JSON.parse(await readFile(join(evidenceDir, 'roster-stop-resources.json'), 'utf8')) as {
+        pgConnections: Array<{ datname: string; application_name: string }>;
+        retained: unknown[];
+        activeResources: string[];
+      };
+      // The acknowledgement path opens a separate locks database. Checking
+      // only db-org's pools missed the live socket that pinned this worker.
+      expect(resources.pgConnections).toEqual(expect.arrayContaining([
+        expect.objectContaining({ datname: 'papercusp_su', application_name: expect.stringContaining('su-lock-tx') }),
+      ]));
+      expect(resources.retained).toEqual([]);
+      expect(resources.activeResources.filter(type => type === 'FSEventWrap' || type === 'FSWatcher')).toEqual([]);
     },
   });
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });

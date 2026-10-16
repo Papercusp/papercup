@@ -104,6 +104,38 @@ function assertLauncherLogProgress(taskId: string, log: string) {
   }
 }
 
+function assertMatrixCapacity(provider: 'claude' | 'codex', report: Record<string, unknown>) {
+  // `serving` is the probe's policy-checked STATE. `ok`, HTTP 200, unknown
+  // projections and the `unwalled` DELTA do not establish eligible capacity.
+  if (report.provider !== provider || report.dryRun !== true ||
+    !Array.isArray(report.serving) || !report.serving.some(id => typeof id === 'string' && id.length > 0)) {
+    throw new Error(`Final matrix has no eligible ${provider} capacity from its dry probe: ` +
+      JSON.stringify({ provider: report.provider, dryRun: report.dryRun, probed: report.probed,
+        serving: report.serving, confirmedWalled: report.confirmedWalled, failed: report.failed }));
+  }
+}
+
+describe('owned matrix capacity preflight', () => {
+  it('accepts measured serving capacity without requiring an unwall correction', () => {
+    expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: true,
+      probed: 1, serving: ['healthy'], unwalled: [] })).not.toThrow();
+  });
+  it.each([
+    { confirmedWalled: ['weekly-full'], failed: [] },
+    { confirmedWalled: [], failed: ['insufficient-credit'] },
+    { confirmedWalled: [], failed: [], ok: true, available: true },
+  ])('refuses walls, missing readings and success-shaped projections before launching fixtures: %j', detail => {
+    expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: true,
+      probed: 1, serving: [], ...detail })).toThrow('no eligible claude capacity');
+  });
+  it('does not substitute another provider or a projection-writing probe', () => {
+    expect(() => assertMatrixCapacity('claude', { provider: 'codex', dryRun: true,
+      serving: ['healthy-codex'] })).toThrow('no eligible claude capacity');
+    expect(() => assertMatrixCapacity('claude', { provider: 'claude', dryRun: false,
+      serving: ['healthy'] })).toThrow('dry probe');
+  });
+});
+
 // expect.poll retries exceptions as assertion failures. A dead launcher is a
 // terminal error, so propagate it immediately rather than hiding it for 240s.
 async function waitForLauncherObservation(observe: () => boolean | Promise<boolean>, timeout: number,
@@ -195,6 +227,16 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     const parentTaskId = matrixParentTaskId();
     const parentWorkItemId = matrixParentWorkItemId(parentTaskId,
       call('processes:list', { taskId: parentTaskId }, origin).tasks);
+    // Both target backends, and Claude maintenance summarization, are required
+    // by the unchanged matrix profile. Refuse known capacity walls before any
+    // fixture is launched; dry probes neither unwall nor readmit accounts.
+    for (const provider of ['claude', 'codex'] as const) {
+      const capacity = call('accounts:probe-capacity', { provider, apply: false }, origin);
+      console.info('CBP_FINAL_CAPACITY_PREFLIGHT', JSON.stringify({ provider,
+        dryRun: capacity.dryRun, probed: capacity.probed, serving: capacity.serving,
+        confirmedWalled: capacity.confirmedWalled, failed: capacity.failed }));
+      assertMatrixCapacity(provider, capacity);
+    }
     const ids = profile.resumeMatrix.sourceAdvSessionIds as number[];
     expect(ids).toHaveLength(3);
     expect(ids.every(id => Number.isSafeInteger(id) && id > 0)).toBe(true);
