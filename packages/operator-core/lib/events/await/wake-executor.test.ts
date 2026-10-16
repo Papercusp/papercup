@@ -372,6 +372,9 @@ function work(overrides: Partial<DeliveryWork> = {}): DeliveryWork {
     minSleepSec: null,
     coalescedCount: 1,
     source: null,
+    turnProof: null,
+    turnStartedAt: null,
+    pickupDeadlineAt: null,
     wakeHandle: null,
     note: 'waiting to edit foo.ts',
     ...overrides,
@@ -3191,7 +3194,7 @@ describe('executeWake — the liveness ladder', () => {
     const isHeadlessResumeTurn = vi.fn(() => true);
     const d = deps({ isHeadlessResumeTurn: isHeadlessResumeTurn as never });
     const out = await executeWake(
-      work({ wakeHandle: advHandle(), pid: 9999 }),
+      work({ wakeHandle: advHandle({ pid: 9999 }) }),
       d,
     );
 

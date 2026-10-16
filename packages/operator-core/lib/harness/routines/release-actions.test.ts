@@ -4061,7 +4061,7 @@ describe('P-303: signed gate-verdict producer', () => {
     expect(logs).toEqual(['signed gate shard publication skipped (no time budget)']);
   });
 
-  function deps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
+  function signedVerdictDeps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
     const inserted: Array<{ target: typeof target; hiveHomeSlug: string | null; signed: import('../../sync/pot-git/gate/verdicts').GateVerdict; verdictId: string }> = [];
     const base: import('./release-actions').SignedGateVerdictPublishDeps = {
       loadHarnessRegistry: async () => ({
@@ -4106,14 +4106,14 @@ describe('P-303: signed gate-verdict producer', () => {
   }
 
   it('fails closed before any dependency work when run identity is incomplete', async () => {
-    const { base, inserted } = deps();
+    const { base, inserted } = signedVerdictDeps();
     const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate: 'short', runId: 'run-1' }, base);
     expect(result).toEqual({ published: 0, skipped: 0, reason: 'missing-run-identity' });
     expect(inserted).toHaveLength(0);
   });
 
   it('publishes one signed fact per evidenced shard with measured outcome and duration', async () => {
-    const { base, inserted } = deps();
+    const { base, inserted } = signedVerdictDeps();
     const result = await publishSignedGateVerdicts(
       target,
       { reason: 'up-to-date', green: true, candidate, runId: 'run-1' },
@@ -4136,7 +4136,7 @@ describe('P-303: signed gate-verdict producer', () => {
     const attemptedIds: string[] = [];
     const attemptedTimestamps: number[] = [];
     const persistedIds = new Set<string>();
-    const { base } = deps({
+    const { base } = signedVerdictDeps({
       insertGateVerdict: async (row) => {
         attemptedIds.push(row.verdictId);
         attemptedTimestamps.push(row.signed.ts);
@@ -4162,7 +4162,7 @@ describe('P-303: signed gate-verdict producer', () => {
   });
 
   it('uses the final attempt per file so a later pass supersedes a historical failure', async () => {
-    const { base, inserted } = deps({
+    const { base, inserted } = signedVerdictDeps({
       readTestRuns: async () => [
         {
           id: 41,
@@ -4197,7 +4197,7 @@ describe('P-303: signed gate-verdict producer', () => {
   });
 
   it('does not turn skipped or cancelled rows into a signed pass', async () => {
-    const { base, inserted } = deps({
+    const { base, inserted } = signedVerdictDeps({
       readTestRuns: async () => [{
         file_path: 'packages/core/src/core.test.ts',
         status: 'skip',
@@ -4211,7 +4211,7 @@ describe('P-303: signed gate-verdict producer', () => {
   });
 
   it('fails closed rather than substituting a wall-clock timestamp for incomplete evidence', async () => {
-    const { base, inserted } = deps({
+    const { base, inserted } = signedVerdictDeps({
       readTestRuns: async () => [{ file_path: 'packages/core/src/core.test.ts', status: 'pass', duration_ms: 12 }],
     });
     const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate, runId: 'run-1' }, base);
@@ -4869,6 +4869,32 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     fakeSql.unsafe.mockClear();
     fireLaunchBlueprintForEvent.mockClear();
     fireLaunchBlueprintForEvent.mockResolvedValue(null);
+  });
+
+  it.each([
+    { measured: 'false', hasSnapshot: true, code: 'no-measured-failures', retryable: false, reason: 'no measured failing tests' },
+    { measured: 'true', hasSnapshot: false, code: 'snapshot-mismatch', retryable: true, reason: 'no fresh candidate snapshot' },
+  ])('reports the exact typed refusal without spawning: $code', async ({ measured, hasSnapshot, code, retryable, reason }) => {
+    const candidate = 'a'.repeat(40);
+    const repairQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 1, phase: 'awaiting-fixer', candidate, base: 'b'.repeat(40), repairHead: candidate,
+      affectedTestProofGroup: 'proof-1', attempts: 0, openedAtMs: 1, updatedAtMs: 2,
+      fixerSpawnId: null, failingTests: ['lib/red.test.ts'], signature: [],
+    };
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: repairQueue.failingTests, repairQueue }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ lf: null, ftm: measured, cs: hasSnapshot ? snapshot : null }]));
+    const onSkip = vi.fn();
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' }, candidate, repairQueue.failingTests, repairQueue, undefined,
+      { checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }), onSkip },
+    );
+
+    expect(result).toBeNull();
+    expect(onSkip).toHaveBeenCalledExactlyOnceWith({ code, retryable, reason: expect.stringContaining(reason) });
+    expect(fireLaunchBlueprintForEvent).not.toHaveBeenCalled();
+    expect(fakeSql.unsafe.mock.calls.some(([query]) => String(query).includes('UPDATE'))).toBe(false);
   });
 
   it('does not announce or suppress retries when the launch target returns no spawn', async () => {

@@ -20,8 +20,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENTS,
   chooseResumeTarget,
+  launchSessionPort,
   resolveResumeTarget,
   resumePickerBackendsFor,
+  sessionPortRequestBody,
   unresumableSourceCause,
 } from "../scripts/psu-launcher.mjs";
 
@@ -274,6 +276,60 @@ describe("psu --resume refuses an unresumable source before spawn (R-23)", () =>
       { tracked: true, home },
     );
     expect(cause).toMatch(/no source transcript to carry onto omp/);
+  });
+
+  it("checks the selected historical consult incarnation instead of the row's missing newest transcript", () => {
+    const home = tempHome();
+    const configDir = tempHome();
+    const selectedId = "5a2b7b99-61c4-4c88-9dcd-5229928ce7e0";
+    mkdirSync(join(configDir, "projects", "--repo--"), { recursive: true });
+    writeFileSync(join(configDir, "projects", "--repo--", `${selectedId}.jsonl`), '{"type":"user"}\n');
+    const source = { ...trackedSession("claude"), configDir };
+    const target = port("claude", "codex");
+    const request = sessionPortRequestBody(source, target, {}, {
+      consultEvidenceSpan: { sessionId: selectedId, turnIndices: [68, 101], contextTurns: 2 },
+    });
+    expect(request.sourceNativeSessionId).toBe(selectedId);
+    expect(unresumableSourceCause(source, target, {
+      tracked: true, home, sourceNativeSessionId: request.sourceNativeSessionId,
+    })).toBeNull();
+    expect(source.sessionId).toBe(trackedSession("claude").sessionId);
+    // The same row without historical evidence is still refused.
+    expect(unresumableSourceCause(source, target, { tracked: true, home }))
+      .toMatch(/no source transcript to carry onto codex/);
+  });
+
+  it("keeps raw-source and current-incarnation refusals when an exact source id is supplied", () => {
+    const source = { ...trackedSession("claude"), configDir: tempHome() };
+    const target = port("claude", "codex");
+    expect(unresumableSourceCause(source, target, {
+      tracked: false, home: tempHome(), sourceNativeSessionId: "5a2b7b99-61c4-4c88-9dcd-5229928ce7e0",
+    })).toMatch(/requires a psu-tracked source session/);
+    expect(unresumableSourceCause(source, target, {
+      tracked: true, home: tempHome(), sourceNativeSessionId: source.sessionId,
+    })).toMatch(/no source transcript to carry onto codex/);
+  });
+
+  it("defers historical availability to the exact operator inspector and never launches after its refusal", async () => {
+    const source = { ...trackedSession("claude"), configDir: tempHome() };
+    const target = port("claude", "codex");
+    const selectedId = "5a2b7b99-61c4-4c88-9dcd-5229928ce7e0";
+    const consultEvidenceSpan = { sessionId: selectedId, turnIndices: [68, 101], contextTurns: 2 };
+    expect(unresumableSourceCause(source, target, {
+      tracked: true, home: tempHome(), sourceNativeSessionId: selectedId,
+    })).toBeNull();
+    const sessionPortApiImpl = vi.fn(async () => { throw new Error("exact historical source unavailable"); });
+    const launchFreshSuImpl = vi.fn();
+    await expect(launchSessionPort(source, target, {}, { consultEvidenceSpan }, {
+      sessionPortApiImpl, launchFreshSuImpl,
+    })).rejects.toThrow("exact historical source unavailable");
+    expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    const [route, options] = sessionPortApiImpl.mock.calls[0] as unknown as [string, { body: string }];
+    expect(route).toBe("/api/adv/sessions/port/inspect");
+    expect(JSON.parse(options.body)).toMatchObject({
+      sourceAdvSessionId: source.id, sourceNativeSessionId: selectedId, consultEvidenceSpan,
+    });
+    expect(launchFreshSuImpl).not.toHaveBeenCalled();
   });
 
   it.each(["claude", "codex"] as const)(

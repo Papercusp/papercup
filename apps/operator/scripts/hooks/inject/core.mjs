@@ -21,6 +21,8 @@
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
 import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { codeIntelDelivery } from './delivery-ledger.mjs';
 
 /**
  * @typedef {import('./ports.mjs').InjectionPort} InjectionPort
@@ -187,6 +189,13 @@ export async function postInjection(port, body, opts = {}) {
   const { off, mode } = killSwitchState(port, env);
   if (off && mode === 'suppress') return null;
 
+  if (port === 'turn-start' || port === 'compaction') codeIntelDelivery(body.owner, env, () => null, port);
+  const finish = (text = '', deliveryToken = null) => {
+    if (port !== 'mid-turn') return text.trim() ? { text, deliveryToken } : null;
+    const merged = mergeCodeIntel(body, text, env);
+    return merged?.trim() ? { text: merged, deliveryToken } : null;
+  };
+
   // AbortSignal.timeout is the hard wall (invariant 2). It bounds the whole
   // exchange including body read, which a per-socket timeout would not.
   const controller = new AbortController();
@@ -198,7 +207,7 @@ export async function postInjection(port, body, opts = {}) {
     // Collect locally, where the edited file and its owning repo exist. Never run
     // the parser/compiler on the shared operator's 250ms snapshot push path.
     if (port === 'mid-turn') await collectInterfaceEdits(body);
-    if (controller.signal.aborted || typeof fetchImpl !== 'function') return localStrandFallback(body);
+    if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
@@ -219,20 +228,15 @@ export async function postInjection(port, body, opts = {}) {
         if (controller.signal.aborted) throw err;
       }
     }
-    if (!res || !res.ok) return localStrandFallback(body);
+    if (!res || !res.ok) return finish();
     const payload = await res.json();
-    if (!payload || typeof payload !== 'object') return localStrandFallback(body);
+    if (!payload || typeof payload !== 'object') return finish();
     const { text, deliveryToken } = payload;
-    if (typeof text !== 'string' || !text.trim()) return localStrandFallback(body);
-    // Preserve the existing local safety advice when the optional snapshot leg
-    // is unavailable, disabled, over budget or deduplicated. One merged payload.
-    const fallback = localStrandFallback(body, text);
-    if (fallback) return { text: `${text}\n\n${fallback.text}`, deliveryToken: typeof deliveryToken === 'string' ? deliveryToken : null };
-    return { text, deliveryToken: typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null };
+    return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null);
   } catch {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
-    return localStrandFallback(body);
+    return finish();
   } finally {
     clearTimeout(timer);
   }
@@ -260,14 +264,34 @@ export async function collectInterfaceEdits(body, collect = async path => {
   }
 }
 
-function localStrandFallback(body, delivered = '') {
-  const edits = [...new Map((body.toolCalls ?? []).flatMap(call => call.interfaceEdits ?? []).map(edit => [edit.path, edit])).values()];
-  const section = delivered.indexOf('## Code intelligence');
-  const remaining = section < 0 ? 1500 : Math.max(0, 1500 - delivered.slice(section).length - 2);
-  if (!remaining) return null;
-  const notes = edits.filter(edit => !delivered.includes(`Code intelligence (interface)`) || !delivered.includes(edit.path))
-    .map(edit => `${edit.path}: ${edit.changes.join('; ')}.\n${edit.checks.join('\n')}`);
-  return notes.length ? { text: `## Interface and strand checks\n${notes.join('\n')}\nSnapshot consequences unavailable; consumer and test reach unknown.`.slice(0, remaining), deliveryToken: null } : null;
+function mergeCodeIntel(body, delivered, env) {
+  const edits = [...new Map((body.toolCalls ?? []).flatMap(call => call.interfaceEdits ?? [])
+    .filter(edit => edit && typeof edit.path === 'string' && Array.isArray(edit.changes)
+      && edit.changes.every(value => typeof value === 'string') && Array.isArray(edit.checks)
+      && edit.checks.every(value => typeof value === 'string'))
+    .map(edit => [edit.path, edit])).values()];
+  const blocks = delivered.split(/(?=^## )/m);
+  const ordinary = blocks.filter(block => !block.startsWith('## Code intelligence')).join('').trim();
+  const optional = blocks.filter(block => block.startsWith('## Code intelligence')).map(block => block.trim());
+  if (!optional.length && !edits.length) return delivered;
+  const reserved = codeIntelDelivery(body.owner, env, state => {
+    const out = [];
+    const subject = edit => `interface:${edit.path}:${edit.changes.join('|')}`;
+    const take = (text, keys) => {
+      if (keys.some(key => state.subjects.includes(key)) || state.chars + text.length + 2 + ordinary.length > 1500) return;
+      out.push(text); state.chars += text.length + 2; state.subjects.push(...keys);
+    };
+    for (const block of optional) {
+      const matches = block.startsWith('## Code intelligence (interface)') ? edits.filter(edit => block.includes(`${edit.path}:`)) : [];
+      take(block, matches.length ? matches.map(subject) : [createHash('sha256').update(block).digest('hex')]);
+    }
+    for (const edit of edits) {
+      if (!Array.isArray(edit.changes) || !Array.isArray(edit.checks)) continue;
+      take(`## Code intelligence (interface)\nLocal comparison base ${edit.base || 'unknown'}\n${edit.path}: ${edit.changes.join('; ')}.\n${edit.checks.join('\n')}\nSnapshot consequences unavailable; consumer and test reach unknown.`, [subject(edit)]);
+    }
+    return out.join('\n\n');
+  });
+  return [ordinary, reserved].filter(Boolean).join('\n\n');
 }
 
 /** Keep native patch headers outside the lossy recall digest, including multi-file patches. */

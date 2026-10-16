@@ -229,7 +229,9 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
   });
 });
 
-describe('converge real PostgreSQL composition', () => {
+// Reuse the exact identities in two independent databases. This catches both
+// retained clause revisions and the fixed proof WI leaking between runs.
+describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', () => {
   let fx: PlanPgFixture;
   const slug = 'converge-real-pg-fixture';
   const ctx = { isSuperuser: true, uiClientId: 'su-converge-pg', ownerId: 'su-converge-pg',
@@ -249,7 +251,13 @@ describe('converge real PostgreSQL composition', () => {
     return evaluateTool.handler(evaluateTool.args.parse(toolArgs) as never, ctx);
   };
   beforeAll(async () => {
-    fx = await setupPlanPgFixture();
+    fx = await setupPlanPgFixture({ isolated: true });
+    expect(await fx.admin`SELECT spec_id FROM harness_shared.plan_spec_clauses
+      WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`)
+      .toHaveLength(0);
+    expect(await fx.admin`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND feature_id = 'WI-CONVERGE-PROOF'`)
+      .toHaveLength(0);
     // The certifier writes through scorecards:emit, which resolves its own
     // spec-test-adequacy rubric from the workspace store. Seed the bundled
     // production rubric into this disposable database so this composition test
@@ -270,9 +278,9 @@ describe('converge real PostgreSQL composition', () => {
       behaviorClass: 'boundary', requiredEvidence: ['real PostgreSQL row'], requiredTestLayers: ['integration'],
       lifecycleStatus: 'active', acceptanceRef: 'fixture-accepted', actorId: 'su-converge-pg',
       falsifier: { observation: 'Unproved completion succeeds.', probeMethod: 'Attempt completion without proof.' } });
-    expect(written.status).toBe('created');
+    expect(written, JSON.stringify(written)).toMatchObject({ status: 'created' });
   }, 120_000);
-  afterAll(async () => { await fx?.dispose(); });
+  afterAll(async () => { await fx?.dispose(); }, 30_000);
   it('reads a persisted unbound clause through all three real handlers and writes no gap in default preview', async () => {
     const evaluate = vi.fn((args: Body) => call(evaluateTool, args));
     const audit = vi.fn((args: Body) => call(auditTool, args));

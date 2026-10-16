@@ -53,18 +53,29 @@ afterEach(() => vi.unstubAllEnvs());
 describe('setup auto-update detection', () => {
   it.each(['alpha', 'beta', 'stable'] as const)('accepts managed %s without a saved user choice', async channel => {
     vi.mocked(readManagedUpdateChannel).mockReturnValue(channel);
-    expect((await collectSetupStatus()).statuses['auto-update']).toBe('ok');
+    const status = await collectSetupStatus();
+    expect(status.statuses['auto-update']).toBe('ok');
+    expect(status.autoUpdate).toEqual({
+      status: 'ok', effectiveChannel: channel, managed: true, source: 'administrator', error: null,
+    });
     expect(fixture.state).toEqual({ telemetry_enabled: false });
   });
 
   it('re-reads administrator policy after a conflicting user choice and subsequent policy change', async () => {
     fixture.state!.update_channel = 'alpha';
     vi.mocked(readManagedUpdateChannel).mockReturnValue('stable');
-    expect((await collectSetupStatus()).statuses['auto-update']).toBe('ok');
+    expect((await collectSetupStatus()).autoUpdate).toEqual({
+      status: 'ok', effectiveChannel: 'stable', managed: true, source: 'administrator', error: null,
+    });
     vi.mocked(readManagedUpdateChannel).mockImplementation(() => {
       throw new ManagedUpdatePolicyError('managed_policy_invalid', 'Invalid administrator policy');
     });
-    expect((await collectSetupStatus()).statuses['auto-update']).toBe('needs-attention');
+    const changed = await collectSetupStatus();
+    expect(changed.statuses['auto-update']).toBe('needs-attention');
+    expect(changed.autoUpdate).toEqual({
+      status: 'needs-attention', effectiveChannel: null, managed: true,
+      source: 'administrator', error: 'managed_policy_invalid',
+    });
     expect(readManagedUpdateChannel).toHaveBeenCalledTimes(2);
     expect(fixture.state!.update_channel).toBe('alpha');
   });
@@ -76,24 +87,39 @@ describe('setup auto-update detection', () => {
     });
     const status = await collectSetupStatus();
     expect(status.statuses['auto-update']).toBe('needs-attention');
+    expect(status.autoUpdate).toEqual({
+      status: 'needs-attention', effectiveChannel: null, managed: true,
+      source: 'administrator', error: 'managed_policy_invalid',
+    });
     expect(status.statuses.telemetry).toBe('ok');
     expect(JSON.stringify(status)).not.toContain('sensitive contents');
   });
 
   it.each(['alpha', 'beta', 'stable'])('preserves saved %s when policy reader reports unmanaged', async channel => {
     fixture.state!.update_channel = channel;
-    expect((await collectSetupStatus()).statuses['auto-update']).toBe('ok');
+    const status = await collectSetupStatus();
+    expect(status.statuses['auto-update']).toBe('ok');
+    expect(status.autoUpdate).toEqual({
+      status: 'ok', effectiveChannel: channel, managed: false, source: 'user', error: null,
+    });
   });
 
   it.each([undefined, 'nightly', 'invalid'])('requires a valid choice when unmanaged: %s', async channel => {
     fixture.state!.update_channel = channel;
-    expect((await collectSetupStatus()).statuses['auto-update']).toBe('needs-attention');
+    const status = await collectSetupStatus();
+    expect(status.statuses['auto-update']).toBe('needs-attention');
+    expect(status.autoUpdate).toEqual({
+      status: 'needs-attention', effectiveChannel: null, managed: false, source: null, error: null,
+    });
   });
 
   it('still detects a managed channel if the saved-state probe fails', async () => {
     fixture.readState.mockRejectedValue(new Error('State unavailable'));
     vi.mocked(readManagedUpdateChannel).mockReturnValue('stable');
-    expect((await collectSetupStatus()).statuses['auto-update']).toBe('ok');
+    const status = await collectSetupStatus();
+    expect(status.statuses['auto-update']).toBe('ok');
+    expect(status.autoUpdate.effectiveChannel).toBe('stable');
+    expect(status.autoUpdate.managed).toBe(true);
   });
 
   it('isolates unexpected policy probe failures as unknown', async () => {
@@ -101,7 +127,11 @@ describe('setup auto-update detection', () => {
     vi.mocked(readManagedUpdateChannel).mockImplementation(() => { throw new Error('Unexpected probe failure'); });
     const status = await collectSetupStatus();
     expect(status.statuses['auto-update']).toBe('unknown');
+    expect(status.autoUpdate).toEqual({
+      status: 'unknown', effectiveChannel: null, managed: null, source: null, error: 'probe_failed',
+    });
     expect(status.statuses.telemetry).toBe('ok');
+    expect(JSON.stringify(status)).not.toContain('Unexpected probe failure');
   });
 
   it('projects the real collector through both HTTP and setup:status', async () => {
@@ -112,6 +142,9 @@ describe('setup auto-update detection', () => {
     const first = 'data' in tool ? undefined : tool.content[0];
     const toolBody = 'data' in tool ? tool.data : first?.type === 'text' ? JSON.parse(first.text) : null;
     expect(httpBody.statuses['auto-update']).toBe('ok');
+    expect(httpBody.autoUpdate).toEqual({
+      status: 'ok', effectiveChannel: 'stable', managed: true, source: 'administrator', error: null,
+    });
     expect(toolBody).toEqual(httpBody);
   });
 });

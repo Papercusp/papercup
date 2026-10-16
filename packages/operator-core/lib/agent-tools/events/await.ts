@@ -667,6 +667,7 @@ export default defineTool({
         (async () => {
           const installed = await readInstalledUnitEvents({
             harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+            workspaceId: identity.workspaceId ?? undefined,
           });
           return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
         })(),
@@ -799,6 +800,7 @@ export default defineTool({
         (async () => {
           const installed = await readInstalledUnitEvents({
             harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+            workspaceId: identity.workspaceId ?? undefined,
           });
           return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
         })(),

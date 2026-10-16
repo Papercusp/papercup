@@ -747,10 +747,11 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             // Rescan write activity + identity and process holders immediately before the effect.
             // A regular file's complete newest-write/identity census is one
-            // lstat. Preserve that check without spawning the tree inspector
-            // for every file; directories still require its complete walk.
+            // lstat, including when production supplies an enrolled remover.
+            // Preserve that check without spawning the tree inspector for every
+            // file; directories still require its complete walk.
             const fresh = await measureEffect('reinspectionMs', async () => {
-              const regularFile = options.inspectTrees && !options.removeEntry && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
+              const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
               if (options.inspectTrees && (retainAfterMs !== undefined || capped) && !regularFile) {
                 const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, {
                   retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path],

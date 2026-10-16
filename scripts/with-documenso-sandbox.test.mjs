@@ -6,7 +6,55 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild } from './with-documenso-sandbox.mjs';
+
+const failureRuntime = { container: 'owned-app', network: 'owned', appUrl: 'http://127.0.0.1:32123', mailUrl: 'http://127.0.0.1:32124' };
+
+test('child failure preserves provider state and reachability before returning its original exit code', async () => {
+  const calls = [], reports = [], secret = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(23)'], { stdio: 'ignore' });
+  const code = await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: args => {
+      calls.push(args);
+      return { status: 0, stdout: JSON.stringify({ Status: 'running', ExitCode: 0, OOMKilled: false, Error: secret }) };
+    },
+    probe: async (url, options) => {
+      assert.equal(options.redirect, 'manual'); assert.ok(options.signal);
+      assert.ok([failureRuntime.appUrl + '/signup', failureRuntime.mailUrl + '/email'].includes(url));
+      return { status: 200, body: { cancel: async () => { calls.push('body-cancelled'); } } };
+    },
+    report: async value => { await new Promise(done => setImmediate(done)); reports.push(value); },
+  });
+  assert.equal(code, 23);
+  assert.equal(reports.length, 1, 'the caller may clean up as soon as this returns');
+  assert.deepEqual(reports[0].endpoints, [{ name: 'provider', status: 200 }, { name: 'mail', status: 200 }]);
+  assert.deepEqual(reports[0].containers.map(row => row.name), ['owned-app', 'owned-pg', 'owned-mail']);
+  assert.equal(calls.filter(Array.isArray).every(args => args[0] === 'inspect'), true, 'never collect post-signup application logs');
+  assert.equal(JSON.stringify(reports).includes(secret), false);
+  assert.equal(calls.filter(value => value === 'body-cancelled').length, 2);
+});
+
+test('child failure distinguishes a stopped provider and refused connection without exposing error text', async () => {
+  const reports = [], secret = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(7)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: () => ({ status: 0, stdout: JSON.stringify({ Status: 'exited', ExitCode: 9, OOMKilled: true }) }),
+    probe: async () => { throw new Error(secret, { cause: { code: 'ECONNREFUSED' } }); },
+    report: value => reports.push(value),
+  }), 7);
+  assert.equal(reports[0].containers.every(row => row.status === 'exited' && row.exitCode === 9 && row.oomKilled), true);
+  assert.equal(reports[0].endpoints.every(row => row.failure === 'ECONNREFUSED' && row.status === null), true);
+  assert.equal(JSON.stringify(reports).includes(secret), false);
+});
+
+test('successful child does not inspect providers or issue extra requests', async () => {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: () => assert.fail('success needs no failure diagnosis'),
+    probe: () => assert.fail('success needs no failure probe'),
+    report: () => assert.fail('success needs no failure report'),
+  }), 0);
+});
 
 async function withReaperServer(handler, run) {
   const sockets = new Set();

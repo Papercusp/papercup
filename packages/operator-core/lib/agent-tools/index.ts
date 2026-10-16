@@ -1718,6 +1718,7 @@ import './events/graph';
 import './events/watch';
 import './events/await';
 import './events/emit';
+import './rules/lifecycle';
 import './events/cancel';
 import './events/status';
 // external-triggers-gmail-slack-2026-08-22 P-005 — source/binding inventory,
@@ -1949,6 +1950,10 @@ import '../work-item-completion-event-reconciler';
 // Importing this registry from a script, a build generator or a vitest worker no
 // longer starts them. The wrapper keeps the never-block-boot contract.
 whenOperatorHostProcess('await-event-sweeper', startAwaitSweeper);
+
+// Local authored rules restore enabled Postgres rows on every trigger after boot.
+import { startLocalRuleRuntime } from '../events/local-rule-runtime';
+whenOperatorHostProcess('local-rule-runtime', startLocalRuleRuntime);
 
 // fleet-deltas-leader-primitives-2026-07-10 P-008 — the predicate-watch poller
 // (engine-side "wake me when a tool result crosses a threshold"). Boot-started so

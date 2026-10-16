@@ -87,6 +87,17 @@ function matrixParentTaskId(env: NodeJS.ProcessEnv = process.env) {
   return id;
 }
 
+function matrixParentWorkItemId(parentTaskId: string, tasks: unknown) {
+  const matches = Array.isArray(tasks)
+    ? tasks.filter(task => task?.taskId === parentTaskId && task?.state === 'running')
+    : [];
+  const workItemId = matches[0]?.workItemId;
+  if (matches.length !== 1 || typeof workItemId !== 'string' || !workItemId.trim()) {
+    throw new Error('The final matrix requires exactly one live parent task with a held work item');
+  }
+  return workItemId;
+}
+
 function assertLauncherLogProgress(taskId: string, log: string) {
   if (/JOB END: status=(?:failed|killed|timed_out)|JOB DIED|refusing to launch|session-port target bootstrap\/spawn failed/.test(log)) {
     throw new Error(`Owned matrix launcher failed (${taskId}): ${log.slice(-4000)}`);
@@ -120,6 +131,18 @@ describe('owned matrix lifetime and progress', () => {
     expect(matrixParentTaskId({ PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'parent123' })).toBe('parent123');
     expect(() => matrixParentTaskId({})).toThrow('durable parent task');
     expect(() => matrixParentTaskId({ PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '../bad' })).toThrow();
+  });
+  it('uses the live parent task work item for nested fixture launches', () => {
+    expect(matrixParentWorkItemId('parent123', [
+      { taskId: 'other', state: 'running', workItemId: 'WI-legacy' },
+      { taskId: 'parent123', state: 'running', workItemId: 'EI-current' },
+    ])).toBe('EI-current');
+    expect(() => matrixParentWorkItemId('parent123', [
+      { taskId: 'parent123', state: 'exited', workItemId: 'EI-current' },
+    ])).toThrow('live parent task');
+    expect(() => matrixParentWorkItemId('parent123', [
+      { taskId: 'parent123', state: 'running' },
+    ])).toThrow('held work item');
   });
   it.each(['failed', 'killed', 'timed_out'])('stops immediately when the launcher is %s', async status => {
     let observations = 0;
@@ -170,6 +193,8 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
     const owner = call('coord:whoami', {}, origin).ownerId as string;
     expect(owner).toBe(process.env.PAPERCUSP_SID);
     const parentTaskId = matrixParentTaskId();
+    const parentWorkItemId = matrixParentWorkItemId(parentTaskId,
+      call('processes:list', { taskId: parentTaskId }, origin).tasks);
     const ids = profile.resumeMatrix.sourceAdvSessionIds as number[];
     expect(ids).toHaveLength(3);
     expect(ids.every(id => Number.isSafeInteger(id) && id > 0)).toBe(true);
@@ -225,7 +250,7 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
             `PAPERCUSP_OPERATOR_URL=${origin}`, process.execPath,
             `${canonical}/apps/operator/scripts/psu-launcher.mjs`, ...args].map(shellQuote).join(' ');
           const task = call('capability:bash', { command, cwd: canonical, timeout: 900_000,
-            run_in_background: true, work_item_id: 'WI-6554700010009934',
+            run_in_background: true, work_item_id: parentWorkItemId,
             parent_task_id: parentTaskId,
             description: `Final matrix ${source.agent} to ${target ?? 'original backend'}` }, origin);
           expect(task.task_id).toBeTruthy();

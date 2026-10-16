@@ -2901,7 +2901,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // aggregate fan-out budget.
     const recoveryBytePage = isScratchReferenceBytePageResult(result, opts);
     const scratchReferenceRead = isScratchReferenceReadResult(result, opts);
-    const aggregate = opts.aggregateScope && !recoveryBytePage
+    const aggregate = opts.aggregateScope && !recoveryBytePage && !scratchReferenceRead
       ? reserveAggregateBytes(
           opts.aggregateScope,
           sourceBytes,

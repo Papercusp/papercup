@@ -4,6 +4,10 @@ import { getOrgPg } from '@papercusp/db-org';
 import { parseRulePackage, type AsyncRuleDeclaration, type SyncRuleDeclaration } from '../cupboard/rule-store';
 
 export type LocalRuleDefinition = AsyncRuleDeclaration | SyncRuleDeclaration;
+/** Stable budget/provenance key across edits; revisions must not reset a fire budget. */
+export function localRuleSource(row: { workspaceId: string; potSlug: string | null; id: string }): string {
+  return 'standalone:local:' + encodeURIComponent(JSON.stringify([row.workspaceId, row.potSlug, row.id]));
+}
 export interface LocalRuleScope { workspaceId: string; potSlug?: string | null }
 export interface LocalAuthoredRule {
   workspaceId: string;

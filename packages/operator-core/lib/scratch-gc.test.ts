@@ -71,6 +71,7 @@ import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from './result-door';
 import { scratchRootForWorkspace } from './scratch-uri';
 import { createRetentionPin } from './storage/retention-pins';
 import { spawn } from 'node:child_process';
+import { createTextCollector } from './child-output.js';
 
 // Tests run against a sandbox scratch root so they don't touch the
 // real ~/.papercusp/scratch tree. `os.homedir()` on Linux reads
@@ -160,13 +161,11 @@ function startScratchChild(script: string, env: Record<string, string>) {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
-  let stdout = '';
-  let stderr = '';
+  const stdout = createTextCollector(child.stdout);
+  const stderr = createTextCollector(child.stderr);
   let spawnError: string | null = null;
   const seenMessages = new Set<string>();
   const messageWaiters = new Map<string, () => void>();
-  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
   child.on('message', (message: unknown) => {
     const type = message && typeof message === 'object' && 'type' in message
       ? String((message as { type: unknown }).type)
@@ -176,14 +175,14 @@ function startScratchChild(script: string, env: Record<string, string>) {
   });
   child.once('error', (error) => { spawnError = error.message; });
   const finished = new Promise<{ code: number | null; stdout: string; stderr: string; spawnError: string | null }>((resolve) => {
-    child.once('close', (code) => resolve({ code, stdout, stderr, spawnError }));
+    child.once('close', (code) => resolve({ code, stdout: stdout.text(), stderr: stderr.text(), spawnError }));
   });
   const waitForMessage = (type: string) => {
     if (seenMessages.has(type)) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         messageWaiters.delete(type);
-        reject(new Error('Timed out waiting for child message ' + type + '; stderr: ' + stderr));
+        reject(new Error('Timed out waiting for child message ' + type + '; stderr: ' + stderr.peek()));
       }, 8_000);
       messageWaiters.set(type, () => {
         clearTimeout(timer);
@@ -193,7 +192,7 @@ function startScratchChild(script: string, env: Record<string, string>) {
       child.once('close', () => {
         clearTimeout(timer);
         messageWaiters.delete(type);
-        reject(new Error('Child exited before message ' + type + '; stdout: ' + stdout + '; stderr: ' + stderr));
+        reject(new Error('Child exited before message ' + type + '; stdout: ' + stdout.peek() + '; stderr: ' + stderr.peek()));
       });
     });
   };

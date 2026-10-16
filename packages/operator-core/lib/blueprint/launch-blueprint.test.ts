@@ -317,7 +317,7 @@ describe('blueprint ordered capacity failover (P-004 R-4)', () => {
       backend: 'claude-code', model: backend.model!, effort: backend.effort, resolvedAccountIds });
     expect(written).toMatchObject({ ownerId: 's-backup', requestedBackend: 'codex', requestedModel: 'gpt-5.4',
       launchedBackend: 'claude-code', launchedModel: 'sonnet[1m]', launchedEffort: 'high', reason: 'capacity', resolvedAccountIds: ['claude-a'] });
-    const pinned = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-pin',
+    const pinned = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-backup',
       backend: 'claude-code', account: 'claude-a' });
     applyExplicitSpawnAccountRoute(pinned, 'claude-a');
     expect(pinned.PAPERCUSP_ACCOUNT_ID).toBe('claude-a');
@@ -340,7 +340,7 @@ describe('blueprint ordered capacity failover (P-004 R-4)', () => {
         const writtenMcp = JSON.parse(readFileSync(mcp.path, 'utf8')).mcpServers.papercusp;
         expect(writtenMcp.type).toBe('http');
         expect(new URL(writtenMcp.url).searchParams.has('sig')).toBe(true);
-        for (const [account, gatewayEnv, ownerId] of [['auto', env, 's-backup'], ['claude-a', pinned, 's-pin']] as const) {
+        for (const [account, gatewayEnv, ownerId] of [['auto', env, 's-backup'], ['claude-a', pinned, 's-backup']] as const) {
           const invocation = buildInvokeOnce({ projectDir: directory, stateDir: directory, harnessDir: directory,
             role: 'release-fixer', extras: parsed.extra, extraEnv: { ...gatewayEnv,
               PAPERCUSP_SPAWN_MODEL: parsed.spawnModelPin, PAPERCUSP_SPAWN_BACKEND: parsed.spawnBackendPin,
@@ -355,11 +355,15 @@ describe('blueprint ordered capacity failover (P-004 R-4)', () => {
             .toThrow(/ambient MCP/);
         }
       } finally { restoreSpawnMcp(mcp); }
-      // The actual signed-config writer rejects missing signing material; a
-      // hand-built request/env spy cannot satisfy this control.
-      await expect(writeSignedSpawnMcp(directory, signingInput, { probe: async () => true,
-        pg: (async () => { throw new Error('fixture signing key unavailable'); }) as never }))
-        .rejects.toThrow(/fixture signing key unavailable/);
+      // Force the documented five-minute signing-key cache to miss, so this
+      // rejection control cannot accidentally reuse the healthy fixture key.
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5 * 60_000 + 1);
+      const unavailableKey = vi.fn(async () => { throw new Error('fixture signing key unavailable'); });
+      try {
+        await expect(writeSignedSpawnMcp(directory, signingInput, { probe: async () => true,
+          pg: unavailableKey as never })).rejects.toThrow(/fixture signing key unavailable/);
+        expect(unavailableKey).toHaveBeenCalledOnce();
+      } finally { clock.mockRestore(); }
     } finally {
       config.cleanup();
       rmSync(directory, { recursive: true, force: true });

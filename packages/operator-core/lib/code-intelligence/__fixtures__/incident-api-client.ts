@@ -9,6 +9,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAdaptorServer } from '@hono/node-server';
 import { nativeCliPlan, nativeCliResult } from '../native-cli.fixture.ts';
+import { createTextCollector } from '../../child-output.js';
 
 // The plain-Node bootstrap supplies this callback from outside tsx's namespace.
 // The maintained handler is already compiled; routing it through tsx again
@@ -70,18 +71,21 @@ async function call(name: string, args: Record<string, unknown>) {
   const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done, reject) => {
     const child = spawn(process.execPath, [join(repo, 'apps/operator/scripts/ptool.mjs'),
       name, `--url=${plan.cliUrl}`, '--json', '-'], { cwd: repo, env: plan.env, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', data => { stdout += data; });
-    child.stderr.on('data', data => {
-      const text = String(data);
-      stderr = (stderr + text).slice(-16_000);
-      // Connection/list/request phase clocks must reach the outer fixture before
-      // a deadline kills the client. No request arguments are logged here.
-      writeSync(2, text);
+    const stdout = createTextCollector(child.stdout);
+    const stderr = createTextCollector(child.stderr, {
+      maxChars: 16_000,
+      onDecodedText: (text) => {
+        // Connection/list/request phase clocks must reach the outer fixture before
+        // a deadline kills the client. No request arguments are logged here.
+        writeSync(2, text);
+      },
     });
     const timer = setTimeout(() => child.kill('SIGTERM'), plan.timeoutMs);
     child.once('error', error => { clearTimeout(timer); reject(error); });
-    child.once('close', status => { clearTimeout(timer); done({ status, stdout, stderr }); });
+    child.once('close', status => {
+      clearTimeout(timer);
+      done({ status, stdout: stdout.text(), stderr: stderr.text() });
+    });
     child.stdin.end(JSON.stringify(args));
   });
   writeSync(2, `NATIVE_CLI_PROGRESS=${JSON.stringify({ name, state: 'settled',

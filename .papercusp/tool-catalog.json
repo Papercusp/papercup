@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 968,
+  "count": 976,
   "tools": [
     {
       "name": "ablation:report",
@@ -30255,6 +30255,246 @@
         "when": "You want to see how a rubric's criteria have trended OVER TIME — is a characteristic improving or worsening? which criteria are degrading across recent wakes? Or whether the rubric ITSELF is STALE (its model drifted — `staleness.stale`). The qualitative health-over-time view, vs a single point-in-time scorecard.",
         "notWhen": "You want the raw recent scorecards (point-in-time standing + completeness via missingKeys) — scorecards:list. You want the rubric DEFINITION (criteria/model/method) — rubrics:get. You want the cross-corpus ideation rollup — curation:state-of-pot.",
         "chaining": "rubrics:list { status: \"active\" } → rubrics:trend { rubricRef, since } → drill a worsening criterion via scorecards:list { rubricRef, since } → work_items:get on a scorecard issueId. If `staleness.stale`, re-ratify the rubric via the rubric↔scout loop (revise template_data → plans:set-plan-status)."
+      }
+    },
+    {
+      "name": "rules:create",
+      "http": {
+        "path": "/api/agent-tools/rules/create",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create a disabled local rule in Postgres, or edit your rule with expectedRevision. Edits invalidate prior replay proof and disable execution.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:delete",
+      "http": {
+        "path": "/api/agent-tools/rules/delete",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Delete a local rule in this scope; the runtime re-reads authoritative rows before execution.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:disable",
+      "http": {
+        "path": "/api/agent-tools/rules/disable",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Disable any local rule in this scope immediately. No passing test or author ownership is required to recover from a bad rule.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:enable",
+      "http": {
+        "path": "/api/agent-tools/rules/enable",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Enable a local rule only when rules:test passed for its current revision. Execution still rechecks author identity and ceilings.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:get",
+      "http": {
+        "path": "/api/agent-tools/rules/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a local rule definition, revision, enabled state and replay receipt in the requested scope.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:list",
+      "http": {
+        "path": "/api/agent-tools/rules/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List local, built-in, plugin and inert Cupboard rules with explicit source and enabled state. Local scope defaults to the current pot.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:test",
+      "http": {
+        "path": "/api/agent-tools/rules/test",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Dry-run a draft or saved rule over at most 200 matching historical triggers. Never dispatches actions or providers. Saved rules get revision-bound proof only with nonempty, complete evidence. Event history retains the latest payload per key, not every occurrence; tool result bodies are unavailable.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:validate",
+      "http": {
+        "path": "/api/agent-tools/rules/validate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Validate a portable async or sync rule using the shared grammar, condition bounds, class targets and hook budgets. Writes nothing.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
       }
     },
     {

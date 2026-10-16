@@ -222,6 +222,8 @@ export default defineTool({
       to: args.to,
       source: identity.ownerId,
       workspaceId: identity.workspaceId ?? undefined,
+      harnessSlug: ctx.harnessSlug,
+      cause: ctx.reactionCause,
     });
     // ── event-key-nearmiss-guard P-004: an emit that reached NO ONE (waiters:0,
     // no `to`) is the key-mismatch failure moment — advisory scan for a

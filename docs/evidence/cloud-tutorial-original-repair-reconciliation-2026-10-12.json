@@ -539,6 +539,67 @@
       },
       "verification": "On 2026-10-16, authoritative work_items:get confirmed DONE/committed and the stored responsive-versus-resistant distinguishing test. Exact-id testing:runs readback confirmed original21100133 and passing21145211 identities. The released ledger reader returns root=null; the retained log independently records immutable-root custody. The log digest and git-show committed test digest match the completion proof. No test was replayed and no repair was reclosed.",
       "proofBoundary": "This maps the original pin-heal fixture timing failures to their completed repair and retained focused proof. It does not establish a product pin-heal defect, full affected PASS or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101695,
+      "testFile": "packages/operator-core/lib/doc-claims/goal-contract-rubric-coverage.test.ts",
+      "observedFailure": "The original complete suite passed five cases and failed two: the live rubric-responsibilities clause had no manifest mapping, and the your-hands clause hash had changed.",
+      "repairId": "EI-25654715213166489",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The completed manifest repair at b79567ed8bcc587afdfa2d9ca146a84e18cd9e6b adds rubric-responsibilities with SHA-256 c0a39cab2aa107a2c7af0cb0984b045b99f6cd80827cc0edb0833d5af5233c20, updates your-hands to 1b8666571a5f2364ac70eaa1db286f900d423174ca43a523b51f3a8f7579ae5b, and records the reviewed goal-mode-e2e revision 83. These are the two original failed obligations.",
+      "retainedProof": {
+        "commit": "b79567ed8bcc587afdfa2d9ca146a84e18cd9e6b",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-b79567ed8b-p8uy3F",
+        "testRunId": 21267087,
+        "testResult": "Complete conventional unit suite7PASS0FAIL0SKIP; terminal exit0. Exact ledger source=local, worktreeDirty=false, isScratchConfig=false, collectionFailed=false and testNamePattern=null. Router requested=executed=matched=1, uncommittedPaths=0/1, provenance=stamped before and after the run.",
+        "command": "npm run lint:as-committed -- test:file --ref=b79567ed8bcc587afdfa2d9ca146a84e18cd9e6b --any -- packages/operator-core/lib/doc-claims/goal-contract-rubric-coverage.test.ts",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "manifestBlobSha": "283d7bcf31a52a3f0c3389eed1f43cc7d1bcc8ba",
+        "manifestSha256": "e4948dbcc7a4637c8fcdd56a953797fd612b8d34777e927fb81ebda8761015aa",
+        "testSha256": "57e0623333fe4159d92b0f25b20d6c9dce69d8d257468fd900e453e1a65a99bd",
+        "segmenterSha256": "7df0713b8fbabbc0668af4b40027e2799ef81b0a5567aa0d0eb7c1eb086a15bc",
+        "contractGitlink": "be1e9ff7129182bc940163d0d8527a1ee4ad36b7",
+        "contractSha256": "f80e9f29efa1a2e6f10248f54c530a305d786c82fcdea6238940e2c32d2b5081"
+      },
+      "excludedProof": {
+        "testRunId": 21134279,
+        "commit": "a1a8faf016ba3292615bcfba4fdd79c48a0b1782",
+        "reason": "This genuine historical clean seven-case PASS is not source-equivalent to the repair: b795 is not its ancestor; its manifest is still revision60, lacks rubric-responsibilities and retains the older your-hands pin; its GOAL contract predates the new clause. Identical test and segmenter bytes do not establish identical consumed contract inputs.",
+        "manifestSha256": "06728cc09f45eadd11fc4eb8e022487f929000662b2034f556cc14b53c6cccf2",
+        "contractGitlink": "8796098977ec1d65ceb547117c18710c0e140f01",
+        "contractSha256": "1b3a5012fdd24375f906db14d857f683fb6e0ecf1b2e53c73631a51f0a41bf56",
+        "ledgerScope": "workspaceId=null and harnessSlug=null; exact unfiltered historical lookup was required."
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed the existing repair is DONE/committed with the exact manifest blob and recorded causal check. After rejecting the older-source clean receipt and observing only dirty-tree alternatives in the bounded matching ledger population, a single new exact-repair-commit qualification passed. Exact-id/current-build ledger lookup confirmed the new clean receipt; committed manifest, test, segmenter and submodule contract bytes were hashed. The terminal repair was neither claimed nor reclosed.",
+      "proofBoundary": "This qualifies the original two clause-coverage failures against their completed repair at its exact committed source. It does not establish a full affected PASS, current runtime behavior, current rubric acceptance or tutorial shipment."
+    },
+    {
+      "originalTestRunId": 21116615,
+      "testFile": "packages/operator-core/lib/__tests__/harness-test-ingestion.test.ts",
+      "observedFailure": "The original suite had one failing JSON persistence assertion: the fixture parsed a value that the postgres-js writer now passes as a typed jsonb object.",
+      "repairId": "WI-10005190",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The committed fixture change at f39e9c3d11c98315f97bac0f306fc8be7a9ffe63 removes JSON.parse(String(...)) and asserts the typed object directly for both normal and unknown-provenance execution-details cases. This directly addresses the original harness-test-ingestion assertion without changing the production writer.",
+      "retainedProof": {
+        "commit": "f39e9c3d11c98315f97bac0f306fc8be7a9ffe63",
+        "root": "/dev/shm/pcv/papercusp-lint-as-committed-f39e9c3d11-G7cRal",
+        "testRunId": 21267130,
+        "testResult": "Complete conventional unit suite31PASS0FAIL0SKIP; terminal exit0. Exact ledger source=local, worktreeDirty=false, isScratchConfig=false, collectionFailed=false and testNamePattern=null. Router requested=executed=matched=1, uncommittedPaths=0/1, provenance=stamped before and after the run.",
+        "command": "npm run lint:as-committed -- test:file --ref=f39e9c3d11c98315f97bac0f306fc8be7a9ffe63 --any -- packages/operator-core/lib/__tests__/harness-test-ingestion.test.ts",
+        "workspaceId": "papercusp-workspace",
+        "harnessSlug": null,
+        "testBlobSha": "302d746cd8fadc781905b17f0049a00fdc59c9e6",
+        "testSha256": "753892e871449f01885d6bb1c43fa8e04cc2ea6c9352cab43258febceb48cd9a"
+      },
+      "priorDirtyProof": {
+        "completionEvidence": "WI-10005190 recorded a focused four-file 59-pass local proof with worktreeDirty=true; that evidence was not used as immutable qualification.",
+        "sourceQualification": "The new exact-commit receipt is the source-qualified proof for this original mapping."
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed WI-10005190 DONE/committed and its fixture-only root-cause evidence. The original receipt row was read from the bounded census; its single failing test file and assertion match the committed diff. A single exact repair-commit qualification then passed and testing:runs readback confirmed clean source custody. No production writer was changed, the original failure was preserved, and the repair item was neither claimed nor reclosed.",
+      "proofBoundary": "This qualifies the original harness-test-ingestion fixture failure against its committed fixture repair and focused clean proof. It does not establish a product persistence defect, a full affected PASS, current runtime behavior beyond the named suite, or tutorial shipment acceptance."
     }
   ],
   "sourceReconciliations": [

@@ -355,13 +355,15 @@ describe('retention on a real fixture tree', () => {
     await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('checks each regular file directly after intent without restarting the tree inspector', async () => {
+  it.each([false, true])('checks each regular file directly after intent with enrolled remover=%s without restarting the tree inspector', async (enrolledRemover) => {
     const { root, options } = await setup();
     const old = join(root, 'a-old'), changed = join(root, 'b-changed');
     await writeFile(old, 'expired'); await writeFile(changed, 'keep after new write');
     const inspectTrees = vi.fn(inspectRetentionTrees);
     const phases: string[] = [];
-    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees, record: async (phase, detail) => {
+    const receipt = await runDiskReclaimOnce({ ...options, inspectTrees,
+      ...(enrolledRemover ? { removeEntry: async (entry: { path: string }) => rm(entry.path) } : {}),
+      record: async (phase, detail) => {
       if (phase === 'remove-intent') {
         phases.push((detail as { path: string }).path);
         if ((detail as { path: string }).path === changed) await utimes(changed, new Date(options.nowMs), new Date(options.nowMs));

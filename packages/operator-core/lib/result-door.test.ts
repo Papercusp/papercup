@@ -2841,6 +2841,49 @@ describe('applyResultDoor', () => {
       expect(nestedOrdinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
     });
 
+    it.each([
+      ['direct capability:read', 'capability:read', undefined, 'turn-content-index-direct'],
+      ['nested capability:read', 'tools:invoke', 'capability:read', 'turn-content-index-nested'],
+    ] as const)(
+      'keeps %s scratch-reference content-index reads readable after the aggregate cohort is exhausted',
+      (_shape, toolName, nestedTargetToolName, outputGroupId) => {
+        const scope = beginResultDoorAggregate({ sessionKey: 'owner-content-index-recovery', outputGroupId });
+        const normalOpts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope };
+        applyResultDoor(medium(), normalOpts);
+        applyResultDoor(medium(), normalOpts);
+        applyResultDoor(medium(), normalOpts);
+
+        const selectedContent: DoorableResult = {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              file_path: '/scratch/result-door.spill',
+              reference: { uri: 'papercusp://scratch/ws-1/plans:get/result-door.spill' },
+              selected_indexes: [0],
+              total_content_items: 1,
+              content: [{ type: 'text', text: 'selected recovery payload' }],
+            }),
+          }],
+          _meta: { capabilityRead: { source: 'scratch-reference' } },
+        };
+
+        const recovered = applyResultDoor(selectedContent, {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope,
+        });
+
+        expect(JSON.parse((recovered.content[0] as { text: string }).text)).toMatchObject({
+          selected_indexes: [0],
+          content: [{ type: 'text', text: 'selected recovery payload' }],
+        });
+        expect((recovered._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+      },
+    );
+
     // EI-21954450841272611, and independently EI-21733745031882912 /
     // EI-21573289806322713 against two other tools: all three read
     // `omittedItems: N` on an aggregate spill and concluded N rows had been

@@ -7141,6 +7141,14 @@ export async function measureCandidateStaleness(
  * call it directly. A `SystemActionCtx` still satisfies this structurally at every existing
  * call site.
  */
+export interface ReleaseFixerDispatchSkip {
+  code: 'scope' | 'stale-candidate' | 'snapshot-mismatch' | 'no-measured-failures' |
+    'covered' | 'reservation-changed' | 'launch-failed';
+  reason: string;
+  /** False only when another dispatch cannot help until the queue's verdict or head changes. */
+  retryable: boolean;
+}
+
 export async function dispatchReleaseFixer(
   ctx: GateVerdictTarget,
   candidate: string,
@@ -7150,8 +7158,13 @@ export async function dispatchReleaseFixer(
   deps: {
     checkCandidate?: (root: string, candidate: string) => Promise<ReleaseFixerCandidateStaleCheck>;
     alarm?: import('../../alarm-attention').AlarmAttentionDeps;
+    onSkip?: (skip: ReleaseFixerDispatchSkip) => void;
   } = {},
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
+  const skip = (code: ReleaseFixerDispatchSkip['code'], reason: string, retryable = true): null => {
+    deps.onSkip?.({ code, reason, retryable });
+    return null;
+  };
   // workspace-work-scope-policy-2026-09-04 P-008: an out-of-scope install's gate still runs
   // (verdict-only) but never SPAWNS a release-fixer for it. Denials land on the policy
   // ledger; with no policy set this is one cached read and byte-identical behaviour.
@@ -7167,7 +7180,7 @@ export async function dispatchReleaseFixer(
         status: 'release-fixer-skipped-scope',
         detail: { candidate: candidate.slice(0, 12), allowHarnesses: scope.allowHarnesses },
       }).catch(() => {});
-      return null;
+      return skip('scope', scope.message);
     }
   }
   // EI-8718: cheap re-verify BEFORE touching dedup state — a candidate that's gone stale
@@ -7202,7 +7215,7 @@ export async function dispatchReleaseFixer(
         candidatePromoted: staleCheck.candidatePromoted,
       },
     }).catch(() => {});
-    return null;
+    return skip('stale-candidate', `stale candidate (exists=${staleCheck.candidateExists}, promoted=${staleCheck.candidatePromoted})`);
   }
 
   // WI-2140605: a FROZEN-REPAIR dispatch with an EMPTY failing set has nothing for a
@@ -7283,7 +7296,7 @@ export async function dispatchReleaseFixer(
         snapshotIdentity: candidateSnapshot?.identity ?? null,
       },
     }).catch(() => {});
-    return null;
+    return skip('snapshot-mismatch', 'no fresh candidate snapshot matches the candidate and failing-test signature');
   }
 
   if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests, failingTestsMeasured)) {
@@ -7305,7 +7318,9 @@ export async function dispatchReleaseFixer(
         failingTestsMeasured,
       },
     }).catch(() => {});
-    return null;
+    return skip('no-measured-failures',
+      `frozen repair queue has no measured failing tests (failingTestsMeasured=${failingTestsMeasured}) — nothing to reproduce; a fresh verdict is the unblock, not a fixer`,
+      false);
   }
 
   // WI-10007494: a frozen queue can mix a real red with an entry the latest repair tick
@@ -7346,7 +7361,7 @@ export async function dispatchReleaseFixer(
   const fixerAlive = sameSignature ? await releaseFixerSpawnAlive(sql, lf?.spawnId) : null;
   const now = Date.now();
   const decision = decideReleaseFixerDispatch({ lf, signature, now, fixerAlive });
-  if (!decision.dispatch) return null; // a live fixer is covering this gate — the good dedup
+  if (!decision.dispatch) return skip('covered', 'an existing live or reserved fixer covers this failure signature');
 
   // Claim the dedup slot BEFORE firing (anti double-fire across ticks): a concurrent
   // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
@@ -7388,7 +7403,7 @@ export async function dispatchReleaseFixer(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: ` +
         'candidate snapshot or last_fixer changed before reservation',
     );
-    return null;
+    return skip('reservation-changed', 'candidate snapshot or last_fixer changed before reservation');
   }
 
   // EI-7443: best-effort flake annotation for the CURRENTLY-failing files, from the
@@ -7409,6 +7424,7 @@ export async function dispatchReleaseFixer(
   // path (fireLaunchBlueprintForEvent) so the fixer is liveness-trackable + survives a crash.
   const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
   let fired: Awaited<ReturnType<typeof fireLaunchBlueprintForEvent>> = null;
+  let fireError: string | null = null;
   try {
     const kickoff = buildReleaseFixerKickoff({
       candidate,
@@ -7449,7 +7465,8 @@ export async function dispatchReleaseFixer(
       timeoutMs: 2_700_000,
     });
   } catch (e) {
-    console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
+    fireError = e instanceof Error ? e.message : String(e);
+    console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${fireError}`);
   }
   // A resolved launch target is not proof of a spawn: fireLaunchBlueprintForEvent returns a
   // target object with spawn:null when the launch is unavailable. Persist that distinction so
@@ -7535,7 +7552,7 @@ export async function dispatchReleaseFixer(
       ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
     },
   }).catch(() => {});
-  return spawn ? { spawnId, runId } : null;
+  return spawn ? { spawnId, runId } : skip('launch-failed', fireError ? `release-fixer fire failed: ${fireError}` : 'release-fixer launch returned no spawn');
 }
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on

@@ -217,6 +217,8 @@ export interface EmitAwaitedEventOpts {
    *  queues (a human message, an escalation, a hard deadline). */
   urgent?: boolean;
   workspaceId?: string;
+  harnessSlug?: string;
+  cause?: import('../types').ReactionCause;
   /** EI-12457: exact event key(s) that are the MUTUALLY-EXCLUSIVE opposite outcome of
    *  this one (e.g. emitting `release:green:<pipeline>` names
    *  `green-checkpoint:red:<pipeline>` here). For every subscriber this emit actually
@@ -319,6 +321,10 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
 
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  // Both code- and agent-emitted fires use this seam; declarations never call it.
+  const { emitSystemEvent } = await import('../engine');
+  emitSystemEvent({ tool: 'event:' + opts.key, args: { key: opts.key, payload: opts.payload },
+    workspaceId: ws, harnessSlug: opts.harnessSlug, cause: opts.cause });
 
   // EI-13705: record the fire on the UNCONDITIONAL per-key latch BEFORE claiming
   // await rows. The bridge can start an event between an awaiter's pre-registration

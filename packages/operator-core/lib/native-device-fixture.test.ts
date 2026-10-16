@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
 import { createTextCollector } from './child-output';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, saveFixtureReceipt, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, saveFixtureReceipt, verifyAdvertisedFixtureRoute, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 import { advanceFixtureDeviceClock, DEVICE_EXPIRY_OFFSET_MS } from './native-device-fixture-clock';
 
@@ -289,7 +289,64 @@ describe('disposable native HTTPS fixture admission', () => {
       { PAPERCUSP_TEST_PG_ADMIN_URL: undefined },
       { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@127.0.0.1:5432/private' },
       { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@remote.example:40003/private' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170', PAPERCUSP_HONO_PORT: '3170' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070', PAPERCUSP_HONO_PORT: '3070' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3055', PAPERCUSP_HONO_PORT: '3055' },
+      { PAPERCUSP_OPERATOR_URL: 'http://user:secret@127.0.0.1:40001' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:40001?query=1' },
     ]) expect(() => fixtureIdentity({ ...privateEnv, ...change })).toThrow();
+  });
+
+  it.each(['pass', 'misrouted', 'foreign-workspace', 'missing-private-device', 'runtime-mismatch', 'cleanup-failed'])(
+    'requires private origin identity before advertised-hostname readiness (%s)', async outcome => {
+      const deviceId = '12345678-1234-1234-1234-123456789abc';
+      const publicBase = 'https://api.papercuspai.com';
+      const workspaceId = privateEnv.PAPERCUSP_WORKSPACE_ID;
+      const seen: Array<{ base: string; path: string; method: string }> = [];
+      const probe = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        seen.push({ base: url.origin, path: url.pathname, method: init.method ?? 'GET' });
+        expect(init.redirect).toBe('error');
+        expect(init.signal).toBeInstanceOf(AbortSignal);
+        const privateCall = url.origin === privateEnv.PAPERCUSP_OPERATOR_URL;
+        if (privateCall && url.pathname.endsWith('mint-pair-token')) {
+          expect(JSON.parse(String(init.body))).toEqual({ workspaceId });
+          return Response.json({ qrPayload: { server: publicBase, workspaceId, pairToken: 'private-one-shot' } });
+        }
+        if (privateCall && init.method === 'DELETE')
+          return Response.json({}, { status: outcome === 'cleanup-failed' ? 500 : 200 });
+        if (privateCall && url.pathname.endsWith('/devices'))
+          return Response.json({ devices: outcome === 'missing-private-device' ? [] : [{ device_id: deviceId, workspace_id: workspaceId }] });
+        if (url.pathname === '/api/device/pair') {
+          expect(JSON.parse(String(init.body)).pairToken).toBe('private-one-shot');
+          return Response.json({ deviceId, deviceToken: 'private-jwt',
+            workspaceId: outcome === 'foreign-workspace' ? 'shared-workspace' : workspaceId },
+          { status: outcome === 'misrouted' ? 401 : 200 });
+        }
+        if (url.pathname.endsWith('runtime-config')) {
+          expect(new Headers(init.headers).get('authorization')).toBe('Bearer private-jwt');
+          return Response.json({ workspaceId: outcome === 'runtime-mismatch' ? 'shared-workspace' : workspaceId });
+        }
+        return Response.json({}, { status: url.pathname.endsWith('heartbeat') ? 401 : 404 });
+      }) as unknown as typeof fetch;
+      if (outcome === 'pass') {
+        const receipt = await verifyAdvertisedFixtureRoute(privateEnv, probe);
+        expect(receipt).toMatchObject({ publicBase, workspaceId, privatePairVerified: true });
+        expect(JSON.stringify(receipt)).not.toMatch(/private-one-shot|private-jwt/);
+      } else await expect(verifyAdvertisedFixtureRoute(privateEnv, probe)).rejects.toThrow();
+      expect(seen.some(r => r.path.includes('attention') || r.path.includes('switch') || r.path === '/api/workspaces')).toBe(false);
+      expect(seen.filter(r => r.method === 'DELETE')).toEqual(outcome === 'misrouted' ? [] : [
+        { base: privateEnv.PAPERCUSP_OPERATOR_URL, path: '/api/device/desktop/devices/' + deviceId, method: 'DELETE' },
+      ]);
+      if (['misrouted', 'foreign-workspace', 'missing-private-device'].includes(outcome))
+        expect(seen.some(r => r.path.endsWith('runtime-config'))).toBe(false);
+    });
+
+  it('rejects shared-runtime input before sending any advertised-route request', async () => {
+    const probe = vi.fn();
+    await expect(verifyAdvertisedFixtureRoute({ ...privateEnv, PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace' }, probe))
+      .rejects.toThrow('Disposable workspace');
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('measures real HTTP denial even when the connector rewrites Host to localhost', async () => {
