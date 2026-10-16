@@ -2,14 +2,17 @@
  * observation is read-only apart from retaining a boot witness in the existing ledger.
  * A mount observed twice in one boot is never reboot proof. */
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, readdir, realpath } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { z } from 'zod';
+import { getBuildInfo } from '../build-info';
 
 export const COLD_MOUNTS_INSTRUMENT_KEY = 'storage:cold-mounts-reboot';
 export const COLD_MOVES_INSTRUMENT_KEY = 'storage:cold-bulk-cutover';
+export const nativeColdInstrumentKeySchema = z.enum([COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY]);
+type NativeColdInstrumentKey = z.infer<typeof nativeColdInstrumentKeySchema>;
 const MOUNT_ACTION = 'storage:cold-mount-observation';
 const TARGETS = [
   { path: '/mnt/cold-a', source: '/dev/sda2' },
@@ -18,6 +21,45 @@ const TARGETS = [
 type Sql = Pick<import('postgres').Sql, 'unsafe'>;
 type Verdict = 'pass' | 'fail' | 'unknown';
 export interface ColdEvidence { verdict: Verdict; detail: string }
+interface NativeColdEnvironmentDeps {
+  identity: () => Promise<{ host: string; bootId: string }>;
+  buildSha: () => string | null;
+  resolve: (key: NativeColdInstrumentKey, scope: { workspaceId: string; harnessSlug: string;
+    windowStart: string; windowEnd: string }) => Promise<ColdEvidence>;
+}
+
+/** Physical host evidence has no serving-process identity. Re-run the maintained
+ * registered instrument instead of attaching an unrelated operator runtime. */
+export async function measureNativeColdEnvironment(workspaceId: string, harnessSlug: string,
+  key: NativeColdInstrumentKey, requirePass = false, deps: Partial<NativeColdEnvironmentDeps> = {}): Promise<string | null> {
+  nativeColdInstrumentKeySchema.parse(key);
+  const identity = deps.identity ?? (async () => ({ host: hostname(),
+    bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }));
+  const before = z.object({ host: z.string().min(1), bootId: z.string().uuid() }).parse(await identity());
+  const buildSha = (deps.buildSha ?? (() => getBuildInfo().sha))();
+  if (!buildSha) {
+    if (requirePass) throw new Error('Native storage instrument build identity unavailable.');
+    return null;
+  }
+  const resolve = deps.resolve ?? (async (instrumentKey, scope) => {
+    const { getRegisteredInstrument } = await import('../rubric-instrument-registry');
+    const instrument = getRegisteredInstrument(instrumentKey);
+    if (instrument?.evaluator !== 'platform' || !instrument.rescore) throw new Error('Native storage instrument unavailable.');
+    return instrument.rescore.resolve(scope);
+  });
+  const now = new Date().toISOString();
+  const result = z.object({ verdict: z.enum(['pass', 'fail', 'unknown']), detail: z.string().min(1) })
+    .parse(await resolve(key, { workspaceId, harnessSlug, windowStart: now, windowEnd: now }));
+  const after = await identity();
+  if (before.host !== after.host || before.bootId !== after.bootId) throw new Error('Native storage host changed during observation.');
+  if (result.verdict !== 'pass') {
+    if (requirePass) throw new Error(`Native storage observation is ${result.verdict}: ${result.detail}`);
+    return null;
+  }
+  return 'sha256-native-storage-environment-v1:' + createHash('sha256').update(JSON.stringify({
+    ...before, instrumentKey: key, buildSha, result,
+  })).digest('hex');
+}
 const outcome = (verdict: Verdict, detail: string): ColdEvidence => ({ verdict, detail });
 const unescapeField = (s: string) => s.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
 const observationSchema = z.object({

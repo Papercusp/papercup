@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assessColdMounts, assessColdMoves, hasColdMoveAside, kopiaJson, measureColdMounts, parseColdMounts,
+import { assessColdMounts, assessColdMoves, hasColdMoveAside, kopiaJson, measureColdMounts, measureNativeColdEnvironment, parseColdMounts,
   COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, type ColdMountObservation } from './cold-tier-evidence';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './retention-interval-evidence';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
@@ -11,6 +11,39 @@ const current = (): ColdMountObservation => ({ host: 'fixture-host', bootId: uui
   { path: '/mnt/cold-b', source: '/dev/sdb3', uuidSource: '/dev/sdb3', uuid: uuid[1]!, type: 'xfs', nofail: true },
 ] });
 const previous = () => ({ ...current(), bootId: uuid[0]!, at: at(1) });
+
+describe('native storage environment evidence', () => {
+  const setup = () => ({ identity: vi.fn(async () => ({ host: 'fixture-host', bootId: uuid[0]! })),
+    buildSha: () => 'abc123', resolve: vi.fn(async () => ({ verdict: 'pass' as const, detail: '7 verified cutovers and snapshot native.' })) });
+  const measure = (deps: Parameters<typeof measureNativeColdEnvironment>[4], requirePass = false) =>
+    measureNativeColdEnvironment('workspace', 'papercusp', COLD_MOVES_INSTRUMENT_KEY, requirePass, deps);
+  it('re-observes the registered native check in the exact scope without inventing a process', async () => {
+    const deps = setup();
+    const first = await measure(deps, true);
+    expect(first).toMatch(/^sha256-native-storage-environment-v1:[a-f0-9]{64}$/);
+    expect(await measure(deps)).toBe(first);
+    expect(deps.resolve).toHaveBeenCalledWith(COLD_MOVES_INSTRUMENT_KEY, expect.objectContaining({ workspaceId: 'workspace', harnessSlug: 'papercusp' }));
+    expect(deps.resolve).toHaveBeenCalledTimes(2);
+    deps.identity.mockResolvedValue({ host: 'other-host', bootId: uuid[0]! });
+    expect(await measure(deps)).not.toBe(first);
+    deps.identity.mockResolvedValue({ host: 'fixture-host', bootId: uuid[1]! });
+    expect(await measure(deps)).not.toBe(first);
+    expect(await measure({ ...setup(), buildSha: () => 'different-build' })).not.toBe(first);
+  });
+  it.each(['fail', 'unknown'] as const)('refuses a %s observation on bind and cannot keep old evidence current', async verdict => {
+    const deps = { ...setup(), resolve: vi.fn(async () => ({ verdict, detail: 'native prerequisite missing' })) };
+    expect(await measureNativeColdEnvironment('workspace', 'papercusp', COLD_MOVES_INSTRUMENT_KEY, false, deps)).toBeNull();
+    await expect(measureNativeColdEnvironment('workspace', 'papercusp', COLD_MOVES_INSTRUMENT_KEY, true, deps)).rejects.toThrow(`is ${verdict}`);
+  });
+  it('fails closed on missing build, native reader failure, or a boot transition during the read', async () => {
+    expect(await measure({ ...setup(), buildSha: () => null })).toBeNull();
+    await expect(measure({ ...setup(), buildSha: () => null }, true)).rejects.toThrow('build identity unavailable');
+    await expect(measure({ ...setup(), resolve: vi.fn(async () => { throw new Error('permission denied'); }) })).rejects.toThrow('permission denied');
+    const deps = setup();
+    deps.identity.mockResolvedValueOnce({ host: 'fixture-host', bootId: uuid[0]! }).mockResolvedValueOnce({ host: 'fixture-host', bootId: uuid[1]! });
+    await expect(measure(deps)).rejects.toThrow('host changed during observation');
+  });
+});
 
 describe('native cold mount evidence', () => {
   it('parses exact kernel mounts and unique UUID/nofail fstab entries', () => {

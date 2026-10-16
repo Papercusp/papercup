@@ -27,7 +27,6 @@ import {
   parseBatchProgress,
   classifyBatchProgress,
   formatBatchProgress,
-// @ts-expect-error batch-watchdog.mjs is a standalone Node script without declarations.
 } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 const AFFECTED_TESTS_SOURCE = readFileSync(

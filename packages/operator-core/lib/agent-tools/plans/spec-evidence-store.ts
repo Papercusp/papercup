@@ -28,6 +28,7 @@ import type { SpecClauseSql } from './spec-clauses-store';
 import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import { resolvePlanScope } from './source';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
+import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
   createCommittedTreeDiagnostics,
@@ -181,6 +182,8 @@ export const repoFilesEvidenceMeasurementSchema = z
     runtimeUnits: runtimeUnitsSchema.optional(),
     /** Final package environment, independently rehashed from a measured operational receipt. */
     artifactReceiptPath: repoMeasurementPathSchema.optional(),
+    /** Native physical storage observations re-run their registered instrument on this host. */
+    nativeInstrumentKey: nativeColdInstrumentKeySchema.optional(),
     /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
     completedRuntime: z.discriminatedUnion('kind', [z.object({
       kind: z.literal('verification-harness'),
@@ -198,6 +201,10 @@ export const repoFilesEvidenceMeasurementSchema = z
   })
   .strict()
   .superRefine((measurement, ctx) => {
+    if (measurement.nativeInstrumentKey && (measurement.runtimeUnits || measurement.completedRuntime || measurement.artifactReceiptPath)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['nativeInstrumentKey'],
+        message: 'native instrument environment cannot also select a process runtime or packaged artifact' });
+    }
     if (measurement.artifactReceiptPath && (!measurement.artifactReceiptPath.startsWith('docs/evidence/') ||
       !measurement.sourcePaths.includes(measurement.artifactReceiptPath) ||
       measurement.runtimeUnits || measurement.completedRuntime)) {
@@ -850,9 +857,11 @@ export async function measureRepoFilesEvidence(
     ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
     : root;
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
-  return measureRepoFilesEvidenceAtRoot(root, measurement, {
+  const measured = await measureRepoFilesEvidenceAtRoot(root, measurement, {
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
+  return { ...measured, ...(measurement.nativeInstrumentKey
+    ? await liveRuntimeEnvironment(workspaceId, harnessSlug, measurement) : {}) };
 }
 
 /**
@@ -864,8 +873,12 @@ export async function measureRepoFilesEvidence(
  */
 async function liveRuntimeEnvironment(
   workspaceId: string,
+  harnessSlug: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<{ environmentFingerprint?: string | null }> {
+  if (measurement.nativeInstrumentKey) return {
+    environmentFingerprint: await measureNativeColdEnvironment(workspaceId, harnessSlug, measurement.nativeInstrumentKey, true),
+  };
   if (!measurement.runtimeUnits || measurement.completedRuntime) return {};
   return {
     environmentFingerprint: await measureRuntimeEnvironment(
@@ -890,7 +903,7 @@ export async function measureAndPinRepoFilesEvidence(
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
   // Spread last: like the read path, named runtimes take precedence over an artifact receipt.
-  return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, measurement)) };
+  return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, harnessSlug, measurement)) };
 }
 
 /**
@@ -3624,6 +3637,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             ...(recipe.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
               measurementRoot, recipe.artifactReceiptPath,
               detailed.files.find(file => file.path === recipe.artifactReceiptPath && file.dimension === 'source')!.sha256) } : {}),
+            ...(recipe.nativeInstrumentKey ? { environmentFingerprint: await measureNativeColdEnvironment(
+              scope.workspaceId, scope.harnessSlug, recipe.nativeInstrumentKey) } : {}),
             ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
               ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
                 { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })

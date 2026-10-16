@@ -25,6 +25,7 @@ import {
   RESULT_DOOR_TOKENS,
   type DoorableResult,
 } from './result-door';
+import readTool from './agent-tools/capability/read';
 import * as scratchGc from './scratch-gc';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
 import * as scratchReference from './scratch-reference';
@@ -282,8 +283,13 @@ describe('result-door deferred spill (WI-10004533)', () => {
         kind: 'pending-spill',
         path: meta?.spillPath,
         uri: meta?.spillUri,
-        args: { file_path: meta?.spillPath },
+        args: {
+          uri: meta?.spillUri,
+          byte_offset: 0,
+          byte_limit: 3_072,
+        },
       });
+      expect(meta?.recoveryCursor?.args).not.toHaveProperty('file_path');
       expect(Object.keys(meta ?? {})).not.toContain('fallbackUri');
       const bodyItem = result.content.find((item) => item.type === 'text');
       if (typeof bodyItem?.text !== 'string') throw new Error('result has no text recovery envelope');
@@ -315,6 +321,15 @@ describe('result-door deferred spill (WI-10004533)', () => {
         aggregateOutputEscape: false,
       });
       expect(spillFiles('tools:invoke')).toHaveLength(1);
+
+      // The pending cursor must remain directly executable after settlement. Using
+      // its URI avoids the long absolute scratch path that can make a file_path
+      // byte-page envelope itself exceed the result-door budget.
+      const pageResult = await readTool.handler(meta!.recoveryCursor!.args as never, {
+        projectDir: sandbox,
+        workspaceId: 'ws-1',
+      } as never) as { content: Array<{ type: 'text'; text: string }> };
+      expect(JSON.parse(pageResult.content[0].text)).toMatchObject({ ok: true, eof: false });
     } finally {
       releaseWrite();
       await resultPromise?.catch(() => undefined);
