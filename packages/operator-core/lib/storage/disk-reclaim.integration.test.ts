@@ -529,7 +529,7 @@ describe('retention on a real fixture tree', () => {
       await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { now.mockRestore(); }
   });
-  it('finishes an admitted removal then yields the real mutex to a queued writer', async () => {
+  it('finishes an admitted removal, yields the real mutex, then resumes the same pass', async () => {
     const { root, options } = await setup();
     const paths = [join(root, 'old-a'), join(root, 'old-b')];
     for (const path of paths) await writeFile(path, Buffer.alloc(4096));
@@ -552,16 +552,42 @@ describe('retention on a real fixture tree', () => {
     const receipt = await reclaim;
     await peer;
     expect(peerEntered).toBe(true);
-    expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
-    expect(receipt.errors).toContain('retention yielded to queued writer');
-    expect(receipt.entries.filter((entry) => entry.status === 'removed')).toHaveLength(1);
-    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 8192, afterBytes: 4096, overByBytes: 0 });
-    expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, stopped: true });
-    expect(delegate).not.toHaveBeenCalled();
-    const resumed = await runDiskReclaimOnce(options);
-    expect(resumed.complete).toBe(true);
-    expect(resumed.entries.filter((entry) => entry.status === 'removed')).toHaveLength(1);
+    expect(receipt.complete).toBe(true); expect(receipt.policyExhausted).toBe(true);
+    expect(receipt.errors).toEqual([]);
+    expect(receipt.entries.filter((entry) => entry.status === 'removed')).toHaveLength(2);
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 8192, afterBytes: 0, overByBytes: 0 });
+    expect(receipt.effects?.[0]).toMatchObject({ processed: 2, remaining: 0, stopped: false });
+    expect(delegate).toHaveBeenCalledOnce();
     for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it.each(['pin', 'lease'] as const)('refreshes a new %s after a FIFO handoff without repeating the census', async (kind) => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let entered!: () => void, finish!: () => void, queued!: () => void;
+    const inspecting = new Promise<void>((resolve) => { entered = resolve; });
+    const finishCensus = new Promise<void>((resolve) => { finish = resolve; });
+    const waiting = new Promise<void>((resolve) => { queued = resolve; });
+    let protectedByPeer = false;
+    const inspectTrees = vi.fn(async (path: string, input: Parameters<typeof inspectRetentionTrees>[1]) => {
+      if (!input.paths) { entered(); await finishCensus; }
+      return inspectRetentionTrees(path, input);
+    });
+    const reclaim = runDiskReclaimOnce({ ...options, inspectTrees,
+      readProtection: async () => ({ paths: protectedByPeer && kind === 'lease' ? [paths[1]!] : [],
+        pins: protectedByPeer && kind === 'pin' ? [{ paths: [paths[1]!], expiresAt: new Date(options.nowMs + 60_000).toISOString() }] : [] }),
+      removeEntry: async (entry) => { expect(protectedByPeer).toBe(true); await rm(entry.path); },
+    });
+    await inspecting;
+    const peer = withFsMutex('papercusp-disk-retention', async () => { protectedByPeer = true; },
+      { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
+    try { await waiting; } finally { finish(); }
+    const receipt = await reclaim; await peer;
+    expect(receipt.complete).toBe(true);
+    expect(inspectTrees.mock.calls.filter(([, input]) => !input.paths)).toHaveLength(1);
+    expect(receipt.entries.find((entry) => entry.path === paths[1])).toMatchObject({ status: 'protected', reason: 'live retention lease or pin' });
+    await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
   });
   it('serializes overlapping fixture passes with the real mutex and preserves the losing pass', async () => {
     const { root, options } = await setup(); const path = join(root, 'old'); await writeFile(path, 'expired');
