@@ -30,9 +30,9 @@ import {
   describeCommitBlockingSecrets,
   cachedExemptionLoader,
   defaultExemptionLoader,
-  isGeneratedNativeFixturePath,
   type ExemptionLoader,
 } from './secrets';
+import { isGeneratedNativeFixturePath } from '../sync/pot-git/secrets-guard';
 import { findIdentityLeakError, identityLeakScopeMatches } from './identity-leak';
 
 /**

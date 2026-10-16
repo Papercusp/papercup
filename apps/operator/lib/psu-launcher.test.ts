@@ -13814,6 +13814,59 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
     expect(calls).toHaveLength(0);
   });
 
+  it.each([
+    ["malformed JSON", "{broken-json"],
+    ["JSON null", "null"],
+    ["an unrelated object", "{}"],
+    ["a refusal", '{"ok":false}'],
+  ])("retains the end witness for %s and replays its original observation", async (_label, responseBody) => {
+    const home = mkdtempSync(join(tmpdir(), "psu-end-invalid-ack-"));
+    const observedAt = "2026-10-16T12:01:48.000Z";
+    const bodies: Array<{ endAttemptKey: string; observedAt: string }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(bodies.length === 1 ? responseBody : '{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const options = {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+      endAttemptKey: "end-invalid-ack-17",
+      observedAt,
+      home,
+    };
+    try {
+      await expect(reportSessionEnded(17, 1, options)).resolves.toMatchObject({
+        reported: false,
+        reason: "http",
+        status: 200,
+      });
+      const pending = readPendingSessionEndWitness(17, home);
+      expect(pending).toMatchObject({
+        advSessionId: 17,
+        endAttemptKey: options.endAttemptKey,
+        observedAt,
+      });
+      // Only a real acknowledgement may remove the witness; replay retains
+      // the original observation so it cannot re-end a newer incarnation.
+      await expect(reportSessionEnded(17, 1, {
+        ...options,
+        endAttemptKey: pending.endAttemptKey,
+        observedAt: pending.observedAt,
+      })).resolves.toMatchObject({ reported: true });
+      expect(bodies).toEqual([
+        expect.objectContaining({ endAttemptKey: options.endAttemptKey, observedAt }),
+        expect.objectContaining({ endAttemptKey: options.endAttemptKey, observedAt }),
+      ]);
+      expect(existsSync(pendingSessionEndWitnessPath(17, home))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("returns a transport outcome and keeps the pending witness when acknowledgement fails", async () => {
     const home = mkdtempSync(join(tmpdir(), "psu-end-witness-"));
     const fetchImpl = async () => {

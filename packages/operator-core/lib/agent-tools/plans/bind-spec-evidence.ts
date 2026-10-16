@@ -104,7 +104,7 @@ const adequacyBindingDetailsSchema = z
     provisionalProofBase: z.boolean().optional(),
     disclosedGap: z.union([z.string(), z.array(z.string())]).optional(),
   })
-  .passthrough();
+  .strict();
 // Keep the evaluator's adequacy vocabulary out of the free-form details
 // namespace. `spec-test-adequacy` reads these keys only below
 // `details.adequacy`; accepting them at the top level creates a successful,

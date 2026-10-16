@@ -393,6 +393,28 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     }
   });
 
+  it.each([
+    ['calibrated', true],
+    ['caseTitles', ['suite > selected case']],
+    ['assertion', 'a hand-written assertion'],
+    ['falsifier', 'a hand-written falsifier'],
+  ] as const)('rejects non-canonical nested adequacy key %s instead of persisting inert metadata', (field, value) => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: { adequacy: { [field]: value } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ['details', 'adequacy'],
+          message: expect.stringContaining(field),
+        }),
+      ]),
+    );
+  });
+
   it('accepts an uppercase platform-generated clause ID as targeted adequacy metadata', () => {
     const specId = 'AUTO-BAR-R-5-P-004';
     const parsed = bindingSchema.safeParse({

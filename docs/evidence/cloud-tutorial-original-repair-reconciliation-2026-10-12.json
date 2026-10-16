@@ -600,6 +600,217 @@
       },
       "verification": "On 2026-10-16, authoritative work_items:get confirmed WI-10005190 DONE/committed and its fixture-only root-cause evidence. The original receipt row was read from the bounded census; its single failing test file and assertion match the committed diff. A single exact repair-commit qualification then passed and testing:runs readback confirmed clean source custody. No production writer was changed, the original failure was preserved, and the repair item was neither claimed nor reclosed.",
       "proofBoundary": "This qualifies the original harness-test-ingestion fixture failure against its committed fixture repair and focused clean proof. It does not establish a product persistence defect, a full affected PASS, current runtime behavior beyond the named suite, or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101810,
+      "testFile": "packages/operator-core/lib/search/embedding-space-parity.test.ts",
+      "observedFailure": "The original complete suite passed two cases and failed the fixture parity case because the chunk vector leg sent the parentless semantic-only report surface through the vector-leg census: chunk vector leg: surface 'report' names no parent vector column.",
+      "repairId": "EI-25874594206621491",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The committed repair skips chunk surfaces without parentVector before calling chunkAwareVectorLegSpaceColumns, and adds the report-surface recurrence guard. This directly removes the original report-surface fixture mismatch.",
+      "retainedProof": {
+        "commit": "e0e17ba93618c0331da89cd145fe9eff69d40771",
+        "testRunId": "9f0ccbef-325a-4458-bc28-b9beae4729f8",
+        "testResult": "Focused conventional embedding-space-parity.test.ts passed with exit 0; generator --check and the live AST census also matched the fixture (40 rows equal, exactly one datatype-registry-store.ts entry).",
+        "sourceFiles": [
+          "packages/operator-core/lib/search/embedding-space-parity-cases.ts",
+          "packages/operator-core/lib/search/embedding-space-parity.test.ts",
+          "libs/generic/search/src/__fixtures__/embedding-space-parity-cases.json"
+        ]
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed EI-25874594206621491 DONE with committed completion authority and stored root-cause verification. The original receipt row names the same report parent-vector defect; e0e17ba93618c0331da89cd145fe9eff69d40771 is an ancestor of the current tree and contains the parentVector guard and recurrence assertion. The terminal repair was mapped without claiming or reclosing it.",
+      "proofBoundary": "This maps the original embedding-space fixture failure to its completed committed repair and focused proof. It does not establish a full affected PASS, current runtime behavior beyond the named suite, or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101804,
+      "testFile": "packages/operator-core/lib/__tests__/check-generic-independence.test.ts",
+      "observedFailure": "The original complete suite passed two cases and failed the private-target guard because @papercusp/test-config depended on @papercusp/verification-harness, which was omitted from the curated BORROWABLE catalog.",
+      "repairId": "EI-25874596380342375",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The committed repair adds libs/generic/verification-harness to the canonical BORROWABLE array and regenerates BORROWABLE.md. This directly removes the sole private-target edge named by the original failure while retaining the separate hard-section findings.",
+      "retainedProof": {
+        "commit": "229c27e24126bea8cfa2a19bdf94b46677e97c90",
+        "testResult": "Focused check-generic-independence.test.ts passed 3/3 after the fix; npm run gen:borrowable:check passed; node scripts/check-generic-independence.mjs exited 0 and reported no private-target findings.",
+        "sourceFiles": [
+          "scripts/gen-borrowable-catalog.mjs",
+          "BORROWABLE.md",
+          "packages/operator-core/lib/__tests__/check-generic-independence.test.ts"
+        ]
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed EI-25874596380342375 DONE with committed completion authority and stored root-cause verification. The original receipt names the same test-config to verification-harness private-target edge; 229c27e24126bea8cfa2a19bdf94b46677e97c90 is an ancestor of current HEAD and contains the BORROWABLE catalog addition. The terminal repair was mapped without claiming or reclosing it.",
+      "proofBoundary": "This maps the original generic-independence guard failure to its completed committed catalog repair and focused proof. It does not establish a full affected PASS, current runtime behavior beyond the named suite, or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101685,
+      "testFile": "packages/operator-core/lib/agent-tools/no-raw-harness-sentinel-guard.test.ts",
+      "observedFailure": "The original complete suite passed ten cases and failed the real-tree sentinel assertion because newly detected raw ctx.harnessSlug identity uses appeared in capability/browser-owner.ts and related scope paths while the shrink-only baseline had no stale entries.",
+      "repairId": "EI-25863683788985338",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "rootConnection": "The committed repair routes the detected raw ctx.harnessSlug uses through canonical harness-scope resolution or fail-closed scoped context and leaves BASELINE shrink-only. Its reported offender set includes the browser-owner and related source paths named by the original guard failure.",
+      "retainedProof": {
+        "commit": "229c27e24126bea8cfa2a19bdf94b46677e97c90",
+        "testResult": "Harness-bound focused suite passed 7 files and 187 tests; the sentinel guard's real-tree assertion reported staleBaseline=[] and offenders=[].",
+        "sourceFiles": [
+          "packages/operator-core/lib/agent-tools/capability/browser-owner.ts",
+          "packages/operator-core/lib/agent-tools/capability/browser-session.ts",
+          "packages/operator-core/lib/agent-tools/code/run.ts",
+          "packages/operator-core/lib/agent-tools/orchestration/current-caller-dispatch.ts",
+          "packages/operator-core/lib/agent-tools/plans/set-plan-status.ts",
+          "packages/operator-core/lib/agent-tools/testing/record-run.ts",
+          "packages/operator-core/lib/code-intelligence/scoped-contracts.ts"
+        ]
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed EI-25863683788985338 DONE with committed completion authority and stored root-cause verification. The original receipt names the same no-raw-harness-sentinel real-tree guard and browser-owner offender class; 229c27e24126bea8cfa2a19bdf94b46677e97c90 is an ancestor of current HEAD and contains the canonical scope fixes. The terminal repair was mapped without claiming or reclosing it.",
+      "proofBoundary": "This maps the original raw-harness-sentinel guard failure to its completed committed scope-resolution repair and focused proof. It does not establish a full affected PASS, current runtime behavior beyond the named suite, or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101507,
+      "testFile": "packages/operator-core/lib/harness/gitmodules-invariants.test.ts",
+      "observedFailure": "The release-blocker guard rejected the registered foreign-hive drill submodule because its HTTPS URL was outside the Papercusp SSH URL pattern.",
+      "repairId": "WI-6554700010009815",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "e329d33f77a80d10790d82614bfc7768feccf47b",
+      "rootConnection": "The committed repair imports the maintained FOREIGN_HIVE_SUBMODULES registry, excuses only an exact path+URL match for registered foreign-hive repositories, and adds a two-way stale-registry guard. The registry entry exactly matches apps/slack-asana-bug-drill and its HTTPS URL, directly addressing the original failing URL.",
+      "retainedProof": {
+        "workingQualification": "Current-build exact-id testing:runs readback confirms LOCAL21178263 is a complete conventional suite7PASS0FAIL0SKIP at af19dc542c359104f09f1d3e82bf62e842b2b7b4 on the dirty staging tree; worktreeDirty=true, isScratchConfig=false, collectionFailed=false and testNamePattern=null. Its before-repair run21178252 is5PASS1FAIL0SKIP on that same dirty staging source. These are working-only proof, not immutable committed qualification. The original receipt is21101507 at clean f419975deb2dbad5228f3499e51db32238f3be5b and remains failed.",
+        "registrySource": "scripts/lib/foreign-hive-submodules.mjs",
+        "registryEntry": "apps/slack-asana-bug-drill -> https://github.com/papercupai/slack-asana-bug-drill-20261009.git",
+        "ancestry": "git merge-base --is-ancestor e329d33f77a80d10790d82614bfc7768feccf47b HEAD passed on 2026-10-16"
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed WI-6554700010009815 DONE with committed completion authority. The exact repair commit is an ancestor of current HEAD; the committed test and registry contain the exact path+URL exception and two-way stale check named by the original failure. The terminal repair was mapped without claiming or reclosing it.",
+      "proofBoundary": "This maps the original gitmodules URL guard failure to its completed committed foreign-hive registry repair. Retained focused test proof is working-only; no clean committed suite qualification is asserted for this mapping. It does not establish a full affected PASS, current runtime behavior or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101450,
+      "testFile": "packages/operator-core/lib/doc-claims/agent-review-retry-convergence.test.ts",
+      "observedFailure": "The pending-refusal ordering guard could not find deps.gradeRoutedIdea({ after the production caller switched to named input objects. Original complete suite: 3PASS1FAIL0SKIP at clean f419975deb2dbad5228f3499e51db32238f3be5b.",
+      "repairId": "WI-6554700010008407",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "b79567ed8bcc587afdfa2d9ca146a84e18cd9e6b",
+      "rootConnection": "The committed repair changes the gradeRoutedIdea and reconcileAgentReviewGrade source anchors from inline-object syntax to the callee expression. Positive anchor-existence and refusal-before-write/reconcile assertions remain. The original grade-idea.ts already calls these functions with gradeInput/input, directly explaining the stale guard. WI-6554700010008407 records resolution by this already-landed change; no new source authorship is attributed to that closing turn.",
+      "retainedProof": {
+        "commit": "09b03f6f38c5e69a5a05c4ebdbf7ac11a7b63b30",
+        "root": "/home/builduser/papercupai-workspace/papercusp-checkpoint",
+        "rootIdentityRedaction": "Home user redacted with the shared serializeIdentitySafeJson helper; the exact original root remains in the referenced test-run receipt.",
+        "testRunId": 21240939,
+        "testResult": "Existing historical complete conventional suite4PASS0FAIL0SKIP; source=ci, worktreeDirty=false, isScratchConfig=false, collectionFailed=false, testNamePattern=null.",
+        "testSha256": "b96250b0923d60dfa20affa95b6aafc13b82a1f16edbda60491efb22f4cd9f54",
+        "verification": "Exact-id current-build testing:runs readback confirmed both the original failed receipt and this historical clean passing receipt. git merge-base --is-ancestor confirms b79567ed8b is included in 09b03f6f38; git-show test bytes at both commits have the identical recorded SHA256. No checkout was edited or recreated, and no test was replayed."
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed WI-6554700010008407 DONE with committed completion authority and stored root-cause verification naming the exact stale inline-object anchors. Source inspection ties the original failure to the b795 repair; ancestry and retained clean test custody were checked without claiming or reclosing the terminal item.",
+      "proofBoundary": "This maps the original retry-convergence guard failure to the existing committed anchor repair and its retained historical four-test proof. It does not establish a current gate verdict, full affected PASS, a change in product retry semantics, or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101416,
+      "testFile": "packages/operator-core/lib/__tests__/check-unenrolled-mjs-imports.test.ts",
+      "observedFailure": "The original clean-f419 complete guard suite13PASS1FAIL0SKIP reported missing declaration enrollment for portal-android-download-launcher.mjs, vitest-startup-trace.mjs and assert-workspace-links.mjs.",
+      "repairId": "EI-25703002383953643",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "a27723ae80ab407d49ef357107d432708469f7be",
+      "rootConnection": "The completed repair enrolls the original three targets in tsconfig.declarations.json and generates their .d.mts siblings through the maintained declaration generator. It also covers a fourth dependency-lock-tree-audit target encountered by the repair owner. The a277 diff adds the exact three missing declaration files and enrollment entries; no original importer or ratchet baseline was relaxed.",
+      "retainedProof": {
+        "repairProcedure": "The terminal repair records a pre-fix detector exit1 with the original three pairs plus the fourth current pair; maintained generation exits0 for4of119 outputs, and the post-fix detector exits0 with no unenrolled imports.",
+        "workingSuite": "Existing LOCAL21269812: complete suite14PASS0FAIL0SKIP at dabb83d977319522003dd8612ccdab5d621928b4 on dirty staging, worktreeDirty=true, isScratchConfig=false, collectionFailed=false, testNamePattern=null. Working-only evidence; no clean complete-suite PASS is asserted.",
+        "historicalCleanRed": "Historical CI21241005 at clean09b03f6f38c5e69a5a05c4ebdbf7ac11a7b63b30 remains13PASS1FAIL0SKIP. Its sole reported offender is scripts/bench-work-item-continuations.ts:85 -> scripts/mcp-call.mjs, distinct from the original three. The a277 repair is an ancestor of09b, whose declaration config retains all three original enrollments."
+      },
+      "verification": "On 2026-10-16, authoritative work_items:get confirmed EI-25703002383953643 DONE/committed and its before/after root-cause evidence. The original receipt and historical clean red outputs were read by exact ID on current-build3170. The a277 declaration/config diff and ancestry to HEAD and09b were verified. Existing dirty suite proof was read separately and retained as working-only; no terminal item was claimed/reclosed and no test was replayed.",
+      "proofBoundary": "This maps only the original three missing-declaration sites to their completed committed repair. The later distinct clean guard failure remains red; this mapping supplies neither a clean complete-suite PASS nor full affected/current gate/tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101409,
+      "testFile": "packages/operator-core/lib/worker-entry-plain-node-loadable.test.ts",
+      "observedFailure": "The original immutable f419 complete suite failed its explicit-extension guard: role-codex-home.worker.ts imported './role-codex-home' and './role-codex-home-offload' without extensions, leaving the plain-Node worker-entry contract violated.",
+      "repairId": "WI-6554700010008913",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "accf2b8a3cecab506d2b8d07feb3ecaef6bf5c99",
+      "rootConnection": "The committed repair adds explicit .ts extensions to both relative imports in role-codex-home.worker.ts. The source bytes at accf2b8 and current HEAD are identical, and the repair commit is an ancestor of HEAD; this directly removes both offenders named by the original guard without relaxing the check.",
+      "retainedProof": {
+        "testRunIds": [21145409, 21145410],
+        "testResult": "Existing clean committed qualification reports 8PASS0FAIL0SKIP across worker-entry-plain-node-loadable.test.ts and role-codex-home-offload.test.ts; source=local, worktreeDirty=false, isScratchConfig=false, collectionFailed=false.",
+        "logPath": "/tmp/tutorial-repairs-8913-8914-8916-clean-accf2b8a-20261012T1324.log",
+        "logSha256": "21fbafb8703136ff91f8e6784ef20f04b3aa941096c84f1c58b6f2108471228b",
+        "sourceFiles": [
+          "packages/operator-core/lib/role-codex-home.worker.ts",
+          "packages/operator-core/lib/role-codex-home-offload.test.ts",
+          "packages/operator-core/lib/worker-entry-plain-node-loadable.test.ts"
+        ]
+      },
+      "verification": "On 2026-10-16, exact-id testing:runs readback confirmed original LOCAL21101409 failed with exactly the two extensionless imports. Authoritative work_items:get confirmed WI-6554700010008913 DONE with committed completion authority and retained clean proof. git merge-base --is-ancestor confirms accf2b8 is included in HEAD, and git-show hashes of role-codex-home.worker.ts match at the repair and current commits. The terminal repair was mapped without claiming or reclosing it and no test was replayed.",
+      "proofBoundary": "This maps the original worker-entry guard failure to its completed committed explicit-extension repair and retained clean focused proof. It does not establish a full affected PASS, current runtime behavior beyond the named suites, or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21101229,
+      "testFile": "packages/operator-core/lib/release/frozen-lineage-never-reads-tip.test.ts",
+      "observedFailure": "Original clean-f419 receipt21101229 records251PASS1FAIL0SKIP. The sole failure expected a direct markFrozenRepairVerificationRed call, but the gate already passed that callback to recordedGateDecision with [fresh, ...].",
+      "repairId": "WI-6554700010009814",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "corroboratingRepairId": "EI-25850777977789731",
+      "sourceRepairCommit": "f36b33ffd50443a46c5ebad3970b46c9689b7681",
+      "rootConnection": "The committed assertion accepts the direct-call or recordedGateDecision callback form while requiring repairQueue or fresh as the first argument. The original f419, repaired f36b, verification846db, historical09b and current HEAD verify-repair branches have identical SHA256 b6dddef3ea38f9c3666345538e07f32bbc9cff55a4edfdd03ef3d969fe3619ef. This is a stale source matcher, not evidence that the gate used a tip-derived row. The repaired test SHA256 is4fe9da8f79722f121c285c1f22432ad21e489e9b8ccfecbdbd7e40a0661504d2 at f36b,846db,09b and HEAD; f36b is an ancestor of each.",
+      "retainedProof": {
+        "logPath": "/tmp/wi6554700010009814/rh52730bbf-fix11/packages_operator-core_lib_release_frozen-lineage-never-reads-tip.test.ts.log",
+        "logSha256": "5af1fa1636a8355bd2318cd3df7a54244e8d9846a4d975aa62f472be5a26205a",
+        "testResult": "Retained fix11 log ends rc=0 with252PASS0FAIL0SKIP and requested1/executed1/matched1, against the repairHead gate-source override. Its provenance is LOCAL/DIRTY: df574832a0, uncommittedPaths1/1. The owning completion also records an ENOENT negative control proving the override is honored; that control is retained completion evidence, not independently replayed here.",
+        "verificationTestRunId": 21245521,
+        "verificationCommit": "846db000385a1a57ddcdef092b4a13d42d05fe4c",
+        "verificationScope": "EI-25850777977789731 stores a later252/252 focused pass with the named test file clean before/after. Exact LOCAL21245521 is pass, worktreeDirty=true and isScratchConfig=false; named-file cleanliness does not make the whole dependency graph clean.",
+        "historicalTestRunId": 21240725,
+        "historicalCommit": "09b03f6f38c5e69a5a05c4ebdbf7ac11a7b63b30",
+        "historicalScope": "Exact historical CI21240725 is pass, worktreeDirty=false and isScratchConfig=false. The released reader returns root=null and omits executionDetails, so measured counts, selector and collection status remain unavailable; no complete immutable-suite qualification is asserted from that row."
+      },
+      "verification": "On2026-10-16, exact original and retained ledger reads, both DONE/committed completion records, the f36b source diff, retained log hash, test/branch hashes and repair ancestry established this root match. No test was replayed, no terminal repair was claimed or reclosed, and no LIVE_GATE operation was performed.",
+      "proofBoundary": "This maps the original assertion mismatch to a completed committed repair. Retained working-tree passes and the metadata-limited historical clean CI PASS keep their stated scopes. The original receipt remains failed; no full affected PASS, current gate verdict, runtime or tutorial shipment acceptance is established."
+    },
+    {
+      "originalTestRunId": 21101159,
+      "testFile": "packages/operator-core/lib/consult/consult-test-database-lifecycle.test.ts",
+      "observedFailure": "Original clean-f419 receipt21101159 records1PASS1FAIL0SKIP. Its ownership guard listed subject-evidence.integration.test.ts as missing a drop because the assertion recognized only fixtureDb or db. The original subject source already bound the fresh database to privateDb and called privateDb?.drop() inside afterAll.",
+      "repairId": "WI-6554700010009814",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "44f253b7b91a9502cd5c89eb9156961fe93b2798",
+      "rootConnection": "The committed guard derives the owning variable from each createFreshTestDb binding instead of hardcoding names. It requires every call to have an owner and a matching drop after afterAll, and adds positive renamed/typed-owner cases plus negative absent-drop, wrong-owner, sibling-name and unbound-call cases. This fixes the original source-matcher false positive without accepting an unrelated database drop. Guard SHA256 81dbb036f4e1a4d33ba0c9254ac2080acba5ac2942bc4d873aca49ca620c522e is identical at44f253b7b9, the owning completion's admitted repairHead19b8b609, historical09b03f6f38 and currentHEAD. The repair is an ancestor of09b andHEAD.",
+      "retainedProof": {
+        "originalReproductionLog": "/tmp/wi6554700010009814/tip/packages_operator-core_lib_consult_consult-test-database-lifecycle.test.ts.log",
+        "originalReproductionLogSha256": "059f7f543ccfcda4a17157001b31c74e04b6e662ecbd483accb58a23770b1eed",
+        "originalReproduction": "The retained pre-fix run atb01fcd34c9 ends rc=1 with the same subject-evidence missing-drop assertion,1PASS1FAIL and named test clean before/after.",
+        "mutationLog": "/tmp/wi6554700010009814/mutation-probe-consult-lifecycle.log",
+        "mutationLogSha256": "d61d5332f967fcb90412ad4b8d9233b1df9ea9a6b931cdfc155de7a3026d69e5",
+        "mutationTestRunIds": [21178555, 21178572, 21178575],
+        "mutationResult": "Retained live and unmutated-copy baselines each pass3/3; removing privateDb?.drop() in the private overlay produces the same missing-drop assertion,1FAIL2PASS, and MUTANT CAUGHT. The log verifies tracked target bytes restored/unchanged. Baseline provenance is UNKNOWN because HEAD moved and the guard was initially dirty; exact mutation-probe ledger rows are worktreeDirty=true. This is retained falsifiability evidence, not clean immutable-suite qualification.",
+        "historicalTestRunId": 21233184,
+        "historicalCommit": "09b03f6f38c5e69a5a05c4ebdbf7ac11a7b63b30",
+        "historicalScope": "Exact historical CI21233184 is pass, worktreeDirty=false and isScratchConfig=false. The released reader returns root=null and omits executionDetails, so measured counts, selector and collection status remain unavailable; no complete immutable-suite qualification is inferred from that row."
+      },
+      "verification": "On2026-10-16, the exact original receipt, original f419 source, committed44f diff, DONE/committed owning completion, admitted guard blob, retained reproduction/mutation logs and their hashes, exact mutation/historical ledger rows and repair ancestry established this match. No test was replayed and no terminal repair was claimed or reclosed.",
+      "proofBoundary": "This maps the original guard naming mismatch to its completed committed repair and retains the probe's provenance limits. A source-level drop call and a guard mutation test do not establish runtime database teardown. The original receipt stays failed; no full affected PASS, current gate verdict, runtime or tutorial shipment acceptance is established."
+    },
+    {
+      "originalTestRunId": 21100679,
+      "testFile": "packages/operator-core/lib/doc-claims/judge-scaffold-version-consumers.test.ts",
+      "observedFailure": "Original clean-f419 receipt21100679 failed the pinned consumer population assertion: six actual judgeRun importers versus five classified entries. The sole additional importer was packages/operator-core/lib/memory/bench/answer-usefulness.ts.",
+      "repairId": "EI-25355584370404958",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "b688dc331f7a1147152f13ad68edeb7f6be9602d",
+      "rootConnection": "The committed repair adds answer-usefulness.ts to PINNED as folds. Its ANSWER_RUBRIC_VERSION already derives from JUDGE_PROMPT_SCAFFOLD_VERSION through deriveRubricVersion, so the defect was an omitted governance classification. The guard retains both population equality and the bidirectional scaffold-import checks. Guard blob521d99d237b08a7e2c4922e276309f1f85e4c068, SHA25699691f6d34b9ad8529dd3415728ea4f7d9cc0c7f483b8daf2ca75428c568843e, is identical at the source repair, the owning completion's attested b385b52469, retained passing72743fd107 and current HEAD. The importer source blob4fb40c061b045fa76f068ae8e3003738ca0dc64c is unchanged from its introducing6c658e4e1e commit to HEAD.",
+      "retainedProof": {
+        "testRunId": 21185660,
+        "commit": "72743fd1075fb3782a00aeef205dcd0104edef84",
+        "testResult": "Exact retained LOCAL receipt21185660 is pass, worktreeDirty=false and isScratchConfig=false. The released reader returns root=null and omits executionDetails; measured case counts, selector and collection status are unavailable, so no complete immutable-suite qualification is asserted from that row.",
+        "completionAttestedCommit": "b385b52469edef5a8afc8c24e28ad9492b08353a",
+        "completionScope": "The existing DONE item's committed completion records testing:run passing the guard, including the folds identity-import check, and a clean scoped typecheck. Its stored causal comparison distinguishes an omitted classification from a scaffold-blind importer. These are retained completion claims, not new test runs."
+      },
+      "verification": "On2026-10-16, the live parent checkpoint revealed that reconciliation had already been recorded after the carry snapshot but was missing from this evidence file. Exact original/passing ledger reads, the existing DONE/committed completion, the b688 source diff, guard/importer blob comparisons and passing-commit ancestry corroborated the mapping. No test was replayed and no terminal repair was claimed or reclosed.",
+      "proofBoundary": "This maps the original population mismatch to its completed committed repair with retained focused proof and explicit metadata limits. The original receipt remains failed; no full affected PASS, current gate verdict, runtime or tutorial shipment acceptance is established."
     }
   ],
   "sourceReconciliations": [
@@ -631,6 +842,21 @@
         "verification": "On 2026-10-16, exact-id testing:runs readback on current-build :3170 verified the stored original and passing source identities, measured counts and selectors. git merge-base --is-ancestor confirms the repair is included in the passing commit. git-show test bytes are identical at the repair and passing commits. The historical temporary checkout has been removed; no checkout was recreated and no test was replayed."
       },
       "proofBoundary": "This qualifies the repaired fixture at its retained immutable source. It does not establish a newly completed repair item, full affected PASS, current runtime behavior or final tutorial shipment."
+    },
+    {
+      "originalTestRunId": 21101392,
+      "testFile": "packages/operator-core/lib/shell-trap-unbound-vars.test.ts",
+      "observedFailure": "Original clean-f419 receipt21101392 failed the no-unbound-trap guard solely on scripts/bench-host/docker-bench.sh:157, whose RETURN trap expanded $tmp without a default. The retained original census records8PASS1FAIL0SKIP.",
+      "sourceRepairCommit": "af19dc542c359104f09f1d3e82bf62e842b2b7b4",
+      "rootConnection": "The committed one-line source repair changes the RETURN trap from rm -rf \"$tmp\" to rm -rf \"${tmp:-}\". The exact guarded expansion remains in current HEAD and in historical passing commit09b03f6f38; af19dc542c is an ancestor of both. This directly addresses the sole original offender without changing the guard.",
+      "repairAttribution": "Unresolved. The filename search found DONE WI-10005208, but its completion concerns scripts/verify-voice-settings.sh:96 and ${status:-0}, a distinct earlier offender. That item is not attributed to this docker-bench change. WI-10005128 retains source-reconciliation custody.",
+      "retainedProof": {
+        "commit": "09b03f6f38c5e69a5a05c4ebdbf7ac11a7b63b30",
+        "testRunId": 21240880,
+        "testResult": "Existing historical row has status=pass, source=ci, worktreeDirty=false and isScratchConfig=false. The released reader returns root=null and omits executionDetails; measured counts, collection status and selector are unavailable from that read. No complete-suite qualification is asserted.",
+        "verification": "On2026-10-16, exact-id testing:runs reads confirmed the original failing offender and the later historical passing row. The af19dc542c source diff and ancestry toHEAD and09b were checked. Current-build3170 exact-receipt reads timed out through direct and staging-proxy routes; this absence of richer readback was not treated as absent stored provenance. No test was replayed and no repair item was claimed or reclosed."
+      },
+      "proofBoundary": "This is a source reconciliation with unresolved repair attribution and incomplete historical qualification metadata, not an additional completed-repair mapping. The original receipt stays failed; no full affected PASS, current gate verdict, runtime or tutorial shipment acceptance is established."
     }
   ],
   "currentCommittedQualification": {

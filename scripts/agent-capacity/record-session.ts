@@ -23,10 +23,9 @@
  */
 import { spawn, execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { assertHostAdmission } from './host-admission';
+import { assertHostAdmission, capacityCacheRoot } from './host-admission';
 import { startRecordProxy } from './record-proxy';
 import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
 
@@ -52,7 +51,7 @@ export interface Corpus {
 
 export const CORPUS_FILE = path.join(__dirname, 'corpus', 'tasks.json');
 export const OWNER_HEADER_VALUE = 'agent-capacity-corpus';
-const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
+const CACHE = capacityCacheRoot(__dirname);
 
 /**
  * The task file a CLI run reads: `--tasks-file <path>` when given, else the shipped corpus. P-019

@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { spawn, spawnSync } from 'node:child_process';
@@ -2601,14 +2601,15 @@ function printTestFinalizationError(result) {
   );
 }
 
-/** Capture bounded identities before a collection watchdog destroys its evidence.
- * This is an identity snapshot, not a measurement of progress or a causal verdict.
+/** Capture bounded evidence before a collection watchdog destroys its evidence.
+ * This is a single snapshot, not a measurement of progress or a causal verdict.
  * Reuse the governed tree walker, with a bounded children reader that never falls
  * back to a host-wide proc scan. Do not retain argv or environment credentials.
  */
 export function readTestChildDiagnostic(rootPid, {
   readFileImpl = readFileSync,
   readdirImpl = readdirSync,
+  readlinkImpl = readlinkSync,
   platform = process.platform,
 } = {}) {
   if (platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) {
@@ -2616,11 +2617,65 @@ export function readTestChildDiagnostic(rootPid, {
   }
   const maxProcesses = 16;
   const maxTasksPerProcess = 32;
+  const maxBlockedDetails = 4;
+  let blockedDetails = 0;
   const admitted = new Set([rootPid]);
   let unreadableFields = 0;
   let truncated = false;
   const read = (path) => {
     try { return readFileImpl(path, 'utf8'); } catch { unreadableFields += 1; return null; }
+  };
+  const readBlockedIo = (pid) => {
+    if (blockedDetails++ >= maxBlockedDetails) {
+      truncated = true;
+      return { status: 'unavailable', reason: 'blocked-detail-cap', scope: 'single-snapshot' };
+    }
+    const unavailable = [];
+    let detailTruncated = false;
+    const ioText = read(`/proc/${pid}/io`);
+    const io = {};
+    for (const key of ['rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes']) {
+      // Keep counters as decimal strings: procfs values can exceed JS integer precision.
+      io[key] = ioText?.match(new RegExp(`^${key}:\\s*(\\d+)$`, 'm'))?.[1] ?? null;
+    }
+    if (Object.values(io).some(value => value === null)) unavailable.push('io');
+    const syscallText = read(`/proc/${pid}/syscall`);
+    const tokens = syscallText?.trim().split(/\s+/) ?? [];
+    let syscall = null;
+    if (syscallText?.trim() === 'running') syscall = { state: 'running' };
+    else if ((tokens.length === 3 || tokens.length === 9)
+      && /^-?\d+$/.test(tokens[0]) && tokens.slice(1).every(token => /^(?:0x[\da-f]+|\d+)$/i.test(token))) {
+      syscall = { number: Number(tokens[0]), arguments: tokens.slice(1, -2),
+        stackPointer: tokens.at(-2), instructionPointer: tokens.at(-1) };
+    }
+    if (syscall === null) unavailable.push('syscall');
+    const stackText = read(`/proc/${pid}/stack`);
+    const frames = (stackText?.split('\n') ?? []).flatMap(line => {
+      const symbol = line.match(/^\[<[^>]+>\]\s+([\w.$]+)(?:\+|\s|$)/)?.[1];
+      return symbol ? [symbol.slice(0, 64)] : [];
+    });
+    if (frames.length > 8) detailTruncated = true;
+    const kernelStack = frames.length ? frames.slice(0, 8) : null;
+    if (kernelStack === null) unavailable.push('kernelStack');
+    let files = null;
+    try {
+      const entries = readdirImpl(`/proc/${pid}/fd`).filter(fd => /^\d+$/.test(fd))
+        .sort((a, b) => Number(a) - Number(b));
+      if (entries.length > 8) detailTruncated = true;
+      files = entries.slice(0, 8).map(fd => {
+        let target = null;
+        try { target = readlinkImpl(`/proc/${pid}/fd/${fd}`); }
+        catch { unreadableFields += 1; unavailable.push(`fd:${fd}`); }
+        // Read the link only, never the descriptor contents, argv or environment.
+        const path = target?.startsWith('/') ? boundedDiagnosticText(target, 160) : null;
+        if (target?.length > 160) detailTruncated = true;
+        return { fd: Number(fd), path, kind: path ? 'path' : target?.startsWith('pipe:') ? 'pipe'
+          : target?.startsWith('socket:') ? 'socket' : target == null ? 'unavailable' : 'other' };
+      });
+    } catch { unreadableFields += 1; unavailable.push('files'); }
+    if (detailTruncated) truncated = true;
+    return { status: unavailable.length ? 'partial' : 'measured', scope: 'single-snapshot',
+      io, syscall, kernelStack, files, unavailable, truncated: detailTruncated };
   };
   const tree = resolveGovernedProcessTree(rootPid, {
     pidCap: maxProcesses,
@@ -2648,15 +2703,18 @@ export function readTestChildDiagnostic(rootPid, {
     const status = read(`/proc/${pid}/status`);
     const parent = status?.match(/^PPid:\s*(\d+)/m)?.[1];
     const waitChannel = read(`/proc/${pid}/wchan`);
+    const state = status?.match(/^State:\s*(\w)/m)?.[1] ?? null;
     return {
       pid,
       parentPid: parent == null ? null : Number(parent),
       name: boundedDiagnosticText(status?.match(/^Name:\s*(.*)/m)?.[1], 48) || null,
-      state: status?.match(/^State:\s*(\w)/m)?.[1] ?? null,
+      state,
       waitChannel: waitChannel?.trim() === '0' ? null : boundedDiagnosticText(waitChannel, 64) || null,
+      ...(state === 'D' ? { blockedIo: readBlockedIo(pid) } : {}),
     };
   });
-  return { status: unreadableFields > 0 ? 'partial' : 'measured', rootPid, truncated, unreadableFields, processes };
+  return { status: unreadableFields > 0 || processes.some(row => row.blockedIo && row.blockedIo.status !== 'measured')
+    ? 'partial' : 'measured', rootPid, truncated, unreadableFields, processes };
 }
 
 /**

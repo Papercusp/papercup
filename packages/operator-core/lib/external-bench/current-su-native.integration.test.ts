@@ -30,6 +30,7 @@ it('launches autonomous current-su through the native container adapter without 
       'packages/operator-core/lib/console-spawn.ts', 'apps/operator/scripts/psu-launcher.mjs',
       'apps/operator/bin/hono-host.ts', 'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
     retainedArtifacts: ['phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+      'phases/prepare/bundle-restricted-hold-inputs.json',
       'phases/prepare/hono-host.mjs.build-steps.jsonl'],
     prepare: async evidenceDir => {
       // Compilation and every guard must finish before the disposable native

@@ -4,6 +4,7 @@
  * compare two full commit ids or read one bounded file from a full commit id
  * in their resolved harness repository.
  */
+import { createHash } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
@@ -130,7 +131,7 @@ export interface GitEvidenceResolvedBlob {
 
 export type GitEvidenceResult =
   | { ok: true; op: 'isAncestor'; ancestorSha: string; descendantSha: string; isAncestor: boolean }
-  | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; resolved: GitEvidenceResolvedBlob; bytes: number; content: string }
+  | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; resolved: GitEvidenceResolvedBlob; bytes: number; contentSha256: string; content: string }
   | {
       ok: true;
       op: 'readFileAtCommit';
@@ -138,6 +139,7 @@ export type GitEvidenceResult =
       path: string;
       resolved: GitEvidenceResolvedBlob;
       encoding: 'base64';
+      contentSha256: string;
       byte_offset: number;
       byte_length: number;
       total_bytes: number;
@@ -168,6 +170,7 @@ export function doorSafeGitEvidencePageBytes(
     ...(repositoryPath ? { repositoryPath } : {}),
     ...(resolved ? { resolved } : {}),
     encoding: 'base64',
+    contentSha256: '0'.repeat(64),
     byte_offset: Number.MAX_SAFE_INTEGER,
     byte_length: Number.MAX_SAFE_INTEGER,
     total_bytes: Number.MAX_SAFE_INTEGER,
@@ -252,7 +255,7 @@ async function runJudgeGitEvidenceInner(
       options.sandboxEnabled,
       options.sandboxRequired,
     );
-    if (options.signal.aborted && result.code === null) {
+    if (options.signal.aborted && result.code !== 0) {
       const message = result.output.slice(0, 300);
       throw new Error(
         `git_command_interrupted: ${message || `git ${argv.join(' ')} was aborted before returning a result`}`,
@@ -311,7 +314,12 @@ async function runJudgeGitEvidenceInner(
       };
     }
 
-    const loadPinnedBlob = async (): Promise<{ commitSha: string; contentBytes: Buffer; resolved: GitEvidenceResolvedBlob }> => {
+    const loadPinnedBlob = async (): Promise<{
+      commitSha: string;
+      contentBytes: Buffer;
+      contentSha256: string;
+      resolved: GitEvidenceResolvedBlob;
+    }> => {
       const top = await invoke(['rev-parse', '--show-toplevel']);
       if (top.code !== 0) {
         const message = top.output.slice(0, 300);
@@ -440,7 +448,8 @@ async function runJudgeGitEvidenceInner(
       if (contentBytes.length !== size) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'file_is_not_valid_utf8' });
       }
-      return { commitSha, contentBytes, resolved };
+      const contentSha256 = createHash('sha256').update(contentBytes).digest('hex');
+      return { commitSha, contentBytes, contentSha256, resolved };
     };
 
     const workspaceId = options.workspaceId;
@@ -454,7 +463,12 @@ async function runJudgeGitEvidenceInner(
       options.sandboxEnabled ?? false,
       options.sandboxRequired ?? false,
     ])}`;
-    let pinnedBlob: { commitSha: string; contentBytes: Buffer; resolved: GitEvidenceResolvedBlob };
+    let pinnedBlob: {
+      commitSha: string;
+      contentBytes: Buffer;
+      contentSha256: string;
+      resolved: GitEvidenceResolvedBlob;
+    };
     try {
       pinnedBlob = cacheableScope
         ? await cache!.getOrSet(workspaceId, cacheKey, loadPinnedBlob, {
@@ -470,7 +484,7 @@ async function runJudgeGitEvidenceInner(
       cache!.forget(workspaceId, cacheKey);
     }
 
-    const { commitSha, contentBytes, resolved } = pinnedBlob;
+    const { commitSha, contentBytes, contentSha256, resolved } = pinnedBlob;
     const size = contentBytes.length;
     if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
       return {
@@ -480,6 +494,7 @@ async function runJudgeGitEvidenceInner(
         path: args.path,
         resolved,
         bytes: size,
+        contentSha256,
         content: contentBytes.toString('utf8'),
       };
     }
@@ -505,6 +520,7 @@ async function runJudgeGitEvidenceInner(
       path: args.path,
       resolved,
       encoding: 'base64',
+      contentSha256,
       byte_offset: byteOffset,
       byte_length: page.length,
       total_bytes: size,
@@ -578,7 +594,7 @@ export default defineTool({
     when: 'A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.',
     notWhen: 'For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.',
     chaining:
-      'op:"isAncestor" takes two full SHAs; op:"readFileAtCommit" takes a full SHA and a repository-relative path. Paths below a submodule follow each parent gitlink; resolved.{repositoryPath, commitSha, blobSha} name what was read while commitSha stays the requested superproject commit. If a binding pins a nested repository HEAD, pass that path as repositoryPath (it must resolve inside the selected root) with the child-relative path and commit. External test checkout: copy rootHarnessSlug from the cited binding measurement. Omit byte_offset/byte_limit for a whole file: blobs up to 128 KiB return {bytes, content} in one call. Larger blobs or deliberate pages return base64 {byte_offset, byte_length, total_bytes, eof, data, next_cursor} with no content; decode data, follow next_cursor.args unchanged, and stop only at eof:true with next_cursor null.',
+      'op:"isAncestor" takes two full SHAs; op:"readFileAtCommit" takes a full SHA and a repository-relative path. Paths below a submodule follow each parent gitlink; resolved.{repositoryPath, commitSha, blobSha} name what was read while commitSha stays the requested superproject commit. If a binding pins a nested repository HEAD, pass that path as repositoryPath (it must resolve inside that root) with the child-relative path and commit. External test checkout: copy rootHarnessSlug from the cited binding measurement. Every successful read includes contentSha256, the SHA-256 of the exact committed blob bytes, so auditors can compare mutation receipts without re-encoding text. Omit byte_offset/byte_limit for a whole file: blobs up to 128 KiB return {bytes, content, contentSha256} in one call. Larger blobs or deliberate pages return base64 {byte_offset, byte_length, total_bytes, contentSha256, eof, data, next_cursor} with no content; decode data, follow next_cursor.args unchanged, and stop only at eof:true with next_cursor null.',
   },
   capability: 'capability:git-evidence:read',
   effect: 'read',

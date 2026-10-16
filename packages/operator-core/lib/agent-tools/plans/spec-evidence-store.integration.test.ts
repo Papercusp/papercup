@@ -224,6 +224,7 @@ beforeAll(async () => {
       origin text NOT NULL DEFAULT 'local',
       item_kind text NOT NULL DEFAULT 'bug',
       payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_ts bigint NOT NULL DEFAULT ((extract(epoch FROM now()) * 1000)::bigint),
       source_plan_slug text,
       source_plan_item_ids text[],
       admission text, admitted_at timestamptz, admitted_by text,

@@ -10683,7 +10683,9 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
     }
     if (typeof response.json === "function") {
       const body = await response.json().catch(() => null);
-      if (body && body.ok !== true) {
+      // HTTP success alone is not an acknowledgement. A truncated/malformed
+      // response or JSON null must preserve the witness for keyed replay.
+      if (body?.ok !== true) {
         return {
           reported: false,
           reason: "http",

@@ -39,9 +39,8 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, createWriteStream } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
-import { assertHostAdmission } from './host-admission';
+import { assertHostAdmission, capacityCacheRoot } from './host-admission';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
 import { finished } from 'node:stream/promises';
 import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, corpusFileFromArgv, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
@@ -49,7 +48,7 @@ import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, corpusFileFromArgv, load
 // server shares this event loop with every running agent's model replies.
 import { parseCgroupStats, prepareWorkdir, removeTree as rm, sessionSpawn, type Isolation, type WorkdirMode } from './session-process';
 
-const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
+const CACHE = capacityCacheRoot(__dirname);
 
 export interface AgentRun {
   runId: string;

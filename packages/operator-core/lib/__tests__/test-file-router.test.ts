@@ -1006,6 +1006,74 @@ describe('collection child identity evidence (WI-10007991)', () => {
     expect(readTestChildDiagnostic(undefined)).toMatchObject({ status: 'unavailable', processes: [] });
   });
 
+  it('retains blocked-child IO mechanisms before reap without opening file contents (EI-25918888568694335)', () => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'folio_wait_bit_common\n';
+      if (path.endsWith('/io')) return 'rchar: 9007199254740993\nwchar: 0\nsyscr: 2\nsyscw: 0\nread_bytes: 8192\nwrite_bytes: 0\n';
+      if (path.endsWith('/syscall')) return '17 0x7 0xabcd 0x1000 0x0 0x0 0x0 0xffff 0xeeee\n';
+      if (path.endsWith('/stack')) return '[<0>] folio_wait_bit_common+0x10/0x20\n[<0>] filemap_read+0x12/0x20\n';
+      throw new Error('must not open the blocked descriptor, cmdline or environ');
+    });
+    const readdirImpl = vi.fn((path: string) => path.endsWith('/task') ? ['4310'] : ['8', '7']);
+    const readlinkImpl = vi.fn((path: string) => path.endsWith('/7') ? '/repo/node_modules/vitest/module.mjs' : 'pipe:[123]');
+    const snapshot = readTestChildDiagnostic(4310, { readFileImpl, readdirImpl, readlinkImpl });
+    expect(snapshot).toMatchObject({ status: 'measured', unreadableFields: 0, truncated: false,
+      processes: [{ pid: 4310, state: 'D', blockedIo: { status: 'measured', scope: 'single-snapshot',
+        io: { rchar: '9007199254740993', read_bytes: '8192' },
+        syscall: { number: 17, arguments: ['0x7', '0xabcd', '0x1000', '0x0', '0x0', '0x0'],
+          stackPointer: '0xffff', instructionPointer: '0xeeee' },
+        kernelStack: ['folio_wait_bit_common', 'filemap_read'],
+        files: [{ fd: 7, path: '/repo/node_modules/vitest/module.mjs', kind: 'path' },
+          { fd: 8, path: null, kind: 'pipe' }], unavailable: [], truncated: false } }] });
+    expect(readlinkImpl.mock.calls.map(([path]) => path)).toEqual(['/proc/4310/fd/7', '/proc/4310/fd/8']);
+    expect(readFileImpl.mock.calls.every(([path]) => /^\/proc\/4310\/(task\/4310\/children|status|wchan|io|syscall|stack)$/.test(path))).toBe(true);
+  });
+
+  it('keeps denied blocked-child evidence explicitly unknown', () => {
+    const readFileImpl = (path: string) => {
+      if (path.endsWith('/children')) return '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'folio_wait_bit_common';
+      throw new Error('EACCES');
+    };
+    const readdirImpl = (path: string) => {
+      if (path.endsWith('/task')) return ['4320'];
+      throw new Error('EACCES');
+    };
+    expect(readTestChildDiagnostic(4320, { readFileImpl, readdirImpl })).toMatchObject({
+      status: 'partial', unreadableFields: 4, processes: [{ blockedIo: {
+        status: 'partial', syscall: null, kernelStack: null, files: null,
+        io: { rchar: null, read_bytes: null }, unavailable: ['io', 'syscall', 'kernelStack', 'files'] } }],
+    });
+  });
+
+  it('bounds blocked IO details and rejects malformed syscall text without retaining it', () => {
+    const readFileImpl = (path: string) => {
+      if (path.endsWith('/children')) return path.includes('/4330/') ? '4331 4332 4333 4334' : '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4330\n';
+      if (path.endsWith('/wchan')) return 'folio_wait_bit_common';
+      if (path.endsWith('/io')) return 'rchar: 1\nwchar: 2\nsyscr: 3\nsyscw: 4\nread_bytes: 5\nwrite_bytes: 6';
+      if (path.endsWith('/syscall')) return 'malformed-secret-must-not-be-retained';
+      return Array.from({ length: 30 }, () => '[<ffffffff>] filemap_read+0x1/0x2').join('\n');
+    };
+    const readdirImpl = vi.fn((path: string) => path.endsWith('/task') ? [path.split('/')[2]]
+      : Array.from({ length: 50 }, (_, i) => String(i)));
+    const readlinkImpl = vi.fn(() => '/repo/' + 'a'.repeat(500));
+    const snapshot = readTestChildDiagnostic(4330, { readFileImpl, readdirImpl, readlinkImpl });
+    expect(snapshot.status).toBe('partial');
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.processes[0].blockedIo).toMatchObject({ syscall: null, unavailable: ['syscall'], truncated: true });
+    expect(snapshot.processes[0].blockedIo.kernelStack).toHaveLength(8);
+    expect(snapshot.processes[0].blockedIo.files).toHaveLength(8);
+    expect(snapshot.processes[0].blockedIo.files[0].path.length).toBeLessThanOrEqual(161);
+    expect(snapshot.processes[4].blockedIo).toEqual({ status: 'unavailable', reason: 'blocked-detail-cap', scope: 'single-snapshot' });
+    expect(readlinkImpl).toHaveBeenCalledTimes(4 * 8);
+    expect(JSON.stringify(snapshot)).not.toContain('malformed-secret');
+    expect(readdirImpl).not.toHaveBeenCalledWith('/proc');
+  });
+
   it('calibrates the pre-reap evidence guard against a permanently disabled-reader control', async () => {
     // The same behavioral guard must accept the real runner and reject this
     // deliberately wrong wrapper; no mutation of the shared source is needed.
@@ -1018,7 +1086,9 @@ describe('collection child identity evidence (WI-10007991)', () => {
           stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
         const events: string[] = [];
         const snapshot = { status: 'partial', rootPid: 4350,
-          processes: [{ pid: 4350, name: 'vitest', state: 'S', waitChannel: 'futex_wait_queue' }] };
+          processes: [{ pid: 4350, name: 'vitest', state: 'D', waitChannel: 'folio_wait_bit_common',
+            blockedIo: { status: 'partial', scope: 'single-snapshot', syscall: null,
+              kernelStack: ['filemap_read'], files: [{ fd: 7, path: '/repo/module.mjs', kind: 'path' }] } }] };
         const pending = run('npx', ['vitest', 'list', '--filesOnly', 'a.test.ts'], {
           env: { PATH: '/usr/bin' }, timeoutMs: 100, killGraceMs: 20,
           systemdRunPath: null, setsidPath: '/usr/bin/setsid',

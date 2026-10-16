@@ -121,10 +121,10 @@ describe('verified cold bulk cutover', () => {
     }
   });
   it('accepts Kopia hostname canonicalization while refusing a different host', () => {
-    const native = { ...backup(), host: 'fixture-server-Precision-7865-Tower',
-      snapshotHost: 'fixture-server-precision-7865-tower' };
+    const native = { ...backup(), host: 'fixture-server-NodeA',
+      snapshotHost: 'fixture-server-nodea' };
     expect(assessColdMoves(moves(), native, at(8)).verdict).toBe('pass');
-    expect(assessColdMoves(moves(), { ...native, snapshotHost: 'other-server-precision-7865-tower' }, at(8)).verdict).toBe('unknown');
+    expect(assessColdMoves(moves(), { ...native, snapshotHost: 'other-server-nodea' }, at(8)).verdict).toBe('unknown');
   });
   it('catches middle verification mismatch, missing verification and wrong DONE destination', () => {
     for (const edit of [(s: string) => s.replace('bytes src=100 dst=100', 'bytes src=100 dst=99'),
