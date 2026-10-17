@@ -165,7 +165,9 @@ describe('hosted pool bounded capacity proposals (P-544 preparation)', () => {
   function input(hosts: HostedPoolCapacityHost[] = [], queuedHosts = 1): HostedPoolCapacityInput {
     const admission = poolInput();
     admission.nowMs = nowMs;
-    admission.entitlements!.quotas['pool.hosts'] = 10;
+    admission.entitlements = { ...admission.entitlements!, quotas: {
+      ...admission.entitlements!.quotas, 'pool.hosts': 10,
+    } };
     admission.allocated.hosts = hosts.filter(value => value.state === 'ready').length;
     admission.pending.hosts = hosts.filter(value => value.state === 'pending').length;
     admission.capacity.requestedWarmHosts = 0;
@@ -211,9 +213,13 @@ describe('hosted pool bounded capacity proposals (P-544 preparation)', () => {
     value.provision.admission.budget.pendingMinor = 9000;
     expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool cost: budget_exceeded');
     value.provision.admission.budget.pendingMinor = 0;
-    value.provision.admission.entitlements!.budgets = {};
+    value.provision.admission.entitlements = {
+      ...value.provision.admission.entitlements!, budgets: {},
+    };
     expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool cost: budget_missing');
-    value.provision.admission.entitlements!.recheckAt = new Date(nowMs);
+    value.provision.admission.entitlements = {
+      ...value.provision.admission.entitlements!, recheckAt: new Date(nowMs),
+    };
     expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool entitlement authority missing, foreign or stale');
   });
 

@@ -388,6 +388,14 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('yield_control()');
     expect(scriptDescription).toContain('store(key, value)');
     expect(scriptDescription).toContain('never hidden session memory');
+    expect(scriptDescription).toContain('200 keys and 65,536 UTF-8 bytes (64 KiB)');
+    expect(scriptDescription).toContain('state_limit_exceeded');
+    expect(scriptDescription).toContain('reduce large tool reads at the source');
+    expect(scriptDescription).toContain('projection.pick');
+    expect(scriptDescription).toContain("payloadTier:'full'");
+    expect(scriptDescription).toContain('summaryNotice.rawSummaryCursor');
+    expect(scriptDescription).toContain('capability:read');
+    expect(scriptDescription).toContain('bounded slices');
   });
 
   it('accepts explicit replay inputs and seeds the stateless sandbox', async () => {

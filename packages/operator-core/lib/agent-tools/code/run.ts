@@ -303,6 +303,9 @@ export default defineTool({
           'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +
           '`generatedImage({ image_url: "data:image/...;base64,...", output_hint? })` appends a validated image; ' +
           '`store(key, value)` / `load(key)` use explicit replay state seeded from bindings/inputs and returned with the result -- never hidden session memory. ' +
+          'Replay state is capped at 200 keys and 65,536 UTF-8 bytes (64 KiB); `store` rejects larger state with `state_limit_exceeded` instead of truncating it. ' +
+          'Keep replay state to compact cursors, IDs, and bounded summaries: reduce large tool reads at the source with `projection.pick`, `limit`, or checkpoint pages, and use `payloadTier:\'full\'` only with a narrow projection. ' +
+          'For exact oversized returns, follow `summaryNotice.rawSummaryCursor` with `capability:read`; split recovery into bounded slices instead of storing the whole envelope, then pass the compact state through `inputs`. ' +
           'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
           'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
           'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
