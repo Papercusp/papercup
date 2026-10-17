@@ -752,8 +752,8 @@ describe('verify-tauri-headless prepare diagnostics', () => {
   it('captures the prepare phase and names its major fallible stages before boot', () => {
     const verifier = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../scripts/verify-tauri-headless.sh');
     const source = readFileSync(verifier, 'utf8');
-    const prepareStart = source.indexOf('vh_begin prepare');
-    const bootStart = source.indexOf('vh_begin boot', prepareStart);
+    const prepareStart = source.indexOf('verifier_begin_phase prepare');
+    const bootStart = source.indexOf('verifier_begin_phase boot', prepareStart);
     expect(prepareStart).toBeGreaterThanOrEqual(0);
     expect(bootStart).toBeGreaterThan(prepareStart);
     const prepare = source.slice(prepareStart, bootStart);
