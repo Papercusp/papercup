@@ -404,6 +404,9 @@ export default function RemoteAccessSettingsPage() {
                   <div className="pc-settings-hint" data-testid="remote-access-entry-authority" style={{ marginTop: 2 }}>
                     {inventory.authoritySummary} · {statusCopy.status}
                   </div>
+                  <div className="pc-settings-hint" data-testid="remote-access-entry-route" style={{ marginTop: 2 }}>
+                    Scope: {inventory.scope} · Transport: {inventory.transport === 'device-http' ? 'Device HTTP' : inventory.transport.toUpperCase()}
+                  </div>
                   <div className="pc-settings-hint" style={{ marginTop: 2 }}>
                     Added by {e.creator} on {when(e.pairedAt)} · last used {when(e.lastSeen)}
                     {e.lastIp ? ` from ${e.lastIp}` : ''}

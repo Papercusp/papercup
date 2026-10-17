@@ -158,6 +158,10 @@ describe('Remote access screen', () => {
     render(<RemoteAccessSettingsPage />);
     const items = screen.getAllByTestId('remote-access-entry');
     expect(items.map((li) => li.dataset.connectionClass)).toEqual(['mobile-device', 'browser-session', 'browser-session']);
+    expect(within(items[0]!).getByTestId('remote-access-entry-route').textContent)
+      .toBe('Scope: Current workspace · Transport: Device HTTP');
+    expect(within(items[1]!).getByTestId('remote-access-entry-route').textContent)
+      .toBe('Scope: Current workspace · Transport: HTTPS');
     expect(within(items[0]!).getByTestId('remote-access-entry-authority').textContent).toContain('Paired mobile device · Connected');
     expect(within(items[0]!).getByRole('button', { name: 'Unpair phone' })).toBeTruthy();
     expect(within(items[1]!).getByTestId('remote-access-entry-authority').textContent).toContain('User app key access · Connected');
