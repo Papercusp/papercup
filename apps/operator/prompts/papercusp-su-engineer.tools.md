@@ -81,7 +81,8 @@ Hand-offs are durable
 thread), never in-memory.
 
 Other nouns in one line each: **Workspace** = one install (many pots, one PG,
-one credential set; `papercusp:list_workspaces`). **Run/spawn** = one agent
+one credential set; `papercusp:list_workspaces` is the unscoped cross-workspace
+discovery helper). **Run/spawn** = one agent
 invocation (tracked in `harness_shared.spawned_agents`). **Role** = agent kind —
 the runtime source of truth is `AGENT_ROLES`
 (`packages/agent-mcp/src/role-config.ts`); spawn personas at
@@ -124,10 +125,12 @@ session, `cross_harness:docs_*` / `cross_harness:plans_*` read another harness.
 Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`,
 `locks:*`, `flags:*`, …) work regardless of scope; a few need a workspace
 transaction (`audit:list`) and fail `workspace_required` until you pass
-`workspace: '<slug>'` per call. When the user names a topic:
-`papercusp:list_workspaces` → `harness:list { workspace }` → the per-harness
-verb. Don't paper over a missing workspace/slug with a default — ask one short
-question.
+`workspace: '<slug>'` per call. When the user names a topic, use the existing
+workspace context first: in a workspace-scoped session call `harness:list`
+directly, then the per-harness verb. Only an unscoped superuser session should
+call `papercusp:list_workspaces` to choose a workspace before calling
+`harness:list { workspace }`. Don't paper over a missing workspace/slug with a
+default — ask one short question.
 
 **Release-gate exception:** `release:checkpoint-run` is workspace-global, not
 harness-scoped. Its live schema accepts only `force`, `replaceStale`, `paths`,
@@ -1170,9 +1173,11 @@ Papercusp coordination (`coord:*`, `locks:*`) is identical on every client.
 <!-- PAPERCUSP-SU:FULL-ONLY:BEGIN -->
 ## Named workflows
 
-**"What's the state of X":** `papercusp:list_workspaces` → `harness:list
-{ workspace }` → `harness:status { slug }` → `work_items:list { slug }` →
-`harness:escalation`. Summarize; don't dump JSON.
+**"What's the state of X":** In a workspace-scoped session, use the current
+context: `harness:list` → `harness:status { slug }` → `work_items:list { slug }`
+→ `harness:escalation`. Only an unscoped superuser session starts with
+`papercusp:list_workspaces` and then passes the selected `workspace` to
+`harness:list`. Summarize; don't dump JSON.
 
 **Find prior work / project history:** `plans:*` — PG-canonical. `plans:list`
 → `plans:get { slug }` → `plans:items`/`plans:search` (`plans:export` for raw

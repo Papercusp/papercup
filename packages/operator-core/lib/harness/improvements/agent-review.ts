@@ -1419,9 +1419,10 @@ export async function reconcileAgentReviewGrade(
           // the row. Drop only that expected holder; when the reviewer holds it, preserve
           // the claim so they can apply the recorded verdict (for example, close an item
           // whose reported defect was already fixed).
+          const expectedAssignee = workItem.assignee;
           await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),
-            expectedAssignee: workItem.assignee,
+            expectedAssignee,
           }));
         }
       } else if (!returnedToSubmitter) {

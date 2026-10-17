@@ -10779,6 +10779,7 @@ export function hostThroughPty(o) {
   let liveChildArgs = args;
   let childGeneration = 0;
   let childStartedAtMs = 0;
+  let childOutputBytes = 0;
   // Reset on every successful spawn; a predecessor's completion cannot
   // certify a newly resumed child before that child has executed a turn.
   let lastMachineTurnSubmittedAtMs = 0;
@@ -10823,6 +10824,7 @@ export function hostThroughPty(o) {
     liveChildArgs = spawnArgs;
     childGeneration++;
     childStartedAtMs = Date.now();
+    childOutputBytes = 0;
     lastMachineTurnSubmittedAtMs = 0;
     return spawned;
   };
@@ -15478,6 +15480,7 @@ export function hostThroughPty(o) {
     }
     child.onData((d) => {
       const raw = typeof d === 'string' ? d : String(d);
+      if (child === startupDialogChild) childOutputBytes += Buffer.byteLength(raw, 'utf8');
       const updateDialog = managedCodexStartupUpdateDialog.observe(raw);
       if (updateDialog.action === 'send-escape') {
         const identityMatches = child === startupDialogChild &&
@@ -16135,6 +16138,20 @@ export function hostThroughPty(o) {
         // the session was killed, and the surviving 0 then travels all the way to
         // adv_sessions as a clean voluntary exit. Two of the owner's agents were reaped
         // by a sidecar restart and recorded as `ended_by='self', exit_code=0` this way.
+        // Preserve the native observation before teardown reports the aggregate
+        // session state. A pre-turn failure can leave no transcript or output;
+        // the spawn row alone cannot distinguish a native exit from host failure.
+        // Link existing output evidence without copying potentially secret text.
+        appendHostEvent(ownerId, 'pty-child-exited', {
+          childPid: Number.isInteger(thisChild.pid) ? thisChild.pid : null,
+          agent: env.PAPERCUSP_AGENT || null,
+          generation: childGeneration,
+          exitCode: Number.isInteger(exitCode) ? exitCode : null,
+          signal: signalNameFromCode(signal),
+          msSinceSpawn: Math.max(0, Date.now() - childStartedAtMs),
+          outputBytes: childOutputBytes,
+          normalizedLogPath,
+        });
         cleanup(exitCode, signalNameFromCode(signal));
       });
     };
