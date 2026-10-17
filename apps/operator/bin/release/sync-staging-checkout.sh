@@ -936,10 +936,20 @@ restart_result_is_pending() {
     process.stdin.on("end", () => {
       try {
         const result = JSON.parse(body);
+        const currentPending =
+          result?.stagingReadiness?.outcome === "not-observed" &&
+          result?.stagingReadiness?.activeState !== "failed";
+        // Older hosts returned the audited request before readiness observation
+        // existed. Admit that exact receipt only to the same bounded PID/source
+        // reconciliation below; scheduled remains distinct from completed.
+        const legacyPending =
+          result?.stagingReadiness === undefined && result?.ok === true &&
+          result?.requestAuditPersisted === true &&
+          typeof result?.restartRequestId === "string" && result.restartRequestId.trim().length > 0 &&
+          result?.reason === undefined && result?.error === undefined;
         process.exit(result?.target === "staging" &&
           result?.restartScheduled === true && result?.restartObserved === false &&
-          result?.stagingReadiness?.outcome === "not-observed" &&
-          result?.stagingReadiness?.activeState !== "failed" ? 0 : 1);
+          (currentPending || legacyPending) ? 0 : 1);
       } catch { process.exit(1); }
     });
   '

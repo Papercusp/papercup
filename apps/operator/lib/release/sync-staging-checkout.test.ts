@@ -1595,6 +1595,10 @@ describe('sync-staging-checkout.sh staging_live_client_count() — live-session 
 });
 
 describe('sync-staging-checkout.sh coordinated restart result', () => {
+  const legacyPending = {
+    ok: true, target: 'staging', restarted: false, restartScheduled: true, restartObserved: false,
+    restartRequestId: 'ec0c414f-34f4-44c0-ac0b-84a8169a092e', requestAuditPersisted: true,
+  };
   const pending = (result: unknown) => runFn(
     ['restart_result_is_pending'],
     'restart_result_is_pending',
@@ -1613,6 +1617,20 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     expect(pending({ ...result, target: 'gateway' })).toBe(false);
     expect(pending({ ...result, stagingReadiness: { outcome: 'failed', activeState: 'failed' } })).toBe(false);
     expect(pending({ ok: false, reason: 'restart_withheld' })).toBe(false);
+  });
+
+  it('reconciles an audited legacy asynchronous receipt without treating it as completion', () => {
+    expect(pending(legacyPending)).toBe(true);
+    expect(accepted(legacyPending)).toBe(false);
+  });
+
+  it.each([
+    { ok: false }, { target: 'gateway' }, { restartScheduled: false }, { restartObserved: true },
+    { requestAuditPersisted: false }, { restartRequestId: undefined }, { restartRequestId: '' },
+    { restartRequestId: ' ' }, { reason: 'restart_withheld' }, { error: 'authorization_denied' },
+    { stagingReadiness: null }, { stagingReadiness: { outcome: 'failed', activeState: 'failed' } },
+  ])('refuses an incomplete or contradictory legacy receipt: %j', override => {
+    expect(pending({ ...legacyPending, ...override })).toBe(false);
   });
 
   it('keeps launcher stderr out of the JSON receipt on the actual request path', () => {
@@ -1643,10 +1661,11 @@ describe('sync-staging-checkout.sh coordinated restart result', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('settles a pending receipt only after a new PID serves the exact target', () => {
+  it.each(['current', 'legacy'])('settles a %s pending receipt only after a new PID serves the exact target', kind => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
     const tail = script.slice(script.indexOf('# ptool exits successfully for a business-level refusal'));
-    const result = JSON.stringify({ ok: false, target: 'staging', restartScheduled: true,
+    const result = JSON.stringify(kind === 'legacy' ? legacyPending : {
+      ok: false, target: 'staging', restartScheduled: true,
       restartObserved: false, stagingReadiness: { outcome: 'not-observed', activeState: 'deactivating' } });
     const verify = (pid: string, sha: string, receipt = result) => runFn(
       ['restart_result_is_accepted', 'restart_result_is_pending', 'restart_result_is_pre_dispatch_refusal',

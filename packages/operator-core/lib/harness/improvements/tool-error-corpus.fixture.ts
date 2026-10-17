@@ -104,6 +104,54 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'captured toolFailure prose retained the whole-call deadline but omitted the persisted call_timeout code/message envelope',
   },
+  {
+    n: 0, errorCode: 'query_embed_deadline', status: 'error',
+    message: 'query embed exceeded 4000ms budget',
+    expectedClass: 'transient',
+    note: 'EI-25521910842775592: bounded embedding deadline is a timeout, not a structural tool defect',
+  },
+  {
+    n: 0, errorCode: 'query_embed_deadline', status: 'error',
+    message: 'embedding request exceeded its budget',
+    expectedClass: 'transient',
+    note: 'synthetic exact-code control: the deadline code remains transient when message wording changes',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'query embed failed: query embed exceeded 4000ms budget',
+    expectedClass: 'transient',
+    note: 'nested handler wrapper retains the maintained EmbedTimeoutError message',
+  },
+  {
+    n: 0, errorCode: null, status: 'error',
+    message: 'query embed exceeded 250ms budget',
+    expectedClass: 'transient',
+    note: 'message-only EmbedTimeoutError with another bounded duration',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'query embed failed: relation "embedding_cache" does not exist',
+    expectedClass: 'structural',
+    note: 'genuine embedding dependency failures remain structural',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'query embed exceeded expectations while validating configuration',
+    expectedClass: 'structural',
+    note: 'similar prose without a numeric deadline must not become transient',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'invalid_args: query_embed_deadline is not an accepted argument',
+    expectedClass: 'caller',
+    note: 'mentioning the deadline code in a caller argument refusal is not a timeout',
+  },
+  {
+    n: 0, errorCode: 'structured_result_shape', status: 'error',
+    message: 'secondary text: query embed exceeded 4000ms budget',
+    expectedClass: 'caller',
+    note: 'the primary caller shape code retains precedence over secondary deadline prose',
+  },
 
   // ── transient: shared-infra exhaustion (PG-wedge collateral) ───────────────
   {

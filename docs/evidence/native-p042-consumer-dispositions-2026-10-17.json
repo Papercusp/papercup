@@ -129,6 +129,35 @@
     },
     "qualification": "One actual detailed hourly reading is below its recorded selector ceiling. The 44 other receipts do not establish snapshot-age continuity. The source-qualified instrumentation has begun producing deployed receipts; no 48-hour pass or retrospective backfill is claimed. Runtime position read identified bg-host fadbd35203 as owner with start-after-mtime containment; the detailed DBOS receipt independently demonstrates the new field was emitted."
   },
+  "deployedReceiptContinuation20261017": {
+    "measuredAt": "2026-10-17T09:01:13.262Z",
+    "capture": "/tmp/native-p042-receipts-window-20261017-0900.json",
+    "captureSha256": "89efea9a093c20816b5f319a448cb4555e62145f707120a2e44a654601466ffd",
+    "rawSummary": "papercusp://scratch/papercusp-workspace/code:run/6703a3b8-68a6-42f8-8bb6-06edf0678b21/raw-summary-1792227673287.json",
+    "rawSummarySha256": "fd6a76cbc37ad1fd49769a3801cd53dd06bcc90efc486c2713fc1e4c3733b863",
+    "route": "Original explicit :3170 authenticated ptool code:run completed with one settled read-only dev:pg_query; no cancellation or replacement query occurred.",
+    "basis": "Same routine-last-fire.ts DBOS join, exact routineFire rt_papercusp_gitnexus_reindex input and system:gitnexus-reindex function; completion-time last 48 hours.",
+    "positiveControl": "passed",
+    "receiptCount": 46,
+    "truncated": false,
+    "withModeDiagnostics": 35,
+    "withSnapshotReading": 8,
+    "freshReadingsBelowRecordedCeiling": 8,
+    "parseErrors": [],
+    "firstDetailedAt": "2026-10-17T01:35:21.635Z",
+    "lastDetailedAt": "2026-10-17T08:35:43.599Z",
+    "detailedSpanMs": 25221964,
+    "maximumObservedAgeMs": 57626093,
+    "recordedSelectorCeilingMs": 86400000,
+    "latestWorkflowId": "sched-.routinesTick-2026-10-17T08:35:00.000Z-51",
+    "latestGeneratedAt": "2026-10-16T16:35:11.574Z",
+    "fortyEightHourQualified": false,
+    "limits": [
+      "The eight detailed readings span roughly seven hours. The other 38 receipts do not establish snapshot-age continuity.",
+      "The code:run transport summary retained four readings and omitted four. Its complete 4394-byte raw summary was recovered and SHA256 verified before classifying all eight.",
+      "No retrospective backfill, passing acceptance grade, final-release or shipment claim. The earlier D023 one-reading receipt remains historical evidence."
+    ]
+  },
   "sourceHashesAtReadback": {
     "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts": "4ada214f4dfdf03f22ad1d703ea253a53e565773f3f0c2778ce1c7584d357d50",
     "packages/operator-core/lib/agent-tools/gitnexus/query.ts": "b16de5fc88f128b7681d47a2b827424a941263da4039ee2603832ef7a95ea4de",
@@ -151,7 +180,7 @@
     "interpretation": "Unknown outcomes are neither zero nor evidence of no value. No invocation counts are credited as benefits; no index deletion, new engine rollout or commercial licence clearance is authorized."
   },
   "remainingAcceptance": [
-    "P018 deployed snapshot age below selector ceiling across a genuine 48-hour hourly sequence; only one detailed reading is currently recovered.",
+    "P018 deployed snapshot age below selector ceiling across a genuine 48-hour hourly sequence; the 09:01Z continuation recovers eight detailed readings spanning roughly seven hours, still short of the required window.",
     "Real gate selector receipt showing graph status=fresh and its added-workspace field. Requested once from the live gate owner via coord-send-fa88c20e7b088862556038d39b5add0e557ff0cf78cb9a07c24806326267bea8; no rerun requested and no parallel LIVE_GATE_OPS.",
     "Exclusion on the finished distribution artifact and final shipment verification.",
     "P040/P041 scope remains blocked on the already-open Avi question conv-mvbhj8rf-0000-7d6b7f1cf3fc4d6395989725d9eb63a9. Its current read is open with no posts; no duplicate question or scope assumption.",

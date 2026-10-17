@@ -349,8 +349,34 @@ export type CensusSpawn = (cmd: string, args: string[]) => ChildProcessByStdio<n
 
 const defaultCensusSpawn: CensusSpawn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
+/** Only multiply linked regular files need per-inode storage. Ordinary files
+ * remain streaming totals even in very large trees. Paths support partial build effects. */
+export interface RetentionHardlink { dev: number; ino: number; bytes: number; paths: string[]; }
+export class RetentionAllocationCounter {
+  bytes = 0;
+  private shared = new Map<string, RetentionHardlink>();
+  add(path: string, stat: { dev: number; ino: number; blocks: number; nlink: number }, regular: boolean): void {
+    const bytes = stat.blocks * 512;
+    if (regular && stat.nlink > 1) {
+      const key = `${stat.dev}:${stat.ino}`;
+      const prior = this.shared.get(key);
+      if (prior) {
+        if (prior.bytes !== bytes) throw new Error('hardlink allocation changed during census');
+        prior.paths.push(path); return;
+      }
+      this.shared.set(key, { dev: stat.dev, ino: stat.ino, bytes, paths: [path] });
+    }
+    this.bytes += bytes;
+  }
+  metadata(): { hardlinks?: RetentionHardlink[] } {
+    return this.shared.size ? { hardlinks: [...this.shared.values()]
+      .sort((a, b) => a.dev - b.dev || a.ino - b.ino).map(value => ({ ...value, paths: [...value.paths].sort() })) } : {};
+  }
+}
+
 export interface RetentionTreeCensus {
   entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number;
+    hardlinks?: RetentionHardlink[];
     buildDirs?: Array<{ path: string; dev: number; ino: number }> }>;
   retained: Array<{ path: string; reason: string; entry?: RetentionTreeCensus['entries'][number] }>;
   inspectedNodes: number;
@@ -402,9 +428,9 @@ try:
             pending = records.pop()
             for value in records:
                 fields.append(value)
-                if len(fields) == 8:
-                    kind, dev, ino, mtime, ctime, blocks, owner, path = fields
-                    if kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime]):
+                if len(fields) == 9:
+                    kind, dev, ino, mtime, ctime, blocks, owner, nlink, path = fields
+                    if kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner, nlink]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime]):
                         deadline = time.monotonic() + idle
                     fields = []
 finally:
@@ -447,7 +473,7 @@ export async function inspectRetentionTrees(root: string, opts: {
   }
   const privileged = Boolean(sudo) || uid === 0;
   const foreignOwner = uid === undefined || privileged ? [] : ['!', '-uid', String(uid)];
-  const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%p\\0';
+  const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%n\\0%p\\0';
   const recent = opts.includeRecent ? ['-false'] : ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
   // A concurrent unlink after find read the containing directory is an absent
   // candidate, not unknown eligibility. GNU find still fails on other IO errors.
@@ -472,7 +498,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     : ['-n', '--', timeout!, '--foreground', '--signal=KILL',
       `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
-    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
+    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; allocation: RetentionAllocationCounter; reason?: string }>();
     const ancestors = new Map<string, { path: string; dev: number; ino: number }>();
     let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -483,10 +509,10 @@ export async function inspectRetentionTrees(root: string, opts: {
       timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.progressTimeoutMs ?? 60_000);
     };
     const take = (row: string[]) => {
-      const [type, dev, ino, mtime, ctime, blocks, owner, path] = row;
+      const [type, dev, ino, mtime, ctime, blocks, owner, nlink, path] = row;
       const modifiedMs = findTimestampMs(mtime!), changedMs = findTimestampMs(ctime!);
       if (!path?.startsWith(root + '/') || !/^[fdlbcsp]$/.test(type!) ||
-          ![dev, ino, blocks, owner].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
+          ![dev, ino, blocks, owner, nlink].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
         malformed = true; return;
       }
       result.inspectedNodes++;
@@ -495,7 +521,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       let group = groups.get(child);
       if (!group) {
         if (!direct) { malformed = true; return; }
-        group = { entry: { path: child, newestWriteMs: Number.NEGATIVE_INFINITY, bytes: 0, dev: Number(dev), ino: Number(ino) } };
+        group = { entry: { path: child, newestWriteMs: Number.NEGATIVE_INFINITY, bytes: 0, dev: Number(dev), ino: Number(ino) }, allocation: new RetentionAllocationCounter() };
         groups.set(child, group);
       }
       const newest = Math.max(modifiedMs, changedMs);
@@ -512,7 +538,8 @@ export async function inspectRetentionTrees(root: string, opts: {
         }
       }
       group.entry.newestWriteMs = Math.max(group.entry.newestWriteMs, newest);
-      group.entry.bytes += Number(blocks) * 512;
+      try { group.allocation.add(path, { dev: Number(dev), ino: Number(ino), blocks: Number(blocks), nlink: Number(nlink) }, type === 'f'); }
+      catch { malformed = true; }
       if (excluded.includes(path)) group.reason = 'protected policy root';
       else if (type === 'l') group.reason = 'symlink boundary';
       else if (type !== 'f' && type !== 'd') group.reason = 'special filesystem entry';
@@ -523,7 +550,9 @@ export async function inspectRetentionTrees(root: string, opts: {
     const finish = (error?: string) => {
       if (settled) return;
       settled = true; clearTimeout(timer); clearTimeout(absoluteTimer);
-      for (const { entry, reason } of groups.values()) {
+      for (const { entry, allocation, reason } of groups.values()) {
+        entry.bytes = allocation.bytes;
+        Object.assign(entry, allocation.metadata());
         if (reason === 'recent write') result.retainedRecentTrees++;
         else if (reason) result.retained.push({ path: entry.path, reason, ...(opts.includeRecent ? { entry } : {}) });
         else result.entries.push(entry);
@@ -543,7 +572,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     child.stdout.on('data', (chunk: string) => {
       const before = result.inspectedNodes;
       const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
-      for (const value of records) { fields.push(value); if (fields.length === 8) { take(fields); fields = []; } }
+      for (const value of records) { fields.push(value); if (fields.length === 9) { take(fields); fields = []; } }
       // Noise, partial records and malformed data cannot keep a wedged scan alive.
       if (!sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });

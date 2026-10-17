@@ -24,7 +24,10 @@
  *                                  only with near-perfect packing, so it is a lower bound
  */
 import { readFileSync } from 'node:fs';
+import { costFromTokens, PRICE_TABLE_VERSION, USAGE_LEDGER_PRICING, type TokenUsage } from '@papercusp/model-pricing';
 import { hourlyPriceUsd, parseMachineType, SPOT_PRICES_2026_10_01 } from './gcp-rails';
+import { decodeChunk, type RecordedExchange } from './record-proxy';
+import { sseEvents } from './replay-server';
 
 export const HOURS_PER_MONTH = 730;
 /** The measurement VMs were priced with a 120 GB boot disk (capacity-table --disk-gb 120), so the rows here match D-019/D-020. */
@@ -422,6 +425,189 @@ const usd = (n: number) => n.toFixed(n < 10 ? 2 : 0);
 const MONTH_COST_KEYS = ['retainedStorageUsd', 'provisionedPerformanceUsd', 'backupUsd',
   'objectStorageUsd', 'networkUsd', 'controlUsd', 'warmCapacityUsd', 'inferenceUsd'] as const;
 
+/** P544: price recorded model requests, never CLI-reported dollars or response text.
+ * Each request selects its own context tier. Failed/truncated/unpriced requests remain
+ * in the population and keep the full estimate unknown; priced portions are a floor.
+ * Reuses the recorder's byte decoder, replay SSE parser and canonical list-price table.
+ */
+export function recordedInferenceCost(exchanges: readonly RecordedExchange[]) {
+  const rec = (v: unknown): Record<string, unknown> | null =>
+    v !== null && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : null;
+  const count = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  const rows = exchanges.filter((ex) => /\/(messages|responses)(?:\?|$)/.test(ex.path)).map((ex) => {
+    const protocol = /\/responses(?:\?|$)/.test(ex.path) ? 'responses' : 'messages';
+    let model: string | null = null, complete = false, streamError = false;
+    let raw: Record<string, unknown> = {};
+    let finalResponse: Record<string, unknown> | null = null;
+    const gaps: string[] = [];
+    const apply = (v: unknown) => { const u = rec(v); if (u) raw = { ...raw, ...u }; };
+    const response = (v: unknown) => {
+      const r = rec(v);
+      if (!r) return;
+      // Duplicate terminal events are snapshots, never additional token charges.
+      if (finalResponse && JSON.stringify(finalResponse) !== JSON.stringify(r)) gaps.push('conflicting-terminal');
+      finalResponse = r;
+      model = typeof r.model === 'string' && r.model.trim() ? r.model : null;
+      apply(r.usage);
+      complete = r.status === 'completed';
+    };
+    if (ex.req.stream) {
+      for (const event of sseEvents(ex.chunks)) {
+        const j = event.data;
+        if (!j) continue;
+        if (protocol === 'responses') {
+          if (['response.completed', 'response.incomplete', 'response.failed'].includes(String(j.type))) response(j.response);
+          if (j.type === 'error' || j.type === 'response.failed') streamError = true;
+        } else {
+          if (j.type === 'message_start') {
+            const message = rec(j.message);
+            model = typeof message?.model === 'string' && message.model.trim() ? message.model : null;
+            apply(message?.usage);
+          } else if (j.type === 'message_delta') apply(j.usage);
+          else if (j.type === 'message_stop') complete = true;
+          else if (j.type === 'error') streamError = true;
+        }
+      }
+    } else {
+      try {
+        const j = rec(JSON.parse(Buffer.concat(ex.chunks.map(decodeChunk)).toString('utf8')));
+        if (protocol === 'responses') response(j);
+        else if (j) {
+          model = typeof j.model === 'string' && j.model.trim() ? j.model : null;
+          apply(j.usage);
+          complete = typeof j.stop_reason === 'string';
+        }
+      } catch { gaps.push('invalid-json'); }
+    }
+    if (ex.status < 200 || ex.status >= 300 || ex.error || streamError) gaps.push('request-error');
+    if (!complete) gaps.push('incomplete-response');
+    if (!model) gaps.push('missing-served-model');
+    const usage: TokenUsage = {};
+    let valid = true;
+    const set = (key: keyof TokenUsage, value: unknown) => {
+      if (!count(value)) { valid = false; return; }
+      Object.assign(usage, { [key]: value });
+    };
+    set('inputTokens', raw.input_tokens);
+    set('outputTokens', raw.output_tokens);
+    if (protocol === 'responses') {
+      const details = rec(raw.input_tokens_details);
+      set('cacheReadTokens', details?.cached_tokens);
+      set('cacheCreationTokens', details?.cache_write_tokens);
+      if (valid) {
+        usage.requestInputTokens = usage.inputTokens!;
+        usage.inputTokens = usage.inputTokens! - usage.cacheReadTokens! - usage.cacheCreationTokens!;
+        if (!count(usage.inputTokens)) valid = false;
+      }
+    } else {
+      set('cacheReadTokens', raw.cache_read_input_tokens);
+      set('cacheCreationTokens', raw.cache_creation_input_tokens);
+      const tiers = rec(raw.cache_creation);
+      if (tiers) {
+        set('cacheCreation5mTokens', tiers.ephemeral_5m_input_tokens);
+        set('cacheCreation1hTokens', tiers.ephemeral_1h_input_tokens);
+      } else if (count(raw.cache_creation_input_tokens) && raw.cache_creation_input_tokens > 0) {
+        usage.cacheCreationTierUnknown = true;
+      }
+      if (valid) usage.requestInputTokens = usage.inputTokens! + usage.cacheReadTokens! + usage.cacheCreationTokens!;
+    }
+    if (!count(usage.requestInputTokens)) valid = false;
+    if (!valid) gaps.push('missing-or-invalid-usage');
+    const price = valid && model ? costFromTokens(model, usage, USAGE_LEDGER_PRICING) : null;
+    if (!price?.priced) gaps.push('unpriced');
+    if (price?.bound) gaps.push('price-lower-bound');
+    const knownEstimatedUsd = price?.priced ? price.usd : 0;
+    return { sessionId: ex.sessionId, seq: ex.seq, startedAt: ex.startedAt,
+      protocol, httpStatus: ex.status, requestedModel: ex.req.model, servedModel: model, complete, usage,
+      estimatedUsd: gaps.length ? null : knownEstimatedUsd, knownEstimatedUsd, gaps };
+  });
+  const knownEstimatedInferenceUsd = rows.reduce((sum, row) => sum + row.knownEstimatedUsd, 0);
+  if (!Number.isFinite(knownEstimatedInferenceUsd)) throw new Error('recorded inference cost overflow');
+  const complete = rows.length > 0 && rows.every((row) => row.estimatedUsd !== null);
+  return { priceTableVersion: PRICE_TABLE_VERSION, costSource: 'estimated' as const,
+    requests: rows.length, pricedRequests: rows.filter((r) => r.estimatedUsd !== null).length,
+    estimatedInferenceUsd: complete ? knownEstimatedInferenceUsd : null,
+    knownEstimatedInferenceUsd, estimateIsLowerBound: !complete, billedInferenceUsd: null, rows };
+}
+
+/** D-081: coding-task observations, kept separate from VM hours and hash-tool probes.
+ * Totals include censored/failed tasks; completedTasks must never silently shrink the denominator.
+ * Even an observed billed sample supplies a modeled month, not an observed monthly invoice.
+ */
+export interface TrialTaskMonthInput {
+  assignedAgents: number;
+  activeVmHours: number;
+  strata: readonly {
+    id: string;
+    profile: 'light' | 'typical' | 'heavy';
+    cli: 'claude' | 'codex';
+    model: string | null;
+    effort: string | null;
+    monthlyTasks: number;
+    observedTasks: number;
+    completedTasks: number;
+    taskWallSeconds: number;
+    estimatedInferenceUsd: number | null;
+    billedInferenceUsd: number | null;
+    sourceRef: string;
+  }[];
+}
+
+export function trialTaskMonth(input: TrialTaskMonthInput) {
+  if (!input || !Array.isArray(input.strata as unknown) || !input.strata.length) throw new Error('task workload requires strata');
+  if (!Number.isSafeInteger(input.assignedAgents) || input.assignedAgents < 1) throw new Error('invalid assignedAgents');
+  if (!Number.isFinite(input.activeVmHours) || input.activeVmHours < 0 || input.activeVmHours > HOURS_PER_MONTH) {
+    throw new Error('invalid activeVmHours');
+  }
+  const ids = new Set<string>();
+  const taskCounts = { light: 0, typical: 0, heavy: 0 };
+  let taskSeconds = 0;
+  let estimatedInferenceUsd: number | null = 0;
+  let billedBasisInferenceUsd: number | null = 0;
+  const censoredStrata: string[] = [];
+  const unknownBindings: string[] = [];
+  for (const s of input.strata) {
+    if (!s || typeof s.id !== 'string' || !s.id.trim() || ids.has(s.id)) throw new Error('invalid or duplicate task stratum');
+    ids.add(s.id);
+    if (!Object.hasOwn(taskCounts, s.profile) || !['claude', 'codex'].includes(s.cli)) throw new Error('invalid task profile or CLI');
+    if (typeof s.sourceRef !== 'string' || !s.sourceRef.trim()) throw new Error('task stratum requires sourceRef');
+    for (const key of ['model', 'effort'] as const) {
+      if (s[key] !== null && (typeof s[key] !== 'string' || !s[key]!.trim())) throw new Error(`invalid task ${key}`);
+    }
+    for (const key of ['monthlyTasks', 'observedTasks', 'completedTasks'] as const) {
+      if (!Number.isSafeInteger(s[key]) || s[key] < 0) throw new Error(`invalid task ${key}`);
+    }
+    if (!s.observedTasks || s.completedTasks > s.observedTasks) throw new Error('invalid task sample population');
+    if (!Number.isFinite(s.taskWallSeconds) || s.taskWallSeconds < 0) throw new Error('invalid taskWallSeconds');
+    for (const key of ['estimatedInferenceUsd', 'billedInferenceUsd'] as const) {
+      if (s[key] !== null && (!Number.isFinite(s[key]) || s[key]! < 0)) throw new Error(`invalid task ${key}`);
+    }
+    taskCounts[s.profile] += s.monthlyTasks;
+    const scale = s.monthlyTasks / s.observedTasks;
+    taskSeconds += s.taskWallSeconds * scale;
+    if (!s.monthlyTasks) continue;
+    if (s.completedTasks < s.observedTasks) censoredStrata.push(s.id);
+    if (s.model === null || s.effort === null) unknownBindings.push(s.id);
+    estimatedInferenceUsd = estimatedInferenceUsd === null || s.estimatedInferenceUsd === null
+      ? null : estimatedInferenceUsd + s.estimatedInferenceUsd * scale;
+    billedBasisInferenceUsd = billedBasisInferenceUsd === null || s.billedInferenceUsd === null
+      ? null : billedBasisInferenceUsd + s.billedInferenceUsd * scale;
+  }
+  const monthlyTasks = taskCounts.light + taskCounts.typical + taskCounts.heavy;
+  const busyAgentHours = taskSeconds / 3600;
+  if (!Number.isSafeInteger(monthlyTasks) || !Number.isFinite(busyAgentHours)
+    || [estimatedInferenceUsd, billedBasisInferenceUsd].some((v) => v !== null && !Number.isFinite(v))) {
+    throw new Error('task workload overflow');
+  }
+  if (busyAgentHours > input.assignedAgents * input.activeVmHours || (monthlyTasks > 0 && input.activeVmHours === 0)) {
+    throw new Error('task workload exceeds active VM population hours');
+  }
+  return { assignedAgents: input.assignedAgents, activeVmHours: input.activeVmHours, monthlyTasks,
+    taskCounts, busyAgentHours, busyHoursLowerBound: censoredStrata.length > 0,
+    modeledInferenceEstimateUsd: estimatedInferenceUsd, modeledInferenceBilledBasisUsd: billedBasisInferenceUsd,
+    censoredStrata, unknownBindings, sourceRefs: input.strata.map((s) => s.sourceRef) };
+}
+
 /** Supporting comparison inputs, not an activated tariff or a qualified trial profile.
  * Each value is the additional monthly cost beyond the legacy compute/Server row;
  * do not count a disk or a warm Server already included in that row twice.
@@ -430,6 +616,8 @@ const MONTH_COST_KEYS = ['retainedStorageUsd', 'provisionedPerformanceUsd', 'bac
 export type CostReportMonth = Partial<Record<typeof MONTH_COST_KEYS[number], number | null>> & {
   /** Sum of actual busy time across agents, not VM running hours or assigned slots. */
   busyAgentHours?: number;
+  /** Optional corpus-based monthly scenario; does not fill inferenceUsd or qualify D-076. */
+  taskWorkload?: TrialTaskMonthInput;
   /** Binds the supplied monthly inputs/usage to their evidence; no inference from its presence. */
   sourceRef?: string;
 };
@@ -437,7 +625,9 @@ export type CostReportMonth = Partial<Record<typeof MONTH_COST_KEYS[number], num
 export function pricingComparison(rows: Row[], month: CostReportMonth = {}) {
   if (!month || typeof month !== 'object' || Array.isArray(month)) throw new Error('report-month must be an object');
   if (month.busyAgentHours === null) throw new Error('invalid busyAgentHours');
-  const supplied = [...MONTH_COST_KEYS, 'busyAgentHours' as const].some((key) => month[key] != null);
+  const workload = month.taskWorkload === undefined ? null : trialTaskMonth(month.taskWorkload);
+  if (workload && month.busyAgentHours !== undefined) throw new Error('supply taskWorkload or busyAgentHours, not both');
+  const supplied = workload !== null || [...MONTH_COST_KEYS, 'busyAgentHours' as const].some((key) => month[key] != null);
   if (supplied && (typeof month.sourceRef !== 'string' || !month.sourceRef.trim())) {
     throw new Error('monthly comparison inputs require sourceRef');
   }
@@ -456,12 +646,13 @@ export function pricingComparison(rows: Row[], month: CostReportMonth = {}) {
   // packing/reclaim behavior those measurements do not establish.
   return rows.filter((row) => row.hosts === null).map((row) => {
     if (!Number.isSafeInteger(row.agents) || row.agents < 1) throw new Error('invalid assigned agents');
+    if (workload && workload.assignedAgents !== row.agents) throw new Error('task workload assigned population mismatch');
     for (const value of [row.serverUsd.packed, row.computeUsd]) {
       if (!Number.isFinite(value) || value < 0) throw new Error('invalid comparison cost');
     }
     const assignedAgentMonthUsd = row.computeUsd / row.agents;
     const busyAgentHourUsd = assignedAgentMonthUsd / (HOURS_PER_MONTH * DUTY.mean);
-    const busyAgentHours = month.busyAgentHours ?? row.agents * HOURS_PER_MONTH * DUTY.mean;
+    const busyAgentHours = workload?.busyAgentHours ?? month.busyAgentHours ?? row.agents * HOURS_PER_MONTH * DUTY.mean;
     if (busyAgentHours > row.agents * HOURS_PER_MONTH) throw new Error('busy agent hours exceed assigned population month');
     const basePlusAgentCoreUsd = row.serverUsd.packed + row.computeUsd;
     const busyHoursCoreUsd = row.serverUsd.packed + busyAgentHours * busyAgentHourUsd;
@@ -473,7 +664,7 @@ export function pricingComparison(rows: Row[], month: CostReportMonth = {}) {
     }
     return { id: row.id, assignedAgents: row.agents, baseServerUsd: row.serverUsd.packed,
       assignedAgentMonthUsd, busyAgentHourUsd, busyAgentHours,
-      busyHoursModeled: month.busyAgentHours === undefined,
+      busyHoursModeled: month.busyAgentHours === undefined, taskWorkload: workload,
       basePlusAgentCoreUsd, busyHoursCoreUsd, additionalInfrastructureUsd, inferenceUsd,
       basePlusAgentTotalUsd, busyHoursTotalUsd, missingCosts, pending: row.pending,
       costIsUpperBound: row.costIsUpperBound, sources: row.sources, inputSourceRef: month.sourceRef ?? null };
@@ -487,6 +678,12 @@ export function renderMarkdown(rows: Row[], month: CostReportMonth = {}): string
     `| id | lever combination | shape | compute | Server (floor-packed) | total (floor-packed) | per agent | x vs ${OWNER_BASELINE.usdMonth}/${OWNER_BASELINE.agents} | target |`,
     '|---|---|---|---|---|---|---|---|---|',
   ];
+  if (month.taskWorkload !== undefined) {
+    const w = trialTaskMonth(month.taskWorkload);
+    out.unshift(`Task scenario: ${w.monthlyTasks} coding tasks (${w.taskCounts.light} light, ${w.taskCounts.typical} typical, ${w.taskCounts.heavy} heavy), ${w.assignedAgents} assigned agents, ${w.activeVmHours} active VM hours; ${w.busyAgentHours.toFixed(3)} modeled busy-agent hours${w.busyHoursLowerBound ? ' (lower bound: censored tasks retained)' : ''}.`,
+      `Modeled inference estimate: ${w.modeledInferenceEstimateUsd === null ? 'UNKNOWN' : usd(w.modeledInferenceEstimateUsd)}; billed-sample basis: ${w.modeledInferenceBilledBasisUsd === null ? 'UNKNOWN' : usd(w.modeledInferenceBilledBasisUsd)}. These projections do not populate observed monthly inference or establish D-076 acceptance.`,
+      `Unknown model/effort bindings: ${w.unknownBindings.join(', ') || 'none'}; censored strata: ${w.censoredStrata.join(', ') || 'none'}.`, '');
+  }
   for (const r of rows) {
     const ub = r.costIsUpperBound ? '<=' : '';
     const tgt = r.pending ? 'PENDING P-532' : r.meetsTarget ? 'yes' : 'no';

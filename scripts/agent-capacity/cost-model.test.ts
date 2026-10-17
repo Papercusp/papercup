@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { costFromTokens, PRICE_TABLE_VERSION } from '@papercusp/model-pricing';
+import { encodeChunk, type RecordedExchange } from './record-proxy';
 import { capacityRow, parseRampLog } from './capacity-table';
 import {
   buildRows,
@@ -10,6 +12,8 @@ import {
   evaluate,
   hostMonthUsd,
   onDemandMonthUsd,
+  recordedInferenceCost,
+  trialTaskMonth,
   pricingComparison,
   renderMarkdown,
   SCENARIOS,
@@ -19,7 +23,174 @@ import {
   tenantsPerHost,
   type PoolBillLine,
   type CostReportMonth,
+  type TrialTaskMonthInput,
 } from './cost-model';
+
+describe('P544 recorded inference cost', () => {
+  const exchange = (events: unknown[], protocol = 'responses'): RecordedExchange => ({
+    seq: 1, sessionId: 'fixture', startedAt: '2026-10-17T00:00:00Z', method: 'POST',
+    path: `/v1/${protocol}`, req: { bytes: 1, sha256: 'fixture', model: 'requested-only', stream: true, messages: 1, tools: 0 },
+    status: 200, contentType: 'text/event-stream', ttfbMs: 1, totalMs: 5, resBytes: 1,
+    chunks: [encodeChunk(5, Buffer.from(events.map((j) => `data: ${JSON.stringify(j)}\r\n\r\n`).join('')))],
+  });
+  const completed = (input = 100, model = 'gpt-6.1-sol') => ({ type: 'response.completed', response: {
+    id: 'response', status: 'completed', model, usage: { input_tokens: input,
+      input_tokens_details: { cached_tokens: 20, cache_write_tokens: 10 }, output_tokens: 5 },
+  } });
+
+  it('prices each request at its own context tier and subtracts cache subsets exactly once', () => {
+    const small = completed(), large = completed(300_000);
+    const result = recordedInferenceCost([exchange([small, small]), { ...exchange([large]), seq: 2 }]);
+    const expected = [100, 300_000].reduce((sum, total) => sum + costFromTokens('gpt-6.1-sol', {
+      requestInputTokens: total, inputTokens: total - 30, cacheReadTokens: 20,
+      cacheCreationTokens: 10, outputTokens: 5,
+    }).usd, 0);
+    expect(result.estimatedInferenceUsd).toBeCloseTo(expected, 12);
+    expect(result).toMatchObject({ requests: 2, pricedRequests: 2,
+      priceTableVersion: PRICE_TABLE_VERSION, costSource: 'estimated', billedInferenceUsd: null, estimateIsLowerBound: false });
+    expect(result.rows[0]!.servedModel).toBe('gpt-6.1-sol');
+  });
+
+  it('merges cumulative Anthropic usage and prices the reported 1h cache writes', () => {
+    const ex = exchange([
+      { type: 'message_start', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 1,
+        output_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 10,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 10 } } } },
+      { type: 'message_delta', usage: { input_tokens: 4, output_tokens: 5, cache_read_input_tokens: 20 } },
+      { type: 'message_stop' },
+    ], 'messages');
+    // Split UTF-8/chunks, including base64, follows the recorder/replayer byte contract.
+    const bytes = Buffer.concat(ex.chunks.map((c) => Buffer.from(c.d!)));
+    ex.chunks = [{ t: 1, b64: bytes.subarray(0, 27).toString('base64') }, encodeChunk(5, bytes.subarray(27))];
+    const result = recordedInferenceCost([ex]);
+    expect(result.rows[0]!.usage).toMatchObject({ inputTokens: 4, outputTokens: 5,
+      requestInputTokens: 34, cacheReadTokens: 20, cacheCreation1hTokens: 10 });
+    expect(result.estimatedInferenceUsd).toBeCloseTo((4 * 2 + 20 * 0.2 + 10 * 4 + 5 * 10) / 1e6, 12);
+  });
+
+  it.each(['missing-write', 'invalid-cache', 'unknown-model', 'missing-model', 'failed', 'truncated', 'conflict'])(
+    'keeps %s requests in the denominator and refuses a complete estimate', (kind) => {
+      const ev = completed();
+      const ex = exchange([ev]);
+      if (kind === 'missing-write') delete (ev.response.usage.input_tokens_details as Record<string, unknown>).cache_write_tokens;
+      if (kind === 'invalid-cache') ev.response.usage.input_tokens_details.cached_tokens = 101;
+      if (kind === 'unknown-model') ev.response.model = 'unpriced-future-model';
+      if (kind === 'missing-model') ev.response.model = '';
+      if (kind === 'failed') ex.status = 500;
+      const events = kind === 'truncated' ? [] : kind === 'conflict' ? [ev, completed(200)] : [ev];
+      ex.chunks = exchange(events).chunks;
+      const result = recordedInferenceCost([exchange([completed()]), { ...ex, seq: 2 }]);
+      expect(result.requests).toBe(2);
+      expect(result.estimatedInferenceUsd).toBeNull();
+      expect(result.estimateIsLowerBound).toBe(true);
+      expect(result.billedInferenceUsd).toBeNull();
+    });
+
+  it('excludes non-model endpoints, preserves empty unknown and emits no response content', () => {
+    const ex = exchange([completed(), { type: 'response.output_text.delta', delta: 'PRIVATE RESPONSE' }]);
+    const result = recordedInferenceCost([ex, { ...ex, path: '/v1/messages/count_tokens' }]);
+    expect(result.requests).toBe(1);
+    expect(JSON.stringify(result)).not.toContain('PRIVATE RESPONSE');
+    expect(recordedInferenceCost([]).estimatedInferenceUsd).toBeNull();
+  });
+
+  it('marks unreported Anthropic write TTLs as a price floor without guessing an exact estimate', () => {
+    const result = recordedInferenceCost([exchange([
+      { type: 'message_start', message: { model: 'claude-sonnet-5-5', usage: { input_tokens: 1,
+        output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 10 } } },
+      { type: 'message_stop' },
+    ], 'messages')]);
+    expect(result.estimatedInferenceUsd).toBeNull();
+    expect(result.knownEstimatedInferenceUsd).toBeGreaterThan(0);
+    expect(result.rows[0]!.gaps).toContain('price-lower-bound');
+  });
+
+  it('prices nonstream responses and retains invalid JSON as unknown', () => {
+    const ex = exchange([]);
+    ex.req = { ...ex.req, stream: false };
+    ex.chunks = [encodeChunk(1, Buffer.from(JSON.stringify(completed().response)))];
+    expect(recordedInferenceCost([ex]).estimatedInferenceUsd).toBeGreaterThan(0);
+    ex.chunks = [encodeChunk(1, Buffer.from('{'))];
+    expect(recordedInferenceCost([ex]).rows[0]!.gaps).toContain('invalid-json');
+  });
+});
+
+describe('P544 monthly coding-task workload', () => {
+  const workload = (): TrialTaskMonthInput => ({ assignedAgents: 50, activeVmHours: 60, strata: [
+    { id: 'light', profile: 'light', cli: 'codex', model: 'fixture-model', effort: 'low',
+      monthlyTasks: 48, observedTasks: 8, completedTasks: 8, taskWallSeconds: 800,
+      estimatedInferenceUsd: 2, billedInferenceUsd: null, sourceRef: 'fixture:light' },
+    { id: 'typical', profile: 'typical', cli: 'claude', model: 'fixture-model', effort: null,
+      monthlyTasks: 48, observedTasks: 8, completedTasks: 8, taskWallSeconds: 1600,
+      estimatedInferenceUsd: 4, billedInferenceUsd: null, sourceRef: 'fixture:typical' },
+    { id: 'heavy', profile: 'heavy', cli: 'claude', model: 'fixture-model', effort: null,
+      monthlyTasks: 24, observedTasks: 4, completedTasks: 3, taskWallSeconds: 3600,
+      estimatedInferenceUsd: null, billedInferenceUsd: null, sourceRef: 'fixture:heavy' },
+  ] });
+
+  it('scales workspace tasks without multiplying by assigned slots or substituting VM hours', () => {
+    const result = trialTaskMonth(workload());
+    expect(result.monthlyTasks).toBe(120);
+    expect(result.taskCounts).toEqual({ light: 48, typical: 48, heavy: 24 });
+    expect(result.busyAgentHours).toBe(10);
+    expect(result.busyHoursLowerBound).toBe(true);
+    expect(result.censoredStrata).toEqual(['heavy']);
+    expect(result.unknownBindings).toEqual(['typical', 'heavy']);
+    expect(result.modeledInferenceEstimateUsd).toBeNull();
+    expect(result.modeledInferenceBilledBasisUsd).toBeNull();
+  });
+
+  it('keeps modeled inference and censored task time out of observed monthly charge inputs', () => {
+    const input = workload();
+    input.strata = input.strata.map((s) => ({ ...s, estimatedInferenceUsd: 1, billedInferenceUsd: 0.5 }));
+    const [result] = pricingComparison(buildRows(50, null), { taskWorkload: input, sourceRef: 'fixture:scenario' });
+    expect(result!.busyAgentHours).toBe(10);
+    expect(result!.busyHoursModeled).toBe(true);
+    expect(result!.taskWorkload?.modeledInferenceEstimateUsd).toBe(18);
+    expect(result!.taskWorkload?.modeledInferenceBilledBasisUsd).toBe(9);
+    expect(result!.inferenceUsd).toBeNull();
+    expect(result!.busyHoursTotalUsd).toBeNull();
+    const md = renderMarkdown(buildRows(50, null), { taskWorkload: input, sourceRef: 'fixture:scenario' });
+    expect(md).toContain('120 coding tasks (48 light, 48 typical, 24 heavy)');
+    expect(md).toContain('lower bound: censored tasks retained');
+    expect(md).toContain('do not populate observed monthly inference');
+  });
+
+  it('ignores zero-weight unknown samples while retaining explicit zero activity', () => {
+    const input = workload();
+    input.activeVmHours = 0;
+    input.strata = input.strata.map((s) => ({ ...s, monthlyTasks: 0 }));
+    expect(trialTaskMonth(input)).toMatchObject({ monthlyTasks: 0, busyAgentHours: 0,
+      modeledInferenceEstimateUsd: 0, modeledInferenceBilledBasisUsd: 0, censoredStrata: [], unknownBindings: [] });
+  });
+
+  it('refuses mismatched populations, conflicting activity inputs and missing evidence', () => {
+    expect(() => pricingComparison(buildRows(1, null), { taskWorkload: workload(), sourceRef: 'fixture:s' })).toThrow(/population mismatch/);
+    expect(() => pricingComparison(buildRows(50, null), { taskWorkload: workload(), busyAgentHours: 1, sourceRef: 'fixture:s' })).toThrow(/not both/);
+    expect(() => pricingComparison(buildRows(50, null), { taskWorkload: workload() })).toThrow(/sourceRef/);
+  });
+
+  it.each(['monthlyTasks', 'observedTasks', 'completedTasks', 'taskWallSeconds',
+    'estimatedInferenceUsd', 'billedInferenceUsd'] as const)('rejects invalid %s instead of producing a cheaper estimate', (key) => {
+    const input = workload();
+    Object.assign(input.strata[0]!, { [key]: -1 });
+    expect(() => trialTaskMonth(input)).toThrow();
+  });
+
+  it('rejects missing samples, impossible time, duplicate identities and absent monetary values', () => {
+    for (const patch of [{ observedTasks: 0 }, { completedTasks: 9 }, { sourceRef: '' },
+      { taskWallSeconds: Infinity }, { estimatedInferenceUsd: undefined }, { profile: 'dummy-tool' }]) {
+      const input = workload();
+      Object.assign(input.strata[0]!, patch);
+      expect(() => trialTaskMonth(input)).toThrow();
+    }
+    const input = workload();
+    input.strata = [...input.strata, input.strata[0]!];
+    expect(() => trialTaskMonth(input)).toThrow(/duplicate/);
+    expect(() => trialTaskMonth({ ...workload(), activeVmHours: 0.01 })).toThrow(/population hours/);
+    expect(() => trialTaskMonth({ ...workload(), assignedAgents: 0 })).toThrow(/assignedAgents/);
+  });
+});
 
 const perActiveSpot = (id: string) => hostMonthUsd(capacity(id).machineType, true) / capacity(id).active;
 const row = (id: string, agents = 50, saved: number | null = null) => {

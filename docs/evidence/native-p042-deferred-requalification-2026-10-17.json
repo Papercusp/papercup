@@ -42,6 +42,45 @@
     "interpretationCorrection": "Current Vitest --filesOnly bypasses test collection workers. No worker-forked event is expected and its absence cannot diagnose this timeout. The workspace crawl remains an unproven hypothesis; no phase timing from the failed attempt identifies it.",
     "shipment": "not claimed"
   },
+  "detectorRepair": {
+    "workItem": "WI-6554700010016661",
+    "purpose": "Expose bounded file-module load start/return/error milestones in the existing passive native-process trace. This repairs missing diagnostic evidence; the original discovery timeout's cause remains unresolved.",
+    "source": "scripts/lib/vitest-startup-trace.mjs",
+    "maintainedTest": "packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts",
+    "sourceSha256": "b777580f10d41893c75f987733b976b591cefa2345b13da9fb65e655abdbd4d4",
+    "testSha256": "c86d9dc44ef055d78904f02abef2c1845bf41c383733721052ea392fcba85cac",
+    "committedPin": "aabc7d9dee26a1468b41e9e3d2276935197c09ee",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-startup-milestones-v2-source-20261017.json npm run lint:as-committed -- test:file --any --ref=aabc7d9dee26a1468b41e9e3d2276935197c09ee -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts",
+    "log": "/tmp/native-p042-startup-milestones-v2-tests-20261017.log",
+    "capture": "/tmp/native-p042-startup-milestones-v2-source-20261017.json",
+    "captureSha256": "03440ac7bbae68512a705d79451d40c9adbc3eee87e4f287eeda0223d226b7a8",
+    "exitCode": 0,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "unhandledErrors": 0,
+    "discoveryMs": 3261,
+    "namedWorkerOriginals": 36,
+    "currentNamedWorkerMismatches": [],
+    "nativeRunTerminalHook": "onTestRunEnd",
+    "regressions": [
+      "Module return behavior and the exact delegated error object are preserved.",
+      "An attempted blocked file load remains recorded after the child is killed before the loader returns.",
+      "All 140 fixture modules execute while load evidence is capped at 128 attempts."
+    ],
+    "savedTypecheck": {
+      "log": "/tmp/native-p042-startup-milestones-types-20261017.log",
+      "scope": "One named maintained test file, unchanged at the recorded test SHA256; saved earlier check reused.",
+      "result": "clean"
+    },
+    "limits": [
+      "Focused committed-source test proof only; config-loaded and main-process-loaded source populations are unknown in this capture.",
+      "No complete child execution graph, serving-runtime, final-release or shipment claim.",
+      "The earlier dirty-child run is retained as invalid current proof; this is its separate committed-pin replacement.",
+      "The original 120-second discovery timeout did not recur and remains unexplained."
+    ]
+  },
   "limits": [
     "The initial attempt remains not measured; currentRequalification records a separate later local routing verdict. No reclose or shipment is claimed.",
     "Keep the original evidence unchanged; later architect source changes and the guard extension require current requalification.",

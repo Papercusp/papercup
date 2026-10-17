@@ -75,10 +75,11 @@ export interface ToolErrorRule {
 
 /** A timeout, including one that surfaced as `handler_error`
  *  ("exceeded timeout … handler returned but signal had aborted") or the
- *  handler's explicit whole-call-deadline diagnostic. Word boundaries keep
+ *  handler's explicit whole-call-deadline diagnostic or bounded query embedding
+ *  deadline. Word boundaries keep
  *  argument names such as `timeoutSec` from looking like a timeout outcome. */
 export const TIMEOUT_MESSAGE_PATTERN =
-  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline';
+  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline|(^|[^a-zA-Z0-9_])query embed exceeded [0-9]+ms budget([^a-zA-Z0-9_]|$)';
 
 /** Caller-side auth/arg/scope error in the MESSAGE: a retained
  *  `missing_capability:` prefix from a nested `tools:invoke` refusal, or an `invalid_args:` prefix
@@ -178,10 +179,10 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'transient',
-    errorCodes: ['timeout'],
+    errorCodes: ['timeout', 'query_embed_deadline'],
     statuses: ['timeout'],
     messagePattern: TIMEOUT_MESSAGE_PATTERN,
-    why: 'a timeout (incl. one surfaced as handler_error) is load, not a tool bug',
+    why: 'a bounded timeout is transient, including query embedding deadlines and handler_error wrappers',
   },
   {
     class: 'transient',

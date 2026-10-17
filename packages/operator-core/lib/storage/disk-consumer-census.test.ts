@@ -23,6 +23,24 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
+  it('counts hardlinks once within a subtree and preserves shared sibling identities', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-hardlinks-'));
+    try {
+      const tree = join(root, 'tree'); await fsp.mkdir(tree);
+      const file = join(tree, 'first'); await fsp.writeFile(file, Buffer.alloc(65536));
+      await fsp.link(file, join(tree, 'second')); await fsp.link(file, join(root, 'sibling'));
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Infinity, includeRecent: true });
+      const allocation = (await fsp.stat(file)).blocks * 512;
+      expect(census.error).toBeUndefined();
+      expect(census.entries.find(entry => entry.path === tree)?.bytes).toBe((await fsp.stat(tree)).blocks * 512 + allocation);
+      expect(census.entries.find(entry => entry.path === tree)?.hardlinks).toEqual([
+        expect.objectContaining({ bytes: allocation, paths: [file, join(tree, 'second')] }),
+      ]);
+      expect(census.entries.find(entry => entry.path === join(root, 'sibling'))?.hardlinks).toEqual([
+        expect.objectContaining({ bytes: allocation, paths: [join(root, 'sibling')] }),
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('measures recent foreign-owned bytes under explicit sudo and retains special trees', async () => {
     const root = mkdtempSync(join(tmpdir(), 'retention-full-'));
     const info = await fsp.lstat(root);
@@ -31,7 +49,7 @@ describe('streaming retention census evidence', () => {
       expect(args).not.toContain('-uid'); expect(args).not.toContain('-newermt');
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
       queueMicrotask(() => {
-        const row = (type: string, name: string, blocks: string) => [type, String(info.dev), '1', '2000000000.0', '2000000000.0', blocks, '99999', join(root, name), ''].join('\0');
+        const row = (type: string, name: string, blocks: string) => [type, String(info.dev), '1', '2000000000.0', '2000000000.0', blocks, '99999', '1', join(root, name), ''].join('\0');
         child.stdout.write(row('f', 'recent', '4') + row('d', 'special', '1') + row('p', 'special/fifo', '0'));
         child.emit('close', 0);
       });
@@ -54,7 +72,7 @@ describe('streaming retention census evidence', () => {
     const spawn = (() => {
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
       queueMicrotask(() => {
-        child.stdout.write(['f', String(info.dev), '1', timestamp, timestamp, '1', String(process.getuid?.() ?? 0), join(root, 'unchanged'), ''].join('\0'));
+        child.stdout.write(['f', String(info.dev), '1', timestamp, timestamp, '1', String(process.getuid?.() ?? 0), '1', join(root, 'unchanged'), ''].join('\0'));
         child.emit('close', 0);
       });
       return child;
@@ -72,7 +90,7 @@ describe('streaming retention census evidence', () => {
     const spawn = (() => {
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
       queueMicrotask(() => {
-        child.stdout.write(['f', String(info.dev), '1', timestamp, '1.0', '1', String(process.getuid?.() ?? 0), join(root, 'unknown'), ''].join('\0'));
+        child.stdout.write(['f', String(info.dev), '1', timestamp, '1.0', '1', String(process.getuid?.() ?? 0), '1', join(root, 'unknown'), ''].join('\0'));
         child.emit('close', 0);
       });
       return child;
@@ -96,7 +114,7 @@ describe('streaming retention census evidence', () => {
     try {
       const census = inspectRetentionTrees(root, { retainAfterMs: Date.now(), progressTimeoutMs: 25, spawn });
       await launched;
-      const record = (name: string) => ['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), join(root, name), ''].join('\0');
+      const record = (name: string) => ['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), '1', join(root, name), ''].join('\0');
       child.stdout.write(record('first')); await vi.advanceTimersByTimeAsync(20);
       child.stdout.write(record('second')); await vi.advanceTimersByTimeAsync(20);
       child.stdout.write(record('third')); await vi.advanceTimersByTimeAsync(20);
@@ -151,7 +169,7 @@ describe('streaming retention census evidence', () => {
     const spawn = (() => {
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
       queueMicrotask(() => {
-        child.stdout.write(['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), join(root, 'survivor'), ''].join('\0'));
+        child.stdout.write(['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), '1', join(root, 'survivor'), ''].join('\0'));
         const missing = `find: ‘${path}’: No such file or directory\n`;
         child.stderr.write(mode === 'permission' ? `find: ‘${path}’: Permission denied\n` :
           mode === 'mixed' ? `find: ‘${path}’: Permission denied\n${missing}` :
@@ -221,7 +239,7 @@ describe('streaming retention census evidence', () => {
       const producer = `import os, sys, time
 root, dev, mode = sys.argv[1:]
 for i in range(5 if mode == 'advancing' else 30):
-    row = [b'f', dev.encode(), str(i + 1).encode(), b'1.0', b'1.0', b'1', str(os.getuid()).encode(), os.fsencode(root + '/entry-' + str(i))]
+    row = [b'f', dev.encode(), str(i + 1).encode(), b'1.0', b'1.0', b'1', str(os.getuid()).encode(), b'1', os.fsencode(root + '/entry-' + str(i))]
     sys.stdout.buffer.write(b'x' if mode == 'noise' else b'\\0'.join(row) + b'\\0')
     sys.stdout.buffer.flush()
     time.sleep(0.25 if mode == 'advancing' else 5 if mode == 'stalled' else 0.05)
