@@ -22,6 +22,7 @@ const censusSelected = [
 ];
 const selected = [
   'waits for first mutex admission within the whole run deadline',
+  'refuses effects when first mutex admission exhausts the whole run deadline',
   'stops waiting for first mutex admission when the run deadline expires',
   'runs the native cargo delegate repeatedly with captured receipts and no missed completion',
   'starts effects without an all-candidate holder census',

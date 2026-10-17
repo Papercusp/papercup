@@ -122,6 +122,7 @@ const fixtureMutex = vi.hoisted(() => ({
   name: `disk-retention-fixture-${crypto.randomUUID()}`,
   requested: [] as string[],
   onRequest: undefined as (() => void) | undefined,
+  observe: undefined as ((phase: string, details?: unknown) => void) | undefined,
 }));
 // Exercise the real mutex on fixture resources. Other infrastructure mutexes
 // retain their original identity; the scheduled actor owns the production name.
@@ -132,13 +133,24 @@ vi.mock('../../../../scripts/lib/fs-mutex.mjs', async (original) => {
     withFsMutex: (...args: Parameters<typeof actual.withFsMutex>) => {
       fixtureMutex.requested.push(args[0]);
       fixtureMutex.onRequest?.();
-      return actual.withFsMutex(args[0] === 'papercusp-disk-retention' ? fixtureMutex.name : args[0], args[1], args[2]);
+      const name = args[0] === 'papercusp-disk-retention' ? fixtureMutex.name : args[0];
+      const observe = args[0] === 'papercusp-disk-retention' ? fixtureMutex.observe : undefined;
+      if (!observe) return actual.withFsMutex(name, args[1], args[2]);
+      observe('mutex-request', { timeoutMs: args[2]?.timeoutMs });
+      return actual.withFsMutex(name, async held => {
+        observe('mutex-callback');
+        return args[1](held);
+      }, { ...args[2],
+        waitingNoticeIntervalMs: args[2]?.waitingNoticeIntervalMs ?? 1,
+        onWaiting: info => { observe('mutex-waiting', info); args[2]?.onWaiting?.(info); },
+        onAcquired: info => { observe('mutex-acquired', info); args[2]?.onAcquired?.(info); },
+      });
     },
   };
 });
 
 let fixture: string | undefined;
-afterEach(async () => { fixtureMutex.onRequest = undefined; inspectionProbe.before = undefined; if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
+afterEach(async () => { fixtureMutex.onRequest = undefined; fixtureMutex.observe = undefined; inspectionProbe.before = undefined; if (fixture) await rm(fixture, { recursive: true, force: true }); fixture = undefined; });
 
 async function setup() {
   fixture = await mkdtemp(join(tmpdir(), 'disk-retention-'));
@@ -293,6 +305,20 @@ describe('retention on a real fixture tree', () => {
     const { root, options } = await setup();
     const path = join(root, 'old');
     await writeFile(path, 'expired');
+    const began = performance.now(), wall = Date.now();
+    const phases: unknown[] = [];
+    let queued!: () => void;
+    const queuedGate = new Promise<void>(resolve => { queued = resolve; });
+    let retried!: () => void;
+    const retriedGate = new Promise<void>(resolve => { retried = resolve; });
+    const observe = (phase: string, details?: unknown) => {
+      if (phases.length < 32) phases.push({ phase, elapsedMs: performance.now() - began, clockElapsedMs: Date.now() - wall, details });
+      if (phase === 'mutex-waiting') {
+        queued();
+        if ((details as { elapsedMs: number }).elapsedMs >= 1_200) retried();
+      }
+    };
+    fixtureMutex.observe = observe;
     let release!: () => void;
     let ready!: () => void;
     const readyGate = new Promise<void>((resolve) => { ready = resolve; });
@@ -302,15 +328,59 @@ describe('retention on a real fixture tree', () => {
       await releaseGate;
     });
     await readyGate;
-    const reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 5_000 });
-    await new Promise(resolve => setTimeout(resolve, 1_200));
-    release();
-    await holder;
-    const receipt = await reclaim;
-    expect(receipt.errors).toEqual([]);
-    expect(receipt.complete).toBe(true);
-    expect(receipt.entries).toContainEqual(expect.objectContaining({ path, status: 'removed' }));
-    await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let reclaim: Promise<DiskReclaimReceipt> | undefined;
+    try {
+      observe('reclaim-start');
+      reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 5_000,
+        record: async (phase, details) => observe('record:' + phase, (details as { phase?: string }).phase),
+      });
+      await Promise.race([queuedGate, reclaim.then(receipt => {
+        throw new Error('reclaim finished before real mutex contention: ' + JSON.stringify(receipt));
+      })]);
+      // Exercise a wait beyond the former one-second admission allowance.
+      // Advance only the deadline clock: filesystem/scheduler latency must not
+      // silently turn this success scenario into the separate expiry scenario.
+      clock += 1_200;
+      await Promise.race([retriedGate, reclaim.then(receipt => {
+        throw new Error('reclaim ended before retrying beyond one second: ' + JSON.stringify(receipt));
+      })]);
+      observe('holder-release');
+      release();
+      await holder;
+      const receipt = await reclaim;
+      observe('reclaim-end');
+      const evidence = JSON.stringify({ phases, errors: receipt.errors, scan: receipt.scan });
+      expect(receipt.errors, evidence).toEqual([]);
+      expect(receipt.complete, evidence).toBe(true);
+      expect(receipt.entries).toContainEqual(expect.objectContaining({ path, status: 'removed' }));
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      try { release(); await holder; await reclaim; }
+      finally { now.mockRestore(); }
+    }
+  });
+
+  it('refuses effects when first mutex admission exhausts the whole run deadline', async () => {
+    const { root, options } = await setup();
+    const path = join(root, 'retain');
+    await writeFile(path, 'keep');
+    let clock = Date.now(), admissions = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const scanHolders = vi.fn(options.scanHolders);
+    fixtureMutex.observe = phase => {
+      if (phase === 'mutex-callback') { admissions++; clock += 5_001; }
+    };
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 5_000, scanHolders });
+      expect(admissions).toBe(1);
+      expect(receipt.complete).toBe(false);
+      expect(receipt.errors).toEqual(['retention run budget exhausted']);
+      expect(receipt.entries).toEqual([]);
+      expect(scanHolders).not.toHaveBeenCalled();
+      expect(await readFile(path, 'utf8')).toBe('keep');
+    } finally { now.mockRestore(); }
   });
 
   it('stops waiting for first mutex admission when the run deadline expires', async () => {

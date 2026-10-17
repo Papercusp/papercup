@@ -477,7 +477,7 @@ describe('work_items:get — checkpoint field', () => {
     });
   });
 
-  it('includes the issue body before the result-door expands the summary shorthand', async () => {
+  it('returns projected prose at results[].workItem.summary without body aliases', async () => {
     const item = {
       id: 'WI-summary-shorthand',
       harness: 'papercusp',
@@ -505,6 +505,8 @@ describe('work_items:get — checkpoint field', () => {
       payloadProjection: 'none',
     });
     expect(result.data.results[0].workItem.summary).toBe(item.summary);
+    expect(result.data.results[0].workItem).not.toHaveProperty('body');
+    expect(result.data.results[0].workItem).not.toHaveProperty('description');
   });
 
   it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {
