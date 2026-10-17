@@ -187,6 +187,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'transient',
+    errorCodes: ['mcp_proxy_upstream_error', 'mcp_proxy_upstream_unavailable'],
+    why: 'the MCP proxy returned its terminal upstream-failure envelope after its retry window; outcome_unknown describes replay safety, not a structural tool fault',
+  },
+  {
+    class: 'transient',
     errorCodes: ['timeout', 'query_embed_deadline'],
     statuses: ['timeout'],
     messagePattern: TIMEOUT_MESSAGE_PATTERN,

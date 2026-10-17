@@ -71,6 +71,23 @@ export interface ToolErrorCorpusRow {
 }
 
 export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
+  // ── transient: terminal MCP proxy upstream failures ───────────────────────
+  {
+    n: 1,
+    errorCode: 'mcp_proxy_upstream_error',
+    status: 'outcome_unknown',
+    message: 'HTTP502 outcome_unknown trace96123ed2-9d92-4b3c-9e7f-7e2bbb2c0daf on external build log locks. Dependent producer launched before lock receipt was checked; reconciling exact held state before further edit. No lock retry until authoritative read.',
+    expectedClass: 'transient',
+    note: 'EI-25822890637070574 captured the proxy 502 after upstream connection; outcome_unknown is replay-safety metadata',
+  },
+  {
+    n: 0,
+    errorCode: 'mcp_proxy_upstream_unavailable',
+    status: 'error',
+    message: 'HTTP502 mcp_proxy_upstream_unavailable: upstream target refused connections for the whole retry window',
+    expectedClass: 'transient',
+    note: 'synthetic companion: the same proxy producer reports an upstream refusal before forwarding',
+  },
   // ── transient: timeouts (by far the highest-volume shape) ──────────────────
   {
     n: 287629, errorCode: null, status: 'timeout',

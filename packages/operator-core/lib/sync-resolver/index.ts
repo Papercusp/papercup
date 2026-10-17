@@ -6442,7 +6442,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       let sshProfilesError: string | null = null;
       try {
         const { loadPsuConnectionStore } = await import('../../../../apps/operator/scripts/psu-connection-front-controller.mjs');
-        sshProfiles = loadPsuConnectionStore().profiles.filter(profile => profile.kind === 'ssh').map(profile => ({
+        const profiles = loadPsuConnectionStore().profiles as Array<{ kind: string; name: string; host?: string }>;
+        sshProfiles = profiles.filter(profile => profile.kind === 'ssh').map(profile => ({
           id: profile.name, label: profile.name, host: profile.host,
           scope: 'This computer', state: 'unknown', health: 'unknown',
           sourceRef: `psu-ssh:${profile.name}`,
