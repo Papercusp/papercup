@@ -48,8 +48,7 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-describe('native P018 private operator CLI incident claim and resume', () => {
-  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
+async function privateNativeJourney(mode: 'incident' | 'task-brief') {
     const root = resolve(import.meta.dirname, '../../../..');
     const sourcePaths = ['packages/operator-core/lib/code-intelligence/push-channel.ts',
       'packages/operator-core/lib/code-intelligence/push-snapshot.ts',
@@ -65,7 +64,12 @@ describe('native P018 private operator CLI incident claim and resume', () => {
       'apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs',
       'scripts/check-required-field-strands.mjs',
       'scripts/check-behavioural-strands.mjs',
-      'packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts'];
+      'packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts',
+      'packages/operator-core/lib/code-intelligence/task-brief.ts',
+      'packages/operator-core/lib/code-intelligence/packer-facade.ts',
+      'packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts',
+      'packages/operator-core/lib/agent-tools/coordination/tools/orient.ts',
+      'packages/operator-core/lib/agent-tools/work_items/complete.ts'];
     const sourceHashes = () => Object.fromEntries(sourcePaths.map(path =>
       [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
     const beforeHashes = sourceHashes();
@@ -99,7 +103,7 @@ describe('native P018 private operator CLI incident claim and resume', () => {
         '--isolated-runtime=operator-api', '--', process.execPath,
         ...scopedNativeFixtureArgs(new URL('./__fixtures__/incident-api-client.ts', import.meta.url).href,
           'runNativeIncidentApi', [join(homedir(), '.papercusp/vendor/repomix'),
-            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash])], {
+            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash, mode])], {
         cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, timeoutMs: 180_000,
         onOutput: (text, timing) => {
           const lines = (pendingStage + text).split('\n');
@@ -111,27 +115,48 @@ describe('native P018 private operator CLI incident claim and resume', () => {
         },
       });
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
-    const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
+    const prefix = mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
+    const line = result.output.split('\n').find(row => row.startsWith(prefix));
     expect(line, result.output).toBeDefined();
-    const proof = JSON.parse(line!.slice('NATIVE_INCIDENT_API_PROOF='.length));
+    const proof = JSON.parse(line!.slice(prefix.length));
+    const afterHashes = sourceHashes();
+    expect(afterHashes).toEqual(beforeHashes);
+    writeSync(2, `${mode === 'incident' ? 'NATIVE_P038_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
+    return proof;
+    } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
+}
+
+describe('native P018 private operator CLI incident claim and resume', () => {
+  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
+    const proof = await privateNativeJourney('incident');
     expect(proof).toMatchObject({
       transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
       push: { duplicateSuppressed: true, attribution: { status: 'measured',
         recentEdits: [expect.objectContaining({ path: 'a-target.ts', symbols: [{ name: 'incidentTarget', line: 1 }] })] },
-        handlerHash, observationProducer: 'maintained collector and delivery ledger with controlled before image',
+        handlerHash: expect.stringMatching(/^[a-f0-9]{64}$/), observationProducer: 'maintained collector and delivery ledger with controlled before image',
         deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
         installed: { nodeOptions: '', processes: expect.any(Number),
           envelope: { hookSpecificOutput: { hookEventName: 'PostToolUse',
             additionalContext: expect.stringContaining('Code intelligence (incident)') } } },
         scope: expect.stringContaining('private current-source installed dispatcher replay') },
     });
-    const afterHashes = sourceHashes();
-    expect(afterHashes).toEqual(beforeHashes);
-    writeSync(2, `NATIVE_P038_RUNTIME_PROOF=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
-    } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
   // The build and private journey have separate producer deadlines. The test
   // deadline must allow both plus the maintained process-group exit fence.
+  }, 120_000 + 180_000 + 20_000);
+});
+
+describe('native P039 private operator intent and completion briefs', () => {
+  it('delivers no-claim declare/orient scope and a pre-review receipt without inventing test execution', async () => {
+    const proof = await privateNativeJourney('task-brief');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', noClaimBeforeIntent: true,
+      declare: { status: 'current', scope: { paths: ['a-target.ts', 'b-consumer.ts', 'target.test.ts'] } },
+      orient: { status: 'current' }, heldClaimSuppressed: true,
+      completion: { phase: 'pre-review', status: 'measured', executionCoverage: 'unmeasured',
+        changes: [expect.objectContaining({ file: 'a-target.ts', symbol: 'briefTarget' })],
+        tests: [expect.objectContaining({ path: 'target.test.ts', execution: 'not-recorded-in-bound-run' })],
+        testsWithoutRunEvidence: ['target.test.ts'] }, terminal: true,
+    });
   }, 120_000 + 180_000 + 20_000);
 });
 

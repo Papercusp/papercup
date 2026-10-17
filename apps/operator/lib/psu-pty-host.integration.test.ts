@@ -3999,6 +3999,12 @@ describe('P-020 carry-respawn drill correlation', () => {
       const sock = socketPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
+      const root = mkdtempSync(join(tmpdir(), 'psu-carry-drill-itest-'));
+      const claudeConfig = join(root, 'claude');
+      const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
+      const marker = '⟦turn-origin:carry-drill nonce:0123456789abcdef⟧';
+      const nativePath = join(claudeConfig, 'projects', '-tmp', 'session-' + nativeId + '.jsonl');
+      mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
       // This fixture models a ready Claude editor. A boot banner alone cannot
       // establish prompt readiness after a fresh-child respawn.
       const childCode =
@@ -4007,7 +4013,6 @@ describe('P-020 carry-respawn drill correlation', () => {
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
         'setTimeout(()=>process.exit(0),15000);';
-      const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
       const carryPath = '/safe/carry-drill-d-1.md';
       // The fresh claude-su path checks /mcp readiness before writing the carry.
       // Give that precondition a deterministic healthy response in this fake CLI.
@@ -4021,15 +4026,25 @@ describe('P-020 carry-respawn drill correlation', () => {
         "process.stdin.setEncoding('utf8');",
         "process.stdin.setEncoding('utf8');let carryBuffer='',carryEchoed=false;process.stdin.on('data',d=>{carryBuffer+=d;if(!carryEchoed&&carryBuffer.includes('⟦carry-drill:d-1⟧')){carryEchoed=true;process.stdout.write('ECHO:⟦carry-drill:d-1⟧\\n');}});",
       );
+      // session:carry-drill tags the prompt before it reaches the PTY. Persist
+      // that exact marker in the isolated Claude transcript so the host's
+      // native proof can distinguish a submitted prompt from a PTY repaint.
+      const nativeAwareChildCode = carryAwareChildCode.replace(
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.setEncoding('utf8');const fs=require('node:fs'),path=require('node:path');let nativeInput='',nativeWritten=false;process.stdin.on('data',d=>{nativeInput+=d;if(!nativeWritten&&nativeInput.includes(process.env.TURN_MARKER)&&nativeInput.includes('\\r')){nativeWritten=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:process.env.TURN_MARKER}})+'\\n');}});",
+      );
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', carryAwareChildCode],
+        args: ['-e', nativeAwareChildCode],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
+          CLAUDE_CONFIG_DIR: claudeConfig,
+          NATIVE_FILE: nativePath,
+          TURN_MARKER: marker,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -4048,7 +4063,7 @@ describe('P-020 carry-respawn drill correlation', () => {
         await sleep(600);
         await envelopeInject(sock, {
           mode: 'carry-respawn',
-          data: '⟦carry-drill:d-1⟧',
+          data: marker + '\n⟦carry-drill:d-1⟧',
           systemPromptAddendum: 'deterministic carry',
           drillId: 'd-1',
           sessionClass: 'claude-su',
@@ -4084,6 +4099,8 @@ describe('P-020 carry-respawn drill correlation', () => {
           drillId: 'd-1',
           sessionClass: 'claude-su',
           nativeId,
+          turnStartVerified: true,
+          nativeRef: nativePath,
         }));
         await rawInject(sock, 'QUIT\n');
         expect(await done).toBe(0);
@@ -4091,6 +4108,7 @@ describe('P-020 carry-respawn drill correlation', () => {
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
         if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(root, { recursive: true, force: true });
       }
     },
     25_000,

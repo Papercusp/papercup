@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { serve } from '@hono/node-server';
 import type { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -144,7 +145,12 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
   });
 
   async function requestFor(app: Pick<Hono, 'fetch'>) {
-    const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port: 0 });
+    const server = serve({ fetch: request => {
+      // Native fetch rewrites Host to the loopback URL in this runtime. Fail
+      // before product routing if the test transport loses the public hostname.
+      expect(new URL(request.url).hostname).toBe(new URL(configuration.publicOrigin).hostname);
+      return app.fetch(request);
+    }, hostname: '127.0.0.1', port: 0 });
     servers.add(server);
     await once(server, 'listening');
     const address = server.address();
@@ -153,7 +159,26 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
       const headers = new Headers(init?.headers);
       // Exercise production hostname authentication over an owned local socket.
       headers.set('host', new URL(configuration.publicOrigin).host);
-      return fetch(`http://127.0.0.1:${address.port}${path}`, { ...init, headers, redirect: 'manual' });
+      if (init?.body != null && typeof init.body !== 'string') throw new Error('private hosted HTTP body must be text');
+      return new Promise<Response>((resolve, reject) => {
+        const outgoing = httpRequest(`http://127.0.0.1:${address.port}${path}`, {
+          method: init?.method ?? 'GET', headers: Object.fromEntries(headers), agent: false,
+        }, incoming => {
+          const chunks: Buffer[] = [];
+          incoming.on('data', chunk => chunks.push(Buffer.from(chunk)));
+          incoming.on('error', reject);
+          incoming.on('end', () => {
+            const received = new Headers();
+            for (let i = 0; i < incoming.rawHeaders.length; i += 2) {
+              received.append(incoming.rawHeaders[i], incoming.rawHeaders[i + 1]);
+            }
+            const status = incoming.statusCode!;
+            resolve(new Response([204, 205, 304].includes(status) ? null : Buffer.concat(chunks), { status, headers: received }));
+          });
+        });
+        outgoing.on('error', reject);
+        outgoing.end(init?.body ?? undefined);
+      });
     };
   }
 

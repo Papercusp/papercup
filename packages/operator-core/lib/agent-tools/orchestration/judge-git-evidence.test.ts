@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runToolOrchestration, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ProjectedTool, ToolResult } from '@papercusp/tooldef';
+import { dispatchProjectedTool } from '@papercusp/tooldef';
 import { runGit } from '../capability/git';
 import { runJudgeGitEvidence, type GitEvidenceArgs } from '../capability/git-evidence';
 import { bindCurrentCallerDispatch } from './current-caller-dispatch';
@@ -64,6 +65,108 @@ function fixtureTool(
 }
 
 describe('nested judge git evidence orchestration', () => {
+  it('gives direct judge facade reads the same full result shape as tools.invoke', async () => {
+    const commitSha = 'a'.repeat(40);
+    const path = 'apps/operator/scripts/psu-launcher.mjs';
+    const fullResult = {
+      ok: true,
+      op: 'readFileAtCommit',
+      commitSha,
+      path,
+      resolved: { repositoryPath: '.', commitSha, blobSha: 'b'.repeat(40) },
+      encoding: 'base64',
+      contentSha256: 'c'.repeat(64),
+      byte_offset: 0,
+      byte_length: 1,
+      total_bytes: 200_000,
+      eof: false,
+      data: 'YQ==',
+      next_cursor: { tool: 'capability:git-evidence', args: { op: 'readFileAtCommit', commitSha, path } },
+    };
+    const clippedResult = {
+      _meta: { explicitFullRequest: false },
+      commitSha,
+      encoding: 'base64',
+      byte_offset: 0,
+      byte_length: 1,
+      data: 'YQ==',
+      eof: false,
+      next_cursor: fullResult.next_cursor,
+    };
+    const target = {
+      pluginName: 'judge-git-evidence-shape-fixture',
+      description: 'capability:git-evidence',
+      inputSchema: { type: 'object' },
+      capabilities: [],
+      effect: 'read' as const,
+      expose: { mcp: { name: 'capability:git-evidence' } },
+      fn: async (args: Record<string, unknown>, ctx: UnifiedToolContext) =>
+        json(args.payloadTier === 'full' || ctx.contextTier === 'full' || ctx.payloadTierOverride === 'full'
+          ? fullResult
+          : clippedResult),
+    } as unknown as ProjectedTool;
+    const invoke = {
+      pluginName: 'judge-git-evidence-invoke-fixture',
+      description: 'tools:invoke',
+      inputSchema: { type: 'object' },
+      capabilities: [],
+      effect: 'read' as const,
+      expose: { mcp: { name: 'tools:invoke' } },
+      fn: async (args: { name: string; args?: Record<string, unknown> }, ctx: UnifiedToolContext) => {
+        const targetArgs = { ...(args.args ?? {}), payloadTier: 'full' };
+        const dispatched = await dispatchProjectedTool(
+          target,
+          args.name,
+          targetArgs,
+          { ...ctx, contextTier: 'full', payloadTierOverride: 'full', codeMode: true },
+          {},
+        );
+        if (!dispatched.ok) throw new Error(dispatched.error?.message ?? 'target dispatch failed');
+        return dispatched.result!;
+      },
+    } as unknown as ProjectedTool;
+    const ctx = {
+      log: () => {},
+      progress: () => {},
+      emit: () => {},
+      signal: new AbortController().signal,
+      workspaceId: 'judge-git-evidence-shape-fixture',
+      harnessSlug: 'papercusp',
+      role: 'judge',
+      isSuperuser: true,
+      projectDir: '/tmp',
+      deadlineAtMs: Date.now() + 30_000,
+      tx: { fixture: true },
+      dispatchTool: async (name: string, args: unknown) => {
+        const dispatched = await dispatchProjectedTool(
+          target,
+          name,
+          args,
+          { ...ctx, contextTier: 'full', payloadTierOverride: 'full', codeMode: true },
+          {},
+        );
+        if (!dispatched.ok) throw new Error(dispatched.error?.message ?? 'target dispatch failed');
+        return dispatched.result!;
+      },
+    } as unknown as UnifiedToolContext;
+    const result = await runToolOrchestration(
+      `const args = { op: 'readFileAtCommit', commitSha: '${commitSha}', path: '${path}' };
+       const direct = await tools.capability['git-evidence'](args);
+       const indirect = await tools.tools.invoke({ name: 'capability:git-evidence', args });
+       return { direct, indirect };`,
+      {
+        ctx,
+        deps: {},
+        tools: [target, invoke],
+        allowed: new Set(['capability:git-evidence', 'tools:invoke']),
+        wrapDispatch: bindCurrentCallerDispatch,
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, childFailures: [] });
+    expect(result.summary).toEqual({ direct: fullResult, indirect: fullResult });
+  });
+
   it('preserves an interrupted blob read through ToolResult unwrapping and childFailures', async () => {
     const root = mkdtempSync(join(tmpdir(), 'judge-git-evidence-nested-'));
     cleanup.push(root);

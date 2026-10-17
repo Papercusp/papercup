@@ -98,6 +98,9 @@ try {
   const identity = await call('coord:whoami', {}); assert.equal(identity.workspaceId, workspace);
   const root = (await loadHarnessRegistry(workspace)).projects.find(p => p.slug === workspace)?.path;
   assert(root, 'Maintained private home harness must resolve');
+  if (argv[4] === 'task-brief') {
+    await runNativeTaskBriefJourney({ call, workspace, root, owner: identity.ownerId });
+  } else {
   await writeFile(join(root, 'a-target.ts'), 'export function incidentTarget() { return 1; }\n');
   await writeFile(join(root, 'b-consumer.ts'), 'import { incidentTarget } from "./a-target.ts";\nexport function consumer() { return incidentTarget(); }\n');
   const testPath = 'target.test.ts';
@@ -289,10 +292,81 @@ try {
   console.log('NATIVE_INCIDENT_API_PROOF=' + JSON.stringify({ workspace, transport: 'real-cli-http',
     failure: 'actual-node-assertion', staticCandidate: true, cause: 'unknown', runtimeExecution: 'unmeasured',
     resume: 'current', repaired: true, push: pushProof }));
+  }
 } finally {
   if ('closeAllConnections' in server) server.closeAllConnections();
   await new Promise<void>(done => server.close(() => done()));
   await getOrgPg().sql.end({ timeout: 2 });
 }
 process.exit(0);
+}
+
+/** Reuse the same private handler/CLI/PG boundary without replaying the incident leg. */
+async function runNativeTaskBriefJourney({ call, workspace, root, owner }: {
+  call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>;
+  workspace: string; root: string; owner: string;
+}) {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const paths = ['a-target.ts', 'b-consumer.ts', 'target.test.ts'];
+  await writeFile(join(root, paths[0]!), 'export function briefTarget() { return 1; }\n');
+  await writeFile(join(root, paths[1]!), 'import { briefTarget } from "./a-target.ts";\nexport function consumer() { return briefTarget(); }\n');
+  await writeFile(join(root, paths[2]!), 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport { briefTarget } from "./a-target.ts";\ntest("native completion assertion", () => assert.equal(briefTarget(), 2));\n');
+  const claims = () => getOrgPg().sql<{ count: number }[]>`SELECT count(*)::int AS count
+    FROM harness_shared.work_items WHERE workspace_id = ${workspace} AND taken_by = ${owner}`;
+  assert.equal((await claims())[0]!.count, 0, 'No-claim intent requires measured absence of ownership');
+  const intent = 'Inspect the bounded target and its consumer before implementing the completion fixture';
+  const declared = await call('coord:declare-intent', { intent, harness: workspace, current_files: paths,
+    projection: { pick: ['ok', 'taskBrief'] } });
+  assert.equal(declared.ok, true, JSON.stringify(declared));
+  const brief = declared.taskBrief;
+  assert.equal(brief?.status, 'current', JSON.stringify(declared));
+  assert.deepEqual(brief.scope.paths, paths);
+  assert.equal(brief.intent.text, intent);
+  assert.equal(brief.incident, undefined, 'Transient intent must not invent a work-item incident');
+  assert(brief.files.some((file: any) => file.path === paths[0]));
+  const oriented = await call('coord:orient', { intent, harness: workspace, currentFiles: paths,
+    claimableLimit: 0, inboxLimit: 0, memoryLimit: 0, includeFleet: false,
+    projection: { pick: ['intentDeclared', 'taskBrief'] } });
+  assert.equal(oriented.intentDeclared, true, JSON.stringify(oriented));
+  assert.equal(oriented.taskBrief?.status, 'current', JSON.stringify(oriented));
+  assert.equal(oriented.taskBrief.sourceFingerprint, brief.sourceFingerprint);
+  assert.equal(oriented.taskBrief.intent.fingerprint, brief.intent.fingerprint);
+  assert.equal((await claims())[0]!.count, 0, 'Intent/orient must not create a work-item claim');
+
+  const created = await call('work_items:create', { kind: 'change', title: 'Private native completion source fixture',
+    harness: workspace, assign_to: 'self', state: 'wip', payload: { paths },
+    projection: { pick: ['results[].id', 'results[].ok', 'results[].item.id'] } });
+  const id = created.results?.[0]?.id ?? created.results?.[0]?.item?.id;
+  assert.equal(typeof id, 'string', JSON.stringify(created));
+  assert.equal((await claims())[0]!.count, 1);
+  const held = await call('coord:declare-intent', { intent, harness: workspace, current_files: paths,
+    projection: { pick: ['ok', 'taskBrief'] } });
+  assert.equal(held.ok, true); assert.equal(held.taskBrief, undefined, JSON.stringify(held));
+  await writeFile(join(root, paths[0]!), 'export function briefTarget() { return 2; }\n');
+  const test = spawnSync(process.execPath, ['--test', paths[2]!], { cwd: root, encoding: 'utf8', timeout: 15_000 });
+  assert.equal(test.error, undefined); assert.equal(test.status, 0, test.stdout + test.stderr);
+  assert.match(test.stdout, /native completion assertion/);
+  // A real native run is evidence for this fixture, but it is deliberately not a
+  // server-bound testing:run invocation. The receipt must expose that distinction.
+  const closed = await call('work_items:complete', { id, harness: workspace, state: 'done', assumptions: 'none',
+    completion: { summary: 'Updated the private target and verified its actual native assertion.',
+      testsRun: 'node --test target.test.ts', testResult: '1 passed, 0 failed',
+      verifiedHow: 'Native node:test process exited 0 in the private harness.', filesChanged: [paths[0]] },
+    projection: { pick: ['ok', 'results[].ok', 'results[].error', 'results[].stateWarning',
+      'results[].completionBrief', 'results[].workItem.state', 'results[].finish.complete'] } });
+  const receipt = closed.results?.[0];
+  assert.equal(receipt?.ok, true, JSON.stringify(closed));
+  const completion = receipt.completionBrief;
+  assert.equal(completion?.status, 'measured', JSON.stringify(closed));
+  assert.equal(completion.phase, 'pre-review');
+  assert.equal(completion.executionCoverage, 'unmeasured');
+  assert(completion.changes.some((change: any) => change.file === paths[0] && change.symbol === 'briefTarget'));
+  assert.deepEqual(completion.testsWithoutRunEvidence, ['target.test.ts']);
+  const settled = await call('work_items:get', { id, harness: workspace,
+    projection: { pick: ['results[].workItem.state'] } });
+  assert.equal(settled.results?.[0]?.workItem.state, 'done', JSON.stringify(settled));
+  console.log('NATIVE_TASK_BRIEF_API_PROOF=' + JSON.stringify({ workspace, transport: 'real-cli-http',
+    noClaimBeforeIntent: true, declare: brief, orient: oriented.taskBrief, heldClaimSuppressed: true,
+    completion, terminal: true, testOutputSha256: createHash('sha256').update(test.stdout + test.stderr).digest('hex'),
+    scope: 'private current-source CLI requests; compiler and safe packer; no model session or final shipment' }));
 }
