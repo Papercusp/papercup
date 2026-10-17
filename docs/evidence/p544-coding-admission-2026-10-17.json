@@ -46,6 +46,51 @@
     "plannedEffort": "low",
     "workload": "Reuse pinned TypeScript/Python corpus, 40/40/20 light/typical/heavy and D081 monthly task counts, alongside D075 assigned/active/burst native profile. Requested settings require served-model evidence; no new inference or cloud spend is admitted by this record."
   },
+  "refresh20261017T125545Z": {
+    "sourceRoot": "/tmp/p544-admission-refresh-20261017-1256",
+    "observedAtUtc": "2026-10-17T12:55:45.015253+00:00",
+    "queryOrder": ["budget", "admin", "instances", "disks", "snapshots", "addresses", "buckets"],
+    "sequential": true,
+    "adminSinceUtc": "2026-10-17T11:54:45Z",
+    "adminRows": 0,
+    "adminLimit": 5000,
+    "instances": [],
+    "disks": [],
+    "snapshots": [],
+    "staticAddresses": [],
+    "retainedArtifactBuckets": ["pc-agent-capacity-0930-artifacts"],
+    "programmeReservationUsd": 171.5,
+    "remainingConservativeHeadroomUsd": 28.5,
+    "reservationChangeUsd": 0,
+    "budgetAlertConfirmedUsd": 200,
+    "recorderGuard": {
+      "workItem": "EI-26228179170676565",
+      "state": "done",
+      "completionAuthorityAtClose": "proposed",
+      "settlement": "Automatic git-sync settlement pending at close; do not re-close or replay tests merely for commit proof.",
+      "perActualProviderSendReserveUsdMicros": 718300,
+      "journal": "Exclusive append-only fsynced recording-budget.jsonl; every final provider send reserves before fetch, including retries and outer OAuth recovery.",
+      "savedTests": ["95 passed initial guard", "76 passed journal hardening", "scoped typecheck 0 errors"],
+      "latestTestLog": "/tmp/p544-record-budget-journal-tests.log",
+      "latestTestLogSha256": "0c042229af51f47572d9af3e69907c94d313f763ed65dd7a229d619815614c07"
+    },
+    "routeEvidence": {
+      "gatewayCodexUnreachable": false,
+      "codexUnserviceableCause": null,
+      "gatewayLastResponseAtMs": 1792241798708,
+      "meaning": "Gateway route is reachable. accounts:status available=false is only a pause projection and does not establish a recording blocker or prove selected-account authentication/model support.",
+      "accountChosen": null,
+      "credentialBindingChosen": false
+    },
+    "supportingEnvelopeOnly": {
+      "providerAttempts": 32,
+      "providerReserveUsd": 22.9856,
+      "remainingBeforeComputeUsd": 5.5144,
+      "admitted": false,
+      "meaning": "Arithmetic only. No inference/VM commitment made. Thirty-two attempts are not proven sufficient for the pinned TS/Python 40/40/20 corpus; incomplete tasks cannot qualify D075/D076. Refresh census again immediately before any create."
+    },
+    "preparation": "Pinned clean dependency checkouts exist under the old home cache; maintained shared-host recorder requires mounted /mnt/data/agent-capacity/prepared, currently absent. Prepare using pc-heavy and existing copyTree/storage admission."
+  },
   "limitations": [
     "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",
     "Cloud audit ingestion can lag. This bounded refresh does not prove account-wide absence of unrelated charges.",

@@ -1408,6 +1408,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:get",
   "work_items:search",
   "work_items:claimable",
+  // Tuple-space rd: reports availability without claiming or changing the item.
+  "work_items:observe",
   // Reads the current scheduler lane spec without claiming or changing work.
   "scheduler:get_claim_spec",
   // Process inventory is a ledger read; its optional reconciliation is dry-run only.

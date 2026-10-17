@@ -1060,6 +1060,41 @@ describe("postConnectRetryable — write-free requests only", () => {
 // EI-21268234394605529 guard: the curated allowlist must NEVER contain a mutating verb —
 // a write wrongly listed here would be silently double-applied on a post-connect replay.
 describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
+  it("EI-25753161998628343: replays work_items:observe after a post-connect reset", () => {
+    const args = { id: "WI-1", harness: "papercusp" };
+    const calls = [
+      { name: "work_items:observe", arguments: args },
+      { name: "mcp__papercusp-su__work_items_observe", arguments: args },
+      { name: "tools:invoke", arguments: { name: "work_items:observe", args } },
+    ];
+
+    expect(READ_ONLY_TOOLS).toContain("work_items:observe");
+    for (const [index, params] of calls.entries()) {
+      const body = Buffer.from(JSON.stringify({
+        jsonrpc: "2.0",
+        id: index + 1,
+        method: "tools/call",
+        params,
+      }));
+      const prepared = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: () => "00000000-0000-4000-8000-000000000000",
+      });
+
+      expect(prepared.klass).toBe("readonly");
+      expect(prepared.body).toBe(body);
+      expect(
+        postConnectRetryable(
+          prepared.klass,
+          0,
+          MAX_POST_CONNECT_RETRIES,
+          100,
+          5_000,
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("keeps sessions:search out of pure-read retries because live refresh writes", () => {
     const body = Buffer.from(
       JSON.stringify({
