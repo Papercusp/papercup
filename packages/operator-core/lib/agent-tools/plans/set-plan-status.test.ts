@@ -13,6 +13,7 @@ import {
 } from './set-plan-status';
 import setPlanStatusTool from './set-plan-status';
 import { ACCEPTANCE_GRADING_SWEEP_ACTOR } from '../../acceptance-grader';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -233,8 +234,11 @@ describe('set-plan-status idempotent-completion opt-in (EI-21122694679454626)', 
 });
 
 describe('set-plan-status acceptance-grader launch deadline', () => {
-  it('covers the bounded headless judge launch path so its outcome reaches the recruiter', () => {
-    expect((setPlanStatusTool as { timeoutSec?: number }).timeoutSec).toBe(90);
+  it('stays below the MCP transport cap so timeout outcomes remain structured', () => {
+    expect((setPlanStatusTool as { timeoutSec?: number }).timeoutSec).toBe(
+      Math.floor(FOREGROUND_TIMEOUT_CEILING_MS / 1000),
+    );
+    expect((setPlanStatusTool as { timeoutSec?: number }).timeoutSec! * 1000).toBeLessThan(55_000);
   });
 });
 

@@ -21,6 +21,7 @@ import coordDispatch from './coordination/tools/dispatch';
 import agentReview from './improvements/agent-review';
 import storagePrune from './storage/prune';
 import bindSpecEvidence from './plans/bind-spec-evidence';
+import plansSetSpecs, { SET_SPECS_MAX_CONCURRENCY, setSpecsAbortCompletionReceipt } from './plans/set-specs';
 import buildTypecheck, { buildTypecheckAbortCompletionReceipt } from './build/typecheck';
 
 /**
@@ -73,6 +74,8 @@ const LATE_RETURN_MUTATORS = {
   'storage:prune': storagePrune,
   // EI-25965568135498194: bind can return after dispatch aborts with durable evidence rows.
   'plans:bind-spec-evidence': bindSpecEvidence,
+  // EI-26072621145526647: bulk clause writes can finish after dispatch aborts with revisions committed.
+  'plans:set-specs': plansSetSpecs,
   // EI-25833565319673625: the long compiler tail needs an attempt receipt so a late verdict is not retried blindly.
   'build:typecheck': buildTypecheck,
 } as const;
@@ -245,6 +248,50 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     }), attempt)).toMatchObject({
       status: 'recovery-incomplete',
       failures: ['missing-landed-evidence-id'],
+    });
+  });
+
+  it('plans:set-specs reports committed clause revisions and fails closed on incomplete rows', () => {
+    expect(plansSetSpecs.abortCompletionReceipt).toBe(setSpecsAbortCompletionReceipt);
+    expect(SET_SPECS_MAX_CONCURRENCY).toBe(4);
+    const attempt = { callId: 'set-specs-call-1', toolName: 'plans:set-specs' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+    const receipt = plansSetSpecs.abortCompletionReceipt!;
+
+    expect(receipt({}, result({
+      ok: false,
+      results: [
+        { ok: true, slug: 'plan', specId: 'SPEC-B', status: 'revised', revision: 3 },
+        { ok: false, slug: 'plan', specId: 'SPEC-C', error: 'conflict' },
+        { ok: true, slug: 'plan', specId: 'SPEC-A', status: 'created', revision: 1 },
+      ],
+      counts: { ok: 2, failed: 1 },
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'plans-set-specs:set-specs-call-1:revisions:SPEC-A@1,SPEC-B@3',
+      diagnostics: {
+        revisions: [
+          { specId: 'SPEC-A', revision: 1, status: 'created' },
+          { specId: 'SPEC-B', revision: 3, status: 'revised' },
+        ],
+      },
+    });
+
+    expect(receipt({}, result({
+      ok: false,
+      results: [{ ok: false, slug: 'plan', specId: 'SPEC-C', error: 'conflict' }],
+      counts: { ok: 0, failed: 1 },
+    }), attempt)).toMatchObject({ status: 'not-recorded' });
+
+    expect(setSpecsAbortCompletionReceipt({}, result({
+      ok: true,
+      results: [{ ok: true, slug: 'plan', specId: 'SPEC-A', status: 'revised' }],
+      counts: { ok: 1, failed: 0 },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-landed-spec-revision'],
     });
   });
 });

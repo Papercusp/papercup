@@ -38,10 +38,66 @@ describe('P037 maintained source admission', () => {
     const receipt = await qualifySyncLintProofInputs({ repo, roots: [testPath] });
     expect(receipt).toMatchObject({ qualification: 'qualified', unresolved: [], workingDrift: [], refusal: null });
     expect(receipt.paths).toEqual(expect.arrayContaining([testPath, 'packages/core/entry.ts',
-      'libs/papercusp/index.d.ts', 'libs/papercusp/index.mjs', runtimePath, 'libs/papercusp/cycle.mjs',
+      'libs/papercusp/index.d.ts', runtimePath, 'libs/papercusp/cycle.mjs',
       'libs/papercusp/import.mjs', 'libs/papercusp/import-only.mjs',
       'libs/papercusp/package.json', 'package-lock.json']));
+    expect(receipt.paths).not.toContain('libs/papercusp/index.mjs');
     expect(new Set(receipt.paths).size).toBe(receipt.paths.length);
+  });
+
+  it('does not admit inactive generated require/default exports but refuses them when require is active', async () => {
+    const { repo, sub } = fixture();
+    write(sub, 'package.json', JSON.stringify({ name: '@papercusp/core', type: 'module', exports: {
+      '.': { types: './index.d.ts', import: './import.mjs', require: './dist/index.cjs', default: './dist/index.cjs' },
+      './types-only': { types: './index.d.ts', import: './dist/types-only.mjs' },
+      './nested': { node: { require: './dist/index.cjs' }, import: './import.mjs' },
+    } }));
+    git(sub, ['add', 'package.json']); git(sub, ['commit', '-qm', 'conditional runtime exports']);
+    write(repo, testPath, "import './entry'; import '@papercusp/core/nested'; import type { value } from '@papercusp/core/types-only';\n");
+    git(repo, ['add', testPath, 'libs/papercusp']); git(repo, ['commit', '-qm', 'pin conditional exports']);
+    write(sub, 'dist/index.cjs', 'exports.value = 99;\n');
+    write(sub, 'dist/types-only.mjs', 'export const value = 99;\n');
+    write(sub, 'index.js', 'export const value = 99;\n');
+    const imported = await qualifySyncLintProofInputs({ repo, roots: [testPath] });
+    expect(imported).toMatchObject({ qualification: 'qualified', unresolved: [] });
+    expect(imported.paths.some(path => path.includes('/dist/'))).toBe(false);
+    expect(imported.paths).not.toContain('libs/papercusp/index.js');
+    expect(imported.imports).toContainEqual(expect.objectContaining({
+      spec: '@papercusp/core/types-only', mode: 'types', path: 'libs/papercusp/index.d.ts',
+    }));
+
+    write(repo, testPath, "import './entry'; const runtime = require('@papercusp/core');\n");
+    git(repo, ['add', testPath]); git(repo, ['commit', '-qm', 'activate require runtime']);
+    const required = await qualifySyncLintProofInputs({ repo, roots: [testPath] });
+    expect(required.paths).toContain('libs/papercusp/dist/index.cjs');
+    expect(required).toMatchObject({ qualification: 'refused',
+      refusal: expect.stringContaining('tested input is not a regular committed file: dist/index.cjs') });
+  });
+
+  it('resolves workspace subpaths without an exports map and retains CommonJS static-import runtime', async () => {
+    const { repo, sub } = fixture();
+    write(sub, 'package.json', JSON.stringify({ name: '@papercusp/core', type: 'module',
+      main: './index.mjs', types: './index.d.ts' }));
+    write(sub, 'legacy.d.ts', 'export declare const value: number;\n');
+    write(sub, 'legacy.js', 'export const value = 1;\n');
+    write(repo, testPath, "import { value } from '@papercusp/core/legacy.js';\n");
+    git(sub, ['add', 'package.json', 'legacy.d.ts', 'legacy.js']); git(sub, ['commit', '-qm', 'legacy package entrypoints']);
+    git(repo, ['add', testPath, 'libs/papercusp']); git(repo, ['commit', '-qm', 'legacy package subpath']);
+    expect(await qualifySyncLintProofInputs({ repo, roots: [testPath] })).toMatchObject({
+      qualification: 'qualified', unresolved: [] });
+    write(sub, 'legacy.js', 'export const value = 2;\n');
+    expect(await qualifySyncLintProofInputs({ repo, roots: [testPath] })).toMatchObject({
+      qualification: 'refused', refusal: expect.stringContaining('dirty tested-input mismatch: libs/papercusp/legacy.js') });
+
+    write(sub, 'package.json', JSON.stringify({ name: '@papercusp/core', exports: {
+      '.': { types: './index.d.ts', import: './import.mjs', require: './dist/index.cjs' },
+    } }));
+    write(sub, 'dist/index.cjs', 'exports.value = 99;\n');
+    write(repo, 'packages/core/proof.cts', "import runtime from '@papercusp/core';\n");
+    git(sub, ['add', 'package.json']); git(sub, ['commit', '-qm', 'conditional CJS entry']);
+    git(repo, ['add', 'packages/core/proof.cts', 'libs/papercusp']); git(repo, ['commit', '-qm', 'CJS static import']);
+    expect(await qualifySyncLintProofInputs({ repo, roots: ['packages/core/proof.cts'] })).toMatchObject({
+      qualification: 'refused', refusal: expect.stringContaining('dist/index.cjs') });
   });
 
   it('refuses dirty runtime even when the named test is clean and rejects nested HEAD beyond the parent pin', async () => {
@@ -68,7 +124,14 @@ describe('P037 maintained source admission', () => {
   it('includes the observed tooldef runtime and the real Vitest setup boundary from maintained roots', () => {
     const repo = resolve(import.meta.dirname, '../../../..');
     const roots = syncLintProofRoots(repo);
-    const closure = collectVerifierInputClosure(repo, roots);
+    const boundaryRoots = ['libs/generic/tooldef/src/code-orchestration/run-script.ts',
+      'packages/operator-core/vitest.config.ts', 'scripts/lib/task-cgroup-limits.mjs',
+      'scripts/lib/task-cgroup-limits.d.mts'];
+    expect(roots).toEqual(expect.arrayContaining(boundaryRoots));
+    // The full maintained census is an admission command, not a unit-test
+    // dependency on every module in a changing monorepo. Exercise its observed
+    // runtime/config boundary here; fixtures above exercise traversal rules.
+    const closure = collectVerifierInputClosure(repo, boundaryRoots);
     expect(closure.paths).toEqual(expect.arrayContaining([
       'libs/generic/tooldef/src/code-orchestration/run-script.ts',
       'libs/generic/tooldef/src/code-orchestration/tool-facade.ts',

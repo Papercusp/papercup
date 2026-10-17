@@ -306,10 +306,11 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       text: fullText.slice(4_000, 8_000),
       text_offset: 4_000,
       text_truncated: true,
-      text_full_chars: 9_572,
-      source_completeness: 'complete',
+      text_full_chars: 8_000,
+      source_completeness: 'unknown',
       readMore: { tool: 'sessions:read', args: { ref, text_offset: 8_000, text_limit: 4_000 } },
     });
+    expect(readArchivedSessionTurns).not.toHaveBeenCalled();
 
     const tail = await dispatch(8_000);
     expect(tail.ok, JSON.stringify(tail)).toBe(true);
@@ -356,6 +357,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
       source_completeness: 'unknown',
       readMore: { tool: 'sessions:read', args: { ref, text_offset: 1_500, text_limit: 1_500 } },
     });
+    expect(readArchivedSessionTurns).not.toHaveBeenCalled();
   });
 
   it("recovers a capped live self turn from the current source before archive fallback", async () => {
@@ -407,25 +409,26 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     const dispatched = await dispatch(4_000);
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      ok: true,
+      turn_count: 1,
+      turns: [{
+        text: fullText.slice(4_000, 8_000),
+        text_full_chars: 8_000,
+        source_completeness: 'unknown',
+        text_truncated: true,
+        text_offset: 4_000,
+        readMore: { args: { text_offset: 8_000, text_limit: 4_000 } },
+      }],
+    });
+    expect(readLiveSessionTurns).not.toHaveBeenCalled();
+    const tail = await dispatch(8_000);
     expect(readLiveSessionTurns).toHaveBeenCalledWith(
       '/managed/sess-live-self.jsonl',
       'codex',
       'su-self',
       { fullSource: true, turnIndices: [3] },
     );
-    expect(dispatched.result?.structuredContent).toMatchObject({
-      ok: true,
-      turn_count: 1,
-      turns: [{
-        text: fullText.slice(4_000, 8_000),
-        text_full_chars: fullText.length,
-        source_completeness: 'complete',
-        text_truncated: true,
-        text_offset: 4_000,
-        readMore: { args: { text_offset: 8_000, text_limit: 4_000 } },
-      }],
-    });
-    const tail = await dispatch(8_000);
     const tailTurn = (tail.result?.structuredContent as { turns: Array<Record<string, unknown>> }).turns[0]!;
     expect(tailTurn).toMatchObject({
       text: expect.stringContaining(emissionContract),

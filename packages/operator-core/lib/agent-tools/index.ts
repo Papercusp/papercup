@@ -330,6 +330,7 @@ import './chat/reply';
 import './ticket/file';
 import './social/delete';
 import './social/post';
+import './blog/post';
 import './social/read';
 import './social/reply';
 import './social/search';

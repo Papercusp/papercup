@@ -158,17 +158,19 @@ describe('cost-model rendering', () => {
 
 describe('on-demand workspace month', () => {
   const profile = { computeHourlyUsd: 0.06, retainedDiskGiB: 52, diskGiBMonthUsd: 0.1,
-    backupMonthUsd: 0.8, controlMonthUsd: 1, networkMonthUsd: 2, activeIpv4HourlyUsd: 0.005 };
+    backupMonthUsd: 0.8, controlMonthUsd: 1, networkMonthUsd: 2, activeIpv4HourlyUsd: 0.005,
+    inferenceMonthUsd: 1.5 };
 
   it('retains disks, backups and control costs when the VM never runs', () => {
     const idle = onDemandMonthUsd({ ...profile, activeHours: 0 });
     expect(idle.computeUsd).toBe(0);
     expect(idle.ipv4Usd).toBe(0);
     expect(idle.retainedUsd).toBeCloseTo(7);
-    expect(idle.totalUsd).toBeCloseTo(9);
+    expect(idle.inferenceUsd).toBeCloseTo(1.5);
+    expect(idle.totalUsd).toBeCloseTo(10.5);
   });
 
-  it.each([[60, 12.9], [120, 16.8], [240, 24.6]])('prices %s active hours without prorating retained storage', (activeHours, total) => {
+  it.each([[60, 14.4], [120, 18.3], [240, 26.1]])('prices %s active hours without prorating retained storage or monthly inference', (activeHours, total) => {
     const result = onDemandMonthUsd({ ...profile, activeHours });
     expect(result.storageUsd).toBeCloseTo(5.2);
     expect(result.totalUsd).toBeCloseTo(total);
@@ -182,11 +184,28 @@ describe('on-demand workspace month', () => {
   });
 
   it('rejects missing, negative and non-finite inputs and hours beyond one month', () => {
-    for (const key of ['computeHourlyUsd', 'retainedDiskGiB', 'backupMonthUsd'] as const) {
+    const input = { ...profile, activeHours: 60 };
+    for (const key of Object.keys(input) as (keyof typeof input)[]) {
       for (const bad of [-1, NaN, Infinity, undefined]) {
-        expect(() => onDemandMonthUsd({ ...profile, activeHours: 60, [key]: bad } as Parameters<typeof onDemandMonthUsd>[0])).toThrow(/finite/);
+        expect(() => onDemandMonthUsd({ ...input, [key]: bad } as Parameters<typeof onDemandMonthUsd>[0])).toThrow(/finite/);
       }
+      const omitted = { ...input } as Partial<typeof input>;
+      delete omitted[key];
+      expect(() => onDemandMonthUsd(omitted as typeof input), `omitted ${key}`).toThrow(/finite/);
     }
     expect(() => onDemandMonthUsd({ ...profile, activeHours: 731 })).toThrow(/month/);
+  });
+
+  it('requires an explicit inference cost and includes it when a profile crosses $20', () => {
+    const result = onDemandMonthUsd({ ...profile, activeHours: 120, inferenceMonthUsd: 3.2 });
+    expect(result.inferenceUsd).toBe(3.2);
+    expect(result.totalUsd).toBeCloseTo(20);
+    const withoutInference = onDemandMonthUsd({ ...profile, activeHours: 120, inferenceMonthUsd: 0 });
+    expect(withoutInference.totalUsd).toBeCloseTo(16.8);
+  });
+
+  it('rejects finite inputs whose computed monthly charge overflows', () => {
+    expect(() => onDemandMonthUsd({ ...profile, activeHours: 730,
+      computeHourlyUsd: Number.MAX_VALUE })).toThrow(/finite/);
   });
 });

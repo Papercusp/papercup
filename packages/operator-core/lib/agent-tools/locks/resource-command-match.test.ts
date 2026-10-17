@@ -10,9 +10,21 @@
  * this file is the fast unit tier + the genuinely-uncovered branches (malformed
  * regex no-throw, multi-resource match, non-first pattern, null patterns).
  */
-import { describe, it, expect } from 'vitest';
-import { matchCommandToResources } from './resource-command-match';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
+
+vi.mock('./su-lock-store', () => ({
+  getTxPool: vi.fn(() => ({})),
+  listResources: vi.fn(),
+  readResourceQueue: vi.fn(),
+}));
+
+import { checkBashCommand, matchCommandToResources } from './resource-command-match';
+import { getTxPool, listResources, readResourceQueue } from './su-lock-store';
 import type { ResourceRegistryRow } from './su-lock-store';
+
+const getPoolM = vi.mocked(getTxPool);
+const listResourcesM = vi.mocked(listResources);
+const readResourceQueueM = vi.mocked(readResourceQueue);
 
 const reg = (resource: string, patterns: string[] | null): ResourceRegistryRow => ({
   resource,
@@ -21,6 +33,11 @@ const reg = (resource: string, patterns: string[] | null): ResourceRegistryRow =
   enforcement: 'checked',
   match_patterns: patterns as string[],
   max_holders: null,
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  getPoolM.mockReturnValue({} as never);
 });
 
 describe('matchCommandToResources — pure matcher (unit tier)', () => {
@@ -68,5 +85,41 @@ describe('matchCommandToResources — pure matcher (unit tier)', () => {
   it('skips resources with empty or missing match_patterns', () => {
     expect(matchCommandToResources('anything', [reg('empty', [])])).toEqual([]);
     expect(matchCommandToResources('anything', [reg('nullish', null)])).toEqual([]);
+  });
+});
+
+describe('checkBashCommand — transient Postgres connection resilience', () => {
+  it('retries CONNECT_TIMEOUT on both registry and queue reads before returning a verdict', async () => {
+    const registry = [reg('dev-server', ['systemctl.*restart.*papercup'])];
+    const connectTimeout = () =>
+      Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), { code: 'CONNECT_TIMEOUT' });
+
+    listResourcesM
+      .mockRejectedValueOnce(connectTimeout())
+      .mockResolvedValueOnce(registry);
+    readResourceQueueM
+      .mockRejectedValueOnce(connectTimeout())
+      .mockResolvedValueOnce({ holders: [], draining: false } as never);
+
+    await expect(
+      checkBashCommand({
+        command: 'systemctl --user restart papercup-dev-api.service',
+        coordinationDomain: 'dom',
+        ownerId: 'me',
+      }),
+    ).resolves.toEqual({
+      decision: 'allow',
+      matched: [
+        {
+          resource: 'dev-server',
+          enforcement: 'checked',
+          exclusiveActive: false,
+          exclusiveByOther: false,
+          draining: false,
+        },
+      ],
+    });
+    expect(listResourcesM).toHaveBeenCalledTimes(2);
+    expect(readResourceQueueM).toHaveBeenCalledTimes(2);
   });
 });

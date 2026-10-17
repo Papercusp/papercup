@@ -295,6 +295,13 @@
                   "helpUrl": { "type": "string" },
                   "placeholder": { "type": "string" },
                   "hosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                  "auth": {
+                    "type": "object", "additionalProperties": false, "required": ["header", "scheme"],
+                    "properties": {
+                      "header": { "enum": ["authorization", "api-key", "x-api-key"] },
+                      "scheme": { "enum": ["bearer", "raw"] }
+                    }
+                  },
                   "perPrincipal": {
                     "type": "boolean",
                     "description": "Each person pastes their own value; the host uses it only for that person's calls (e.g. a user token for live search)."

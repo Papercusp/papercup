@@ -108,6 +108,8 @@ import toolFind, {
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
   PLUGIN_HOST_READINESS_TIMEOUT_MS,
+  TOOLS_FIND_DEFAULT_LIMIT,
+  TOOLS_FIND_LIMIT_MAX,
   ensureIndex,
   exactToolNamesInQuery,
   normalizeToolsFindArgs,
@@ -183,8 +185,20 @@ describe('tools:find tool registration', () => {
     // args schema accepts a query, rejects an empty one.
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);
+    expect(def.args.safeParse({ query: 'feature flag', limit: TOOLS_FIND_LIMIT_MAX }).success).toBe(true);
+    expect(def.args.safeParse({ query: 'feature flag', limit: TOOLS_FIND_LIMIT_MAX + 1 }).success).toBe(false);
     const missing = def.args.safeParse({});
     expect(missing.success).toBe(false);
+  });
+
+  it('publishes the result-count cap in the live discovery schema', async () => {
+    const out = await callHandler({ query: 'tools:find', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'tools:find');
+
+    expect(hit?.description).toContain('`limit` defaults to 8, accepts 1-25, and values above 25 are rejected');
+    expect(hit?.argSchema).toContain(`limit?:integer(>0-${TOOLS_FIND_LIMIT_MAX})`);
+    expect(hit?.argSchema).toContain(`defaults to ${TOOLS_FIND_DEFAULT_LIMIT}`);
+    expect(hit?.argSchema).toContain(`values above ${TOOLS_FIND_LIMIT_MAX} are rejected`);
   });
 
   it('accepts legacy q and normalizes it to query, with query taking precedence', () => {

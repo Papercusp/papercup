@@ -74,6 +74,7 @@ import { domainFailureMessage } from './plan-activation-gate';
 import { PLAN_STATUSES } from './parser';
 import { propagatePlanScopeWrite, type PlanScopeCascadeResult } from './plan-scope-cascade';
 import { defaultPlanScopeCascadeDeps } from './plan-scope-cascade-deps';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import {
   recoverHarnessFromSlugs,
   slugScopeErrorResult,
@@ -725,11 +726,12 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   // A shipped-gate refusal can synchronously recruit a fresh headless judge.
-  // That bounded path can spend 6s in boot, 30s on native kickoff proof and
-  // 25s verifying its first turn (61s total). The default status-tool deadline
-  // expires first, hiding the launcher's failure/recovery receipt from the
-  // recruiter; match the launcher budget so the structured outcome is returned.
-  timeoutSec: 90,
+  // Keep this write's dispatcher deadline below the MCP transport cap. A larger
+  // declaration lets the transport close first, returning opaque request_timeout
+  // while the handler is still recruiting the judge; the shared foreground ceiling
+  // leaves room for abort cleanup and response delivery so the caller gets the
+  // dispatcher's structured timeout/idempotent-completion result instead.
+  timeoutSec: Math.floor(FOREGROUND_TIMEOUT_CEILING_MS / 1000),
   args: argsSchema,
   async handler(args, ctx) {
     // Caller-DX (P-006): map caller aliases to canonical plan lifecycle statuses.

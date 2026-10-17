@@ -378,8 +378,8 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
     });
     expect(current).toBe(false);
     const [query, ...bindings] = tx.mock.calls.find(([strings]) => strings.join('').includes('SELECT scorecard.feature_id')) as unknown as [TemplateStringsArray, ...unknown[]];
-    for (const clause of ["'state' = 'pending'", "'reservedAt' = ?", "'evidenceFingerprint' = ?",
-      "scorecard.payload->'_ei'->>'created_by' = ?", "'rubricRef' = ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
+    for (const clause of ["'state' = 'pending'", "'reservedAt' = ?", "'evidenceFingerprint' IS NOT DISTINCT FROM ?",
+      "scorecard.payload->'_ei'->>'created_by' IS NOT DISTINCT FROM ?", "'rubricRef' IS NOT DISTINCT FROM ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
       expect(query.join('?')).toContain(clause);
     }
     expect(bindings).toEqual(expect.arrayContaining(['EI-renew', 'grading-audit:EI-renew', 'renewed-at', 'exact-fingerprint', 'su-author', 'standard-rubric']));
@@ -526,6 +526,90 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).not.toHaveBeenCalled();
     expect(result.receipts).toEqual([
       expect.objectContaining({ issueId, state: 'skipped', reason: expect.stringContaining('no longer a current pending') }),
+    ]);
+  });
+
+  it('does not dispatch a legacy current[] snapshot card after its evidence cohort is rebound', async () => {
+    const d = deps();
+    const issueId = 'EI-legacy-rebound-evidence-audit';
+    const snapshot = {
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run:old-binding',
+      sourceFingerprint: 'sha256:old-source',
+      testFingerprint: 'sha256:old-test',
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+    };
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        includeDraft: true,
+        current: [snapshot],
+      },
+      selection: {
+        planSlug: 'plan-a', specId: 'SPEC-001', specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run:old-binding' }],
+      },
+      current: { supplied: true, fingerprints: [snapshot] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    const target = card(issueId, {
+      evidenceFingerprint: 'legacy-snapshot-evidence-v1',
+      rerunRecipe,
+    });
+    d.listScorecards.mockResolvedValue([target]);
+    const staleCurrentness = {
+      state: 'stale' as const,
+      reason: 'cited-binding-retracted' as const,
+      citedBindingCount: 1,
+      retractedBindingIds: ['30309'],
+      unavailableBindingIds: [],
+    };
+    d.readEvidence.mockResolvedValue({
+      kind: 'found',
+      scorecard: evidenceCard(issueId, {
+        evidenceFingerprint: target.evidenceFingerprint,
+        rerunRecipe,
+        gradingAudit: target.gradingAudit,
+        evidenceBindingCurrentness: staleCurrentness,
+        auditTarget: {
+          current: false,
+          superseded: false,
+          supersededBy: null,
+          retracted: false,
+          subjectRubricCurrentness: null,
+          evidenceBindingCurrentness: staleCurrentness,
+        },
+      }),
+    });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+
+    expect(d.readEvidence).toHaveBeenCalledWith(issueId);
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId,
+        state: 'skipped',
+        reason: expect.stringContaining('no longer a current pending'),
+      }),
     ]);
   });
 

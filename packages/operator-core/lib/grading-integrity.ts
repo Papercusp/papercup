@@ -789,8 +789,7 @@ export async function confirmPendingGradingAuditReservation(
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const reservedAt = options.reservedAt ?? null;
-  const read = async (tx: OrgSql) =>
-      tx<{ feature_id: string }[]>`
+  const read = async (tx: OrgSql) => tx<{ feature_id: string }[]>`
       SELECT scorecard.feature_id
         FROM harness_shared.work_items AS scorecard
        WHERE scorecard.workspace_id = ${workspaceId}
@@ -803,14 +802,14 @@ export async function confirmPendingGradingAuditReservation(
            OR scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
          )
          ${options.snapshot
-           ? tx`AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot' = ${JSON.stringify(options.snapshot)}::jsonb`
+           ? tx`AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot' = ${JSON.stringify(options.snapshot)}::text::jsonb`
            : tx``}
          AND (
            ${options.expectedCard != null}::boolean = false
-           OR (
-             scorecard.payload->'observation'->>'evidenceFingerprint' = ${options.expectedCard?.evidenceFingerprint ?? null}
-             AND scorecard.payload->'_ei'->>'created_by' = ${options.expectedCard?.createdBy ?? null}
-             AND scorecard.payload->'observation'->>'rubricRef' = ${options.expectedCard?.rubricRef ?? null}
+             OR (
+             scorecard.payload->'observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ${options.expectedCard?.evidenceFingerprint ?? null}
+             AND scorecard.payload->'_ei'->>'created_by' IS NOT DISTINCT FROM ${options.expectedCard?.createdBy ?? null}
+             AND scorecard.payload->'observation'->>'rubricRef' IS NOT DISTINCT FROM ${options.expectedCard?.rubricRef ?? null}
            )
          )
          AND scorecard.payload->'observation'->'retracted' IS NULL
@@ -961,6 +960,141 @@ export async function notifyRetainedGradingAuditor(
     return { state: 'failed', ownerId, msgId, reason: error instanceof Error ? error.message : String(error),
       pickupConfirmed: false };
   }
+}
+
+export interface GradingAuditCancellationNotification {
+  issueId: string;
+  state: 'delivered' | 'skipped' | 'failed';
+  ownerId?: string;
+  taskIds?: string[];
+  msgId?: string;
+  queued?: number;
+  reason?: string;
+  /** The wake queue is not proof that the auditor picked up the notice. */
+  pickupConfirmed?: false;
+}
+
+/**
+ * Notify every exact live auditor task after its target was cancelled by a
+ * committed evidence withdrawal. The task ledger is the owner authority here:
+ * do not address the card author or the dispatch actor, and do not infer an
+ * owner from a stale scorecard snapshot. A stable message id makes retries a
+ * replay of the same owner/target directive.
+ */
+export async function notifyCancelledGradingAuditors(
+  input: {
+    workspaceId: string;
+    issueIds: readonly string[];
+    harness?: string | null;
+    reason?: string;
+  },
+  deps: {
+    listTasks?: typeof listTasks;
+    send?: typeof sendMessage;
+    wake?: typeof wakeRecipients;
+  } = {},
+): Promise<GradingAuditCancellationNotification[]> {
+  const workspaceId = input.workspaceId.trim();
+  const issueIds = [...new Set(input.issueIds.map((id) => id.trim()).filter(Boolean))].sort();
+  if (!workspaceId || workspaceId === '*' || issueIds.length === 0) return [];
+
+  const readTasks = deps.listTasks ?? listTasks;
+  let tasks: TaskRow[];
+  try {
+    tasks = await readTasks({
+      workspaceId,
+      states: ['pending', 'running'],
+      classes: ['agent-session'],
+      labelPrefix: GRADING_AUDIT_TASK_LABEL_PREFIX,
+      limit: 2_000,
+    });
+  } catch (error) {
+    const reason = `could not resolve live grading-audit tasks: ${error instanceof Error ? error.message : String(error)}`;
+    return issueIds.map((issueId) => ({ issueId, state: 'failed', reason }));
+  }
+
+  const taskGroups = new Map<string, Map<string, TaskRow[]>>();
+  for (const issueId of issueIds) {
+    const key = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
+    for (const task of tasks) {
+      const label = typeof task.detail?.label === 'string' ? task.detail.label : '';
+      const ownerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+      if (!ownerId || (label !== key && !label.startsWith(`${key}:`))) continue;
+      const byOwner = taskGroups.get(issueId) ?? new Map<string, TaskRow[]>();
+      const ownerTasks = byOwner.get(ownerId) ?? [];
+      ownerTasks.push(task);
+      byOwner.set(ownerId, ownerTasks);
+      taskGroups.set(issueId, byOwner);
+    }
+  }
+
+  const send = deps.send ?? (await import('./agent-tools/coordination/messages')).sendMessage;
+  const wake = deps.wake ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients;
+  const cancellationReason = input.reason?.trim() || 'the cited spec evidence was withdrawn';
+  const notifications: GradingAuditCancellationNotification[] = [];
+  for (const issueId of issueIds) {
+    const byOwner = taskGroups.get(issueId);
+    if (!byOwner) continue;
+    for (const [ownerId, ownerTasks] of [...byOwner.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      const taskIds = [...new Set(ownerTasks.map((task) => task.taskId))].sort();
+      const msgId = `grading-audit-cancelled:${createHash('sha256')
+        .update(JSON.stringify([workspaceId, issueId, ownerId]))
+        .digest('hex')}`;
+      const summary = `Cancelled grading audit for ${issueId}`;
+      const body = [
+        `The grading audit for target '${issueId}' was cancelled after the transaction committed because ${cancellationReason}.`,
+        `Your live grading-audit task${taskIds.length === 1 ? '' : 's'} '${taskIds.join("', '")}' must stop. Do not grade or emit a result for '${issueId}'; its reservation is no longer valid.`,
+      ].join('\n\n');
+      let persisted = false;
+      try {
+        await send({
+          ownerId: GRADING_AUDIT_DISPATCH_ACTOR,
+          ownerLabel: 'grading audit dispatch',
+          source: 'principal',
+          workspaceId,
+          userId: null,
+        }, {
+          to: [ownerId],
+          msgId,
+          harnessSlug: input.harness ?? undefined,
+          kind: 'message',
+          category: 'cancellation',
+          summary,
+          body,
+          extra: {
+            expects: 'action',
+            sections: [{
+              text: body,
+              forYouBecause: { relation: 'owns', ref: taskIds[0] ?? issueId },
+            }],
+          },
+        });
+        persisted = true;
+        const outcome = await wake([ownerId], {
+          workspaceId,
+          requiredWake: true,
+          source: GRADING_AUDIT_DISPATCH_ACTOR,
+          summary,
+          payload: { msg_id: msgId, issueId, taskIds },
+        });
+        notifications.push({ issueId, state: 'delivered', ownerId, taskIds, msgId,
+          queued: outcome.queued ?? outcome.woken, pickupConfirmed: false });
+      } catch (error) {
+        notifications.push({
+          issueId,
+          state: persisted ? 'delivered' : 'failed',
+          ownerId,
+          taskIds,
+          msgId,
+          ...(persisted
+            ? { reason: `notification persisted; wake request failed: ${error instanceof Error ? error.message : String(error)}` }
+            : { reason: error instanceof Error ? error.message : String(error) }),
+          ...(persisted ? { pickupConfirmed: false as const } : {}),
+        });
+      }
+    }
+  }
+  return notifications;
 }
 
 interface GradingAuditReservationOptions {
@@ -1479,6 +1613,13 @@ function currentPendingScorecard(card: ScorecardRow): boolean {
   );
 }
 
+function hasCitedSpecEvidenceBindings(card: ScorecardRow): boolean {
+  const recipe = card.rerunRecipe;
+  // Newer recipes pin immutable row ids. Legacy recipes pin the same rows by
+  // their exact args.current tuples; both need a read-time currentness check.
+  return Boolean(recipe?.selection.bindingIds?.length || recipe?.args.current?.length);
+}
+
 function gradingAuditReservationSnapshot(
   card: ScorecardRow,
   evidence?: ScorecardEvidenceRow,
@@ -1772,7 +1913,7 @@ export async function dispatchPendingGradingAudits(
   const evidenceCandidates = cards
     .filter((card) =>
       card.gradingAudit?.state === 'pending' &&
-      Boolean(card.rerunRecipe?.selection.bindingIds?.length) &&
+      hasCitedSpecEvidenceBindings(card) &&
       !card.supersededBy &&
       !card.retracted,
     )
@@ -1879,7 +2020,7 @@ export async function dispatchPendingGradingAudits(
   const pendingCards = cards.filter((card) => {
     if (evaluatorBuildDriftIds.has(card.issueId)) return false;
     if (!currentPendingScorecard(card)) return false;
-    if (!card.rerunRecipe?.selection.bindingIds?.length) return true;
+    if (!hasCitedSpecEvidenceBindings(card)) return true;
     return evidenceById.get(card.issueId)?.auditTarget.current === true;
   });
   const pendingById = new Map(pendingCards.map((card) => [card.issueId, card] as const));

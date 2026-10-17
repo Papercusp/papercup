@@ -23,11 +23,67 @@ const supplemental = [
   'scripts/lib/task-cgroup-limits.mjs', 'scripts/lib/task-cgroup-limits.d.mts',
   'scripts/source-preview.mjs', 'scripts/test-files.mjs',
   'scripts/qualify-sync-lint-proof.mjs', 'scripts/qualify-sync-lint-proof.d.mts',
+  'libs/generic/tooldef/src/code-orchestration/run-script.ts',
 ];
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const git = (repo, args) => execFileSync('git', ['-C', repo, ...args], {
   encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'],
 }).trim();
+
+// Keep erased type edges, ESM imports and CommonJS loads distinct. Probing every
+// ESM import with require.resolve admits inactive generated CJS exports.
+function moduleEdges(path, text) {
+  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, false);
+  const declaration = /\.d\.[cm]?ts$/.test(path), edges = new Map();
+  const staticMode = /\.cts$/.test(path) ? 'require' : 'import';
+  const add = (literal, mode) => {
+    if (!literal || !ts.isStringLiteralLike(literal)) return;
+    if (declaration) mode = 'types';
+    edges.set(mode + '\0' + literal.text, { spec: literal.text, mode });
+  };
+  const visit = node => {
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause, bindings = clause?.namedBindings;
+      const typeOnly = clause?.isTypeOnly || !clause?.name && bindings
+        && ts.isNamedImports(bindings) && bindings.elements.length > 0
+        && bindings.elements.every(element => element.isTypeOnly);
+      add(node.moduleSpecifier, typeOnly ? 'types' : staticMode);
+    } else if (ts.isExportDeclaration(node)) {
+      const bindings = node.exportClause;
+      const typeOnly = node.isTypeOnly || bindings && ts.isNamedExports(bindings)
+        && bindings.elements.length > 0 && bindings.elements.every(element => element.isTypeOnly);
+      add(node.moduleSpecifier, typeOnly ? 'types' : staticMode);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      add(node.moduleReference.expression, node.isTypeOnly ? 'types' : 'require');
+    } else if (ts.isImportTypeNode(node) && ts.isLiteralTypeNode(node.argument)) {
+      add(node.argument.literal, 'types');
+    } else if (ts.isCallExpression(node)) {
+      const expression = node.expression;
+      const resolver = ts.isPropertyAccessExpression(expression) && expression.name.text === 'resolve';
+      const metaResolve = resolver && ts.isMetaProperty(expression.expression)
+        && expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword;
+      const requireResolve = resolver && ts.isIdentifier(expression.expression)
+        && expression.expression.text === 'require';
+      if (expression.kind === ts.SyntaxKind.ImportKeyword || metaResolve)
+        add(node.arguments[0], 'import');
+      else if (ts.isIdentifier(expression) && expression.text === 'require'
+        || requireResolve) add(node.arguments[0], 'require');
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...edges.values()];
+}
+
+function runtimeConditions(mode) {
+  const custom = [...(process.execArgv.join(' ') + ' ' + (process.env.NODE_OPTIONS ?? ''))
+    .matchAll(/(?:--conditions|-C)(?:=|\s+)([^\s]+)/g)].flatMap(match => match[1].split(','));
+  const node = new Set(['node', 'node-addons', mode, ...custom]);
+  // Both Node/tsx workers and Vitest load this proof. Vite's node resolver also
+  // enables module and the current development/production condition.
+  return mode === 'import' ? [node, new Set([...node, 'module',
+    process.env.NODE_ENV === 'production' ? 'production' : 'development'])] : [node];
+}
 
 export function syncLintProofRoots(repo) {
   const source = ts.createSourceFile(integration, readFileSync(join(repo, integration), 'utf8'),
@@ -79,8 +135,8 @@ export function collectVerifierInputClosure(repo, roots) {
   }
   const cache = ts.createModuleResolutionCache(repo, path => path, options);
   const manifests = new Map();
-  const runtimeExports = (spec, typed) => {
-    if (spec.startsWith('.') || isAbsolute(spec)) return [];
+  const runtimeExports = (spec, typed, mode) => {
+    if (spec.startsWith('.') || isAbsolute(spec)) return { known: false, targets: [] };
     const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
     const subpath = '.' + spec.slice(name.length);
     let dir = dirname(realpathSync(typed));
@@ -90,7 +146,13 @@ export function collectVerifierInputClosure(repo, roots) {
         if (!manifests.has(manifestPath)) manifests.set(manifestPath, JSON.parse(readFileSync(manifestPath, 'utf8')));
         const pkg = manifests.get(manifestPath);
         if (pkg.name === name) {
-          add(manifestPath);
+          // Installed third-party bytes are outside this source population;
+          // package-lock is admitted separately. Do not turn optional installed
+          // runtime artifacts into missing workspace-source edges.
+          if (!add(manifestPath)) return { known: false, targets: [] };
+          // Legacy subpaths use the TS-resolved file and its runtime companion,
+          // not the package root's main entry or a nonexistent exports branch.
+          if (!pkg.exports && subpath !== '.') return { known: false, targets: [] };
           let entry = pkg.exports, wildcard;
           if (entry && typeof entry === 'object' && Object.keys(entry).some(key => key.startsWith('.'))) {
             const key = Object.keys(entry).filter(key => key === subpath || key.includes('*')
@@ -101,27 +163,37 @@ export function collectVerifierInputClosure(repo, roots) {
               key.split('*')[1] ? -key.split('*')[1].length : undefined);
             entry = entry[key];
           } else if (subpath !== '.') entry = undefined;
-          const targets = [];
-          const visit = value => {
-            if (typeof value === 'string') {
-              const target = resolve(dir, wildcard === undefined ? value : value.replaceAll('*', wildcard));
-              if (existsSync(target) && lstatSync(target).isFile()) targets.push(target);
+          const select = (value, conditions) => {
+            if (typeof value === 'string') return resolve(dir,
+              wildcard === undefined ? value : value.replaceAll('*', wildcard));
+            if (Array.isArray(value)) {
+              for (const branch of value) { const target = select(branch, conditions); if (target) return target; }
             } else if (value && typeof value === 'object') {
-              // Include each runtime condition conservatively. require.resolve
-              // alone can choose require while the worker executes import.
+              // Export conditions are ordered: default is a fallback at its
+              // position, not another runtime to union with an earlier import.
               for (const [condition, branch] of Object.entries(value))
-                if (condition !== 'types' && !condition.startsWith('types@')) visit(branch);
+                if (condition === 'default' || conditions.has(condition)) {
+                  const target = select(branch, conditions);
+                  if (target !== undefined) return target;
+                }
             }
+            return value === null ? null : undefined;
           };
-          visit(entry);
-          if (!pkg.exports && subpath === '.') { visit(pkg.main); visit(pkg.module); }
-          return targets;
+          const targets = runtimeConditions(mode).map(conditions => select(entry, conditions)).filter(Boolean);
+          if (!pkg.exports) {
+            if (subpath !== '.') targets.push(typed);
+            else {
+              targets.push(resolve(dir, pkg.main ?? 'index.js'));
+              if (mode === 'import' && pkg.module) targets.push(resolve(dir, pkg.module));
+            }
+          }
+          return { known: true, targets: [...new Set(targets)] };
         }
       }
       if (dir === repo) break;
       dir = dirname(dir);
     }
-    return [];
+    return { known: false, targets: [] };
   };
   for (let i = 0; i < queue.length; i++) {
     const from = queue[i], absolute = join(repo, from);
@@ -132,28 +204,43 @@ export function collectVerifierInputClosure(repo, roots) {
       if (dir === repo) break;
       dir = dirname(dir);
     }
-    const implementation = absolute.replace(/\.d\.mts$/, '.mjs').replace(/\.d\.cts$/, '.cjs')
-      .replace(/\.d\.ts$/, '.js');
-    if (implementation !== absolute && existsSync(implementation)) add(implementation);
     if (!/\.[cm]?[jt]sx?$/.test(from)) continue;
     const text = readFileSync(absolute, 'utf8');
     const require = createRequire(absolute);
-    for (const imported of ts.preProcessFile(text, true, true).importedFiles) {
-      const spec = imported.fileName;
+    for (const { spec, mode } of moduleEdges(from, text)) {
       if (isBuiltin(spec)) continue;
       const targets = new Set();
-      const typed = ts.resolveModuleName(spec, absolute, options, ts.sys, cache).resolvedModule?.resolvedFileName;
+      const typed = ts.resolveModuleName(spec, absolute, options, ts.sys, cache, undefined,
+        mode === 'require' ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext).resolvedModule?.resolvedFileName;
       if (typed) {
         targets.add(typed);
-        for (const target of runtimeExports(spec, typed)) targets.add(target);
+        if (mode !== 'types') {
+          const runtime = runtimeExports(spec, typed, mode);
+          if (runtime.known && !runtime.targets.length) unresolved.push({ from, spec });
+          for (const target of runtime.targets) {
+            if (existsSync(target) && lstatSync(target).isFile()) targets.add(target);
+            else {
+              // Node/tsx and Vite map package .js entrypoints to TS sources.
+              const source = ts.resolveModuleName('./' + relative(dirname(typed), target), typed,
+                options, ts.sys, cache, undefined,
+                mode === 'require' ? ts.ModuleKind.CommonJS : ts.ModuleKind.ESNext).resolvedModule?.resolvedFileName;
+              if (source && !/\.d\.[cm]?ts$/.test(source)) targets.add(source);
+              else unresolved.push({ from, spec });
+            }
+          }
+          const implementation = typed.replace(/\.d\.mts$/, '.mjs').replace(/\.d\.cts$/, '.cjs')
+            .replace(/\.d\.ts$/, '.js');
+          if (!runtime.known && implementation !== typed && existsSync(implementation)) targets.add(implementation);
+        }
       }
-      // Types and Node's runtime export can be different files; retain BOTH.
-      try { targets.add(require.resolve(spec)); } catch { /* TS also resolves source-only ESM imports. */ }
+      if (mode === 'require') {
+        try { targets.add(require.resolve(spec)); } catch { /* Unresolved local edges refuse below. */ }
+      }
       if (!targets.size && (spec.startsWith('.') || spec.startsWith('@papercusp/')))
         unresolved.push({ from, spec });
       for (const target of targets) {
         const local = add(target);
-        imports.push({ from, spec, path: relative(repo, realpathSync(target)).split(sep).join('/'), external: !local });
+        imports.push({ from, spec, mode, path: relative(repo, realpathSync(target)).split(sep).join('/'), external: !local });
       }
     }
     // Configs hand setup/reporters to Vitest as paths rather than imports.

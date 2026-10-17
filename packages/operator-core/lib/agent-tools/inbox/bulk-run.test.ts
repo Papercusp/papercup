@@ -353,7 +353,7 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     expect(h.readInboxWindow).toHaveBeenCalledWith(
       'pc-admin-coord-ui',
       { kinds: ['message'] },
-      expect.objectContaining({ enough: expect.any(Function) }),
+      expect.any(Function),
     );
     expect(result).toMatchObject({
       ok: true,

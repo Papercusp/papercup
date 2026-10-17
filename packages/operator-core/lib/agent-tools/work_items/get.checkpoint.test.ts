@@ -946,7 +946,7 @@ describe('work_items:get — checkpoint field', () => {
     getWorkItemDetail.mockResolvedValue({ id: 'WI-11', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', topics: [], posts: [], links: [] });
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'detail-path checkpoint', updatedAtMs: Date.now() });
     const r = await one({ id: 'WI-11', detail: true });
-    expect(getWorkItemDetail).toHaveBeenCalled();
+    expect(getWorkItemDetail).toHaveBeenCalledWith('WI-11', undefined, { threadLimit: 10 });
     expect(r).toMatchObject({ ok: true, id: 'WI-11', checkpoint: 'detail-path checkpoint' });
   });
 

@@ -79,6 +79,17 @@ describe('evaluateLoop — the three triggers', () => {
     expect(v.fingerprints).toEqual(['log:bbb']);
   });
 
+  it('does not count a passing attempt with an error-log fingerprint as a failure', () => {
+    const v = evaluateLoop(
+      [attempt(0, 10, 'pass', 'log:permission-denied'), attempt(20, 30, 'fail', 'log:aaa')],
+      [],
+      { now },
+    );
+    expect(v.windowFailures).toBe(1);
+    expect(v.fingerprints).toEqual(['log:aaa']);
+    expect(v.tripped).toBe(false);
+  });
+
   it('counts a failed attempt with no fingerprint under one explicit key', () => {
     const v = evaluateLoop([attempt(0, 10, 'fail'), attempt(20, 30, 'fail', 'log:aaa')], [], { now });
     expect(v.fingerprints.sort()).toEqual(['log:aaa', 'unfingerprinted']);

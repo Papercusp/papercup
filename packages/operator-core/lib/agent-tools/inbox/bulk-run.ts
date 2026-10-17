@@ -286,11 +286,9 @@ async function liveActionsById(
         readInboxWindow(
           ADMIN_COORD_UI_OWNER,
           { kinds: ['message'] },
-          {
-            enough: (entries) => {
-              const seen = new Set(entries.map((entry) => entry.msg_id).filter((id): id is string => typeof id === 'string'));
-              return [...wanted.keys()].every((msgId) => seen.has(msgId));
-            },
+          (entries) => {
+            const seen = new Set(entries.map((entry) => entry.msg_id).filter((id): id is string => typeof id === 'string'));
+            return [...wanted.keys()].every((msgId) => seen.has(msgId));
           },
         ),
       );
@@ -1410,7 +1408,7 @@ export const bulkRunReport = defineTool({
           workspaceId: run.workspaceId,
         }).catch(() => null)
       : null;
-    if (!heartbeat) {
+    if (!heartbeat || !run) {
       return {
         content: [
           {

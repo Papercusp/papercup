@@ -509,6 +509,9 @@ export interface ProviderCredentialField {
    * only host-held ingress uses.
    */
   hosts?: string[];
+  /** Host-owned authentication for these hosts; omitted preserves Authorization: Bearer.
+   * Only authentication headers are accepted, never arbitrary HTTP header injection. */
+  auth?: { header: 'authorization' | 'api-key' | 'x-api-key'; scheme: 'bearer' | 'raw' };
   /**
    * Each person stores their own value (e.g. a Slack user token), instead of the owner storing one
    * for the source (D-026). The host injects it only into `host.fetch` calls made on that person's
@@ -1697,6 +1700,16 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
     if (field.helpUrl !== undefined && !isHttpsUrl(field.helpUrl)) issues.push(`${at}.helpUrl must be an https URL`);
     if (field.perPrincipal !== undefined && typeof field.perPrincipal !== 'boolean') {
       issues.push(`${at}.perPrincipal must be true or false`);
+    }
+    if (field.auth !== undefined) {
+      const auth = field.auth;
+      if (!auth || typeof auth !== 'object' || Array.isArray(auth) ||
+        !['authorization', 'api-key', 'x-api-key'].includes(auth.header) ||
+        !['bearer', 'raw'].includes(auth.scheme) ||
+        Object.keys(auth).some((key) => !['header', 'scheme'].includes(key))) {
+        issues.push(`${at}.auth must declare an authentication header and bearer or raw scheme`);
+      }
+      if (!Array.isArray(field.hosts) || field.hosts.length === 0) issues.push(`${at}.auth requires hosts`);
     }
     const perPrincipal = field.perPrincipal === true;
     if (perPrincipal && field.hosts === undefined) {

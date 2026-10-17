@@ -2,7 +2,7 @@ export function syncLintProofRoots(repo: string): string[];
 export interface VerifierInputClosure {
   roots: string[];
   paths: string[];
-  imports: { from: string; spec: string; path: string; external: boolean }[];
+  imports: { from: string; spec: string; mode: 'types' | 'import' | 'require'; path: string; external: boolean }[];
   unresolved: { from: string; spec: string }[];
   workingHashes: Record<string, string>;
 }

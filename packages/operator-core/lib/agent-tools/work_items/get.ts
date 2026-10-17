@@ -1259,11 +1259,14 @@ export default defineTool({
         if (!workItem) {
           return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
         }
+        const checkpointRef = { harness: workItem.harness, workItemId: workItem.id };
+        const readCheckpoint = () => ctx.signal
+          ? getWorkItemCheckpointWithMeta(checkpointRef, { signal: ctx.signal, timeoutMs: remainingBudgetMs })
+          : getWorkItemCheckpointWithMeta(checkpointRef);
         if (checkpointOnly) {
           stage.enrichmentStartedAtMs = Date.now();
-          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
-            getWorkItemCheckpointWithMeta({ harness: workItem.harness, workItemId: workItem.id }),
-          ).catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
+          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
+            .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
           stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
           if (checkpointRead.readFailed) {
             return {
@@ -1305,12 +1308,7 @@ export default defineTool({
         // are all unrelated to building `retireIds` and can be very expensive.
         if (checksOnly) {
           stage.enrichmentStartedAtMs = Date.now();
-          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
-            getWorkItemCheckpointWithMeta({
-              harness: workItem.harness,
-              workItemId: workItem.id,
-            }),
-          )
+          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
             .then((r) => ({
               checkpoint: r.checkpoint,
               updatedAtMs: r.updatedAtMs,
@@ -1416,12 +1414,7 @@ export default defineTool({
           threadWindowReadResult,
           mechanics,
         ] = await Promise.all([
-          needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
-            getWorkItemCheckpointWithMeta({
-              harness: workItem.harness,
-              workItemId: workItem.id,
-            }),
-          )
+          needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
             .then((r) => {
               // The canonical reader fails soft IN BAND. Preserve that state
               // through the same unknown projection as a rejected read.

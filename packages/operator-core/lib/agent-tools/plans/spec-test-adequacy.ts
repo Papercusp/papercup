@@ -1237,14 +1237,36 @@ function fixtureCalibrationBindingSummary(rows: SpecEvidenceForAdequacy[]): stri
   return omitted > 0 ? `${shown}; +${omitted} more binding(s) omitted` : shown;
 }
 
-function bindingNotesSummary(rows: SpecEvidenceForAdequacy[]): string {
+function noteExcerpt(note: string, maxChars = 500): string {
+  if (note.length <= maxChars) return note;
+  const marker = '…[truncated]';
+  const budget = Math.max(1, maxChars - marker.length);
+  const candidate = note.slice(0, budget).trimEnd();
+  const boundary = candidate.lastIndexOf(' ');
+  const readable = boundary > Math.floor(budget / 2) ? candidate.slice(0, boundary).trimEnd() : candidate;
+  return readable + marker;
+}
+
+function bindingNotesSummary(
+  rows: SpecEvidenceForAdequacy[],
+  selectedRows: readonly SpecEvidenceForAdequacy[] = [],
+): string {
+  const selectedIds = new Set(
+    selectedRows
+      .map((row) => row.id)
+      .filter((id): id is number => Number.isSafeInteger(id)),
+  );
+  const selectedKeys = new Set(selectedRows.map(logicalEvidenceReferenceKey));
   const notes = rows
     .map((row) => {
       const note = typeof row.details.note === 'string' ? row.details.note.trim() : '';
       if (note.length === 0) return null;
-      const excerpt = note.length > 500 ? note.slice(0, 500) + '…[truncated]' : note;
+      const excerpt = noteExcerpt(note);
       const id = Number.isSafeInteger(row.id) ? 'id=' + row.id + ' ' : '';
-      return id + 'note=' + JSON.stringify(excerpt);
+      const selected = Number.isSafeInteger(row.id)
+        ? selectedIds.has(row.id!)
+        : selectedKeys.has(logicalEvidenceReferenceKey(row));
+      return id + `scope=${selected ? 'selected' : 'other-current'} ` + 'note=' + JSON.stringify(excerpt);
     })
     .filter((note): note is string => note !== null);
   if (notes.length === 0) return '';
@@ -1562,7 +1584,17 @@ function mutationProvenanceDescription(row: SpecEvidenceForAdequacy): string[] {
     `mutationReaim=${JSON.stringify(reaim ?? null)}`,
     'mutationReaimCoverage=ledgered-mutant-leg-rows-only',
   ];
-  if (!mutation) return ['mutationLinkage=unverified-legacy', ...measuredFields];
+  if (!mutation) {
+    // A mutation-probe row with a recorded phase was produced by the current
+    // probe writer but lost its descriptor before persistence. Keep the
+    // historical label for rows that predate the phase marker; calling a
+    // fresh unlinked row "legacy" hides a live provenance gap.
+    const linkage = provenance?.source === 'mutation-probe' &&
+      typeof provenance.mutationPhase === 'string' && provenance.mutationPhase.trim().length > 0
+      ? 'unverified-current'
+      : 'unverified-legacy';
+    return [`mutationLinkage=${linkage}`, ...measuredFields];
+  }
   return [
     `mutationLinkage=${hasLinkedMutationBaseline(row) ? 'verified' : 'unverified'}`,
     ...measuredFields,
@@ -3769,18 +3801,21 @@ export function evaluateSpecTestAdequacy(input: {
     if (!active) return false;
     return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
   });
-  const freeFormNoteRows = exactDisclosedGapMatches.filter((row) => {
+  // Keep review-only notes on the same active logical population as the count above.
+  // The append-only store can contain older rows for the same proof; quoting those
+  // alongside the active count makes a pinned diagnostic look like it checked fewer
+  // bindings than it rendered. Selected/other-current labels preserve the universal
+  // disclosed-gap census without hiding notes from unselected active bindings.
+  const freeFormNoteRows = activeDisclosedGapEvidence.filter((row) => {
     const note = row.details.note;
     if (typeof note !== 'string' || note.trim().length === 0) return false;
-    const active = activeDisclosedGapByLogicalReference.get(logicalEvidenceReferenceKey(row));
-    if (!active) return false;
-    return proofIdentity(row) === proofIdentity(active) || active.currentness.overall !== 'current';
+    return true;
   });
   const noDisclosureStatement =
     'No bound proof for ' +
     clauseIdentity(clause) +
     ` records a structured author-disclosed gap. Checked ${activeDisclosedGapEvidence.length} active binding(s) for the clause.` +
-    bindingNotesSummary(freeFormNoteRows) +
+    bindingNotesSummary(freeFormNoteRows, evidence) +
     (freeFormNoteRows.length > 0
       ? ' Record any coverage limitation under details.adequacy.disclosedGap so machine grading blocks it.'
       : '');

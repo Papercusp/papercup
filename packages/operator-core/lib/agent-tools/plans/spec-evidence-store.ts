@@ -2695,6 +2695,45 @@ export interface RetractedBindingRow {
   retraction_reason: string | null;
 }
 
+type CancelledAuditorNotifier = (input: {
+  workspaceId: string;
+  issueIds: readonly string[];
+  harness?: string | null;
+  reason?: string;
+}) => Promise<unknown>;
+
+interface SpecEvidenceGradingAuditNotificationDeps {
+  /** Test seam; production resolves the shared notifier after the write commits. */
+  notifyCancelledAuditors?: CancelledAuditorNotifier;
+}
+
+async function notifyCancelledAuditorsAfterCommit(
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    issueIds: readonly string[];
+    reason: string;
+  },
+  deps: SpecEvidenceGradingAuditNotificationDeps,
+): Promise<void> {
+  if (input.issueIds.length === 0) return;
+  try {
+    const notify = deps.notifyCancelledAuditors ??
+      (await import('../../grading-integrity')).notifyCancelledGradingAuditors;
+    await notify({
+      workspaceId: input.workspaceId,
+      harness: input.harnessSlug,
+      issueIds: input.issueIds,
+      reason: input.reason,
+    });
+  } catch (error) {
+    // The binding withdrawal is already committed. Keep notification degradation
+    // visible without turning a durable evidence repair into a false failure.
+    console.warn('[spec-evidence] cancelled grading-auditor notification failed:',
+      error instanceof Error ? error.message : error);
+  }
+}
+
 /**
  * Record a one-way, attributable withdrawal of a single evidence binding (D-011).
  *
@@ -2706,7 +2745,10 @@ export interface RetractedBindingRow {
  * clause revision purely to shed failing evidence — which D-011 forbids as gate
  * evasion, since a bar whose hash moved has genuinely different meaning.
  */
-export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
+export async function retractSpecEvidence(
+  options: RetractSpecEvidenceOptions,
+  deps: SpecEvidenceGradingAuditNotificationDeps = {},
+) {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const reason = options.reason.trim();
   const actorId = options.actorId.trim();
@@ -2757,6 +2799,12 @@ export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
   // part of the same transaction as the binding retraction, so a pushed read can
   // never observe the binding withdrawn while its audit lease remains pending.
   if (result.status === 'retracted') {
+    await notifyCancelledAuditorsAfterCommit({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      issueIds: result.cancelledAuditIssueIds ?? [],
+      reason: `binding ${result.bindingId} was retracted: ${reason}`,
+    }, deps);
     void trackDetached(import('../../sync-sse'))
       .then((m) => {
         m.notifySyncInvalidate('scorecards.list');
@@ -2805,6 +2853,8 @@ export interface SupersessionResult {
   retracted: RetractedBindingRow[];
   /** Same-kind live siblings left standing, each with the claim that protected it. */
   kept: SupersessionKeptRow[];
+  /** Pending grading-audit targets fenced in the same withdrawal transaction. */
+  cancelledAuditIssueIds?: string[];
 }
 
 /**
@@ -2833,12 +2883,13 @@ export interface SupersessionResult {
  */
 export async function supersedeSpecEvidenceAtRevision(
   options: SupersedeSpecEvidenceOptions,
+  deps: SpecEvidenceGradingAuditNotificationDeps = {},
 ): Promise<SupersessionResult> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const actorId = options.actorId.trim();
   const reason = `superseded by binding ${options.supersedingBindingId} (plans:bind-spec-evidence supersedeAtRevision)`;
   const keep = [...new Set([options.supersedingBindingId, ...options.keepBindingIds])];
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const result = await withWorkspace(scope.workspaceId, async (tx) => {
     const siblings = await tx<
       Array<Omit<SupersessionKeptRow, 'keep_reason'> & { keep_reason: SupersessionKeepReason | null }>
     >`
@@ -2900,8 +2951,39 @@ export async function supersedeSpecEvidenceAtRevision(
          AND retracted_at IS NULL
       RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
                 evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
-    return { retracted, kept };
+    // The binding withdrawals and audit fences share this transaction. Capture
+    // issue ids here; the owner notification is deliberately deferred until the
+    // transaction has committed below.
+    const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
+    const cancelledAuditIssueIds = [...new Set((await Promise.all(
+      retracted.map((binding) => cancelPendingGradingAuditsForBindingInTransaction(
+        tx,
+        scope.workspaceId,
+        Number(binding.id),
+      )),
+    )).flat())].sort();
+    return {
+      retracted,
+      kept,
+      ...(cancelledAuditIssueIds.length > 0 ? { cancelledAuditIssueIds } : {}),
+    };
   });
+  await notifyCancelledAuditorsAfterCommit({
+    workspaceId: scope.workspaceId,
+    harnessSlug: scope.harnessSlug,
+    issueIds: result.cancelledAuditIssueIds ?? [],
+    reason: `spec evidence was superseded by binding ${options.supersedingBindingId}`,
+  }, deps);
+  if (result.retracted.length > 0) {
+    void trackDetached(import('../../sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return result;
 }
 
 /**

@@ -16,7 +16,7 @@ const PLUGINS = join(REPO, 'libs/papercusp/plugins');
 const packages = readdirSync(PLUGINS, { withFileTypes: true }).filter((entry) => entry.isDirectory()).flatMap((entry) => {
   try {
     const manifest = JSON.parse(readFileSync(join(PLUGINS, entry.name, 'papercusp.json'), 'utf8'));
-    return manifest.provider?.datatypes?.includes('social-post') ? [[entry.name, join(PLUGINS, entry.name)] as const] : [];
+    return manifest.provider?.datatypes?.some((datatype: string) => ['social-post', 'blog-post'].includes(datatype)) ? [[entry.name, join(PLUGINS, entry.name)] as const] : [];
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;

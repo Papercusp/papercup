@@ -433,16 +433,20 @@ export function scorecardEmitMutexKey(input: {
   workspaceId: string;
   rubricRef: string;
   sourceHive?: string;
+  subjectKind?: string;
+  subjectRef?: string;
 }): string {
-  // The final scorecard history read is partitioned by workspace, rubric and
-  // sourceHive. Keep the same scope here; subject is intentionally omitted
-  // because the final read also omits subjectRef, and a narrower lock would not
-  // protect that actual read/write predicate.
+  // The final scorecard history read is partitioned by workspace, rubric,
+  // sourceHive, and (when supplied) the typed subject. Keep the lock at that
+  // same scope so unrelated subjects do not serialize while identical emits
+  // still share one read-to-write critical section.
   return [
     SCORECARD_EMIT_MUTEX_NAMESPACE,
     input.workspaceId,
     input.rubricRef,
     input.sourceHive ?? '<unscoped>',
+    input.subjectKind ?? '<untyped>',
+    input.subjectRef ?? '<unscoped>',
   ]
     .map((part) => `${part.length}:${part}`)
     .join('|');
@@ -3413,6 +3417,8 @@ export async function emitScorecard(
           workspaceId: input.workspaceId ?? activeWorkspaceId(),
           rubricRef: args.rubricRef,
           sourceHive,
+          subjectKind: args.subject?.kind,
+          subjectRef: args.subject?.ref,
         }),
         input.phases,
         scorecardMutexWaitTimeoutMs,

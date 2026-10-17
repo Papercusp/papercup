@@ -435,6 +435,7 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(bound.testRunExecution).toEqual({
       status: 'pass',
       passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+      passedCaseTitlesIncomplete: true,
       filePath: testPath,
     });
     await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = false WHERE id = ${run.id}`;

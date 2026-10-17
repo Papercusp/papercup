@@ -340,6 +340,20 @@ export default defineTool({
     const cappedRows = rows.filter((row) => row.text_full_chars >= SESSION_TURN_TEXT_CAP);
     for (const row of cappedRows) row.source_completeness = 'unknown';
 
+    // A cap-length index row already contains every character in the requested
+    // chunk while its offset stays below the cap. Do not decompress and parse
+    // the entire archived transcript just to rediscover that bounded prefix:
+    // `sessions:read { tail: 15 }` is a common read shape, and that recovery
+    // made a small indexed read scale with the whole archive (EI-26185536694007565).
+    // Recover only when the requested chunk reaches beyond the indexed cap;
+    // the response remains explicitly `source_completeness:'unknown'` until
+    // that caller asks for the uncapped continuation.
+    const needsFullSourceRecovery = (row: (typeof cappedRows)[number]) => {
+      const offset = row.text_offset ?? textOffset;
+      return offset >= SESSION_TURN_TEXT_CAP || textLimit > SESSION_TURN_TEXT_CAP - offset;
+    };
+    const recoverableCappedRows = cappedRows.filter(needsFullSourceRecovery);
+
     // A live self transcript is still on disk even though it has not reached
     // the permanent archive yet. Recover capped rows from that source before
     // falling through to the ended-session archive reader.
@@ -365,7 +379,7 @@ export default defineTool({
       }
     };
     if (selfSession && liveSelfSession) {
-      const liveRows = cappedRows.filter((row) =>
+      const liveRows = recoverableCappedRows.filter((row) =>
         row.source_kind === liveSelfSession!.sourceKind && row.session_id === liveSelfSession!.sessionId,
       );
       if (liveRows.length) {
@@ -393,7 +407,7 @@ export default defineTool({
       }
     }
 
-    const archiveBackedRows = cappedRows.filter((row) =>
+    const archiveBackedRows = recoverableCappedRows.filter((row) =>
       row.source_completeness !== 'complete' &&
       typeof row.session_id === 'string' && row.session_id.length > 0 &&
       (row.source_kind === 'claude' || row.source_kind === 'codex' || row.source_kind === 'omp'),
@@ -560,7 +574,16 @@ export default defineTool({
               : r.text.slice(0, textLimit);
             const fullChars = typeof r.text_full_chars === 'number' ? r.text_full_chars : r.text.length;
             const nextOffset = offset + text.length;
-            const textTruncated = fullChars > nextOffset;
+            // An index-capped row reports only the known prefix length. When
+            // this chunk reaches that cap, the source may continue even though
+            // `fullChars === nextOffset`; keep the continuation pointer so the
+            // caller can explicitly request the recovery path.
+            const sourceMayContinuePastCap =
+              r.source_completeness === 'unknown' &&
+              fullChars === SESSION_TURN_TEXT_CAP &&
+              offset < SESSION_TURN_TEXT_CAP &&
+              nextOffset >= SESSION_TURN_TEXT_CAP;
+            const textTruncated = fullChars > nextOffset || sourceMayContinuePastCap;
             // The indexed query always returns session_id; retain the requested
             // session as a defensive fallback for archive/test-shaped rows.
             const ref = formatSessionTurnRef(r.source_kind, r.session_id ?? sessionId, r.turn_idx);

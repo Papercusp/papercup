@@ -26,6 +26,27 @@ import {
   type ProviderDescriptor,
 } from './provider';
 
+describe('host-owned credential authentication headers', () => {
+  const base = { id: 'blog-fixture', contractVersion: 1, datatypes: ['blog-post'], capabilities: ['blog.post'], egressHosts: ['blog.test'] };
+  const field = { key: 'api_key', label: 'API key', hosts: ['blog.test'] };
+  const validate = (auth: unknown, overrides = {}) => validateProviderDescriptor({ ...base,
+    setup: { credentials: [{ ...field, auth, ...overrides }] } });
+  it('accepts raw API-key and authorization values as well as the existing Bearer default', () => {
+    for (const header of ['api-key', 'authorization', 'x-api-key']) {
+      for (const scheme of ['raw', 'bearer']) expect(validate({ header, scheme })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, setup: { credentials: [field] } })).toEqual([]);
+  });
+  it.each([null, [], 'raw', {}, { header: 'cookie', scheme: 'raw' }, { header: 'host', scheme: 'raw' },
+    { header: 'authorization\r\ninjected', scheme: 'raw' }, { header: 'api-key', scheme: 'Basic' },
+    { header: 'api-key', scheme: 'raw', value: 'secret' }])('refuses unsafe auth declarations %j', (auth) => {
+    expect(validate(auth).length).toBeGreaterThan(0);
+  });
+  it('requires a declared host for non-default authentication', () => {
+    expect(validate({ header: 'api-key', scheme: 'raw' }, { hosts: undefined })).toContain('provider.setup.credentials[0].auth requires hosts');
+  });
+});
+
 describe('provider rate budget declarations', () => {
   const base: ProviderDescriptor = { id: 'neutral-provider', contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.reply'], egressHosts: ['example.test'] };
   const budget = () => ({ verifiedAt: '2026-08-23', sources: ['https://example.test/limits'], requestsPerMinute: 60,

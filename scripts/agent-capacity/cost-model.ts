@@ -104,13 +104,20 @@ export interface OnDemandMonthInput {
   backupMonthUsd: number;
   controlMonthUsd: number;
   networkMonthUsd: number;
+  /** Monthly inference exposure, including customer-direct usage; never assume an omitted cost is zero. */
+  inferenceMonthUsd: number;
   /** An ephemeral address released on stop; reserved addresses belong in controlMonthUsd. */
   activeIpv4HourlyUsd: number;
 }
 
-/** Provider-neutral arithmetic; a priced profile still needs independent capacity evidence. */
+/** Provider-neutral arithmetic. Every category needs an explicit input; zero needs supporting
+ * evidence from the caller. Arithmetic alone proves neither measured cost nor capacity acceptance. */
 export function onDemandMonthUsd(input: OnDemandMonthInput) {
-  for (const [key, value] of Object.entries(input)) {
+  const required = ['activeHours', 'computeHourlyUsd', 'retainedDiskGiB', 'diskGiBMonthUsd',
+    'backupMonthUsd', 'controlMonthUsd', 'networkMonthUsd', 'inferenceMonthUsd',
+    'activeIpv4HourlyUsd'] as const satisfies readonly (keyof OnDemandMonthInput)[];
+  for (const key of required) {
+    const value = input[key];
     if (!Number.isFinite(value) || value < 0) throw new Error(`${key} must be finite and non-negative`);
   }
   if (input.activeHours > HOURS_PER_MONTH) throw new Error('activeHours exceeds the modeled month');
@@ -118,10 +125,11 @@ export function onDemandMonthUsd(input: OnDemandMonthInput) {
   const ipv4Usd = input.activeHours * input.activeIpv4HourlyUsd;
   const storageUsd = input.retainedDiskGiB * input.diskGiBMonthUsd;
   const retainedUsd = storageUsd + input.backupMonthUsd + input.controlMonthUsd;
-  const totalUsd = computeUsd + ipv4Usd + retainedUsd + input.networkMonthUsd;
+  const totalUsd = computeUsd + ipv4Usd + retainedUsd + input.networkMonthUsd + input.inferenceMonthUsd;
+  if (!Number.isFinite(totalUsd)) throw new Error('totalUsd must be finite');
   return { activeHours: input.activeHours, computeUsd, ipv4Usd, storageUsd,
     backupUsd: input.backupMonthUsd, controlUsd: input.controlMonthUsd,
-    networkUsd: input.networkMonthUsd, retainedUsd, totalUsd };
+    networkUsd: input.networkMonthUsd, inferenceUsd: input.inferenceMonthUsd, retainedUsd, totalUsd };
 }
 
 export function capacity(id: string): Capacity {

@@ -5117,6 +5117,36 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     expect(result.wouldBlock).not.toContain('disclosed-gap');
   });
 
+  it('labels universal notes by selected scope and truncates at a word boundary', () => {
+    const longNote = 'Historical R7cleanup ownerauthorization ' + 'detail '.repeat(100);
+    const noted = (id: number, note: string) => {
+      const base = evidence({
+        id,
+        evidenceKind: 'test',
+        evidenceRef: `test-run:${id}`,
+        coverageEvidenceRef: null,
+      });
+      return { ...base, details: { ...base.details, note } };
+    };
+    const selected = [noted(41767, 'selected proof note'), noted(41777, 'selected companion note')];
+    const other = [noted(41765, longNote), noted(41725, 'other current binding note')];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: selected,
+      disclosedGapEvidence: [...selected, ...other],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const rendered = result.ratings['disclosed-gap'].evidence;
+    expect(rendered).toContain('Checked 4 active binding(s) for the clause.');
+    expect(rendered).toContain('id=41767 scope=selected note="selected proof note"');
+    expect(rendered).toContain('id=41777 scope=selected note="selected companion note"');
+    expect(rendered).toContain('id=41765 scope=other-current note=');
+    expect(rendered).toContain('id=41725 scope=other-current note=');
+    expect(rendered).toContain('detail…[truncated]');
+    expect(rendered).not.toContain('detai…[truncated]');
+  });
+
   it('blocks a proof whose observations explicitly limit coverage to one leg', () => {
     const base = evidence();
     const observations =

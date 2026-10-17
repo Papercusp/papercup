@@ -12,8 +12,10 @@ import {
   listSpecEvidence,
   readCurrentOperationalArtifactDisclosures,
   evidenceCurrentInputSchema,
+  type ListSpecEvidenceDiagnostics,
   type EvidenceCurrentInput,
 } from './spec-evidence-store';
+import { createCommittedTreeDiagnostics } from './committed-tree-reader';
 import { resolvePersistedClassRef } from './plan-spec-quality-gate';
 import {
   ADEQUACY_CRITERIA,
@@ -876,6 +878,24 @@ export default defineTool({
         : undefined;
     const evaluatorStartedAt = Date.now();
     const phaseMs: Record<string, number> = {};
+    const newEvidenceDiagnostics = (): ListSpecEvidenceDiagnostics => ({
+      phaseMs: {},
+      committedTree: createCommittedTreeDiagnostics({
+        requestTraceId: ctx.requestOrigin?.mcpRequestTraceId,
+        toolName: 'plans:evaluate-spec-test-adequacy',
+      }),
+      bindings: {
+        selectedRows: 0,
+        rowsWithRecipe: 0,
+        measured: 0,
+        unavailable: 0,
+        skipped: 0,
+        totalMeasurementMs: 0,
+        maxMeasurementMs: 0,
+      },
+    });
+    const selectedEvidenceDiagnostics = newEvidenceDiagnostics();
+    const disclosedGapEvidenceDiagnostics = newEvidenceDiagnostics();
     const timePhase = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
       const startedAt = Date.now();
       try {
@@ -970,6 +990,7 @@ export default defineTool({
       current,
       bindingIds: args.bindingIds,
       limit: evidenceLimit,
+      diagnostics: selectedEvidenceDiagnostics,
     }));
     if (allEvidence.length >= evidenceLimit) {
       return {
@@ -1119,6 +1140,7 @@ export default defineTool({
             : {}),
           current,
           limit: disclosedGapEvidenceLimit,
+          diagnostics: disclosedGapEvidenceDiagnostics,
         }))
       : allEvidence;
     if (bindingSelection && disclosedGapEvidence.length >= disclosedGapEvidenceLimit) {
@@ -1410,6 +1432,13 @@ export default defineTool({
           bindingSelection,
           planItemPrefilter: itemClauses !== undefined,
           selectedEvidenceSkipped: itemSpecIds?.length === 0,
+        },
+        listSpecEvidenceDiagnostics: {
+          schemaVersion: 'list-spec-evidence-diagnostics-v1',
+          selectedEvidenceRead: selectedEvidenceDiagnostics,
+          disclosedGapEvidenceRead: bindingSelection && eligible.length > 0
+            ? disclosedGapEvidenceDiagnostics
+            : null,
         },
       },
     });

@@ -241,10 +241,10 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     const headers = new Headers();
     for (const [name, value] of Object.entries(request.headers ?? {})) {
       const lower = name.toLowerCase();
-      if (lower === 'authorization') {
+      if (['authorization', 'api-key', 'x-api-key'].includes(lower)) {
         throw new HostFetchError(
           'caller-authorization-header',
-          'host.fetch: providers may not set Authorization; the host injects the source credential',
+          'host.fetch: providers may not set authentication headers; the host injects the source credential',
         );
       }
       if (!HOP_BY_HOP.has(lower)) headers.set(name, value);
@@ -277,13 +277,18 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     // source is sent its own token, and the pasted value is only its fallback.
     const ownToken = pasted && resolved.ownCredential ? await deps.accessToken(resolved) : null;
     const secretValues: string[] = [];
+    const injectPasted = (field: NonNullable<typeof pasted>, value: string) => {
+      const auth = field.auth ?? { header: 'authorization', scheme: 'bearer' };
+      headers.set(auth.header, auth.scheme === 'raw' ? value : `Bearer ${value}`);
+      secretValues.push(value);
+    };
     if (session?.hosts.includes(url.hostname)) {
       if (!deps.credentialSession) throw new HostFetchError('credential-unavailable', 'host.fetch: session resolver unavailable');
       const credential = await deps.credentialSession(resolved);
       headers.set('authorization', `Bearer ${credential.accessToken}`);
       secretValues.push(...credential.secrets);
     } else if (principalValue) {
-      headers.set('authorization', `Bearer ${principalValue}`);
+      injectPasted(principal!, principalValue);
     } else if (ownToken) {
       headers.set('authorization', `Bearer ${ownToken}`);
     } else if (pasted) {
@@ -294,7 +299,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
           `host.fetch: "${pasted.label}" for provider "${providerId}" is not set up; paste it on the Integrations page`,
         );
       }
-      headers.set('authorization', `Bearer ${value}`);
+      injectPasted(pasted, value);
     } else if (service) {
       let serviceToken: string;
       try {

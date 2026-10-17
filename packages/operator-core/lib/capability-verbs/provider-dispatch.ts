@@ -37,7 +37,7 @@ import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
-export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post';
+export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post' | 'blog-post';
 
 /**
  * The outbound capability vocabulary (D-014.2). Each is passed to `invoke` as
@@ -60,6 +60,7 @@ export const OUTBOUND_CAPABILITIES = {
   socialPost: PROVIDER_SOCIAL_POST_CAPABILITY,
   socialReply: PROVIDER_SOCIAL_REPLY_CAPABILITY,
   socialDelete: PROVIDER_SOCIAL_DELETE_CAPABILITY,
+  blogPost: 'blog.post',
 } as const;
 
 /**
@@ -237,7 +238,7 @@ export async function invokeOutboundProvider(
     throw new ProviderCapabilityUnsupported(provider.id, capability);
   }
   const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
-  if (target.datatype === 'social-post') {
+  if (target.datatype === 'social-post' || target.datatype === 'blog-post') {
     const registry = deps.registry ?? await readyProviderRegistry();
     const current = verifiedProviderForCapability(registry, provider.id, capability);
     if (current !== provider.entry) throw new Error(`provider_changed:${provider.id}: resolve the source again`);

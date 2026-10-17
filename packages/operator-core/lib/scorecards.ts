@@ -35,6 +35,7 @@ import {
   parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
+import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY, measurePgTableGrowthWindow } from './storage/pg-table-growth';
@@ -419,6 +420,7 @@ export async function resolveScorecardInstrumentSnapshots(
     now?: () => number;
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
+    providerPackages?: typeof measureProviderPackageAcceptance;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
     coldEvidence?: (key: string, window: { workspaceId: string; harnessSlug: string; windowStart: string; windowEnd: string }) => Promise<{ verdict: 'pass' | 'fail' | 'unknown'; detail: string }>;
@@ -516,6 +518,7 @@ export async function resolveScorecardInstrumentSnapshots(
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
   ));
   let workOverheadMeasured: Promise<WorkOverheadMetrics> | null = null;
+  let providerPackagesMeasured: ReturnType<typeof measureProviderPackageAcceptance> | null = null;
   for (const key of keys) {
     if (key === BM25_LATENCY_INSTRUMENT_KEY) {
       const base = { measuredAt: BM25_LATENCY_ARTIFACT_IDENTITY.generatedAt,
@@ -554,6 +557,29 @@ export async function resolveScorecardInstrumentSnapshots(
       value: { resolver: key, resolverVersion: 2, reason },
       evidenceRef: 'scorecards:list:goal-mode-e2e',
     });
+    if (Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS).some(instrumentKey => instrumentKey === key)) {
+      const evidenceRef = 'libs/papercusp/plugins/*/{papercusp.json,README.md}';
+      if (subject?.kind !== 'plan' || subject.ref !== PROVIDER_PACKAGE_PLAN || input.rubric.subjectPlan !== subject.ref ||
+          input.rubric.subjectHarnessSlug !== 'papercusp') {
+        snapshots[key] = { ...unknown('Require the exact provider-package plan and harness; this is a current-tree measurement.'), evidenceRef };
+        continue;
+      }
+      try {
+        providerPackagesMeasured ??= (deps.providerPackages ?? measureProviderPackageAcceptance)();
+        const measurement = await providerPackagesMeasured;
+        const result = key === PROVIDER_PACKAGE_INSTRUMENT_KEYS.additions ? measurement.additions : measurement.claims;
+        // R-7 also covers completion/report claims. A tree pass cannot force a
+        // healthy grade while those independently reviewed records are absent.
+        const reportReviewPending = key === PROVIDER_PACKAGE_INSTRUMENT_KEYS.claims && result.verdict === 'pass';
+        snapshots[key] = { verdict: reportReviewPending ? 'unknown' : result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          value: { resolver: key, resolverVersion: 1, root: measurement.root, ...result,
+            ...(reportReviewPending ? { treeVerdict: result.verdict, verdict: 'unknown',
+              unresolved: ['Independent completion/report claims and live-run/approval evidence review.'] } : {}) } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Provider package read unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
+      continue;
+    }
     if (!subject?.ref || !subject.windowStart || !subject.windowEnd) {
       snapshots[key] = unknown('An exact subject observation window is required.');
       continue;
