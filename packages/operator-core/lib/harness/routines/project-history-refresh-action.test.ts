@@ -184,12 +184,21 @@ describe('runProjectHistoryRefreshAction health bookkeeping', () => {
     payloadTemplate: null,
   });
 
-  it.each([
+  const preconditionCases: Array<[
+    string,
+    Record<string, unknown>,
+    (file: string) => boolean,
+    () => string,
+    () => string | null,
+    string,
+  ]> = [
     ['misconfigured row', { output: 'history.ts' }, () => false, () => '/cli', () => '/ptool', 'repo_root is required'],
     ['missing repository', validConfig, () => false, () => '/cli', () => '/ptool', 'repo_root does not exist'],
     ['missing pinned CLI', validConfig, (file: string) => file === '/repo', () => '/cli', () => '/ptool', 'Papercusp CLI not found'],
     ['missing ptool', validConfig, () => true, () => '/cli', () => null, '`ptool` does not resolve'],
-  ])(
+  ];
+
+  it.each(preconditionCases)(
     'records a failed health outcome before returning for a %s precondition',
     async (_label, triggerConfig, exists, resolveCliBin, resolvePtool, expectedReason) => {
       const outcomes: ProjectHistoryHealthOutcome[] = [];
