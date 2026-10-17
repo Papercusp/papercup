@@ -1332,7 +1332,7 @@ async function persistedChats(db: OrgTestDb): Promise<PersistedChat[]> {
 type SeedAgentChat = {
   id: string;
   title: string;
-  transcript: Array<Record<string, unknown>>;
+  transcript: Array<{ role: string; content: string; ts: string; [key: string]: unknown }>;
   role?: string;
   featureId?: string | null;
   runtimeClass?: 'su-session' | 'legacy-owned-loop' | null;
@@ -1346,6 +1346,15 @@ type SeedAgentChat = {
 
 /** Seed a real Agent Chat row in this fixture's migrated Postgres database. */
 async function seedAgentChat(input: SeedAgentChat): Promise<void> {
+  // The installed Rust client's AgentChatTranscriptTurn requires all three
+  // strings. Reject malformed seeds here, before a missing timestamp becomes
+  // a slow, misleading "No messages yet" PTY failure (EI-26244280525107325).
+  for (const [index, turn] of input.transcript.entries()) {
+    expect(turn, `seeded ${input.id} turn ${index} wire contract`).toMatchObject({
+      role: expect.any(String), content: expect.any(String), ts: expect.any(String),
+    });
+    expect(Number.isFinite(Date.parse(turn.ts)), `seeded ${input.id} turn ${index} timestamp`).toBe(true);
+  }
   const now = input.updatedAt ?? Date.now();
   await db.adminSql`
     INSERT INTO harness_shared.agent_chats_consolidated
@@ -2861,10 +2870,20 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     const chatId = `pui-r07-compact-${tag}`;
     const answer = `R07 compact answer ${tag}`;
     const task = `R07 compact task ${tag}`;
-    const transcript = [{ role: 'user', content: 'compact question' }, { role: 'assistant', content: answer }];
+    const now = Date.now();
+    const transcript = [
+      { role: 'user', content: 'compact question', ts: new Date(now - 1_000).toISOString() },
+      { role: 'assistant', content: answer, ts: new Date(now).toISOString() },
+    ];
     await seedAgentChat({ id: chatId, title: `R07 compact ${tag}`, runtimeClass: 'su-session',
-      transcript, createdAt: Date.now() + 300_000, updatedAt: Date.now() + 300_000 });
+      transcript, createdAt: now + 300_000, updatedAt: now + 300_000 });
     await seedBoundSuSession({ agentChatId: chatId, transcript });
+    const snapshot = await fetch(`http://127.0.0.1:${operatorPort}/api/harness/${HARNESS}/agent-chats/${chatId}/su-session`);
+    expect(snapshot.status, 'compact journey canonical inventory preflight').toBe(200);
+    expect(await snapshot.json()).toMatchObject({ launchCwd: realpathSync(REPO_ROOT) });
+    const chat = await fetch(`http://127.0.0.1:${operatorPort}/api/harness/${HARNESS}/agent-chats/${chatId}`);
+    expect(chat.status, 'compact journey transcript preflight').toBe(200);
+    expect(await chat.json()).toMatchObject({ id: chatId, transcript });
     await db.adminSql`
       INSERT INTO harness_shared.session_tasks
         (workspace_id, session_id, task_id, position, content, active_form, status, created_at, updated_at)
@@ -2879,13 +2898,16 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       // operator and installed artifact. Keep each rendered frame as evidence.
       await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
       await pane.waitFor(answer, { timeoutMs: 40_000 });
+      if (!isSendReady(pane.screen())) pane.write('i');
       await pane.waitForSendReady();
+      stage = 'destination-return';
       pane.escape();
       pane.write('3');
       await pane.waitFor('Plans (', { timeoutMs: 40_000 });
       pane.write('o');
       await pane.waitFor('┌ Agent Chat');
       await pane.waitFor(answer, { timeoutMs: 40_000 });
+      if (!isSendReady(pane.screen())) pane.write('i');
       await pane.waitForSendReady();
       expect(pane.screen()).not.toContain('Context · Ctrl-T');
       frames.conversation = pane.screen();

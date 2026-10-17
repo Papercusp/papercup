@@ -1,18 +1,64 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
 import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, waitForPrivateOperator } from './private-http-workspace-preflight';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function privateBudgetEnvironment() {
+  const home = mkdtempSync(join(tmpdir(), 'private-budget-auth-'));
+  dirs.push(home);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('PAPERCUSP_HOME', join(home, '.papercusp'));
+  vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'test-runtime-budget-auth');
+  vi.stubEnv('PC_ISOLATED_RUNTIME_PROOF', '1');
+  vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+  vi.stubEnv('PAPERCUSP_DBOS_ENABLE', '0');
+  return home;
+}
+
+it('prepares a disposable native login for the budget bootstrap without changing the account route', async () => {
+  const home = privateBudgetEnvironment();
+  const { prepareCodexBudgetScenario } = await import('./codex-budget-http-scenario');
+  await prepareCodexBudgetScenario('test-runtime-budget-auth');
+  const authPath = join(home, '.codex', 'auth.json');
+  expect(JSON.parse(readFileSync(authPath, 'utf8'))).toEqual({ auth_mode: 'chatgpt', tokens: {
+    access_token: expect.stringMatching(/^private-budget-no-provider-/), account_id: 'private-budget' } });
+  expect(statSync(authPath).mode & 0o777).toBe(0o600);
+  expect(process.env.PAPERCUSP_WORKSPACE_ID).toBe('test-runtime-budget-auth');
+});
+
+it('refuses the budget scenario before touching auth outside its isolated runtime', async () => {
+  const home = privateBudgetEnvironment();
+  vi.stubEnv('PC_ISOLATED_RUNTIME_PROOF', undefined);
+  const { measureCodexBudgetScenario } = await import('./codex-budget-http-scenario');
+  await expect(measureCodexBudgetScenario({ workspace: 'test-runtime-budget-auth',
+    base: 'http://127.0.0.1:1', headers: {}, evidenceDir: home })).rejects.toThrow();
+  expect(existsSync(join(home, '.codex'))).toBe(false);
+});
+
+it('refuses to overwrite an existing login in the budget fixture', async () => {
+  const home = privateBudgetEnvironment();
+  const { prepareCodexBudgetScenario } = await import('./codex-budget-http-scenario');
+  mkdirSync(join(home, '.codex'));
+  const authPath = join(home, '.codex', 'auth.json');
+  const original = JSON.stringify({ tokens: { access_token: randomUUID() } });
+  writeFileSync(authPath, original, { mode: 0o600 });
+  await expect(prepareCodexBudgetScenario('test-runtime-budget-auth')).rejects.toThrow(/EEXIST/);
+  expect(readFileSync(authPath, 'utf8')).toBe(original);
+});
 
 function pgStartup(fields: Record<string, string>) {
   const body = Buffer.from(Object.entries(fields).flatMap(([key, value]) => [key, value]).join('\0') + '\0\0');
