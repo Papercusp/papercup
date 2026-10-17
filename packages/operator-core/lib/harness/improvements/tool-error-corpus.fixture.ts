@@ -499,6 +499,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'the patch tool refused stale/mismatched hunk context before writing; re-read the exact source lines (EI-25197457482157766)',
   },
   {
+    n: 1, errorCode: null, status: 'parse-error',
+    message: 'The nested call returned text beginning `format: toon`; a script assumed content[0].text was JSON and JSON.parse threw SyntaxError, discarding the raw event-status payload. The event status was not interpreted, and the call has not been retried.',
+    expectedClass: 'caller',
+    note: 'events:status returned valid compact TOON; JSON.parse of its tagged content is caller misuse and must not be promoted as a structural tool bug (EI-24868283216064457)',
+  },
+  {
     n: 1, errorCode: 'handler_error', status: 'error',
     message: 'Code-run script treated nested activity:recent typed output as an MCP content envelope and failed with structured_result_shape; the returned activity data is in the typed root.',
     expectedClass: 'caller',

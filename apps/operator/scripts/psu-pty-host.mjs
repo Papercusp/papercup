@@ -5206,9 +5206,9 @@ export function makeCarryRearmController({
   // policy and are not gated here.
   readWakeMode = async () => 'auto',
   wakeModeRetryMs = 30_000,
-  // Native submission/binding prerequisites can settle while the same child
-  // stays alive. Their retry must not inherit the much slower mode-policy poll.
-  deliveryRetryMs = 250,
+  // Native identity can arrive while the same child stays alive. Its retry
+  // must not inherit the much slower policy and carry-ordering poll.
+  nativeBindingRetryMs = 250,
   waitWakeModeRetry = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 }) {
   const pending = new Set();
@@ -5634,12 +5634,14 @@ export function makeCarryRearmController({
               continue;
             }
             if (deliveryDeferred) {
-              // Re-enter the identity and prompt gates on a paced native retry.
-              // Mode-policy recovery keeps its independent, slower cadence.
+              // Re-enter the identity and prompt gates on a paced native retry;
+              // preserve the existing cadence for every other prerequisite.
+              const retryMs = deferReason === 'successor-native-id-missing'
+                ? nativeBindingRetryMs : wakeModeRetryMs;
               try {
-                await waitWakeModeRetry(deliveryRetryMs);
+                await waitWakeModeRetry(retryMs);
               } catch {
-                await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
+                await new Promise((resolve) => setTimeout(resolve, retryMs));
               }
               continue;
             }

@@ -867,7 +867,7 @@ function isWorkItemsGetReceiptEntry(value: unknown): value is Record<string, unk
 }
 
 /** Reconcile the source manifest against the rows that survived this door. */
-function reconcileWorkItemsGetReceipt(sourceValue: unknown, outputValue: unknown): unknown {
+function reconcileWorkItemsGetReceipt(sourceValue: unknown, outputValue: JsonObject): JsonObject {
   const source = recordAt(sourceValue);
   const output = recordAt(outputValue);
   if (!source || !output || !Array.isArray(source.receipt)) return outputValue;
@@ -3888,7 +3888,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     } : null;
     const leaderBriefFits = leaderBriefPreview !== null &&
       Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
-    let projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
+    let projected: JsonObject = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
       scorecardsEmitCompactBody ?? evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ??
         (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {

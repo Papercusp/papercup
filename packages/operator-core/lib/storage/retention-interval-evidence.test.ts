@@ -1,10 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
-import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples, assessPostgresRetentionEvidence } from './retention-interval-evidence';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples, assessPostgresRetentionEvidence, measurePostgresRetentionEvidence } from './retention-interval-evidence';
 
 describe('native R-8 Postgres retention binding', () => {
-  const base = (): Parameters<typeof assessPostgresRetentionEvidence>[0] => ({
-    routine: { completedAt: '2026-10-17T00:00:00.000Z', tableRetentionComplete: true,
-      targets: ['route-invocations', 'tool-invocations', 'harness-run-output', 'agent-activity', 'memory-recall-query-text'].map(category => ({ category, complete: true })) },
+  const measuredAt = '2026-10-17T00:01:00.000Z';
+  const base = () => ({
+    workspaceId: 'workspace', host: 'fixture-host', measuredAt,
+    routine: { schemaVersion: 1 as const, kind: 'telemetry-retention-completion' as const,
+      workspaceId: 'workspace', host: 'fixture-host', workflowId: 'routine-workflow', routineId: 'routine-id',
+      startedAt: '2026-10-16T23:59:00.000Z', finishedAt: '2026-10-17T00:00:00.000Z',
+      completedAt: '2026-10-17T00:00:01.000Z', dryRun: false, tableRetentionComplete: true,
+      targets: ['route-invocations', 'tool-invocations', 'harness-run-output', 'agent-activity', 'memory-recall-query-text']
+        .map(category => ({ category, complete: true, retentionDays: category === 'memory-recall-query-text' ? 3 : 30 })) },
     ages: [
       { category: 'route-invocations', oldestAgeDays: 29, measured: true },
       { category: 'tool-invocations', oldestAgeDays: 29, measured: true },
@@ -19,10 +25,99 @@ describe('native R-8 Postgres retention binding', () => {
     expect(assessPostgresRetentionEvidence(base()).verdict).toBe('pass');
     const stale = base(); stale.ages[1]!.oldestAgeDays = 31;
     expect(assessPostgresRetentionEvidence(stale).verdict).toBe('fail');
-    const missing = base(); missing.routine = null;
-    expect(assessPostgresRetentionEvidence(missing).verdict).toBe('unknown');
-    const unbound = base(); unbound.servingRuntimes[0]!.containsColdFallback = null;
+    expect(assessPostgresRetentionEvidence({ ...base(), routine: null }).verdict).toBe('unknown');
+    const unbound = base(); Object.assign(unbound.servingRuntimes[0]!, { containsColdFallback: null });
     expect(assessPostgresRetentionEvidence(unbound).verdict).toBe('unknown');
+  });
+  it.each(['stale', 'future', 'reversed', 'ledger-before-finish', 'dry-run', 'foreign-host', 'foreign-workspace'])(
+    'rejects a %s routine receipt despite healthy current tables', kind => {
+      const input = base(), receipt = input.routine;
+      if (kind === 'stale') input.measuredAt = '2026-10-18T00:00:01.001Z';
+      if (kind === 'future') input.measuredAt = '2026-10-16T23:59:59.000Z';
+      if (kind === 'reversed') receipt.startedAt = '2026-10-17T00:00:02.000Z';
+      if (kind === 'ledger-before-finish') receipt.completedAt = '2026-10-16T23:59:59.000Z';
+      if (kind === 'dry-run') receipt.dryRun = true;
+      if (kind === 'foreign-host') receipt.host = 'other-host';
+      if (kind === 'foreign-workspace') receipt.workspaceId = 'other-workspace';
+      expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+    });
+  it('accepts the daily freshness boundary and measures freshness from native finish, not delayed ledger persistence', () => {
+    const input = base(); input.measuredAt = '2026-10-18T00:00:00.000Z';
+    expect(assessPostgresRetentionEvidence(input).verdict).toBe('pass');
+    input.measuredAt = '2026-10-18T00:00:00.001Z';
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+  });
+  it.each(['subset', 'duplicate', 'extra', 'wrong-horizon', 'incomplete'])(
+    'rejects %s target coverage', kind => {
+      const input = base(), targets = input.routine.targets;
+      if (kind === 'subset') targets.pop();
+      if (kind === 'duplicate') targets[4] = { ...targets[0]! };
+      if (kind === 'extra') targets.push({ category: 'unrelated', retentionDays: 30, complete: true });
+      if (kind === 'wrong-horizon') targets[0]!.retentionDays = 90;
+      if (kind === 'incomplete') targets[0]!.complete = false;
+      expect(assessPostgresRetentionEvidence(input).verdict).toBe('fail');
+    });
+  it.each([NaN, Infinity, -Infinity, -1, undefined, ''])('rejects malformed measured age %s', age => {
+    const input = base(); Object.assign(input.ages[0]!, { oldestAgeDays: age });
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+  });
+  it('rejects duplicated age observations and accepts explicit measured empty tables', () => {
+    const input = base(); input.ages.push({ ...input.ages[0]! });
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+    expect(assessPostgresRetentionEvidence({ ...base(), ages: base().ages.map(a => ({ ...a, oldestAgeDays: null })) }).verdict).toBe('pass');
+  });
+  it.each([undefined, 'true', 1])('requires an explicit boolean serving binding, not %s', binding => {
+    const input = base(); Object.assign(input.servingRuntimes[0]!, { containsColdFallback: binding });
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+  });
+  it.each(['completedAt', 'startedAt', 'finishedAt', 'dryRun', 'host', 'workspaceId', 'schemaVersion', 'kind'])(
+    'cannot certify missing or malformed receipt field %s', field => {
+      const input = base(); Object.assign(input.routine, { [field]: undefined });
+      expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+    });
+
+  afterEach(() => vi.useRealTimers());
+  const native = (options: { wrap?: boolean; receipt?: unknown; rows?: unknown[]; age?: unknown; ledger?: unknown; workflow?: string } = {}) => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(measuredAt));
+    const receipt = options.receipt === undefined ? base().routine : options.receipt;
+    const output = options.wrap ? { json: { diagnostics: { retention: receipt } } } : { diagnostics: { retention: receipt } };
+    const unsafe = vi.fn(async (query: string) => query.includes('dbos.operation_outputs')
+      ? [{ output: typeof receipt === 'string' ? receipt : JSON.stringify(output),
+        workflow_uuid: options.workflow ?? 'routine-workflow',
+        completed_at_epoch_ms: options.ledger === undefined ? String(Date.parse(base().routine.completedAt)) : options.ledger }]
+      : options.rows ?? [{ oldest_age_days: options.age === undefined ? '2' : options.age, total_rows: '1', dated_rows: '1' }]);
+    return { unsafe, measure: () => measurePostgresRetentionEvidence({ unsafe } as never, {
+      workspaceId: 'workspace', host: 'fixture-host', coldIntegrity: base().coldIntegrity, servingRuntimes: base().servingRuntimes,
+    }) };
+  };
+  it.each([false, true])('binds native receipt provenance and PostgreSQL numeric ages (wrapped=%s)', async wrap => {
+    const { unsafe, measure } = native({ wrap });
+    expect((await measure()).verdict).toBe('pass');
+    const [query, params] = unsafe.mock.calls.find(call => call[0].includes('dbos.operation_outputs'))! as unknown as [string, string[]];
+    expect(query).toContain('workspaceId'); expect(query).toContain('host');
+    expect(params).toEqual(['workspace', 'fixture-host']);
+    const epochQuery = unsafe.mock.calls.find(call => call[0].includes('FROM harness_shared.harness_run_output'))![0];
+    expect(epochQuery).toContain('to_timestamp'); expect(epochQuery).toContain('1000.0');
+  });
+  it.each(['{bad json', null, [], { tableRetentionComplete: true, targets: [] }])(
+    'keeps malformed native output unknown without throwing (%j)', async receipt => {
+      expect((await native({ receipt }).measure()).verdict).toBe('unknown');
+    });
+  it.each(['', 'NaN', 'Infinity', '-1', true, {}, '0x10'])('does not coerce malformed SQL age %j into passing evidence', async age => {
+    expect((await native({ age }).measure()).verdict).not.toBe('pass');
+  });
+  it.each([{ rows: [] }, { rows: [{}] }, { rows: [{ oldest_age_days: null, total_rows: '2', dated_rows: '0' }] }])(
+    'distinguishes an empty table from missing aggregate or undated rows ($rows)', async ({ rows }) => {
+      expect((await native({ rows }).measure()).verdict).toBe('unknown');
+    });
+  it('accepts an explicitly empty native table', async () => {
+    expect((await native({ rows: [{ oldest_age_days: null, total_rows: '0', dated_rows: '0' }] }).measure()).verdict).toBe('pass');
+  });
+  it.each(['bad', null, 0])('rejects malformed DBOS completion time %j without throwing', async ledger => {
+    expect((await native({ ledger }).measure()).verdict).toBe('unknown');
+  });
+  it('does not detach receipt identity from the DBOS workflow', async () => {
+    expect((await native({ workflow: 'other-workflow' }).measure()).verdict).not.toBe('pass');
   });
 });
 

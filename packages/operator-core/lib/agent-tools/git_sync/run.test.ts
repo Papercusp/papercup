@@ -156,6 +156,9 @@ describe('git-sync:run', () => {
       ['rev-parse', 'HEAD'],
       ['status', '--porcelain=v1', '-z', '-uall'],
     ]);
+    expect(execFileMock.mock.calls[1]?.[2]).toMatchObject({
+      env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    });
   });
 
   it('returns an honest no-repository preview without spawning git or firing git-sync', async () => {

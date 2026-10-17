@@ -91,6 +91,8 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  the checkpoint replacement/merge safety refusals that require explicit
  *  retirement of carried safety rows, and the stale loop-carry compare-and-swap
  *  conflict that requires a fresh read before retrying,
+ *  or compact MCP text tagged `format: toon|csv|tsv` incorrectly passed to
+ *  `JSON.parse`,
  *  a missing / unregistered browser UI client for a CLI caller,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
  *  an explicit claim-spec selector refusal for the literal `self` sentinel,
@@ -103,7 +105,7 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|(^|[^a-zA-Z0-9_])acceptance_bar_approval_required:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|(^|[^a-zA-Z0-9_])acceptance_bar_approval_required:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|format: *(toon|csv|tsv).*content.*text.*JSON[.]parse|content.*text.*JSON[.]parse.*format: *(toon|csv|tsv)|^cupId must be a concrete session/owner ID, not the literal "self"';
 
 /** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
  *  its PostgreSQL 42703 code and a known-column correction payload. When
@@ -229,7 +231,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     ],
     statuses: ['role-not-allowed', 'scratch_line_window_too_large', 'mixed_window_modes'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, supplied an owner handle that matches no or multiple known owners, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, supplied an owner handle that matches no or multiple known owners, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic, or passed tagged compact MCP text (format: toon/csv/tsv) to JSON.parse — not a tool bug',
   },
   {
     class: 'caller',

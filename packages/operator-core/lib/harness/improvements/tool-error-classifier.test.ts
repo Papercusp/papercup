@@ -641,6 +641,20 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     )).toBe('structural');
   });
 
+  it.each(['toon', 'csv', 'tsv'])('classifies JSON.parse of tagged %s MCP text as caller misuse', (format) => {
+    const message =
+      `The nested call returned text beginning \`format: ${format}\`; ` +
+      'a script assumed content[0].text was JSON and JSON.parse threw SyntaxError, ' +
+      'discarding the raw event-status payload.';
+
+    expect(classifyToolError(null, 'parse-error', message)).toBe('caller');
+    // A JSON-tagged response parse failure may indicate malformed tool output, so it remains structural.
+    expect(classifyToolError(null, 'parse-error', message.replace(`format: ${format}`, 'format: json')))
+      .toBe('structural');
+    expect(classifyToolError(null, 'parse-error', 'JSON.parse failed before a tool response was decoded.'))
+      .toBe('structural');
+  });
+
   it('lets the primary error code outrank unrelated secondary failure text', () => {
     const mixedMessage =
       'The extraction script treated dev:session_detail as an MCP content envelope; ' +
