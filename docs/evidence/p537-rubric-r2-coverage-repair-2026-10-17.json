@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "workItem": "WI-6554700010015799",
+  "status": "proposed-amendment-not-acceptance",
+  "sourceRubricRevision": 2,
+  "sourceCriteriaHash": "72fa1d166ab5904819bf0c59d0d25a1d42840e8cd144348e44c1a8ab3954ef13",
+  "critique": {
+    "conversation": "conv-request-e1f661ba33bfa186b58c1aec223a20cba14c1c9feb43f646d0cc204968349084",
+    "post": "thread-post:1185685",
+    "verdict": "blocking-coverage-defects",
+    "scope": "Independent rubric vetting; no implementation, capacity, cost or shipment pass."
+  },
+  "preserve": "R-1 through R-13 remain verbatim. Add the three missing outcomes identified by the independent critique; no proof binding before amended-rubric vetting.",
+  "additions": [
+    {
+      "key": "r-14",
+      "barKey": "R-14",
+      "title": "Trial profile is usable and all-in under $20 per month",
+      "intent": {
+        "request": "Qualify the trial configuration only when measured usable performance and complete monthly cost satisfy Avi's strict under-$20 gate.",
+        "sourceRefs": ["D-076", "D-075", "thread-post:1185685"]
+      },
+      "model": "For every trial usage profile defined by the plan, the configuration qualified under R-15 has a measurement-backed monthly all-in cost strictly below $20 across compute, retained disks, backups, network, control-plane and inference.",
+      "method": "Enumerate the defined trial profiles and their exact qualified real-VM run identities. For each, reconcile measured active hours and provider usage to effective rates, retained resources and observed token/inference usage using the existing cost and unit-economics ledgers; recompute all six categories and their sum before comparing with $20. Preserve usage windows, currency, credit-excluded rates, observed versus modeled provenance and allocation of shared costs. An absent/unpriced category, undefined duty profile, unqualified run, or list-price arithmetic without usage evidence is unknown and cannot pass. R-15 owns workload qualification; this criterion owns the complete cost of that qualified configuration. Manual verification remains explicit until a stable live ledger instrument covers the complete claim.",
+      "driftMarkers": "Any defined trial profile costs $20 or more, lacks R-15 qualification, omits inference or another category, treats unknown cost as zero, excludes shared retained/control costs, or relies solely on list-price arithmetic.",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": ["live"],
+      "evidencePlane": "live",
+      "passRatings": ["healthy"],
+      "check": {"kind": "instrument", "instrumentKey": "none"}
+    },
+    {
+      "key": "r-15",
+      "barKey": "R-15",
+      "title": "Minimum on-demand profile passes frozen workload and UX controls",
+      "intent": {
+        "request": "Measure the cheapest workable ordinary GCP/AWS VM profile for 50 assigned native agents with moderate active use and a separately measured full burst.",
+        "sourceRefs": ["D-074", "D-075", "thread-post:1185685"]
+      },
+      "model": "Each recommended GCP/AWS minimum profile passes the frozen D-075 acceptance thresholds in a qualified real-VM run of the exact candidate with 50 assigned native sessions, verified 1/5/10-active cohorts and a separate unbatched 50-agent burst.",
+      "method": "For each recommended provider/profile enumerate the run, exact candidate artifact, raw native histories, verified file-hash results and host telemetry. Verify one arm per invocation and swap configured before native launch through shutdown. Recompute assigned population, unique active agents, task counts and p50/p95/max/sample counts independently. Apply D-075 unchanged: zero OOM/native/task failures; moderate p95 echo <=1s, host fork/exec <=100ms and full model+CLI verified task wall <=30s; burst p95 echo <=3s and all 50 settled <=120s; validated application-ready cold wake <=120s with acknowledged data hashes preserved. Inspect fresh server/DB/repository footprint, direct major-fault/swap-in counters, active hours, grow/resize/reconnect durability and provider-confirmed cleanup. Missing raw coverage, sparse populations or invalid readiness measurements cannot pass. Report raw model latency without attributing delay to resource pressure absent a measured mechanism. The existing maintained native driver and archive verifier provide supporting data; their unit tests alone cannot qualify a VM. Manual verification is required across the complete run record.",
+      "driftMarkers": "A recommended profile lacks a required cohort or unbatched burst, conflates assigned with active populations, loses raw native histories, changes thresholds after measurement, substitutes shell time for full task latency, uses an unvalidated health endpoint or wrong candidate, omits durability/cleanup evidence, or fails any frozen threshold.",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": ["live"],
+      "evidencePlane": "live",
+      "passRatings": ["healthy"],
+      "check": {"kind": "instrument", "instrumentKey": "none"}
+    },
+    {
+      "key": "r-16",
+      "barKey": "R-16",
+      "title": "On-demand recommendation uses measured economic alternatives",
+      "intent": {
+        "request": "Compare demand-based GCP/AWS capacity and actual retained costs without charging moderate use as 24/7 dedicated compute or silently adopting a new backend/IaC writer.",
+        "sourceRefs": ["D-074", "D-076", "thread-post:1185685"]
+      },
+      "model": "The GCP/AWS recommendation selects among on-demand alternatives using measurement-backed monthly scenarios for 60/120/240 active hours and near-idle, with warm-floor-zero as a first-class alternative and every retained/shared cost included.",
+      "method": "Enumerate recommended GCP/AWS options and trace compute duty, measured capacity and actual purchased storage to qualified runs, provider rates and allocation evidence. Compare direct stop/start/provision with optional budgeted warm capacity, supported small DB/storage growth ladders and economical provider disks; include backup, network, control-plane and inference. Label each quantity observed or modeled and retain unpriced values as unknown. Document Cloud Run/Fargate/Lambda/managed-DB fit limits for arbitrary CLI, writable durable data, long-lived sessions, extensions and isolation; functional equivalence requires a trial. Document Terraform/OpenTofu fit for slow-changing foundation resources and preserve one existing lifecycle writer for wake/drain/attach. Analysis of an alternative is not its implementation or a passing trial. This criterion owns comparative selection, while R-14 owns the strict price threshold and R-15 owns usability qualification. Inspect the complete comparison manually until an existing registered instrument covers this selection contract.",
+      "driftMarkers": "The recommendation assumes full-month dedicated compute for moderate use, omits a required duty scenario or retained/shared/inference cost, treats thin files as lower purchased block-storage charges, selects an unmeasured provider/profile, or asserts serverless/IaC functional equivalence from analysis alone.",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": ["live"],
+      "evidencePlane": "live",
+      "passRatings": ["healthy"],
+      "check": {"kind": "instrument", "instrumentKey": "none"}
+    }
+  ],
+  "dischargeMap": [
+    {"bar": "R-14", "items": ["P-544", "P-538"], "evidencePlane": "live"},
+    {"bar": "R-15", "items": ["P-544", "P-540"], "evidencePlane": "live"},
+    {"bar": "R-16", "items": ["P-544", "P-538", "P-539"], "evidencePlane": "live"}
+  ],
+  "limitations": [
+    "No implementation grade or cost/capacity/shipment acceptance is claimed.",
+    "The 4CPU/8GiB historical run still lacks raw native-history coverage; application-ready cold-wake timing remains unqualified.",
+    "Existing arithmetic unit tests do not prove a measured monthly cost below $20."
+  ]
+}

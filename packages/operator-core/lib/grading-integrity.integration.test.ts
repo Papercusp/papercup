@@ -299,34 +299,6 @@ it('rebinds a live null-session auditor to its paced 429 transcript before launc
         }));
       },
       getRubric: async () => standardRubric(),
-      confirmReservation: async (targetId, key, options) => {
-        const rows = await db.sql`
-          SELECT item_kind,
-                 payload->'observation'->'gradingAudit'->>'state' = 'pending' AS state_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->>'key' = ${key} AS key_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${options.reservedAt} AS reserved_at_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot' = ${JSON.stringify(options.snapshot)}::jsonb AS snapshot_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot'::text AS stored_snapshot_text,
-                 ${JSON.stringify(options.snapshot)}::jsonb::text AS expected_snapshot_text,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot'->'evidenceFingerprint' = ${options.snapshot?.evidenceFingerprint ?? null} AS snapshot_evidence_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot'->'evaluatorBuild' IS NOT DISTINCT FROM ${options.snapshot?.evaluatorBuild ?? null}::jsonb AS snapshot_build_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot'->'bindingIds' = ${JSON.stringify(options.snapshot?.bindingIds ?? [])}::jsonb AS snapshot_bindings_ok,
-                 payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot'->'bindingCurrentness' IS NOT DISTINCT FROM ${options.snapshot?.bindingCurrentness ?? null}::jsonb AS snapshot_currentness_ok,
-                 payload->'observation'->>'evidenceFingerprint' = ${options.expectedCard?.evidenceFingerprint ?? null} AS evidence_ok,
-                 payload->'_ei'->>'created_by' = ${options.expectedCard?.createdBy ?? null} AS created_by_ok,
-                 payload->'observation'->>'rubricRef' = ${options.expectedCard?.rubricRef ?? null} AS rubric_ok,
-                 payload->'observation'->'retracted' IS NULL AS retracted_ok,
-                 NOT EXISTS (
-                   SELECT 1 FROM harness_shared.work_items AS superseder
-                    WHERE superseder.workspace_id = work_items.workspace_id
-                      AND superseder.payload->'observation'->>'supersedes' = work_items.feature_id
-                      AND superseder.payload->'observation'->>'rubricRef' = work_items.payload->'observation'->>'rubricRef'
-                      AND superseder.payload->'observation'->>'sourceHive' IS NOT DISTINCT FROM work_items.payload->'observation'->>'sourceHive'
-                 ) AS no_superseder_ok
-            FROM harness_shared.work_items
-           WHERE workspace_id = ${workspaceId} AND feature_id = ${targetId}`;
-        throw new Error(`DEBUG_AFTER_RESERVE ${JSON.stringify({ targetId, key, options, rows })}`);
-      },
       route: async () => ({ state: 'fallback', reason: 'fixture preserves the independent launch path' }),
       listTasks: (filter) => listTasks(filter, db.sql),
       bindTaskNativeSession,
@@ -347,7 +319,6 @@ it('rebinds a live null-session auditor to its paced 429 transcript before launc
     },
   );
 
-  throw new Error(`DEBUG_RETAINED_DISPATCH ${JSON.stringify(result)}`);
   expect(bindTaskNativeSession).toHaveBeenCalledExactlyOnceWith(liveTask.taskId);
   expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
   expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
