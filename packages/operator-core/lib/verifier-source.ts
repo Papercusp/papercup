@@ -12,22 +12,27 @@ import type { TaskRow } from './task-manager/types';
 const TASK_RECEIPT = '.verifier-task.json';
 
 /** Persist ownership before checkout/dependency preparation can block or be killed. */
-export function writeVerifierTaskReceipt(owned: string, repoRoot: string, env: NodeJS.ProcessEnv): void {
-  const taskId = env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
-  if (!taskId) return; // A CLI outside the durable task plane retains normal finally cleanup.
+export function writeVerifierTaskReceipt(owned: string, repoRoot: string, env: NodeJS.ProcessEnv, externalPath?: string) {
+  const taskId = env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID || null;
   const processIdentity = readProcessIdentity(process.pid);
-  if (!/^[A-Za-z0-9-]{1,100}$/.test(taskId) || !processIdentity)
+  if ((taskId !== null && !/^[A-Za-z0-9-]{1,100}$/.test(taskId)) || !processIdentity)
     throw new Error('verifier task ownership cannot be established');
   // This is the payload's kernel membership, captured BEFORE the launcher's
   // asynchronous markSpawned write. Descendants retain the owning task scope.
   const kernelPath = readProcessCgroupPath(process.pid);
   const parts = kernelPath?.split('/') ?? [];
-  const scopeIndex = parts.findIndex(part => taskIdFromScopeUnit(part) === taskId);
+  const scopeIndex = taskId === null ? -1 : parts.findIndex(part => taskIdFromScopeUnit(part) === taskId);
   const cgroupPath = scopeIndex > 0 ? parts.slice(0, scopeIndex + 1).join('/') : null;
-  writeFileSync(join(owned, TASK_RECEIPT), JSON.stringify({
+  const receipt = {
     schemaVersion: 'verifier-task-v1', taskId, repoRoot: realpathSync(repoRoot),
-    pid: process.pid, processIdentity, cgroupPath,
-  }) + '\n', { flag: 'wx', mode: 0o600 });
+    pid: process.pid, processIdentity, cgroupPath, ownedRoot: realpathSync(owned), cleanup: 'pending',
+  };
+  const bytes = JSON.stringify(receipt) + '\n';
+  writeFileSync(join(owned, TASK_RECEIPT), bytes, { flag: 'wx', mode: 0o600 });
+  // CLI ownership must survive both a killed finally and removal of the tree.
+  // A null taskId is evidence, never authority for the task reconciler to delete it.
+  if (externalPath) writeFileSync(externalPath, bytes, { flag: 'wx', mode: 0o600 });
+  return receipt;
 }
 
 function processGone(pid: number): boolean {

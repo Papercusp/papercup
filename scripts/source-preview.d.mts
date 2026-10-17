@@ -157,25 +157,27 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
  * @param {string} command
  * @param {string[]} args
  * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
- *   stallWindowMs?: number, extensionMs?: number }} options
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal }} options
  */
-export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs }: {
+export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs, signal }: {
     cwd: string;
     env: NodeJS.ProcessEnv;
     timeoutMs?: number;
     maxMs?: number;
     stallWindowMs?: number;
     extensionMs?: number;
+    signal?: AbortSignal;
 }): Promise<string>;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
  */
-export function prepareVerifierDependencies({ donor, dest, receipt, runPhase }: {
+export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal }: {
     donor: string;
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     runPhase?: VerifierPhaseRunner;
+    signal?: AbortSignal;
 }): Promise<{
     schemaVersion: string;
     scope: string;

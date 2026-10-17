@@ -907,7 +907,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
     });
 
-  it.each(['snapshot', 'census', 'child', 'sigkill'] as const)(
+  it.each(['snapshot', 'census', 'child', 'sigint', 'sigkill'] as const)(
     'retains plain CLI ownership and truthful cleanup on cancellation during %s', async phase => {
       const fixture = makeSuperproject(join(tmp, 'verifier-cli-cancel-' + phase));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -926,8 +926,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         'cp -al -- "$2/node_modules" "$3/node_modules"',
       ].join('\n') + '\n');
       write(fixture.repo, provider, [
-        "import { writeFileSync } from 'node:fs';",
-        "writeFileSync(process.env.VERIFIER_CANCEL_READY, process.cwd());",
+        "import { spawn } from 'node:child_process';",
+        "spawn(process.execPath, ['-e', `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(process.env.VERIFIER_CANCEL_READY + '.pid', String(process.pid)); fs.writeFileSync(process.env.VERIFIER_CANCEL_READY, process.cwd()); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
         "setInterval(() => {}, 1000);",
       ].join('\n'));
       write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
@@ -966,7 +966,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(JSON.parse(readFileSync(join(owned!, '.verifier-task.json'), 'utf8'))).toEqual(receipt);
         peer = mkdtempSync(join(dirname(owned!), 'verifier-command-'));
         writeFileSync(join(peer, 'peer-owned'), 'must survive');
-        const signal = phase === 'sigkill' ? 'SIGKILL' : 'SIGTERM';
+        const signal = phase === 'sigkill' ? 'SIGKILL' : phase === 'sigint' ? 'SIGINT' : 'SIGTERM';
         process.kill(phase === 'sigkill' ? -child.pid! : child.pid!, signal);
         const result = await closed;
         const final = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
@@ -975,12 +975,17 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           expect(final).toEqual(receipt); // A killed finally cannot manufacture cleanup evidence.
           expect(existsSync(owned!)).toBe(true);
         } else {
-          expect(result, output).toEqual([143, null]);
-          expect(final).toMatchObject({ ...receipt, cleanup: 'completed', cancellationSignal: 'SIGTERM' });
+          expect(result, output).toEqual([phase === 'sigint' ? 130 : 143, null]);
+          expect(final).toMatchObject({ ...receipt, cleanup: 'completed', cancellationSignal: signal });
           expect(existsSync(owned!)).toBe(false);
           const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
           expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
-          if (phase !== 'child') expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+          if (phase !== 'child' && phase !== 'sigint') expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+          if (existsSync(ready + '.pid')) {
+            const pid = readFileSync(ready + '.pid', 'utf8');
+            if (existsSync(`/proc/${pid}/stat`))
+              expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+          }
         }
         expect(readFileSync(join(peer, 'peer-owned'), 'utf8')).toBe('must survive');
       } finally {
