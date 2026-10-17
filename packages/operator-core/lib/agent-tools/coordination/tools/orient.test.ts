@@ -1900,6 +1900,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       limit: 20,
       admissibleOnly: true,
       kind: 'feature',
+      includeBody: false,
+      includePayload: false,
     });
     expect(calls[3].args).toMatchObject({ limit: 10, max_body_chars: 300 });
     // WI-5343: calls[4] batch-observes every fetched row for the real claim floors.
@@ -1966,7 +1968,9 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect((r.claimable as Array<{ id: string }>).map((x) => x.id)).toEqual(['WI-1', 'WI-2']);
     const listCalls = calls.filter((c) => c.name === 'work_items:list');
     expect(listCalls).toHaveLength(2);
+    expect(listCalls[0].args).toMatchObject({ includeBody: false, includePayload: false });
     // The fallback leg is family-agnostic (no `kind` filter) — the old whole-lane read.
+    expect(listCalls[1].args).toMatchObject({ includeBody: false, includePayload: false });
     expect(listCalls[1].args.kind).toBeUndefined();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
@@ -1978,6 +1982,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls.some((c) => c.name === 'work_items:claimable')).toBe(false);
     const listCalls = calls.filter((c) => c.name === 'work_items:list');
     expect(listCalls).toHaveLength(1);
+    expect(listCalls[0].args).toMatchObject({ includeBody: false, includePayload: false });
     expect(listCalls[0].args.kind).toBeUndefined();
   });
 

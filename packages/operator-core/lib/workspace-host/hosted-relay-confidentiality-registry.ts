@@ -408,6 +408,7 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
   },
   'vendor-runtime-config': {
     PAPERCUSP_HOSTED_FIRST_WORKSPACE_ORGANIZATIONS: { sensitivity: 'content', note: 'Structured customer/organization configuration; this is a vendor runtime input, not a persistence claim.' },
+    PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT: { sensitivity: 'content', note: 'Structured hosted trial entitlement policy; runtime configuration input, not approved telemetry metadata.' },
     PAPERCUSP_HOSTED_PUBLIC_ORIGIN: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },

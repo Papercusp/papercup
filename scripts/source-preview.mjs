@@ -478,6 +478,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'scripts/restricted-hold-tree-gate.mjs',
   'scripts/lib/spa-require-built.sh',
   'scripts/lib/budgeted-task-scheduler.mjs',
+  'scripts/lib/task-cgroup-limits.mjs',
   'scripts/pc-heavy.sh',
   'apps/operator/bin/release/dependency-generation.sh',
   'papercusp-desktop/bin/tauri-guarded',

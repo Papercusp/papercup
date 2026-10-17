@@ -9,14 +9,19 @@
  * Run: cd packages/operator-core && npx vitest run lib/endpoint-route/routes/agent-mcp/run-tool.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 
 vi.mock('../../../superuser-token', () => ({ isLoopbackRequest: vi.fn(() => true) }));
 vi.mock('../../../agent-tools', () => ({}));
 vi.mock('../../../capabilities/invoke', () => ({ invokeServerCapability: vi.fn() }));
 vi.mock('../../../auth/principal/from-cookie', () => ({ principalFromCookie: vi.fn(async () => null) }));
+vi.mock('../../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
+vi.mock('../../../coverage-census/attribution/sink', () => ({ recordHttpTraffic: vi.fn() }));
 
 import { invokeServerCapability } from '../../../capabilities/invoke';
 import { principalFromCookie } from '../../../auth/principal/from-cookie';
+import { registerRoute } from '../../define-route';
+import { DEFAULT_ROUTE_STACK } from '../../route-stack';
 const invokeM = vi.mocked(invokeServerCapability);
 const tool = (await import('./run-tool')).default;
 
@@ -45,6 +50,31 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(principalFromCookie).mockResolvedValue(null);
   invokeM.mockResolvedValue({ ok: true, status: 200, body: { ok: true } });
+});
+
+describe('POST /agent-mcp/run-tool — governed deadline receipt', () => {
+  it.each(['work_items:get', 'tools:invoke'])('preserves the governed read deadline receipt for %s', async name => {
+    vi.useFakeTimers();
+    try {
+      const receipt = { ok: false, counts: { ok: 0, failed: 1 },
+        results: [{ id: 'WI-stalled', ok: false, availability: 'unavailable', error: 'timeout', retryable: true }] };
+      invokeM.mockImplementationOnce(async () => {
+        await new Promise(resolve => setTimeout(resolve, 30_001));
+        return { ok: true, status: 200, body: { structuredContent: receipt } };
+      });
+      const app = new Hono();
+      // Exercise the real endpoint watchdog boundary; auth is covered separately.
+      registerRoute(app, tool, DEFAULT_ROUTE_STACK.filter(step => step.name === 'invoke'));
+      const pending = app.request(tool.path, { method: 'POST',
+        body: JSON.stringify({ name, args: { id: 'WI-stalled' } }) });
+      await vi.advanceTimersByTimeAsync(30_010);
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true, result: { structuredContent: receipt } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('POST /agent-mcp/run-tool — request cancellation', () => {

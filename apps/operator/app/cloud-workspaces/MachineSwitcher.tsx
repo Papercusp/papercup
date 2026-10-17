@@ -7,6 +7,7 @@ import { Select } from "@/app/harness/Select";
 import { Modal } from "@/app/harness/Modal";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from "./workspace-view-model";
+import { desktopMachineSelection, preferredDesktopWorkspace } from "./workspace-view-model";
 import { normalizeSshProfile } from "../settings/remote-access/connection-inventory";
 
 export interface MachineSwitcherProps {
@@ -40,8 +41,7 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
     onSelect={(hostId) => {
       // The viewer, pins and filter belong to the old machine. No shared registry
       // default or agent lifecycle is written; each window keeps its own URL.
-      const updated = setTarget({ desktopHost: hostId, host: hostId === LOCAL_DESKTOP_HOST ? null : hostId,
-        desktop: null, desktopPins: null, desktopFilter: null });
+      const updated = setTarget(desktopMachineSelection(hostId));
       // Batch portal navigation with the target so surface-param isolation
       // never sees a target belonging to a different app.
       if (onSelect) onSelect(hostId);
@@ -66,7 +66,7 @@ export function MachineSwitcherView({ localMode, value, rows, loading, error, on
 }) {
   const machines = rows.filter((row): row is WorkspaceHostControlRow => row.kind === "workspace"
     && row.observedState !== "absent" && row.observedState !== "destroying");
-  const selected = value ?? (localMode ? LOCAL_DESKTOP_HOST : machines[0]?.id ?? "");
+  const selected = value ?? preferredDesktopWorkspace(machines)?.id ?? (localMode ? LOCAL_DESKTOP_HOST : "");
   const options = [
     ...(localMode ? [{ value: LOCAL_DESKTOP_HOST, label: "This computer" }] : []),
     ...machines.map((row) => ({ value: row.id, label: `${row.name} — ${row.observedState}` })),

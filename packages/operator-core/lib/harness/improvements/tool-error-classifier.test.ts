@@ -379,6 +379,24 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
   });
 
+  it('classifies stale tools:invoke serving-generation refusals as caller state', () => {
+    const message =
+      'stale_tool_contract: schema was discovered from serving-generation-v1:old, but this operator serves ' +
+      'serving-generation-v1:current; refresh tools:find on this operator';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError('stale_tool_contract', 'error', 'generation mismatch before dispatch')).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ error: message }))).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'tools:invoke',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+    // A generic handler failure that merely mentions an MCP generation remains structural.
+    expect(classifyToolError('handler_error', 'error', 'serving generation lookup failed in the database')).toBe('structural');
+  });
+
   it('classifies the claim-spec self-sentinel refusal as caller misuse, not a structural tool defect', () => {
     const message =
       'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.';

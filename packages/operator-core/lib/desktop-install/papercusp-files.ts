@@ -1714,6 +1714,16 @@ export async function writeShim(
   const shellLiteral = (value: string): string => JSON.stringify(value);
   const fallbackLiterals = runtime.fallbackLaunchers.map(shellLiteral);
   const relativeLiterals = relativeLauncherPaths.map(shellLiteral);
+  // `psu-terminal-repair` activates Node's inspector with SIGUSR1. Node's
+  // default publish destinations include stderr, which appends a debugger URL
+  // directly to an interactive TUI. Keep the diagnostic endpoint available
+  // over loopback HTTP while leaving an explicit caller setting untouched.
+  const terminalSafeInspector = label === 'superuser launcher (psu)'
+    ? 'case " ${NODE_OPTIONS:-} " in\n' +
+      "  *' --inspect-publish-uid='*) ;;\n" +
+      '  *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--inspect-publish-uid=http" ;;\n' +
+      'esac\n'
+    : '';
   const body =
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
@@ -1727,6 +1737,7 @@ export async function writeShim(
     (bundledBinDir
       ? `export PATH=${shellLiteral(bundledBinDir)}:"$HOME/.local/bin:$PATH"\n`
       : 'export PATH="$HOME/.local/bin:$PATH"\n') +
+    terminalSafeInspector +
     'resolve_launcher() {\n' +
     `  if [ -n "\${${runtime.explicitLauncherEnv}:-}" ] && [ -f "\${${runtime.explicitLauncherEnv}}" ]; then\n` +
     `    printf '%s\\n' "\${${runtime.explicitLauncherEnv}}"\n` +

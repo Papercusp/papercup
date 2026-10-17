@@ -364,7 +364,7 @@ describe('per-pass kernel holder transport', () => {
   const evidence = (path: string, pids: string[] = [], patch = {}) => ({ complete: true,
     byPath: pids.length ? [[path, pids]] : [], diagnostics: { fdEnd: 1, cwdEnd: 1, readFailures: 0,
       identityStable: true, callerSeen: 1, descriptorsScanned: 50, processesScanned: 10, elapsedMs: 2, ...patch } });
-  const fixture = (respond: (request: { path: string; caller: number; control: string }, child: ChildProcess) => void) => {
+  const fixture = (respond: (request: { path: string; caller: number; control: string; operation?: string; [key: string]: unknown }, child: ChildProcess) => void) => {
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       exitCode: null as number | null, signalCode: null, kill: vi.fn() });
     child.kill.mockImplementation(() => { child.exitCode = 1; child.emit('close', 1, 'SIGKILL'); return true; });
@@ -396,6 +396,33 @@ describe('per-pass kernel holder transport', () => {
     } finally { await scanner.close(); }
     expect(child.stdin.writableEnded).toBe(true);
     expect((await scanner.scan([target])).complete).toBe(false);
+  });
+
+  it('holds a regular-file lease through the persistent worker and releases its token', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const child = fixture((request, spawned) => {
+      requests.push(request);
+      if (request.operation === 'lease-acquire') {
+        spawned.stdout!.emit('data', JSON.stringify({ complete: true,
+          lease: { token: '0123456789abcdef0123456789abcdef', type: 'write' },
+          diagnostics: { backend: 'fcntl-file-lease', identityStable: true } }) + '\n');
+      } else if (request.operation === 'lease-release') {
+        spawned.stdout!.emit('data', JSON.stringify({ complete: true, released: true,
+          diagnostics: { backend: 'fcntl-file-lease', breakRequested: false } }) + '\n');
+      } else {
+        spawned.stdout!.emit('data', JSON.stringify(evidence(request.path)) + '\n');
+      }
+    });
+    const scanner = createRetentionHolderScanner();
+    const candidate: RetentionEntry = { path: target, root: '/tmp', classId: 'scratch', newestWriteMs: 1,
+      bytes: 1, dev: 1, ino: 2, uid: 1000, gid: 1000 };
+    try {
+      const lease = await scanner.acquireRegularFileLease(candidate, 1_000);
+      expect(requests[0]).toMatchObject({ operation: 'lease-acquire', path: target, dev: 1, ino: 2, uid: 1000, gid: 1000 });
+      expect((await scanner.scan([target])).complete).toBe(false);
+      await lease.release();
+      expect(requests[1]).toEqual({ operation: 'lease-release', token: '0123456789abcdef0123456789abcdef' });
+    } finally { await scanner.close(); }
   });
 
   it.each([{ fdEnd: 0 }, { cwdEnd: 0 }, { callerSeen: 0 }, { readFailures: 1 }, { identityStable: false }])(

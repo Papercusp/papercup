@@ -74,6 +74,9 @@ export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
 export const PLUGIN_HOST_READINESS_TIMEOUT_MS = 5_000;
 /** The optional harness-registry read must not let catalog discovery hang on a DB pool wait. */
 export const DISCOVERY_HIVE_SCOPE_TIMEOUT_MS = 5_000;
+/** Keep the caller-facing result count aligned with the validation contract. */
+export const TOOLS_FIND_DEFAULT_LIMIT = 8;
+export const TOOLS_FIND_LIMIT_MAX = 25;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
@@ -1429,6 +1432,7 @@ export default defineTool({
     // P-011 prompt-weight: the result-shape prose below moved into the free `returns`
     // field, which already described this exact payload (EI-22083648545226771).
     'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
+    'The optional `limit` defaults to 8, accepts 1-25, and values above 25 are rejected. ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface ' +
     '(activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so ' +
     'follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there ' +
@@ -1472,8 +1476,16 @@ export default defineTool({
         .max(400)
         .optional()
         .describe('Compatibility alias for `query`; explicit `query` wins when both are supplied.'),
-      /** Max results (default 8). */
-      limit: z.number().int().positive().max(25).optional(),
+      /** Max results (default 8, hard maximum 25). */
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(TOOLS_FIND_LIMIT_MAX)
+        .optional()
+        .describe(
+          `Maximum number of matches; defaults to ${TOOLS_FIND_DEFAULT_LIMIT}; values above ${TOOLS_FIND_LIMIT_MAX} are rejected.`,
+        ),
       // EI-21854434860586936: every other harness/workspace-scoped tool in the
       // catalog accepts a `harness` (and often `workspace`) arg, so callers
       // naturally reach for the same shape here — but this tool is catalog-global
@@ -1571,8 +1583,9 @@ export default defineTool({
     const activeEmbeddings = indexedRevision === revision ? embIndex : null;
 
     const exactNames = exactToolNamesInQuery(args.query);
+    const resultLimit = args.limit ?? TOOLS_FIND_DEFAULT_LIMIT;
     const rankedHits = await findTools(corpus, args.query, {
-      limit: args.limit ?? 8,
+      limit: resultLimit,
       embedder,
       embeddings: activeEmbeddings,
       // WI-20202755675039636: a resolved provider can still stall (notably an
@@ -1580,7 +1593,7 @@ export default defineTool({
       // by degrading this query to lexical-only at the interactive budget.
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
-    const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, args.limit ?? 8);
+    const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, resultLimit);
 
     // `tools:find` returns a hand-serialized ToolResult, so the generic
     // payload-tier shaper cannot expand its compact discovery projection for

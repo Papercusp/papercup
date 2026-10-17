@@ -11,6 +11,8 @@ import { withFsMutex } from "./fs-mutex.mjs";
 // red test suite at every caller.
 import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 import { scriptCommandWords } from "./executed-source-map.mjs";
+import { readTaskCgroupLimit, readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
+export { readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
 
 export const DURATION_HISTORY_VERSION = 1;
 
@@ -1088,43 +1090,6 @@ const nonNegativeInteger = (value, name) => {
   }
   return parsed;
 };
-
-function readTaskCgroupLimit(
-  fileName,
-  {
-    readFile = readFileSync,
-    procCgroupPath = "/proc/self/cgroup",
-    cgroupRoot = "/sys/fs/cgroup",
-  } = {},
-) {
-  try {
-    const unified = String(readFile(procCgroupPath, "utf8"))
-      .split(/\r?\n/)
-      .find((line) => line.startsWith("0::"));
-    if (!unified) return null;
-    const relative = unified.slice(3).trim().replace(/^\/+/, "");
-    const raw = String(
-      readFile(join(cgroupRoot, relative, fileName), "utf8"),
-    ).trim();
-    if (!raw || raw === "max") return null;
-    return raw;
-  } catch {
-    return null;
-  }
-}
-
-/** Read the hard memory.max of THIS task's cgroup. `max`/unreadable means unbounded. */
-export function readTaskCgroupMemoryMaxMb(options = {}) {
-  try {
-    const raw = readTaskCgroupLimit("memory.max", options);
-    if (raw == null) return null;
-    const bytes = BigInt(raw);
-    if (bytes < 0n) return null;
-    return Number(bytes / (1024n * 1024n));
-  } catch {
-    return null;
-  }
-}
 
 /** Read the hard pids.max of THIS task's cgroup. `max`/unreadable means unbounded. */
 export function readTaskCgroupPidsMax(options = {}) {

@@ -450,6 +450,15 @@ describe('hosted first-workspace bootstrap (D-384)', () => {
   });
 });
 
+describe('funded first-workspace storage admission (P-537)', () => {
+  it.each(['gcp', 'aws'] as const)('pins a small explicit DB/workspace allocation for %s pooled admission', async provider => {
+    const { deps, resolvedSpecs } = harness();
+    expect(await createHostedFirstWorkspace(deps).run({ ...PAPERCUSP_REQUEST, provider })).toMatchObject({ ok: true });
+    expect(resolvedSpecs[0]).toMatchObject({ data: { encrypted: true, volumeGiB: 10,
+      allocation: { dbGiB: 8, workspaceGiB: 2 } } });
+  });
+});
+
 describe('hosted first-workspace in the customer\'s own AWS account (aws-byoc-gcp-parity D-008/D-009)', () => {
   it('builds the delegation from the account and region alone, discarding any role, principal or ExternalId the browser sent', async () => {
     const { deps, ensureProvisioned, resolvedSpecs } = harness();

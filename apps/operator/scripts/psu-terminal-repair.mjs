@@ -28,6 +28,7 @@ export const LEGACY_IDENTITY_FUNCTION = `export function codexNativeIdForPty(cod
   }
 }`;
 const MARKER = '/* psu-terminal-identity-fdinfo-v1 */';
+const INSPECTOR_PUBLISH_UID_FLAG = '--inspect-publish-uid=';
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 // Read original ESM bytes: Function#toString on a bundled/test-transformed
 // module carries synthetic import bindings that do not exist in a live host.
@@ -39,6 +40,31 @@ function productionFunction(name) {
   return launcherSource.slice(start, end + 2);
 }
 const readerSource = productionFunction('readLinuxProcessFlockText').slice('export '.length);
+
+/**
+ * Node's SIGUSR1 inspector activation writes its URL to fd 2 when the
+ * `stderr` publish destination is enabled. Interactive psu hosts must publish
+ * the URL through HTTP only so a repair cannot append a debugger banner to the
+ * owner's TUI. The last option wins, matching Node's command-line handling.
+ * @param {{cmdline?:string[],environment?:string}} [options]
+ */
+export function hasTerminalSafeInspectorPublication({ cmdline = [], environment = '' } = {}) {
+  let destinations = null;
+  const options = [];
+  for (const value of String(environment).split('\0')) {
+    if (value.startsWith('NODE_OPTIONS=')) options.push(...value.slice('NODE_OPTIONS='.length).trim().split(/\s+/));
+  }
+  options.push(...(Array.isArray(cmdline) ? cmdline : []));
+  for (let i = 0; i < options.length; i += 1) {
+    const option = String(options[i]);
+    let value = option.startsWith(INSPECTOR_PUBLISH_UID_FLAG)
+      ? option.slice(INSPECTOR_PUBLISH_UID_FLAG.length)
+      : null;
+    if (option === '--inspect-publish-uid' && i + 1 < options.length) value = String(options[++i]);
+    if (value !== null) destinations = value.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  return Boolean(destinations?.includes('http') && !destinations.includes('stderr'));
+}
 
 /** A function-body-only change is safe for V8 live edit of an existing module.
  * Inline the SAME production reader because legacy modules lack its binding.
@@ -166,6 +192,13 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
   const executable = basename(readlinkSync('/proc/' + pid + '/exe')).replace(/ \(deleted\)$/, '');
   if (!entry || !/^node(?:js)?$/.test(executable))
     throw new Error('Discovery PID is not a Node terminal host; repair refused before signaling');
+  const environment = readFileSync('/proc/' + pid + '/environ', 'utf8');
+  if (!hasTerminalSafeInspectorPublication({ cmdline: argv, environment })) {
+    throw new Error(
+      'Terminal inspector attachment refused: launch the host with --inspect-publish-uid=http ' +
+      '(stderr publication is unsafe for an interactive TUI)',
+    );
+  }
   const started = startTicks(pid);
   if (await discoverInspector({ portCount: 1 })) throw new Error('Inspector port is already occupied; leave the existing debugger alone');
   process.kill(pid, 'SIGUSR1');

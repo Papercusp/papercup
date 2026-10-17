@@ -234,6 +234,28 @@ describe('retention on a real fixture tree', () => {
     } finally { release(); await holder; }
   });
 
+  it('uses a held regular-file lease for file effects while directories keep host holder scans', async () => {
+    const { root, options } = await setup();
+    const directory = join(root, 'a-directory'); await mkdir(directory); await writeFile(join(directory, 'payload'), 'old');
+    const file = join(root, 'b-file'); await writeFile(file, 'old');
+    const scanPaths: string[][] = [], leased: string[] = [], released: string[] = [];
+    const receipt = await runDiskReclaimOnce({ ...options,
+      scanHolders: async (paths) => { scanPaths.push([...paths]); return { complete: true, byPath: new Map<string, string[]>() }; },
+      acquireRegularFileLease: async (entry) => {
+        leased.push(entry.path);
+        return { release: async () => { released.push(entry.path); } };
+      },
+    });
+    expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+    expect(leased).toEqual([file]); expect(released).toEqual([file]);
+    expect(scanPaths.length).toBeGreaterThanOrEqual(1);
+    expect(scanPaths.every((paths) => paths.length === 1 && paths[0] === directory)).toBe(true);
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: directory, status: 'removed' }));
+    expect(receipt.entries).toContainEqual(expect.objectContaining({ path: file, status: 'removed' }));
+    await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it.each(['local', 'native'])('expires build directories after one idle day while retaining their source entry (%s)', async route => {
     const { root, options } = await setup();
     const entry = join(root, 'agent-copy'); await mkdir(entry);

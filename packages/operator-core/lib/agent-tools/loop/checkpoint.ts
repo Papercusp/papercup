@@ -1367,23 +1367,55 @@ export default defineTool({
     //   A walls-only write likewise carries the prior note body forward.
     // A rescued blob's own rows slot in where the explicit arg would have gone — an
     // EXPLICIT `walls`/`checks` arg still wins outright (including its `[]` clear).
-    const effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
-    const effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
+    let effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
+    let effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
     const hasNoteWrite = hasStructured || rawNote !== undefined;
     // P-014: lint only what this call supplied as current provenance. Rows and
     // narrative inherited by mergeCarryRows remain in the stored note, but are
     // reported separately as retainedProvenance rather than as fresh activity.
     // EI-19425644478222007: resolve `[turn:self]` / `[turn:current]` into this write's
-    // REAL anchor before anything reads the text. Order is load-bearing: expanding
-    // BEFORE stampCarrySurfaceProvenance means the lint sees a verifiable ref (rather
-    // than flagging the sentinel as an unanchored action claim) and verifyTurnRefs
-    // resolves it against the transcript, so the note is STORED with an anchor that
-    // actually resolves. Gated on a cheap substring test — a write carrying no sentinel
-    // pays no extra transcript read. Fail-soft: an unresolvable current turn leaves the
-    // sentinel verbatim, which the lint still flags (an honest miss, never a fake ref).
-    const sentinelTurn = hasCurrentTurnSentinel(baseNote)
+    // REAL anchor before anything reads the text. Structured check/wall rows are composed
+    // into the current provenance text after the narrative base, so inspect and expand
+    // their provenance-bearing strings too; expanding only `baseNote` leaves row claims
+    // literal, which the lint flags and the store preserves. Order is load-bearing:
+    // expansion BEFORE stampCarrySurfaceProvenance lets lint see a verifiable ref rather
+    // than an unanchored sentinel. Gated on a cheap substring test across only this write's
+    // supplied fields; a write carrying no sentinel pays no extra transcript read.
+    // Fail-soft: an unresolvable current turn leaves the sentinel verbatim, which the lint
+    // still flags (an honest miss, never a fake ref).
+    type CarryRowText = {
+      claim: string;
+      recheck?: string;
+      falsifier?: string;
+      verified?: string;
+      observed?: string;
+      contested?: string;
+    };
+    const carryRowTextFields = ['claim', 'recheck', 'falsifier', 'verified', 'observed', 'contested'] as const;
+    const rowsHaveCurrentTurnSentinel = (rows: CarryRowText[] | undefined): boolean =>
+      rows?.some((row) => carryRowTextFields.some((field) => hasCurrentTurnSentinel(row[field]))) ?? false;
+    const currentTurnSentinelSupplied =
+      hasCurrentTurnSentinel(baseNote) ||
+      rowsHaveCurrentTurnSentinel(effectiveChecks) ||
+      rowsHaveCurrentTurnSentinel(effectiveWalls);
+    const sentinelTurn = currentTurnSentinelSupplied
       ? await resolveCurrentTurnStamp(ownerId).catch(() => null)
       : null;
+    if (sentinelTurn) {
+      const expandRowText = <T extends CarryRowText>(rows: T[] | undefined): T[] | undefined =>
+        rows?.map((row) => {
+          const expanded = { ...row } as CarryRowText;
+          for (const field of carryRowTextFields) {
+            const value = expanded[field];
+            if (typeof value === 'string') {
+              expanded[field] = expandCurrentTurnSentinel(value, sentinelTurn) ?? value;
+            }
+          }
+          return expanded as T;
+        });
+      effectiveChecks = expandRowText(effectiveChecks);
+      effectiveWalls = expandRowText(effectiveWalls);
+    }
     const anchoredBaseNote = expandCurrentTurnSentinel(baseNote, sentinelTurn);
     let currentProvenanceText = (() => {
       let text = anchoredBaseNote ?? '';

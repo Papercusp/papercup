@@ -72,8 +72,8 @@ export const MISROUTED_QUESTIONS: readonly MisroutedQuestion[] = Object.freeze([
     reason:
       'a definition lookup routes to lsp:query, which resolves shadowing and re-exports; gitnexus.context answers topology for a known symbol (gitnexus-deterministic-integration P-002, rubric R-2)',
   }),
-  ...['gitnexus.context', 'gitnexus.impact'].map((tool) => Object.freeze({
-    question: /\btopology\b|\bcall (?:chains?|sites?)\b|\bcallers\b|\bcallees\b|\bimpact\b|\bcode.graph\b/i,
+  ...['gitnexus.context', 'gitnexus.impact', 'gitnexus.api_impact'].map((tool) => Object.freeze({
+    question: /\btopology\b|\bcall (?:chains?|sites?)\b|\bcallers\b|\bcallees\b|\bimpact\b|\bcode.graph\b|\bAPI[ -]surface\b|\bblast[ -]radius\b/i,
     tool,
     instead: 'graph:query (bounded first-party topology)',
     reason: 'native topology is the default; GitNexus is retained only for explicitly optional internal comparisons (P-042, D-004/D-005)',

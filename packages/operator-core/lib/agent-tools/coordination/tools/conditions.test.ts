@@ -367,6 +367,12 @@ describe("computeConditionStates (pure)", () => {
 });
 
 describe("coord:conditions handler", () => {
+  it("declares condition_key in the public argument schema", () => {
+    const conditionKey = "loop-dead-man:papercusp";
+    expect(Object.keys(tool.args.shape)).toContain("condition_key");
+    expect(tool.args.parse({ condition_key: conditionKey })).toMatchObject({ condition_key: conditionKey });
+  });
+
   it("condition_key performs an exact keyed lifecycle read instead of the aggregate scan", async () => {
     M.pgFastPath = true;
     M.pgQuery.mockImplementation(async (..._args: unknown[]) => [

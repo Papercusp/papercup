@@ -1549,8 +1549,8 @@ snapshot_verifier_pinned_deps() {
       mkdir -p -- "$(dirname "$pinned_deps_copy")" || return 1
       cp -- "$helper_source" "$pinned_deps_copy" || return 1
     fi
-    # Reuse the task scheduler's measured cgroup ceiling. The copy and all its
-    # checksum children stay in this task; no unbounded detached copy is allowed.
+    # Read the same task ceiling without importing the scheduler/toolchain:
+    # this frozen tree has no node_modules until the copy below succeeds.
     node --input-type=module -e '
       const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
       const limit = readTaskCgroupMemoryMaxMb();
@@ -1559,7 +1559,7 @@ snapshot_verifier_pinned_deps() {
         process.exit(2);
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
-    ' "$snapshot_root/scripts/lib/budgeted-task-scheduler.mjs" || return $?
+    ' "$snapshot_root/scripts/lib/task-cgroup-limits.mjs" || return $?
     # The existing heavy-command wrapper admits the copy's memory reserve;
     # pinned-deps still owns the host copy lease and donor install mutex.
     bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
@@ -3939,7 +3939,10 @@ gtk_init_failed() {
 # stays correct wherever cargo chooses to place the escapes.
 strip_ansi() { sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g'; }
 desktop_binary_started() {
-  strip_ansi < "$LOG" 2>/dev/null | grep -qE "Running[[:space:]]+.*papercusp-desktop"
+  # Put stderr redirection before input redirection. If cargo has not created
+  # the log yet, opening it is the expected non-ready result; placing `< "$LOG"`
+  # first leaks bash's "No such file or directory" diagnostic during each poll.
+  strip_ansi 2>/dev/null < "$LOG" | grep -qE "Running[[:space:]]+.*papercusp-desktop"
 }
 vh_capture_phase_stop
 verifier_begin_phase boot

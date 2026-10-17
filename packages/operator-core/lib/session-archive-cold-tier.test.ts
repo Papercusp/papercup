@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DARK_FLAGS, FLAG_DEFAULTS, FLAGS } from '@papercusp/flags';
 const rollout = vi.hoisted(() => ({ getFlag: vi.fn() }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: rollout.getFlag }));
-import { assertArchiveColdMount, exportArchiveToColdTier, migrateArchiveToColdTier, readColdArchiveFiles, readColdArchiveStamp, runScheduledColdArchiveMigration, sha256Hex, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
+import { assertArchiveColdMount, exportArchiveToColdTier, migrateArchiveToColdTier, readColdArchiveFiles, readColdArchiveStamp, runScheduledColdArchiveMigration, verifyColdArchiveIntegrity, sha256Hex, type ArchiveFileRow, type ArchiveStampRow, type SessionArchiveStore } from './session-archive';
 
 const roots: string[] = [];
 beforeEach(() => { rollout.getFlag.mockReset().mockResolvedValue(false); });
@@ -125,5 +125,41 @@ describe('session archive cold-tier export', () => {
     await symlink(join(root, 'outside'), join(root, 'default'));
     await expect(exportArchiveToColdTier(stamp, [row], root)).rejects.toThrow('not real');
     await expect(assertArchiveColdMount('/')).rejects.toThrow('not mounted separately');
+  });
+
+  async function dualCopy() {
+    const primary = await mkdtemp(join(tmpdir(), 'session-cold-primary-')); roots.push(primary);
+    const replica = await mkdtemp(join(tmpdir(), 'session-cold-replica-')); roots.push(replica);
+    const { stamp, row } = fixture();
+    const a = await exportArchiveToColdTier(stamp, [row], primary);
+    const b = await exportArchiveToColdTier(stamp, [row], replica);
+    expect(a.location.manifestSha256).toBe(b.location.manifestSha256);
+    return { stamp: { ...stamp, cold_storage: { ...a.location, replicaRoot: replica } }, a, b,
+      statRoot: async (path: string) => ({ dev: path === '/' ? 1 : path === primary ? 2 : 3, ino: 10 }) };
+  }
+
+  it('reads both actual compressed copies and binds them to the retained PG manifest', async () => {
+    const { stamp, statRoot } = await dualCopy();
+    expect(await verifyColdArchiveIntegrity(stamp, { statRoot })).toEqual({ fileCount: 1,
+      bytesRaw: stamp.bytes_raw, bytesStored: stamp.bytes_stored,
+      manifestSha256: stamp.cold_storage.manifestSha256, primaryDevice: 2, replicaDevice: 3 });
+    await expect(verifyColdArchiveIntegrity({ ...stamp, manifest: [{ ...stamp.manifest[0]!, sha256: '0'.repeat(64) }] },
+      { statRoot })).rejects.toThrow('retained PG index');
+  });
+
+  it.each(['primary', 'replica'] as const)('detects a corrupted %s copy without modifying either locator', async which => {
+    const { stamp, statRoot, a, b } = await dualCopy();
+    await writeFile(join((which === 'primary' ? a : b).manifestPath, '..', 'blob-0.zst'), 'corrupt');
+    await expect(verifyColdArchiveIntegrity(stamp, { statRoot })).rejects.toThrow('checksum');
+  });
+
+  it('refuses missing replicas, same-volume copies and a remount during verification', async () => {
+    const { stamp, statRoot } = await dualCopy();
+    await expect(verifyColdArchiveIntegrity({ ...stamp, cold_storage: { ...stamp.cold_storage, replicaRoot: undefined } }))
+      .rejects.toThrow('distinct replica');
+    await expect(verifyColdArchiveIntegrity(stamp)).rejects.toThrow('independent mounted volumes');
+    let calls = 0;
+    await expect(verifyColdArchiveIntegrity(stamp, { statRoot: async path => ({ ...await statRoot(path),
+      ino: ++calls > 3 ? 20 : 10 }) })).rejects.toThrow('volume changed');
   });
 });

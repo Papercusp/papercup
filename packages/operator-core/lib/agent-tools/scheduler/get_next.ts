@@ -57,6 +57,7 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError, type CandidateWaitSnapshot } from '../../pg-bounded-txn';
 import {
   liveLockedPaths,
@@ -399,6 +400,15 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
   timeoutSource: 'pg' | 'caller-budget';
   message: string;
   candidateWaitSnapshot?: CandidateWaitSnapshot;
+  setupAcquisition?: {
+    label: string;
+    deadlineMs: number;
+    elapsedMs: number;
+    pool: string | null;
+    measured: string | null;
+    retryable: boolean;
+    acquisitionTickets: DbCallDeadlineError['acquisitionTickets'];
+  };
 } {
   // EI-21831306274538775: `pgCode: '57014'` here does NOT prove PostgreSQL timed out. The
   // claim ladder SYNTHESIZES the same typed error when its own wall-clock budget expires,
@@ -416,6 +426,18 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
           lastClaimStep +
           '". It locates the phase, not the cause; measure that phase before attributing the timeout to claim-ladder cost, backlog shape, or pool contention.'
         : 'The result does not identify a phase or prove PG pool saturation; inspect lastClaimStep before assigning a cause.';
+  const setupAcquisition =
+    error.cause instanceof DbCallDeadlineError
+      ? {
+          label: error.cause.label,
+          deadlineMs: error.cause.deadlineMs,
+          elapsedMs: error.cause.elapsedMs,
+          pool: error.cause.pool,
+          measured: error.cause.measured,
+          retryable: error.cause.retryable,
+          acquisitionTickets: error.cause.acquisitionTickets,
+        }
+      : undefined;
   return {
     ok: false,
     error: 'timeout',
@@ -423,6 +445,7 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
     pgCode: error.pgCode,
     timeoutSource: error.timeoutSource,
     ...(error.candidateWaitSnapshot ? { candidateWaitSnapshot: error.candidateWaitSnapshot } : {}),
+    ...(setupAcquisition ? { setupAcquisition } : {}),
     message: callerBudget
       ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.messageWithoutBlockerHint}. ` +
         'Retry now; no claim was returned. ' +
@@ -970,7 +993,14 @@ async function buildMissDiagnosis(args: {
       );
       if (agg.value) {
         excludedBreakdown = agg.value;
-        reviewable = reviewableMiss(agg.value.queueControl, { harness: args.harness });
+        // The generic miss path still serves callers whose effective spec is inherited from a
+        // fleet (for example when the request workspace cannot resolve member scope). Keep the
+        // reviewability read on that same fleet lane; omitting it widens work_items:claimable to
+        // the harness-wide review queue and can drain unrelated reviews.
+        reviewable = reviewableMiss(agg.value.queueControl, {
+          harness: args.harness,
+          spec: rec?.fleetSlug,
+        });
         const top = Object.entries(agg.value.excluded)
           .filter(([, n]) => (n as number) > 0)
           .sort((a, b) => (b[1] as number) - (a[1] as number));
@@ -1782,14 +1812,16 @@ export default defineTool({
       // FAIL-SOFT, always: the refusal is the load-bearing behaviour and ships unchanged
       // whether or not the bench registers. A bench failure must never convert a clean
       // compact-first verdict into an error.
-      const benchOutcome = await autoBenchContextCriticalCallerCore(
-        { ownerId: ident.ownerId, bucket: preflightState.bucket },
-        {
-          listParkedAwaitsForSubscribers: listParkedAwaitsForSubscribersStore,
-          registerBenchPark,
-          captureWakeHandleForOwner: captureWakeHandleForOwnerStore,
-          registerAwait: registerAwaitStore,
-        },
+      const benchOutcome = await trackPhase(ctx.phases, 'get_next:refusal:contextCriticalBench', () =>
+        autoBenchContextCriticalCallerCore(
+          { ownerId: ident.ownerId, bucket: preflightState.bucket },
+          {
+            listParkedAwaitsForSubscribers: listParkedAwaitsForSubscribersStore,
+            registerBenchPark,
+            captureWakeHandleForOwner: captureWakeHandleForOwnerStore,
+            registerAwait: registerAwaitStore,
+          },
+        ),
       );
       return recordNoClaim({
         content: [
@@ -1830,7 +1862,9 @@ export default defineTool({
       // claimable await(s) right here so no future release re-wakes them for a
       // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
       // same posture as the successful-claim cancel below.
-      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0);
+      const claimableAwaitsCancelled = await trackPhase(ctx.phases, 'get_next:refusal:cancelAwaits', () =>
+        cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0),
+      );
       return recordNoClaim({
         content: [
           {

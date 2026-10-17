@@ -3585,6 +3585,10 @@ dependency_generation_stage_exact_ref_inputs() {
   dependency_generation_sweep_exact_scratch "$parent"
   scratch="$(mktemp -d "$parent/${exact_input:0:16}.XXXXXX")" || return 1
   DEPENDENCY_GENERATION_EXACT_SCRATCH="$scratch"
+  # Exact-ref inputs are runtime state just like published generations. Protect
+  # each live scratch tree before its first writer/input, including in new pots
+  # whose enclosing repository has no Papercusp ignore rules yet.
+  dependency_generation_ensure_store_root "$scratch" || return 1
   dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer" || return 1
 
   # 1. The ref's dependency inputs, materialised by the same walk that keys them.

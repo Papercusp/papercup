@@ -2859,6 +2859,48 @@ describe('loop:checkpoint — current-turn sentinel reuses its resolved transcri
     );
     expect(setLoopCarryNote.mock.calls[0]?.[1]).toContain(currentTurn.ref);
   });
+
+  it('expands [turn:self] in structured check and wall rows before linting and storage', async () => {
+    const currentTurn = {
+      ref: '[turn:claude:current-row@2026-10-16T12:00:00.000Z]',
+      verdict: 'agent-injected' as const,
+      origin: 'loop-fire',
+    };
+    const checkClaim = 'Posted completion evidence to WI-2144600 [turn:self]';
+    resolveCurrentTurnStamp.mockReset();
+    resolveCurrentTurnStamp.mockResolvedValue(currentTurn);
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      const label = (options as { label?: string }).label;
+      if (label === 'carry-provenance-stamp') {
+        return { value: await (work as Promise<unknown>), degraded: false, elapsedMs: 0 };
+      }
+      if (label === 'loop:checkpoint decision-ref advisory') {
+        try {
+          return { value: await (work as Promise<unknown>), degraded: false, elapsedMs: 0 };
+        } catch {
+          return { value: undefined, degraded: true, elapsedMs: 0 };
+        }
+      }
+      return { value: undefined, degraded: false, elapsedMs: 0 };
+    });
+
+    const result = body(
+      await call({
+        checks: [{ claim: checkClaim, recheck: 'read the matching work-item thread', verified: 'tool receipt', ok: true }],
+        walls: [{ claim: 'The carry row was recorded during [turn:self].' }],
+      }),
+    );
+    const stored = String(setLoopCarryNote.mock.calls[0]?.[1] ?? '');
+
+    expect(result).toMatchObject({ ok: true, verified: true, checks: 1, walls: 1 });
+    expect(resolveCurrentTurnStamp).toHaveBeenCalled();
+    expect(stored).not.toContain('[turn:self]');
+    expect(stored.split(currentTurn.ref)).toHaveLength(3);
+    expect(result.turnProvenance?.refs).toMatchObject([
+      { ref: currentTurn.ref, found: true, checked: true, verdict: 'agent-injected', origin: 'loop-fire' },
+    ]);
+    expect(result.provenanceLint?.flagged ?? false).toBe(false);
+  });
 });
 
 describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {

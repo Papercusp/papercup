@@ -1679,7 +1679,8 @@ function spillRecoveryNote(
 ): string {
   const referenceReader =
     'The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. ' +
-    'Read it with `capability:read` to validate and unwrap its manifest before parsing the payload. ';
+    'Read it with `capability:read` byte pages (`byte_offset` + `byte_limit`, without `raw`) and follow `next_cursor` ' +
+    'to validate and unwrap its manifest before parsing the payload; the default numbered line view can truncate a long single-line payload. ';
   const recoverable =
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
@@ -3591,7 +3592,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // The cursor points to a manifest-bearing scratch file, not the JSON body;
               // offer plaintext line windows and retain the validated byte-page path.
               `Use capability:read cursor.args (byte_offset+byte_limit; no raw). ` +
-              `Plaintext: raw:true+offset/limit lines. ` +
+              `Plaintext: raw:true+offset/limit lines (long selected lines require byte pages). ` +
               `file_path-only truncates long lines; Scratch ref, not JSON; ` +
               `response.data canonical base64; runtime codec; decoded.length===byte_length; ` +
               `follow next_cursor; ` +

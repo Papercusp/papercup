@@ -1305,6 +1305,12 @@ export async function composeOrient(
       limit: claimableLimit,
       admissibleOnly: true,
       ...extra,
+      // WI-6554700010010580: orient's in-process dispatch intentionally clears the
+      // ambient payload tier. Keep this backlog fold source-lean explicitly so
+      // PostgreSQL never materializes large body/payload JSONB values before the
+      // compound result is shaped.
+      includeBody: false,
+      includePayload: false,
     }, signal);
   /** EI-21127719036550806: bound a core orient leg to ORIENT_CORE_LEG_TIMEOUT_MS,
    *  degrading to `fallback` on EITHER a hang or a rejection — one call site for the

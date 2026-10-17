@@ -1256,19 +1256,16 @@ export interface AgentReviewReconcileOutcome {
   woken?: number;
   /** Per-operation wall-clock measurements for the grade→review reconciliation seam. */
   diagnostics?: AgentReviewReconcileDiagnostics;
-  /**
-   * WI-41687: whether the row ended up held by its original submitter. False means the
-   * transfer could not be made (typically a reaped submitter session) and the reviewer's
-   * claim was dropped instead, leaving the row unassigned in 'revision-requested'. The
-   * revision itself is still fully recorded — grade, payload and round comment — so this
-   * reports a weaker DISPOSITION, never a failed review.
-   */
+  /** Whether the row ended up held by its effective submitter. */
   returnedToSubmitter?: boolean;
+  /** True when an un-actionable submitter left the existing reviewer claim in place. */
+  reviewerRetained?: boolean;
 }
 
 export type AgentReviewReconcilePhase =
   | 'readLedgerGrade'
   | 'getWorkItem'
+  | 'resolveVerifiedSubmitterAlias'
   | 'resolveSubmitterLiveness'
   | 'mergeWorkItemPayload'
   | 'ensureComment'
@@ -1352,14 +1349,23 @@ export async function reconcileAgentReviewGrade(
       } } : {}),
     };
     const changed = current.status !== next.status;
-    // The claim store can persist an ended session id as an assignee. Measure the
-    // submitter before this ledger-derived transition so a confirmed dead session
-    // is never selected as the revision target. A thrown oracle failure happens
-    // before any transition write; an in-band unknown keeps the prior transfer
-    // behavior, and the explicit orphan-resubmit path owns adoption.
-    const submitterLiveness = changed && current.submittedBy !== LEGACY_AGENT_REVIEW_SUBMITTER
-      ? await measure('resolveSubmitterLiveness', () => deps.resolveSubmitterLiveness(current.submittedBy, {
-          claimsHeld: workItem.assignee === current.submittedBy,
+    // The claim store can persist an ended session id as an assignee. Resolve signed
+    // system identities to their verified submitter first, then measure that person's
+    // liveness before the ledger-derived transition. An unverified system identity has no
+    // revision target; a confirmed dead session must not be selected either. A thrown
+    // oracle failure happens before any transition write, and an in-band unknown still
+    // lets the claim store validate an ordinary submitter transfer.
+    const submitterIsSynthetic = current.submittedBy.startsWith('system:');
+    const revisionSubmitter = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER
+      ? null
+      : submitterIsSynthetic
+        ? await measure('resolveVerifiedSubmitterAlias', () =>
+            (deps.resolveVerifiedSubmitterAlias ?? resolveVerifiedSubmitterAlias)(current.submittedBy))
+        : current.submittedBy;
+    const submitterLiveness = changed && revisionSubmitter
+      ? await measure('resolveSubmitterLiveness', () => deps.resolveSubmitterLiveness(revisionSubmitter, {
+          claimsHeld: workItem.assignee === revisionSubmitter ||
+            (submitterIsSynthetic && workItem.assignee === current.submittedBy),
         }))
       : null;
     const submitterEnded = submitterLiveness?.sessionState === 'ended';
@@ -1399,47 +1405,41 @@ export async function reconcileAgentReviewGrade(
       }
       return withDiagnostics({ workItemId: workItem.id, status: 'revision-requested', round: current.round, changed });
     }
-    let returnedToSubmitter = true;
+    let returnedToSubmitter = revisionSubmitter !== null && workItem.assignee === revisionSubmitter;
+    let reviewerRetained = false;
     if (changed) {
-      const transferred = submitterEnded
-        ? null
-        : await measure('transferClaim', () => deps.claimWorkItem(workItem.id, current.submittedBy, {
-            ...(workItem.harness ? { harness: workItem.harness } : {}),
-            ...(workItem.assignee ? { fromHolder: workItem.assignee } : {}),
-          }));
-      if (!transferred) {
-        // WI-41687: the submitter frequently no longer EXISTS by review time — a session
-        // that filed a report hours earlier is routinely reaped, and a reaped owner cannot
-        // take a claim. This is the common case, not an edge case.
-        //
-        // Throwing here stranded the row twice over. By this point the ledger grade, the
-        // payload flip to 'revision-requested' and the round comment have ALL committed,
-        // so the caller saw a hard error for a transition that was three-quarters applied;
-        // the row kept the REVIEWER's claim (an agent who is not implementing it); and the
-        // regrade path then refused to re-drive the transfer at all, because the payload had
-        // already left 'pending' ('agent-review-not-pending'). Nothing could recover it
-        // through the supported surface.
-        //
-        // Fall back to the disposition the LEGACY_AGENT_REVIEW_SUBMITTER branch above already
-        // uses for "no real submitter to hand this to", and that the approval path below uses
-        // unconditionally: drop the reviewer's claim and leave the row unassigned in
-        // 'revision-requested'. Release is best-effort — if it also fails the row is no worse
-        // off than before, and `returnedToSubmitter:false` reports the weaker disposition
-        // rather than hiding it behind a thrown error.
+      const currentHolderIsSubmitter = workItem.assignee !== null && (
+        workItem.assignee === current.submittedBy || workItem.assignee === revisionSubmitter
+      );
+      if (!revisionSubmitter || submitterEnded) {
         returnedToSubmitter = false;
-        const holder = workItem.assignee;
-        if (holder) {
+        reviewerRetained = workItem.assignee !== null && !currentHolderIsSubmitter;
+        if (workItem.assignee && currentHolderIsSubmitter) {
+          // A prior partial transition may already have left the stale submitter holding
+          // the row. Drop only that expected holder; when the reviewer holds it, preserve
+          // the claim so they can apply the recorded verdict (for example, close an item
+          // whose reported defect was already fixed).
           await measure('releaseClaim', () => deps.releaseWorkItem(workItem.id, {
             ...(workItem.harness ? { harness: workItem.harness } : {}),
-            expectedAssignee: holder,
+            expectedAssignee: workItem.assignee,
           }));
         }
+      } else if (!returnedToSubmitter) {
+        const transferred = await measure('transferClaim', () => deps.claimWorkItem(workItem.id, revisionSubmitter, {
+          ...(workItem.harness ? { harness: workItem.harness } : {}),
+          ...(workItem.assignee ? { fromHolder: workItem.assignee } : {}),
+        }));
+        returnedToSubmitter = Boolean(transferred);
+        // If the expected transfer did not land, keep the current reviewer claim. The
+        // grade and revision request are already durable, and the reviewer may need to
+        // dispose of work that the submitter cannot revise.
+        reviewerRetained = !transferred && workItem.assignee !== null && !currentHolderIsSubmitter;
       }
     }
     let woken: number | undefined;
-    if ((changed || commentAdded) && !submitterEnded) {
+    if ((changed || commentAdded) && revisionSubmitter && !submitterEnded && returnedToSubmitter) {
       woken = (await measure('deliverRevision', () => deps.deliverRevision({
-        to: current.submittedBy,
+        to: revisionSubmitter,
         workItemId: workItem.id,
         round: current.round,
         grade,
@@ -1447,7 +1447,15 @@ export async function reconcileAgentReviewGrade(
         gradedBy,
       }))).woken;
     }
-    return withDiagnostics({ workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, returnedToSubmitter, ...(woken === undefined ? {} : { woken }) });
+    return withDiagnostics({
+      workItemId: workItem.id,
+      status: 'revision-requested',
+      round: current.round,
+      changed,
+      returnedToSubmitter,
+      ...(reviewerRetained ? { reviewerRetained: true } : {}),
+      ...(woken === undefined ? {} : { woken }),
+    });
   }
 
   const reproduction = workItem.kind === 'bug' ? readBugReproductionReceipt(approvalReproduction(workItem.payload)) : null;

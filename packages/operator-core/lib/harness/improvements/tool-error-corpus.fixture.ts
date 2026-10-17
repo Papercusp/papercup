@@ -237,6 +237,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'MCP auth gate recorded an invalid-bearer refusal before dispatch; keep this credential rejection out of the structural bug lane (EI-24772367245361033)',
   },
   {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: 'stale_tool_contract: schema was discovered from serving-generation-v1:old, but this operator serves serving-generation-v1:current; refresh tools:find on this operator',
+    expectedClass: 'caller',
+    note: 'tools:invoke intentionally rejected a stale serving-generation binding before dispatch; refresh the catalog instead of filing a structural tool bug (EI-26182697062618996)',
+  },
+  {
     n: 1, errorCode: 'mcp_auth_failed', status: 'error',
     message: 'superuser_native_session_verifier_unavailable',
     expectedClass: 'transient',

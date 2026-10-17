@@ -35,12 +35,15 @@ const sizeCapError = (root: string, overByBytes: number) => `size cap remains ex
 export interface RetentionEntry {
   path: string; root: string; classId: string;
   newestWriteMs: number; bytes: number; dev: number; ino: number;
+  /** Ownership is revalidated by the native regular-file lease proof. */
+  uid?: number; gid?: number;
   protectedReason?: string;
   buildDirs?: Array<{ path: string; dev: number; ino: number }>;
   /** Reclaim only rebuildable descendants; the source entry stays. */
   buildOnly?: boolean;
 }
 interface BuildRemovalResult { removed: Array<{ path: string; bytes: number }>; }
+export interface RetentionFileLease { release: () => Promise<void>; }
 export interface ReclaimDelegate {
   classId: string;
   run: (dryRun: boolean, onPhase?: (event: ReclaimPhaseTiming) => void) => Promise<{ ok: boolean; detail: unknown }>;
@@ -114,6 +117,10 @@ export interface DiskReclaimOptions {
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
   removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void, dryRun?: boolean) => Promise<void | BuildRemovalResult>;
+  /** Explicit native proof for regular-file effects. The returned lease is held
+   * across the effect and released in the effect finally block. Directories
+   * never use this seam and retain their complete host holder scan. */
+  acquireRegularFileLease?: (entry: RetentionEntry, timeoutMs: number) => Promise<RetentionFileLease>;
 }
 
 /** The workflow checkpoints each callback separately. Only safe, productive
@@ -318,6 +325,7 @@ export function createRetentionHolderScanner(deps: {
   let child: ChildProcess | undefined, starting: Promise<ChildProcess> | undefined;
   let ended = false, closed = false, buffer = '', stderr = '';
   let pending: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
+  let activeLeaseToken: string | undefined;
   let serial = Promise.resolve();
   const fail = (reason: string) => {
     ended = true;
@@ -374,14 +382,7 @@ export function createRetentionHolderScanner(deps: {
     }
     const spawned = await start();
     if (ended || closed) return incompleteHolders('kernel holder worker ended');
-    const line = await new Promise<string>((resolveLine, rejectLine) => {
-      const timer = setTimeout(() => { fail('kernel holder request deadline'); spawned.kill('SIGKILL'); }, RETENTION_HOLDER_SCAN_MS);
-      pending = {
-        resolve: (value) => { clearTimeout(timer); resolveLine(value); },
-        reject: (error) => { clearTimeout(timer); rejectLine(error); },
-      };
-      spawned.stdin!.write(JSON.stringify({ path: paths[0], caller: process.pid, control }) + '\n');
-    });
+    const line = await requestWorker(spawned, { path: paths[0], caller: process.pid, control }, RETENTION_HOLDER_SCAN_MS);
     const result = JSON.parse(line), d = result?.diagnostics;
     if (result?.complete !== true || !d || d.fdEnd !== 1 || d.cwdEnd !== 1 || d.readFailures !== 0 ||
         d.identityStable !== true || ![d.callerSeen, d.descriptorsScanned, d.processesScanned].every((n) => Number.isSafeInteger(n) && n > 0) ||
@@ -400,9 +401,71 @@ export function createRetentionHolderScanner(deps: {
     return { complete: true, byPath: new Map([[control, [String(process.pid)]], ...paths.filter(() => pids.length).map((path): [string, string[]] => [path, pids])]),
       diagnostics: { elapsedMs: d.elapsedMs, readFailures: 0, descriptorsScanned: d.descriptorsScanned, processesScanned: d.processesScanned } };
   };
+  function requestWorker(spawned: ChildProcess, request: Record<string, unknown>, timeoutMs: number): Promise<string> {
+    return new Promise<string>((resolveLine, rejectLine) => {
+      const timeout = Math.max(1, Math.min(timeoutMs, RETENTION_HOLDER_SCAN_MS));
+      const timer = setTimeout(() => {
+        const error = new Error('holder worker request deadline');
+        const current = pending;
+        pending = undefined;
+        current?.reject(error);
+        fail(error.message);
+        spawned.kill('SIGKILL');
+      }, timeout);
+      pending = {
+        resolve: (value) => { clearTimeout(timer); resolveLine(value); },
+        reject: (error) => { clearTimeout(timer); rejectLine(error); },
+      };
+      try { spawned.stdin!.write(JSON.stringify(request) + '\n'); }
+      catch (error) { clearTimeout(timer); pending = undefined; rejectLine(new Error(message(error))); }
+    });
+  }
+  const acquireRegularFileLease = (entry: RetentionEntry, timeoutMs: number): Promise<RetentionFileLease> => {
+    const run = serial.then(async () => {
+      if (closed || ended) throw new Error('retention holder scanner unavailable');
+      if (activeLeaseToken) throw new Error('regular-file lease already held');
+      if (!Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino) ||
+          !Number.isSafeInteger(entry.uid) || !Number.isSafeInteger(entry.gid) ||
+          !Number.isFinite(entry.newestWriteMs)) throw new Error('regular-file lease identity incomplete');
+      const spawned = await start();
+      const line = await requestWorker(spawned, {
+        operation: 'lease-acquire', path: entry.path, caller: process.pid, control: process.cwd(),
+        dev: entry.dev, ino: entry.ino, newestWriteMs: entry.newestWriteMs, uid: entry.uid, gid: entry.gid,
+      }, timeoutMs);
+      let result: any;
+      try { result = JSON.parse(line); } catch { throw new Error('regular-file lease response was not JSON'); }
+      const token = result?.lease?.token;
+      if (result?.complete !== true || result?.lease?.type !== 'write' || typeof token !== 'string' ||
+          token.length < 16 || result?.diagnostics?.backend !== 'fcntl-file-lease' ||
+          result?.diagnostics?.identityStable !== true) {
+        throw new Error(`regular-file lease unavailable: ${result?.diagnostics?.reason ?? 'incomplete evidence'}`);
+      }
+      activeLeaseToken = token;
+      let released = false;
+      return {
+        release: async () => {
+          if (released) return;
+          released = true;
+          try {
+            const releaseLine = await requestWorker(spawned, { operation: 'lease-release', token }, RETENTION_HOLDER_SCAN_MS);
+            let releaseResult: any;
+            try { releaseResult = JSON.parse(releaseLine); } catch { throw new Error('regular-file lease release response was not JSON'); }
+            if (releaseResult?.complete !== true || releaseResult?.released !== true ||
+                releaseResult?.diagnostics?.breakRequested === true) {
+              throw new Error(`regular-file lease release incomplete: ${releaseResult?.diagnostics?.reason ?? 'lease break requested'}`);
+            }
+          } finally {
+            activeLeaseToken = undefined;
+          }
+        },
+      } satisfies RetentionFileLease;
+    });
+    serial = run.then(() => {}, () => {});
+    return run;
+  };
   const scan = (paths: readonly string[]): Promise<OpenWriterScan> => {
     const run = serial.then(async () => {
-      if (closed) return incompleteHolders('retention holder scanner closed');
+      if (closed || activeLeaseToken) return incompleteHolders('retention holder scanner unavailable while regular-file lease is held');
       return scanRetentionHolders(paths, { uid: () => 1, privileged: async (wanted, control) => {
         const candidates = wanted.filter((path) => path !== control);
         let result: OpenWriterScan;
@@ -427,7 +490,7 @@ export function createRetentionHolderScanner(deps: {
       spawned.once('close', () => { clearTimeout(timer); resolveClosed(); });
     });
   };
-  return { scan, close };
+  return { scan, acquireRegularFileLease, close };
 }
 
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
@@ -599,6 +662,7 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
     }
   }
   return { path, root, classId, newestWriteMs, bytes, dev: first.dev, ino: first.ino,
+    uid: first.uid, gid: first.gid,
     ...(collectBuildDirs ? { buildDirs } : {}) };
 }
 
@@ -862,6 +926,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
           let deferred = false;
+          let regularLease: RetentionFileLease | undefined;
           try {
             if (!deletionClassFor(entry.path, policy, started) || rootProtectedPaths().some((path) => overlap(entry.path, path))) {
               outcome.reason = 'live retention lease or pin'; continue;
@@ -876,8 +941,10 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // lstat, including when production supplies an enrolled remover.
             // Preserve that check without spawning the tree inspector for every
             // file; directories still require its complete walk.
+            let regularFile = false;
             const fresh = await measureEffect('reinspectionMs', async () => {
-              const regularFile = options.inspectTrees && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
+              const candidateStat = await lstat(entry.path);
+              regularFile = candidateStat.isFile();
               if (options.inspectTrees && (retainAfterMs !== undefined || capped) && !regularFile) {
                 const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, {
                   retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path], collectBuildDirs,
@@ -886,18 +953,33 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
                 if (census.error) throw new Error(census.error);
                 const current = census.entries.find((candidate) => candidate.path === entry.path);
                 if (!current) outcome.reason = census.retained[0]?.reason ?? 'recent write';
-                return current ? { ...current, root: entry.root, classId: entry.classId } : null;
+                return current ? { ...current, root: entry.root, classId: entry.classId, uid: candidateStat.uid, gid: candidateStat.gid } : null;
               }
               return inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
                 (reason) => { outcome.reason = reason; }, collectBuildDirs);
             });
             if (!fresh) continue;
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            const freshHolders = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() => scanRoot([entry.path])));
-            if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
-              outcome.reason = 'process evidence unavailable or held';
-              if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
-              continue;
+            // A regular file can use one enrolled worker FD as the proof held
+            // across the effect. Directories retain the complete host holder
+            // census because a lease on the directory would not prove all
+            // descendants are unused. Unsupported/incomplete lease evidence
+            // falls back to the existing fresh host scan.
+            if (regularFile && !receipt.dryRun && options.acquireRegularFileLease) {
+              try {
+                regularLease = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() =>
+                  options.acquireRegularFileLease!(fresh, Math.max(1, effectDeadline - Date.now()))));
+              } catch {
+                regularLease = undefined;
+              }
+            }
+            if (!regularLease) {
+              const freshHolders = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() => scanRoot([entry.path])));
+              if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
+                outcome.reason = 'process evidence unavailable or held';
+                if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
+                continue;
+              }
             }
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes) { outcome.status = 'changed'; continue; }
@@ -930,6 +1012,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (budgetExpired()) { stopAtBudget(root.path); break; }
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);
           } finally {
+            if (regularLease) {
+              try { await regularLease.release(); }
+              catch (err) {
+                outcome.status = 'failed'; outcome.reason = `regular-file lease release: ${message(err)}`;
+                receipt.errors.push(`lease-release:${entry.path}: ${message(err)}`);
+              }
+              regularLease = undefined;
+            }
             if (!deferred) effect.processed++;
             // Do not race or cancel a running safety check or removal. Record
             // progress between effects, after the final holder-to-unlink window.
@@ -1334,7 +1424,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const holders = createRetentionHolderScanner();
   try { return await runDiskReclaimOnce({ ...options, previousReceipt, delegates, readProtection, inspectTrees,
     removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
-    scanHolders: holders.scan, record: async (phase, detail) => {
+    scanHolders: holders.scan, acquireRegularFileLease: holders.acquireRegularFileLease,
+    record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } }); } finally { await holders.close(); }

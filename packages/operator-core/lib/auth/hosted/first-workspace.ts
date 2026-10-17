@@ -254,6 +254,14 @@ export const GCP_FIRST_WORKSPACE_DEFAULTS = {
   volumeGiB: 100,
 } as const;
 
+// D-074/D-077: the allowance ceiling is not purchased capacity. New funded
+// workspaces begin on the provider's 10GiB data disk; retained disks keep their
+// immutable admission split. Both providers must persist the same explicit
+// allocation that pooled admission and the guest quota renderer enforce.
+const FUNDED_FIRST_WORKSPACE_DATA = {
+  encrypted: true, volumeGiB: 10, allocation: { dbGiB: 8, workspaceGiB: 2 },
+} as const;
+
 /**
  * The provisioning model of a NEW Papercusp-hosted host (WI-10005210, plan
  * agent-capacity-and-cost-gcp-2026-09-30 D-028): spot, which roughly halves the cost per active
@@ -306,7 +314,9 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
     zone: location.zone,
     size,
     image: { ...GCP_FIRST_WORKSPACE_DEFAULTS.image },
-    data: { encrypted: true, volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
+    data: papercuspHosted
+      ? { ...FUNDED_FIRST_WORKSPACE_DATA, allocation: { ...FUNDED_FIRST_WORKSPACE_DATA.allocation } }
+      : { encrypted: true, volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
     provider: {
       projectId: source.projectId,
@@ -366,7 +376,9 @@ export function awsFirstWorkspaceDesiredSpec(input: {
     zone: infra.zone,
     size: AWS_FIRST_WORKSPACE_DEFAULTS.size,
     image: { ...infra.image },
-    data: { encrypted: true, volumeGiB: AWS_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
+    data: configuration.papercuspHosted
+      ? { ...FUNDED_FIRST_WORKSPACE_DATA, allocation: { ...FUNDED_FIRST_WORKSPACE_DATA.allocation } }
+      : { encrypted: true, volumeGiB: AWS_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
     provider: {
       vpcId: infra.vpcId,

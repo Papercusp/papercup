@@ -1859,8 +1859,29 @@ async function getFeatureWorkItemOnly(
 export interface WorkItemDetail extends WorkItem {
   topics: string[];
   posts: ThreadPostRow[];
+  /** Total posts when the detail read used a bounded thread window. */
+  postsTotal?: number;
   /** Edges OUT of this work-item (e.g. blocks → feature|plan_item), excluding tag edges. */
   links: { rel: string; dst: ObjectRef }[];
+}
+
+/**
+ * Maximum thread slice used by callers that need detail metadata without
+ * allowing an unbounded full-thread read. The ordinary `getWorkItemDetail`
+ * contract remains full when this option is omitted.
+ */
+export const WORK_ITEM_DETAIL_THREAD_LIMIT = 10;
+
+export interface WorkItemDetailReadOptions {
+  /** Read at most this many recent posts and return the same-snapshot total. */
+  threadLimit?: number;
+}
+
+/** Test seams for the bounded detail reader; production uses the defaults. */
+export interface WorkItemDetailReadDeps {
+  getWorkItem?: typeof getWorkItem;
+  getWorkItemThreadWindow?: typeof getWorkItemThreadWindow;
+  listOut?: (ref: ObjectRef) => Promise<Array<{ rel: string; dst: ObjectRef }>>;
 }
 
 /** The last-N slice of a work-item's thread, plus what frames it. */
@@ -1877,11 +1898,10 @@ export interface WorkItemThreadWindow {
 /**
  * The LAST `limit` posts of a work-item's thread, bounded, plus its total and topics.
  *
- * The bounded sibling of {@link getWorkItemDetail}, which reads a thread in FULL
- * because it backs a full render. This exists for cell resolvers and other hot
- * read paths, where pulling a 121-post thread to display 3 is the over-fetch the
- * performance doc lists — see PgThreadStore.listRecentPosts for why the count
- * rides the same query rather than a second one.
+ * The bounded thread reader used by cell resolvers and the bounded detail path.
+ * Pulling a 121-post thread to display 3 is the over-fetch the performance doc
+ * lists — see PgThreadStore.listRecentPosts for why the count rides the same
+ * query rather than a second one.
  *
  * ⚠ DISPATCHES BY FAMILY, exactly like {@link getWorkItemDetail} — and the reason
  * is a trap worth stating, because getting it wrong FAILS SILENTLY. The two
@@ -1925,9 +1945,35 @@ export async function getWorkItemThreadWindow(
 }
 
 /** A work-item plus its coord-substrate detail (topics, thread posts, outgoing links). */
-export async function getWorkItemDetail(id: string, harness?: string): Promise<WorkItemDetail | null> {
-  const wi = await getWorkItem(id, harness);
+export async function getWorkItemDetail(
+  id: string,
+  harness?: string,
+  opts: WorkItemDetailReadOptions = {},
+  deps: WorkItemDetailReadDeps = {},
+): Promise<WorkItemDetail | null> {
+  const wi = await (deps.getWorkItem ?? getWorkItem)(id, harness);
   if (!wi) return null;
+  const boundedThreadLimit = opts.threadLimit === undefined
+    ? undefined
+    : Math.max(0, Math.min(WORK_ITEM_DETAIL_THREAD_LIMIT, Math.trunc(opts.threadLimit)));
+  if (boundedThreadLimit !== undefined) {
+    // `detail:true` is shaped after this helper returns, so loading every post
+    // here only to discard most of them defeats the result-door bound. Reuse the
+    // family-dispatching bounded window reader; its database transaction carries
+    // a statement timeout and returns the exact total alongside the slice.
+    const thread = await (deps.getWorkItemThreadWindow ?? getWorkItemThreadWindow)(id, boundedThreadLimit, harness, {
+      getWorkItem: async () => wi,
+    });
+    const ref = workItemObjectRef(wi);
+    const out = await (deps.listOut ?? ((source) => blockingLinks.listOut(source)))(ref);
+    return {
+      ...wi,
+      topics: thread?.topics ?? [],
+      posts: thread?.posts ?? [],
+      ...(thread ? { postsTotal: thread.total } : {}),
+      links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })),
+    };
+  }
   if (wi.family === 'issue') {
     const d = await getIssueDetail(id);
     return { ...wi, topics: d?.topics ?? [], posts: d?.posts ?? [], links: d?.links ?? [] };

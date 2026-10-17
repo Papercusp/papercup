@@ -313,7 +313,7 @@ function checkpointTextPage(checkpoint: string | null, requestedOffset: number, 
 }
 
 const RESUME_ARGUMENT_CONSTRAINT =
-  'resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the full record)';
+  'resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the detail record)';
 
 /**
  * P-002 (WI-2145856): every undeclared key a real caller reached for when they
@@ -369,7 +369,7 @@ const workItemsGetArgRedirects: Record<string, string> = {
   ...Object.fromEntries(
     DETAIL_SWITCH_ALIASES.map((key) => [
       key,
-      `detail — set it to true for the single full-record switch (topics, thread posts, links, \`lifecycle\`, \`priorAttempts\`). If you only want COMMENTS, prefer \`threadLimit\` (1–${THREAD_WINDOW_MAX}): it is bounded and much cheaper than the full render.`,
+      `detail — set it to true for the single detail-record switch (topics, recent thread posts, links, \`lifecycle\`, \`priorAttempts\`). The detail read caps recent posts at ${THREAD_WINDOW_MAX} and discloses the same-snapshot total; if you only want COMMENTS, prefer \`threadLimit\` (1–${THREAD_WINDOW_MAX}) for the smaller bounded window.`,
     ]),
   ),
   includeChecks:
@@ -537,8 +537,9 @@ function resultRowPath(pick: string): string | null {
  * payload. Unknown or payload-derived fields fail open to the existing full
  * read; a partial source row must never change the meaning of a selected field.
  *
- * `detail:true` intentionally stays full: its coord-substrate render has
- * separate read semantics and is not the hot path reported by EI-219266.
+ * `detail:true` intentionally keeps the base source complete: its coord-substrate
+ * render is bounded by `getWorkItemDetail`'s detail-read option and is not the
+ * hot path reported by EI-219266.
  */
 export function workItemsGetSourceReadOptions(
   sourceProjection: unknown,
@@ -1224,7 +1225,9 @@ export default defineTool({
             try {
               const row = await (
                 readDetail
-                  ? getWorkItemDetail(id, args.harness)
+                  ? getWorkItemDetail(id, args.harness, {
+                      threadLimit: THREAD_WINDOW_MAX,
+                    })
                   : sourceReadOptions
                     ? getWorkItem(id, args.harness, sourceReadOptions)
                     : getWorkItem(id, args.harness)

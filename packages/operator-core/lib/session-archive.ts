@@ -541,6 +541,45 @@ export async function readColdArchiveFiles(
   return rows;
 }
 
+/** Read-only integrity evidence for an existing cutover. A PG locator alone is
+ * not proof: read both manifests and every compressed/raw checksum, compare the
+ * retained PG index, and require two volumes independent of each other and root.
+ * The test seam changes only stat identity; the actual file readers still run. */
+export async function verifyColdArchiveIntegrity(stamp: ArchiveStampRow, deps: {
+  statRoot?: (path: string) => Promise<{ dev: number; ino: number }>;
+} = {}): Promise<{ fileCount: number; bytesRaw: number; bytesStored: number;
+  manifestSha256: string; primaryDevice: number; replicaDevice: number }> {
+  const location = stamp.cold_storage;
+  if (!location?.replicaRoot || location.root === location.replicaRoot) {
+    throw new Error('cold archive requires a distinct replica');
+  }
+  const inspect = deps.statRoot ?? stat;
+  const roots = ['/', location.root, location.replicaRoot];
+  await Promise.all(roots.slice(1).map(validateColdRoot));
+  const before = await Promise.all(roots.map(path => inspect(path)));
+  if (new Set(before.map(info => info.dev)).size !== 3) {
+    throw new Error('cold archive copies must use independent mounted volumes');
+  }
+  const canonicalManifest = (value: ArchiveStampRow) => JSON.stringify(value.manifest.map(entry => ({
+    relpath: entry.relpath, sha256: entry.sha256, bytes_raw: entry.bytes_raw,
+    short_user_turns_offset: entry.short_user_turns_offset ?? null,
+  })));
+  for (const root of roots.slice(1)) {
+    const copy = await readColdArchiveStamp(stamp.source_kind, stamp.session_id, { ...location, root });
+    if (copy.file_count !== stamp.file_count || copy.bytes_raw !== stamp.bytes_raw ||
+        copy.bytes_stored !== stamp.bytes_stored || canonicalManifest(copy) !== canonicalManifest(stamp)) {
+      throw new Error('cold archive differs from retained PG index');
+    }
+    await readColdArchiveFiles(copy);
+  }
+  const after = await Promise.all(roots.map(path => inspect(path)));
+  if (before.some((info, i) => info.dev !== after[i]!.dev || info.ino !== after[i]!.ino)) {
+    throw new Error('cold archive volume changed during verification');
+  }
+  return { fileCount: stamp.file_count, bytesRaw: stamp.bytes_raw, bytesStored: stamp.bytes_stored,
+    manifestSha256: location.manifestSha256, primaryDevice: before[1]!.dev, replicaDevice: before[2]!.dev };
+}
+
 const WS_DEFAULT = 'default';
 /** Bounds: a "session" that trips these is malformed input, not an archive job. */
 export const SESSION_ARCHIVE_MAX_FILES = 64;

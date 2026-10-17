@@ -3021,7 +3021,23 @@ export function logDependencySnapshotCheck(
   else logger.warn(line);
 }
 
-async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoName: string): Promise<void> {
+/** Compact per-fire evidence for the existing DBOS action receipt, independent of mutable health metadata. */
+type DependencySnapshotFireReading = {
+  backend: DependencySnapshotBackend;
+  status: DependencySnapshotStatus;
+  reason: string | null;
+  checkedAt: number;
+  generatedAt: string | null;
+  ageMs: number | null;
+  edges: number | null;
+  selectorCeilingMs: number;
+  producerRan: boolean;
+  producerExit: number | null;
+  trackingError?: string;
+} | { unavailable: string };
+
+async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoName: string): Promise<DependencySnapshotFireReading> {
+  let measured: Exclude<DependencySnapshotFireReading, { unavailable: string }> | undefined;
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
@@ -3036,6 +3052,10 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
       : pickIndexFreshness(readRegistryEntry(registryPath(), repoName), readIndexMetaFreshness(root)).lastCommit ?? null;
     const update = await refreshDependencySnapshot({ root, repoName, currentIndexCommit, prev: rows[0]?.ds ?? null, backend });
     const s = update.next;
+    measured = { backend, status: s.status, reason: s.reason?.slice(0, 300) ?? null,
+      checkedAt: s.checkedAt, generatedAt: s.generatedAt, ageMs: s.ageMs, edges: s.edges,
+      selectorCeilingMs: DEPENDENCY_SNAPSHOT_MAX_AGE_MS, producerRan: update.ran,
+      producerExit: update.ran ? s.lastProducerExit : null };
     logDependencySnapshotCheck(update);
     await sql.unsafe(
       `UPDATE harness_shared.routines
@@ -3072,8 +3092,12 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
     } else if (update.shouldResolve) {
       console.log('[gitnexus-reindex] dependency snapshot usable again');
     }
+    return measured;
   } catch (e) {
-    console.warn(`[gitnexus-reindex] dependency snapshot tracking failed: ${e instanceof Error ? e.message : e}`);
+    const reason = String(e instanceof Error ? e.message : e).slice(0, 300);
+    console.warn(`[gitnexus-reindex] dependency snapshot tracking failed: ${reason}`);
+    // Preserve a completed observation when only bookkeeping failed; never invent a reading after an early failure.
+    return measured ? { ...measured, trackingError: reason } : { unavailable: reason };
   }
 }
 
@@ -3106,7 +3130,8 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const repoName = typeof cfg.repo_name === 'string' ? cfg.repo_name : GITNEXUS_REPO_NAME;
   // Source-only refresh must also run while the optional graph analyzer is busy or skipped.
   const snapshotBackend = dependencySnapshotBackend(cfg.snapshot_backend);
-  if (snapshotBackend === 'first-party-imports') await trackDependencySnapshot(ctx, root, repoName);
+  let dependencySnapshot: DependencySnapshotFireReading | undefined;
+  if (snapshotBackend === 'first-party-imports') dependencySnapshot = await trackDependencySnapshot(ctx, root, repoName);
 
   // Native plan D-018/P-042: the maintained first-party snapshot is the default job.
   // Legacy internal index maintenance is explicit opt-in on this SAME routine;
@@ -3116,7 +3141,10 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
       throw new Error('snapshot_backend=gitnexus requires analyze_enabled:true; use first-party-imports for source-only maintenance.');
     }
     console.log('[gitnexus-reindex] source-only maintenance; optional GitNexus analyzer disabled (analyze_enabled is not true)');
-    return { diagnostics: { maintenanceMode: 'first-party-snapshot', snapshotBackend, analyzeEnabled: false } };
+    const snapshotError = dependencySnapshot && ('unavailable' in dependencySnapshot
+      ? dependencySnapshot.unavailable : dependencySnapshot.trackingError);
+    return { diagnostics: { maintenanceMode: 'first-party-snapshot', snapshotBackend, analyzeEnabled: false, dependencySnapshot },
+      ...(snapshotError ? { softError: `dependency snapshot: ${snapshotError}` } : {}) };
   }
 
   // Capacity telemetry is cheap and independent of whether this tick elects to run

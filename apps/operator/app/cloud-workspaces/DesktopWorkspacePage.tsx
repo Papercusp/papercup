@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { Monitor, RefreshCw } from "lucide-react";
-import { parseAsString, useQueryState } from "nuqs";
+import { parseAsString, useQueryStates } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
 import { useOperatorWorkspaceLocation } from "@papercusp/operator-ui/seam";
 import { Button } from "@/app/harness/Button";
@@ -10,7 +10,7 @@ import { Select } from "@/app/harness/Select";
 import { HostedDesktopConnection } from "./HostedDesktopConnection";
 import { LocalDesktopWorkspace } from "./LocalDesktopWorkspace";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
-import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
+import { desktopMachineSelection, preferredDesktopWorkspace } from "./workspace-view-model";
 import type {
   CloudWorkspacesControlRow,
   WorkspaceHostControlRow,
@@ -23,12 +23,11 @@ export default function DesktopWorkspacePage() {
   const control = useSyncQuery<CloudWorkspacesControlRow>({
     queryName: "workspaceHosts.control",
   });
-  const [desktopHost, setDesktopHost] = useQueryState(
-    "desktopHost",
-    parseAsString.withOptions({ history: "push" }),
-  );
-  const [legacyHost] = useQueryState("host", parseAsString);
-  const requestedHost = desktopHost ?? legacyHost;
+  const [target, setTarget] = useQueryStates({
+    desktopHost: parseAsString, host: parseAsString, desktop: parseAsString,
+    desktopPins: parseAsString, desktopFilter: parseAsString,
+  }, { history: "push" });
+  const requestedHost = target.desktopHost ?? target.host;
   const workspaces = useMemo(
     () =>
       (control.data ?? []).filter(
@@ -50,9 +49,7 @@ export default function DesktopWorkspacePage() {
     ? undefined
     : requestedHost
       ? workspaces.find((row) => row.id === requestedHost)
-      : (workspaces.find((row) => readHostedWorkspaceConnector(row.tunnel)) ??
-        workspaces.find((row) => row.observedState === "running") ??
-        workspaces[0]);
+      : preferredDesktopWorkspace(workspaces);
 
   return (
     <section
@@ -78,7 +75,7 @@ export default function DesktopWorkspacePage() {
               })),
             ]}
             onChange={(value) => {
-              void setDesktopHost(value);
+              void setTarget(desktopMachineSelection(value));
             }}
           />
           <Button

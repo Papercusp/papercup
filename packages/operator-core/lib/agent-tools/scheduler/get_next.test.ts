@@ -21,12 +21,29 @@ const scopeState = vi.hoisted(() => ({
   pauseReason: null as string | null,
 }));
 const getNextM = vi.hoisted(() => vi.fn());
+const diagnoseClaimNextMissM = vi.hoisted(() =>
+  vi.fn(async () => ({
+    drained: true,
+    pendingUnclaimed: 0,
+    readyUnclaimed: 0,
+    flagReadError: null as string | null,
+  })),
+);
+const aggregateIssueClaimExclusionsM = vi.hoisted(() =>
+  vi.fn(async () => ({
+    matchedByFilter: 0,
+    claimable: 0,
+    excluded: {} as Record<string, number>,
+    queueControl: { pendingAgentReview: 0 },
+  })),
+);
 type TestClaimSpecRecord = {
-  source: 'default' | 'cup';
+  source: 'default' | 'cup' | 'fleet';
   spec: { specId: string; revision: number; view?: { filter?: unknown } };
   revision: number | null;
   updatedBy: string | null;
   updatedAt: string | null;
+  fleetSlug?: string;
 };
 const getClaimSpecRecordM = vi.hoisted(() =>
   vi.fn(
@@ -63,6 +80,22 @@ type LiveLockPhaseEventForTest = { phase: string; state: 'start' | 'end'; durati
 type LiveLockPathsOptionsForTest = { onPhase?: (event: LiveLockPhaseEventForTest) => void };
 const liveLockedPathsM = vi.hoisted(() => vi.fn(async (_options?: LiveLockPathsOptionsForTest) => [] as string[]));
 const getFlagM = vi.hoisted(() => vi.fn(async () => true));
+const resolveContextPressureRecoveryPathM = vi.hoisted(() => vi.fn(async () => ({
+  path: 'self-compaction' as const,
+  selfCompactionAvailable: true,
+  carryNoteVerified: null,
+  reason: 'host-backed' as const,
+})));
+const resolveContextPressureHeadroomM = vi.hoisted(() => vi.fn(async () => ({
+  contextTokens: null,
+  softLimit: null,
+  selfSetCeiling: null,
+})));
+const autoBenchContextCriticalCallerM = vi.hoisted(() => vi.fn(async () => null as {
+  benched: boolean;
+  reason: string;
+  wakeEvent: string | null;
+} | null));
 // Keep the timeout tests focused on the scheduler claim watchdog. These preflight reads were
 // added after the original regression and otherwise fall through to the live org pool, where a
 // fake-timer test can sit on a connection acquisition instead of reaching the claim timeout.
@@ -103,7 +136,8 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   loadHarnessRegistry: loadHarnessRegistryM,
 }));
-vi.mock('../../events/await/store', () => ({
+vi.mock('../../events/await/store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   cancelClaimableAwaits: cancelClaimableAwaitsM,
 }));
 vi.mock('../../work-item-claim-lease-wiring', () => ({
@@ -113,6 +147,10 @@ vi.mock('../../work-item-claim-lease-wiring', () => ({
 vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   releaseWorkItem: releaseWorkItemM,
+  diagnoseClaimNextMiss: diagnoseClaimNextMissM,
+}));
+vi.mock('../../scheduler/get-next', () => ({
+  aggregateIssueClaimExclusions: aggregateIssueClaimExclusionsM,
 }));
 vi.mock('../locks/live-lock-paths', () => ({
   liveLockedPaths: liveLockedPathsM,
@@ -152,6 +190,12 @@ vi.mock('../coordination/context-pressure', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchContextPressure: fetchContextPressureM,
   fetchContextPressureReadings: fetchContextPressureM,
+  resolveContextPressureRecoveryPath: resolveContextPressureRecoveryPathM,
+  resolveContextPressureHeadroom: resolveContextPressureHeadroomM,
+}));
+vi.mock('../../fleet/context-critical-bench', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  autoBenchContextCriticalCaller: autoBenchContextCriticalCallerM,
 }));
 vi.mock('../../goals/holder-authority', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -309,6 +353,18 @@ beforeEach(() => {
   diagnoseFleetScopePlanTerminalityM.mockResolvedValue(null);
   getFlagM.mockResolvedValue(true);
   fetchContextPressureM.mockResolvedValue(new Map());
+  resolveContextPressureRecoveryPathM.mockResolvedValue({
+    path: 'self-compaction',
+    selfCompactionAvailable: true,
+    carryNoteVerified: null,
+    reason: 'host-backed',
+  });
+  resolveContextPressureHeadroomM.mockResolvedValue({
+    contextTokens: null,
+    softLimit: null,
+    selfSetCeiling: null,
+  });
+  autoBenchContextCriticalCallerM.mockResolvedValue(null);
   readGoalHolderAuthorityM.mockResolvedValue(null);
   liveLockedPathsM.mockImplementation(async () => []);
   getPresenceM.mockResolvedValue(null);
@@ -1093,6 +1149,67 @@ describe('scheduler:get_next harness-existence gate (EI-16057)', () => {
   });
 });
 
+describe('scheduler:get_next keeps reviewable misses on the inherited fleet lane (EI-25982738611634117)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getNextM.mockResolvedValue(null);
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'fleet',
+      fleetSlug: 'main-green-1013',
+      spec: {
+        specId: 'main-green-1013-owner1802',
+        revision: 10,
+        view: { filter: { field: 'kind', op: '=', value: 'bug' } },
+      },
+      revision: 10,
+      updatedBy: 'fleet-leader',
+      updatedAt: new Date().toISOString(),
+    });
+    diagnoseClaimNextMissM.mockResolvedValue({
+      drained: false,
+      pendingUnclaimed: 1,
+      readyUnclaimed: 0,
+      flagReadError: null,
+    });
+    aggregateIssueClaimExclusionsM.mockResolvedValue({
+      matchedByFilter: 1,
+      claimable: 0,
+      excluded: { agent_review: 1 },
+      queueControl: { pendingAgentReview: 1 },
+    });
+  });
+
+  afterEach(() => {
+    diagnoseClaimNextMissM.mockReset().mockResolvedValue({
+      drained: true,
+      pendingUnclaimed: 0,
+      readyUnclaimed: 0,
+      flagReadError: null,
+    });
+    aggregateIssueClaimExclusionsM.mockReset().mockResolvedValue({
+      matchedByFilter: 0,
+      claimable: 0,
+      excluded: {},
+      queueControl: { pendingAgentReview: 0 },
+    });
+  });
+
+  it('passes the inherited fleet slug into the scoped claimable review route', async () => {
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    const body = handlerPayload(out);
+
+    expect(body).toMatchObject({ ok: false });
+    expect(body.error).toContain("work_items:claimable { harness:'papercusp', spec:'main-green-1013'");
+    expect(body.error).not.toContain("mode:'claim-next'");
+  });
+});
+
 // EI-18167154191955470: a routine scheduler:get_next hung with ZERO response/progress for the
 // full 300s MCP idle timeout (the signature of PG pool contention — a query stuck waiting on a
 // pool connection blocks silently, no error) and was aborted by the client; an immediate retry
@@ -1516,6 +1633,73 @@ describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)
       () => new Promise<{ allowed: boolean; reason: string }>(() => {}),
     );
     await expectPreflightTimeout('work-scope-policy');
+  });
+});
+
+describe('scheduler:get_next attributes async refusal tails (WI-6554700010012557)', () => {
+  beforeEach(() => {
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    fetchContextPressureM.mockReset().mockResolvedValue(new Map());
+    autoBenchContextCriticalCallerM.mockReset().mockResolvedValue(null);
+  });
+  afterEach(() => {
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+  });
+
+  it('attributes a slow context-critical auto-bench after preflight', async () => {
+    const { createPhaseTracker } = await import('@papercusp/tooldef');
+    const tracker = createPhaseTracker();
+    fetchContextPressureM.mockResolvedValueOnce(new Map([[
+      'su-member',
+      { bucket: 'critical', estimatedAt: new Date().toISOString(), ageSec: 0 },
+    ]]));
+    autoBenchContextCriticalCallerM.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return { benched: true, reason: 'test park', wakeEvent: 'session:compacted:su-member' };
+    });
+
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, { phases: tracker } as never);
+    const body = handlerPayload(out);
+    const meta = tracker.toMetadata()!;
+    const benchPhase = meta.phases.find((phase) => phase.phase === 'get_next:refusal:contextCriticalBench');
+
+    expect(body).toMatchObject({ ok: false, diagnosis: { contextPressureBlocked: true } });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(benchPhase?.durationMs).toBeGreaterThanOrEqual(250);
+    expect(meta.attributedMs / meta.elapsedMs).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it('attributes a slow paused-fleet await cancellation after preflight', async () => {
+    const { createPhaseTracker } = await import('@papercusp/tooldef');
+    const tracker = createPhaseTracker();
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    scopeState.windingDown = true;
+    scopeState.pauseReason = 'owner pause';
+    cancelClaimableAwaitsM.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return 1;
+    });
+
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, { phases: tracker } as never);
+    const body = handlerPayload(out);
+    const meta = tracker.toMetadata()!;
+    const cancelPhase = meta.phases.find((phase) => phase.phase === 'get_next:refusal:cancelAwaits');
+
+    expect(body).toMatchObject({ ok: false, windDown: true, paused: true, claimableAwaitsCancelled: 1 });
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(cancelPhase?.durationMs).toBeGreaterThanOrEqual(250);
+    expect(meta.attributedMs / meta.elapsedMs).toBeGreaterThanOrEqual(0.8);
   });
 });
 

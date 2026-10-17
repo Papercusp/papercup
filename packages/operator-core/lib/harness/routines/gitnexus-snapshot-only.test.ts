@@ -27,6 +27,7 @@ vi.mock('../operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'sna
 
 let root: string;
 beforeEach(() => {
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-17T00:00:00Z'));
   root = mkdtempSync(join(tmpdir(), 'gitnexus-source-only-'));
   fixture.snapshot = join(root, 'dependency-snapshot.json');
   fixture.indexReads = [];
@@ -38,8 +39,9 @@ beforeEach(() => {
   fixture.spawn.mockReset().mockImplementation(() => { throw new Error('unexpected analyzer/producer spawn'); });
   vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', root);
   vi.spyOn(console, 'log').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
   writeFileSync(fixture.snapshot, JSON.stringify({ schema: 'graph-dependency-snapshot-v1',
-    index: { lastCommit: 'a'.repeat(40), backend: 'first-party-imports' }, generatedAt: new Date().toISOString(),
+    index: { lastCommit: 'a'.repeat(40), backend: 'first-party-imports' }, generatedAt: new Date(Date.now() - 7_200_000).toISOString(),
     edges: [{ importer: 'app/use.ts', imported: 'lib/target.ts', importerSha256: 'b'.repeat(64) }] }));
 });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
@@ -50,7 +52,10 @@ describe('registered hourly source-only maintenance', () => {
       const result = await getSystemAction('gitnexus-reindex')!({ installSlug: 'snapshot-fixture', workspaceId: 'fixture',
         triggerConfig, payloadTemplate: null });
       expect(result).toEqual({ diagnostics: { maintenanceMode: 'first-party-snapshot',
-        snapshotBackend: 'first-party-imports', analyzeEnabled: false } });
+        snapshotBackend: 'first-party-imports', analyzeEnabled: false,
+        dependencySnapshot: { backend: 'first-party-imports', status: 'fresh', reason: null,
+          checkedAt: Date.now(), generatedAt: '2026-10-16T22:00:00.000Z', ageMs: 7_200_000,
+          edges: 1, selectorCeilingMs: 86_400_000, producerRan: false, producerExit: null } } });
       expect(fixture.sql).toHaveBeenCalledTimes(2);
       expect(fixture.sql.mock.calls[1]?.[1]?.[1]).toContain('"status":"fresh"');
       expect(fixture.indexReads).toEqual([]);
@@ -58,6 +63,30 @@ describe('registered hourly source-only maintenance', () => {
       expect(console.log).toHaveBeenCalledWith(expect.stringContaining('dependency snapshot fresh'));
     },
   );
+
+  it('records an unavailable measurement and soft error when the initial health read fails', async () => {
+    fixture.sql.mockRejectedValueOnce(new Error('health read unavailable'));
+    const result = await getSystemAction('gitnexus-reindex')!({ installSlug: 'snapshot-fixture', workspaceId: 'fixture',
+      triggerConfig: {}, payloadTemplate: null });
+    expect(result).toEqual({ diagnostics: { maintenanceMode: 'first-party-snapshot',
+      snapshotBackend: 'first-party-imports', analyzeEnabled: false,
+      dependencySnapshot: { unavailable: 'health read unavailable' } },
+      softError: 'dependency snapshot: health read unavailable' });
+    expect(fixture.spawn).not.toHaveBeenCalled();
+  });
+
+  it('retains the measured snapshot with a separate tracking error when metadata persistence fails', async () => {
+    fixture.sql.mockImplementation(async (query: string) => {
+      if (query.startsWith('SELECT')) return [{ ds: null }];
+      throw new Error('metadata write unavailable');
+    });
+    const result = await getSystemAction('gitnexus-reindex')!({ installSlug: 'snapshot-fixture', workspaceId: 'fixture',
+      triggerConfig: {}, payloadTemplate: null });
+    expect(result).toMatchObject({ diagnostics: { dependencySnapshot: { status: 'fresh',
+      checkedAt: Date.now(), generatedAt: '2026-10-16T22:00:00.000Z', ageMs: 7_200_000,
+      trackingError: 'metadata write unavailable' } }, softError: 'dependency snapshot: metadata write unavailable' });
+    expect(fixture.spawn).not.toHaveBeenCalled();
+  });
 
   it('refuses a graph-produced snapshot without explicit analyzer admission', async () => {
     await expect(getSystemAction('gitnexus-reindex')!({ installSlug: 'snapshot-fixture', workspaceId: 'fixture',

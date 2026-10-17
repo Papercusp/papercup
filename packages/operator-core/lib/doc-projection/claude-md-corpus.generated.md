@@ -2599,6 +2599,9 @@ If a pipeline is necessary, consume to EOF (for example with `grep -c`) rather
 than using an early-exit predicate. A false absence from this pattern is not
 evidence that the guarded string, process, or flag is missing.
 
+Current routing clarification (2026-10-17, P-042): the positive-control rule below remains active. For definition lookup use `lsp:query` with a verified existing source path. Optional internal `gitnexus.context` topology comparisons remain under D-005, with D-004 distribution exclusion. The original paragraph is preserved byte-for-byte below; its GitNexus definition recommendation is superseded.
+
+```md
 ⚠ **A search of a path that DOES NOT EXIST looks exactly like one that found
 nothing** — empty output, and the exit code that separates them (grep: 1 = ran
 and found nothing, 2 = could not read the path) is thrown away by a pipe,
@@ -2616,6 +2619,7 @@ control also comes back empty, the instrument is broken, not the subject — and
 state the scope you actually searched. For "where is this symbol defined" use
 `gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL
 exist", `tools:find`.
+```
 
 ⚠ **Do not use human-relative timestamps with `find -newermt` on this box.**
 `find` resolves to **bfs 4.1.1** here, and values such as `12 minutes ago`,

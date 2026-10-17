@@ -50,7 +50,7 @@ beforeEach(() => {
     return { stored, priorLength };
   });
 });
-afterEach(() => { delete process.env.PAPERCUSP_FLUSH_GATE; });
+afterEach(() => { delete process.env.PAPERCUSP_FLUSH_GATE; vi.restoreAllMocks(); });
 
 describe('host mechanical carry-respawn checkpoint (R-13)', () => {
   it('saves all 13 held items, including fresh ones outside both preview caps, without agent bookkeeping', async () => {
@@ -99,17 +99,21 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
   });
 
   it.each(['off', 'on'])('refuses an incomplete host save with the advisory flush ladder %s', async (enabled) => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.PAPERCUSP_FLUSH_GATE = enabled;
     notes.set('WI-1', 'Judgment.');
     mocks.set.mockRejectedValueOnce(new Error('persistence unavailable'));
     const out = await runFlushGate({ ...input, boundary: 'compaction', mode: 'host-snapshot', brief: null });
     expect(out.verdict).toBe('refuse');
-    expect(out.snapshotFailure).toEqual({
+    expect(out.snapshotFailure).toMatchObject({
       phase: 'checkpoint-write', code: 'checkpoint-write-failed', elapsedMs: expect.any(Number),
+      checkpointStage: 'write-item', workItemId: 'WI-1', completedWorkItemIds: [],
+      errorFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/),
     });
     expect(out.refusalText).toContain('checkpoint-write-failed');
     expect(out.refusalText).toContain('session remains intact');
     expect(out.refusalText).not.toContain('work_items:checkpoint');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(out.snapshotFailure!.errorFingerprint!));
   });
 
   it('preserves a locked-store refusal code and affected item context', async () => {
@@ -129,6 +133,37 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
     expect(out.refusalText).toContain('WI-1');
     expect(out.refusalText).toContain('write_refused');
     expect(out.refusalText).not.toContain('Error(');
+  });
+
+  it('attributes a storage exception after a partial save without exposing its secret message', async () => {
+    notes.set('WI-1', 'First judgment.');
+    notes.set('WI-2', 'Second judgment.');
+    const writer = mocks.set.getMockImplementation()!;
+    mocks.set.mockImplementationOnce(writer).mockRejectedValueOnce(Object.assign(
+      new Error('connection postgresql://fixture:never-emit@invalid/database failed'), { code: '08006' }));
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const out = await runFlushGate({ ...input, boundary: 'compaction', mode: 'host-snapshot', brief: null });
+      expect(out.verdict).toBe('refuse');
+      expect(out.snapshotFailure).toMatchObject({ code: '08006', checkpointStage: 'write-item',
+        workItemId: 'WI-2', completedWorkItemIds: ['WI-1'], errorFingerprint: expect.stringMatching(/^[a-f0-9]{16}$/) });
+      expect(notes.get('WI-1')).toContain('system respawn snapshot');
+      expect(notes.get('WI-2')).toBe('Second judgment.');
+      expect(JSON.stringify(out)).not.toContain('never-emit');
+      expect(JSON.stringify(log.mock.calls)).not.toContain('never-emit');
+      expect(JSON.stringify(log.mock.calls)).toContain(out.snapshotFailure!.errorFingerprint);
+    } finally { log.mockRestore(); }
+  });
+
+  it('distinguishes a held-item read failure from an item write failure', async () => {
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mocks.sql.mockRejectedValueOnce(Object.assign(new Error('read unavailable'), { code: '57014' }));
+    const out = await runFlushGate({ ...input, boundary: 'compaction', mode: 'host-snapshot', brief: null });
+    expect(out.verdict).toBe('refuse');
+    expect(out.snapshotFailure).toMatchObject({ code: '57014', checkpointStage: 'read-held-items', completedWorkItemIds: [] });
+    expect(out.snapshotFailure).not.toHaveProperty('workItemId');
+    expect(mocks.set).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('read-held-items'));
   });
 
   it('does not silently claim success for a blocked checkpoint write', async () => {

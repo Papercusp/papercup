@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync, readlinkSync } from 'node:fs';
 import { closeInspector, createCdpClient, discoverInspector } from '../../../scripts/cdp-inspector.mjs';
-import { applyTerminalIdentityRepair, closeLateInspectorWhenAvailable, repairTerminalHost, terminalIdentityRepairSource, LEGACY_IDENTITY_FUNCTION } from './psu-terminal-repair.mjs';
+import { applyTerminalIdentityRepair, closeLateInspectorWhenAvailable, hasTerminalSafeInspectorPublication, repairTerminalHost, terminalIdentityRepairSource, LEGACY_IDENTITY_FUNCTION } from './psu-terminal-repair.mjs';
 import { mockImplementationTyped, mockReturnTyped } from '../../../packages/operator-core/lib/testing/typed-mock';
 
 vi.mock('node:fs', async (original) => {
@@ -32,6 +32,20 @@ function cleanupFixture(identity = { pid: process.pid, entry: '/launcher.mjs' })
 const legacy = LEGACY_IDENTITY_FUNCTION;
 
 describe('terminal identity repair adoption', () => {
+  it('requires HTTP-only inspector publication for interactive attachment', () => {
+    expect(hasTerminalSafeInspectorPublication({
+      environment: 'NODE_OPTIONS=--max-old-space-size=131072 --inspect-publish-uid=http\0',
+      cmdline: ['node', '/psu-launcher.mjs'],
+    })).toBe(true);
+    expect(hasTerminalSafeInspectorPublication({
+      environment: 'NODE_OPTIONS=--inspect-publish-uid=http,stderr\0',
+    })).toBe(false);
+    expect(hasTerminalSafeInspectorPublication({
+      environment: 'NODE_OPTIONS=--max-old-space-size=131072\0',
+      cmdline: ['node', '--inspect-publish-uid=http', '/psu-launcher.mjs'],
+    })).toBe(true);
+  });
+
   it('refuses unknown source and preserves unrelated loaded code byte for byte', () => {
     expect(() => terminalIdentityRepairSource('export function other() {}')).toThrow('Unknown');
     expect(() => terminalIdentityRepairSource(legacy + '\n' + legacy)).toThrow('ambiguous');
@@ -113,6 +127,7 @@ describe('terminal identity repair adoption', () => {
     mockImplementationTyped(vi.mocked(readFileSync), (path, ...args) => {
       if (String(path).endsWith(ownerId + '.json')) return JSON.stringify({ pid, ownerId, bridgeTty: true, ptyPid: 43 });
       if (path === '/proc/42/cmdline') return 'node\0' + entry + '\0';
+      if (path === '/proc/42/environ') return 'NODE_OPTIONS=--inspect-publish-uid=http\0';
       if (path === '/proc/42/stat') return stat;
       return (actualFs.readFileSync as any)(path, ...args);
     });

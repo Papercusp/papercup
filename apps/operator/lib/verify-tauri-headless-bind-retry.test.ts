@@ -192,6 +192,61 @@ describe('WI-6554700010008930 — boot bind evidence survives retry and cleanup'
   });
 });
 
+describe('EI-26073173753563377 — desktop binary readiness polling is quiet and content-aware', () => {
+  const readinessProbe = src.match(
+    /strip_ansi\(\) \{[\s\S]*?\n\}\ndesktop_binary_started\(\) \{[\s\S]*?\n\}/,
+  )?.[0];
+
+  function probe(log: string | undefined) {
+    expect(readinessProbe).toBeTruthy();
+    const dir = mkdtempSync(join(tmpdir(), 'verifier-readiness-'));
+    const logPath = join(dir, 'tauri.log');
+    if (log !== undefined) writeFileSync(logPath, log);
+    const run = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+set -eu
+LOG="$1"
+${readinessProbe}
+if desktop_binary_started; then
+  printf 'ready\\n'
+else
+  printf 'not-ready\\n'
+fi
+`,
+        '_',
+        logPath,
+      ],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    rmSync(dir, { recursive: true, force: true });
+    return run;
+  }
+
+  it('treats a not-yet-created log as not ready without leaking an open error', () => {
+    const run = probe(undefined);
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toBe('not-ready\n');
+    expect(run.stderr).toBe('');
+  });
+
+  it('strips ANSI SGR escapes before recognizing Cargo\'s Running marker', () => {
+    const run = probe('\u001b[1m\u001b[92m     Running\u001b[0m `/tmp/debug/papercusp-desktop`\n');
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toBe('ready\n');
+    expect(run.stderr).toBe('');
+  });
+
+  it('keeps non-ready Cargo output false', () => {
+    const run = probe('   Compiling papercusp-desktop v0.1.0\nFinished dev profile\n');
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.stdout).toBe('not-ready\n');
+    expect(run.stderr).toBe('');
+  });
+});
+
 /**
  * The variable name out of bash's `set -u` diagnostic ("foo: unbound variable"), or
  * undefined when the failure was something else. Deliberately narrow: it must stay

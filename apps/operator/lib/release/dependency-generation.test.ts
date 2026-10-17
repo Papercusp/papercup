@@ -3305,6 +3305,51 @@ describe('WI-42354: the generation store is born un-committable', () => {
     expect(readFileSync(ignore, 'utf8').trim()).toBe('*');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('EI-26183925708230574: a live exact-ref scratch tree stays out of Git without enclosing ignore rules', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'exact-ref scratch fixture');
+    const fingerprint = fingerprintRef(integration, candidate);
+    expect(fingerprint.status, fingerprint.stderr).toBe(0);
+    expect(existsSync(join(integration, '.gitignore'))).toBe(false);
+    const staged = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_stage_exact_ref_inputs "$INTEGRATION" "$CANDIDATE" "$EXACT_INPUT"',
+      'printf "%s\\n" "$DEPENDENCY_GENERATION_EXACT_SCRATCH"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: {
+        ...process.env, SCRIPT, INTEGRATION: integration, CANDIDATE: candidate,
+        EXACT_INPUT: publishedInputFingerprint(fingerprint.stdout),
+      },
+    });
+    expect(staged.status, staged.stderr).toBe(0);
+    const scratch = staged.stdout.trim();
+    expect(existsSync(join(scratch, '.papercusp-exact-ref-writer'))).toBe(true);
+    expect(existsSync(join(scratch, 'package-lock.json'))).toBe(true);
+    const relativeScratch = scratch.slice(integration.length + 1);
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: integration, encoding: 'utf8' });
+    expect(git('ls-files', '--others', '--exclude-standard', '--', relativeScratch).trim()).toBe('');
+
+    // Calibration: ordinary source still participates in the same staging pass.
+    writeFileSync(join(integration, 'ordinary-source.ts'), 'export const current = true;\n');
+    git('add', '-A');
+    expect(git('diff', '--cached', '--name-only', '--', relativeScratch).trim()).toBe('');
+    expect(git('diff', '--cached', '--name-only', '--', 'ordinary-source.ts').trim()).toBe('ordinary-source.ts');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['', 'nested/pot/'])('EI-26183925708230574: canonical ignore rules protect abandoned exact-ref inputs at %s', (prefix) => {
+    const integration = makeIntegration();
+    execFileSync('git', ['init', '-q'], { cwd: integration });
+    writeFileSync(join(integration, '.gitignore'), readFileSync(join(REPO_ROOT, '.gitignore')));
+    const path = `${prefix}.papercusp/dependency-exact-ref/abandoned/.papercusp-exact-ref-writer`;
+    mkdirSync(dirname(join(integration, path)), { recursive: true });
+    writeFileSync(join(integration, path), 'pid=99999999\n');
+    expect(execFileSync('git', ['check-ignore', '--no-index', '--', path], { cwd: integration, encoding: 'utf8' }).trim()).toBe(path);
+    writeFileSync(join(integration, 'ordinary-source.ts'), 'export {};\n');
+    expect(execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'ordinary-source.ts'], { cwd: integration, encoding: 'utf8' }).trim()).toBe('ordinary-source.ts');
+  });
+
   it('git reports NOTHING to commit for a store that has published pins', () => {
     const integration = makeIntegration();
     const git = (...args: string[]) =>

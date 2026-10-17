@@ -1045,6 +1045,10 @@ export async function pruneDiskCensus(sql: CensusSql, now: Date = new Date()): P
 
 export interface CensusDeviceView {
   device: string;
+  /** Saved identities, retained for native alarm evidence (never inferred from time). */
+  host?: string;
+  runId?: string;
+  baselineRunId?: string | null;
   /** No census run has ever been written for this watched device on this host. */
   missing?: true;
   sampledAt?: string;
@@ -1140,6 +1144,9 @@ export async function readDiskConsumerCensus(
     const unattributed = Math.max(0, used - attributed);
     devices.push({
       device: run.device,
+      host,
+      runId: run.run_id,
+      baselineRunId: base?.run_id ?? null,
       sampledAt: finishedAt.toISOString(),
       stale: now.getTime() - finishedAt.getTime() > CENSUS_STALE_MS,
       complete: run.complete && censusCoverageReadable(run.note),

@@ -279,8 +279,10 @@ function noteDroppedDetail(w: Row, dropped: Set<string>): Record<string, number>
   const omitted: Record<string, number> = {};
   for (const field of ["posts", "topics", "links"] as const) {
     const value = w[field];
-    if (Array.isArray(value) && value.length > 0) {
-      omitted[field] = value.length;
+    const boundedTotal = field === "posts" && typeof w.postsTotal === "number" ? w.postsTotal : null;
+    const count = boundedTotal ?? (Array.isArray(value) ? value.length : 0);
+    if (count > 0) {
+      omitted[field] = count;
       // The LABEL carries no count, deliberately. `dropped` is a payload-level
       // Set shared by every row, so an interpolated count would emit up to one
       // distinct string PER ROW on a bulk read — noise, and budget spent on the
@@ -291,6 +293,87 @@ function noteDroppedDetail(w: Row, dropped: Set<string>): Record<string, number>
     }
   }
   return Object.keys(omitted).length > 0 ? omitted : null;
+}
+
+/**
+ * Keep the detail payload on an exact one-item read usable at shaped tiers.
+ *
+ * `getWorkItemDetail` already bounds the database read to the most recent ten
+ * posts, but the payload shaper used to discard that bounded result wholesale.
+ * A caller who explicitly asked for `detail:true` therefore got only a count
+ * marker and had to repeat the read through the unshaped framework path. Keep a
+ * smaller, tier-relative window inline for exact reads and disclose any loss in
+ * the row. Bulk reads continue to use `noteDroppedDetail` so 100-id calls do not
+ * multiply thread bodies into the result door.
+ */
+function projectExactDetail(w: Row, caps: FieldCaps, dropped: Set<string>): Row | null {
+  const hasPosts = Object.prototype.hasOwnProperty.call(w, "posts");
+  const hasTopics = Object.prototype.hasOwnProperty.call(w, "topics");
+  const hasLinks = Object.prototype.hasOwnProperty.call(w, "links");
+  if (!hasPosts && !hasTopics && !hasLinks && !Object.prototype.hasOwnProperty.call(w, "postsTotal")) {
+    return null;
+  }
+
+  const tier = caps === FIELD_CAPS.trimmed ? "trimmed" : "standard";
+  const detailCaps = THREAD_CAPS[tier];
+  const truncated: Row = {};
+
+  const sourcePosts = hasPosts && Array.isArray(w.posts) ? w.posts : [];
+  const totalPosts = typeof w.postsTotal === "number" ? w.postsTotal : sourcePosts.length;
+  let bodyTruncated = false;
+  const posts = sourcePosts.slice(-detailCaps.posts).map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const post = value as Row;
+    const body = typeof post.body === "string" ? post.body : "";
+    if (body.length > detailCaps.body) bodyTruncated = true;
+    return {
+      ...(post.id !== undefined ? { id: post.id } : {}),
+      ...(post.post_id !== undefined ? { post_id: post.post_id } : {}),
+      ...(post.thread_id !== undefined ? { thread_id: post.thread_id } : {}),
+      ...(post.author_id !== undefined ? { author_id: post.author_id } : {}),
+      body: clip(body, detailCaps.body),
+      ...(post.created_ts !== undefined ? { created_ts: post.created_ts } : {}),
+      ...(post.created_at !== undefined ? { created_at: post.created_at } : {}),
+      ...(body.length > detailCaps.body ? { bodyChars: body.length, bodyTruncated: true } : {}),
+    };
+  });
+  if (hasPosts && (sourcePosts.length > posts.length || totalPosts > posts.length || bodyTruncated)) {
+    dropped.add("workItem.posts");
+    truncated.posts = {
+      shown: posts.length,
+      total: totalPosts,
+      ...(bodyTruncated ? { bodyTruncated: true } : {}),
+    };
+  }
+
+  const sourceTopics = hasTopics && Array.isArray(w.topics) ? w.topics : [];
+  const topics = sourceTopics.slice(0, detailCaps.topics);
+  if (sourceTopics.length > topics.length) {
+    dropped.add("workItem.topics");
+    truncated.topics = { shown: topics.length, total: sourceTopics.length };
+  }
+
+  const sourceLinks = hasLinks && Array.isArray(w.links) ? w.links : [];
+  const links = sourceLinks.slice(0, detailCaps.topics).map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const link = value as Row;
+    return {
+      ...(link.rel !== undefined ? { rel: link.rel } : {}),
+      ...(link.dst !== undefined ? { dst: link.dst } : {}),
+    };
+  });
+  if (sourceLinks.length > links.length) {
+    dropped.add("workItem.links");
+    truncated.links = { shown: links.length, total: sourceLinks.length };
+  }
+
+  return {
+    ...(hasPosts ? { posts } : {}),
+    ...(Object.prototype.hasOwnProperty.call(w, "postsTotal") ? { postsTotal: totalPosts } : {}),
+    ...(hasTopics ? { topics } : {}),
+    ...(hasLinks ? { links } : {}),
+    ...(Object.keys(truncated).length > 0 ? { detailTruncated: truncated } : {}),
+  };
 }
 
 function hasCompletionEvidence(value: unknown): boolean {
@@ -427,7 +510,8 @@ function projectWorkItem(
 ): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
-  const detailOmitted = noteDroppedDetail(w, dropped);
+  const detailOmitted = includeLifecycleCandidatePayload ? null : noteDroppedDetail(w, dropped);
+  const exactDetail = includeLifecycleCandidatePayload ? projectExactDetail(w, caps, dropped) : null;
   const state = typeof w.state === "string" ? w.state.toLowerCase() : "";
   const completionAuthority = w.completionAuthority;
   const terminal = ANY_FAMILY_TERMINAL_STATES.includes(state);
@@ -473,6 +557,7 @@ function projectWorkItem(
         }
       : {}),
     ...(lifecycleCandidatePayload !== undefined ? { payload: lifecycleCandidatePayload } : {}),
+    ...(exactDetail ? exactDetail : {}),
     assignee: w.assignee ?? null,
     takenAt: w.takenAt ?? null,
     lastProgressAt: w.lastProgressAt ?? null,

@@ -194,6 +194,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    errorCodes: ['stale_tool_contract'],
+    messagePattern: '(^|[^a-zA-Z0-9_])stale_tool_contract([^a-zA-Z0-9_]|$)',
+    why: 'tools:invoke and the MCP host intentionally reject a schema bound to an older serving generation before target dispatch; refresh tools:find/tools:list and retry against the current operator',
+  },
+  {
+    class: 'caller',
     messagePattern: 'events:status.*evidence-only judge may inspect its own awaits only.*exact-key inspection and fleet-meter access are unavailable',
     why: 'events:status deliberately refuses exact-key and fleet-wide meter reads for an evidence-only judge; dispatch surfaces this authorization refusal through handler_error, so it must not enter the structural auto-fix lane',
   },

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { OperatorWorkspaceLocationProvider } from "@papercusp/operator-ui/seam";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
+import { MachineSwitcherView } from "./MachineSwitcher";
 
 const H = vi.hoisted(() => ({
   rows: [] as WorkspaceHostControlRow[],
@@ -35,6 +36,16 @@ vi.mock("nuqs", async (importOriginal) => {
   const React = await import("react");
   return {
     ...actual,
+    useQueryStates: (parsers: Record<string, unknown>) => {
+      const [values, setValues] = React.useState<Record<string, unknown>>(
+        Object.fromEntries(Object.keys(parsers).map((key) => [key, H.params[key] ?? null])),
+      );
+      return [values, (next: Record<string, unknown>) => {
+        H.updates.push(...Object.entries(next));
+        setValues((previous) => ({ ...previous, ...next }));
+        return Promise.resolve(next);
+      }];
+    },
     useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
       const [value, setValue] = React.useState<unknown>(
         H.params[key] ?? config?.defaultValue ?? null,
@@ -137,6 +148,30 @@ beforeEach(() => {
 });
 
 describe("portal Desktops entry — approved option B", () => {
+  it.each(["local", "cloud"] as const)(
+    "keeps the persistent %s machine selector on the desktop pane's default target",
+    async (location) => {
+      H.rows = [workspace("Stopped machine", "stopped"), workspace("Running machine")];
+      render(<MachineSwitcherView localMode={location === "local"} value={null}
+        rows={H.rows} loading={false} error={null} onSelect={vi.fn()} />);
+      openDesktops(location);
+      expect(await screen.findByRole("region", { name: "Desktops for Running machine" })).toBeTruthy();
+      expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value)
+        .toBe((screen.getByRole("combobox", { name: "Desktop workspace" }) as HTMLSelectElement).value);
+    },
+  );
+
+  it("keeps both controls on the connector-backed target when an earlier machine is running", async () => {
+    const connected = workspace("Connected machine");
+    connected.tunnel = { routeLabel: "connected-route", transport: "websocket" };
+    H.rows = [workspace("Other running machine"), connected];
+    render(<MachineSwitcherView localMode={false} value={null}
+      rows={H.rows} loading={false} error={null} onSelect={vi.fn()} />);
+    openDesktops("cloud");
+    expect(await screen.findByRole("region", { name: "Desktops for Connected machine" })).toBeTruthy();
+    expect((screen.getByRole("combobox", { name: "Machine" }) as HTMLSelectElement).value).toBe(connected.id);
+  });
+
   it("keeps a hosted session with no workspace empty without reading this computer", async () => {
     H.rows = [];
     openDesktops("cloud");
@@ -203,6 +238,24 @@ describe("portal Desktops entry — approved option B", () => {
     expect(H.updates).toContainEqual(["desktopHost", "Research workspace"]);
   });
 
+  it.each(["local", "cloud"] as const)(
+    "clears the previous machine's desktop state when the %s page switches machines",
+    async (location) => {
+      H.rows.push(workspace("Next machine"));
+      H.params = { ws: "window-workspace", desktopHost: "Research workspace", host: "Research workspace",
+        desktop: "watch:old", desktopPins: "old", desktopFilter: "old" };
+      openDesktops(location);
+      fireEvent.change(await screen.findByRole("combobox", { name: "Desktop workspace" }),
+        { target: { value: "Next machine" } });
+      expect(await screen.findByRole("region", { name: "Desktops for Next machine" })).toBeTruthy();
+      expect(H.updates).toEqual(expect.arrayContaining([
+        ["desktopHost", "Next machine"], ["host", "Next machine"],
+        ["desktop", null], ["desktopPins", null], ["desktopFilter", null],
+      ]));
+      expect(H.updates.some(([key]) => key === "ws")).toBe(false);
+    },
+  );
+
   it("does not silently open a different workspace for an invalid deep link", async () => {
     H.params.desktopHost = "missing-host";
     openDesktops();
@@ -264,6 +317,7 @@ describe("portal Desktops entry — approved option B", () => {
       await screen.findByRole("region", { name: "Desktops on this computer" }),
     ).toBeTruthy();
     expect(H.updates).toContainEqual(["desktopHost", "local"]);
+    expect(H.updates).toContainEqual(["host", null]);
     expect(screen.getByRole("button", { name: "Watch browser" })).toBeTruthy();
     expect(screen.getByText("Agent su-1")).toBeTruthy();
   });

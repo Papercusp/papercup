@@ -138,13 +138,15 @@ describe('registered subject evidence with the real local scorer', () => {
     }
     const failures: { contracts: string[]; reason: string }[] = [];
     let scorerFailureCaptured = false;
-    const readScorerFailureState = async () => {
+    const readScorerState = async () => {
       const health = url ? await probeSidecarHealth(url, 1000).catch(() => null) as {
         pid?: number; uptimeMs?: number;
         models?: Record<string, string>; warmups?: Record<string, string>;
         rerankExecutionHealth?: { active?: unknown };
         rerankExecution?: unknown;
-        workers?: { reranker?: unknown };
+        workers?: { embedder?: unknown; reranker?: unknown };
+        admission?: { mode?: string };
+        queue?: { depth?: number; active?: number; saturated?: boolean };
       } | null : null;
       if (!privateDb) return { health, admission: null };
       const sql = postgres(privateDb.url, { max: 1, connect_timeout: 3, onnotice: () => {} });
@@ -179,6 +181,9 @@ describe('registered subject evidence with the real local scorer', () => {
           warmup: health.warmups?.rerank ?? null,
           rerankExecution: health.rerankExecution ?? null,
           rerankExecutionHealth: health.rerankExecutionHealth ?? null,
+          admission: health.admission ?? null,
+          queue: health.queue ?? null,
+          embedderWorker: health.workers?.embedder ?? null,
           rerankerWorker: health.workers?.reranker ?? null,
         } : null;
         return { sidecar, admission: { database: privateDb.name, admissions, activity } };
@@ -198,20 +203,34 @@ describe('registered subject evidence with the real local scorer', () => {
       const samplePhase = async () => {
         if (!url) return;
         try {
-          const health = await probeSidecarHealth(url, 1000) as {
+          const response = await fetch(`${url.replace(/\/$/, '')}/healthz`, {
+            signal: AbortSignal.timeout(1000),
+          });
+          const elapsedMs = Date.now() - callStartedAt;
+          if (!response.ok) {
+            phaseSamples.push({ elapsedMs, healthAvailable: false, healthStatus: response.status });
+            return;
+          }
+          const health = await response.json() as {
             models?: Record<string, string>; warmups?: Record<string, string>;
             rerankExecutionHealth?: { active?: unknown };
             rerankExecution?: unknown;
-            workers?: { reranker?: unknown };
+            workers?: { embedder?: unknown; reranker?: unknown };
+            admission?: { mode?: string };
+            queue?: { depth?: number; active?: number; saturated?: boolean };
           } | null;
-          phaseSamples.push({ elapsedMs: Date.now() - callStartedAt,
+          phaseSamples.push({ elapsedMs, healthAvailable: true, healthStatus: response.status,
+            admission: health?.admission ?? null,
+            queue: health?.queue ?? null,
             model: health?.models?.rerank ?? null,
             warmup: health?.warmups?.rerank ?? null,
             execution: health?.rerankExecutionHealth?.active ?? null,
             rerankExecution: health?.rerankExecution ?? null,
+            embedderWorker: health?.workers?.embedder ?? null,
             rerankerWorker: health?.workers?.reranker ?? null });
         } catch (error) {
           phaseSamples.push({ elapsedMs: Date.now() - callStartedAt,
+            healthAvailable: false,
             probeError: error instanceof Error ? error.message : String(error) });
         }
       };
@@ -226,8 +245,13 @@ describe('registered subject evidence with the real local scorer', () => {
       };
       try {
         const scores = await baseScorer(query, contracts, opts);
+        const elapsedMs = Date.now() - callStartedAt;
         await stopSampling();
-        console.info('subject-contract-scores', JSON.stringify({ elapsedMs: Date.now() - callStartedAt,
+        if (elapsedMs >= 1000) {
+          console.info('subject-contract-phases', JSON.stringify({ elapsedMs,
+            contracts: contracts.map(c => c.split('\n')[0]), phaseSamples }));
+        }
+        console.info('subject-contract-scores', JSON.stringify({ elapsedMs,
           contracts: contracts.map(c => c.split('\n')[0]), scores }));
         if (contracts[0]?.includes('?')) {
           console.info('subject-natural-contract-pairs', JSON.stringify({ passage: query, contracts, scores }));
@@ -241,7 +265,7 @@ describe('registered subject evidence with the real local scorer', () => {
           reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown' };
         failures.push(failure);
         console.info('subject-contract-unavailable', JSON.stringify({ ...failure, phaseSamples }));
-        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerFailureState()));
+        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerState()));
         scorerFailureCaptured = true;
         throw error;
       }
@@ -274,11 +298,18 @@ describe('registered subject evidence with the real local scorer', () => {
       // Preserve phase evidence before teardown removes the owned process and
       // database. Per-call failures already captured this in the scorer wrapper.
       if (!scorerFailureCaptured) {
-        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerFailureState()));
+        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerState()));
       }
       throw error;
     }
-    console.info('subject-scorer-ready', JSON.stringify({ warmupMs: Date.now() - warmStart }));
+    const warmupMs = Date.now() - warmStart;
+    console.info('subject-scorer-ready', JSON.stringify({ warmupMs }));
+    if (privateDb) {
+      // Snapshot the boot warmups and first successful scorer together, too:
+      // otherwise the phase evidence exists only on a timeout and passing cold
+      // runs cannot show whether background admissions overlapped inference.
+      console.info('subject-scorer-ready-state', JSON.stringify(await readScorerState()));
+    }
     const naturalMeasurements = [];
     for (const scenario of NATURAL_QUESTION_SUBJECT_CASES) {
       // Keep the production direction separate from this diagnostic. The same

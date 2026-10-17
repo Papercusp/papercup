@@ -207,6 +207,18 @@ function scratchLineWindowExceedsDoor(text: string): boolean {
   return Buffer.byteLength(text, 'utf8') > budgetBytes - DOOR_MARGIN_CHARS;
 }
 
+/**
+ * Numbered scratch-reference reads must never turn a recoverable JSON/text line
+ * into an apparently complete prefix. Ordinary source-file reads retain the
+ * native `[line truncated]` display, but a result-door spill is the recovery
+ * container the caller was told to parse. A long selected line therefore needs
+ * the explicit byte-page route even when the shortened display would fit the
+ * result door.
+ */
+function scratchLineWindowHasLongLine(lines: readonly string[]): boolean {
+  return lines.some((line) => line.length > MAX_LINE_CHARS);
+}
+
 /** A scratch-reference read returns stored tool output verbatim. Markers such
  * as `textTruncated` inside that stored payload describe its original producer,
  * not a truncation performed by this read; the result door uses this metadata
@@ -1218,6 +1230,14 @@ export const capabilityReadDefinition = {
           ? { structuredContent: { ok: true, file_path: abs, body: rawBody, ...rawWindow } }
           : {}),
       }, reference));
+    }
+
+    if (reference && scratchLineWindowHasLongLine(slice)) {
+      return err(
+        'scratch_line_window_too_large',
+        'This scratch-reference line window contains a long line that numbered output would truncate. ' +
+        'Use a smaller offset/limit/tail window for adjacent lines, or byte_offset+byte_limit for exact bytes.',
+      );
     }
 
     const numbered = slice

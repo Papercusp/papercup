@@ -167,9 +167,12 @@ export interface FlushGateOutcome {
     /** A stable refusal code or a safe underlying storage code. */
     code: string;
     elapsedMs: number;
-    /** Present only for a locked-store refusal, never for raw storage errors. */
+    /** Present for a locked-store refusal or an attributed item-write failure. */
     workItemId?: string;
     blockedReason?: string;
+    checkpointStage?: 'load-writer' | 'read-held-items' | 'write-item';
+    errorFingerprint?: string;
+    completedWorkItemIds?: string[];
   };
 }
 
@@ -273,6 +276,16 @@ export async function runFlushGate(input: {
       await clearRefused(input.boundary, input.ownerId);
       return { verdict: 'mechanical-fallback', tripwires: [], fallback };
     } catch (error) {
+      const diagnostic = error && typeof error === 'object' ? error as {
+        checkpointStage?: unknown; workItemId?: unknown; errorFingerprint?: unknown; completedWorkItemIds?: unknown;
+      } : null;
+      const attributed = diagnostic && ['load-writer', 'read-held-items', 'write-item'].includes(String(diagnostic.checkpointStage)) &&
+        typeof diagnostic.errorFingerprint === 'string' && /^[a-f0-9]{16}$/.test(diagnostic.errorFingerprint) &&
+        Array.isArray(diagnostic.completedWorkItemIds) && diagnostic.completedWorkItemIds.every((id) => typeof id === 'string')
+        ? { checkpointStage: diagnostic.checkpointStage as 'load-writer' | 'read-held-items' | 'write-item',
+            errorFingerprint: diagnostic.errorFingerprint, completedWorkItemIds: diagnostic.completedWorkItemIds as string[],
+            ...(typeof diagnostic.workItemId === 'string' ? { workItemId: diagnostic.workItemId } : {}) }
+        : null;
       const structured = error && typeof error === 'object' &&
         (error as { code?: unknown }).code === CHECKPOINT_WRITE_BLOCKED_CODE &&
         typeof (error as { workItemId?: unknown }).workItemId === 'string' &&
@@ -291,11 +304,12 @@ export async function runFlushGate(input: {
         phase: 'checkpoint-write' as const,
         code,
         elapsedMs: Date.now() - startedAt,
+        ...(attributed ?? {}),
         ...(structured ?? {}),
       };
       const refusalText = structured
         ? `The host checkpoint write was blocked for ${structured.workItemId} (${structured.blockedReason}). The session remains intact; inspect the concurrent checkpoint update before retrying.`
-        : `The host checkpoint write failed (${code}). The session remains intact; inspect host persistence before retrying.`;
+        : `The host checkpoint write failed (${code})${attributed ? ` at ${attributed.checkpointStage}${attributed.workItemId ? ` for ${attributed.workItemId}` : ''}; diagnostic ${attributed.errorFingerprint}` : ''}. The session remains intact; inspect host persistence before retrying.`;
       return { verdict: 'refuse', tripwires: [],
         refusalText,
         snapshotFailure };

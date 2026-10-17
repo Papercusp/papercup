@@ -8,6 +8,7 @@
  */
 import { withBoundedTimeout } from './bounded-timeout';
 import { createHash } from 'node:crypto';
+import { redactSensitiveText } from './sensitive-text';
 import { modeImpliesAutonomy } from './modes/registry';
 import {
   isUnpublishedReportTurn,
@@ -101,12 +102,35 @@ export class CheckpointWriteBlockedError extends Error {
   }
 }
 
+/** A mandatory save must identify the failing operation even for an untyped
+ * storage exception. Keep arbitrary messages out of the tool response; retain
+ * a redacted diagnostic in the host log under the same fingerprint. */
+export class CheckpointSnapshotFailureError extends Error {
+  readonly code: string;
+  readonly errorFingerprint: string;
+
+  constructor(error: unknown, readonly checkpointStage: 'load-writer' | 'read-held-items' | 'write-item',
+    readonly workItemId: string | undefined, readonly completedWorkItemIds: string[]) {
+    const message = error instanceof Error ? error.message : String(error);
+    const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
+    const code = typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
+      ? rawCode : 'checkpoint-write-failed';
+    super(`Host checkpoint failed at ${checkpointStage}${workItemId ? ` for ${workItemId}` : ''} (${code})`, { cause: error });
+    this.name = 'CheckpointSnapshotFailureError';
+    this.code = code;
+    this.errorFingerprint = createHash('sha256').update(message).digest('hex').slice(0, 16);
+    console.warn('[host-checkpoint] ' + JSON.stringify({ checkpointStage, workItemId,
+      completedWorkItemIds, code, errorFingerprint: this.errorFingerprint,
+      message: redactSensitiveText(message).slice(0, 1000) }));
+  }
+}
+
 /**
  * Auto-checkpoint the caller's held work-items whose checkpoints are missing
  * or stale: compose a mechanical block from the turn's journal note + the
  * P-013 tool-call log tail, merge it under the agent-authored prose (replacing
  * only a previous mechanical block), and write it back. Returns the item ids
- * written. Never throws.
+ * written. Advisory sweeps fail soft; mandatory respawn saves throw with context.
  */
 export async function autoCheckpointStaleHeldItems(input: {
   ownerId: string;
@@ -118,6 +142,9 @@ export async function autoCheckpointStaleHeldItems(input: {
   /** Respawn snapshots every held item, including fresh ones, without preview caps. */
   mode?: 'respawn';
 }): Promise<AutoCheckpointResult[]> {
+  let checkpointStage: 'load-writer' | 'read-held-items' | 'write-item' = 'load-writer';
+  let workItemId: string | undefined;
+  const written: AutoCheckpointResult[] = [];
   try {
     const [{ readHeldWorkItems }, { setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
       await Promise.all([
@@ -127,6 +154,7 @@ export async function autoCheckpointStaleHeldItems(input: {
         import('./tool-call-log'),
       ]);
     const nowMs = input.nowMs ?? Date.now();
+    checkpointStage = 'read-held-items';
     const held = await readHeldWorkItems(input.ownerId, input.workspaceId,
       input.mode === 'respawn' ? { limit: null } : {});
     const selected = input.mode === 'respawn' ? held
@@ -147,8 +175,9 @@ export async function autoCheckpointStaleHeldItems(input: {
     } catch {
       /* the block is still useful with the journal note alone */
     }
-    const written: AutoCheckpointResult[] = [];
     for (const item of selected) {
+      checkpointStage = 'write-item';
+      workItemId = item.id;
       try {
         const block = composeMechanicalCheckpoint({
           atIso: new Date(nowMs).toISOString(),
@@ -185,7 +214,10 @@ export async function autoCheckpointStaleHeldItems(input: {
     }
     return written;
   } catch (error) {
-    if (input.mode === 'respawn') throw error;
+    if (input.mode === 'respawn') {
+      if (error instanceof CheckpointWriteBlockedError) throw error;
+      throw new CheckpointSnapshotFailureError(error, checkpointStage, workItemId, written.map((item) => item.id));
+    }
     return [];
   }
 }

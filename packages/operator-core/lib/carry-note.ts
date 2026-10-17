@@ -1941,15 +1941,21 @@ export function normalizeCheckEntries(
           ? ''
           : (existing?.observed ?? '')
     ).trim();
+    // A row has one authority slot. Explicit contested evidence wins first;
+    // otherwise canonical verified evidence wins over an accidentally supplied
+    // observed context, and observed context wins only when no verification was
+    // supplied. The previous independent clears made `{ verified, observed }`
+    // erase BOTH fields, so the persisted row lost its evidence silently.
     if (e.contested !== undefined) {
       verified = '';
       observed = '';
-    }
-    if (e.observed !== undefined) {
+    } else if (e.verified !== undefined) {
+      observed = '';
+      contested = '';
+    } else if (e.observed !== undefined) {
       verified = '';
       contested = '';
     }
-    if (e.verified !== undefined) observed = '';
     // EI-23771449112267271: a probe whose SAMPLE could not discriminate the claim from its
     // negation is not verification — the evidence stays visible as CONTEXT on a `?` row
     // (never ✓), tagged so the successor sees the state at the badge. Same downgrade shape as
