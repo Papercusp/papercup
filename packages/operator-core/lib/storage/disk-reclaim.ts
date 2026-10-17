@@ -1501,7 +1501,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     { classId: 'release-cut-worktrees', run: async (dryRun, onPhase, notAfterMs) => {
       const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
-      const plan = await gatherCutReclaimPlan({
+      const gather = () => gatherCutReclaimPlan({
         repoPath: repoRoot, isAutoManaged: isAutoManagedCutWorktree, releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
         onPhase,
         loadReleases: async () => {
@@ -1511,7 +1511,14 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
           return rows.map((row) => ({ version: row.version, gitSha: row.git_sha, cutAtMs: new Date(row.cut_at).getTime(), publishedAtMs: row.published_at ? new Date(row.published_at).getTime() : null }));
         },
       });
-      const detail = await reclaimCutWorktrees(plan, { dryRun, notAfterMs }, { retentionMutexHeld: true });
+      const { createHash } = await import('node:crypto');
+      const plan = await gather();
+      const detail = await reclaimCutWorktrees(plan, { dryRun, notAfterMs }, {
+        retentionMutexHeld: true, refreshPlan: gather,
+        // This is persistent retention-owner state, not a per-run census. Its
+        // lifecycle is consumption/terminal retirement, never generic census GC.
+        usageWalk: { dir: join(defaultRetentionDir(), 'reclaim-usage', createHash('sha256').update(plan.canonicalRoot ?? repoRoot).digest('hex')) },
+      });
       return { ok: detail.ok, detail };
     } },
     { classId: 'unregistered-workspaces', run: async () => {

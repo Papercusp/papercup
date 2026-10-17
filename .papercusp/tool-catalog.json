@@ -7215,7 +7215,7 @@
           "POST"
         ]
       },
-      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux supports workspace current (bring here, default) or window (switch there); Windows brings here; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
+      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux defaults to current (bring here); Windows defaults to window (switch there), and explicit current refuses when Windows denies moving the foreign window; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
       "capabilities": [
         "coord:mark-terminal"
       ],

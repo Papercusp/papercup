@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -39,7 +39,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const value = <T = any>(code: string): T => JSON.parse(ev('JSON.stringify(' + code + ')'));
     const reload = () => native('navigate', value<string>('location.href'), '--json');
     const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
-    const click = (text: string, scope = 'document') => ev("(()=>{const b=[..." + scope + ".querySelectorAll('button')].find(e=>e.textContent.trim()===" + JSON.stringify(text) + ");if(!b||b.disabled)throw Error('Unavailable control '+ " + JSON.stringify(text) + ");b.click();return true})()");
+    const click = (text: string, scope = 'document') => ev(clickWorkbenchButton(text, scope));
     const field = (label: string, input: string) => ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
     const textHas = (text: string) => {
       try { wait('document.body.innerText.includes(' + JSON.stringify(text) + ')'); }

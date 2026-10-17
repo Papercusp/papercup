@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { HiringView } from '@papercusp/operator-core/lib/dao-hr/hiring';
-import { chooseWorkbenchOption, openWorkbenchDisclosure, openWorkbenchSelect, workbenchTextField } from '../../../../../../scripts/lib/dao-workbench-controls.mts';
+import { chooseWorkbenchOption, openWorkbenchDisclosure, openWorkbenchSelect, workbenchTextField, clickWorkbenchButton } from '../../../../../../scripts/lib/dao-workbench-controls.mts';
 import HiringViews from './HiringViews';
 import ContractSigningViews from './ContractSigningViews';
 
@@ -58,6 +58,21 @@ describe('Native hiring controls with the real shared primitives', () => {
     fireEvent.click(submit);
     await waitFor(() => expect(fetcher).toHaveBeenCalledWith('/api/pot/dao/hiring', expect.objectContaining({ method: 'POST',
       body: JSON.stringify({ action: 'candidate', roleId: 'role', personId: 'PER-candidate' }) })));
+  });
+
+  it('opens the offer action when its candidate name also labels the preceding combobox', async () => {
+    const view: HiringView = { ...hiring,
+      roles: [{ roleId: 'role', title: 'Native engineer', level: 'L3', managerPersonId: null, exclusive: false, candidates: ['PER-candidate'] }],
+      offers: [{ ...offer, state: 'offered', approvedBy: [] }] };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, hiring: view })));
+    render(<NuqsTestingAdapter searchParams="?hiringRole=role"><section data-testid="dao-workspace"><HiringViews daoSlug="dao" /></section></NuqsTestingAdapter>);
+    await screen.findByRole('combobox', { name: 'Offer candidate' });
+    const firstMatch = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Native candidate');
+    expect(firstMatch?.getAttribute('role')).toBe('combobox');
+    evaluate(clickWorkbenchButton('Native candidate'));
+    await screen.findByRole('article', { name: 'Offer detail' });
+    expect(screen.getByText('Another HR admin must approve your offer.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Approve offer' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('selects a company countersigner through the real control before generating a contract', async () => {
