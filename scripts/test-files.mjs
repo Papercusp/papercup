@@ -3386,6 +3386,20 @@ export async function main(
   }
 
   const groups = groupRoutes(routes);
+  // Admit in the caller checkout before freezing a private proof. The frozen
+  // checkout deliberately excludes local operator config, so its census cannot
+  // discover the caller's disclosure ledger. Only a real admission is inherited
+  // by the same requested file set; unknown or held states refuse before copying.
+  if (!dry) {
+    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot, files: routes.map((route) => route.absolute) });
+    if (restrictedHold.verdict === 'refuse') {
+      console.error(formatRestrictedHoldRefusal(restrictedHold));
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+    if (restrictedHold.verdict === 'admit') {
+      process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
+    }
+  }
   if (!dry) {
     try {
       const inputs = privateIntegrationVerifierInputs(repoRoot, testFiles);
@@ -3436,23 +3450,6 @@ export async function main(
   // Diagnostic only: one stderr line, never a verdict input (see scripts/lib/mutation-probe-window.mjs).
   const probeWindowBefore = readMutationProbeWindow(repoRoot);
   if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, repoRoot));
-  // WI-10005713 (D-012 / R-11): a session holding an active personal disclosure has no network,
-  // but a test or source it WROTE would run here with the network. Refuse before ANY test process
-  // starts — the same restrictedHoldRefusal testing:run applies in-process (it marks the child env
-  // so this does not run twice). Fail-closed: an unreadable census refuses too.
-  if (!dry) {
-    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot, files: routes.map((route) => route.absolute) });
-    if (restrictedHold.verdict === 'refuse') {
-      console.error(formatRestrictedHoldRefusal(restrictedHold));
-      return TEST_FILE_EXIT_NOT_MEASURED;
-    }
-    // WI-10005724: every vitest this router starts inherits process.env, and its root preflight
-    // (libs/test-config host-preflight globalSetup) would otherwise repeat the same ~2s census.
-    // Only a real admit marks it; a skip means an enclosing root already set (or owns) the marker.
-    if (restrictedHold.verdict === 'admit') {
-      process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
-    }
-  }
   // Clone only after admission: receipt-consuming children must inherit the
   // same real preflight result instead of repeating the disclosure-ledger read.
   const receiptChildEnv = receiptFile

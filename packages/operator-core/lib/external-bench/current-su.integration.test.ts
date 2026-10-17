@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import { currentBenchObservationReader, currentBenchIdentityFromObservation, liveCurrentBenchObservationReaderPorts,
   currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, readCurrentBenchCompletion, type CurrentSuBenchOptions,
-  liveCurrentBenchNativeCostReader, currentBenchLaunchRequest,
+  liveCurrentBenchNativeCostReader, currentBenchLaunchRequest, currentBenchNativeSessionCostDelta,
+  requireCurrentBenchNativeRunCost,
   currentBenchAssignmentId, currentBenchGatewayController, currentBenchWorkloadLockStateReader,
   type CurrentBenchLockStateAllocation,
   currentBenchWorkloadTransitionReader, currentBenchWorkloadArtifactReader, currentBenchWorkloadContextReader,
@@ -1773,10 +1774,11 @@ describe('legacy SQL usage measurement', () => {
 });
 
 describe('production native accounting with private PG and full source bytes', () => {
-  async function costFixture() {
+  async function costFixture(maxWallClockMs = 100) {
+    const fixtureProtocol = currentProtocolFixture('PRIVATE', maxWallClockMs);
     const opts: CurrentSuBenchOptions = { workspaceId, runId: 'PRIVATE', armId: 'papercusp', seed: 1,
       agent: 'codex', model: 'configured-alias', effort: 'high', account: 'auto',
-      preregistration: { preregHash: createHash('sha256').update('private-cost-protocol').digest('hex'), config } };
+      preregistration: { preregHash: createHash('sha256').update('private-cost-protocol').digest('hex'), config: fixtureProtocol } };
     const label = currentBenchLaunchRequest(opts, handle, 'Private cost fixture.').label;
     async function addSource(home: string, ownerId: string) {
       const nativeSessionId = randomUUID(), nativeTurnId = randomUUID();
@@ -1816,10 +1818,11 @@ describe('production native accounting with private PG and full source bytes', (
     }
     const solver = await addParticipant('private-cost-solver', 'su-private-cost-solver');
     async function accountingFixture() {
-      const loopId = `private-benchmark:${randomUUID()}`, protocol = currentProtocolFixture('PRIVATE');
+      const loopId = `private-benchmark:${randomUUID()}`, protocol = fixtureProtocol;
+      const armWallClockMs = protocol.arms[0].generationBudget.maxWallClockMs!;
       const resources = { inputTokens: 1000, outputTokens: 100, requestsPerArm: 50,
         armIds: protocol.arms.map(a => currentBenchAssignmentId(protocol.runId, a.id, 't1', 1)),
-        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: 1000, wallClockMsPerArm: 100 };
+        usdPerArm: 3, maxOpenUsd: 3, wallClockMs: armWallClockMs * 10, wallClockMsPerArm: armWallClockMs };
       await registerLearningLoop(sql, { workspaceId, loopId, budgetKind: 'lifetime', budgetUsd: 60,
         enabled: true, meta: { reservationBinding: opts.preregistration.preregHash, reservationResourceBudget: resources } });
       const controller = currentBenchGatewayController({ workspaceId, loopId, token: randomUUID(),
@@ -1837,7 +1840,11 @@ describe('production native accounting with private PG and full source bytes', (
           attemptKind: 'evaluation', note: JSON.stringify({ nativeGatewayAttempt: identity }),
           exact: { reservationId: id, binding: binding.preregHash, expectedBudgetUsd: 60,
             resources: { armId: binding.assignmentId, inputTokens: 100, outputTokens: 10 }, expectedResourceBudget: resources } });
-        expect(receipt.ok).toBe(true);
+        const refusalClock = receipt.ok ? [] : await sql`
+          SELECT EXTRACT(EPOCH FROM (clock_timestamp() - MIN(created_at))) * 1000 AS age_ms
+          FROM harness_shared.learning_spend_reservations
+          WHERE workspace_id = ${workspaceId} AND loop_id = ${loopId}`;
+        expect(receipt.ok, JSON.stringify({ receipt, refusalClock, resources })).toBe(true);
         const headers: GatewayCarryTrialAttemptResult = { ...identity, reservationRef: id,
           outcome: outcome === 'fetch-failed' ? 'fetch-failed' : 'response-headers',
           responseStatus: outcome === 'fetch-failed' ? null : 200, costUsdMeasurementMissing: true };
@@ -2032,6 +2039,49 @@ describe('production native accounting with private PG and full source bytes', (
     expect(positions.census.reservations.map(row => row.status)).toEqual(['settled', 'settled', 'settled']);
     expect(positions.census.reservations.map(row => row.usedUsd).sort()).toEqual([0.002, 0.002, 0.007]);
   });
+  it.each(['complete', 'missing-successor-bill'] as const)(
+    'measures a fresh recovered session through production source and billing readers (%s)', async evidence => {
+      // Source bytes and provider bills are private fixtures. The runtime census,
+      // identity attribution, settlement and delta readers are production code.
+      // This protocol permits the full two-session SQL workflow. The helper's
+      // default 100 ms protocol remains available for short-budget controls.
+      const f = await costFixture(60_000), accounting = await f.accountingFixture();
+      const before = requireCurrentBenchNativeRunCost(await accounting.read());
+      const successor = await f.addSource(f.solver.home, f.solver.ownerId);
+      await sql`UPDATE harness_shared.adv_sessions SET session_id = ${successor.nativeSessionId}
+        WHERE workspace_id = ${workspaceId} AND coord_owner_id = ${f.solver.ownerId}`;
+      await accounting.addAttempt(successor);
+      if (evidence === 'missing-successor-bill') {
+        await sql`DELETE FROM harness_shared.agent_usage_samples
+          WHERE workspace_id = ${workspaceId} AND session_id = ${successor.nativeSessionId}`;
+      }
+      const after = await accounting.read();
+      if (evidence === 'missing-successor-bill') {
+        expect(after).toMatchObject({ costUsdMeasurementMissing: true,
+          armMeta: { nativeCostAccounting: { billedCostUsd: null, sourceCensusComplete: true } } });
+        expect(() => currentBenchNativeSessionCostDelta(before,
+          requireCurrentBenchNativeRunCost(after), successor.nativeSessionId)).toThrow(/incomplete/);
+        return;
+      }
+      const complete = requireCurrentBenchNativeRunCost(after);
+      expect(complete).toMatchObject({ tokensIn: 160, tokensOut: 20, tokensCacheRead: 40,
+        armMeta: { nativeCostAccounting: { billedCostUsd: 0.004, attemptAccountingComplete: true } } });
+      const delta = currentBenchNativeSessionCostDelta(before, complete, successor.nativeSessionId);
+      expect(delta).toMatchObject({ nativeSessionId: successor.nativeSessionId, tokensIn: 80,
+        tokensOut: 10, tokensCacheRead: 20, billedCostUsd: 0.002, sourceComplete: true });
+      expect(delta.normalizedCostUsd).toBeCloseTo(before.costUsd, 12);
+      expect(complete.armMeta.nativeCostAccounting.sources).toHaveLength(2);
+      expect(() => currentBenchNativeSessionCostDelta(before, complete, f.solver.nativeSessionId))
+        .toThrow(/reused|non-monotone/);
+      // Rereading a recovered home must neither change its receipts nor bill its
+      // predecessor again after the native session pointer moves to the successor.
+      expect(await accounting.read()).toEqual(complete);
+      const positions = await getLearningSpendPositions(sql,
+        { workspaceId, loopId: accounting.binding.loopId, includeReservations: true });
+      expect(positions.positions).toMatchObject({ usedUsd: 0.004, unsettledUsd: 0 });
+      expect(await listLearningSpendEvents(sql, { workspaceId, loopId: accounting.binding.loopId }))
+        .toHaveLength(2);
+    });
   it('settles only the source-matched provider bill once and preserves its request provenance', async () => {
     const f = await costFixture(), accounting = await f.accountingFixture();
     await accounting.read(); await accounting.read();

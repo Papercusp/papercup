@@ -1,9 +1,9 @@
 /** E2E: real OpenSSH between the test client and an isolated private-network computer.
  * The remote psu/HTTP fixtures observe transport behavior; this is not release GUI proof. */
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, inject, test } from 'vitest';
@@ -53,13 +53,18 @@ async function ssh(command: string, args: string[]) {
   });
 }
 
-// Exercise the production entrypoint and its real child-process transport.
+// Reuse the installed-PUI selection contract for exact packaged-psu acceptance.
+// Resolve the binary before selecting its sibling: installed launchers may be symlinks.
+// Without PUI_BIN this continues to exercise the production source entrypoint.
 // Only OpenSSH configuration is supplied by the fixture; no controller,
 // command runner, PTY implementation or connection dependency is injected.
 async function nativePsu(args: string[], input?: string) {
+  const installedPui = process.env.PUI_BIN?.trim();
+  const command = installedPui ? join(dirname(realpathSync(installedPui)), 'psu') : process.execPath;
+  const entryArgs = installedPui ? [] : [fileURLToPath(new URL(
+    '../../../../apps/operator/scripts/psu-launcher.mjs', import.meta.url))];
   return new Promise<{ code: number | null; output: string }>((resolve, reject) => {
-    const child = spawn(process.execPath, [fileURLToPath(new URL(
-      '../../../../apps/operator/scripts/psu-launcher.mjs', import.meta.url)), ...args], {
+    const child = spawn(command, [...entryArgs, ...args], {
       cwd: root,
       env: {
         HOME: root, PATH: `${join(root, 'bin')}:${process.env.PATH}`,

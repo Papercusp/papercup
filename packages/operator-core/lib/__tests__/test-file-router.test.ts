@@ -144,31 +144,67 @@ describe('test-files router', () => {
   it('hands the private command to verifier-run before any list or test child is started', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
+    const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
     const preflight = vi.fn(async () => { stages.push('pg-preflight'); });
+    const restricted = vi.fn(() => { stages.push('restricted-preflight'); return { verdict: 'admit' }; });
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
         stages.push('source-freeze'); receiptDir = join(options.receiptPath, '..'); return 7;
       });
       expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
         preflightPrivateIntegrationPgImpl: preflight,
+        restrictedHoldPreflightImpl: restricted,
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       })).toBe(7);
-      expect(stages).toEqual(['pg-preflight', 'source-freeze']);
+      expect(stages).toEqual(['restricted-preflight', 'pg-preflight', 'source-freeze']);
+      expect(restricted).toHaveBeenCalledExactlyOnceWith({ repoRoot: REPO_ROOT, files: [resolve(REPO_ROOT, file)] });
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
+        env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router' }),
       }));
     } finally {
       if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
     }
   });
+
+  it.each(['restricted_write_held', 'restricted_hold_state_unknown'])(
+    'refuses private proof %s before PG admission, source copying or any test child', async error => {
+      const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+      const oldOptions = process.env.NODE_OPTIONS;
+      const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      const frozen = vi.fn(), preflight = vi.fn(), list = vi.fn(), run = vi.fn();
+      const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+        delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+        expect(await main([resolve(REPO_ROOT, file)], {
+          restrictedHoldPreflightImpl: () => ({ verdict: 'refuse', error, hint: 'Fixture census refused.' }),
+          preflightPrivateIntegrationPgImpl: preflight,
+          runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+        })).toBe(2);
+        expect(preflight).not.toHaveBeenCalled(); expect(frozen).not.toHaveBeenCalled();
+        expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+        expect(process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT).toBeUndefined();
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining(error));
+      } finally {
+        if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+        if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+        else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
+        warning.mockRestore();
+      }
+    },
+  );
 
   it('refuses an unavailable private-proof PG before source copying or any test child', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';

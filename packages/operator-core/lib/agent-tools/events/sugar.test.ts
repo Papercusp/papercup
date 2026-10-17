@@ -914,6 +914,38 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
   const gitSyncTool = definedTools.find((tool) => tool.name === "git-sync:await");
   if (!gitSyncTool) throw new Error("git-sync:await tool was not registered");
 
+  it("retries a transient statement timeout while registering the named wait (EI-23197998119991408)", async () => {
+    vi.useFakeTimers();
+    try {
+      const contention = Object.assign(new Error("canceling statement due to statement timeout"), {
+        code: "57014",
+      });
+      vi.mocked(registerAwait)
+        .mockRejectedValueOnce(contention)
+        .mockResolvedValueOnce({
+          id: 100,
+          eventKey: "git-sync:committed",
+          expiresTs: "2030-01-01",
+          timeoutBehavior: "wake",
+        } as never);
+
+      const pending = gitSyncTool.handler(
+        { harness: "harness-a" } as never,
+        { harnessSlug: "*", workspaceId: "workspace-a" } as never,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const res = await pending;
+
+      expect(JSON.parse(res.content[0].text)).toMatchObject({
+        ok: true,
+        events: ["git-sync:committed"],
+      });
+      expect(registerAwait).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("accepts on_timeout and threads expire through the shared await registration (EI-21671694555865156)", async () => {
     const schema = (
       gitSyncTool as unknown as {

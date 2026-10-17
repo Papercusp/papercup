@@ -142,7 +142,27 @@ describe('native terminal API-error provenance', () => {
 
 describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => {
   const input = { workspaceId: 'grader-ws', conversationId: 'grader-conv', answeringOwnerId: 'su-answerer' };
-  const target = { ok: true, ownerId: input.answeringOwnerId, agent: 'claude', sessionId: 'native-answerer' };
+  const target = {
+    ok: true,
+    ownerId: input.answeringOwnerId,
+    agent: 'claude',
+    sessionId: 'native-answerer',
+    ompThreadId: null,
+    resumeId: 'native-answerer',
+    workspaceId: input.workspaceId,
+    harnessSlug: 'papercusp',
+    role: null,
+    feature: null,
+    cwd: null,
+    model: null,
+    modelSource: null,
+    account: null,
+    endedAt: null,
+    endedBy: null,
+    live: false,
+    advSessionId: 72,
+    binding: null,
+  } as const;
   const native = JSON.stringify({ type: 'assistant', sessionId: target.sessionId,
     isApiErrorMessage: true, apiErrorStatus: 429, message: { role: 'assistant', stop_reason: 'end_turn' } });
   const log = '●API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n❯';
