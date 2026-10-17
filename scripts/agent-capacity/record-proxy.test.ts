@@ -73,6 +73,25 @@ function readExchanges(file: string): RecordedExchange[] {
 }
 
 describe('record proxy', () => {
+  it('refuses an oversized UTF-8 request before upstream and admits the exact byte boundary without changing the body', async () => {
+    const body = JSON.stringify({ model: 'gpt-6-luna', reasoning: { effort: 'low' }, input: 'héllo' });
+    const maxRequestBytes = Buffer.byteLength(body);
+    const requestLimit = recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2, maxRequestBytes);
+    const proxy = await startRecordProxy({ upstream: upstreamUrl, outFile: path.join(dir, 'bytes.jsonl'), sessionId: 'bytes', requestLimit });
+    try {
+      expect((await post(proxy.url + '/v1/responses', body + ' ')).status).toBe(400);
+      expect(seen).toHaveLength(0);
+      expect((await post(proxy.url + '/v1/responses', body)).status).toBe(200);
+      expect(seen.map((request) => request.body)).toEqual([body]);
+      expect(requestLimit.snapshot()).toMatchObject({ maxRequestBytes, admitted: 1, denied: 1 });
+    } finally { await proxy.close(); }
+    expect(readExchanges(path.join(dir, 'bytes.jsonl'))[0].error).toContain('byte allowance');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid byte allowance %s before opening a proxy', (bytes) => {
+    expect(() => recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2, bytes)).toThrow(/byte limit/);
+  });
+
   it('shares a synchronous request cap across concurrent session proxies and records refusals', async () => {
     const requestLimit = recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2);
     const proxies = await Promise.all(['first', 'second'].map((sessionId) => startRecordProxy({

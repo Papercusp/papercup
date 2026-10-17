@@ -232,15 +232,18 @@ export function decodeChunk(c: RecordedChunk): Buffer {
 }
 
 /** One admission counter shared by every proxy in a recording batch. No retries are refunded. */
-export function recordingRequestLimit(selection: { model: string; effort: string }, maxRequests: number) {
+export function recordingRequestLimit(selection: { model: string; effort: string }, maxRequests: number, maxRequestBytes?: number) {
   if (!Number.isSafeInteger(maxRequests) || maxRequests <= 0 || !selection.model || !selection.effort) {
     throw new Error('Recording request limit needs explicit model/effort and a positive safe integer');
+  }
+  if (maxRequestBytes !== undefined && (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes <= 0)) {
+    throw new Error('Recording request byte limit needs a positive safe integer');
   }
   const binding = { ...selection };
   let admitted = 0;
   let denied = 0;
   return {
-    snapshot: () => ({ ...binding, maxRequests, admitted, denied }),
+    snapshot: () => ({ ...binding, maxRequests, ...(maxRequestBytes === undefined ? {} : { maxRequestBytes }), admitted, denied }),
     admit(method: string, requestPath: string, body: Buffer): string | null {
       let request: Record<string, any>;
       try { request = JSON.parse(body.toString('utf8')); } catch { request = {}; }
@@ -250,7 +253,8 @@ export function recordingRequestLimit(selection: { model: string; effort: string
       const valid = method === 'POST' && requestPath === '/v1/responses' && request &&
         request.model === binding.model && request.reasoning?.effort === binding.effort &&
         request.background !== true && (request.tools === undefined || localTools);
-      const reason = !valid ? 'request does not match the admitted Responses model/effort/local-tool configuration'
+      const reason = maxRequestBytes !== undefined && body.length > maxRequestBytes ? 'request exceeds the admitted byte allowance'
+        : !valid ? 'request does not match the admitted Responses model/effort/local-tool configuration'
         : admitted >= maxRequests ? 'batch model request allowance exhausted' : null;
       if (reason) { denied++; return reason; }
       // Reserve synchronously before forwarding, including across concurrent session proxies.

@@ -111,6 +111,13 @@ it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workIte
   expect(returns).toContain('\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker');
   expect(returns).toContain('do not infer checkpoint authorship from \`workItem.updatedAt\`');
 });
+
+it('documents the projected work-item prose path and rejects body aliases', () => {
+  const returns = (get as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
+  expect(returns).toContain('`results[].workItem.summary`');
+  expect(returns).toContain('`results[].workItem.body` and `results[].workItem.description` are not response fields');
+  expect(returns).not.toContain('read `results[].workItem.body`');
+});
 // P-002 (WI-2145856) rewrote this contract rather than removing its guard. The
 // cap used to REJECT: `threadLimit:11` threw, which is what this test pinned. It
 // is now CLAMPED, because 50 filings of that rejection were pure round-trips that

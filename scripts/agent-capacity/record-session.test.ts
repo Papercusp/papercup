@@ -17,6 +17,14 @@ describe('batch recording request allowance', () => {
   it.each(['0', '-1', '1.5', 'NaN', 'Infinity', '9007199254740992', '--tasks', ''])('rejects an invalid allowance %j before sessions start', (value) => {
     expect(() => recordingLimitFromArgv(['--max-model-requests', value], 'codex', selection)).toThrow();
   });
+  it('requires a batch allowance for byte limits and retains both in the saved snapshot', () => {
+    expect(() => recordingLimitFromArgv(['--max-request-bytes', '65536'], 'codex', selection)).toThrow(/requires --max-model-requests/);
+    expect(recordingLimitFromArgv(['--max-model-requests', '20', '--max-request-bytes', '65536'], 'codex', selection)?.snapshot())
+      .toEqual({ ...selection, maxRequests: 20, maxRequestBytes: 65536, admitted: 0, denied: 0 });
+  });
+  it.each(['0', '-1', '1.5', 'NaN', 'Infinity', '9007199254740992', '--tasks', ''])('rejects an invalid byte allowance %j before sessions start', (value) => {
+    expect(() => recordingLimitFromArgv(['--max-model-requests', '20', '--max-request-bytes', value], 'codex', selection)).toThrow();
+  });
 });
 
 describe('default recording placement', () => {

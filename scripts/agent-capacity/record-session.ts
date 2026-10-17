@@ -6,6 +6,7 @@
  *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work] [--tasks-file <tasks.json>]
  *     [--codex-model <model> --codex-effort low|medium|high]
  *     [--max-model-requests <batch-wide positive integer; requires explicit Codex selection>]
+ *     [--max-request-bytes <positive integer; requires --max-model-requests>]
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -120,12 +121,20 @@ export function codexSelectionFromArgv(argv: readonly string[]): CodexSelection 
 
 export function recordingLimitFromArgv(argv: readonly string[], cli: Cli, selection?: CodexSelection): RecordingRequestLimit | undefined {
   const index = argv.indexOf('--max-model-requests');
-  if (index < 0) return undefined;
+  const bytesIndex = argv.indexOf('--max-request-bytes');
+  if (index < 0) {
+    if (bytesIndex >= 0) throw new Error('--max-request-bytes requires --max-model-requests');
+    return undefined;
+  }
   const raw = argv[index + 1];
   if (cli !== 'codex' || !selection || !raw || !/^[1-9][0-9]*$/.test(raw)) {
     throw new Error('--max-model-requests requires explicit Codex model/effort and a positive integer');
   }
-  return recordingRequestLimit(selection, Number(raw));
+  const bytes = bytesIndex < 0 ? undefined : argv[bytesIndex + 1];
+  if (bytesIndex >= 0 && (!bytes || !/^[1-9][0-9]*$/.test(bytes))) {
+    throw new Error('--max-request-bytes requires a positive integer');
+  }
+  return recordingRequestLimit(selection, Number(raw), bytes === undefined ? undefined : Number(bytes));
 }
 
 /** config.toml for a fresh CODEX_HOME whose only model provider is the recording proxy. */
