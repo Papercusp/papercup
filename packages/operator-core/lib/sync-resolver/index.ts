@@ -5212,13 +5212,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       expectedRuntime: z.object({ host: z.string().trim().min(1), processId: z.string().trim().min(1), buildSha: z.string().trim().min(1) }).strict().optional(),
       actionJournalUnit: z.string().trim().min(1).max(500).optional(),
       expectedActionRuntime: z.object({ host: z.string().trim().min(1), processId: z.string().trim().min(1), buildSha: z.string().trim().min(1) }).strict().optional(),
+      gymJournalUnit: z.string().trim().min(1).max(500).optional(),
+      expectedGymRuntime: z.object({ host: z.string().trim().min(1), processId: z.string().trim().min(1), buildSha: z.string().trim().min(1) }).strict().optional(),
       since: z.string().datetime().optional(), until: z.string().datetime().optional(),
       cursor: z.string().max(800).optional(), runId: z.string().trim().min(1).max(500).optional(),
     }).refine(args => args.view !== 'run' || Boolean(args.runId), 'A run id is required for Dream detail')
       .refine(args => args.view !== 'observations' || Boolean(args.expectedRuntime && args.since && args.until), 'Observations require an exact expected runtime and window')
-      .refine(args => Boolean(args.actionJournalUnit) === Boolean(args.expectedActionRuntime), 'Action journal requires its exact expected runtime'),
+      .refine(args => Boolean(args.actionJournalUnit) === Boolean(args.expectedActionRuntime), 'Action journal requires its exact expected runtime')
+      .refine(args => Boolean(args.gymJournalUnit) === Boolean(args.expectedGymRuntime), 'Gym journal requires its exact expected runtime'),
     resolve: async (raw: unknown) => {
-      const args = raw as { potSlug: string; mode?: 'manual' | 'auto'; view?: 'controls' | 'metrics' | 'history' | 'run' | 'observations'; since?: string; until?: string; cursor?: string; runId?: string; expectedRuntime?: { host: string; processId: string; buildSha: string }; actionJournalUnit?: string; expectedActionRuntime?: { host: string; processId: string; buildSha: string } };
+      const args = raw as { potSlug: string; mode?: 'manual' | 'auto'; view?: 'controls' | 'metrics' | 'history' | 'run' | 'observations'; since?: string; until?: string; cursor?: string; runId?: string; expectedRuntime?: { host: string; processId: string; buildSha: string }; actionJournalUnit?: string; expectedActionRuntime?: { host: string; processId: string; buildSha: string }; gymJournalUnit?: string; expectedGymRuntime?: { host: string; processId: string; buildSha: string } };
       const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
       ]);
@@ -5226,14 +5229,23 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       if (args.view === 'observations') {
         const { readDreamControlObservations } = await import('../dream/dream-control-observations');
         const scope = { workspaceId, potSlug: args.potSlug, since: args.since!, until: args.until!, expectedRuntime: args.expectedRuntime!,
-          ...(args.actionJournalUnit ? { actionJournalUnit: args.actionJournalUnit, expectedActionRuntime: args.expectedActionRuntime } : {}) };
+          ...(args.actionJournalUnit ? { actionJournalUnit: args.actionJournalUnit, expectedActionRuntime: args.expectedActionRuntime } : {}),
+          ...(args.gymJournalUnit ? { gymJournalUnit: args.gymJournalUnit, expectedGymRuntime: args.expectedGymRuntime } : {}) };
         // Host journal IO must finish before taking a workspace transaction.
         const journal = args.actionJournalUnit ? await (await import('../journal-read')).readJournal({
           units: [args.actionJournalUnit], since: `@${Date.parse(args.since!) / 1000}`, until: `@${Date.parse(args.until!) / 1000}`,
           grep: (await import('../dream/dream-config')).DREAM_ACTION_DECISION_PREFIX, limit: 20,
         }) : null;
-        return routeWithWorkspace(async tx => [await (journal
-          ? readDreamControlObservations(tx as unknown as import('postgres').Sql, scope, { journal: async () => journal })
+        const gymJournal = args.gymJournalUnit ? await (await import('../journal-read')).readJournal({
+          units: [args.gymJournalUnit], since: `@${Date.parse(args.since!) / 1000}`, until: `@${Date.parse(args.until!) / 1000}`,
+          grep: (await import('../gym/autoloop-tick')).GYM_ADMISSION_DECISION_PREFIX, limit: 1000,
+        }) : null;
+        return routeWithWorkspace(async tx => [await (journal || gymJournal
+          ? readDreamControlObservations(tx as unknown as import('postgres').Sql, scope, { journal: async request => {
+            const captured = request.grep === (await import('../gym/autoloop-tick')).GYM_ADMISSION_DECISION_PREFIX ? gymJournal : journal;
+            if (!captured) throw new Error('Requested journal was not captured before transaction');
+            return captured;
+          } })
           : readDreamControlObservations(tx as unknown as import('postgres').Sql, scope))]);
       }
       if (args.view === 'run') {

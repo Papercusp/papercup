@@ -212,3 +212,11 @@ export function resolveDreamCycleConfig(override: Partial<DreamCycleConfig> = {}
 
   return config;
 }
+
+/** Actual action checks only; a later gate stays not-reached after an early refusal. */
+export const DREAM_ADMISSION_GATES = ['feature', 'owner-idle', 'idle-ratio', 'source', 'governor', 'continue'] as const;
+export interface DreamAdmissionGate {
+  gate: typeof DREAM_ADMISSION_GATES[number];
+  status: 'passed' | 'refused' | 'unknown' | 'not-reached' | 'not-applicable';
+  inputs: Record<string, unknown>;
+}

@@ -1007,6 +1007,29 @@
       },
       "verification": "On2026-10-16, exact original/before/after evidence, source-changing bootstrap history, unchanged pre-repair fixture identity, full terminal logs, committed source hashes and authoritative completion established this scoped fixture repair. No historical repair was reclaimed or reclosed; no broad affected or live-gate run was launched.",
       "proofBoundary": "Original21116758 and current baseline21293705/06 remain failed. The two repaired complete suites passed10 with retained dirty working-tree provenance; matching committed fixture bytes do not establish an immutable executed import graph. No full affected PASS, current gate verdict, native/attended/novice/screen-reader/voice/exact-production acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116699,
+      "testFile": "packages/operator-core/lib/generated-declarations.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116699 records6PASS1FAIL0SKIP. The generator check named exactly one missing manual declaration export: rootReadDenyPaths from libs/papercusp/packages/orchestrator/src/fleet-srt-spawn.mjs was absent from its adjacent .d.mts.",
+      "repairId": "EI-25732602759029469",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "32963fcf189514a06c2bf22d984cee03dba4dc6e",
+      "sourceRepairSubmoduleCommit": "4b8664816ce23c8ac6cce82337f9fbc9b047a9cf",
+      "rootConnection": "Originalf419 pins submodulee6579e3b17bfe9f227a982e7b612ccdd250cb61a: the runtime exports rootReadDenyPaths while the manual declaration omits it. The completed repair adds only its structural Dirent input/string[] result signature; the runtime module is byte-identical across this repair. A conventional real-file parity regression verifies that this manual path is scanned, stays outside generated declarations, and detects exactly rootReadDenyPaths when that export alone is removed in memory. The completion's emitted superproject32963 pins submodule435b571bea5f38a63ffe13fde33a399840669959, which retains the repaired declaration blob e6d644d661458d1a32ecd33a4d96b5a7c8597dca. The same missing-export signature and regression remain in current source.",
+      "retainedWorkingProof": {
+        "beforeTestRunId": 21134712,
+        "testRunId": 21134721,
+        "testFile": "packages/operator-core/lib/declaration-export-parity.test.ts",
+        "recordedCommit": "ad3ba262de8856b66be5145e47413ae604e6faf2",
+        "sourceSha256": "4f8a5c2fe5586fddd052125b251deb9f698cab9a33263116f0ff406feaaf98ab",
+        "testSha256": "b9a6cc55baa89c808700905a3f9b2380da87d4d45d931f45f9caca9d5b7b5b32",
+        "testResult": "Exact retained LOCAL21134712 is failed and names only stranded rootReadDenyPaths; LOCAL21134721 is passed. Both released ledger rows record worktreeDirty=true, root=null and isScratchConfig=false. The stored completion reports selected regression0PASS1FAIL12unselected before repair, then full parity suite13PASS0FAIL0SKIP, global115-declaration check exit0 and selected TypeScript exit0. The released ledger reader omits executionDetails and measured case counts/collection/selector metadata, so those counts remain attributed to stored completion rather than independently remeasured.",
+        "retentionBoundary": "The three completion-cited /dev/shm global-check and TypeScript logs are no longer present. A bounded historical lookup for generated-declarations.test.ts at ad3ba262 returned no row; this does not establish that no historical run exists elsewhere. No fresh test was run to replace missing retained evidence."
+      },
+      "verification": "On2026-10-17, exact original and before/after test-run reads matched this defect. Authoritative work_items:get confirmed EI-25732602759029469 DONE/committed and unassigned; no repair was reclaimed or reclosed. git-show hashes verified original omission, the unchanged runtime across the source repair, the exact repaired declaration at emitted32963's submodule pin, and the conventional regression at32963/currentHEAD. Current declaration has a later native-container binding addition, so the repair's completion-freshness warning remains stale and its historical proof is not promoted to current-suite qualification.",
+      "proofBoundary": "This maps the original missing-export failure to an existing committed repair with retained dirty working-tree proof. Original21116699 and the selected before-repair21134712 remain failed. Committed source identity does not establish an immutable executed import graph, a newly verified current declaration suite, full affected PASS, current gate verdict, runtime or tutorial shipment acceptance."
     }
   ],
   "sourceReconciliations": [
@@ -1080,6 +1103,35 @@
         "verification": "On2026-10-16, exact-id original and passing ledger reads, the retained original-root census, both source-changing diffs, producer completion and git ancestry/blob/hash checks established this reconciliation. No test was replayed, no terminal repair was claimed or reclosed, and no live-gate operation was performed."
       },
       "proofBoundary": "This is a committed baseline source correction with unresolved repair attribution and retained dirty historical PASS evidence. It adds no completed-repair mapping. Original21116573 remains failed; no immutable full affected PASS, current gate verdict, runtime, parent acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116796,
+      "testFile": "packages/operator-core/lib/agent-tools/scheduler/get_next.result-envelope.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116796 records8PASS5FAIL0SKIP. The retained original log ties the missing structured claim data and unexpected console warnings to scheduler:get_next preflight throwing because the context-pressure mock has no fetchContextPressureReadings export, then degrading to fallback.",
+      "originalLogPath": "~/.papercusp/logs/papercusp-affected-tests/1954068-628608ae.log",
+      "sourceRepairCommit": "2998298920a789179489753fd7cb06d7c5fc4922",
+      "rootConnection": "The original f419 handler imports and calls fetchContextPressureReadings when the context-pressure gate is enabled, while its whole-module fixture exports only fetchContextPressure. Commit2998298920 adds the missing async Map-returning stub and its explanatory comment, without changing any assertion. Its parent and original f419 have the identical test blob2cadea11851adcbd5f4dc1261ad96a63b230551d. The corrected blob459cf467e5b587194278542fb97018dfe8a5735d is also present at the later passing receipt's recorded commit bef8d2fb9f; that commit and HEAD descend from the correction. The stub and committed-claim assertions remain in the current test, preserving the recurrence guard.",
+      "relatedPriorRepair": {
+        "id": "EI-20308567859934395",
+        "state": "done",
+        "completionAuthority": "committed",
+        "scope": "The authoritative item concerns an older five-second timeout in a three-file focused batch. It is not attributed the later missing-export assertion failures or their fixture correction, and was read without reclaiming or reclosing it."
+      },
+      "repairAttribution": "Unresolved for the three-line fixture correction in2998298920. Literal-file work-item search found the older timeout repair, whose scope is different. WI-10005128 retains source-reconciliation custody; this entry does not claim a completed-repair mapping.",
+      "retainedProof": {
+        "commit": "bef8d2fb9f3792fb713eaffaa438663291c39a8e",
+        "testRunId": 21251365,
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": null,
+        "runGroupId": null,
+        "originalTestSha256": "e9df66d0cf7af20b71f1e5b7d7755aa7ed4269c1b393c087c3c40c719251d5df",
+        "repairTestSha256": "0feab9a7e0f760d24c94a5e92d9cb2bb98d7744c3e1232fedf02b405d57a690d",
+        "testResult": "Existing exact historical receipt21251365 is pass. Its recorded commit contains the same corrected test blob as2998298920. The receipt is dirty; matching committed blobs do not establish the executed dirty bytes or imported source graph. The released reader returns root=null and omits executionDetails, measured counts, collection status and selector. No immutable or complete-suite qualification is inferred.",
+        "verification": "On2026-10-17, exact-id original and passing ledger reads, the retained original-root census and raw original preflight error, minimal source-changing diff, older repair scope and git ancestry/blob/hash checks established this reconciliation. No test was replayed, no terminal repair was claimed or reclosed, and no live-gate operation was performed."
+      },
+      "proofBoundary": "This is a committed fixture source correction with unresolved repair attribution and retained dirty historical PASS evidence. It adds no completed-repair mapping. Original21116796 remains failed; no immutable full affected PASS, current gate verdict, runtime, parent acceptance or tutorial shipment is established."
     }
   ],
   "currentCommittedQualification": {

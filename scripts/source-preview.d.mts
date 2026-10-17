@@ -258,6 +258,7 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
  * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options] Source-only runtime mode permits
  * named untracked build outputs and materialized dependency directories, not source edits.
+ * dependencyStaging is reserved for the pre-copy preparation check; it never attests dependency bytes.
  */
 export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
@@ -286,6 +287,7 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
  * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options]
+ * dependencyStaging is reserved for the pre-copy preparation check.
  */
 export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;

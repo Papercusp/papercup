@@ -10,7 +10,8 @@ import { signAuthorityRpc, type AuthorityRpcAuth } from '../../authority/authori
 
 export const VM_COPY_SCOPE = 'vmctl:prepare-diagnostic-copy';
 export const VM_COPY_RESPONSE_KIND = 'capability:inspect/vm-copy-authority/response-v1';
-const text = z.string().trim().min(1).max(4096);
+// Identity/reference bytes are compared exactly; validation must not normalize them.
+const text = z.string().min(1).max(4096).refine(value => value.trim().length > 0);
 const integer = z.number().int().safe().positive();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const lifetime = z.object({ bootId: text, pid: integer, startTicks: integer }).strict();

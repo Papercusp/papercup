@@ -3559,6 +3559,22 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
     expect(batch.map((item) => item.id)).toEqual(['WI-6', 'WI-5']);
   });
 
+  it('prioritizes component screening only in the ordinary model window and keeps peer guards first', async () => {
+    await seedPending({ id: 'WI-old', createdAtMs: NOW - 30_000 });
+    await seedPending({ id: 'WI-recovery', createdAtMs: NOW - 20_000 });
+    await seedPending({ id: 'WI-peer', createdAtMs: NOW - 10_000 });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'live-peer' WHERE feature_id = 'WI-peer'`;
+    const opts = { demoteGuardBlocked: true, componentScreeningItemIds: ['WI-recovery', 'WI-peer'] };
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3, undefined, opts)).map((r) => r.id))
+      .toEqual(['WI-recovery', 'WI-old', 'WI-peer']);
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3)).map((r) => r.id))
+      .toEqual(['WI-old', 'WI-recovery', 'WI-peer']);
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3, undefined, { ...opts, preferModelFree: true })).map((r) => r.id))
+      .toEqual(['WI-old', 'WI-recovery', 'WI-peer']);
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3, ['WI-old', 'WI-recovery'], opts)).map((r) => r.id))
+      .toEqual(['WI-old', 'WI-recovery']);
+  });
+
   it('rotates scheduled ambiguous reviews behind never-reviewed and less-recently reviewed rows', async () => {
     await seedPending({ id: 'WI-repeat', createdAtMs: NOW - 30_000, dedupCandidates: [{ id: 'WI-twin' }] });
     await seedPending({ id: 'WI-earlier-review', createdAtMs: NOW - 20_000 });

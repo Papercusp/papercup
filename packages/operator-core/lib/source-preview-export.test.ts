@@ -268,6 +268,102 @@ describe('source-preview export — R-1 selection parity with the installer cut'
   });
 });
 
+describe('verifier dependency staging preparation boundary', () => {
+  function fixture(recordedStaging?: string) {
+    const dest = mkdtempSync(join(tmp, 'dependency-staging-'));
+    write(dest, 'input.mjs', 'export default 1;\n');
+    // The no-op models a completed helper that incorrectly left staging behind.
+    write(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh', '#!/bin/bash\nexit 0\n');
+    if (recordedStaging) write(dest, recordedStaging + '/source.mjs', 'recorded source');
+    const files = verifierSourceFiles(dest);
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40), submodules: [],
+      testedInputs: [{ path: 'input.mjs', sha256: files.find(file => file.path === 'input.mjs')!.sha256 }], files };
+    write(dest, '.verifier-source.json', JSON.stringify(receipt));
+    return { dest, receipt };
+  }
+
+  it.each(['node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345',
+    'apps/operator/node_modules.pinned-deps-tmp.12345'])(
+    'retains strict source/runtime verification outside preparation for %s, including empty staging', async staging => {
+      const { dest, receipt } = fixture();
+      await fsPromises.mkdir(join(dest, staging), { recursive: true });
+      for (const options of [{}, { runtimeArtifacts: true }])
+        await expect(verifyVerifierSource(dest, receipt, options)).rejects.toThrow('unexpected dependency staging');
+      await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true, dependencyStaging: true }))
+        .resolves.toEqual(receipt);
+      write(dest, staging + '/partial', 'retained bytes');
+      await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }))
+        .rejects.toThrow('unexpected dependency staging');
+    },
+  );
+
+  it.each(['node_modules.pinned-deps-tmp.0', 'node_modules.pinned-deps-tmp.0123',
+    'node_modules.pinned-deps-tmp.-1', 'node_modules.pinned-deps-tmp.123.tmp',
+    'node_modules.pinned-deps-tmp-other'])(
+    'rejects the empty staging lookalike %s before the helper', async staging => {
+      const { dest, receipt } = fixture();
+      await fsPromises.mkdir(join(dest, staging));
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+        runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+        .rejects.toThrow('invalid dependency staging name');
+      expect(phases).toEqual(['deps.source.before']);
+      expect(existsSync(join(dest, staging))).toBe(true);
+    },
+  );
+
+  it.each(['symlink', 'dangling-link', 'file', 'ambiguous-pids', 'ambiguous-stable', 'redirected-parent'])(
+    'rejects %s before helper execution without removing retained evidence', async defect => {
+      const { dest, receipt } = fixture();
+      const staging = join(dest, 'node_modules.pinned-deps-tmp.12345');
+      if (defect === 'symlink') symlinkSync('.', staging);
+      else if (defect === 'dangling-link') symlinkSync('absent', staging);
+      else if (defect === 'file') writeFileSync(staging, 'retained bytes');
+      else if (defect === 'redirected-parent') {
+        const external = mkdtempSync(join(tmp, 'redirected-staging-'));
+        write(external, 'node_modules.pinned-deps-tmp/partial', 'external bytes');
+        symlinkSync(external, join(dest, 'app'));
+      } else {
+        await fsPromises.mkdir(staging);
+        await fsPromises.mkdir(join(dest, defect === 'ambiguous-pids'
+          ? 'node_modules.pinned-deps-tmp.67890' : 'node_modules.pinned-deps-tmp'));
+      }
+      const before = readdirSync(dest).sort();
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+        runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+        .rejects.toThrow(/dependency staging|symlink escapes source root/);
+      expect(phases).toEqual(['deps.source.before']);
+      expect(readdirSync(dest).sort()).toEqual(before);
+    },
+  );
+
+  it.each(['input.mjs', 'node_modules.pinned-deps-tmp/source.mjs',
+    'node_modules.pinned-deps-tmp.12345/source.mjs', 'apps/operator/node_modules.pinned-deps-tmp/source.mjs'])(
+    'never exempts changed recorded source at %s', async input => {
+      const { dest, receipt } = fixture(input === 'input.mjs' ? undefined : dirname(input));
+      write(dest, input, 'changed recorded source');
+      if (input === 'input.mjs') write(dest, 'node_modules.pinned-deps-tmp/partial', 'retained bytes');
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+        runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+        .rejects.toThrow('changed ' + input);
+      expect(phases).toEqual(['deps.source.before']);
+    },
+  );
+
+  it('rejects unfinished empty staging after the helper and before any invoked Node command', async () => {
+    const { dest, receipt } = fixture();
+    await fsPromises.mkdir(join(dest, 'node_modules.pinned-deps-tmp'));
+    const phases: string[] = [];
+    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+      .rejects.toThrow('unexpected dependency staging');
+    expect(phases).toEqual(['deps.source.before', 'deps.snapshot', 'deps.source.after-snapshot']);
+    expect(existsSync(join(dest, 'node_modules.pinned-deps-tmp'))).toBe(true);
+  });
+});
+
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
   const budgetPhases = { 'source.freeze': 103_607, 'receipt.write': 377,
     'deps.source.before': 11_836, 'deps.snapshot': 140_626, 'deps.source.after-snapshot': 22_222,
@@ -633,8 +729,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
-  it('loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal', async () => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
+  it.each(['fresh', 'node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345'])(
+    'loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal (%s)', async staging => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies-' + staging));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -644,14 +741,14 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Substitute the expensive copy only; execute real Node resolution from the
     // independent source tree, with ambient loaders and NODE_PATH excluded.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\nshopt -s nullglob\nstaging=("$3"/node_modules.pinned-deps-tmp*)\nif [ "${#staging[@]}" = 1 ]; then mv -- "${staging[0]}" "$3/node_modules"; else mkdir "$3/node_modules"; fi\ncp -al -- "$2/node_modules/." "$3/node_modules/"\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', script, 'scripts/schema', helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
     const scratch = join(fixture.repo, '.papercusp', 'scratch');
     await fsPromises.mkdir(scratch, { recursive: true });
     const dest = join(scratch, 'invoked');
-    const otherTemp = join(tmp, 'verifier-native-dependencies-other-temp');
+    const otherTemp = join(tmp, 'verifier-native-dependencies-other-temp-' + staging);
     await fsPromises.mkdir(otherTemp);
     vi.stubEnv('TMPDIR', otherTemp);
     let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
@@ -666,7 +763,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
     installVerifierTsx(fixture.repo);
+    if (staging !== 'fresh') write(dest, staging + '/retained-proof', 'retained private fixture bytes');
     const dependencies = await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    if (staging !== 'fresh') {
+      expect(existsSync(join(dest, staging))).toBe(false);
+      expect(readFileSync(join(dest, 'node_modules/retained-proof'), 'utf8')).toBe('retained private fixture bytes');
+    }
     expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual(expect.arrayContaining([
       '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json', 'tsx/package.json',
     ]));

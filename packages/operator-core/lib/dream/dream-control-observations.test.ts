@@ -2,8 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import type { FlagAttestation } from '@papercusp/flags/server';
-import { assessDreamActionDecisions, assessDreamControlObservationCurrentness, readDreamControlObservations, type ControlObservationScope } from './dream-control-observations';
-import { DREAM_ACTION_DECISION_PREFIX } from './dream-config';
+import { assessDreamActionDecisions, assessDreamAdmission, assessGymAdmissionDecisions, assessDreamControlObservationCurrentness, readDreamControlObservations, type ControlObservationScope } from './dream-control-observations';
+import { DREAM_ACTION_DECISION_PREFIX, DREAM_ADMISSION_GATES } from './dream-config';
+import { GYM_ADMISSION_DECISION_PREFIX, GYM_ADMISSION_GATES } from '../gym/autoloop-tick';
 import type { JournalReadResult } from '../journal-read';
 
 const now = Date.parse('2026-10-17T12:00:00Z');
@@ -45,6 +46,34 @@ function fixture(change: Record<string, readonly Row[]> = {}) {
 
 afterEach(() => vi.unstubAllEnvs());
 describe('mutation-free Dream/Gym/Scout control observations', () => {
+  it.each(['valid', 'missing-gates', 'unknown', 'wrong-prefix', 'dispatch-only'])(
+    'requires an actual complete Dream refusal chain: %s', fault => {
+      const gates = DREAM_ADMISSION_GATES.map((gate, i) => ({ gate,
+        status: i === 0 ? 'passed' : i === 1 ? 'refused' : 'not-reached', inputs: {} }));
+      if (fault === 'unknown') gates[0].status = 'unknown';
+      if (fault === 'wrong-prefix') gates[0].status = 'not-reached';
+      const row = { schemaVersion: 1 as const, actionId: 'a', workspaceId: 'ws', potSlug: 'pot', capturedAt: scope.since,
+        runtime, source: 'dream/dream-cycle-action:makeDreamCycleAction' as const, mode: 'auto' as const,
+        reason: 'owner-idle-disabled', disposition: 'pre-attempt-policy-skip' as const, costUsd: 0,
+        ...(fault === 'missing-gates' ? {} : { admission: fault === 'dispatch-only' ? [] : gates }) };
+      expect(assessDreamAdmission(row).status).toBe(fault === 'valid' ? 'observed' : 'unknown');
+    });
+  it.each(['valid', 'refusal', 'missing-prefix', 'fail-open', 'wrong-runtime', 'wrong-unit', 'clipped', 'truncated', 'absent'])(
+    'validates actual Gym gate records and preserves %s uncertainty', fault => {
+      const names = ['owner-idle', ...GYM_ADMISSION_GATES];
+      const records = names.map(gate => ({ schemaVersion: 1, actionId: 'gym-a', workspaceId: 'ws', potSlug: gate === 'owner-idle' ? null : 'pot',
+        capturedAt: scope.since, runtime: fault === 'wrong-runtime' ? { ...runtime, buildSha: 'other' } : runtime,
+        source: 'harness/routines/gym-actions:runGymCycleInline', gate,
+        status: fault === 'fail-open' && gate === 'authority' ? 'unknown' : fault === 'refusal' && gate === 'native-budget' ? 'refused' : 'passed', inputs: {} }));
+      const selected = fault === 'absent' ? [] : fault === 'missing-prefix' ? [{ ...records[5], status: 'refused' }]
+        : fault === 'refusal' ? records.slice(0, 3) : records;
+      const journal = { journalAvailable: true, journalError: null, truncated: fault === 'truncated', unitsUnknown: [],
+        entries: selected.map(row => ({ ts: scope.since, unit: fault === 'wrong-unit' ? 'wrong.service' : 'gym.service',
+          message: GYM_ADMISSION_DECISION_PREFIX + JSON.stringify(row), clipped: fault === 'clipped' })) } as unknown as JournalReadResult;
+      const assessed = assessGymAdmissionDecisions(journal, { ...scope, gymJournalUnit: 'gym.service', expectedGymRuntime: runtime });
+      expect(assessed.status).toBe(['valid', 'refusal'].includes(fault) ? 'observed' : 'unknown');
+      if (assessed.status === 'observed') expect(assessed.value.actions[0].allow).toBe(fault === 'valid');
+    });
   it('uses open reservations in lifetime governor decisions, preserving native and later-gate limits', async () => {
     const { query } = fixture({ 'FROM harness_shared.learning_governor_loops': [{ workspace_id: 'ws', loop_id: 'dream:pot', pot_slug: 'pot',
       budget_kind: 'lifetime', budget_usd: 2, spent_usd: 0.25, enabled: true, enforcement: 'governor', registered_at: now, updated_at: now }] });

@@ -81,6 +81,10 @@ describe('makeDreamCycleAction', () => {
         disposition: 'pre-attempt-policy-skip', paidCalls: 0, model: null, usage: null, costUsd: 0,
         runtime: expect.objectContaining({ processId: expect.any(String) }), capturedAt: expect.any(String),
       });
+      const recorded = JSON.parse(line!.slice(DREAM_ACTION_DECISION_PREFIX.length));
+      expect(recorded.admission.find((g: { gate: string }) => g.gate === 'source').status).toBe('not-reached');
+      expect(recorded.admission.find((g: { gate: string }) => g.gate === 'governor').status).toBe('not-reached');
+      expect(recorded.admission.filter((g: { status: string }) => g.status === 'refused')).toHaveLength(1);
     });
   it('gates the whole surface on DREAM_CYCLE', async () => {
     const runCycle = vi.fn(async () => result());
@@ -117,7 +121,7 @@ describe('makeDreamCycleAction', () => {
 
     await action({ ...CTX, payloadTemplate: { mode: 'manual' } });
 
-    expect(runCycle).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }), { mode: 'manual' });
+    expect(runCycle).toHaveBeenCalledWith(expect.objectContaining({ installSlug: 'papercusp' }), { mode: 'manual' }, expect.any(Function));
     expect(idleAllowed).not.toHaveBeenCalled();
     expect(readIdleRatio).not.toHaveBeenCalled();
   });
@@ -159,6 +163,23 @@ describe('makeDreamCycleAction', () => {
     expect(runCycle).toHaveBeenCalledWith(auto, {
       mode: 'auto',
       cycle: { autoIdleRatioFloor: 0.5 },
-    });
+    }, expect.any(Function));
+  });
+
+  it('retains production governor inputs and repeated pause refusals instead of treating dispatch as admission', async () => {
+    const log = vi.fn();
+    const action = makeDreamCycleAction({ featureEnabled: async () => true,
+      runCycle: async (_ctx, _config, observe) => {
+        observe({ gate: 'source', status: 'passed', inputs: { rootPath: '/registered' } });
+        observe({ gate: 'governor', status: 'passed', inputs: { allow: true, rollingRemainingUsd: 4, cycleRemainingUsd: 1 } });
+        observe({ gate: 'continue', status: 'passed', inputs: { active: true } });
+        observe({ gate: 'continue', status: 'refused', inputs: { reason: 'routine-inactive' } });
+        return result({ reason: 'aborted' });
+      }, log });
+    await action({ ...CTX, payloadTemplate: { mode: 'manual' } });
+    const row = JSON.parse(log.mock.calls.find(([line]) => line.startsWith(DREAM_ACTION_DECISION_PREFIX))![0].slice(DREAM_ACTION_DECISION_PREFIX.length));
+    expect(row.admission.filter((g: { gate: string }) => g.gate === 'continue').map((g: { status: string }) => g.status)).toEqual(['passed', 'refused']);
+    expect(row.admission.find((g: { gate: string }) => g.gate === 'governor').inputs).toMatchObject({ rollingRemainingUsd: 4 });
+    expect(row.admission.find((g: { gate: string }) => g.gate === 'idle-ratio').status).toBe('not-applicable');
   });
 });

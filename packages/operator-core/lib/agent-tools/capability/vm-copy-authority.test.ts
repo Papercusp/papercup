@@ -3,13 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { generateEd25519KeypairDer } from '../../identity/ed25519';
 import { signAuthorityRpc } from '../../authority/authority-rpc-envelope';
 import {
-  evaluateVmCopyAuthority, inspectVmCopyAuthority, VM_COPY_RESPONSE_KIND,
+  decodeVmCopyRequest, evaluateVmCopyAuthority, inspectVmCopyAuthority, VM_COPY_RESPONSE_KIND,
   vmCopyInspectSchema, vmCopyVerdictSchema,
 } from './vm-copy-authority';
 import { vmCopyResponseConsumer, verifyVmCopyFromInstalledHost } from './vm-copy-authority-bridge';
 import { fixture, NOW } from './__fixtures__/vm-copy-authority';
 
 describe('vm-copy strict source authority', () => {
+  it('keeps wall-clock fixtures valid between second boundaries', () => {
+    expect(() => decodeVmCopyRequest(fixture(NOW + 123).request)).not.toThrow();
+  });
   it('signs a fully bound fake host and emits exactly the existing helper verdict', async () => {
     const f = fixture();
     const response = await evaluateVmCopyAuthority(f.request, f.host, NOW);
@@ -26,6 +29,13 @@ describe('vm-copy strict source authority', () => {
     f.request.manifestRawBase64 = raw.toString('base64');
     f.request.manifestSha256 = createHash('sha256').update(raw).digest('hex');
     await expect(evaluateVmCopyAuthority(f.request, f.host, NOW)).rejects.toThrow('accepted-input-mismatch');
+  });
+  it('does not trim a foreign manifest owner into the authenticated owner', async () => {
+    const f = fixture(); f.manifest.ownerId = ` ${f.scope.ownerId} `;
+    const raw = Buffer.from(JSON.stringify(f.manifest));
+    f.request.manifestRawBase64 = raw.toString('base64');
+    f.request.manifestSha256 = createHash('sha256').update(raw).digest('hex');
+    await expect(evaluateVmCopyAuthority(f.request, f.host, NOW)).rejects.toThrow('owner-mismatch');
   });
   it.each([
     ['owner', (f: ReturnType<typeof fixture>) => { f.scope.ownerId = 'foreign'; }],

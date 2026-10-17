@@ -17,7 +17,7 @@ export function fixture(now = NOW) {
       sha256: 'b'.repeat(64), format: 'qcow2', virtualSize: 8192 }],
     stopped: { bootId: 'source-boot', pid: 123, startTicks: 1234 } },
     destination: { name: 'copy', path: '/run/vms/copy/overlay.qcow2' }, evidenceDir: '/evidence',
-    lineage: ['source-1'], retentionUntil: now / 1000 + 86400,
+    lineage: ['source-1'], retentionUntil: Math.ceil(now / 1000) + 86400,
     authority: { leaseRef: 'canonical-lease-ref', capabilityRef: 'applied-capability-ref' },
     limits: { copyBytes: 8192, guestWriteBytes: 0, evidenceBytes: 65536, rollbackBytes: 0, retainedBytes: 0,
       timeoutSec: 60, leaseLifetimeSec: 120 },

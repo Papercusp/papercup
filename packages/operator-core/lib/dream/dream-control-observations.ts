@@ -15,7 +15,8 @@ import { getLearningLoop } from '../learning-governor/store';
 import { checkLoopVerdict, gymLoopId, scoutLoopId, LEARNING_GOVERNOR_BUDGET_FLOOR_USD } from '../learning-governor/core';
 import { OWNER_STEERING_KEYS } from '../owner-steering';
 import { readDreamRoutineControls } from './dream-control';
-import { DREAM_ACTION_DECISION_PREFIX, resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { DREAM_ACTION_DECISION_PREFIX, DREAM_ADMISSION_GATES, resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { GYM_ADMISSION_DECISION_PREFIX, GYM_ADMISSION_GATES } from '../gym/autoloop-tick';
 import { readJournal, type JournalReadResult } from '../journal-read';
 import { dreamLoopId, sumDreamSpendSince, DREAM_ROLLING_WINDOW_MS } from './dream-governor';
 import { resolveScoutBudget } from '../scout/budget';
@@ -30,11 +31,14 @@ export const controlObservationScopeSchema = z.object({
   expectedRuntime: controlObservationRuntimeSchema,
   actionJournalUnit: nonempty.optional(),
   expectedActionRuntime: controlObservationRuntimeSchema.optional(),
+  gymJournalUnit: nonempty.optional(),
+  expectedGymRuntime: controlObservationRuntimeSchema.optional(),
 }).strict().refine(s => {
   const span = Date.parse(s.until) - Date.parse(s.since);
   return span > 0 && span <= 31 * 86_400_000;
 }, 'Observations require a scoped window of at most 31 days')
-  .refine(s => Boolean(s.actionJournalUnit) === Boolean(s.expectedActionRuntime), 'Action journal requires its exact expected runtime');
+  .refine(s => Boolean(s.actionJournalUnit) === Boolean(s.expectedActionRuntime), 'Action journal requires its exact expected runtime')
+  .refine(s => Boolean(s.gymJournalUnit) === Boolean(s.expectedGymRuntime), 'Gym journal requires its exact expected runtime');
 export type ControlObservationScope = z.infer<typeof controlObservationScopeSchema>;
 export const CONTROL_OBSERVATION_TTL_MS = 60_000;
 const ROW_LIMIT = 20;
@@ -107,6 +111,44 @@ const actionDecisionSchema = z.object({
   costUsd: z.number().finite().nonnegative(),
 }).passthrough();
 
+const dreamGateSchema = z.object({ gate: z.enum(DREAM_ADMISSION_GATES),
+  status: z.enum(['passed', 'refused', 'unknown', 'not-reached', 'not-applicable']),
+  inputs: z.record(z.string(), z.unknown()),
+}).strict();
+
+/** A refusal can terminate the chain; later checks remain explicitly unreached.
+ * A legacy row, missing gate, or read failure cannot establish full admission. */
+export function assessDreamAdmission(row: z.infer<typeof actionDecisionSchema>) {
+  const refs = ['dream/dream-cycle-action:makeDreamCycleAction', 'dream-governor:preflightDreamCycle'];
+  const parsed = z.array(dreamGateSchema).min(DREAM_ADMISSION_GATES.length).safeParse(row.admission);
+  if (!parsed.success || DREAM_ADMISSION_GATES.some(g => !parsed.data.some(r => r.gate === g)))
+    return unknown('missing-production-admission-gates', refs);
+  const gates = parsed.data;
+  if (gates.some(g => g.status === 'unknown')) return unknown('unresolved-production-admission-gate', refs);
+  const skipGate = { 'feature-off': 'feature', 'owner-idle-disabled': 'owner-idle', 'idle-ratio-below-floor': 'idle-ratio' }[row.reason];
+  if (row.disposition === 'pre-attempt-policy-skip') {
+    const at = DREAM_ADMISSION_GATES.indexOf(skipGate as typeof DREAM_ADMISSION_GATES[number]);
+    if (at < 0 || gates.length !== DREAM_ADMISSION_GATES.length || gates.some((g, i) =>
+      g.gate !== DREAM_ADMISSION_GATES[i] || g.status !== (i < at ? 'passed' : i === at ? 'refused' : 'not-reached')))
+      return unknown('incoherent-policy-skip-gate-chain', refs);
+    return { status: 'observed' as const, value: { allow: false, reason: row.reason, gates, scope: 'actual-production-action' as const }, sourceRefs: refs };
+  }
+  const prereqs = gates.filter(g => g.gate !== 'continue');
+  if (prereqs.some(g => !['passed', 'not-applicable'].includes(g.status))) {
+    // A governor refusal is a complete observed refusal only after source and
+    // the action-level gates passed; it does not mean a model call occurred.
+    if (row.reason !== 'governor-refused' || !gates.some(g => g.gate === 'governor' && g.status === 'refused') ||
+      prereqs.some(g => g.gate !== 'governor' && !['passed', 'not-applicable'].includes(g.status)))
+      return unknown('incomplete-production-admission-chain', refs);
+    return { status: 'observed' as const, value: { allow: false, reason: row.reason, gates, scope: 'actual-production-action' as const }, sourceRefs: refs };
+  }
+  const continued = gates.filter(g => g.gate === 'continue');
+  if (continued.some(g => g.status === 'refused'))
+    return { status: 'observed' as const, value: { allow: false, reason: 'continuation-refused', gates, scope: 'actual-production-action' as const }, sourceRefs: refs };
+  if (!continued.length || continued.some(g => g.status !== 'passed')) return unknown('continuation-not-observed', refs);
+  return { status: 'observed' as const, value: { allow: true, reason: 'observed-gates-passed', gates, scope: 'actual-production-action' as const }, sourceRefs: refs };
+}
+
 /** The bounded maintained journal is an actual decision source. No records,
  * unavailable/clipped/truncated reads and dispatch labels never become skips. */
 export function assessDreamActionDecisions(journal: JournalReadResult, scope: ControlObservationScope) {
@@ -137,8 +179,60 @@ export function assessDreamActionDecisions(journal: JournalReadResult, scope: Co
       return unknown('invalid-pre-attempt-skip', refs);
     records.push(row);
   }
-  return records.length > 0 ? { status: 'observed' as const, value: { records, modelUsage: 'follow-dream-run-ledger' as const }, sourceRefs: refs }
+  return records.length > 0 ? { status: 'observed' as const, value: { records,
+    admission: records.map(row => ({ actionId: row.actionId, assessment: assessDreamAdmission(row) })),
+    modelUsage: 'follow-dream-run-ledger' as const }, sourceRefs: refs }
     : unknown('no-actual-action-decision-records', refs);
+}
+
+const gymDecisionSchema = z.object({ schemaVersion: z.literal(1), actionId: nonempty,
+  workspaceId: nonempty, potSlug: nonempty.nullable(), capturedAt: z.string().datetime(),
+  runtime: controlObservationRuntimeSchema, source: z.literal('harness/routines/gym-actions:runGymCycleInline'),
+  gate: z.enum(['owner-idle', ...GYM_ADMISSION_GATES, 'tick-result']),
+  status: z.enum(['passed', 'refused', 'unknown', 'not-applicable']), inputs: z.record(z.string(), z.unknown()),
+}).strict();
+
+export function assessGymAdmissionDecisions(journal: JournalReadResult, scope: ControlObservationScope) {
+  const refs = ['journal:readJournal', 'gym/autoloop-tick:runGymAutoloopTick', 'harness/routines/gym-actions:runGymCycleInline'];
+  if (!scope.expectedGymRuntime || !scope.gymJournalUnit) return unknown('gym-runtime-and-unit-required', refs);
+  if (!journal.journalAvailable || journal.journalError || journal.truncated || journal.unitsUnknown.length)
+    return unknown('incomplete-gym-journal', refs);
+  const records: Array<z.infer<typeof gymDecisionSchema>> = [];
+  for (const entry of journal.entries) {
+    const index = entry.message.indexOf(GYM_ADMISSION_DECISION_PREFIX);
+    if (index < 0) continue;
+    if (entry.unit !== scope.gymJournalUnit || entry.clipped) return unknown('wrong-unit-or-clipped-gym-decision', refs);
+    let raw: unknown;
+    try { raw = JSON.parse(entry.message.slice(index + GYM_ADMISSION_DECISION_PREFIX.length)); }
+    catch { return unknown('invalid-gym-decision-json', refs); }
+    const parsed = gymDecisionSchema.safeParse(raw);
+    if (!parsed.success) return unknown('invalid-gym-decision', refs);
+    const row = parsed.data;
+    if (row.workspaceId !== scope.workspaceId || row.potSlug !== null && row.potSlug !== scope.potSlug) continue;
+    if (!sameRuntime(row.runtime, scope.expectedGymRuntime)) return unknown('wrong-gym-runtime', refs);
+    if ([row.capturedAt, entry.ts].some(t => timestamp(t) < timestamp(scope.since) || timestamp(t) >= timestamp(scope.until)))
+      return unknown('wrong-window-gym-decision', refs);
+    records.push(row);
+  }
+  if (!records.length) return unknown('no-actual-gym-admission-records', refs);
+  const actions = [...new Set(records.map(row => row.actionId))].map(actionId => {
+    const rows = records.filter(row => row.actionId === actionId);
+    const gates = ['owner-idle', ...GYM_ADMISSION_GATES].map(gate => {
+      const found = rows.filter(row => row.gate === gate);
+      return { gate, status: found.some(r => r.status === 'unknown') ? 'unknown' : found.some(r => r.status === 'refused') ? 'refused'
+        : found.length ? found[found.length - 1].status : 'not-reached', records: found };
+    });
+    const refused = gates.find(g => g.status === 'refused');
+    const unresolved = gates.some(g => g.status === 'unknown');
+    const refusalIndex = gates.findIndex(g => g.status === 'refused');
+    const prefixComplete = refusalIndex >= 0 && gates.slice(0, refusalIndex).every(g => g.status === 'passed');
+    const complete = !unresolved && (prefixComplete || gates.every(g => g.status === 'passed'));
+    return { actionId, status: complete ? 'observed' as const : 'unknown' as const,
+      allow: complete ? !refused : null, gates, records: rows,
+      reason: unresolved ? 'unresolved-gym-gate' : refused ? refused.gate : complete ? 'observed-gates-passed' : 'incomplete-gym-gate-chain' };
+  });
+  return { status: actions.every(a => a.status === 'observed') ? 'observed' as const : 'unknown' as const,
+    value: { actions, modelUsage: 'not-established' as const }, sourceRefs: refs };
 }
 
 /** All SQL below is SELECT-only. In particular, do not call the control snapshot's
@@ -294,6 +388,20 @@ export async function readDreamControlObservations(
         grep: DREAM_ACTION_DECISION_PREFIX, limit: ROW_LIMIT });
       return { journal, assessment: assessDreamActionDecisions(journal, scope) };
     }) : unknown('action-runtime-and-unit-required', ['journal:readJournal']);
+  const gymDecisions = scope.gymJournalUnit && scope.expectedGymRuntime
+    ? await observe(['journal:readJournal'], async () => {
+      const journal = await deps.journal({ units: [scope.gymJournalUnit!],
+        since: `@${Date.parse(scope.since) / 1000}`, until: `@${Date.parse(scope.until) / 1000}`,
+        grep: GYM_ADMISSION_DECISION_PREFIX, limit: 1000 });
+      return { journal, assessment: assessGymAdmissionDecisions(journal, scope) };
+    }) : unknown('gym-runtime-and-unit-required', ['journal:readJournal']);
+  const productionAdmission = actionDecisions.status === 'observed' && actionDecisions.value.assessment.status === 'observed' &&
+    actionDecisions.value.assessment.value.admission.every(row => row.assessment.status === 'observed') &&
+    gymDecisions.status === 'observed' && gymDecisions.value.assessment.status === 'observed'
+    ? { status: 'observed' as const, value: { dream: actionDecisions.value.assessment.value.admission,
+      gym: gymDecisions.value.assessment.value.actions, scope: 'actual-production-gate-decisions' as const },
+      sourceRefs: ['dream/dream-cycle-action:makeDreamCycleAction', 'gym/autoloop-tick:runGymAutoloopTick'] }
+    : unknown('complete-dream-and-gym-production-decisions-required', ['journal:readJournal']);
   const completedAt = deps.now();
   const fresh = completedAt >= startedAt && completedAt - startedAt < CONTROL_OBSERVATION_TTL_MS;
   const observations = { flags, dream, gym, governors, activity, rollingSpend };
@@ -302,7 +410,7 @@ export async function readDreamControlObservations(
     status: fresh && Object.values(observations).every(o => o.status === 'observed') ? 'observed' as const : 'unknown' as const,
     reason: !fresh ? 'read-expired-or-clock-invalid' : Object.values(observations).some(o => o.status === 'unknown') ? 'incomplete-observations' : null,
     scope, runtime, capturedAt: new Date(startedAt).toISOString(),
-    expiresAt: new Date(startedAt + CONTROL_OBSERVATION_TTL_MS).toISOString(), observations, actionDecisions,
+    expiresAt: new Date(startedAt + CONTROL_OBSERVATION_TTL_MS).toISOString(), observations, actionDecisions, gymDecisions, productionAdmission,
   };
 }
 
@@ -332,6 +440,15 @@ export function assessDreamControlObservationCurrentness(
     if (!('actionDecisions' in value) || value.actionDecisions.status !== 'observed' ||
       value.actionDecisions.value.assessment.status !== 'observed')
       return { current: false, reason: 'incomplete-action-decisions' };
+    if (value.actionDecisions.value.assessment.value.admission.some(row => row.assessment.status !== 'observed'))
+      return { current: false, reason: 'incomplete-dream-production-admission' };
+  }
+  if (expected.expectedGymRuntime) {
+    if (value.scope.gymJournalUnit !== expected.gymJournalUnit || !value.scope.expectedGymRuntime ||
+      !sameRuntime(value.scope.expectedGymRuntime, expected.expectedGymRuntime))
+      return { current: false, reason: 'wrong-gym-runtime-or-unit' };
+    if (!('gymDecisions' in value) || value.gymDecisions.status !== 'observed' || value.gymDecisions.value.assessment.status !== 'observed')
+      return { current: false, reason: 'incomplete-gym-decisions' };
   }
   const captured = Date.parse(value.capturedAt), expires = Date.parse(value.expiresAt);
   if (!Number.isFinite(nowMs) || !Number.isFinite(captured) || !Number.isFinite(expires) ||

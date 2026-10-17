@@ -88,4 +88,18 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     expect(mocks.journal.mock.invocationCallOrder.at(-1)).toBeLessThan(mocks.observations.mock.invocationCallOrder.at(-1)!);
     expect(mocks.observations).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({ actionJournalUnit: 'bg.service' }), expect.objectContaining({ journal: expect.any(Function) }));
   });
+  it('requires exact Gym runtime and captures both journals before opening the scoped read', async () => {
+    const schema = getRegistryEntryV2('learning.dream')!.argsSchema!;
+    const base = { potSlug: 'pot', view: 'observations', since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z',
+      expectedRuntime: { host: 'read', processId: 'read-1', buildSha: 'current' } };
+    expect(() => schema.parse({ ...base, gymJournalUnit: 'gym.service' })).toThrow();
+    mocks.journal.mockImplementation(async ({ units }) => ({ journalAvailable: true, entries: [], units }));
+    await resolveNamedQueryV2('learning.dream', schema.parse({ ...base, actionJournalUnit: 'bg.service',
+      expectedActionRuntime: base.expectedRuntime, gymJournalUnit: 'gym.service', expectedGymRuntime: { ...base.expectedRuntime, processId: 'gym-1' } }));
+    expect(mocks.journal).toHaveBeenCalledWith(expect.objectContaining({ units: ['gym.service'], grep: 'GYM_ADMISSION_DECISION ' }));
+    expect(mocks.journal.mock.invocationCallOrder.at(-1)).toBeLessThan(mocks.observations.mock.invocationCallOrder.at(-1)!);
+    const supplied = mocks.observations.mock.calls.at(-1)!;
+    expect(supplied[1]).toMatchObject({ gymJournalUnit: 'gym.service', expectedGymRuntime: { processId: 'gym-1' } });
+    expect(await supplied[2].journal({ grep: 'GYM_ADMISSION_DECISION ' })).toMatchObject({ units: ['gym.service'] });
+  });
 });

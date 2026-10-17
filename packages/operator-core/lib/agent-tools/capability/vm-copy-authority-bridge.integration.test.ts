@@ -8,13 +8,14 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { fixture } from './__fixtures__/vm-copy-authority';
 import { callVmCopyAuthorityFromInstallation } from './vm-copy-authority-bridge';
-import { evaluateVmCopyAuthority, inspectVmCopyAuthority, vmCopyInspectSchema, type VmCopyRequest } from './vm-copy-authority';
+import { decodeVmCopyRequest, evaluateVmCopyAuthority, inspectVmCopyAuthority, vmCopyInspectSchema, type VmCopyRequest } from './vm-copy-authority';
 
 async function privateHost(run: (h: {
   f: ReturnType<typeof fixture>; url: string; requests: VmCopyRequest[];
   production: () => void; calls: string[];
 }) => Promise<void>) {
   const f = fixture(Date.now());
+  decodeVmCopyRequest(f.request); // Fixture admission before any socket allocation.
   const hosts: Array<{ host: McpServer; transport: StreamableHTTPServerTransport }> = [];
   const requests: VmCopyRequest[] = []; const calls: string[] = []; const errors: unknown[] = [];
   let useProduction = false;
