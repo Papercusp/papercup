@@ -1,6 +1,6 @@
 /**
  * tools:find — find tools by INTENT. The agent-facing front door to the
- * ~550-tool catalog (tool-discovery-for-weak-models-2026-06-30 WS3).
+ * full tool catalog (tool-discovery-for-weak-models-2026-06-30 WS3).
  *
  * Hybrid lexical + semantic search (the committed `cupboard/tool-find.ts`
  * floored-union core): the lexical leg is exact-name-authoritative, the semantic
@@ -1431,7 +1431,7 @@ export default defineTool({
   description:
     // P-011 prompt-weight: the result-shape prose below moved into the free `returns`
     // field, which already described this exact payload (EI-22083648545226771).
-    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
+    'Find tools by INTENT across the full tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
     'The optional `limit` defaults to 8, accepts 1-25, and values above 25 are rejected. ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface ' +
     '(activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so ' +

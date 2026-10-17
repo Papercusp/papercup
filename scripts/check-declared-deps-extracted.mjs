@@ -83,6 +83,8 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   // The SPA uses the ESM icon-set entrypoint. CommonJS and package.json can
   // survive a partial extraction while its shared lib/index.mjs is missing.
   'react-icons/ai',
+  // operator-vite's typecheck depends on Lucide's published declaration bundle.
+  'lucide-react',
 ]);
 
 export function packageNameFromSpecifier(specifier) {
@@ -520,20 +522,61 @@ export function findUnusableRuntimeDeps({
     probeSpecifiers ??
     resolveRuntimeContentProbes(repoRoot, RUNTIME_CONTENT_PROBES, deps);
   const probe = deps.probeRuntimeImport ?? defaultRuntimeImportProbe;
+  const exists = deps.existsSync ?? fsExistsSync;
+  const readJson = deps.readJson ?? ((path) => JSON.parse(readFileSync(path, 'utf8')));
   const failures = [];
   for (const specifier of specifiers) {
     const result = probe({ repoRoot, specifier });
-    if (result === true || result?.ok === true) continue;
-    failures.push({
-      specifier,
-      detail:
-        typeof result === "string"
-          ? result
-          : (result?.detail ?? "runtime import failed"),
-      ...(result?.code === 'ERR_MODULE_NOT_FOUND' && typeof result.missingPath === 'string'
-        ? { code: result.code, missingPath: result.missingPath }
-        : {}),
-    });
+    if (result !== true && result?.ok !== true) {
+      failures.push({
+        specifier,
+        detail:
+          typeof result === "string"
+            ? result
+            : (result?.detail ?? "runtime import failed"),
+        ...(result?.code === 'ERR_MODULE_NOT_FOUND' && typeof result.missingPath === 'string'
+          ? { code: result.code, missingPath: result.missingPath }
+          : {}),
+      });
+      continue;
+    }
+
+    // A runtime import can succeed while TypeScript still fails if npm kept the
+    // manifest and JS entrypoint but omitted the package's declared declaration
+    // file. Check the advertised top-level `types`/`typings` file for the same
+    // critical packages whose import graph is already verified.
+    const packageDir = resolvedDepDir(
+      repoRoot,
+      repoRoot,
+      packageNameFromSpecifier(specifier),
+      exists,
+    );
+    if (!packageDir) continue;
+    let manifest;
+    try {
+      manifest = readJson(join(packageDir, 'package.json'));
+    } catch {
+      continue;
+    }
+    const typeEntry =
+      typeof manifest?.types === 'string'
+        ? manifest.types
+        : typeof manifest?.typings === 'string'
+          ? manifest.typings
+          : null;
+    if (typeEntry === null) continue;
+    const typePath = resolve(packageDir, typeEntry);
+    if (!exists(typePath)) {
+      failures.push({
+        specifier,
+        detail: `declared type entrypoint is missing: ${typePath}`,
+        // Reuse install:safe's existing exact-file repair path. It validates
+        // that this absolute missing path belongs to the locked package before
+        // removing and re-extracting that package.
+        code: 'ERR_MODULE_NOT_FOUND',
+        missingPath: typePath,
+      });
+    }
   }
   return failures;
 }

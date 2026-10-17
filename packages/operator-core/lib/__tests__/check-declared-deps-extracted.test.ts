@@ -535,7 +535,7 @@ describe('runtime-content probes catch partial packages that directory checks ca
       join(root, 'package-lock.json'),
       JSON.stringify({
         packages: Object.fromEntries(
-          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons'].map(
+          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons', 'lucide-react'].map(
             (name) => [`node_modules/${name}`, {}],
           ),
         ),
@@ -575,10 +575,29 @@ describe('runtime-content probes catch partial packages that directory checks ca
     writePackage('react-icons', { exports: { './ai': './ai/index.mjs' } }, {
       'ai/index.mjs': "export { IconBase } from '../lib/index.mjs';",
     });
+    writePackage('lucide-react', {
+      type: 'module',
+      exports: './dist/index.mjs',
+      typings: './dist/lucide-react.d.ts',
+    }, {
+      'dist/index.mjs': 'export const Check = {};',
+    });
 
     const failures = findUnusableRuntimeDeps({ repoRoot: root }) as RuntimeProbeFailure[];
     expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
-    for (const failure of failures) expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
+    for (const failure of failures) {
+      if (failure.specifier === 'lucide-react') {
+        expect(failure.detail).toContain('declared type entrypoint is missing:');
+        expect(failure).toMatchObject({
+          code: 'ERR_MODULE_NOT_FOUND',
+          missingPath: join(root, 'node_modules/lucide-react/dist/lucide-react.d.ts'),
+        });
+      } else {
+        expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
+      }
+    }
+    writeFileSync(join(root, 'node_modules/lucide-react/dist/lucide-react.d.ts'), 'export declare const Check: {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers: ['lucide-react'] })).toEqual([]);
   });
 
   it('rejects ONNX with working CommonJS but missing ESM content, and accepts the restored entrypoint', () => {

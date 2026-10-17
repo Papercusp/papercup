@@ -2925,7 +2925,9 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       scriptedEngine.mode = 'stream';
       pane.enter();
       await pane.waitFor('STREAM-A1', { timeoutMs: 60_000 });
-      expect(pane.screen()).toContain('Ctrl-X');
+      // The compact contract names the key, while the installed HUD spells
+      // the same control chord Ctrl+X. Require the advertised cancel action.
+      expect(pane.screen()).toMatch(/Running · Ctrl[+-]X cancel/);
       frames.running = pane.screen();
       await pane.waitFor('STREAM-E5', { timeoutMs: 15_000 });
       await pane.waitForSendReady();
