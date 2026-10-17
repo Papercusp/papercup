@@ -97,6 +97,17 @@ describe('PUI acceptance dependency retirement', () => {
     await mkdir(join(fixture, 'apps/tui/scripts'), { recursive: true });
     await writeFile(wrapper, await readFile(join(repo, 'apps/tui/scripts/release-acceptance.sh')));
     await mkdir(join(fixture, 'scripts'));
+    // Database authority/authentication has its own executable wrapper cases in
+    // release-acceptance.test.ts. Keep these cache-lifecycle cases offline while
+    // still running the real wrapper's precheck before dependency retirement.
+    await mkdir(join(fixture, 'scripts/lib'));
+    await writeFile(join(fixture, 'scripts/lib/pg-url.mjs'), `
+export const resolveScriptPgUrl = () => ({ url: 'postgresql://fixture@localhost:6543/ledger' });
+export const describePgUrlResolution = () => 'offline cache fixture';
+`);
+    await mkdir(join(fixture, 'node_modules/pg'), { recursive: true });
+    await writeFile(join(fixture, 'node_modules/pg/index.js'),
+      'exports.Client = class { async connect() {} async query() {} async end() {} };');
     // Emulate materialization after the real wrapper has retired crash residue.
     await writeFile(join(fixture, 'scripts/npm-install-safe.mjs'), `import fs from 'node:fs';
 const checkout=${JSON.stringify(checkout)};

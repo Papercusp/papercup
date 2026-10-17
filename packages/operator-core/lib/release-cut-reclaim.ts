@@ -1024,6 +1024,8 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
 export interface ReclaimExecDeps {
   /** Set by a caller that already holds papercusp-disk-retention (the scheduled adapter). */
   retentionMutexHeld?: boolean;
+  /** Stop admitting removals at this shared run deadline; finish an admitted rename/removal. */
+  notAfterMs?: number;
   /** Re-read under the retention mutex immediately before destructive work. */
   pinProtection?: (path: string) => boolean;
   nowMs?: () => number;
@@ -1133,9 +1135,16 @@ async function executeCutReclaimUnlocked(
   const auditFile = deps.auditFile ?? path.join(defaultRetentionDir(), 'deletion-audit.tsv');
   const results: ReclaimExecResult[] = [];
   const isPinned = deps.pinProtection ?? (() => false);
+  const deadlineExhausted = () => deps.notAfterMs !== undefined &&
+    (!Number.isFinite(deps.notAfterMs) || now() >= deps.notAfterMs);
+  const deadlineReason = 'release-cut execution run deadline exhausted; resume with a fresh plan';
   for (const v of resolved.verdicts) {
     const started = now();
     const done = (r: Omit<ReclaimExecResult, 'path' | 'ms'>) => results.push({ path: v.path, ms: now() - started, ...r });
+    if (deadlineExhausted()) {
+      done({ removed: false, reason: deadlineReason });
+      continue;
+    }
     const real = v.realPath ?? v.path;
     if (isPinned(v.path) || (real !== v.path && isPinned(real))) {
       done({ removed: false, reason: 'active retention pin' });
@@ -1177,6 +1186,10 @@ async function executeCutReclaimUnlocked(
       });
       continue;
     }
+    if (deadlineExhausted()) {
+      done({ removed: false, reason: deadlineReason });
+      continue;
+    }
     const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
     const archive = path.join(archiveDir, `${stamp}-${path.basename(v.path)}.patch`);
     try {
@@ -1185,6 +1198,13 @@ async function executeCutReclaimUnlocked(
       done({ removed: false, reason: `archive failed: ${errText(e)}` });
       continue;
     }
+    if (deadlineExhausted()) {
+      done({ removed: false, archive, reason: deadlineReason });
+      continue;
+    }
+    // From the durable removal receipt through physical deletion and Git bookkeeping,
+    // finish this one admitted operation even if it crosses the deadline. The next
+    // target must return to a fresh plan and its current pin/holder checks.
     const trash = path.join(path.dirname(real), `.reclaim-trash-${path.basename(real)}-${stamp}`);
     try {
       const stat = fs.lstatSync(real);
@@ -1407,7 +1427,7 @@ export async function reclaimCutWorktrees(
     return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
   }
   let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
-  try { if (targets.length) execution = await executeCutReclaim(plan, targets, deps); }
+  try { if (targets.length) execution = await executeCutReclaim(plan, targets, { ...deps, notAfterMs }); }
   catch (e) { errors.push(`release-cut execution: ${errText(e)}`); }
   try {
     const after = await measure();

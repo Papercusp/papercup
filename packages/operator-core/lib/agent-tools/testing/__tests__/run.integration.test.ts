@@ -458,6 +458,32 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
 });
 
 describe('owned private PG router supervision', () => {
+  it.each([{ privatePg: true }, { allowDetachedRecovery: false }])(
+    'preserves the no-replay contract after a mixed-checkout timeout: %j', async (options) => {
+      const roots = [
+        await makeScratchTestCheckout('papercusp-testing-owned-pg-timeout-a-'),
+        await makeScratchTestCheckout('papercusp-testing-owned-pg-timeout-b-'),
+      ];
+      for (const root of roots) {
+        await mkdir(join(root, 'scripts'), { recursive: true });
+        await writeFile(join(root, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+        await writeFile(join(root, 'scripts', 'with-test-pg.mjs'), 'process.exit(0);\n');
+        await sealScratchTestCheckout(root);
+      }
+      const runRouterFn = vi.fn(async () => ({
+        code: null, signal: null, timedOut: true, aborted: false, output: '',
+      }));
+      const out = await runTestFilesCore({
+        root: roots[0]!,
+        files: ['packages/x/real.test.ts', join(roots[1]!, 'packages/x/real.test.ts')],
+        timeoutMs: 10_000, ...options,
+      }, { runRouterFn });
+      expect(out, JSON.stringify(out)).toMatchObject({ ok: false, error: 'timeout', roots });
+      expect(out).not.toHaveProperty('detachedRunId');
+      expect(runRouterFn).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it.each([false, true])('selects the requested supervisor and preserves the ledger/scope: privatePg=%s', async (privatePg) => {
     const file = 'packages/x/real.integration.test.ts';
     const root = await makeScratchTestCheckout('papercusp-testing-owned-pg-', file);

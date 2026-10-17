@@ -3311,7 +3311,9 @@ export async function runTestFilesCore(opts: {
       }
       const timeout = errors.find((result) => result.error === 'timeout');
       if (timeout) {
-        if (timeout.terminationUnconfirmed) {
+        // A detached replay must not discard an owned PG route or an explicit
+        // no-recovery request when a batch spans multiple checkouts.
+        if (timeout.terminationUnconfirmed || opts.privatePg || opts.allowDetachedRecovery === false) {
           return {
             ...timeout,
             runId,
@@ -3615,7 +3617,7 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedEnabled = hasRouter && opts.allowDetachedRecovery !== false;
+      const detachedEnabled = hasRouter && !opts.privatePg && opts.allowDetachedRecovery !== false;
       const detachedHarnessSlug = await resolveDetachedHarnessSlug({
         root,
         detachedEnabled,
