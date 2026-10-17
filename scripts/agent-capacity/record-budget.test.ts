@@ -1,9 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { fsyncSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { recordingAttemptReserve, recordingBudgetFromArgv, recordingProviderBudget, startRecordingBudgetGateway,
+import { recordingAttemptReserve, recordingBudgetFromArgv, recordingBudgetJournal, recordingProviderBudget, startRecordingBudgetGateway,
   type RecordingBudgetConfig } from './record-budget';
 import { processMonotonicClock } from '../../packages/operator-core/lib/process-monotonic-clock';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult } from '../../packages/operator-core/lib/inference-gateway/gateway';
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, fsyncSync: vi.fn(actual.fsyncSync) };
+});
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 const config: RecordingBudgetConfig = { model: 'gpt-6-luna', effort: 'low', accountId: 'recording-account',
@@ -81,6 +89,7 @@ describe('recording provider budget', () => {
   it.each([
     { model: 'gpt-6-sol' }, { reasoning: { effort: 'high' } }, { previous_response_id: 'remote-id' },
     { conversation: 'remote-id' }, { background: true }, { tools: [{ type: 'web_search' }] },
+    { prompt: { id: 'stored-remote-prompt' } }, { context_management: [{ type: 'compaction' }] },
     { input: [{ role: 'user', content: [{ type: 'input_image', image_url: 'https://remote/image' }] }] },
     { input: [{ type: 'item_reference', id: 'remote-item' }] },
   ])('refuses unpriced or remote-context request shapes %j', async overrides => {
@@ -136,6 +145,55 @@ describe('recording provider budget', () => {
       expect(fetchProvider).toHaveBeenCalledTimes(1);
       expect(service.snapshot()).toMatchObject({ admitted: 1, reservedUsdMicros: 718_300 });
     } finally { await service.stop(); }
+  });
+});
+
+describe('recording budget journal', () => {
+  it('permanently refuses sends after a reservation fsync fails, without erasing earlier evidence', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'capacity-budget-'));
+    const file = path.join(directory, 'recording-budget.jsonl');
+    const journal = recordingBudgetJournal(file);
+    try {
+      const budget = recordingProviderBudget(config, journal.persist);
+      const receipt = (await budget.binding.authorizeAttempt(attempt(budget)))!;
+      vi.mocked(fsyncSync).mockImplementationOnce(() => { throw new Error('fsync failed'); });
+      expect(() => receipt.validateAuthorization!()).toThrow('fsync failed');
+      const retry = (await budget.binding.authorizeAttempt(attempt(budget)))!;
+      expect(() => retry.validateAuthorization!()).toThrow(/failed/);
+      expect(JSON.parse(readFileSync(file, 'utf8').split('\n')[0]).reservedUsdMicros).toBe(0);
+    } finally { journal.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('exclusively owns its batch, preserves all write-ahead reservations and refuses reuse after close', async () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'capacity-budget-'));
+    const file = path.join(directory, 'recording-budget.jsonl');
+    const journal = recordingBudgetJournal(file);
+    try {
+      const budget = recordingProviderBudget(config, journal.persist);
+      for (let i = 0; i < 2; i++) (await budget.binding.authorizeAttempt(attempt(budget)))!.validateAuthorization!();
+      expect(() => recordingBudgetJournal(file)).toThrow(/EEXIST/);
+      const snapshots = readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      expect(snapshots.map(snapshot => snapshot.reservedUsdMicros)).toEqual([0, 718_300, 1_436_600]);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+      journal.close();
+      expect(() => journal.persist({})).toThrow(/closed/);
+      expect(() => recordingBudgetJournal(file)).toThrow(/EEXIST/);
+    } finally { journal.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it('refuses symlink destinations without changing their target', () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), 'capacity-budget-'));
+    const target = path.join(directory, 'target');
+    const journal = recordingBudgetJournal(target);
+    journal.persist({ preserved: true });
+    journal.close();
+    const before = readFileSync(target, 'utf8');
+    try {
+      const link = path.join(directory, 'link');
+      symlinkSync(target, link);
+      expect(() => recordingBudgetJournal(link)).toThrow(/EEXIST/);
+      expect(readFileSync(target, 'utf8')).toBe(before);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 });
 

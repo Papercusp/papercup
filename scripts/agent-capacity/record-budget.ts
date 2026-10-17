@@ -3,6 +3,8 @@
  * Reuses carryTrial rather than estimating how many retries a client request has.
  */
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { closeSync, fsyncSync, openSync, writeSync } from 'node:fs';
+import path from 'node:path';
 import { priceFor, priceTableVersion } from '@papercusp/model-pricing';
 import { processMonotonicClock } from '../../packages/operator-core/lib/process-monotonic-clock';
 import type { GatewayCarryTrialAttempt, GatewayCarryTrialAttemptResult, GatewayCarryTrialBinding } from '../../packages/operator-core/lib/inference-gateway/gateway';
@@ -21,6 +23,36 @@ export interface RecordingBudgetConfig {
 // https://developers.openai.com/api/docs/models/gpt-6-luna
 const INPUT_TOKENS = 922_000;
 const OUTPUT_TOKENS = 128_000;
+
+/** Exclusive append-only evidence: a torn final line cannot erase prior reservations.
+ * Each provider send waits for its full snapshot and fsync, including the first
+ * directory entry. Existing files (including symlinks) are never reused.
+ */
+export function recordingBudgetJournal(file: string) {
+  const fd = openSync(file, 'wx', 0o600);
+  let closed = false;
+  let failed = false;
+  try {
+    const directory = openSync(path.dirname(file), 'r');
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } catch (error) { closeSync(fd); throw error; }
+  return {
+    persist(snapshot: unknown) {
+      if (closed || failed) throw new Error('Recording budget journal is closed or failed');
+      try {
+        const bytes = Buffer.from(JSON.stringify(snapshot) + '\n');
+        let offset = 0;
+        while (offset < bytes.length) {
+          const written = writeSync(fd, bytes, offset, bytes.length - offset);
+          if (written <= 0) throw new Error('Recording budget journal write made no progress');
+          offset += written;
+        }
+        fsyncSync(fd);
+      } catch (error) { failed = true; throw error; }
+    },
+    close() { if (!closed) { closed = true; closeSync(fd); } },
+  };
+}
 
 export function recordingAttemptReserve() {
   const price = priceFor('gpt-6-luna');
@@ -78,6 +110,7 @@ function localTextRequest(body: string, config: RecordingBudgetConfig): boolean 
   const request = JSON.parse(body);
   if (!request || request.model !== config.model || request.reasoning?.effort !== config.effort ||
       request.background === true || request.previous_response_id != null || request.conversation != null ||
+      request.prompt != null || request.context_management != null ||
       request.audio != null || request.modalities != null ||
       request.tools !== undefined && (!Array.isArray(request.tools) || !request.tools.every((tool: { type?: string }) =>
         tool && (tool.type === 'function' || tool.type === 'custom')))) return false;
@@ -163,7 +196,7 @@ export function recordingProviderBudget(input: RecordingBudgetConfig, persist: (
 
 /** Dynamic service load keeps ordinary recordings and unit imports independent of PG. */
 export async function startRecordingBudgetGateway(config: RecordingBudgetConfig, persist: (snapshot: unknown) => void,
-  startService = async (binding: GatewayCarryTrialBinding) => {
+  startService: (binding: GatewayCarryTrialBinding) => Promise<{ port: number; stop(): Promise<void> }> = async binding => {
     const { startGatewayService } = await import('../../packages/operator-core/lib/inference-gateway/launch');
     return startGatewayService({ port: 0, workspace: process.env.PAPERCUSP_WORKSPACE, carryTrial: binding });
   }) {

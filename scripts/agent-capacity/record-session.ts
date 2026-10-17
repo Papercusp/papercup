@@ -32,7 +32,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { assertHostAdmission, capacityCacheRoot } from './host-admission';
 import { recordingRequestLimit, startRecordProxy, type RecordingRequestLimit } from './record-proxy';
-import { recordingBudgetFromArgv, startRecordingBudgetGateway } from './record-budget';
+import { recordingBudgetFromArgv, recordingBudgetJournal, startRecordingBudgetGateway } from './record-budget';
 import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
 
 // Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
@@ -434,9 +434,11 @@ async function main(): Promise<void> {
   if (budgetConfig && existsSync(path.join(outDir, 'recording-budget.json'))) {
     throw new Error('Recording budget output already exists; preserve prior reservations and use a newly admitted batch directory');
   }
-  const boundedGateway = budgetConfig ? await startRecordingBudgetGateway(budgetConfig, snapshot => {
-    writeFileSync(path.join(outDir, 'recording-budget.json'), JSON.stringify(snapshot, null, 2) + '\n');
-  }) : undefined;
+  const journal = budgetConfig ? recordingBudgetJournal(path.join(outDir, 'recording-budget.jsonl')) : undefined;
+  let boundedGateway: Awaited<ReturnType<typeof startRecordingBudgetGateway>> | undefined;
+  try {
+    boundedGateway = budgetConfig ? await startRecordingBudgetGateway(budgetConfig, journal!.persist) : undefined;
+  } catch (error) { journal?.close(); throw error; }
   const queue = [...tasks];
   const worker = async () => {
     for (let task = queue.shift(); task; task = queue.shift()) {
@@ -465,7 +467,7 @@ async function main(): Promise<void> {
   try {
     await Promise.all(Array.from({ length: parallel }, worker));
   } finally {
-    await boundedGateway?.stop();
+    try { await boundedGateway?.stop(); } finally { journal?.close(); }
     if (requestLimit) {
       writeFileSync(path.join(outDir, 'recording-limit.json'), JSON.stringify(requestLimit.snapshot(), null, 2) + '\n');
     }
