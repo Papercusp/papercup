@@ -5,10 +5,13 @@ import {
   evaluateHostedIdleStop,
   evaluateHostedLifecycleAdmission,
   evaluateHostedPoolResourceAdmission,
+  evaluateHostedPoolCapacity,
   HOSTED_POOL_RESOURCE_QUOTAS,
   HOSTED_POOL_TRIAL_DB_GIB,
   type HostedPoolResourceAdmissionInput,
   type HostedPoolResources,
+  type HostedPoolCapacityInput,
+  type HostedPoolCapacityHost,
   type HostedLifecycleAdmissionRequest,
 } from './hosted-lifecycle-policy';
 import type { ResolvedHostedEntitlements } from '../auth/hosted-entitlements';
@@ -146,6 +149,176 @@ describe('hosted pool resource policy (P-537)', () => {
     ]) expect(evaluateHostedIdleStop({ ...base, activeWork }, 120000))
       .toMatchObject({ due: false, hold: 'active-work' });
     expect(evaluateHostedIdleStop({ ...base, activeWork: { activeAgents: 0, pendingAgentStarts: 0, activeCommands: 0 } }, 120000).due).toBe(true);
+  });
+});
+
+describe('hosted pool bounded capacity proposals (P-544 preparation)', () => {
+  const nowMs = Date.parse('2026-10-17T00:00:00Z');
+  function host(hostId: string, state: HostedPoolCapacityHost['state'] = 'ready'): HostedPoolCapacityHost {
+    return { hostId, state, generation: 4, controllerFence: 8, observedAtMs: nowMs,
+      customerWorkspaceId: null, reservationId: null,
+      activity: state === 'ready' ? { state: 'active', observedState: 'running',
+        lastActivityAt: new Date(nowMs - 120000).toISOString(), idleStopAfterMinutes: 1,
+        activeLifecycleJobs: 0, activeWork: { activeAgents: 0, pendingAgentStarts: 0, activeCommands: 0 },
+        desktopViewers: { attachedViewers: 0, lastSeenAt: null, holdSec: 60 } } : null };
+  }
+  function input(hosts: HostedPoolCapacityHost[] = [], queuedHosts = 1): HostedPoolCapacityInput {
+    const admission = poolInput();
+    admission.nowMs = nowMs;
+    admission.entitlements!.quotas['pool.hosts'] = 10;
+    admission.allocated.hosts = hosts.filter(value => value.state === 'ready').length;
+    admission.pending.hosts = hosts.filter(value => value.state === 'pending').length;
+    admission.capacity.requestedWarmHosts = 0;
+    return { nowMs, observedAtMs: nowMs, maxObservationAgeMs: 30000, generation: 11,
+      controllerFence: 19, lastChangeAtMs: null, cooldownMs: 60000, queuedHosts,
+      minimumSpareHosts: 0, hosts, provision: { profileRef: 'gcp/us-central1/2cpu8g/runtime-1',
+        market: 'on-demand', estimate: { ...request.estimate, estimatedAt: new Date(nowMs).toISOString() },
+        admission, reclaimRecovery: null } };
+  }
+
+  it('proposes only one create for a large deficit with explicit CAS preconditions', () => {
+    expect(evaluateHostedPoolCapacity(input([], 50))).toEqual({ kind: 'provision', readyHosts: 0,
+      pendingHosts: 0, reasons: [], profileRef: 'gcp/us-central1/2cpu8g/runtime-1',
+      market: 'on-demand', generation: 11, controllerFence: 19 });
+  });
+
+  it('counts pending creates with ready inventory and supports a zero warm floor', () => {
+    expect(evaluateHostedPoolCapacity(input([host('ready'), host('creating', 'pending')], 2)))
+      .toMatchObject({ kind: 'hold', readyHosts: 1, pendingHosts: 1 });
+    expect(evaluateHostedPoolCapacity(input([], 0))).toMatchObject({ kind: 'hold', reasons: ['pool capacity meets demand'] });
+    const floor = input([], 0);
+    floor.minimumSpareHosts = 1;
+    expect(evaluateHostedPoolCapacity(floor).kind).toBe('provision');
+  });
+
+  it('does not count tenant-assigned or reserved hosts as free capacity', () => {
+    for (const assignment of [{ customerWorkspaceId: 'tenant-1' }, { reservationId: 'reservation-1' }]) {
+      const value = host('occupied');
+      Object.assign(value, assignment);
+      expect(evaluateHostedPoolCapacity(input([value]))).toMatchObject({ kind: 'provision', readyHosts: 0 });
+      expect(evaluateHostedPoolCapacity(input([value], 0)).kind).toBe('hold');
+    }
+  });
+
+  it.each(['cpuMillicores', 'memoryMiB', 'hosts'] as const)('applies canonical pending %s quota before growth', key => {
+    const value = input([host('pending', 'pending')], 2);
+    value.provision.admission.pending[key] = value.provision.admission.entitlements!.quotas[HOSTED_POOL_RESOURCE_QUOTAS[key]];
+    expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+  });
+
+  it('applies pending spend, missing budget authority and entitlement expiry before growth', () => {
+    const value = input();
+    value.provision.admission.budget.pendingMinor = 9000;
+    expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool cost: budget_exceeded');
+    value.provision.admission.budget.pendingMinor = 0;
+    value.provision.admission.entitlements!.budgets = {};
+    expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool cost: budget_missing');
+    value.provision.admission.entitlements!.recheckAt = new Date(nowMs);
+    expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool entitlement authority missing, foreign or stale');
+  });
+
+  it('binds the one-host proposal to its price, currency, resource and inventory reservation', () => {
+    const changes: Array<(value: HostedPoolCapacityInput) => void> = [
+      value => { value.provision.admission.requested.hosts = 2; },
+      value => { value.provision.admission.requested.memoryMiB = 0; },
+      value => { value.provision.admission.capacity.requestedWarmHosts = undefined; },
+      value => { value.provision.admission.budget.requestedMinor = 1; },
+      value => { value.provision.admission.budget.currency = 'EUR'; },
+      value => { value.provision.admission.pending.hosts = 1; },
+      value => { value.provision.admission.allocated.hosts = 1; },
+      value => { value.provision.admission.nowMs--; },
+      value => { value.provision.estimate.evidenceRef = ''; },
+      value => { value.provision.estimate.estimatedAt = new Date(nowMs + 1).toISOString(); },
+      value => { value.provision.estimate.estimatedAt = new Date(nowMs - 30001).toISOString(); },
+      value => { value.provision.estimate.cents = 0; value.provision.admission.budget.requestedMinor = 0; },
+    ];
+    for (const change of changes) {
+      const value = input();
+      change(value);
+      expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+    }
+  });
+
+  it('refuses stale/future snapshots, bad fences, duplicate hosts and unknown host state/work', () => {
+    const changes: Array<(value: HostedPoolCapacityInput) => void> = [
+      value => { value.observedAtMs = nowMs + 1; },
+      value => { value.observedAtMs = nowMs - 30001; },
+      value => { value.generation = 0; },
+      value => { value.controllerFence = NaN; },
+      value => { value.queuedHosts = Number.MAX_SAFE_INTEGER; value.minimumSpareHosts = 1; },
+      value => { value.hosts[0].observedAtMs = nowMs - 30001; },
+      value => { value.hosts[0].state = 'unavailable'; },
+      value => { value.hosts[0].state = 'draining'; },
+      value => { value.hosts[0].activity = null; },
+      value => { value.hosts[0].activity!.activeLifecycleJobs = NaN; },
+      value => { value.hosts[0].activity!.activeWork = undefined; },
+      value => { value.hosts[0].activity!.activeWork!.activeCommands = NaN; },
+      value => { value.hosts = [host('same'), host('same')]; },
+    ];
+    for (const change of changes) {
+      const value = input([host('ready')], 2);
+      change(value);
+      expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+    }
+  });
+
+  it('holds both directions during cooldown and allows the exact expiry boundary', () => {
+    for (const value of [input(), input([host('idle')], 0)]) {
+      value.lastChangeAtMs = nowMs - 59999;
+      expect(evaluateHostedPoolCapacity(value).reasons).toContain('pool cooldown active');
+      value.lastChangeAtMs = nowMs - 60000;
+      expect(evaluateHostedPoolCapacity(value).kind).toBe(value.hosts.length ? 'drain' : 'provision');
+      value.lastChangeAtMs = nowMs + 1;
+      expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+    }
+  });
+
+  it('requires passing, fresh, profile-specific reclaim recovery evidence for spot', () => {
+    const value = input();
+    value.provision.market = 'spot';
+    expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+    const proof = { profileRef: value.provision.profileRef, result: 'passed' as const,
+      evidenceRef: 'reclaim-drill:1', verifiedAtMs: nowMs };
+    for (const invalid of [{ result: 'failed' as const }, { result: 'unknown' as const },
+      { profileRef: 'other-profile' }, { evidenceRef: '' }, { verifiedAtMs: nowMs + 1 },
+      { verifiedAtMs: nowMs - 30001 }]) {
+      value.provision.reclaimRecovery = { ...proof, ...invalid };
+      expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+    }
+    value.provision.reclaimRecovery = proof;
+    expect(evaluateHostedPoolCapacity(value)).toMatchObject({ kind: 'provision', market: 'spot' });
+  });
+
+  it('drains one deterministic idle unassigned host while preserving demand and the warm floor', () => {
+    const value = input([host('b'), host('a'), host('c')], 1);
+    value.minimumSpareHosts = 1;
+    expect(evaluateHostedPoolCapacity(value)).toEqual({ kind: 'drain', readyHosts: 3, pendingHosts: 0,
+      reasons: [], hostId: 'a', hostGeneration: 4, hostControllerFence: 8, generation: 11, controllerFence: 19 });
+    value.queuedHosts = 2;
+    expect(evaluateHostedPoolCapacity(value).kind).toBe('hold');
+  });
+
+  it('never drains active, assigned, reserved, recently used or unmeasured hosts', () => {
+    const changes: Array<(value: HostedPoolCapacityHost) => void> = [
+      value => { value.customerWorkspaceId = 'tenant'; },
+      value => { value.reservationId = 'reservation'; },
+      value => { value.activity!.activeLifecycleJobs = 1; },
+      value => { value.activity!.activeWork!.activeAgents = 1; },
+      value => { value.activity!.activeWork!.pendingAgentStarts = 1; },
+      value => { value.activity!.activeWork!.activeCommands = 1; },
+      value => { value.activity!.lastActivityAt = new Date(nowMs - 59999).toISOString(); },
+      value => { value.activity!.lastActivityAt = null; },
+      value => { value.activity!.idleStopAfterMinutes = null; },
+      value => { value.activity!.desktopViewers = null; },
+      value => { value.activity!.desktopViewers!.attachedViewers = 1; },
+      value => { value.activity!.desktopViewers!.attachedViewers = NaN; },
+    ];
+    for (const change of changes) {
+      const candidate = host('protected');
+      change(candidate);
+      expect(evaluateHostedPoolCapacity(input([candidate], 0)).kind).toBe('hold');
+    }
+    expect(evaluateHostedPoolCapacity(input([host('idle'), host('creating', 'pending')], 0)).kind).toBe('hold');
   });
 });
 

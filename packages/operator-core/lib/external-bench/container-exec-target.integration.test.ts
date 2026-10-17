@@ -306,7 +306,7 @@ describe('container exec target against a live container', () => {
     finally { await removeContainer(cid, primaryError); }
   });
 
-  it('delivers minted managed carry to a fresh native container session while retaining the git checkpoint', async () => {
+  it('delivers minted managed carry to a fresh native container session and resumes its git checkpoint', async () => {
     const { mintCarryRespawnArgs } = await import('../../../../apps/operator/scripts/psu-launcher.mjs');
     const base = mkdtempSync(join(root, 'native-carry-'));
     const checkout = join(base, 'checkout'), homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
@@ -404,13 +404,33 @@ describe('container exec target against a live container', () => {
       expect(received).toContain('<cwd>/app</cwd>');
       expect(received).not.toContain(predecessorOnly);
       expect(received).not.toContain(checkout);
-      expect(requests.map(body => body.model)).toEqual(['gpt-6-luna', 'gpt-6-luna']);
+      // A fresh carry launch and a native resume are different boundaries. Reopen
+      // the persisted successor through another wrapper, without re-supplying its
+      // carry, and require the native CLI to recover that exact session context.
+      rmSync(successor.dir, { recursive: true, force: true });
+      const reopened = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'native-resume-')) });
+      const resumeText = `Resume the retained private checkpoint: ${randomUUID()}`;
+      const continued = await command(reopened.wrapperPath,
+        ['exec', 'resume', '--json', '--skip-git-repo-check', successorId, resumeText], env, 60_000);
+      expect(continued.status, JSON.stringify(continued)).toBe(0);
+      expect(sessionId(continued.stdout)).toBe(successorId);
+      expect(requests).toHaveLength(3);
+      const resumeInput = JSON.stringify(requests[2]);
+      expect(resumeInput).toContain(checkpoint);
+      expect(resumeInput).toContain(`codex-carry-lineage predecessor:${originalId}`);
+      expect(resumeInput).toContain('Private native carry protocol acknowledgement.');
+      expect(resumeInput).toContain(resumeText);
+      expect(resumeInput).toContain('<cwd>/app</cwd>');
+      expect(resumeInput).not.toContain(predecessorOnly);
+      expect(resumeInput).not.toContain(checkout);
+      expect(requests.map(body => body.model)).toEqual(['gpt-6-luna', 'gpt-6-luna', 'gpt-6-luna']);
       expect(git('rev-parse', 'HEAD')).toBe(head);
       expect(git('diff', '--', 'answer.txt')).toBe(diff);
       expect(readFileSync(join(checkout, 'answer.txt'), 'utf8')).toBe('after\n');
       expect(egress.stats().gw.connections).toBeGreaterThan(0);
       console.info('CONTAINER_NATIVE_CARRY_VERIFIED', JSON.stringify({ originalId, successorId,
-        modelRequests: requests.length, providerForwarding: false, checkpointPreserved: true, freshNativeSession: true }));
+        modelRequests: requests.length, providerForwarding: false, checkpointPreserved: true,
+        freshNativeSession: true, nativeResumeVerified: true }));
     } catch (error) { primaryError = error; throw error; }
     finally {
       const failures: unknown[] = [];
