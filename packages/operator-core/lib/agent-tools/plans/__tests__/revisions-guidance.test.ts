@@ -2,13 +2,30 @@ import { describe, expect, it } from 'vitest';
 import revisionDiff from '../revision-diff';
 import revisions from '../revisions-list';
 
-function guidanceText(tool: typeof revisions): string {
+type GuidanceTool = {
+  description?: string;
+  guidance?: {
+    when?: string;
+    notWhen?: string;
+    chaining?: string;
+    seeAlso?: unknown;
+  };
+};
+
+function guidanceText(tool: GuidanceTool): string {
+  const seeAlso = Array.isArray(tool.guidance?.seeAlso)
+    ? tool.guidance.seeAlso.map((entry: unknown) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object' && 'tool' in entry) return String(entry.tool);
+        return '';
+      })
+    : [];
   return [
     tool.description,
     tool.guidance?.when,
     tool.guidance?.notWhen,
     tool.guidance?.chaining,
-    ...(tool.guidance?.seeAlso ?? []),
+    ...seeAlso,
   ].join('\n');
 }
 

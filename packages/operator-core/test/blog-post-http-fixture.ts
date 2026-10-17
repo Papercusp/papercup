@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { readProcessIdentity } from '../lib/process-identity';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
@@ -29,6 +30,17 @@ function toolData(body: any): any {
     if (text) value = JSON.parse(text);
   }
   return value?.data ?? value;
+}
+
+/** Use the same raw driver and statement in the HTTP fixture and its cheap PG guard. */
+export async function configureBlogPostPublication(sql: postgres.Sql, params: {
+  workspace: string; sourceId: string; userId: string;
+}) {
+  const rows = await sql`UPDATE harness_shared.data_sources SET config = config || ${sql.json({ publicationId: PUBLICATION })}::jsonb
+    WHERE workspace_id = ${params.workspace} AND id = ${params.sourceId}::uuid AND owner_user_id = ${params.userId}::uuid
+    RETURNING config`;
+  assert.equal(rows.length, 1, 'owned publication source required');
+  assert.equal(rows[0].config.publicationId, PUBLICATION, 'publication configuration was not stored');
 }
 
 async function main() {
@@ -104,8 +116,7 @@ async function main() {
     const [user] = await sql`SELECT id::text FROM harness_shared.users WHERE username = 'default'`;
     assert.ok(user?.id);
     // Disposable identity/config preparation; credentials were saved only via Settings routes.
-    await sql`UPDATE harness_shared.data_sources SET config = config || ${JSON.stringify({ publicationId: PUBLICATION })}::jsonb
-      WHERE workspace_id = ${workspace} AND id = ${sources.hashnode}::uuid AND owner_user_id = ${user.id}::uuid`;
+    await configureBlogPostPublication(sql, { workspace, sourceId: sources.hashnode, userId: user.id });
     const [grant] = await sql`INSERT INTO harness_shared.personal_grants
       (workspace_id, user_id, principal_type, principal_id, scopes, granted_by)
       VALUES (${workspace}, ${user.id}::uuid, 'agent-role', 'operator', ${['personal:devto', 'personal:hashnode']}, 'private-request-fixture') RETURNING id`;
@@ -145,10 +156,12 @@ async function main() {
   } finally { await sql.end({ timeout: 5 }); }
 }
 
-try {
-  assert.ok(evidenceDir, 'retained evidence directory required');
-  await main();
-} catch (error) {
-  console.error('BLOG_POST_FAILURE ' + (error instanceof Error ? error.stack : String(error)));
-  process.exitCode = 1;
-} finally { await stopHost(); }
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  try {
+    assert.ok(evidenceDir, 'retained evidence directory required');
+    await main();
+  } catch (error) {
+    console.error('BLOG_POST_FAILURE ' + (error instanceof Error ? error.stack : String(error)));
+    process.exitCode = 1;
+  } finally { await stopHost(); }
+}

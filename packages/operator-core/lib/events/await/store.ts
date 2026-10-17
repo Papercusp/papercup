@@ -685,6 +685,34 @@ export async function upsertInboxWakeAwait(input: {
   return mapAwait(rows[0]);
 }
 
+/**
+ * A successful explicit work declaration ends an earlier deliberate inbox park.
+ * Automatic SessionStart re-arms still preserve that park; resuming work must
+ * clear it without cancelling the standing wake channel or its queued deliveries.
+ */
+export async function clearExplicitInboxWakePark(subscriberId: string): Promise<boolean> {
+  const ws = eventsWs();
+  const rows = await boundedOrgTxn((tx) => tx`
+    UPDATE harness_shared.event_awaits
+       SET note = 'always-armed inbox-wake (resumed work declaration)'
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND event_key = ${INBOX_WAKE_KEY_PREFIX + subscriberId}
+       AND policy = 'wake' AND once = false
+       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+     RETURNING id
+  `, {
+    acquireTimeoutMs: 1_500,
+    acquireRetries: 0,
+    connectionSetupRetries: 0,
+    statementTimeoutMs: 1_500,
+    lockTimeoutMs: 500,
+    phase: 'declare-intent:clear-inbox-park',
+  });
+  return rows.length > 0;
+}
+
 /** Cancel an agent's standing inbox-wake await(s) — SessionEnd hygiene
  *  (turn-lifecycle-control D-003). Returns how many rows were cancelled. */
 export async function cancelInboxWakeAwaits(subscriberId: string): Promise<number> {

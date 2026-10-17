@@ -57,6 +57,7 @@ import { withBoundedTimeout } from '../../../bounded-timeout';
 import { detectIntentPivot } from '../../../intent-pivot';
 import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import { goalRefSchema } from '../../../agent-goal-ref';
+import { clearExplicitInboxWakePark } from '../../../events/await/store';
 
 /**
  * EI-9484 — "coord:declare-intent timing out repeatedly": the watchdog observed
@@ -287,6 +288,18 @@ export default defineTool({
       // harness the work is in → resolves the agent's home hive_slug (D-004).
       args.harness ?? null,
     );
+
+    // Declaring resumed work supersedes an old deliberate inbox park. Keep the
+    // standing channel/queued wakes; SessionStart alone must still preserve parks.
+    let inboxWakePark: { cleared: boolean; warning?: string } | undefined;
+    try {
+      if (await clearExplicitInboxWakePark(identity.ownerId)) inboxWakePark = { cleared: true };
+    } catch (error) {
+      inboxWakePark = {
+        cleared: false,
+        warning: `Work declared, but the previous inbox park could not be cleared: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
     // Offline-member mailbox (shared-hive-collaboration P-016): declaring intent is
     // the explicit ARRIVAL signal (the OMP hook calls it at session start), so a
@@ -539,6 +552,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             presence,
+            ...(inboxWakePark ? { inboxWakePark } : {}),
             ...(claims ? { claims } : {}),
             ...(taskBrief ?? {}),
             ...(overCoverageHint ? { overCoverageHint } : {}),

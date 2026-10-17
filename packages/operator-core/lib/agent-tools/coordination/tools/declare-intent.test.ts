@@ -15,6 +15,11 @@ import type { ReconcileDeclaredClaimsResult } from '../../../plan-items/claim-di
 
 // ── module-seam mocks (arrow-deref so the hoisted vi.mock factory sees them) ──
 const writePresence = vi.fn(async () => 'x' as string | null);
+const clearExplicitInboxWakePark = vi.fn(async () => false);
+vi.mock('../../../events/await/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../events/await/store')>()),
+  clearExplicitInboxWakePark: (...a: unknown[]) => clearExplicitInboxWakePark(...(a as [])),
+}));
 const getPresence = vi.fn(async () => ({ ownerId: 'su-test', intent: 'x' }));
 vi.mock('../presence', async (importOriginal) => ({
   // Spread the real module so PRESENCE_STALE_MS (consumed transitively by
@@ -164,7 +169,31 @@ const rowWithItems = (ids: string[]): Record<string, unknown> => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearExplicitInboxWakePark.mockReset().mockResolvedValue(false);
   getPlanRow.mockResolvedValue(null);
+});
+
+describe('coord:declare-intent resumes an explicit inbox park', () => {
+  it('clears the caller park after the work declaration lands', async () => {
+    clearExplicitInboxWakePark.mockResolvedValueOnce(true);
+    const res = parse(await tool.handler({ intent: 'resume owned work' }, ctx));
+    expect(clearExplicitInboxWakePark).toHaveBeenCalledWith('su-test');
+    expect(writePresence.mock.invocationCallOrder[0]).toBeLessThan(clearExplicitInboxWakePark.mock.invocationCallOrder[0]);
+    expect(res.inboxWakePark).toEqual({ cleared: true });
+  });
+
+  it('keeps a rejected declaration from clearing an existing park', async () => {
+    const res = parse(await tool.handler({ intent: 'invalid lane', items: ['P-001'] }, ctx));
+    expect(res.ok).toBe(false);
+    expect(clearExplicitInboxWakePark).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed clear without claiming the park resumed', async () => {
+    clearExplicitInboxWakePark.mockRejectedValueOnce(new Error('database unavailable'));
+    const res = parse(await tool.handler({ intent: 'resume owned work' }, ctx));
+    expect(res.ok).toBe(true);
+    expect(res.inboxWakePark).toEqual({ cleared: false, warning: expect.stringContaining('database unavailable') });
+  });
 });
 
 describe('coord:declare-intent lane validation (EI-356)', () => {

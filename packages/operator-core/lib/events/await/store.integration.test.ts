@@ -32,6 +32,7 @@ const {
   retireAnnouncement,
   stampAnnouncementsFired,
   upsertInboxWakeAwait,
+  clearExplicitInboxWakePark,
   cancelInboxWakeAwaits,
   cancelClaimableAwaits,
   cancelAwait,
@@ -386,6 +387,39 @@ describe('await-event store (PG)', () => {
     expect(await rootSql`SELECT 1 FROM harness_shared.event_awaits WHERE event_key=${key}`).toHaveLength(1); // ONE row, not two
     expect(rearmed.wakeHandle).toEqual({ sessionId: 'first' }); // COALESCE kept the prior handle
     expect(rearmed.minSleepSec).toBe(30); // floor replaced by EXCLUDED
+  });
+
+  it('resuming declared work clears only its own explicit park and preserves the standing wake', async () => {
+    const subscriberId = 'resumed-worker';
+    const eventKey = `coord:inbox-wake:${subscriberId}`;
+    const note = '[coord:await-inbox:explicit-park] waiting on an old dependency';
+    const standing = await upsertInboxWakeAwait({
+      subscriberId, eventKey, note, minSleepSec: 17,
+      wakeHandle: { sessionId: 'native-worker' } as never,
+    });
+    await upsertInboxWakeAwait({ subscriberId, eventKey, note: 'automatic SessionStart', minSleepSec: 17 });
+    expect((await listActiveAwaits(subscriberId))[0].note).toBe(note);
+    const peer = await upsertInboxWakeAwait({
+      subscriberId: 'still-parked', eventKey: 'coord:inbox-wake:still-parked', note,
+    });
+    const deliberate = await registerAwait({ subscriberId, eventKey: 'work-item:done:dependency', note });
+    const [fired] = await fireAwaitsForKey({ eventKey });
+    await insertDeliveries({ awaits: [fired!], source: 'loop:test', payload: { wakeCount: 1 } });
+
+    expect(await clearExplicitInboxWakePark(subscriberId)).toBe(true);
+    expect(await clearExplicitInboxWakePark(subscriberId)).toBe(false);
+    const active = await listActiveAwaits(subscriberId);
+    const resumed = active.find((row) => row.id === standing.id)!;
+    expect(resumed.note).not.toContain('[coord:await-inbox:explicit-park]');
+    expect(resumed.wakeHandle).toEqual({ sessionId: 'native-worker' });
+    expect(resumed.minSleepSec).toBe(17);
+    expect(resumed.once).toBe(false);
+    expect(active.find((row) => row.id === deliberate.id)?.note).toBe(note);
+    expect((await listActiveAwaits('still-parked')).find((row) => row.id === peer.id)?.note).toBe(note);
+    expect(await rootSql`SELECT status FROM harness_shared.event_wake_deliveries WHERE await_id=${standing.id}`)
+      .toEqual([{ status: 'pending' }]);
+    expect((await listParkedAwaitsForSubscribers([subscriberId])).map((row) => row.eventKey))
+      .toEqual(['work-item:done:dependency']);
   });
 
   it('fireAwaitsForKey claims a one-shot EXACTLY ONCE; a standing watch keeps matching', async () => {

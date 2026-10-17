@@ -185,7 +185,7 @@ export function sessionFor(sessions: SessionMeta[], slot: number, iteration: num
 }
 
 
-export function loadMetas(corpusDir: string): SessionMeta[] {
+export function loadMetas(corpusDir = path.join(CACHE, 'corpus')): SessionMeta[] {
   const out: SessionMeta[] = [];
   for (const d of readdirSync(corpusDir)) {
     const f = path.join(corpusDir, d, 'meta.json');

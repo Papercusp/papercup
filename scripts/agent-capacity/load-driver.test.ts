@@ -1,11 +1,32 @@
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { achievedConcurrency, checkParkedPlan, drive, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
+import { achievedConcurrency, checkParkedPlan, drive, loadMetas, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readdirSync: vi.fn(actual.readdirSync) };
+});
+
+describe('default corpus placement', () => {
+  it('reads the shared-host data corpus by default and preserves an explicit corpus', () => {
+    const read = vi.mocked(fs.readdirSync).mockReturnValueOnce([]).mockReturnValueOnce([]);
+    try {
+      expect(loadMetas()).toEqual([]);
+      expect(read).toHaveBeenLastCalledWith(path.join(platform() === 'linux'
+        ? '/mnt/data/agent-capacity' : path.join(homedir(), '.cache', 'agent-capacity'), 'corpus'));
+      expect(loadMetas('/explicit/corpus')).toEqual([]);
+      expect(read).toHaveBeenLastCalledWith('/explicit/corpus');
+    } finally {
+      read.mockReset();
+    }
+  });
+});
 
 describe('parseAgentEnv', () => {
   it('absent or blank is no extra env', () => {

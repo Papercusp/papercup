@@ -1,9 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, CORPUS_FILE, corpusFileFromArgv, loadCorpus, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+
+describe('default recording placement', () => {
+  it('places shared-host recording checkouts on data and preserves an explicit cache', () => {
+    const root = platform() === 'linux'
+      ? '/mnt/data/agent-capacity' : path.join(homedir(), '.cache', 'agent-capacity');
+    expect(recordedWorkDir('placement-control')).toBe(path.join(root, 'work', 'placement-control'));
+    expect(recordedWorkDir('placement-control', '/explicit/cache'))
+      .toBe('/explicit/cache/work/placement-control');
+  });
+});
 
 describe('corpusFileFromArgv', () => {
   it('defaults to the shipped corpus and resolves --tasks-file when given', () => {

@@ -869,7 +869,7 @@
               "adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0"
             },
             "stamp": {
-              "sourceDir": "/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/hooks/inject",
+              "sourceDir": "apps/operator/scripts/hooks/inject",
               "sourceSha": "8fdb7d20436896addb05b9055e306907eaa29d7e",
               "sourceCommittedAt": "2026-10-17T02:22:35.000Z",
               "installedAt": "2026-10-17T02:29:55.812Z",
