@@ -8,6 +8,8 @@ const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
 const planItemNeedsHumanContradiction = vi.fn();
+const resolvePlanItemStamp = vi.fn();
+const resyncPlanItemLaneNow = vi.fn();
 const ownerAskRun = vi.fn();
 const makeCoordOpContext = vi.fn();
 const parkConsult = vi.fn();
@@ -40,6 +42,10 @@ vi.mock('../../modes/store', () => ({
 }));
 vi.mock('../../scheduler/plan-item-lane-guard', () => ({
   planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradiction(...args),
+  resolvePlanItemStamp: (...args: unknown[]) => resolvePlanItemStamp(...args),
+}));
+vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
+  resyncPlanItemLaneNow: (...args: unknown[]) => resyncPlanItemLaneNow(...args),
 }));
 vi.mock('../../coord-ops/ops/compose', () => ({
   askOp: { run: (...args: unknown[]) => ownerAskRun(...args) },
@@ -70,6 +76,8 @@ beforeEach(() => {
   setWorkItemClaimHold.mockResolvedValue({ applicable: true, held: false });
   getModes.mockResolvedValue([]);
   planItemNeedsHumanContradiction.mockResolvedValue(null);
+  resolvePlanItemStamp.mockResolvedValue(null);
+  resyncPlanItemLaneNow.mockResolvedValue(null);
   ownerAskRun.mockResolvedValue({ conversation_id: 'owner-ask-direct', answered: false, answer: null });
   makeCoordOpContext.mockReturnValue({ coordOpContext: true });
   parkConsult.mockResolvedValue({ consultId: 'conv-r13' });
@@ -1577,6 +1585,67 @@ describe('work_items:set_blocker', () => {
     expect(out.error).toContain('claim hold update failed');
     expect(out.error).toContain('do not repeat the clear blindly');
     expect(out.partialOutcome.recoveryAction).toContain('work_items:set_state');
+  });
+
+  it('re-syncs a linked plan lane after a clear leaves lifecycle restoration blocked', async () => {
+    const blocker = {
+      kind: 'runtime', ref: 'runtime:obsolete', summary: 'obsolete runtime', status: 'active',
+      createdAt: '2026-10-09T15:00:00.000Z', createdBy: 'su-a',
+      updatedAt: '2026-10-09T15:00:00.000Z',
+    };
+    const planLaneBlocker = {
+      kind: 'gate', capability: 'live-dependency', ref: 'plan-lane:codex-native-operation-protocol#P-003',
+      summary: 'linked plan lane remains blocked', status: 'active',
+      createdAt: '2026-10-09T15:01:00.000Z', createdBy: 'system:plan-item-lane-sync',
+      updatedAt: '2026-10-09T15:01:00.000Z',
+    };
+    const item = {
+      id: 'WI-1', family: 'feature', kind: 'feature', state: 'blocked', harness: 'papercusp',
+      payload: { externalBlockers: [blocker] },
+    };
+    const persisted = {
+      ...item,
+      payload: { externalBlockers: [{ ...blocker, status: 'cleared' }] },
+    };
+    const repaired = {
+      ...item,
+      payload: { externalBlockers: [planLaneBlocker] },
+    };
+    getWorkItem.mockResolvedValueOnce(item).mockResolvedValueOnce(persisted).mockResolvedValueOnce(repaired);
+    mergeWorkItemPayload.mockResolvedValue(persisted);
+    setWorkItemStateWithAliasInfo.mockRejectedValue(new Error(
+      "work_item 'WI-1' is blocked, and its linked plan-item codex-native-operation-protocol#P-003 is STILL effectively 'blocked'",
+    ));
+    resolvePlanItemStamp.mockResolvedValue({
+      plan_slug: 'codex-native-operation-protocol',
+      item_ids: ['P-003'],
+    });
+    resyncPlanItemLaneNow.mockResolvedValue({ gated: ['WI-1'] });
+
+    const out = await one({ id: 'WI-1', kind: 'runtime', ref: 'runtime:obsolete', clear: true, evidence: 'obsolete' });
+
+    expect(resyncPlanItemLaneNow).toHaveBeenCalledWith(
+      'codex-native-operation-protocol',
+      'P-003',
+      'papercusp',
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'partial-clear',
+      workItem: repaired,
+      activeBlockers: [expect.objectContaining({ ref: 'plan-lane:codex-native-operation-protocol#P-003', status: 'active' })],
+      partialOutcome: {
+        blockerHistoryPersisted: true,
+        lifecycleApplied: false,
+        currentState: 'blocked',
+        activeBlockerCount: 1,
+      },
+      planLaneRepair: {
+        planSlug: 'codex-native-operation-protocol',
+        itemIds: ['P-003'],
+      },
+    });
+    expect(out.partialOutcome.recoveryAction).toContain('Plan lane codex-native-operation-protocol#P-003 was re-synced');
   });
 
   it('EI-13301 backstop: retries the restore when the primary attempt leaves state stuck at blocked', async () => {

@@ -43,6 +43,8 @@ export interface PruneRequest {
   /** workspace for the VACUUM resource-lock coordination domain. */
   workspaceId: string;
   signal?: AbortSignal;
+  /** Test-only seam for the foreground scratch-scan budget; omitted in production calls. */
+  scanBudgetMs?: number;
   /**
    * Wall-time budget (ms) for the chunked PG delete loop (EI-11379). When the
    * budget is hit mid-drain, the loop stops and returns a continuation instead
@@ -411,8 +413,12 @@ function pruneDiskPlain(cat: DiskStorageCategory, req: PruneRequest): PruneResul
   return result;
 }
 
+/** Keep a foreground scratch preview well below the MCP transport deadline. */
+const SCRATCH_PRUNE_SCAN_BUDGET_MS = 20_000;
+
 /** Scratch entries are workspace trees, not independent disposable top-level directories. */
 async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promise<PruneResult> {
+  const scanBudgetMs = req.scanBudgetMs ?? SCRATCH_PRUNE_SCAN_BUDGET_MS;
   const requestedMs = req.olderThanDays == null ? 0 : req.olderThanDays * 86400000;
   const categoryFloorMs = (cat.minOlderThanDays ?? 0) * 86400000;
   const retentionMs = Math.max(RETENTION_MS, categoryFloorMs, requestedMs);
@@ -423,6 +429,7 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
     retentionMs,
     quietMs: retentionMs,
     enforceQuota: false,
+    maxDurationMs: scanBudgetMs,
   });
   const removed = gc.retentionEvictions + gc.deadWorkspaces;
   const notes: string[] = [];
@@ -433,14 +440,24 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
   if (gc.deadWorkspacesDeferred.length > 0) {
     notes.push(`kept ${gc.deadWorkspacesDeferred.length} marked workspace root(s) without complete quiet/open-writer proof`);
   }
+  if (gc.truncated) {
+    notes.push(`scratch scan budget of ${scanBudgetMs}ms exhausted; this result is partial — re-run with the same arguments to continue`);
+  }
   return {
     ok: true,
     categoryId: cat.id,
     dryRun: req.dryRun,
     removed,
     reclaimedBytes: gc.retentionEvictedBytes + gc.deadWorkspaceBytes,
-    reclaimEstimated: false,
+    reclaimEstimated: Boolean(gc.truncated && req.dryRun),
     vacuumed: false,
+    ...(gc.truncated
+      ? {
+          partial: true,
+          complete: false,
+          continuation: { categoryId: cat.id, olderThanDays: req.olderThanDays },
+        }
+      : {}),
     ...(notes.length > 0 ? { note: notes.join('; ') } : {}),
   };
 }

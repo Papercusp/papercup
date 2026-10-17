@@ -865,6 +865,19 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
       deadWorkspacesDeferred: [],
     });
   });
+
+  it('returns a truncated summary when a caller wall-time budget is already exhausted', async () => {
+    makeRunDir('ws-A', 'tool', UUID(70), 64, RETENTION_MS + 60_000);
+    const r = await runScratchGc({
+      workspaceRegistry: ['ws-A'],
+      dryRun: true,
+      enforceQuota: false,
+      maxDurationMs: 0,
+    });
+
+    expect(r.truncated).toBe(true);
+    expect(r.retentionEvictions).toBe(0);
+  });
 });
 
 /**

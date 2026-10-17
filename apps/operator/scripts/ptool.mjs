@@ -1589,16 +1589,13 @@ export const PTOOL_CONNECT_MAX_ATTEMPTS = Math.ceil(
   PTOOL_CONNECT_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
 ) + 1;
 
-// Explicit/local direct URLs remain pinned, but a hard operator restart can
-// briefly refuse connections. Give those pins one short recovery window: one
-// direct-handshake timeout plus five paced retry intervals (20s with the
-// current budgets), bounded independently from the managed/proxy 120s window.
-// Proxy pins keep their longer initialize contract and are excluded above by
-// ptoolConnectAttemptTimeoutMs.
-export const PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS = Math.min(
-  PTOOL_CONNECT_TIMEOUT_MS,
-  PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS + (5 * PTOOL_CONNECT_RETRY_DELAY_MS),
-);
+// Explicit/local direct URLs remain pinned, but a coordinated operator restart
+// can leave the listener unavailable for longer than one direct handshake. Give
+// those pins the same bounded recovery window as the managed/proxy route. Each
+// direct attempt still has its 15s per-attempt ceiling; this total budget lets
+// ptool survive the staging sync's migration/build/restart sequence without
+// silently switching to a different operator.
+export const PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS = PTOOL_CONNECT_TIMEOUT_MS;
 export const PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS = Math.ceil(
   PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
 ) + 1;

@@ -2033,10 +2033,11 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
  * session), so a large nested field on an intermediate result (rubrics:get's
  * `criteria[]`) got shaped/truncated by applyPayloadTier with no error signal —
  * indistinguishable from a genuinely small result to the script's own `.length` /
- * `.filter()` read. bindInnerDispatch now strips `contextTier` off every inner
- * call's ctx so it defaults to 'full' (a script can still opt into a narrower
- * tier for one call via that call's own `payloadTier` arg — resolved
- * independently downstream, unaffected by this ctx-level default).
+ * `.filter()` read. bindInnerDispatch now forces `contextTier:'full'` and
+ * `payloadTierOverride:'full'` on every inner call so it receives the same
+ * lossless materialization as a direct tools:invoke call (a script can still
+ * opt into a narrower tier for one call via that call's own `payloadTier` arg —
+ * resolved independently downstream).
  */
 describe('code:run → inner calls default to full payload tier (EI-18699443874201617)', () => {
   const readTool = {
@@ -2058,7 +2059,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
     runWithWorkspaceIfConcreteMock.mockClear();
   });
 
-  it('fast path: strips a trimmed outer contextTier before dispatching the inner call', async () => {
+  it('fast path: forces full contextTier over a trimmed outer tier', async () => {
     const outerCtx = {
       workspaceId: 'ws-bee',
       role: 'cup',
@@ -2071,7 +2072,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       contextTier?: string;
     };
     expect(result).not.toBe(outerCtx); // a new ctx object — the tier was overridden
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
   });
 
   it('fast path: a ctx with no contextTier at all still dispatches under the same binding (no needless rebind)', async () => {
@@ -2087,7 +2088,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       contextTier?: string;
     };
     expect(result.workspaceId).toBe('ws-bee');
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
     expect(withWorkspaceMock).not.toHaveBeenCalled();
     expect(synthesizeDispatchPrincipalMock).not.toHaveBeenCalled();
   });
@@ -2102,7 +2103,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       echoNext,
     )) as { contextTier?: string; workspaceId: string };
     expect(result.workspaceId).toBe('ws-target');
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
   });
 
   it('crossWorkspace path: strips contextTier on the admin-tx ctx too', async () => {
@@ -2114,7 +2115,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       outerCtx as never,
       echoNext,
     )) as { contextTier?: string };
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
   });
 });
 

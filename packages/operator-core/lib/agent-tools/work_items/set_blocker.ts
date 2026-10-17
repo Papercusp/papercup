@@ -21,6 +21,7 @@ import {
   mergeWorkItemPayload,
   setWorkItemClaimHold,
   setWorkItemStateWithAliasInfo,
+  type WorkItem,
 } from '../../work-items';
 import {
   activeExternalBlockers,
@@ -115,6 +116,37 @@ function normalizeBlockerInput(input: BlockerInput): NormalizedBlockerInput {
     kind: alias.kind,
     capability: input.capability ?? alias.capability,
   };
+}
+
+/**
+ * A clear can persist blocker history before lifecycle restoration discovers that
+ * the linked plan lane is still blocked. Re-run the canonical plan-lane sync so
+ * that recovery writes the provenance-carrying `plan-lane:` blocker instead of
+ * leaving a `blocked` work-item with no active blocker for the scheduler to find.
+ *
+ * This is deliberately best-effort: the original lifecycle failure remains the
+ * caller-visible result, while the reconciler is the single writer for plan-lane
+ * blocker semantics and can retry on its normal cadence if its read also fails.
+ */
+async function resyncLinkedPlanLaneAfterLifecycleFailure(
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
+): Promise<{ planSlug: string; itemIds: string[]; results: unknown[] } | null> {
+  try {
+    const { resolvePlanItemStamp } = await import('../../scheduler/plan-item-lane-guard');
+    const stamp = await resolvePlanItemStamp(workItem);
+    if (!stamp) return null;
+    const { resyncPlanItemLaneNow } = await import('../../plan-items/reconcile-linked-work-items');
+    const results: unknown[] = [];
+    for (const itemId of stamp.item_ids) {
+      results.push(await resyncPlanItemLaneNow(stamp.plan_slug, itemId, workItem.harness ?? null));
+    }
+    return results.some((result) => result !== null)
+      ? { planSlug: stamp.plan_slug, itemIds: [...stamp.item_ids], results }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function directHumanCapabilityChoices(capability: DirectHumanCapability): string[] {
@@ -1109,9 +1141,26 @@ export default defineTool({
           const lookup = await trackPhase(ctx.phases, 'set_blocker:recover-work-item', () =>
             lookupWorkItem(input.id, input.harness),
           );
-          const persisted = lookup.status === 'found' ? lookup.item : null;
-          const persistedActive = persisted ? activeExternalBlockers(persisted.payload) : active;
-          const persistedState = persisted?.state ?? null;
+          let persisted = lookup.status === 'found' ? lookup.item : null;
+          let persistedActive = persisted ? activeExternalBlockers(persisted.payload) : active;
+          let persistedState = persisted?.state ?? null;
+          let planLaneRepair: { planSlug: string; itemIds: string[]; results: unknown[] } | null = null;
+          if (input.clear && persisted && persistedState === 'blocked' && persistedActive.length === 0) {
+            planLaneRepair = await resyncLinkedPlanLaneAfterLifecycleFailure(persisted);
+            if (planLaneRepair) {
+              // The reconciler may have added the provenance-carrying plan-lane
+              // blocker or restored the row. Re-read so the partial outcome names
+              // the authoritative post-repair state, not the pre-repair snapshot.
+              const repaired = await trackPhase(ctx.phases, 'set_blocker:recover-work-item-after-plan-lane', () =>
+                lookupWorkItem(input.id, input.harness),
+              );
+              if (repaired.status === 'found') {
+                persisted = repaired.item;
+                persistedActive = activeExternalBlockers(repaired.item.payload);
+                persistedState = repaired.item.state;
+              }
+            }
+          }
           const stateText = persistedState ??
             (lookup.status === 'unreadable' ? `unreadable (${lookup.error})` : 'unavailable (row not found)');
           return {
@@ -1126,13 +1175,16 @@ export default defineTool({
               lifecycleApplied: false,
               currentState: persistedState,
               activeBlockerCount: persistedActive.length,
-              recoveryAction: persistedState === 'blocked' && persistedActive.length === 0
-                ? 'Reopen the item through work_items:set_state after checking for independent work-item dependencies.'
-                : 'Read work_items:get and repair the lifecycle state indicated by the remaining blockers.',
+              recoveryAction: planLaneRepair && persistedActive.length > 0
+                ? `Plan lane ${planLaneRepair.planSlug}#${planLaneRepair.itemIds.join(',')} was re-synced; keep its active plan-lane blocker and retry after the lane clears.`
+                : persistedState === 'blocked' && persistedActive.length === 0
+                  ? 'Reopen the item through work_items:set_state after checking for independent work-item dependencies.'
+                  : 'Read work_items:get and repair the lifecycle state indicated by the remaining blockers.',
             },
             workItem: persisted ?? updated,
             activeBlockers: persistedActive,
-            blockerHistory: history.blockers,
+            blockerHistory: persisted ? readExternalBlockers(persisted.payload) : history.blockers,
+            ...(planLaneRepair ? { planLaneRepair } : {}),
           };
         }
 

@@ -608,7 +608,7 @@ describe('ptool operator routing', () => {
     })).toBe(false);
   });
 
-  it('keeps explicit and bare local URL pins in place with a short retry budget', () => {
+  it('keeps explicit and bare local URL pins in place with a bounded recovery budget', () => {
     const localPinRetryOptions = {
       maxAttempts: PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
       totalTimeoutMs: PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
@@ -2960,8 +2960,9 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     })).toBe(false);
   });
 
-  it('EI-22697016277102033 caps direct local attempts but preserves the resilient proxy window', async () => {
+  it('EI-22697016277102033 gives direct local pins the full bounded recovery window', async () => {
     expect(PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS).toBe(15_000);
+    expect(PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS).toBe(PTOOL_CONNECT_TIMEOUT_MS);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:3170', {})).toBe(15_000);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:3070', {})).toBe(15_000);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9071', {})).toBe(PTOOL_CONNECT_TIMEOUT_MS);
@@ -3069,7 +3070,7 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(sleeps).toEqual([1_000]);
   });
 
-  it('bounds retries for a dead direct local URL pin to its short recovery window', async () => {
+  it('bounds retries for a dead direct local URL pin to the full recovery window', async () => {
     const pinned = 'http://127.0.0.1:32951';
     const connectOnce = vi.fn().mockRejectedValue(
       Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' }),
@@ -3083,6 +3084,24 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       }),
     ).rejects.toThrow(/ECONNREFUSED/);
     expect(connectOnce).toHaveBeenCalledTimes(PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS);
+  });
+
+  it('keeps a direct staging pin alive through a 20s coordinated restart gap', async () => {
+    const pinned = 'http://127.0.0.1:3170';
+    const client = { close: vi.fn() };
+    const refusal = () => Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' });
+    const connectOnce = vi.fn();
+    for (let i = 0; i < 20; i += 1) connectOnce.mockRejectedValueOnce(refusal());
+    connectOnce.mockResolvedValue(client);
+
+    await expect(connectWithLocalRetry(connectOnce, pinned, {}, {
+      ...ptoolConnectionRetryOptions({ url: pinned }, {}),
+      attemptTimeoutMs: PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
+      sleep: vi.fn(async () => {}),
+      retryJitterMs: 0,
+    })).resolves.toEqual(client);
+    expect(connectOnce).toHaveBeenCalledTimes(21);
+    expect(PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS).toBeGreaterThan(20_000);
   });
 
   it('does not spend the local retry budget when explicit UDS discovery has no endpoint', async () => {

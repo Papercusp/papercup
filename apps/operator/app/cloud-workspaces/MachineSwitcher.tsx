@@ -6,6 +6,7 @@ import { useSyncQuery } from "@papercusp/sync";
 import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 import { Select } from "@/app/harness/Select";
 import { Modal } from "@/app/harness/Modal";
+import { Tooltip } from "@/app/harness/Tooltip";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
 import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from "./workspace-view-model";
 import { desktopMachineSelection, preferredDesktopWorkspace } from "./workspace-view-model";
@@ -94,8 +95,10 @@ function MachineConnectionHelp() {
   const [open, setOpen] = useState(false);
   const connection = normalizeSshProfile({ id: "local-ssh", label: "Connect your computer", scope: "Private network" });
   return <>
-    <button type="button" data-connection-class={connection.class} title="SSH connection profile"
-      onClick={() => setOpen(true)}>Connect your computer</button>
+    <Tooltip label="SSH connection profile">
+      <button type="button" data-connection-class={connection.class}
+        onClick={() => setOpen(true)}>Connect your computer</button>
+    </Tooltip>
     <Modal open={open} onOpenChange={setOpen} title="Connect your computer"
       contentStyle={{ maxWidth: 560, padding: 24, background: "var(--surface-1, #151922)" }}>
       <h2>Connect your computer</h2>

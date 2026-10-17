@@ -66,11 +66,14 @@ describe("persistent machine selection", () => {
     expect(transitions.every((params) => params.get("app") === "desktops" && params.get("desktopHost") === "b")).toBe(true);
   });
 
-  it("offers personal terminal and GUI connection instructions without a hosted workspace", () => {
+  it("offers personal terminal and GUI connection instructions without a hosted workspace", async () => {
     render(<MachineSwitcher localMode={false} workspaceSelected={false} />);
     const help = screen.getByRole("button", { name: "Connect your computer" });
     expect(help.dataset.connectionClass).toBe("ssh-profile");
-    expect(help.title).toBe("SSH connection profile");
+    fireEvent.focus(help);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toBe("SSH connection profile");
+    expect(help.getAttribute("aria-describedby")).toBe(tooltip.id);
     fireEvent.click(help);
     const dialog = screen.getByRole("dialog", { name: "Connect your computer" });
     expect(screen.getByTestId("machine-connection-authority").textContent).toContain("SSH machine access");

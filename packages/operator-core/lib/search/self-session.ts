@@ -242,11 +242,29 @@ export async function resolveSelfSession(
   //    plus the live process pids (the WI-5681 coord-id-drift bridge).
   let command: string | null = null;
   let uuid: string | null = null;
+  let discoveredAdvSessionId: number | null = null;
+  let discoveredNativeSessionId: string | null = null;
   const livePids: number[] = [];
   try {
     const raw = await readFile(join(home, '.papercusp', 'psu-pty', `${sanitizeKey(ownerId)}.json`), 'utf8');
-    const rec = JSON.parse(raw) as { command?: string; args?: unknown; pid?: unknown; ptyPid?: unknown };
+    const rec = JSON.parse(raw) as {
+      command?: string;
+      args?: unknown;
+      pid?: unknown;
+      ptyPid?: unknown;
+      advSessionId?: unknown;
+      nativeSessionId?: unknown;
+    };
     command = typeof rec.command === 'string' ? rec.command : null;
+    if (typeof rec.advSessionId === 'number' && Number.isSafeInteger(rec.advSessionId) && rec.advSessionId > 0) {
+      discoveredAdvSessionId = rec.advSessionId;
+    } else if (typeof rec.advSessionId === 'string' && /^\d+$/.test(rec.advSessionId)) {
+      const parsed = Number(rec.advSessionId);
+      if (Number.isSafeInteger(parsed) && parsed > 0) discoveredAdvSessionId = parsed;
+    }
+    if (typeof rec.nativeSessionId === 'string' && UUID_RE.test(rec.nativeSessionId)) {
+      discoveredNativeSessionId = rec.nativeSessionId;
+    }
     // ptyPid is the hosted CLI itself (its env carries CLAUDE_CONFIG_DIR); pid is
     // the wrapper — try the CLI first.
     for (const p of [rec.ptyPid, rec.pid]) {
@@ -281,7 +299,7 @@ export async function resolveSelfSession(
   const native = active?.session_id && UUID_RE.test(active.session_id) ? active.session_id : null;
   if (activeKind) {
     command = activeKind;
-    uuid = native ?? (activeKind === discoveredKind ? uuid : null);
+    uuid = native ?? (activeKind === discoveredKind ? uuid ?? discoveredNativeSessionId : null);
   } else {
     // A fresh psu Codex launch has an adv-session row before it has a native
     // session id or discovery record. If there is no recognized row, retain
@@ -289,7 +307,7 @@ export async function resolveSelfSession(
     if (!command) command = activeSessions.find((r) => r.agent)?.agent ?? null;
     if (!uuid) {
       const fallbackNative = activeSessions.find((r) => r.session_id && UUID_RE.test(r.session_id))?.session_id;
-      if (fallbackNative) uuid = fallbackNative;
+      uuid = fallbackNative ?? discoveredNativeSessionId;
     }
   }
 
@@ -351,10 +369,19 @@ export async function resolveSelfSession(
   // first (session-db-archive-retire-dirs P-015; before this a live fleet
   // codex session could never resolve `session:'self'`). Fail-soft to the
   // shared root.
-  for (const r of activeSessions.filter((row) => row.agent === 'codex')) {
+  const codexSessionIds = activeSessions
+    .filter((row) => row.agent === 'codex')
+    .map((row) => row.id);
+  // The psu-pty record is owner-scoped and carries the managed adv-session id.
+  // Use it only when the database lookup returned no recognized active client;
+  // an active row remains authoritative when the record is stale after a handoff.
+  if (!activeKind && discoveredKind === 'codex' && discoveredAdvSessionId !== null) {
+    codexSessionIds.push(discoveredAdvSessionId);
+  }
+  for (const sessionId of [...new Set(codexSessionIds)]) {
     const codexHome = opts.codexHomeForSession
-      ? opts.codexHomeForSession(r.id)
-      : join(home, '.papercusp', 'su-codex-homes', `session-${r.id}`);
+      ? opts.codexHomeForSession(sessionId)
+      : join(home, '.papercusp', 'su-codex-homes', `session-${sessionId}`);
     const isolated = await listJsonlUnder(join(codexHome, 'sessions'));
     files.push(...isolated);
     // A cold carry-respawn keeps the original adv_sessions.session_id while

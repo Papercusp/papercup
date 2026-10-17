@@ -1135,6 +1135,7 @@ describe('specTestAdequacyCompletionGate', () => {
 
       expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
       expect(!result.ok && result.reason).toContain('work_items:update');
+      expect(!result.ok && result.reason).toContain('re-claim the current item');
       expect(deps.listEvidence).not.toHaveBeenCalled();
       expect(deps.listCards).not.toHaveBeenCalled();
     },

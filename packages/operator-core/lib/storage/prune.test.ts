@@ -426,6 +426,24 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(existsSync(fixture.workspaceRoot)).toBe(true);
     expect(existsSync(fixture.agentFile)).toBe(true);
   });
+
+  it('returns a bounded partial scratch preview when the scan budget expires', async () => {
+    const fixture = makeScratchPruneFixture();
+    const r = await pruneStorageCategory(REQ({
+      categoryId: 'scratch',
+      olderThanDays: 1,
+      dryRun: true,
+      scanBudgetMs: 0,
+    }));
+
+    expect(r.ok).toBe(true);
+    expect(r.partial).toBe(true);
+    expect(r.complete).toBe(false);
+    expect(r.continuation).toEqual({ categoryId: 'scratch', olderThanDays: 1 });
+    expect(r.reclaimEstimated).toBe(true);
+    expect(r.note).toMatch(/scan budget of 0ms exhausted/);
+    expect(existsSync(fixture.staleRun)).toBe(true);
+  });
 });
 
 describe('pruneStorageCategory — wake-spills retention floor', () => {

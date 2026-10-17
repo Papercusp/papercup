@@ -549,6 +549,19 @@ export interface ScratchGcSummary {
   unprovenEntries: number;
   /** Provably-dead workspace roots this sweep kept, and why. */
   deadWorkspacesDeferred: Array<{ workspaceId: string; reason: DeadWorkspaceDeferral }>;
+  /** The caller's wall-time budget expired before the full sweep completed. */
+  truncated?: boolean;
+}
+
+interface ScratchGcBudget {
+  deadlineMs: number;
+  truncated: boolean;
+}
+
+function scratchGcBudgetExpired(budget?: ScratchGcBudget): boolean {
+  if (!budget || Date.now() < budget.deadlineMs) return false;
+  budget.truncated = true;
+  return true;
 }
 
 export async function runScratchGc(opts: {
@@ -564,6 +577,8 @@ export async function runScratchGc(opts: {
   quietMs?: number;
   /** Skip quota FIFO eviction when the caller only owns retention pruning. Defaults to true. */
   enforceQuota?: boolean;
+  /** Optional wall-time cap for foreground callers; a capped sweep returns a partial summary. */
+  maxDurationMs?: number;
 }): Promise<ScratchGcSummary> {
   const now = opts.now ?? Date.now();
   const dryRun = opts.dryRun ?? false;
@@ -583,11 +598,15 @@ export async function runScratchGc(opts: {
   };
 
   const registrySet = new Set(opts.workspaceRegistry);
+  const budget = opts.maxDurationMs == null
+    ? undefined
+    : { deadlineMs: Date.now() + Math.max(0, opts.maxDurationMs), truncated: false };
 
   if (!dryRun) {
     // Backfill: every registered workspace root that exists gets its marker, so that once the
     // workspace leaves the registry its root is provably ours. Never creates a root.
     for (const workspaceId of opts.workspaceRegistry) {
+      if (scratchGcBudgetExpired(budget)) break;
       let wsRoot: string;
       try {
         wsRoot = scratchRootForWorkspace(workspaceId);
@@ -609,14 +628,16 @@ export async function runScratchGc(opts: {
   // Step 2 (before step 1 so we don't waste work on dead workspaces): remove PROVABLY dead
   // workspace roots wholesale (WI-10006512). A missing root lists as empty.
   const candidates: Array<{ workspaceId: string; dir: string; realDir: string; bytes: number }> = [];
-  for (const name of await listDir(root)) {
+  for (const name of await listDir(root, undefined, budget)) {
+    if (scratchGcBudgetExpired(budget)) break;
     if (registrySet.has(name)) continue;
     const dir = join(root, name);
     if (!(await isProvenWorkspaceScratchRoot(dir, name))) {
       summary.unprovenEntries += 1;
       continue;
     }
-    const tree = await treeStatsAsync(dir);
+    const tree = await treeStatsAsync(dir, budget);
+    if (tree.truncated || scratchGcBudgetExpired(budget)) break;
     if (now - tree.newestMtimeMs < quietMs) {
       summary.deadWorkspacesDeferred.push({ workspaceId: name, reason: 'recent-write' });
       continue;
@@ -630,7 +651,7 @@ export async function runScratchGc(opts: {
     }
     candidates.push({ workspaceId: name, dir, realDir, bytes: tree.bytes });
   }
-  if (candidates.length > 0) {
+  if (candidates.length > 0 && !scratchGcBudgetExpired(budget)) {
     let scan: OpenWriterScan = { byPath: new Map(), complete: false };
     try {
       scan = await (opts.scanOpenPaths ?? defaultScanOpenPaths)(candidates.map((c) => c.realDir));
@@ -638,6 +659,7 @@ export async function runScratchGc(opts: {
       /* no process evidence is not permission to delete */
     }
     for (const c of candidates) {
+      if (scratchGcBudgetExpired(budget)) break;
       if (scan.byPath.get(c.realDir)?.length) {
         summary.deadWorkspacesDeferred.push({ workspaceId: c.workspaceId, reason: 'open-writer' });
         continue;
@@ -678,16 +700,19 @@ export async function runScratchGc(opts: {
 
   // Step 1: retention sweep, per-workspace.
   for (const workspaceId of opts.workspaceRegistry) {
+    if (scratchGcBudgetExpired(budget)) break;
     // Walk and size candidates without the workspace mutex. A retention sweep can visit many
     // run directories, and a slow stat/readdir here must not hold up result-door reservations
     // for the whole workspace. Each deletion still takes the mutex and revalidates the run's
     // mtime immediately before removing it, so a cooperating writer that started after this
     // scan keeps its run alive. Pin state is checked inside the same deletion critical section.
-    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId)))
+    const candidates = (await runDirsOf(scratchRootForWorkspace(workspaceId), undefined, budget))
       .filter((run) => now - run.mtimeMs > retentionMs);
     let removed = false;
     for (const candidate of candidates) {
-      const bytes = await sizeOfDirAsync(candidate.dir);
+      if (scratchGcBudgetExpired(budget)) break;
+      const bytes = await sizeOfDirAsync(candidate.dir, undefined, undefined, 0, undefined, undefined, budget);
+      if (scratchGcBudgetExpired(budget)) break;
       if (dryRun) {
         if (!(await removeUnpinnedScratchPath(candidate.dir, true))) continue;
         summary.retentionEvictions += 1;
@@ -717,13 +742,15 @@ export async function runScratchGc(opts: {
   }
 
   // Step 3: per-workspace quota check + FIFO eviction by mtime.
-  if (opts.enforceQuota !== false && !dryRun) {
+  if (opts.enforceQuota !== false && !dryRun && !scratchGcBudgetExpired(budget)) {
     for (const workspaceId of opts.workspaceRegistry) {
       const reclaimed = await evictWorkspaceQuotaWithLock(workspaceId, () => WORKSPACE_QUOTA_BYTES);
       summary.quotaEvictions += reclaimed.evictions;
       summary.quotaEvictedBytes += reclaimed.bytes;
     }
   }
+
+  if (budget?.truncated) summary.truncated = true;
 
   return summary;
 }
@@ -732,13 +759,17 @@ export async function runScratchGc(opts: {
 async function listDir(
   dir: string,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
+  budget?: ScratchGcBudget,
 ): Promise<string[]> {
+  if (scratchGcBudgetExpired(budget)) return [];
   try {
-    return await measureScratchQuotaRecoveryOperation(
+    const names = await measureScratchQuotaRecoveryOperation(
       diagnostics,
       'readdir',
       () => readdirAsync(dir),
     );
+    scratchGcBudgetExpired(budget);
+    return names;
   } catch {
     return [];
   }
@@ -748,9 +779,11 @@ async function listDir(
 async function childDirs(
   dir: string,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
+  budget?: ScratchGcBudget,
 ): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const out: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const name of await listDir(dir, diagnostics)) {
+  for (const name of await listDir(dir, diagnostics, budget)) {
+    if (scratchGcBudgetExpired(budget)) break;
     const child = join(dir, name);
     let st;
     try {
@@ -767,10 +800,12 @@ async function childDirs(
 async function runDirsOf(
   wsRoot: string,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
+  budget?: ScratchGcBudget,
 ): Promise<Array<{ dir: string; mtimeMs: number }>> {
   const runs: Array<{ dir: string; mtimeMs: number }> = [];
-  for (const toolDir of await childDirs(wsRoot, diagnostics)) {
-    runs.push(...(await childDirs(toolDir.dir, diagnostics)));
+  for (const toolDir of await childDirs(wsRoot, diagnostics, budget)) {
+    if (scratchGcBudgetExpired(budget)) break;
+    runs.push(...(await childDirs(toolDir.dir, diagnostics, budget)));
   }
   return runs;
 }
@@ -1137,7 +1172,9 @@ async function sizeOfDirAsync(
   depth = 0,
   runDir?: string,
   diagnostics?: ScratchQuotaRecoveryDiagnostics,
+  budget?: ScratchGcBudget,
 ): Promise<number> {
+  if (scratchGcBudgetExpired(budget)) return 0;
   if (diagnostics) diagnostics.sizeWalkDirectories += 1;
   let entries;
   try {
@@ -1146,6 +1183,7 @@ async function sizeOfDirAsync(
         readdirAsync(dir, { withFileTypes: true }),
       ),
     );
+    scratchGcBudgetExpired(budget);
   } catch (error) {
     if (scratchFsErrorCode(error) === 'ENOENT') return 0; // an absent or concurrently removed directory is empty
     if (diagnostics) {
@@ -1157,6 +1195,7 @@ async function sizeOfDirAsync(
   if (diagnostics) diagnostics.sizeWalkEntries += entries.length;
   let total = 0;
   for (const entry of entries) {
+    if (scratchGcBudgetExpired(budget)) break;
     const child = join(dir, entry.name);
     if (entry.isDirectory()) {
       // Scratch run directories are exactly the directory level below each tool directory.
@@ -1164,7 +1203,7 @@ async function sizeOfDirAsync(
       // them without a second recursive stat pass.
       const childRunDir = runBytesByPath && depth === 1 ? child : runDir;
       if (runBytesByPath && depth === 1) runBytesByPath.set(child, 0);
-      const childBytes = await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir, diagnostics);
+      const childBytes = await sizeOfDirAsync(child, observedFileBytes, runBytesByPath, depth + 1, childRunDir, diagnostics, budget);
       total += childBytes;
     } else {
       if (runBytesByPath && depth <= 1 && entry.isSymbolicLink()) {
@@ -1200,15 +1239,20 @@ async function sizeOfDirAsync(
  * lstat throughout: a symlink is judged by itself, never by what it points at. A missing or
  * unreadable tree reports { bytes: 0, newestMtimeMs: 0 } (nothing recent in it).
  */
-async function treeStatsAsync(dir: string): Promise<{ bytes: number; newestMtimeMs: number }> {
+async function treeStatsAsync(
+  dir: string,
+  budget?: ScratchGcBudget,
+): Promise<{ bytes: number; newestMtimeMs: number; truncated: boolean }> {
+  if (scratchGcBudgetExpired(budget)) return { bytes: 0, newestMtimeMs: 0, truncated: true };
   let newestMtimeMs = 0;
   let bytes = 0;
   try {
     newestMtimeMs = (await lstatAsync(dir)).mtimeMs;
   } catch {
-    return { bytes: 0, newestMtimeMs: 0 };
+    return { bytes: 0, newestMtimeMs: 0, truncated: false };
   }
-  for (const name of await listDir(dir)) {
+  for (const name of await listDir(dir, undefined, budget)) {
+    if (scratchGcBudgetExpired(budget)) return { bytes, newestMtimeMs, truncated: true };
     const child = join(dir, name);
     let st;
     try {
@@ -1217,15 +1261,16 @@ async function treeStatsAsync(dir: string): Promise<{ bytes: number; newestMtime
       continue; // vanished mid-walk
     }
     if (st.isDirectory()) {
-      const sub = await treeStatsAsync(child);
+      const sub = await treeStatsAsync(child, budget);
       bytes += sub.bytes;
       if (sub.newestMtimeMs > newestMtimeMs) newestMtimeMs = sub.newestMtimeMs;
+      if (sub.truncated) return { bytes, newestMtimeMs, truncated: true };
     } else {
       bytes += st.size;
       if (st.mtimeMs > newestMtimeMs) newestMtimeMs = st.mtimeMs;
     }
   }
-  return { bytes, newestMtimeMs };
+  return { bytes, newestMtimeMs, truncated: false };
 }
 
 /**

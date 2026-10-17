@@ -657,7 +657,7 @@ export async function specTestAdequacyCompletionGate(
           `task-kind completion for '${input.workItem.id}' claims executable changes or proof` +
           `${sourceChanges.length ? ` (${sourceChanges.slice(0, 5).join(', ')})` : ''}; ` +
           'task is the non-code kind. Use work_items:update to set the appropriate code kind ' +
-          '(change, bug, or feature), then retry with current spec evidence and independently ' +
+          '(change, bug, or feature), re-claim the current item, then retry with current spec evidence and independently ' +
           'settled grading audits. No proof exemption can be inferred from the task label.',
       });
     }

@@ -915,7 +915,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       // livelock-vs-churn distinction below, they do not revert this.
       expect(miss.advice).toMatch(/not a scope\/spec mismatch/);
       expect(miss.advice).toMatch(/do NOT re-author the claim spec/);
-      expect(miss.advice).not.toMatch(/report the scoped miss to the fleet leader/);
+      expect(miss.advice).not.toMatch(/Report the scoped miss to the fleet leader/);
     });
 
     // EI-14615/EI-16519: a cooldown-only miss whose relative `cooldownExpirySec` alone
