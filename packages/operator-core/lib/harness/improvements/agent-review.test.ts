@@ -262,7 +262,21 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
         .resolves.toMatchObject({ resubmitted: false, reason: 'validation-receipt-missing' });
       expect(bare.state.issue.assignee).toBe('su-validator');
 
-      const h = harness(validationRow({ intakeReproduction: { receipt } }));
+      const h = harness(validationRow({
+        intakeReproduction: { receipt },
+        agentReview: {
+          status: 'revision-requested',
+          revisionKind: 'reproduction',
+          submittedBy: 'su-author',
+          ledgerIdeaId: 'WI-7',
+          round: 1,
+          reviewedSourceRevision: acceptanceSourceRevision({
+            kind: 'bug',
+            title: 'Proposal needing peer review',
+            summary: 'body',
+          }),
+        },
+      }));
       await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator' }, h.deps)).resolves.toEqual({
         resubmitted: true,
         state: {
@@ -276,6 +290,8 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
       expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
       expect(h.state.issue.assignee).toBeNull();
       expect((h.state.issue.payload as { agentReview: Record<string, unknown> }).agentReview).not.toHaveProperty('revisionKind');
+      expect((h.state.issue.payload as { agentReview: Record<string, unknown> }).agentReview)
+        .not.toHaveProperty('reviewedSourceRevision');
 
       // The next round approves with the verified receipt and carries no revision kind.
       h.state.issue = { ...h.state.issue, assignee: 'su-reviewer' };
@@ -861,19 +877,64 @@ describe('agent-review grading lifecycle', () => {
     });
   });
 
+  it('refuses unbound, stale, or non-holder grades before the ledger write seam', async () => {
+    const ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: null, feedback: null, gradedBy: null };
+    const unbound = harness(pending);
+    unbound.state.ledger = ledger;
+    await expect(preflightAgentReviewGrade(
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer' },
+      unbound.deps,
+    )).resolves.toMatchObject({ applicable: true, refusal: 'agent-review-source-revision-unbound' });
+
+    const review = (pending.payload as { agentReview: Record<string, unknown> }).agentReview;
+    const boundPending = {
+      ...pending,
+      payload: {
+        agentReview: {
+          ...review,
+          reviewedSourceRevision: acceptanceSourceRevision(pending),
+        },
+      },
+    };
+    const stale = harness(boundPending);
+    stale.state.ledger = ledger;
+    stale.state.issue = { ...stale.state.issue, summary: 'Corrected after reviewer claim.' };
+    await expect(preflightAgentReviewGrade(
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer' },
+      stale.deps,
+    )).resolves.toMatchObject({ applicable: true, refusal: 'agent-review-source-revision-stale' });
+
+    const wrongReviewer = harness(boundPending);
+    wrongReviewer.state.ledger = ledger;
+    await expect(preflightAgentReviewGrade(
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-other-reviewer' },
+      wrongReviewer.deps,
+    )).resolves.toMatchObject({ applicable: true, refusal: 'agent-review-reviewer-mismatch' });
+  });
+
   it('refuses a 1–3 grade without actionable feedback before the ledger write seam', async () => {
-    const h = harness(pending);
+    const review = (pending.payload as { agentReview: Record<string, unknown> }).agentReview;
+    const boundPending = {
+      ...pending,
+      payload: {
+        agentReview: {
+          ...review,
+          reviewedSourceRevision: acceptanceSourceRevision(pending),
+        },
+      },
+    };
+    const h = harness(boundPending);
     h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: null, feedback: null, gradedBy: null };
 
-    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3 }, h.deps)).resolves.toMatchObject({
+    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
       applicable: true,
       refusal: 'agent-review-feedback-required',
     });
-    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3, feedback: '  ' }, h.deps)).resolves.toMatchObject({
+    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer', feedback: '  ' }, h.deps)).resolves.toMatchObject({
       refusal: 'agent-review-feedback-required',
     });
     const accepted = await preflightAgentReviewGrade(
-      { ideaId: 'WI-7', grade: 3, feedback: 'Make the retry idempotent.' },
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer', feedback: 'Make the retry idempotent.' },
       h.deps,
     );
     expect(accepted).toMatchObject({ applicable: true });

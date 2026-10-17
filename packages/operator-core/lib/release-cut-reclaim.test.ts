@@ -43,18 +43,25 @@ import {
 import { createRetentionPin } from './storage/retention-pins';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 
-// Release-cut tests exercise the mutex contract, but must not queue behind a
-// live operator's production retention pass. Map only this suite's fixed name
-// to an isolated lease while preserving all lock behavior and race assertions.
-const cutFixtureMutex = vi.hoisted(() => 'release-cut-fixture-test');
-vi.mock('../../../scripts/lib/fs-mutex.mjs', async (original) => {
-  const actual = await original<typeof import('../../../scripts/lib/fs-mutex.mjs')>();
-  const map = (name: string) => name === 'papercusp-disk-retention' ? cutFixtureMutex : name;
-  return {
-    ...actual,
-    withFsMutex: (name: string, ...rest: any[]) => actual.withFsMutex(map(name), ...rest),
-    peekFsMutexSync: (name: string, ...rest: any[]) => actual.peekFsMutexSync(map(name), ...rest),
-  };
+// Both Vitest imports and portable .mjs owners must use the same real mutex.
+// A name mock only intercepts one import path and breaks the pin-writer race.
+// Isolate the maintained lock-root seam instead of touching a live operator's lock.
+let fixtureLockRoot: string;
+let savedLockRoot: string | undefined;
+let savedDisableMutex: string | undefined;
+beforeEach(() => {
+  savedLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  savedDisableMutex = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  fixtureLockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'release-cut-mutex-'));
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = fixtureLockRoot;
+  delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+});
+afterEach(() => {
+  if (savedLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = savedLockRoot;
+  if (savedDisableMutex === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  else process.env.PAPERCUSP_DISABLE_FS_MUTEX = savedDisableMutex;
+  fs.rmSync(fixtureLockRoot, { recursive: true, force: true });
 });
 
 const NOW = Date.parse('2026-09-30T04:00:00Z');

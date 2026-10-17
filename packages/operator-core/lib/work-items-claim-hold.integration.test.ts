@@ -400,17 +400,21 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
       else await seedFeature(id, { payload });
 
       const {
+        acceptanceSourceRevision,
         mintAgentReviewClaimAdmission,
         readAgentReviewState,
         verificationParties,
       } = await import('./harness/improvements/agent-review-policy');
       const review = readAgentReviewState(payload);
       expect(review).not.toBeNull();
+      const source = await wi.getWorkItem(id, H);
+      expect(source).not.toBeNull();
       const admission = mintAgentReviewClaimAdmission({
         itemId: id,
         reviewer: 'bee-reviewer',
         harnessSlug: H,
         review: review!,
+        source: source!,
         parties: verificationParties({ payload }),
       });
       expect(admission).not.toBeNull();
@@ -422,10 +426,14 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
 
       // Prove the exact reviewer capability otherwise admits this same row.
       await wi.setWorkItemClaimHold(id, false, { harness: H });
-      expect((await wi.claimWorkItem(id, 'bee-reviewer', {
+      const claimed = await wi.claimWorkItem(id, 'bee-reviewer', {
         harness: H,
         agentReviewAdmission: admission!,
-      }))?.id).toBe(id);
+      });
+      expect(claimed?.id).toBe(id);
+      expect(readAgentReviewState(claimed!.payload)).toMatchObject({
+        reviewedSourceRevision: acceptanceSourceRevision(source!),
+      });
     },
   );
 

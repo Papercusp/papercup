@@ -13,6 +13,8 @@ import { captureIsolatedWorker, isolatedTestFileWorkerOptions, isolatedWorkerFai
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const filePath = 'packages/operator-core/lib/storage/disk-reclaim-background-runtime.integration.test.ts';
 const assertion = 'packages/operator-core/lib/storage/disk-reclaim.integration.test.ts';
+const releaseAssertion = 'packages/operator-core/lib/release-cut-reclaim.test.ts';
+const releaseSource = 'packages/operator-core/lib/release-cut-reclaim.ts';
 const censusAssertion = 'packages/operator-core/lib/storage/disk-consumer-census.test.ts';
 const reclaimSource = 'packages/operator-core/lib/storage/disk-reclaim.ts';
 const censusSource = 'packages/operator-core/lib/storage/disk-consumer-census.ts';
@@ -62,21 +64,26 @@ const hardlinkSelected = [
 const hardlinkSelectedCount = 21;
 const options = isolatedTestFileWorkerOptions(process.env, 1);
 
-type RuntimeSelection = { reclaimTitles: string[]; expectedReclaimCases: number; census: boolean };
+type RuntimeSelection = {
+  reclaimTitles: string[]; expectedReclaimCases: number; census: boolean;
+  assertion?: string; source?: string;
+};
 const runSelection = async (selection: RuntimeSelection, context: TestContext) => {
+  const selectedAssertion = selection.assertion ?? assertion;
+  const selectedSource = selection.source ?? reclaimSource;
   let environmentObserved = false;
   let environmentError: unknown;
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
-    sourcePaths: [assertion, censusAssertion, reclaimSource, censusSource,
-      'packages/operator-core/lib/release-cut-reclaim.ts',
+    sourcePaths: [...new Set([assertion, selectedAssertion, censusAssertion, reclaimSource, censusSource,
+      releaseSource,
       'packages/operator-core/lib/native-bg-task-ledger.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
       'scripts/lib/retention-pins.mjs', 'scripts/lib/fs-mutex.mjs',
       'libs/generic/verification-harness/src/runner.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
-      'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'],
+      'scripts/with-test-pg.mjs', 'scripts/test-files.mjs'])],
     retainedArtifacts: ['phases/execute/worker.log', 'phases/execute/worker-result.json',
       'phases/execute/reclaim-test-receipts.ndjson',
       'phases/execute/executed-source-map.json',
@@ -85,7 +92,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
       const receipts = join(evidenceDir, 'reclaim-test-receipts.ndjson');
       const child = spawn(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
         '--isolated-runtime', '--', process.execPath, join(root, 'scripts/test-files.mjs'),
-        assertion, ...(selection.census ? [censusAssertion] : []), '--', '-t',
+        selectedAssertion, ...(selection.census ? [censusAssertion] : []), '--', '-t',
         [...selection.reclaimTitles, ...(selection.census ? censusSelected : [])].join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
@@ -129,7 +136,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
         expect(environmentError).toBeUndefined();
         expect(environmentObserved).toBe(true);
         const sourceMaps = [
-          ['executed-source-map.json', assertion, reclaimSource],
+          ['executed-source-map.json', selectedAssertion, selectedSource],
           ...(selection.census ? [['executed-source-map.1.json', censusAssertion, censusSource]] : []),
         ];
         for (const [mapFile, testFile, sourceFile] of sourceMaps) {
@@ -146,7 +153,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
           }
         }
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-        const row = rows.find(value => value.filePath === assertion);
+        const row = rows.find(value => value.filePath === selectedAssertion);
         expect(row).toMatchObject({ outcome: 'inserted', row: { status: 'pass', executionDetails: {
           passed: selection.expectedReclaimCases, failed: 0, collectionFailed: false,
         } } });
@@ -183,3 +190,18 @@ it('accounts hardlinks and retained siblings in the observed private background 
 it('accepts the real isolated privileged release holder scanner in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['finds cwd executable and deleted fd holders through the real isolated privileged release scanner'], expectedReclaimCases: 1, census: false }, context),
   options.testTimeoutMs);
+it('checkpoints productive scheduled effects and preserves standalone fairness in the observed private background runtime',
+  context => runSelection({ reclaimTitles: [
+    'checkpoints the first productive effect batch before a slow independent census',
+    'bounds effect work per root, records the remainder and resumes from a fresh policy census',
+  ], expectedReclaimCases: 2, census: false }, context), options.testTimeoutMs);
+it('supervises release usage progress and refuses incomplete measurement in the observed private background runtime',
+  context => runSelection({ assertion: releaseAssertion, source: releaseSource, reclaimTitles: [
+    'finishes a productive usage walk past ten seconds',
+    ...['missing-root', 'duplicate-root', 'malformed', 'outside-root', 'partial'].map(kind => `refuses ${kind} usage evidence before any removal`),
+    'stops a still-productive usage walk at the existing shared run deadline',
+    'does not let partial records or stderr noise renew an idle usage walk',
+    'measures allocated bytes for descendant paths containing tabs and newlines',
+    'charges shared hardlink allocation to pins before unpinned cuts',
+    'waits for a pin writer before its final protection read',
+  ], expectedReclaimCases: 11, census: false }, context), options.testTimeoutMs);
