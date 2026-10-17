@@ -3235,6 +3235,13 @@ export async function preflightPrivateIntegrationPg() {
   await loadGovernedExecutionModule();
   const { getTestPg } = await import('../libs/test-config/src/pg-container.ts');
   await getTestPg();
+  // The immutable verifier tree intentionally excludes apps/operator/.env.local.
+  // Preserve the caller's governed-admission target before that freeze; otherwise
+  // getOrgPg() in the frozen child falls through to a stale discovery file and
+  // can authenticate against the wrong cluster. This URL is only for the
+  // runner's control-plane admission; the private proof still owns its own PG.
+  const { getHarnessAdminUrlWithSource } = await import('../packages/operator-core/lib/embedded-pg-discovery.ts');
+  return getHarnessAdminUrlWithSource();
 }
 
 export async function main(
@@ -3404,7 +3411,7 @@ export async function main(
     try {
       const inputs = privateIntegrationVerifierInputs(repoRoot, testFiles);
       if (inputs) {
-        await preflightPrivateIntegrationPgImpl();
+        const privatePg = await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();
         if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))
@@ -3418,6 +3425,7 @@ export async function main(
             // The frozen router takes over this same logical invocation's
             // barriers; ordinary test children still never inherit them.
             env: { ...process.env,
+              ...(privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {}),
               ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
               ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) },
             command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',

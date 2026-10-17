@@ -782,6 +782,18 @@ export default defineTool({
         ),
     })
     .refine(
+      (args) => {
+        const hasPostgresNul = (value: unknown, seen = new Set<object>()): boolean => {
+          if (typeof value === 'string') return value.includes('\u0000');
+          if (value === null || typeof value !== 'object' || seen.has(value)) return false;
+          seen.add(value);
+          return Object.values(value).some((nested) => hasPostgresNul(nested, seen));
+        };
+        return !hasPostgresNul(args);
+      },
+      { message: 'U+0000 is not supported in PostgreSQL-backed loop checkpoint input.' },
+    )
+    .refine(
       (a) => {
         // EI-21719647580242620: the carry-content fields are `.nullish()`, and for them an
         // explicit null means OMITTED. A bare `!== undefined` would therefore count

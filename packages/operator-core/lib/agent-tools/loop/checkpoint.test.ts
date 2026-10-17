@@ -743,6 +743,15 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
+  it('rejects PostgreSQL-invalid U+0000 text before carry-note persistence', () => {
+    const nul = `before${String.fromCharCode(0)}after`;
+
+    expect(() => parse({ note: nul })).toThrow(/U\+0000/);
+    expect(() => parse({ checkpoint: { did: nul } })).toThrow(/U\+0000/);
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
   it('distinguishes the 48-row input ceiling from the 12-row durable cap in its schema', () => {
     const shape = (tool.args as unknown as { shape: Record<string, { description?: string }> }).shape;
 

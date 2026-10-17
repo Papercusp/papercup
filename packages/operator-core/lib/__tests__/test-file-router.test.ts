@@ -147,7 +147,10 @@ describe('test-files router', () => {
     const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
-    const preflight = vi.fn(async () => { stages.push('pg-preflight'); });
+    const preflight = vi.fn(async () => {
+      stages.push('pg-preflight');
+      return { url: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp', source: 'operator-env-file' };
+    });
     const restricted = vi.fn(() => { stages.push('restricted-preflight'); return { verdict: 'admit' }; });
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
@@ -169,6 +172,9 @@ describe('test-files router', () => {
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
         env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router' }),
+      }));
+      expect(frozen.mock.calls[0][0].env).toEqual(expect.objectContaining({
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp',
       }));
     } finally {
       if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
