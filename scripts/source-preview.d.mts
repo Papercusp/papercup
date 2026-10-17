@@ -232,10 +232,11 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number,
+ *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs }: {
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, clock }: {
     repo: string;
     ref: string;
     receiptPath: string;
@@ -246,6 +247,11 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
     env?: NodeJS.ProcessEnv;
     budgetFrom?: string;
     childEstimateMs?: number;
+    clock?: {
+        now: () => number;
+        setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+        clearTimeout: (timer: ReturnType<typeof setTimeout>) => void;
+    };
 }): Promise<number>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
@@ -340,7 +346,9 @@ export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparat
 }): {
     deadlineEpochMs: number | null;
     remainingMs: number | null;
-    knownEstimateMs: any;
+    knownEstimateMs: number;
+    cleanupReserveMs: number;
+    childCutoffEpochMs: number | null;
     estimate: any;
 };
 export function noticeText(manifest: any): string;
