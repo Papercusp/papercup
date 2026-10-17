@@ -724,8 +724,9 @@ export const FLAGS = {
   // the Scout `rubric` rail. ON ⇒ on a detected RUBRIC GAP (corpus-digest rubricGaps,
   // P-008) Scout AUTHORS a `template: rubric` DRAFT plan → the existing queen↔scout
   // loop ratifies it into an active rubric; OFF ⇒ the gap is detected (visible in the
-  // digest) but no draft is auto-authored. DARK by default — a brand-new autonomous
-  // PLAN-WRITE behavior; the owner flips it after observing gap quality. Idempotent
+  // digest) but no draft is auto-authored. Runtime default ON: it is not in DARK_FLAGS,
+  // so the derived FLAG_DEFAULTS enable it (it was first planned dark as a new
+  // autonomous PLAN-WRITE behavior; `flags:attest` shows the live value). Idempotent
   // (one stable slug/gap) + best-effort (never disturbs the cycle); drafts are
   // Queen-gated (invisible to rubrics:list until promoted active+templateData).
   SCOUT_RUBRIC_RAIL: "papercusp-scout-rubric-rail",

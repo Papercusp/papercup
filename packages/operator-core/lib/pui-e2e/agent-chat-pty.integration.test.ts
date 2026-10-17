@@ -2856,6 +2856,107 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
     }
   }, 180_000);
 
+  test('AUTO-BAR-R-07-P-002: the 80x24 Surface B frame preserves the conversation through its keyboard journey', async ({ onTestFailed }) => {
+    const tag = randomUUID().slice(0, 8);
+    const chatId = `pui-r07-compact-${tag}`;
+    const answer = `R07 compact answer ${tag}`;
+    const task = `R07 compact task ${tag}`;
+    const transcript = [{ role: 'user', content: 'compact question' }, { role: 'assistant', content: answer }];
+    await seedAgentChat({ id: chatId, title: `R07 compact ${tag}`, runtimeClass: 'su-session',
+      transcript, createdAt: Date.now() + 300_000, updatedAt: Date.now() + 300_000 });
+    await seedBoundSuSession({ agentChatId: chatId, transcript });
+    await db.adminSql`
+      INSERT INTO harness_shared.session_tasks
+        (workspace_id, session_id, task_id, position, content, active_form, status, created_at, updated_at)
+      VALUES (${WORKSPACE}, ${chatId}, 'compact-task', 0, ${task}, ${task}, 'in_progress', now(), now())`;
+    await db.adminSql`DELETE FROM harness_shared.tui_view_state WHERE owner_id = ${OWNER}`;
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 80, rows: 24 });
+    const frames: Record<string, string> = {};
+    let stage = 'open';
+    onTestFailed(() => console.info('PUI_R07_COMPACT_FAILURE', JSON.stringify({ stage, frames, ...pane.failureEvidence() })));
+    try {
+      // PUBLIC_RELEASE_UX.md's validated 80x24 journey, against the real
+      // operator and installed artifact. Keep each rendered frame as evidence.
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      await pane.waitFor(answer, { timeoutMs: 40_000 });
+      await pane.waitForSendReady();
+      pane.escape();
+      pane.write('3');
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      pane.write('o');
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(answer, { timeoutMs: 40_000 });
+      await pane.waitForSendReady();
+      expect(pane.screen()).not.toContain('Context · Ctrl-T');
+      frames.conversation = pane.screen();
+
+      stage = 'unicode-multiline';
+      const first = `compact café ${tag}`;
+      const second = `second line ${tag}`;
+      pane.write(first);
+      pane.write('\u001b\r');
+      pane.write(second);
+      await pane.waitFor(first);
+      await pane.waitFor(second);
+      frames.draft = pane.screen();
+      expect(scriptedEngine.requests).toEqual([]);
+      scriptedEngine.mode = 'stream';
+      pane.enter();
+      await pane.waitFor('STREAM-A1', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain('Ctrl-X');
+      frames.running = pane.screen();
+      await pane.waitFor('STREAM-E5', { timeoutMs: 15_000 });
+      await pane.waitForSendReady();
+      expect(scriptedEngine.requests).toEqual([`${first}\n${second}`]);
+
+      stage = 'context-and-switcher';
+      const draft = `keep draft ${tag}`;
+      pane.write(draft);
+      await pane.waitFor(draft);
+      pane.write('\u0014');
+      await pane.waitFor('Esc/o Agent Chat');
+      await pane.waitFor(task);
+      frames.context = pane.screen();
+      pane.write('o');
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(draft);
+      await pane.waitFor('STREAM-E5');
+      pane.write('\u0013');
+      await pane.waitFor('Sessions · Ctrl-S');
+      frames.switcher = pane.screen();
+      pane.escape();
+      await pane.waitForGone('Sessions · Ctrl-S');
+      await pane.waitFor(draft);
+
+      stage = 'blocking-approval';
+      pane.write('\u007f'.repeat(draft.length));
+      scriptedEngine.mode = 'approval';
+      scriptedEngine.successText = `R07 decision reply ${tag}`;
+      scriptedEngine.approvalRequests = [{ tag, input: { command: `printf 'compact-${tag}'` } }];
+      const prompt = `approval ${tag}`;
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('Do you want to run this command?', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain('STREAM-E5');
+      frames.approval = pane.screen();
+      pane.write('2');
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitForSendReady();
+      expect(scriptedEngine.approvalExecuted).toEqual([]);
+      expect(scriptedEngine.requests).toEqual([`${first}\n${second}`, prompt]);
+      const saved = await waitForSavedTurn(prompt);
+      expect(saved.id).toBe(chatId);
+      expect(saved.transcript.filter((turn) => turn.role === 'user' && turn.content === `${first}\n${second}`)).toHaveLength(1);
+      frames.recovered = pane.screen();
+      console.info('PUI_R07_COMPACT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, size: '80x24', reference: 'apps/tui/PUBLIC_RELEASE_UX.md#validated-8024-frame-and-journey',
+        chatId, task, frames,
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 240_000);
+
   test('PUI-COMMANDS: help and the command palette discover and execute a harmless extension', async ({ onTestFailed }) => {
     await putViewState('Plans');
     let stage = 'help';
@@ -7270,6 +7371,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
   test('P-013: 80x24, 120x40 and 200x60 keep a streamed reply whole across resizes', { timeout: 240_000 }, async () => {
     const prompt = `P13 stream ${randomUUID().slice(0, 8)}`;
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    const frames: Record<string, string> = {};
     try {
       await openComposer(pane);
       scriptedEngine.mode = 'stream';
@@ -7295,9 +7397,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
           expect(at.every((index, i) => index >= 0 && (i === 0 || index > at[i - 1])), screen).toBe(true);
           expect(chunks.every((chunk) => screen.split(chunk).length === 2), screen).toBe(true);
         }, { timeout: 10_000, interval: 100 });
+        frames[`${cols}x${rows}`] = pane.screen();
       }
       expect(scriptedEngine.requests).toEqual([prompt]);
-      console.info('PUI_P013_RESIZE_STREAM_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, prompt, frame: pane.screen() }));
+      console.info('PUI_P013_RESIZE_STREAM_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, prompt, frames, frame: pane.screen() }));
     } finally {
       await pane.stop().catch(() => {});
     }

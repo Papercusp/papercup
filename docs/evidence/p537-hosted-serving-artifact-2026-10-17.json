@@ -3,7 +3,7 @@
   "plan": "agent-capacity-and-cost-gcp-2026-09-30",
   "item": "P-537",
   "workItem": "WI-6554700010015799",
-  "status": "incomplete",
+  "status": "private-serving-acceptance-passed",
   "scope": "Private actual hosted serve artifact, genuine WorkOS TEST identity; not production rollout, cloud provisioning, cost qualification or final source-to-serving parity",
   "artifact": {
     "path": "/tmp/p537-hosted-serving-20261017/serve.mjs",
@@ -68,6 +68,63 @@
         "secretResolver": true,
         "scope": "Both imports pass with the committed-source guard enabled; full credential resolution and the corrected fixture still require their committed-byte preflight."
       }
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run5.log",
+      "evidenceDirectory": "/tmp/pcv/p537-hosted-serving-proof-z6RGnT",
+      "result": "passed",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_HOSTED_SERVING_ARTIFACT=/tmp/p537-hosted-serving-20261017/serve.mjs npm run test:file -- packages/operator-core/lib/endpoint-route/hosted-serving-artifact.e2e.test.ts",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "runner": {
+        "head": "105c2763aec788a3a8fe1ef95bc1424aed0ca57b",
+        "uncommittedNamedTestPaths": "0/1",
+        "childSubstituted": 0,
+        "startedAt": "2026-10-17T15:59:03.875Z"
+      },
+      "guardedCredentialPreflight": {
+        "path": "/tmp/p537-guarded-credential-preflight-run5.json",
+        "exitCode": 0,
+        "referenceSlots": 4,
+        "workosTestKey": true,
+        "committedSourceGuard": true,
+        "valuesLogged": false
+      },
+      "receipt": {
+        "profile": "hosted-control-plane",
+        "bundleSha256": "9a3fa4a5ee4ea3dc69fbe636bd235c7358f3beba1ddc0dac327395c94608c9ba",
+        "policySha256": "a5059e2b2e5918528a9962be449c3a6943d696453f6ab04c915a8431fb97563c",
+        "invalidPolicyRefused": true,
+        "missingSessionStatus": 401,
+        "authenticatedSession": true,
+        "organizationMatches": true,
+        "closedAdmissionStatus": 403,
+        "closedAdmissionError": "first_workspace_not_enabled",
+        "testUserCleaned": true,
+        "revokedSessionStatus": 401,
+        "provisionOperationsCreated": 0,
+        "hostStopped": true
+      },
+      "privateRuntimeTeardown": {
+        "source": "/tmp/pcv/p537-hosted-serving-proof-z6RGnT/lifecycle-observation.json",
+        "exitCode": 0,
+        "signal": null,
+        "runtimeRemoved": true,
+        "pgDataRemoved": true,
+        "observationError": null,
+        "observedAt": "2026-10-17T16:00:13.306Z"
+      },
+      "prospectiveNamedInputs": {
+        "source": "/tmp/p537-hosted-serving-run5-inputs.json",
+        "files": {
+          "packages/operator-core/test/hosted-serving-artifact.fixture.ts": "79e53d6d1019409af337c702090a164dc9d71ccd9e082f8356f17ce2eaf1b2f7",
+          "packages/operator-core/lib/endpoint-route/hosted-serving-artifact.e2e.test.ts": "7955b8d20b003e4a2965e57030e7a5b665b614eda4b4dd2b18f521394e92e341"
+        },
+        "namedInputsUnchangedAfterRun": true,
+        "artifactUnchangedAfterRun": true,
+        "scope": "Two named test inputs and exact artifact; not complete original bundle input-byte provenance"
+      }
     }
   ],
   "commitBlockerRepair": {
@@ -85,11 +142,16 @@
     "evidence": "/tmp/p537-hosted-serving-typecheck-final-local.json",
     "requestedFileErrors": 0,
     "otherLoadedGraphDiagnostics": 30,
-    "scope": "Both new files after credential fix, before final admission assertion and cleanup receipt edits"
+    "scope": "Both new files after credential fix, before final admission assertion and cleanup receipt edits",
+    "finalEsmParserFollowup": {
+      "engine": "tsc-cli",
+      "requestedFileErrors": 0,
+      "otherLoadedGraphDiagnostics": 30,
+      "scopedVerdictIncomplete": false,
+      "scope": "Final fixture and E2E test only; not a full-project or gate verdict"
+    }
   },
   "remaining": [
-    "Commit the ESM credential-parser repair through background git-sync and pass complete credential preflight with the same committed-source guard",
-    "Run maintained opted-in test through revocation, zero provision delta and successful cleanup",
     "Verify final source and artifact provenance separately from private runtime behavior",
     "P544 D075 and D076 qualification and final shipment remain open"
   ]
