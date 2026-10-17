@@ -327,6 +327,17 @@ async function main() {
     }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-same-item-write') {
+    const receipt = await (await import('./private-unrelated-write-http-scenario')).measurePrivateSameItemCheckpointScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_SAME_ITEM_WRITE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-unrelated-write') {
     const receipt = await measurePrivateUnrelatedCheckpointScenario({
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,

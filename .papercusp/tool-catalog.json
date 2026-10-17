@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 976,
+  "count": 977,
   "tools": [
     {
       "name": "ablation:report",
@@ -2229,6 +2229,39 @@
         "when": "Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live.",
         "notWhen": "Asking whether Scout ideas are getting BETTER over time (the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).",
         "chaining": "Read verdict and each bar's evidence/unknownReason. Cite resolvedWindow + runningGeneration alongside the verdict (EI-12146: default window comes from the rubric, not a fixed 48h) — sinceMs/watermarkRef only overrides which window judges it."
+      }
+    },
+    {
+      "name": "blog:post",
+      "http": {
+        "path": "/api/agent-tools/blog/post",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Cross-post Markdown to an installed publishing provider and an explicit connected source. Creates a vendor draft by default; published:true requests public publication, subject to the existing owner publication setting. canonicalUrl must point to HTTPS papercusp.com.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks to cross-post a blog article or documentation to a connected publishing account.",
+        "notWhen": "For a short social post use social:post.",
+        "chaining": "Use the owner-selected source. Report drafted, published or withheld exactly as returned. A draft is stored at the vendor. Hashnode requires a Pro publication. Ambiguous create errors require reconciliation before another attempt."
       }
     },
     {

@@ -276,6 +276,13 @@ describe('completed isolated runtime certification', () => {
     await setupIsolated();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it.each(['tree', 'live', 'deployed', 'unknown', undefined])(
+    'certifies the retained isolated lifetime only for tree or live evidence: %s', async evidencePlane => {
+      const state = await setupIsolated();
+      state.row.details.evidencePlane = evidencePlane as string;
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(evidencePlane === 'tree' || evidencePlane === 'live' ? 'current' : 'unknown');
+    });
   it.each(['filtered', 'missing-pattern', 'invalid-pattern', 'selected-skip', 'missing-ledger', 'missing-case', 'failed-case'])(
     'certifies only ledger-proven excluded cases: %s', async condition => {
       const state = await setupIsolated();

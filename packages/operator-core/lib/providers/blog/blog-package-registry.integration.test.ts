@@ -59,7 +59,7 @@ describe.each(['devto', 'hashnode'])('installed %s publishing package', (id) => 
       }
       await expect(entry.adapter!.invoke({ source: 'owned', config, capability: 'social.post', args: {} }, { fetch })).rejects.toThrow('capability_unsupported');
       expect(seen).toHaveLength(2);
-    } finally { stopDaemonProvider(entry); registry.unregisterPlugin(id); }
+    } finally { expect(await stopDaemonProvider(id)).toBe(true); registry.unregisterPlugin(id); }
     expect(registry.get(id)).toBeUndefined();
   });
 });

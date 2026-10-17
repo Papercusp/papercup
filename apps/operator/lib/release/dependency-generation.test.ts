@@ -261,11 +261,15 @@ function ensureRef(
   };
 }
 
-function fingerprintRef(integration: string, ref: string): ShellResult {
+function fingerprintRef(
+  integration: string,
+  ref: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ShellResult {
   const result = spawnSync(
     'bash',
     [SCRIPT, '--integration', integration, '--fingerprint-ref', ref],
-    { encoding: 'utf8', env: process.env },
+    { encoding: 'utf8', env },
   );
   return {
     status: result.status,
@@ -536,6 +540,41 @@ describe('WI-10002299: patch-package patches are dependency inputs', () => {
     },
     NATIVE_SHELL_TIMEOUT_MS,
   );
+});
+
+describe('exact-ref dependency record filtering', () => {
+  it('filters the immutable tree listing before the Bash manifest loop', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate with ordinary dependency inputs');
+    const shimDir = join(integration, 'grep-shim');
+    const traceFile = join(integration, 'grep-filter.trace');
+    mkdirSync(shimDir);
+    const realGrep = execFileSync('bash', ['-lc', 'command -v grep'], {
+      encoding: 'utf8',
+    }).trim();
+    writeFileSync(
+      join(shimDir, 'grep'),
+      '#!/bin/sh\nif [ "$1" = "-zE" ]; then printf filtered >> "$DEPENDENCY_GENERATION_FILTER_TRACE"; fi\nexec "$DEPENDENCY_GENERATION_REAL_GREP" "$@"\n',
+      { mode: 0o755 },
+    );
+
+    const result = fingerprintRef(integration, candidate, {
+      ...process.env,
+      PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+      DEPENDENCY_GENERATION_FILTER_TRACE: traceFile,
+      DEPENDENCY_GENERATION_REAL_GREP: realGrep,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const lockDigest = createHash('sha256')
+      .update(readFileSync(join(integration, 'package-lock.json')))
+      .digest('hex');
+    const expected = createHash('sha256')
+      .update(`schema\t1\npackage-lock.json\t${lockDigest}\n`)
+      .digest('hex');
+    expect(publishedInputFingerprint(result.stdout)).toBe(expected);
+    expect(readFileSync(traceFile, 'utf8')).toContain('filtered');
+  });
 });
 
 describe('immutable dependency generation', () => {

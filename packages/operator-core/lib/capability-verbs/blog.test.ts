@@ -1,6 +1,6 @@
 import type postgres from 'postgres';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProviderDescriptor } from '@papercusp/plugin-sdk';
+import type { ProviderDescriptor, ProviderInvokeRequest } from '@papercusp/plugin-sdk';
 import { createProviderRegistry } from '../integrations/provider-registry';
 const mocks = vi.hoisted(() => ({ sources: vi.fn(), trust: vi.fn(), disclosure: vi.fn(), flag: vi.fn() }));
 vi.mock('../external-triggers/source-store', async (original) => ({ ...(await original<object>()), listOwnedExternalTriggerSources: mocks.sources }));
@@ -19,7 +19,7 @@ beforeEach(() => { vi.resetAllMocks(); mocks.flag.mockResolvedValue(false); mock
 async function fixture(capabilities = ['blog.post']) {
   const descriptor: ProviderDescriptor = { id: 'blog-example', contractVersion: 1, datatypes: ['blog-post'], sync: false,
     capabilities, egressHosts: ['blog.test'], verification: { verifiedAt: '2026-10-17', sources: ['https://blog.test/docs'], capabilities: Object.fromEntries(capabilities.map((c) => [c, '2026-10-17'])) } };
-  const invoke = vi.fn(async (request) => ({ externalId: 'created', published: request.args.published,
+  const invoke = vi.fn(async (request: ProviderInvokeRequest) => ({ externalId: 'created', published: request.args.published,
     canonicalUrl: request.args.canonicalUrl }));
   const registry = createProviderRegistry();
   await registry.register({ descriptor, pluginName: descriptor.id, adapter: { describe: () => descriptor,

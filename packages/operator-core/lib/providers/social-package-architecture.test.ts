@@ -25,6 +25,87 @@ const packages = readdirSync(PLUGINS, { withFileTypes: true }).filter((entry) =>
 
 type Policy = 'retry/backoff' | 'cursor recovery' | 'egress enforcement';
 
+/** A URL checked solely for content metadata is not an outbound destination policy.
+ * Keep this conservative: prove the local binding and its uses, rather than exempting
+ * a package, function name, domain, or every URL constructor.
+ */
+function isContentUrlProperty(property: ts.PropertyAccessExpression, source: ts.SourceFile): boolean {
+  if (!ts.isIdentifier(property.expression)) return false;
+  const binding = property.expression.text;
+  let scope: ts.Node | undefined = property.parent;
+  while (scope && !ts.isFunctionDeclaration(scope)) scope = scope.parent;
+  if (!scope || !ts.isFunctionDeclaration(scope) || !scope.body) return false;
+  const body = scope.body;
+  const fn = scope;
+  const nodes: ts.Node[] = [];
+  const collect = (node: ts.Node) => { nodes.push(node); ts.forEachChild(node, collect); };
+  collect(body);
+  const assigned = (name: string) => nodes.flatMap((node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name && node.initializer) return [node.initializer];
+    if (ts.isBinaryExpression(node) && ts.isIdentifier(node.left) && node.left.text === name &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      return node.operatorToken.kind === ts.SyntaxKind.EqualsToken ? [node.right] : [node];
+    }
+    return [];
+  });
+  const writes = assigned(binding);
+  if (writes.length !== 1 || !ts.isNewExpression(writes[0]) || writes[0].expression.getText(source) !== 'URL' || writes[0].arguments?.length !== 1) return false;
+  const constructor = writes[0];
+  const input = constructor.arguments![0];
+  const calls = nodes.filter(ts.isCallExpression);
+  const inReturn = (node: ts.Node) => {
+    let parent: ts.Node | undefined = node.parent;
+    while (parent && parent !== fn) {
+      if (ts.isReturnStatement(parent)) return true;
+      parent = parent.parent;
+    }
+    return false;
+  };
+  const isCanonical = ts.isIdentifier(input) && fn.parameters.length === 1 && fn.parameters[0].name.getText(source) === input.text &&
+    !!fn.name && calls.every((call) => call.expression.getText(source) === 'fault') &&
+    nodes.some((node) => ts.isReturnStatement(node) && node.expression?.getText(source) === `${binding}.href`);
+  if (isCanonical) {
+    // Only payload metadata fields may consume this validator's result.
+    const references: ts.Identifier[] = [];
+    const findReferences = (node: ts.Node) => {
+      if (ts.isIdentifier(node) && node.text === fn.name!.text && node !== fn.name) references.push(node);
+      ts.forEachChild(node, findReferences);
+    };
+    findReferences(source);
+    if (!references.length || references.some((ref) => !ts.isCallExpression(ref.parent) || ref.parent.expression !== ref ||
+      !ts.isPropertyAssignment(ref.parent.parent) || ref.parent.parent.initializer !== ref.parent ||
+      !['canonical_url', 'originalArticleURL'].includes(ref.parent.parent.name.getText(source)))) return false;
+  } else {
+    // A permalink from the sole completed host request may only be returned as metadata.
+    if (!ts.isPropertyAccessExpression(input) || input.name.text !== 'url' || !ts.isIdentifier(input.expression)) return false;
+    const parsed = assigned(input.expression.text);
+    if (parsed.length !== 1 || !ts.isCallExpression(parsed[0]) || parsed[0].expression.getText(source) !== 'JSON.parse' ||
+      parsed[0].arguments.length !== 1 || !ts.isPropertyAccessExpression(parsed[0].arguments[0]) || parsed[0].arguments[0].name.text !== 'body') return false;
+    const response = parsed[0].arguments[0].expression.getText(source);
+    const requests = calls.filter((call) => call.expression.getText(source) === 'host.fetch');
+    const responses = assigned(response);
+    if (requests.length !== 1 || responses.length !== 1 || !ts.isAwaitExpression(responses[0]) ||
+      responses[0].expression !== requests[0] || requests[0].end >= parsed[0].pos || parsed[0].end >= constructor.pos) return false;
+  }
+  return nodes.filter((node): node is ts.Identifier => ts.isIdentifier(node) && node.text === binding).every((ref) => {
+    const parent = ref.parent;
+    if ((ts.isPropertyAccessExpression(parent) && parent.name === ref) ||
+      (ts.isPropertyAssignment(parent) && parent.name === ref)) return true;
+    if ((ts.isVariableDeclaration(parent) && parent.name === ref) ||
+      (ts.isBinaryExpression(parent) && parent.left === ref && parent.right === constructor)) return true;
+    if (ts.isConditionalExpression(parent) && parent.condition === ref) return inReturn(parent);
+    if (!ts.isPropertyAccessExpression(parent) || parent.expression !== ref) return false;
+    if (parent.name.text === 'href') {
+      if (isCanonical) return ts.isReturnStatement(parent.parent) && parent.parent.expression === parent;
+      return ts.isPropertyAssignment(parent.parent) && parent.parent.name.getText(source) === 'url' && inReturn(parent.parent);
+    }
+    if (!['protocol', 'host', 'hostname', 'port', 'username', 'password', 'hash'].includes(parent.name.text)) return false;
+    let condition: ts.Node = parent;
+    while (condition.parent && !ts.isIfStatement(condition.parent) && condition.parent !== fn) condition = condition.parent;
+    return ts.isIfStatement(condition.parent) && condition.parent.expression === condition;
+  });
+}
+
 /** Instagram observes an already-created media container before publishing it once.
  * Its bounded status-only loop is not a retry of creation/publication. An extra request
  * in that loop invalidates this exception, including inside an unused nested function.
@@ -85,9 +166,10 @@ function copiedPolicies(body: string): Policy[] {
       if (call === 'fetch' || /^(?:globalThis|global)\.fetch$/.test(call)) found.add('egress enforcement');
       if (/\.(?:has|includes|test|match)$/.test(call) && node.arguments.some((arg) => /\.(?:host|hostname|origin)\b/.test(text(arg)))) found.add('egress enforcement');
     }
-    if (ts.isPropertyAccessExpression(node) && /^(?:egressHosts|host|hostname)$/.test(node.name.text)) found.add('egress enforcement');
+    if (ts.isPropertyAccessExpression(node) && /^(?:egressHosts|host|hostname)$/.test(node.name.text) && !isContentUrlProperty(node, source)) found.add('egress enforcement');
     if (ts.isBinaryExpression(node) && /\.(?:host|hostname|origin)\b/.test(text(node)) &&
-      (ts.isStringLiteral(node.left) || ts.isStringLiteral(node.right))) found.add('egress enforcement');
+      (ts.isStringLiteral(node.left) || ts.isStringLiteral(node.right)) &&
+      ![node.left, node.right].some((side) => ts.isPropertyAccessExpression(side) && isContentUrlProperty(side, source))) found.add('egress enforcement');
     if ((ts.isIfStatement(node) && cursorCheck(node.expression)) ||
       (ts.isConditionalExpression(node) && cursorCheck(node.condition)) ||
       (ts.isSwitchStatement(node) && node.caseBlock.clauses.some((clause) => ts.isCaseClause(clause) && cursorCheck(clause.expression)))) found.add('cursor recovery');
@@ -157,6 +239,32 @@ describe('social packages keep shared host policy in the host', () => {
     expect(copiedPolicies(observe.replace('let minute = 0', 'let minute = -5000'))).toContain('retry/backoff');
     expect(copiedPolicies(observe.replace("if (status === 'FINISHED')", "minute = 0; if (status === 'FINISHED')"))).toContain('retry/backoff');
     expect(copiedPolicies(observe.replace('60_000', 'delay'))).toContain('retry/backoff');
+  });
+
+  it('allows canonical payload and returned permalink checks but rejects destination checks', () => {
+    const canonical = `function validate(value) {
+      let url; try { url = new URL(value); } catch { throw fault('invalid'); }
+      if (url.hostname !== 'papercusp.com' || url.protocol !== 'https:') throw fault('invalid');
+      return url.href;
+    }
+    const article = { canonical_url: validate(args.canonicalUrl) };`;
+    expect(copiedPolicies(canonical)).toEqual([]);
+    expect(copiedPolicies(canonical.replace('canonical_url:', 'url:'))).toContain('egress enforcement');
+    expect(copiedPolicies(canonical.replace('const article = { canonical_url: validate(args.canonicalUrl) };',
+      'host.fetch({ request: { url: validate(args.canonicalUrl) } });'))).toContain('egress enforcement');
+    expect(copiedPolicies(canonical.replace('return url.href;', 'return url.hostname;'))).toContain('egress enforcement');
+    const permalink = `async function invoke(request, host) {
+      const response = await host.fetch({ request: { url: 'https://api.example' } });
+      const data = JSON.parse(response.body);
+      let url; url = new URL(data.url);
+      if (url.hostname !== 'example.com') throw fault('invalid');
+      return { url: url.href };
+    }`;
+    expect(copiedPolicies(permalink)).toEqual([]);
+    expect(copiedPolicies(permalink.replace('return { url: url.href };', 'return host.fetch({ request: { url: url.href } });'))).toContain('egress enforcement');
+    expect(copiedPolicies(permalink.replace('new URL(data.url)', 'new URL(request.url)'))).toContain('egress enforcement');
+    expect(copiedPolicies(permalink.replace('return { url: url.href };', "await host.fetch({ request: { url: data.url } }); return { url: url.href };"))).toContain('egress enforcement');
+    expect(copiedPolicies(permalink.replace("if (url.hostname", "url = new URL(request.url); if (url.hostname"))).toContain('egress enforcement');
   });
 
   it('allows fault classification, host catch-up reporting and resource-bound pagination validation', () => {

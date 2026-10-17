@@ -1046,7 +1046,7 @@ export interface FrozenRepairConvergenceRound {
   head: string;
   /** Size of the failing set observed at this round. */
   failingCount: number;
-  /** Exact bounded signature at this round. Absent on legacy/malformed history, never []. */
+  /** Exact bounded signature at this round. Legacy/malformed history gains no invented list. */
   failingTests?: string[];
   atMs: number;
   /** WI-10007489: the radius this round executed. Absent on legacy rows and on reds whose
@@ -3562,7 +3562,8 @@ function verificationLegMeasurements(
   round: number,
 ): FrozenRepairLegState[] {
   const entries = new Map([
-    ...classifyRepairSignature((queue.legs ?? []).map((leg) => leg.id), input.signatureContext),
+    // Fixed legs absent from this verification's signature were not rerun: retain their
+    // original measurement instead of restamping them as freshly passing at this head.
     ...queue.signature,
     ...signature,
   ].map((entry) => [entry.id, entry] as const));
@@ -3628,8 +3629,8 @@ export interface FrozenRepairConvergenceSummary {
   /** Per-round size and the delta from the previous round (negative = shrank). */
   shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null }[];
   /**
-   * True only when every recorded round is <= the one before it AND the set actually got
-   * smaller overall. Null when fewer than two rounds are recorded — deliberately NOT false,
+   * True only when every recorded repair round strictly reduces the failing set. A plateau
+   * requires diagnosis even after earlier improvement. Null with fewer than two rounds,
    * because "not yet knowable" and "not converging" are different answers and a reader that
    * conflates them will call a healthy new cycle a treadmill.
    */
@@ -3648,7 +3649,7 @@ export function summarizeFrozenRepairConvergence(
     failingCount: entry.failingCount,
     delta: index === 0 ? null : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
   }));
-  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta <= 0);
+  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta < 0);
   const shrinkTotal = failingFirst === null ? null : failingFirst - failingNow;
   return {
     openedAtMs: queue.openedAtMs,
@@ -3843,7 +3844,7 @@ export type FrozenRepairConvergenceCode =
   | 'no-attempts'
   /** Fewer than two recorded rounds: there is no trend yet. Not a verdict of failure. */
   | 'not-yet-knowable'
-  /** Every round is <= the one before AND the set actually shrank. */
+  /** Every recorded repair round strictly reduced the failing set. */
   | 'converging'
   /** Rounds recorded, but the failing set is not shrinking. This is the treadmill. */
   | 'not-converging';

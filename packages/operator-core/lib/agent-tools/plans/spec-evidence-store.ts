@@ -1582,7 +1582,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       }
     }
 
-    if (input.testRunId != null && runtimeRecipe?.completedRuntime?.kind === 'isolated-integration') {
+    if (input.testRunId != null && runtimeRecipe?.kind === 'repo-files'
+      && runtimeRecipe.completedRuntime?.kind === 'isolated-integration') {
       const gaps = await isolatedIntegrationSourceReceiptGaps(runtimeRecipe);
       if (gaps.length > 0) {
         const rendered = gaps
@@ -2971,7 +2972,7 @@ export async function supersedeSpecEvidenceAtRevision(
   await notifyCancelledAuditorsAfterCommit({
     workspaceId: scope.workspaceId,
     harnessSlug: scope.harnessSlug,
-    issueIds: result.cancelledAuditIssueIds ?? [],
+    issueIds: 'cancelledAuditIssueIds' in result ? result.cancelledAuditIssueIds ?? [] : [],
     reason: `spec evidence was superseded by binding ${options.supersedingBindingId}`,
   }, deps);
   if (result.retracted.length > 0) {
@@ -3337,9 +3338,13 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
   const isolatedHarnessMatches = execution?.harnessSlug === scope.harnessSlug
     || (execution?.harnessSlug === null && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
+  // A completed private runtime can prove committed-tree behavior as well as
+  // a live test. Its receipts never establish the currently deployed artifact.
+  const evidencePlane = readSpecEvidencePlane(row.details);
+  const completedTestPlane = evidencePlane === 'tree' || evidencePlane === 'live';
   if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
     || !row.test_run_present
-    || !certifiesCompletedTestRow(row.evidence_kind) || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || !certifiesCompletedTestRow(row.evidence_kind) || !completedTestPlane || row.test_run_status !== 'pass'
     || row.test_run_framework !== 'vitest' || (execution.testLayer !== 'integration' && execution.testLayer !== 'e2e')
     || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
     || execution.failed !== 0 || execution.passed !== selector.runIds.length

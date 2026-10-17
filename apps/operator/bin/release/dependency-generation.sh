@@ -217,6 +217,15 @@ dependency_generation_input_fingerprint() {
 # Optional 4th argument: a directory to ALSO materialise each input blob into, at its
 # repo-relative path. The exact-ref builder uses it so the files it stages are, by
 # construction, exactly the set this function fingerprints (WI-10004151).
+# Filter the NUL-delimited ls-tree stream in grep before entering the Bash read loop.
+# A full Bash loop over every tree record made each historical candidate scan expensive
+# even though only lockfiles and patch-package patches are dependency inputs.
+dependency_generation_ref_input_records() {
+  local root="$1" ref="$2"
+  git -C "$root" ls-tree -r -z "$ref" \
+    | LC_ALL=C grep -zE $'\t([^/]+/)*(package-lock\\.json|npm-shrinkwrap\\.json)$|\t([^/]+/)*patches/[^/]+\\.patch$'
+}
+
 dependency_generation_input_manifest_ref() {
   local root="$1" ref="$2" prefix="${3:-}" extract_root="${4:-}"
   local record metadata mode type object rel digest submodule_path submodule_object
@@ -241,7 +250,7 @@ dependency_generation_input_manifest_ref() {
       digest="$(git -C "$root" cat-file blob "$object" | dependency_generation_sha256)" || return 1
     fi
     printf '%s\t%s\n' "${prefix}${rel}" "$digest"
-  done < <(git -C "$root" ls-tree -r -z "$ref")
+  done < <(dependency_generation_ref_input_records "$root" "$ref")
 
   while IFS= read -r submodule_path; do
     [ -n "$submodule_path" ] || continue

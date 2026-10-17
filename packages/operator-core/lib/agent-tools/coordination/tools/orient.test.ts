@@ -1134,6 +1134,60 @@ describe('coord:orient args', () => {
     expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot', harness: 'papercusp' });
   });
 
+  it('uses snapshot detail for a normal self-scoped assignment read', async () => {
+    const ownerId = 'su-orient-handler-normal-snapshot-test';
+    const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: Record<string, unknown>) => {
+      nestedCalls.push({ name, args });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          detail: 'snapshot',
+          summary: { agents: 1, claims: 0 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const result = (await orientTool.handler(
+      {
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignmentCall?.args).toEqual({ agent: ownerId, detail: 'snapshot' });
+    expect(result.data).toMatchObject({
+      ok: true,
+      me: { detail: 'snapshot', summary: { agents: 1, claims: 0 } },
+    });
+  });
+
   it('applies caller-specific tool-surface activation in the real handler', async () => {
     const ownerId = 'su-orient-handler-activation-test';
 

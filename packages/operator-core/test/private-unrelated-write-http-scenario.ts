@@ -1,6 +1,6 @@
 /** Real private HTTP control for the P-009 unrelated-write responsiveness bar. */
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { getOrgPg } from '@papercusp/db-org';
 import { createWorkItem } from '../lib/work-items';
@@ -175,5 +175,119 @@ export async function measurePrivateUnrelatedCheckpointScenario(o: Options) {
       await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${o.workspace}
         AND harness_slug = ${o.harness} AND feature_id IN (${stalled.id}, ${unrelated.id}, ${decoy.id})`;
     }
+  }
+}
+
+/** Both HTTP appends must merge against the row read inside their locked transaction. */
+export async function measurePrivateSameItemCheckpointScenario(o: Options) {
+  assert.match(o.workspace, /^test-runtime-/);
+  assert.ok(o.expectedSha);
+  const { sql } = getOrgPg();
+  const nonce = randomUUID();
+  const item = await createWorkItem({ kind: 'feature', title: `P009 private same-item ${nonce}`,
+    summary: 'Disposable row for two concurrent HTTP checkpoint appends.',
+    harness: o.harness, workspaceId: o.workspace, createdBy: 'private-http-fixture' });
+  const ref = { workspaceId: o.workspace, harness: o.harness, workItemId: item.id };
+  const baseline = `private same-item baseline ${nonce}`;
+  const additions = [`private first append ${nonce}`, `private second append ${nonce}`];
+  await setWorkItemCheckpointWithPrior(ref, baseline);
+  const holder = await sql.reserve();
+  const requests: Array<Promise<{ status: number; envelope: any; result: any }>> = [];
+  let released = false;
+  const health = async () => {
+    const response = await fetch(o.base + '/api/health', { headers: o.headers,
+      signal: AbortSignal.timeout(2_000) });
+    const body = await response.json() as { sha: string };
+    assert.equal(response.status, 200);
+    assert.equal(body.sha, o.expectedSha);
+    return body;
+  };
+  const invoke = async (index: number) => {
+    const response = await fetch(o.base + '/api/agent-mcp/run-tool', {
+      method: 'POST', headers: o.headers,
+      body: JSON.stringify({ name: 'work_items:checkpoint',
+        args: { id: item.id, harness: o.harness, checkpoint: additions[index], append: true },
+        harness: o.harness, callerSid: `private-same-item-${o.workspace}-${index}`, confirmed: true }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const envelope = await response.json() as any;
+    await writeFile(`${o.evidenceDir}/same-item-request-${index}.json`,
+      JSON.stringify({ index, status: response.status, envelope }), { flag: 'wx' });
+    return { status: response.status, envelope, result: receiptFromEnvelope(envelope) };
+  };
+  try {
+    const healthBefore = await health();
+    await holder`BEGIN`;
+    const rows = await holder`SELECT scope FROM harness_shared.carry_notes
+      WHERE workspace_id = ${o.workspace} AND scope = ${workItemScope(o.harness, item.id)} FOR UPDATE`;
+    assert.equal(rows.length, 1);
+    const [backend] = await holder`SELECT pg_backend_pid() AS pid`;
+    const holderPid = Number(backend.pid);
+    const waitFor = async (blockers: number[], exclude: number[] = []) => {
+      const deadline = performance.now() + 2_000;
+      while (performance.now() < deadline) {
+        const waits = await sql<ActivityRow[]>`SELECT pid,
+          backend_start::text AS "backendStart", query_start::text AS "queryStart",
+          state, wait_event_type AS "waitEventType", query, pg_blocking_pids(pid) AS "blockingPids"
+          FROM pg_stat_activity WHERE datname = current_database() AND state = 'active'
+            AND wait_event_type = 'Lock' AND query LIKE '%harness_shared.carry_notes%'
+            AND pid <> pg_backend_pid()`;
+        const selected = waits.filter(row => !exclude.includes(Number(row.pid)) &&
+          row.blockingPids.some(pid => blockers.includes(Number(pid))));
+        assert.ok(selected.length <= 1, 'same-item waiter correlation must be unambiguous');
+        if (selected[0]) return selected[0];
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.fail('both HTTP appends must reach the exact held carry-row lock before release');
+    };
+    requests.push(invoke(0));
+    const firstWait = await waitFor([holderPid]);
+    requests.push(invoke(1));
+    const secondWait = await waitFor([holderPid, Number(firstWait.pid)], [Number(firstWait.pid)]);
+    assert.notEqual(firstWait.pid, secondWait.pid);
+    const releasedAtMs = performance.now();
+    await holder`ROLLBACK`;
+    released = true;
+    const responses = await Promise.all(requests);
+    const completedAtMs = performance.now();
+    const readback = await getWorkItemCheckpoint(ref);
+    const expected = [baseline, ...additions].join('\n\n---\n');
+    assert.equal(readback, expected, 'the second queued append must retain the first committed append exactly once');
+    const hash = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 12);
+    const expectedHashes = [hash([baseline, additions[0]].join('\n\n---\n')), hash(expected)];
+    const receipts = responses.map((response, index) => {
+      assert.equal(response.status, 200);
+      const result = response.result?.results?.find((row: any) => row.id === item.id);
+      assert.ok(result, 'each HTTP response must identify the same private work item');
+      if (result.ok === true) {
+        assert.equal(result.verified, true);
+        assert.equal(result.contentHash, expectedHashes[index]);
+      } else {
+        // A later committed append can outrun the first read-after-write verifier.
+        // That is an explicit committed conflict, never permission to replay a write.
+        assert.equal(index, 0);
+        assert.equal(result.errorCode, 'checkpoint_verify_failed');
+        assert.equal(result.writeCommitted, true);
+        assert.equal(result.retryable, false);
+        assert.equal(result.storedContentHash, expectedHashes[0]);
+        assert.equal(result.readBackContentHash, expectedHashes[1]);
+        assert.equal(result.recovery?.verify?.tool, 'work_items:get');
+      }
+      return result;
+    });
+    const healthAfter = await health();
+    const observation = { workspace: o.workspace, harness: o.harness, itemId: item.id,
+      expectedSha: o.expectedSha, healthBefore, healthAfter, holderPid, firstWait, secondWait,
+      releasedAtMs, completedAtMs, receipts, baseline, additions, readback,
+      readbackContentHash: hash(readback), hostStopped: false };
+    await writeFile(`${o.evidenceDir}/same-item-observation.json`, JSON.stringify(observation), { flag: 'wx' });
+    return observation;
+  } finally {
+    try { if (!released) await holder`ROLLBACK`; } finally { holder.release(); }
+    await Promise.allSettled(requests);
+    await sql`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${o.workspace}
+      AND scope = ${workItemScope(o.harness, item.id)}`;
+    await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${o.workspace}
+      AND harness_slug = ${o.harness} AND feature_id = ${item.id}`;
   }
 }

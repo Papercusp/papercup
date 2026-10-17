@@ -98,7 +98,9 @@ try {
   const identity = await call('coord:whoami', {}); assert.equal(identity.workspaceId, workspace);
   const root = (await loadHarnessRegistry(workspace)).projects.find(p => p.slug === workspace)?.path;
   assert(root, 'Maintained private home harness must resolve');
-  if (argv[4] === 'task-brief') {
+  if (argv[4] === 'first-touch') {
+    await runNativeFirstTouchJourney({ call, workspace, root, owner: identity.ownerId, repo, endpoint });
+  } else if (argv[4] === 'task-brief') {
     await runNativeTaskBriefJourney({ call, workspace, root, owner: identity.ownerId });
   } else {
   await writeFile(join(root, 'a-target.ts'), 'export function incidentTarget() { return 1; }\n');
@@ -188,52 +190,11 @@ try {
   assert.equal(replay.incidentAttribution?.status, 'measured');
   assert.deepEqual(replay.incidentAttribution.recentEdits?.[0]?.symbols, [{ name: 'incidentTarget', line: 1 }]);
   assert.equal(replay.incidentAttribution.recentEdits?.[0]?.sha256, sha('a-target.ts'));
-  const { installInjectionHooks } = await import('../../desktop-install/papercusp-files.ts');
-  const { readInstallStamp } = await import('../../desktop-install/install-provenance.ts');
-  const sourceDir = join(repo, 'apps/operator/scripts/hooks/inject');
-  const installedDir = join(homedir(), '.papercusp/hooks/inject');
-  const installed = await installInjectionHooks(homedir(), sourceDir);
-  const hookPaths = ['index.mjs', 'core.mjs', 'ports.mjs', 'delivery-ledger.mjs', 'adapters/codex.mjs'];
-  const installedHashes = Object.fromEntries(hookPaths.map(path => {
-    assert(installed.includes(join('inject', path)), `Hook not installed: ${path}`);
-    const bytes = readFileSync(join(installedDir, path));
-    assert.deepEqual(bytes, readFileSync(join(sourceDir, path)), `Installed hook differs: ${path}`);
-    return [path, createHash('sha256').update(bytes).digest('hex')];
-  }));
-  const installStamp = await readInstallStamp(installedDir);
-  assert.equal(installStamp?.sourceDir, sourceDir);
+  const dispatcher = await installedNativeDispatcher({ repo, root, endpoint, workspace, owner: observationScope.owner });
   const nativeEvent = { hook_event_name: 'PostToolUse', cwd: root,
     tool_name: 'mcp__papercusp_su__testing_run', tool_input: { harness: workspace, files: [testPath] },
     tool_response: { byFile: { [testPath]: { status: 'fail', failed: 1, runId: failure.id } } } };
-  let hookProcesses = 0;
-  const postIncident = async () => {
-    // The server's loop must stay live while the installed CLI performs HTTP.
-    // Clear the source loader so Node executes the actual installed byte copies.
-    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done, reject) => {
-      const child = spawn(process.execPath, [join(installedDir, 'index.mjs'),
-        '--client=codex', '--event=post-tool-use'], { cwd: root, env: { ...process.env,
-        NODE_OPTIONS: '', PAPERCUSP_SID: observationScope.owner,
-        PAPERCUSP_HOME: join(homedir(), '.papercusp'), PAPERCUSP_WORKSPACE: workspace,
-        PAPERCUSP_HARNESS_SLUG: workspace, PAPERCUSP_OPERATOR_URL: endpoint.origin,
-        // Keep transport fallback inside this isolated operator, including on failure.
-        PAPERCUSP_MCP_PROXY_PORT: endpoint.port, PAPERCUSP_MID_TURN_CONTEXT: 'on',
-      }, stdio: ['pipe', 'pipe', 'pipe'] });
-      hookProcesses++;
-      const stdout = createTextCollector(child.stdout), stderr = createTextCollector(child.stderr);
-      const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
-      child.once('error', error => { clearTimeout(timer); reject(error); });
-      child.once('close', status => { clearTimeout(timer); done({ status, stdout: stdout.text(), stderr: stderr.text() }); });
-      child.stdin.end(JSON.stringify(nativeEvent));
-    });
-    assert.equal(result.status, 0, JSON.stringify(result));
-    assert.equal(result.stderr, '', result.stderr);
-    if (!result.stdout.trim()) return { text: '', envelope: null };
-    const envelope = JSON.parse(result.stdout);
-    assert.equal(envelope.hookSpecificOutput?.hookEventName, 'PostToolUse');
-    assert.equal(typeof envelope.hookSpecificOutput?.additionalContext, 'string');
-    assert.equal(envelope.hookSpecificOutput.permissionDecision, undefined);
-    return { text: envelope.hookSpecificOutput.additionalContext as string, envelope };
-  };
+  const postIncident = () => dispatcher.post(nativeEvent);
   // The maintained cold loader returns immediately; converge only on its
   // bounded fixture load, retaining the first delivered response for evidence.
   let delivered = await postIncident();
@@ -262,7 +223,7 @@ try {
   const pushProof = { delivered: delivered.text, duplicateSuppressed: true, ledger: rows[0],
     attribution: replay.incidentAttribution, testRunId: failure.id, handlerHash,
     deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
-    installed: { hashes: installedHashes, stamp: installStamp, processes: hookProcesses,
+    installed: { ...dispatcher.installation, processes: dispatcher.processes(),
       nodeOptions: '', envelope: delivered.envelope, duplicateEnvelope: duplicate.envelope },
     snapshotSha256: createHash('sha256').update(snapshot).digest('hex'),
     sourceBeforeSha256: createHash('sha256').update(beforeTarget).digest('hex'), sourceAfterSha256: sha('a-target.ts'),
@@ -299,6 +260,115 @@ try {
   await getOrgPg().sql.end({ timeout: 2 });
 }
 process.exit(0);
+}
+
+/** Both delivery legs execute the same installed bytes in fresh plain-Node processes. */
+async function installedNativeDispatcher({ repo, root, endpoint, workspace, owner }: {
+  repo: string; root: string; endpoint: URL; workspace: string; owner: string;
+}) {
+  const { installInjectionHooks } = await import('../../desktop-install/papercusp-files.ts');
+  const { readInstallStamp } = await import('../../desktop-install/install-provenance.ts');
+  const sourceDir = join(repo, 'apps/operator/scripts/hooks/inject');
+  const installedDir = join(homedir(), '.papercusp/hooks/inject');
+  const installed = await installInjectionHooks(homedir(), sourceDir);
+  const hookPaths = ['index.mjs', 'core.mjs', 'ports.mjs', 'delivery-ledger.mjs', 'adapters/codex.mjs'];
+  const hashes = Object.fromEntries(hookPaths.map(path => {
+    assert(installed.includes(join('inject', path)), `Hook not installed: ${path}`);
+    const bytes = readFileSync(join(installedDir, path));
+    assert.deepEqual(bytes, readFileSync(join(sourceDir, path)), `Installed hook differs: ${path}`);
+    return [path, createHash('sha256').update(bytes).digest('hex')];
+  }));
+  const stamp = await readInstallStamp(installedDir);
+  assert.equal(stamp?.sourceDir, sourceDir);
+  let processes = 0;
+  return { installation: { hashes, stamp }, processes: () => processes,
+    post: async (nativeEvent: Record<string, unknown>) => {
+      const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>((done, reject) => {
+        const child = spawn(process.execPath, [join(installedDir, 'index.mjs'),
+          '--client=codex', '--event=post-tool-use'], { cwd: root, env: { ...process.env,
+          NODE_OPTIONS: '', PAPERCUSP_SID: owner,
+          PAPERCUSP_HOME: join(homedir(), '.papercusp'), PAPERCUSP_WORKSPACE: workspace,
+          PAPERCUSP_HARNESS_SLUG: workspace, PAPERCUSP_OPERATOR_URL: endpoint.origin,
+          PAPERCUSP_MCP_PROXY_PORT: endpoint.port, PAPERCUSP_MID_TURN_CONTEXT: 'on',
+        }, stdio: ['pipe', 'pipe', 'pipe'] });
+        processes++;
+        const stdout = createTextCollector(child.stdout), stderr = createTextCollector(child.stderr);
+        const timer = setTimeout(() => child.kill('SIGKILL'), 15_000);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', status => { clearTimeout(timer); done({ status, stdout: stdout.text(), stderr: stderr.text() }); });
+        child.stdin.end(JSON.stringify(nativeEvent));
+      });
+      assert.equal(result.status, 0, JSON.stringify(result));
+      assert.equal(result.stderr, '', result.stderr);
+      if (!result.stdout.trim()) return { text: '', envelope: null };
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.hookSpecificOutput?.hookEventName, 'PostToolUse');
+      assert.equal(typeof envelope.hookSpecificOutput?.additionalContext, 'string');
+      assert.equal(envelope.hookSpecificOutput.permissionDecision, undefined);
+      return { text: envelope.hookSpecificOutput.additionalContext as string, envelope };
+    } };
+}
+
+async function runNativeFirstTouchJourney({ call, workspace, root, owner, repo, endpoint }: {
+  call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>;
+  workspace: string; root: string; owner: string; repo: string; endpoint: URL;
+}) {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const target = 'a-target.ts', consumer = 'b-consumer.ts', testPath = 'target.test.ts';
+  await writeFile(join(root, target), 'export function firstTouchTarget() { return 1; }\n');
+  await writeFile(join(root, consumer), 'import { firstTouchTarget } from "./a-target.ts";\nexport function consumer() { return firstTouchTarget(); }\n');
+  await writeFile(join(root, testPath), 'import { consumer } from "./b-consumer.ts";\nexport const observed = consumer();\n');
+  const sha = (path: string) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
+  const snapshotPath = join(homedir(), '.papercusp/graph-snapshot/papercusp/dependency-snapshot.json');
+  await mkdir(resolve(snapshotPath, '..'), { recursive: true });
+  const snapshot = JSON.stringify({ schema: 'graph-dependency-snapshot-v1', generatedAt: new Date().toISOString(),
+    index: { backend: 'first-party-imports', lastCommit: 'a'.repeat(40) },
+    edges: [{ imported: target, importer: consumer, importerSha256: sha(consumer) },
+      { imported: consumer, importer: testPath, importerSha256: sha(testPath) }],
+    symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols: [{
+      id: 'private-first-touch-target', name: 'firstTouchTarget', path: target, line: 1, column: 17,
+      sha256: sha(target), signature: 'firstTouchTarget()', aliases: [],
+      callers: [{ path: consumer, line: 2, column: 37, sha256: sha(consumer),
+        spelling: 'firstTouchTarget', workspace: '@fixture/consumer' }],
+    }] } });
+  await writeFile(snapshotPath, snapshot);
+  const dispatcher = await installedNativeDispatcher({ repo, root, endpoint, workspace, owner });
+  const toolInput = { file_path: join(root, target) };
+  const read = await call('capability:read', toolInput);
+  assert.equal(read.encoding, 'base64', JSON.stringify(read));
+  assert.deepEqual(Buffer.from(read.data, 'base64'), readFileSync(join(root, target)));
+  const nativeEvent = { hook_event_name: 'PostToolUse', cwd: root,
+    tool_name: 'mcp__papercusp_su__capability_read', tool_input: toolInput, tool_response: read };
+  let delivered = await dispatcher.post(nativeEvent);
+  for (let attempt = 0; attempt < 10 && !delivered.text.includes('Code intelligence (first-touch)'); attempt++) {
+    await new Promise(done => setTimeout(done, 25));
+    delivered = await dispatcher.post(nativeEvent);
+  }
+  assert.match(delivered.text, /Code intelligence \(first-touch\)/);
+  assert.match(delivered.text, /firstTouchTarget:1 >=1 static calls/);
+  assert(delivered.text.includes('@fixture/consumer'), delivered.text);
+  assert(delivered.text.includes(consumer), delivered.text);
+  assert(delivered.text.includes(`testing:run ${JSON.stringify({ files: [testPath], harness: workspace })}`), delivered.text);
+  assert.match(delivered.text, /dynamic dispatch.*runtime execution are unknown/);
+  const rows = await getOrgPg().sql<{ id: string; subject: string; chars: number; cited_paths: string[] }[]>`
+    SELECT id, subject, chars, cited_paths FROM harness_shared.code_intel_pushes
+    WHERE workspace_id = ${workspace} AND owner_id = ${owner} AND leg = 'first-touch'`;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]!.subject, target);
+  assert.equal(rows[0]!.chars, delivered.text.length + 2);
+  const duplicate = await dispatcher.post(nativeEvent);
+  assert(!duplicate.text.includes('Code intelligence (first-touch)'), duplicate.text);
+  const [count] = await getOrgPg().sql<{ count: number }[]>`SELECT count(*)::int AS count
+    FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}
+      AND owner_id = ${owner} AND leg = 'first-touch'`;
+  assert.equal(count!.count, 1);
+  console.log('NATIVE_FIRST_TOUCH_API_PROOF=' + JSON.stringify({ workspace, transport: 'real-cli-http',
+    readPath: target, delivered: delivered.text, duplicateSuppressed: true, ledger: rows[0],
+    deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
+    installed: { ...dispatcher.installation, processes: dispatcher.processes(), nodeOptions: '',
+      envelope: delivered.envelope, duplicateEnvelope: duplicate.envelope },
+    snapshotSha256: createHash('sha256').update(snapshot).digest('hex'), sourceSha256: sha(target),
+    scope: 'private current-source installed dispatcher replay after real capability:read; synthetic snapshot commit; no live Codex model session or final shipment' }));
 }
 
 /** Reuse the same private handler/CLI/PG boundary without replaying the incident leg. */

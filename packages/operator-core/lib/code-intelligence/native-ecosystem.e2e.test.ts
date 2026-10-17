@@ -48,7 +48,7 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-async function privateNativeJourney(mode: 'incident' | 'task-brief') {
+async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch') {
     const root = resolve(import.meta.dirname, '../../../..');
     const sourcePaths = ['packages/operator-core/lib/code-intelligence/push-channel.ts',
       'packages/operator-core/lib/code-intelligence/push-snapshot.ts',
@@ -115,16 +115,32 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief') {
         },
       });
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
-    const prefix = mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
+    const prefix = mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
+      : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
     const line = result.output.split('\n').find(row => row.startsWith(prefix));
     expect(line, result.output).toBeDefined();
     const proof = JSON.parse(line!.slice(prefix.length));
     const afterHashes = sourceHashes();
     expect(afterHashes).toEqual(beforeHashes);
-    writeSync(2, `${mode === 'incident' ? 'NATIVE_P038_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
+    writeSync(2, `${mode === 'incident' ? 'NATIVE_P038_RUNTIME_PROOF'
+      : mode === 'first-touch' ? 'NATIVE_P036_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
     return proof;
     } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
 }
+
+describe('native P036 private operator installed first-touch Read', () => {
+  it('delivers the snapshot brief through fresh installed hook processes and suppresses a second Read', async () => {
+    const proof = await privateNativeJourney('first-touch');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', readPath: 'a-target.ts',
+      duplicateSuppressed: true, ledger: { subject: 'a-target.ts' },
+      deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
+      installed: { nodeOptions: '', processes: expect.any(Number),
+        envelope: { hookSpecificOutput: { hookEventName: 'PostToolUse',
+          additionalContext: expect.stringContaining('Code intelligence (first-touch)') } } },
+      scope: expect.stringContaining('no live Codex model session'),
+    });
+  }, 120_000 + 180_000 + 20_000);
+});
 
 describe('native P018 private operator CLI incident claim and resume', () => {
   it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {

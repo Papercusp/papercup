@@ -6,6 +6,7 @@ import {
   parseFrozenCandidateRepairQueue,
   recordFrozenRepairLegMeasurement,
   recordFrozenRepairSupersededRed,
+  summarizeFrozenRepairConvergence,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
 
@@ -29,6 +30,22 @@ function verifying(): FrozenCandidateRepairQueue {
 }
 
 describe('frozen repair verification history (WI-10007020)', () => {
+  it('reports a plateau after earlier improvement as not converging without changing the failures', () => {
+    const improved = markFrozenRepairVerificationRed(verifying(), {
+      repairHead: H, nowMs: T + 1, failingTests: [FILE, LANE],
+    });
+    const plateau = markFrozenRepairVerificationRed({
+      ...improved, repairHead: NEWER, phase: 'ready-to-verify',
+    }, {
+      repairHead: NEWER, nowMs: T + 2, failingTests: [FILE, LANE],
+    });
+    const summary = summarizeFrozenRepairConvergence(plateau, T + 3);
+    expect(summary.shrinkPerRound.map((round) => round.failingCount)).toEqual([3, 2, 2]);
+    expect(summary.shrinkPerRound.at(-1)?.delta).toBe(0);
+    expect(plateau.failingTests).toEqual([FILE, LANE]);
+    expect(summary.converging).toBe(false);
+  });
+
   it('retains bounded failed identities for each red, including equal-size replacements', () => {
     const before = verifying();
     const next = markFrozenRepairVerificationRed(before, {
@@ -70,6 +87,18 @@ describe('frozen repair verification history (WI-10007020)', () => {
     for (const leg of next.legs!) {
       expect(leg).toMatchObject({ state: 'fixed', resolvedHead: H, lastMeasuredHead: H });
     }
+  });
+
+  it('preserves the measurement of a previously fixed leg outside this verification', () => {
+    const before = verifying();
+    const fixed = recordFrozenRepairLegMeasurement(before, {
+      measurements: [{ id: LINT, status: 'pass' }], head: H, nowMs: T + 1,
+    });
+    expect(fixed.signature.some((entry) => entry.id === LINT)).toBe(false);
+    const next = markFrozenRepairVerificationRed(fixed, {
+      repairHead: H, nowMs: T + 2, failingTests: [FILE, LANE],
+    });
+    expect(next.legs?.find((leg) => leg.id === LINT)).toEqual(fixed.legs?.find((leg) => leg.id === LINT));
   });
 
   it('retains superseded verification evidence at the measured head without moving the newer admission', () => {

@@ -1232,7 +1232,7 @@ export async function composeOrient(
       ...(recoveredFleetMembership
         ? { fleet: recoveredFleetMembership.fleetSlug, detail: 'snapshot' }
         : ownerId
-          ? { agent: ownerId }
+          ? { agent: ownerId, detail: 'snapshot' }
           : {}),
       ...(args.harness ? { harness: args.harness } : {}),
     }, signal),
