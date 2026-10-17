@@ -3360,8 +3360,7 @@ describe('ptool SDK bootstrap recovery during install:safe drains', () => {
   });
 
   it('writes the JSON payload to the helper and propagates its exit code', async () => {
-    const child = new EventEmitter() as EventEmitter & { stdin: { end: ReturnType<typeof vi.fn> } };
-    child.stdin = { end: vi.fn() };
+    const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn<(payload: string) => void>() } });
     const spawnImpl = vi.fn(() => {
       queueMicrotask(() => child.emit('close', 5, null));
       return child;

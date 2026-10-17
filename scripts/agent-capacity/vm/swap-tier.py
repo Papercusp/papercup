@@ -34,6 +34,13 @@ Codex runs also save native-evidence.tar.gz INSIDE DIR after stopping agents, in
 raw histories, dummy data and a population/hash manifest. Copy that file locally and run
 `swap-tier.py verify-archive --archive FILE --results DIR/results.jsonl` BEFORE deleting a guest. An incomplete
 receipt is evidence loss, never capacity acceptance; the fixed deletion deadline still wins.
+Before a cold wake/resize/growth operation, initialize a retained witness explicitly:
+  swap-tier.py witness-create --manifest /data/witness.json --pg-config /data/embedded-pg.json \\
+      --id unique-run-id --file /data/native-evidence.tar.gz --file /data/corpus/tasks.json
+Save that receipt's manifestSha256 and the manifest locally BEFORE the operation. Afterwards use
+witness-verify with the same --manifest/--pg-config and --manifest-sha256 from the saved receipt.
+Verification never recreates a missing SQL row or file. These commands prove retained bytes only;
+application-ready timing, capacity, billed cost and provider teardown are separate acceptance gates.
 Run as root (cgroup writes, swapon); the agents run as --user (claude refuses bypass mode as root).
 """
 import argparse
@@ -45,6 +52,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shlex
 import statistics
 import subprocess
@@ -52,6 +60,7 @@ import sys
 import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SLICE = "swaptier"
@@ -76,6 +85,92 @@ def launch_delay_seconds(env=None):
 
 LAUNCH_DELAY_SEC = launch_delay_seconds()
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def durability_file(path):
+    """Hash retained bytes without loading a whole native archive into memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        before = os.fstat(source.fileno())
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+        after = os.fstat(source.fileno())
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError("durability file changed while hashing")
+    return {"path": os.path.abspath(path), "bytes": after.st_size, "sha256": digest.hexdigest()}
+
+
+def durability_sql(config_path, psql, witness_id, value=None):
+    """Only explicit initialization writes; verification is read-only in PostgreSQL too."""
+    if not isinstance(witness_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", witness_id):
+        raise ValueError("invalid durability witness id")
+    with open(config_path) as source:
+        config = json.load(source)
+    url = urllib.parse.urlsplit(config["url"])
+    if url.scheme not in ("postgres", "postgresql") or not url.hostname or not url.path.strip("/"):
+        raise ValueError("invalid embedded PostgreSQL configuration")
+    env = dict(os.environ, PGHOST=url.hostname, PGPORT=str(url.port or 5432),
+               PGUSER=urllib.parse.unquote(url.username or ""),
+               PGPASSWORD=urllib.parse.unquote(url.password or ""),
+               PGDATABASE=urllib.parse.unquote(url.path[1:]), PGCONNECT_TIMEOUT="5",
+               PGOPTIONS="-c statement_timeout=10000 -c default_transaction_read_only=" +
+                         ("off" if value is not None else "on"))
+    if value is not None:
+        if not re.fullmatch(r"[a-f0-9]{64}", value):
+            raise ValueError("invalid durability witness value")
+        # No upsert: a repeated initialization must fail, never replace the old witness.
+        sql = ("BEGIN; CREATE TABLE IF NOT EXISTS public.p544_durability_witness "
+               "(id text PRIMARY KEY, value text NOT NULL); "
+               f"INSERT INTO public.p544_durability_witness VALUES ('{witness_id}', '{value}'); COMMIT;")
+    else:
+        sql = ("SELECT current_setting('transaction_read_only'), value "
+               f"FROM public.p544_durability_witness WHERE id = '{witness_id}';")
+    try:
+        result = subprocess.run([psql, "-X", "-A", "-t", "-q", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", sql],
+                                env=env, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError("durability witness SQL unavailable") from None
+    if result.returncode:
+        # Config and provider errors may contain a credential. Never echo subprocess output.
+        raise RuntimeError("durability witness SQL failed")
+    return result.stdout.strip()
+
+
+def create_durability_witness(manifest_path, files, config_path, psql, witness_id):
+    if os.path.exists(manifest_path):
+        raise ValueError("durability manifest already exists")
+    if not files or len(set(map(os.path.abspath, files))) != len(files):
+        raise ValueError("durability witness requires unique retained files")
+    manifest = {"schemaVersion": "swap-tier-durability-witness-v1", "id": witness_id,
+                "value": secrets.token_hex(32), "files": [durability_file(p) for p in files]}
+    durability_sql(config_path, psql, witness_id, manifest["value"])
+    with open(manifest_path, "x") as target:
+        json.dump(manifest, target, sort_keys=True)
+        target.flush()
+        os.fsync(target.fileno())
+    return {"created": True, "manifestSha256": durability_file(manifest_path)["sha256"],
+            "files": len(files)}
+
+
+def verify_durability_witness(manifest_path, expected_sha256, config_path, psql):
+    with open(manifest_path, "rb") as source:
+        raw = source.read()
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256) or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("durability manifest hash mismatch")
+    manifest = json.loads(raw)
+    files = manifest.get("files")
+    if (manifest.get("schemaVersion") != "swap-tier-durability-witness-v1" or not isinstance(files, list) or
+            not files or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("value", "")))):
+        raise ValueError("invalid durability manifest")
+    paths = [entry.get("path") for entry in files]
+    if any(not isinstance(p, str) or not os.path.isabs(p) for p in paths) or len(set(paths)) != len(paths):
+        raise ValueError("invalid durability manifest paths")
+    for entry in files:
+        if durability_file(entry["path"]) != entry:
+            raise RuntimeError("retained durability file changed")
+    if durability_sql(config_path, psql, manifest.get("id")) != "on\t" + manifest["value"]:
+        raise RuntimeError("retained SQL witness missing, changed or not read-only")
+    return {"verified": True, "manifestSha256": expected_sha256, "files": len(files), "sqlReadOnly": True}
 
 
 # ---------------------------------------------------------------- measurement helpers
@@ -1237,6 +1332,16 @@ def main(argv=None):
     v = sub.add_parser("verify-archive")
     v.add_argument("--archive", required=True, help="locally copied native-evidence.tar.gz; required before teardown")
     v.add_argument("--results", required=True, help="locally copied results.jsonl from the exact run being torn down")
+    for command in ("witness-create", "witness-verify"):
+        w = sub.add_parser(command, help="retained file/SQL witness before or after cold wake/disk growth")
+        w.add_argument("--manifest", required=True)
+        w.add_argument("--pg-config", required=True, help="guest embedded-pg.json; credentials are never printed")
+        w.add_argument("--psql", default="/usr/lib/Papercusp Server/sidecar/bin/psql")
+        if command == "witness-create":
+            w.add_argument("--file", required=True, action="append")
+            w.add_argument("--id", required=True)
+        else:
+            w.add_argument("--manifest-sha256", required=True, help="receipt saved locally BEFORE the lifecycle operation")
     a = ap.parse_args(argv)
     if a.cmd == "run":
         if a.active and (a.cli != "codex" or a.warm < 1 or a.single != 0 or len(a.arm) != 1 or
@@ -1261,6 +1366,10 @@ def main(argv=None):
         probe(a.out)
     elif a.cmd == "verify-archive":
         print(json.dumps(verify_native_archive(a.archive, a.results)))
+    elif a.cmd == "witness-create":
+        print(json.dumps(create_durability_witness(a.manifest, a.file, a.pg_config, a.psql, a.id)))
+    elif a.cmd == "witness-verify":
+        print(json.dumps(verify_durability_witness(a.manifest, a.manifest_sha256, a.pg_config, a.psql)))
     return 0
 
 

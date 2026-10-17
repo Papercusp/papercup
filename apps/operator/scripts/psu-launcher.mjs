@@ -9991,6 +9991,7 @@ async function pickFeature(workspace, harness, need) {
 // always-wins kill switch. A non-TTY launch (brain dock pane, --no-picker
 // scripts) still takes the plain inherit spawn — there's no terminal to bridge.
 export const PTY_DEFAULT_ON = true;
+/** @param {{ env?: NodeJS.ProcessEnv, stdin?: { isTTY?: boolean }, stdout?: { isTTY?: boolean } }} [options] */
 export function usePtyHost({
   env = process.env,
   stdin = process.stdin,

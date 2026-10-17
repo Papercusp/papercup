@@ -1,7 +1,7 @@
 /** Current-build reclaim acceptance through the maintained private background
  * runtime. Fixture effects and receipt writes never use the shared host state. */
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,8 @@ const buildSelected = [
 ];
 // The first two are parameterized over local and native metadata walks.
 const buildSelectedCount = 7;
+const specialSelected = ['preserves old live Unix sockets and FIFOs when path holder evidence is empty'];
+const specialSelectedCount = 2;
 const hardlinkSelected = [
   'keeps a hardlinked population already within its cap',
   'keeps shared bytes after removing a link beside a',
@@ -84,6 +86,9 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
         [...selection.reclaimTitles, ...(selection.census ? censusSelected : [])].join('|')], {
         cwd: root, detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1',
+          // The parent router expects only this wrapper in its run group.
+          // Inner assertion receipts belong to a separate native execution.
+          PAPERCUSP_TEST_RUN_GROUP: randomUUID(),
           // Each runner owns its map. Inheriting the outer path loses the
           // native worker's original sources when the outer reporter finishes.
           PC_EXECUTED_SOURCE_MAP_WORKSPACE: 'papercusp-workspace',
@@ -107,6 +112,8 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
           expect(env.PAPERCUSP_HOME).toBe(join(env.HOME!, '.papercusp'));
           expect(env.PAPERCUSP_BACKGROUND_WORKERS).toBe('1');
           expect(env.PAPERCUSP_DBOS_ROUTINES).toBe('0');
+          expect(env.PAPERCUSP_TEST_RUN_GROUP).toMatch(/^[0-9a-f-]{36}$/);
+          expect(env.PAPERCUSP_TEST_RUN_GROUP).not.toBe(process.env.PAPERCUSP_TEST_RUN_GROUP);
           expect(new URL(env.HARNESS_ADMIN_DATABASE_URL!).port).toBe(String(message.pgPort));
           expect(env.PAPERCUSP_WORKSPACE_ID).toMatch(/^test-runtime-/);
           environmentObserved = true;
@@ -161,7 +168,8 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
 };
 it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime',
-  context => runSelection({ reclaimTitles: [...selected, ...buildSelected], expectedReclaimCases: selected.length + buildSelectedCount, census: true }, context),
+  context => runSelection({ reclaimTitles: [...selected, ...buildSelected, ...specialSelected],
+    expectedReclaimCases: selected.length + buildSelectedCount + specialSelectedCount, census: true }, context),
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),

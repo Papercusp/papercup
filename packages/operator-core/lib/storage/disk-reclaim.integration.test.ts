@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, utimes, symlink, stat, rm, chmod, copyFile, open, link } from 'node:fs/promises';
 import { homedir, hostname, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -158,6 +158,107 @@ const fixtureBuildRemover = (entry: RetentionEntry, ms: number, _observe?: (timi
   }), undefined, dryRun);
 
 describe('retention on a real fixture tree', () => {
+  it.each(['local', 'native'])('keeps a hardlinked population already within its cap (%s)', async route => {
+    const { root, options } = await setup();
+    const tree = join(root, 'tree'); await mkdir(tree);
+    const file = join(tree, 'first'); await writeFile(file, Buffer.alloc(65536));
+    await link(file, join(tree, 'second')); await link(file, join(root, 'sibling'));
+    const uniqueBytes = (await stat(file)).blocks * 512 + (await stat(tree)).blocks * 512;
+    const receipt = await runDiskReclaimOnce({ ...options, nowMs: Date.now(),
+      ...(route === 'native' ? { inspectTrees: inspectRetentionTrees } : {}),
+      policy: options.policy.map(cls => ({ ...cls, maxBytes: uniqueBytes })) });
+    expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: uniqueBytes, afterBytes: uniqueBytes });
+    expect(receipt.entries.filter(entry => ['removed', 'would-remove'].includes(entry.status))).toEqual([]);
+    expect((await stat(file)).nlink).toBe(3);
+  });
+
+  it.each(['local', 'native'].flatMap(route => ['pinned', 'held', 'leased', 'workspace', 'boundary'].map(protection => [route, protection])))
+    ('keeps shared bytes after removing a link beside a %s/%s sibling', async (route, protection) => {
+      const { root, options } = await setup();
+      const discard = join(root, 'discard'), retained = join(root, 'retained'), extra = join(root, 'extra');
+      const retainedFile = protection === 'boundary' ? join(retained, 'keep') : retained;
+      if (protection === 'boundary') { await mkdir(retained); execFileSync('mkfifo', [join(retained, 'fifo')]); }
+      await writeFile(discard, Buffer.alloc(65536)); await link(discard, retainedFile); await writeFile(extra, Buffer.alloc(16384));
+      const sharedBytes = (await stat(retainedFile)).blocks * 512 + (protection === 'boundary' ? (await stat(retained)).blocks * 512 : 0),
+        extraBytes = (await stat(extra)).blocks * 512;
+      const receipt = await runDiskReclaimOnce({ ...options,
+        ...(route === 'native' ? { inspectTrees: inspectRetentionTrees } : {}),
+        roots: [{ path: root, classId: 'papercusp-scratch' }],
+        policy: options.policy.map(cls => ({ ...cls, id: 'papercusp-scratch', maxBytes: 0 })),
+        registeredWorkspaces: () => protection === 'workspace' ? ['retained'] : [],
+        readProtection: async () => ({ paths: protection === 'leased' ? [retained] : [],
+          pins: protection === 'pinned' ? [{ paths: [retained], expiresAt: new Date(options.nowMs + 60000).toISOString() }] : [] }),
+        scanHolders: async () => ({ complete: true, byPath: new Map(protection === 'held' ? [[retained, ['123']]] : []) }),
+      });
+      expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: sharedBytes + extraBytes, afterBytes: sharedBytes,
+        pinnedBytes: protection === 'pinned' ? sharedBytes : 0, overByBytes: sharedBytes });
+      await expect(stat(discard)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(extra)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await stat(retainedFile)).nlink).toBe(1);
+      expect(receipt.complete).toBe(protection === 'pinned');
+    });
+
+  it.each(['local', 'native'])('subtracts a shared allocation only at its last planned link (%s)', async route => {
+    const { root, options } = await setup();
+    const first = join(root, 'a'), second = join(root, 'b');
+    await writeFile(first, Buffer.alloc(65536)); await link(first, second);
+    const bytes = (await stat(first)).blocks * 512;
+    const receipt = await runDiskReclaimOnce({ ...options, dryRun: true, nowMs: Date.now(),
+      ...(route === 'native' ? { inspectTrees: inspectRetentionTrees } : {}),
+      policy: options.policy.map(cls => ({ ...cls, maxBytes: 0 })) });
+    expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: bytes, afterBytes: 0 });
+    expect(receipt.entries.filter(entry => entry.status === 'would-remove')).toHaveLength(2);
+    expect((await stat(first)).nlink).toBe(2);
+  });
+
+  it('refuses effects on a hardlink cap when a sibling census fails', async () => {
+    const { root, options } = await setup();
+    const first = join(root, 'a'), unknown = join(root, 'unknown');
+    await writeFile(first, Buffer.alloc(65536)); await link(first, join(root, 'b')); await writeFile(unknown, 'unreadable');
+    inspectionProbe.before = path => { if (path === unknown) throw Object.assign(new Error('EACCES fixture'), { code: 'EACCES' }); return undefined; };
+    const receipt = await runDiskReclaimOnce({ ...options, policy: options.policy.map(cls => ({ ...cls, maxBytes: 0 })) });
+    expect(receipt.complete).toBe(false);
+    expect(receipt.scan?.incompleteRoots).toEqual([root]);
+    expect(receipt.entries.filter(entry => ['removed', 'would-remove'].includes(entry.status))).toEqual([]);
+    expect((await stat(first)).nlink).toBe(2);
+  });
+
+  it.each(['local', 'native'])('releases shared bytes after removing both build directories (%s)', async route => {
+    const { root, options } = await setup(); const source = join(root, 'source'); await mkdir(source);
+    const first = join(source, 'node_modules'), second = join(source, 'target'); await mkdir(first); await mkdir(second);
+    await writeFile(join(second, 'CACHEDIR.TAG'), CACHEDIR_TAG_SIGNATURE + '\n');
+    const file = join(first, 'a'); await writeFile(file, Buffer.alloc(65536)); await link(file, join(first, 'b')); await link(file, join(second, 'c'));
+    const sourceBytes = (await stat(source)).blocks * 512;
+    const receipt = await runDiskReclaimOnce({ ...options, removeEntry: fixtureBuildRemover,
+      ...(route === 'native' ? { inspectTrees: inspectRetentionTrees } : {}),
+      policy: options.policy.map(cls => ({ ...cls, maxBytes: 1024 ** 3,
+        keep: { kind: 'max-age' as const, maxAgeHours: 72, buildDirMaxAgeHours: 24 } })) });
+    expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+    expect(receipt.caps?.[0]?.afterBytes).toBe(sourceBytes);
+    await expect(stat(first)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(second)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each(['local', 'native'].flatMap(route => [true, false].map(dryRun => [route, dryRun] as const)))
+    ('accounts shared build-only removals with source and sibling links (%s dry=%s)', async (route, dryRun) => {
+      const { root, options } = await setup(); const source = join(root, 'source'); await mkdir(source);
+      const build = join(source, 'node_modules'); await mkdir(build);
+      const file = join(source, 'keep'); await writeFile(file, Buffer.alloc(65536));
+      await link(file, join(build, 'first')); await link(file, join(build, 'second')); await link(file, join(root, 'sibling'));
+      const sharedBytes = (await stat(file)).blocks * 512, sourceBytes = (await stat(source)).blocks * 512,
+        buildBytes = (await stat(build)).blocks * 512;
+      const receipt = await runDiskReclaimOnce({ ...options, dryRun, removeEntry: fixtureBuildRemover,
+        ...(route === 'native' ? { inspectTrees: inspectRetentionTrees } : {}),
+        policy: options.policy.map(cls => ({ ...cls, maxBytes: 1024 ** 3,
+          keep: { kind: 'max-age' as const, maxAgeHours: 72, buildDirMaxAgeHours: 24 } })) });
+      expect(receipt.complete, receipt.errors.join('; ')).toBe(true);
+      expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: sourceBytes + buildBytes + sharedBytes,
+        afterBytes: sourceBytes + sharedBytes });
+      expect(receipt.entries.some(entry => entry.path === build && entry.status === (dryRun ? 'would-remove' : 'removed'))).toBe(true);
+      expect((await stat(file)).nlink).toBe(dryRun ? 4 : 2);
+    });
   it('reports worker phases before effects while preserving the build JSON receipt and identity refusal', async () => {
     const { root } = await setup();
     const source = join(root, 'source');

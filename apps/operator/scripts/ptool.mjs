@@ -2660,6 +2660,9 @@ export function resolveMcpCallRecoveryPath() {
  * Build a Node-only recovery invocation without changing the selected
  * endpoint, session identity, scope, payload, or idempotency key.
  * Pure — exported for focused recovery tests.
+ * @param {{ helperPath?: string | null, toolName?: string, callArgs?: Record<string, unknown>,
+ * inputKind?: string | null, operatorUrl?: string, workspace?: string, harness?: string,
+ * clientId?: string, idempotencyKey?: string, raw?: boolean, projection?: string | null }} [options]
  */
 export function buildMcpCallRecoveryInvocation({
   helperPath,
@@ -2699,6 +2702,9 @@ export function buildMcpCallRecoveryInvocation({
  * Run the Node-only recovery helper. Its stdout/stderr are inherited so the
  * caller receives the same result stream and diagnostic channel as ptool.
  * `spawnImpl` is injectable for the focused lifecycle test.
+ * @param {{ invocation?: ReturnType<typeof buildMcpCallRecoveryInvocation>, env?: NodeJS.ProcessEnv,
+ * spawnImpl?: (command: string, args: string[], options: import('node:child_process').SpawnOptions) =>
+ * Pick<import('node:events').EventEmitter, 'once'> & { stdin: { end: (payload: string) => unknown } } }} [options]
  */
 export async function runMcpCallRecovery({
   invocation,

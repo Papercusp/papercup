@@ -34,6 +34,7 @@ import {
   runVerifierDependencyCommand,
   captureVerifierDependencies,
   runVerifierCommand,
+  verifierCommandAdmissionEnv,
   readVerifierPhaseMeasurements,
   estimateVerifierCommandBudget,
   admitVerifierCommandBudget,
@@ -53,6 +54,39 @@ import type { TaskRow } from './task-manager/types';
 let tmp: string;
 let fx: Superproject;
 let out: string;
+
+describe('verifier command disclosure admission', () => {
+  const marker = 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT';
+
+  it('admits in the caller checkout and transports the actual verdict without changing the caller environment', () => {
+    const env = { PATH: '/fixture/bin', DATABASE_URL: 'postgresql://fixture.invalid/application' };
+    const preflight = vi.fn(() => ({ verdict: 'admit' as const }));
+    const child = verifierCommandAdmissionEnv({ repo: '/caller/checkout', env, preflight });
+    expect(preflight).toHaveBeenCalledExactlyOnceWith({ roots: ['/caller/checkout'], env });
+    expect(child).toEqual({ ...env, [marker]: 'admitted-by-test-router' });
+    expect(env).not.toHaveProperty(marker);
+    expect(child).not.toHaveProperty('HARNESS_ADMIN_DATABASE_URL');
+  });
+
+  it.each(['restricted_write_held', 'restricted_hold_state_unknown'])(
+    'refuses %s before source preparation and never creates an admission marker', (error) => {
+      const env = { PATH: '/fixture/bin' };
+      const preflight = vi.fn(() => ({ verdict: 'refuse' as const, error, hint: 'nothing may start' }));
+      expect(() => verifierCommandAdmissionEnv({ repo: '/caller/checkout', env, preflight }))
+        .toThrow(expect.objectContaining({ exitCode: 3, message: expect.stringContaining(error) }));
+      expect(env).not.toHaveProperty(marker);
+    },
+  );
+
+  it('preserves upstream admission but does not turn a test-runner skip into a new admission', () => {
+    const preflight = vi.fn(() => ({ verdict: 'skipped', reason: 'nested-in-test-runner' } as const));
+    expect(verifierCommandAdmissionEnv({ repo: '/caller/checkout', env: { VITEST: '1' }, preflight }))
+      .toEqual({ VITEST: '1' });
+    const upstream = { [marker]: 'admitted-by-testing-run' };
+    expect(verifierCommandAdmissionEnv({ repo: '/caller/checkout', env: upstream,
+      preflight: () => ({ verdict: 'skipped', reason: 'testing-run' }) })).toEqual(upstream);
+  });
+});
 let manifest: Awaited<ReturnType<typeof exportSnapshot>>['manifest'];
 
 const NATIVE_RUNTIME_FILES = [

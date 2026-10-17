@@ -186,10 +186,9 @@ export const PACKAGE_CACHE_MUTEX_NAME: "package-manager-cache";
 export type FsMutexIo = {
     opendir?: typeof opendir;
     symlink?: typeof symlink;
-    readFile?: typeof readFile;
+    readFile?: (path: string, encoding: "utf8") => Promise<string>;
     writeFile?: typeof writeFile;
 };
 import { opendir } from "node:fs/promises";
 import { symlink } from "node:fs/promises";
-import { readFile } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";

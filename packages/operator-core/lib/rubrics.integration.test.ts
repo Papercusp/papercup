@@ -3499,6 +3499,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
   it('EI-261580: persists a provenance-only amendment with its authenticated authority', async () => {
     const seeded = await explicitAmendmentSubject('provenance-only-amendment-subject');
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    if (before.revision === undefined) throw new Error('The persisted rubric must have a revision');
     expect(before.criteria.map((criterion) => criterion.barProvenance?.lifecycle)).toEqual([
       'pre-implementation', 'pre-implementation',
     ]);

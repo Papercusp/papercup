@@ -1116,10 +1116,9 @@ describe('withFsMutex fairness (FIFO ticket queue)', () => {
 
     let ticketOwnerReads = 0;
     const io = {
-      readFile: async (...args: Parameters<typeof readFile>) => {
-        const path = String(args[0]);
+      readFile: async (path: string, encoding: 'utf8') => {
         if (path.startsWith(`${queueDir}/`) && path.endsWith('/owner.json')) ticketOwnerReads += 1;
-        return readFile(...args);
+        return readFile(path, encoding);
       },
     };
     try {

@@ -387,6 +387,7 @@ describe('container exec target against a live container', () => {
       expect(statSync(carryRoot).uid).toBe(process.getuid!());
       const carry = mintCarryRespawnArgs([], { agent: 'codex', home: base, codexHome: home,
         ownerId: 'su-private-container-carry', systemPromptAddendum: checkpoint });
+      if (!carry.carryText || !carry.launchContextPath) throw new Error('Carry minting must produce text and a launch context');
       expect(carry.carryText).toContain(checkpoint);
       expect(carry.carryText).toContain(`codex-carry-lineage predecessor:${originalId}`);
       expect(readFileSync(carry.launchContextPath, 'utf8').trim()).toBe(carry.carryText);

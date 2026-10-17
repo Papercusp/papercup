@@ -489,25 +489,44 @@ export function resolveMcpCallRecoveryPath(): string | null;
  * Build a Node-only recovery invocation without changing the selected
  * endpoint, session identity, scope, payload, or idempotency key.
  * Pure — exported for focused recovery tests.
+ * @param {{ helperPath?: string | null, toolName?: string, callArgs?: Record<string, unknown>,
+ * inputKind?: string | null, operatorUrl?: string, workspace?: string, harness?: string,
+ * clientId?: string, idempotencyKey?: string, raw?: boolean, projection?: string | null }} [options]
  */
 export function buildMcpCallRecoveryInvocation({ helperPath, toolName, callArgs, inputKind, operatorUrl, workspace, harness, clientId, idempotencyKey, raw, projection, }?: {
-    callArgs?: {} | undefined;
-    raw?: boolean | undefined;
-    projection?: null | undefined;
+    helperPath?: string | null;
+    toolName?: string;
+    callArgs?: Record<string, unknown>;
+    inputKind?: string | null;
+    operatorUrl?: string;
+    workspace?: string;
+    harness?: string;
+    clientId?: string;
+    idempotencyKey?: string;
+    raw?: boolean;
+    projection?: string | null;
 }): {
     command: string;
-    args: any[];
-    payload: {};
+    args: (string | undefined)[];
+    payload: Record<string, unknown>;
     port: string;
 } | null;
 /**
  * Run the Node-only recovery helper. Its stdout/stderr are inherited so the
  * caller receives the same result stream and diagnostic channel as ptool.
  * `spawnImpl` is injectable for the focused lifecycle test.
+ * @param {{ invocation?: ReturnType<typeof buildMcpCallRecoveryInvocation>, env?: NodeJS.ProcessEnv,
+ * spawnImpl?: (command: string, args: string[], options: import('node:child_process').SpawnOptions) =>
+ * Pick<import('node:events').EventEmitter, 'once'> & { stdin: { end: (payload: string) => unknown } } }} [options]
  */
 export function runMcpCallRecovery({ invocation, env, spawnImpl, }?: {
-    env?: NodeJS.ProcessEnv | undefined;
-    spawnImpl?: typeof spawn | undefined;
+    invocation?: ReturnType<typeof buildMcpCallRecoveryInvocation>;
+    env?: NodeJS.ProcessEnv;
+    spawnImpl?: (command: string, args: string[], options: import("node:child_process").SpawnOptions) => Pick<import("node:events").EventEmitter, "once"> & {
+        stdin: {
+            end: (payload: string) => unknown;
+        };
+    };
 }): Promise<any>;
 /**
  * A scripted named call already has the only input ptool needs to dispatch:
@@ -1036,6 +1055,5 @@ export type EnvironmentMap = Record<string, string | undefined>;
  */
 declare function readSpilledPayload(path: any): Promise<any>;
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { statfs } from 'node:fs/promises';
 export {};

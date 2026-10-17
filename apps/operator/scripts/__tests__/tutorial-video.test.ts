@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PRODUCT_TUTORIAL_CHAPTERS } from '../../../../packages/operator-core/lib/onboarding/product-tutorial-lesson';
-import { captionCues, validateManifest, vttTimestamp, webVtt } from '../tutorial-video.mjs';
+import { captionCues, validateManifest, vttTimestamp, webVtt } from '../tutorial-video-contract.mjs';
 
 const manifest = () => ({ project: { workspaceId: 'same-cloud', projectSlug: 'workshop-planner', portalOrigin: 'https://app.papercusp.com' },
   chapters: PRODUCT_TUTORIAL_CHAPTERS.map(chapter => ({ id: chapter.id, text: 'Actual narration.', recordingPath: '/recorded/portal.webm', recordingStartSeconds: 0, recordingDurationSeconds: 5,

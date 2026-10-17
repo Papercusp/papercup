@@ -307,7 +307,7 @@ describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)
     const originalExitCode = process.exitCode;
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const arm = vi.fn<typeof armMigration>();
-    let result: { status: number | undefined; stderr: string } = { status: undefined, stderr: '' };
+    let result: { status: typeof process.exitCode; stderr: string } = { status: undefined, stderr: '' };
     try {
       await main(['--arm', draftPath, '--dry-run'], arm);
       result = { status: process.exitCode, stderr: error.mock.calls.flat().join('\n') };

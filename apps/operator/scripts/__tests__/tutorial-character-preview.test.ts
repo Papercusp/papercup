@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
-import { characterStateAt, pageHtml, visemeForCharacter } from '../tutorial-character-preview.mjs';
+import { characterStateAt, pageHtml, visemeForCharacter } from '../tutorial-character-model.mjs';
 
 describe('PaperCup speaking character timing', () => {
   it('maps speech characters to stable mouth poses', () => {

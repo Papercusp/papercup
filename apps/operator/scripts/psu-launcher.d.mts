@@ -2497,7 +2497,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "ok" | "warn" | "refuse";
+    level: "ok" | "refuse" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2549,7 +2549,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "ok" | "warn" | "refuse";
+    level: "ok" | "refuse" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2711,14 +2711,15 @@ export function pickIdentity(workspace: any, harness: any): Promise<{
     stack: string[];
     selectedIdentityRevision: any;
 }>;
+/** @param {{ env?: NodeJS.ProcessEnv, stdin?: { isTTY?: boolean }, stdout?: { isTTY?: boolean } }} [options] */
 export function usePtyHost({ env, stdin, stdout, }?: {
-    env?: NodeJS.ProcessEnv | undefined;
-    stdin?: (NodeJS.ReadStream & {
-        fd: 0;
-    }) | undefined;
-    stdout?: (NodeJS.WriteStream & {
-        fd: 1;
-    }) | undefined;
+    env?: NodeJS.ProcessEnv;
+    stdin?: {
+        isTTY?: boolean;
+    };
+    stdout?: {
+        isTTY?: boolean;
+    };
 }): boolean;
 /**
  * The terminal THIS psu launch owns, as a device path — or null when there isn't one

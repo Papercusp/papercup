@@ -18,6 +18,7 @@ import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledge
 import { readRegistry } from '../workspace-registry';
 import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
+import { RetentionAllocationCounter, type RetentionHardlink } from './disk-consumer-census';
 import {
   RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
   retentionRootSizeCap, buildDirsEligible, isBuildDirName, BUILD_DIR_NAMES, CACHEDIR_TAG_SIGNATURE,
@@ -35,6 +36,7 @@ const sizeCapError = (root: string, overByBytes: number) => `size cap remains ex
 export interface RetentionEntry {
   path: string; root: string; classId: string;
   newestWriteMs: number; bytes: number; dev: number; ino: number;
+  hardlinks?: RetentionHardlink[];
   /** Ownership is revalidated by the native regular-file lease proof. */
   uid?: number; gid?: number;
   protectedReason?: string;
@@ -493,6 +495,54 @@ export function createRetentionHolderScanner(deps: {
   return { scan, acquireRegularFileLease, close };
 }
 
+/** Root usage is a union of allocations. Removing a name releases a shared
+ * allocation only after its last retained entry leaves the population. */
+class RetentionUsage {
+  bytes = 0;
+  private entries = new Map<string, RetentionEntry>();
+  private shared = new Map<string, { bytes: number; refs: number }>();
+  constructor(entries: readonly RetentionEntry[]) { for (const entry of entries) this.add(entry); }
+  private add(entry: RetentionEntry): void {
+    this.entries.set(entry.path, entry);
+    this.bytes += entry.bytes;
+    for (const link of entry.hardlinks ?? []) {
+      const key = `${link.dev}:${link.ino}`, prior = this.shared.get(key);
+      if (prior) {
+        if (prior.bytes !== link.bytes) throw new Error('inconsistent hardlink allocation census');
+        prior.refs++; this.bytes -= link.bytes;
+      } else this.shared.set(key, { bytes: link.bytes, refs: 1 });
+    }
+  }
+  remove(path: string): void {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    this.entries.delete(path); this.bytes -= entry.bytes;
+    for (const link of entry.hardlinks ?? []) {
+      const key = `${link.dev}:${link.ino}`, shared = this.shared.get(key)!;
+      if (--shared.refs) this.bytes += link.bytes;
+      else this.shared.delete(key);
+    }
+  }
+  removeBuilds(path: string, removed: BuildRemovalResult['removed']): void {
+    let entry = this.entries.get(path)!;
+    for (const target of removed) {
+      const underTarget = (value: string) => value === target.path || value.startsWith(target.path + '/');
+      let bytes = entry.bytes - target.bytes;
+      const hardlinks: RetentionHardlink[] = [];
+      for (const link of entry.hardlinks ?? []) {
+        const paths = link.paths.filter(value => !underTarget(value));
+        if (paths.length) {
+          hardlinks.push({ ...link, paths });
+          if (paths.length !== link.paths.length) bytes += link.bytes;
+        }
+      }
+      if (bytes < 0) throw new Error('invalid build allocation receipt');
+      entry = { ...entry, bytes, hardlinks };
+    }
+    this.remove(path); this.add(entry);
+  }
+}
+
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
 export function selectRetentionEntries(entries: readonly RetentionEntry[], policy: CompiledPolicy, nowMs: number,
   caps?: RetentionCapReceipt[]): RetentionEntry[] {
@@ -521,17 +571,17 @@ export function selectRetentionEntries(entries: readonly RetentionEntry[], polic
     const maxBytes = retentionRootSizeCap(cls);
     if (maxBytes !== undefined) {
       const pinned = group.filter((entry) => !deletionClassFor(entry.path, policy, nowMs));
-      const beforeBytes = group.reduce((sum, entry) => sum + entry.bytes, 0);
-      let remaining = beforeBytes;
+      const usage = new RetentionUsage(group);
+      const beforeBytes = usage.bytes;
       // The UNION of age and cap effects is oldest-first. Do not subtract
       // planned age deletions before choosing cap victims: doing so could skip
       // an older entry while evicting a newer age-selected sibling.
       for (const entry of [...group].reverse()) {
-        if (remaining <= maxBytes) break;
+        if (usage.bytes <= maxBytes) break;
         if (entry.protectedReason || !deletionClassFor(entry.path, policy, nowMs)) continue;
-        selected.add(entry); remaining -= entry.bytes;
+        selected.add(entry); usage.remove(entry.path);
       }
-      const pinnedBytes = pinned.reduce((sum, entry) => sum + entry.bytes, 0);
+      const pinnedBytes = new RetentionUsage(pinned).bytes;
       caps?.push({ root: group[0]!.root, classId: cls.id, maxBytes, beforeBytes, pinnedBytes,
         pinnedPaths: pinned.map((entry) => entry.path), afterBytes: beforeBytes,
         overByBytes: Math.max(0, beforeBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) });
@@ -617,25 +667,29 @@ interface RetentionScanBudget {
   progress: NonNullable<DiskReclaimReceipt['scan']>;
 }
 async function inspectEntry(path: string, root: string, classId: string, budget: RetentionScanBudget, retainAfterMs?: number,
-  retained?: (reason: string) => void, collectBuildDirs = false): Promise<RetentionEntry | null> {
+  retained?: (reason: string) => void, collectBuildDirs = false, includeProtected = false): Promise<RetentionEntry | null> {
   const first = await lstat(path);
-  let newestWriteMs = 0, bytes = 0;
+  let newestWriteMs = 0;
+  const allocation = new RetentionAllocationCounter();
   const stack = [path];
   const directories = new Map<string, { path: string; dev: number; ino: number }>();
   const buildDirs: NonNullable<RetentionEntry['buildDirs']> = [];
+  let protectedReason: string | undefined;
   while (stack.length) {
     if (Date.now() > budget.deadline) throw new Error('incomplete tree scan');
     const current = stack.pop()!;
     const s = current === path ? first : await lstat(current);
     // A known traversal boundary conclusively protects the whole candidate.
     // Never follow it, and do not confuse that retain verdict with lost evidence.
-    if (s.isSymbolicLink() || s.dev !== first.dev) {
-      retained?.(s.isSymbolicLink() ? 'symlink boundary' : 'filesystem boundary');
-      return null;
+    const boundary = s.isSymbolicLink() ? 'symlink boundary' : s.dev !== first.dev ? 'filesystem boundary'
+      : !s.isFile() && !s.isDirectory() ? 'special filesystem entry' : undefined;
+    if (boundary) {
+      if (!protectedReason) retained?.(boundary);
+      if (!includeProtected) return null;
+      protectedReason ??= boundary;
     }
     // Unix sockets are represented as socket:[inode] in /proc, so a path-only
     // holder scan cannot prove them unused. Native/system owners retain these.
-    if (!s.isFile() && !s.isDirectory()) { retained?.('special filesystem entry'); return null; }
     newestWriteMs = Math.max(newestWriteMs, s.mtimeMs, s.ctimeMs);
     // A single recent write proves a max-age tree ineligible. Its remaining
     // descendants cannot change that verdict, so leave them unwalked. Count
@@ -648,8 +702,8 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
     // Cheap, conclusive retain checks remain bounded by the shared deadline.
     if (--budget.left < 0) throw new Error('incomplete tree scan');
     budget.progress.inspectedNodes++;
-    bytes += s.blocks * 512;
-    if (s.isDirectory()) {
+    allocation.add(current, s, s.isFile());
+    if (!boundary && s.isDirectory()) {
       if (collectBuildDirs) {
         const identity = { path: current, dev: s.dev, ino: s.ino };
         directories.set(current, identity);
@@ -661,8 +715,9 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
       if (parent && parent.path !== path && !buildDirs.some(value => value.path === parent.path)) buildDirs.push(parent);
     }
   }
-  return { path, root, classId, newestWriteMs, bytes, dev: first.dev, ino: first.ino,
+  return { path, root, classId, newestWriteMs, bytes: allocation.bytes, ...allocation.metadata(), dev: first.dev, ino: first.ino,
     uid: first.uid, gid: first.gid,
+    ...(protectedReason ? { protectedReason } : {}),
     ...(collectBuildDirs ? { buildDirs } : {}) };
 }
 
@@ -776,6 +831,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         if (budgetExpired()) { stopAtBudget(root.path); continue; }
         let entries: RetentionEntry[] = [];
+        let inspectionFailed = false;
         const keep = policy.classes.get(root.classId)?.keep;
         const maxBytes = retentionRootSizeCap(policy.classes.get(root.classId)!);
         const capped = maxBytes !== undefined;
@@ -822,7 +878,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
             if (!deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
-              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain, collectBuildDirs);
+              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain, collectBuildDirs, capped);
             }
             catch (err) {
               if (budgetExpired()) { stopAtBudget(root.path); return null; }
@@ -830,15 +886,22 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               // permission/IO failures still leave eligibility unknown and fail closed.
               if (absent(err)) { retain('disappeared during inspection', 'changed'); return null; }
               receipt.errors.push(`inspect:${path}: ${message(err)}`);
+              inspectionFailed = true;
               return null;
             }
             });
             entries = inspected.filter((entry): entry is RetentionEntry => entry !== null);
           }
-        } catch (err) { if (!absent(err)) receipt.errors.push(`list:${root.path}: ${message(err)}`); }
+        } catch (err) {
+          if (!absent(err)) { receipt.errors.push(`list:${root.path}: ${message(err)}`); inspectionFailed = true; }
+        }
         // An incomplete class census cannot establish oldest-first selection.
         // Leave its entries untouched and retain the independent owner delegates.
-        if (budgetStopped) continue;
+        if (inspectionFailed) {
+          progress.stoppedAtRoot ??= root.path;
+          if (!progress.incompleteRoots.includes(root.path)) progress.incompleteRoots.push(root.path);
+        }
+        if (budgetStopped || inspectionFailed) continue;
         for (const entry of entries) {
           // The workspace owner controls deletion, but its retained usage still
           // belongs in this root's cap census on both inspection routes.
@@ -852,6 +915,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const selected = selectRetentionEntries(entries, policy, started, rootCaps);
         (receipt.caps ??= []).push(...rootCaps);
         const cap = rootCaps[0];
+        const remainingUsage = cap ? new RetentionUsage(entries) : undefined;
         const ageOnlyPolicy = { ...policy, classes: new Map([...policy.classes].map(([id, cls]) => [id, { ...cls, maxBytes: undefined }])) };
         const agePaths = new Set(selectRetentionEntries(entries, ageOnlyPolicy, started).map((entry) => entry.path));
         if (cap && cap.beforeBytes > cap.maxBytes) {
@@ -982,7 +1046,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               }
             }
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes) { outcome.status = 'changed'; continue; }
+            if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes ||
+                !isDeepStrictEqual(fresh.hardlinks, entry.hardlinks)) { outcome.status = 'changed'; continue; }
             if (entry.buildOnly) {
               if (!isDeepStrictEqual(fresh.buildDirs, entry.buildDirs)) { outcome.status = 'changed'; continue; }
               const result = await measureEffect('removalMs', () => outsideInspectionBudget(() => (options.removeEntry ??
@@ -994,17 +1059,21 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
                 const childOutcome = { path: removed.path, classId: entry.classId, bytes: removed.bytes,
                   status: receipt.dryRun ? 'would-remove' as const : 'removed' as const };
                 receipt.entries.push(childOutcome);
-                if (cap) cap.afterBytes -= removed.bytes;
                 if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', childOutcome)));
               }
+              if (cap && remainingUsage) { remainingUsage.removeBuilds(entry.path, result.removed); cap.afterBytes = remainingUsage.bytes; }
               continue;
             }
-            if (receipt.dryRun) { outcome.status = 'would-remove'; if (cap) cap.afterBytes -= entry.bytes; continue; }
+            if (receipt.dryRun) {
+              outcome.status = 'would-remove';
+              if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
+              continue;
+            }
             await measureEffect('removalMs', () => outsideInspectionBudget(() => options.removeEntry
               ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; })
               : rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
-            if (cap) cap.afterBytes -= entry.bytes;
+            if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
             await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', outcome)));
           } catch (err) {
             if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
@@ -1029,7 +1098,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         await recordProgress();
         if (cap) {
           cap.pinnedPaths = entries.filter((entry) => !deletionClassFor(entry.path, policy, started)).map((entry) => entry.path);
-          cap.pinnedBytes = entries.filter((entry) => cap.pinnedPaths.includes(entry.path)).reduce((sum, entry) => sum + entry.bytes, 0);
+          cap.pinnedBytes = new RetentionUsage(entries.filter((entry) => cap.pinnedPaths.includes(entry.path))).bytes;
           cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - cap.maxBytes);
           cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
           if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
@@ -1164,6 +1233,8 @@ try:
             # nested targets never double-subtract from the source/root cap.
             progress('source-scan-started', targets=len(selected))
             newest, total, nodes, scan_samples = 0, 0, 0, 0
+            seen = set()
+            target_seen = {t['path']: set() for t in selected}
             next_sample = time.monotonic() + 1
             def account(path, s):
                 global newest, total, nodes, scan_samples, next_sample
@@ -1171,7 +1242,12 @@ try:
                     raise RuntimeError('unsafe source descendant')
                 newest = max(newest, s.st_mtime_ns / 1000000, s.st_ctime_ns / 1000000)
                 size = s.st_blocks * 512
-                total += size
+                shared = stat.S_ISREG(s.st_mode) and s.st_nlink > 1
+                key = (s.st_dev, s.st_ino)
+                if not shared or key not in seen:
+                    total += size
+                    if shared:
+                        seen.add(key)
                 nodes += 1
                 if nodes % 1024 == 0 and scan_samples < 16 and time.monotonic() >= next_sample:
                     progress('source-scan', nodes=nodes)
@@ -1179,7 +1255,10 @@ try:
                     next_sample = time.monotonic() + 1
                 for target in selected:
                     if path == target['path'] or path.startswith(target['path'] + '/'):
-                        target['bytes'] += size
+                        if not shared or key not in target_seen[target['path']]:
+                            target['bytes'] += size
+                            if shared:
+                                target_seen[target['path']].add(key)
             for directory, dirs, files, dfd in os.fwalk('.', dir_fd=parent, follow_symlinks=False):
                 account(os.path.normpath(os.path.join(e['path'], directory)), os.fstat(dfd))
                 for child in dirs + files:

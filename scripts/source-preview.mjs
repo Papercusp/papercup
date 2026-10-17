@@ -60,6 +60,8 @@ import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
+import { runTreeRestrictedHoldPreflight, formatTreeRestrictedHoldRefusal,
+  RESTRICTED_HOLD_PREFLIGHT_ENV, RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } from './lib/restricted-hold-preflight.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -863,6 +865,20 @@ export function captureVerifierDependencies({ dest, receipt }) {
     sourceReceiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), trees };
 }
 
+/** Admit against the caller's disclosure ledger before leaving its checkout.
+ * Frozen source excludes local operator configuration; forward only a genuine
+ * admission, never the operator credentials or a fabricated skip marker.
+ * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
+ */
+export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight = runTreeRestrictedHoldPreflight }) {
+  const verdict = preflight({ roots: [repo], env });
+  if (verdict.verdict === 'refuse')
+    throw new PreviewError(formatTreeRestrictedHoldRefusal('verifier-run', verdict), 3);
+  return verdict.verdict === 'admit'
+    ? { ...env, [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER }
+    : { ...env };
+}
+
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
@@ -874,6 +890,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
+  env = verifierCommandAdmissionEnv({ repo: sourceRepo, env });
   const donor = committedWorkRootDependencyDonor(sourceRepo);
   // Keep hardlinks beside a donor on a data device. A donor on the root device
   // must use the admitted data scratch instead; pinned-deps already supports

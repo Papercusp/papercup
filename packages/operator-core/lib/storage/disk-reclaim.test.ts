@@ -39,6 +39,14 @@ describe('per-root allocated-byte caps', () => {
     compiled.pins[0]!.expiresAt = new Date(now - 1).toISOString();
     expect(selectRetentionEntries([sized('pin', 100, 110), sized('new', 1, 30)], compiled, now).map((entry) => entry.path)).toEqual(['/scratch/pin']);
   });
+  it('counts the union of hardlinked pins without manufacturing a pinned-only overage', () => {
+    const compiled = capped(); compiled.pins = [{ paths: ['/scratch/pin-a', '/scratch/pin-b'], expiresAt: new Date(now + HOUR).toISOString() }];
+    const shared = (name: string) => ({ ...sized(name, 2, 64), hardlinks: [{ dev: 1, ino: 200, bytes: 64, paths: [`/scratch/${name}`] }] });
+    const caps: RetentionCapReceipt[] = [];
+    expect(selectRetentionEntries([shared('pin-a'), shared('pin-b'), sized('new', 1, 60)], compiled, now, caps)
+      .map(entry => entry.path)).toEqual(['/scratch/new']);
+    expect(caps[0]).toMatchObject({ beforeBytes: 124, pinnedBytes: 64, pinnedOverageBytes: 0 });
+  });
   it('keeps recent entries at the ceiling and still expires old entries below it', () => {
     expect(selectRetentionEntries([sized('recent', 1, 100)], capped(), now)).toEqual([]);
     expect(selectRetentionEntries([sized('expired', 25, 1)], capped(), now).map((entry) => entry.path)).toEqual(['/scratch/expired']);

@@ -361,7 +361,8 @@ function safeStringify(value) {
  * contract clamps. Shared by every adapter so the three clients cannot drift
  * into shipping different volumes of context for the same batch.
  * @param {Array<{ tool?: unknown, toolInput?: unknown, toolResponse?: unknown }>} calls
- * @returns {Array<{ tool: string, toolInput: string, toolResponse: string }>}
+ * @returns {Array<{ tool: string, toolInput: string, toolResponse: string,
+ * incidentResult?: ReturnType<typeof incidentResultFor>, editedPaths?: string[], editedPath?: string }>}
  */
 export function buildDigest(calls) {
   const spec = PORTS['mid-turn'];

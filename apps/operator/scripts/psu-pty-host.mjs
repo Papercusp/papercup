@@ -8479,6 +8479,7 @@ export function codexTuiStartObserved(output) {
  * has already trimmed away: the whole buffer then counts as post-probe.
  * Pure and exported for tests. */
 const CODEX_SESSION_MODEL_RE = /model:\s+(?!loading\b)[^\s│]/;
+/** @param {string} output @param {{ probeAlreadySeen?: boolean, dims?: { cols: number, rows: number } }} [options] */
 export function codexSessionFrameObserved(output, { probeAlreadySeen = false, dims } = {}) {
   const raw = String(output ?? '');
   const probeAt = raw.lastIndexOf('\x1b[6n');

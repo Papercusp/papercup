@@ -1010,7 +1010,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () =>
     // Rejected, not defaulted into a terminal — and SAID so, so a client asking for a kind this
     // host lacks can fall back instead of waiting (D-002 P-009).
     expect(ptys).toHaveLength(1);
-    expect(sent.filter((message) => message.channelId === 'future-1')).toEqual([
+    expect(sent.filter((message) => 'channelId' in message && message.channelId === 'future-1')).toEqual([
       { type: 'relay.close', channelId: 'future-1', reason: 'channel_kind_unknown' },
     ]);
   });

@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   lookupByMcpName: vi.fn((_name: string) => ({ name: 'capability:launch-agent' })),
   dispatch: vi.fn(),
   markAdvSessionEnded: vi.fn(async (..._args: unknown[]) => true),
-  probeProcessLiveness: vi.fn(() => false),
+  probeProcessLiveness: vi.fn((_record: unknown) => false),
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({

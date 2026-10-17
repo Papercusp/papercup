@@ -26,6 +26,94 @@ function py(module: string, expr: string, input: unknown): any {
 
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
+describe('retained file and SQL durability witness', () => {
+  function witnessScenario(change: string, expectedFailure = false, cli = false) {
+    const fakePsql = String.raw`#!/usr/bin/env python3
+import os,sys,json,pathlib,re
+sql=sys.argv[-1]; db=pathlib.Path(os.environ['WITNESS_DB']); log=pathlib.Path(os.environ['WITNESS_LOG'])
+with log.open('a') as f:
+ f.write(json.dumps({'sql':sql,'options':os.environ['PGOPTIONS'],'passwordCorrect':os.environ['PGPASSWORD']=='p@ssword','argsContainSecret':'p@ssword' in str(sys.argv)})+'\n')
+if os.environ.get('WITNESS_SQL_FAILURE'):
+ print('error includes p@ssword',file=sys.stderr); sys.exit(17)
+if sql.startswith('BEGIN;'):
+ if db.exists(): sys.exit(1)
+ db.write_text(re.findall(r'[a-f0-9]{64}',sql)[0])
+elif sql.startswith('SELECT current_setting'):
+ if db.exists(): print(('off' if os.environ.get('WITNESS_WRITABLE') else 'on')+'\t'+db.read_text())
+else: sys.exit(9)
+`;
+    const code = [
+      'import importlib.util,json,pathlib,tempfile,os,sys,shutil,subprocess',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'root=pathlib.Path(tempfile.mkdtemp()); data=root/"retained.bin"; data.write_bytes(b"retained-data")',
+      'config=root/"embedded-pg.json"; config.write_text(json.dumps({"url":"postgresql://user:p%40ssword@127.0.0.1:5432/test"}))',
+      'db=root/"db"; log=root/"sql.log"; psql=root/"psql"',
+      `psql.write_text(${JSON.stringify(fakePsql)}); psql.chmod(0o755)`,
+      'os.environ.update(WITNESS_DB=str(db),WITNESS_LOG=str(log))',
+      'manifest=root/"manifest.json"',
+      'receipt=m.create_durability_witness(str(manifest),[str(data)],str(config),str(psql),"p544-test")',
+      'before=manifest.read_bytes(); error=None; verified=None',
+      change,
+      'try: verified=m.verify_durability_witness(str(manifest),receipt["manifestSha256"],str(config),str(psql))',
+      'except (RuntimeError,ValueError,OSError) as e: error=str(e)',
+      'cli=None',
+      ...(cli ? [
+        `result=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"witness-verify","--manifest",str(manifest),"--manifest-sha256",receipt["manifestSha256"],"--pg-config",str(config),"--psql",str(psql)],capture_output=True,text=True)`,
+        'assert result.returncode==0,result.stderr; cli=json.loads(result.stdout)',
+      ] : []),
+      'rows=[json.loads(line) for line in log.read_text().splitlines()]',
+      'print(json.dumps({"receipt":receipt,"verified":verified,"error":error,"cli":cli,"sql":rows,"manifestUnchanged":before==manifest.read_bytes(),"dbExists":db.exists()}))',
+      'shutil.rmtree(root)',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const out = JSON.parse(result.stdout);
+    expect(out.error !== null).toBe(expectedFailure);
+    expect(out.sql.filter((row: any) => row.sql.startsWith('BEGIN;'))).toHaveLength(1);
+    for (const row of out.sql.slice(1)) {
+      expect(row.sql).toMatch(/^SELECT current_setting\('transaction_read_only'\), value FROM/);
+      expect(row.sql).not.toMatch(/CREATE|INSERT|UPDATE|DELETE|CONFLICT/i);
+      expect(row.options).toContain('default_transaction_read_only=on');
+      expect(row.passwordCorrect).toBe(true);
+      expect(row.argsContainSecret).toBe(false);
+    }
+    return out;
+  }
+
+  it('compares the pre-event manifest and forces read-only SQL verification', () => {
+    const out = witnessScenario('pass', false, true);
+    expect(out.verified).toMatchObject({ verified: true, files: 1, sqlReadOnly: true });
+    expect(out.cli).toEqual(out.verified);
+    expect(out.manifestUnchanged).toBe(true);
+    expect(out.sql).toHaveLength(3);
+  });
+
+  it.each([
+    ['db.unlink()', 'missing, changed or not read-only'],
+    ['db.write_text("changed")', 'missing, changed or not read-only'],
+    ['os.environ["WITNESS_WRITABLE"]="1"', 'missing, changed or not read-only'],
+    ['os.environ["WITNESS_SQL_FAILURE"]="1"', 'SQL failed'],
+    ['data.write_bytes(b"lost-and-recreated")', 'file changed'],
+    ['data.unlink()', 'retained.bin'],
+    ['manifest.write_bytes(before+b" ")', 'manifest hash mismatch'],
+  ])('fails without repairing evidence after %s', (change, message) => {
+    const out = witnessScenario(change, true);
+    expect(out.error).toContain(message);
+    if (change === 'db.unlink()') expect(out.dbExists).toBe(false);
+  });
+
+  it('refuses initialization over the same manifest before another SQL write', () => {
+    const out = witnessScenario([
+      'try: m.create_durability_witness(str(manifest),[str(data)],str(config),str(psql),"p544-test")',
+      'except ValueError as e: assert "already exists" in str(e)',
+      'else: raise AssertionError("reinitialized existing witness")',
+    ].join('\n'));
+    expect(out.verified.verified).toBe(true);
+    expect(out.manifestUnchanged).toBe(true);
+  });
+});
+
 describe('native evidence survives guest teardown', () => {
   function archiveScenario(change: string, afterArchive = 'pass') {
     const code = [

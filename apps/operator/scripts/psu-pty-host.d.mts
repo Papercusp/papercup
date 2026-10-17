@@ -4536,8 +4536,13 @@ export function startupOutputReady(agent: any, output: any, dims?: {
  * request is the earliest byte that is unambiguously the Codex TUI rather than
  * the psu launcher's own banner. Pure and exported for tests. */
 export function codexTuiStartObserved(output: any): boolean;
-export function codexSessionFrameObserved(output: any, { probeAlreadySeen, dims }?: {
-    probeAlreadySeen?: boolean | undefined;
+/** @param {string} output @param {{ probeAlreadySeen?: boolean, dims?: { cols: number, rows: number } }} [options] */
+export function codexSessionFrameObserved(output: string, { probeAlreadySeen, dims }?: {
+    probeAlreadySeen?: boolean;
+    dims?: {
+        cols: number;
+        rows: number;
+    };
 }): boolean;
 /** Has the startup-ready fallback window elapsed? For most backends it is
  * measured from the child's first output byte. For Codex it is measured from

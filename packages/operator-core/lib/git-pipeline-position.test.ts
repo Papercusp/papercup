@@ -79,7 +79,7 @@ import type { RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 import { unownedCell } from './coord/gate-ownership';
 import { certifyCheckpointProgress, DEFAULT_STALL_THRESHOLD_MS } from './release-trace-progress';
-import type { RepairSignatureEntry } from './release/frozen-candidate-repair-queue';
+import { createFrozenCandidateRepairQueue, diagnoseFrozenCandidateRepairQueue, type RepairSignatureEntry } from './release/frozen-candidate-repair-queue';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -820,19 +820,14 @@ describe('gitPipelinePosition (P-002)', () => {
       id: 'lint:tsc:workspaces',
       recipe: 'npm run lint:tsc:workspaces',
       admittedRound: 1,
-      measuredHead: 'c'.repeat(12),
+      measuredHead: 'c'.repeat(40),
     }];
-    const repairQueue = {
-      candidate: 'c'.repeat(40),
+    const repairQueue = diagnoseFrozenCandidateRepairQueue({
+      ...createFrozenCandidateRepairQueue({ candidate: 'c'.repeat(40), base: null, nowMs: 0, signature }),
       repairHead: 'd'.repeat(40),
-      phase: 'awaiting-fixer',
-      decision: 'dispatch-fixer',
-      nextAction: 'repair',
-      retireRefusal: 'live-fixer',
-      legs: [],
-      signature,
-      admissions: [],
-    } as NonNullable<GitPipelineSnapshot['gate']['repairQueue']>;
+      fixerSpawnId: 'fixer',
+    }, { nowMs: 1, fixerAlive: true });
+    if (!repairQueue) throw new Error('The frozen queue diagnostic must exist');
     const readCandidateFailures = vi.fn(async () => null as unknown as GateCandidateFailures);
 
     await gitPipelinePosition(

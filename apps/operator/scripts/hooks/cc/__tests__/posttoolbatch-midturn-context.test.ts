@@ -53,7 +53,7 @@ describe('P-038 shared hook attribution producer', () => {
       beforeSha256: 'b'.repeat(64), sha256: 'c'.repeat(64), symbols: [{ name: 'changed', line: 1 }] };
     try {
       await collectInterfaceEdits({ ...scope, toolCalls: [{ editedPaths: ['a.ts'] }] },
-        async () => ({ changes: [], sourceChange }), env);
+        async () => ({ path: sourceChange.path, base: sourceChange.base, checks: [], changes: [], sourceChange }), env);
       const failure: any = { ...scope, toolCalls: [{ tool: 'testing:run' }] };
       await collectInterfaceEdits(failure, undefined, env);
       expect(failure.incidentAttribution.recentEdits).toEqual([{ ...sourceChange,
@@ -62,7 +62,7 @@ describe('P-038 shared hook attribution producer', () => {
       await collectInterfaceEdits(foreign, undefined, env);
       expect(foreign.incidentAttribution).toBeUndefined();
       const expired: any = { ...scope, toolCalls: [{ editedPaths: ['a.ts'] }] };
-      await collectInterfaceEdits(expired, async () => ({ changes: [],
+      await collectInterfaceEdits(expired, async () => ({ path: sourceChange.path, base: sourceChange.base, checks: [], changes: [],
         sourceChange: { ...sourceChange, at: Date.now() - 86_400_001 } }), env);
       expect(expired.incidentAttribution.recentEdits[0].at).toBe(sourceChange.at);
     } finally { rmSync(env.PAPERCUSP_HOME, { recursive: true, force: true }); }
@@ -85,6 +85,7 @@ const BATCH = {
 let server: Server;
 let baseUrl = '';
 let lastBody: Record<string, unknown> | null = null;
+const receivedBody = (): Record<string, unknown> | null => lastBody;
 let nextResponse: { status?: number; body?: unknown } = { body: { ok: true, text: '' } };
 
 beforeAll(async () => {
@@ -175,7 +176,7 @@ describe('posttoolbatch-midturn-context.sh', () => {
     await runHook({
       tool_calls: [{ tool_name: 'Read', tool_input: { file_path: '/a.ts' }, tool_response: 'y'.repeat(100_000) }],
     });
-    const calls = (lastBody as { toolCalls: { toolResponse: string }[] }).toolCalls;
+    const calls = (receivedBody() as { toolCalls: { toolResponse: string }[] }).toolCalls;
     expect(calls[0]!.toolResponse.length).toBeLessThanOrEqual(400);
   });
 
@@ -189,7 +190,7 @@ describe('posttoolbatch-midturn-context.sh', () => {
         tool_response: 'ok',
       })),
     });
-    expect((lastBody as { toolCalls: unknown[] }).toolCalls.length).toBeLessThanOrEqual(12);
+    expect((receivedBody() as { toolCalls: unknown[] }).toolCalls.length).toBeLessThanOrEqual(12);
   });
 
   it('no PAPERCUSP_SID → silent no-op, exit 0 (psu sessions only)', async () => {

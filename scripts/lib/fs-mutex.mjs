@@ -35,7 +35,7 @@ import {
 } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 
-/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: typeof readFile, writeFile?: typeof writeFile }} FsMutexIo */
+/** @typedef {{ opendir?: typeof opendir, symlink?: typeof symlink, readFile?: (path: string, encoding: 'utf8') => Promise<string>, writeFile?: typeof writeFile }} FsMutexIo */
 
 const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_STALE_MS = 10 * 60_000;

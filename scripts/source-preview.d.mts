@@ -215,6 +215,20 @@ export function captureVerifierDependencies({ dest, receipt }: {
         files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
     }[];
 };
+/** Admit against the caller's disclosure ledger before leaving its checkout.
+ * Frozen source excludes local operator configuration; forward only a genuine
+ * admission, never the operator credentials or a fabricated skip marker.
+ * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
+ */
+export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
+    repo: string;
+    env?: NodeJS.ProcessEnv;
+    preflight?: typeof runTreeRestrictedHoldPreflight;
+}): {
+    PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: "admitted-by-test-router";
+} | {
+    [key: string]: string | undefined;
+};
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
@@ -751,4 +765,5 @@ export type Gate = (dir: string, opts: {
     env?: NodeJS.ProcessEnv;
 }) => Promise<GateVerdict>;
 export type Log = (message: string) => void;
+import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;
