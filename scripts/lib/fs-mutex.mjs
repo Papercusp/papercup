@@ -100,13 +100,17 @@ function sleep(ms) {
  * every platform.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, lockRootDir?: string }} [options]
  */
 export function resolveFsMutexLockRoot(env = process.env, options = {}) {
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? userInfo().homedir;
   const stableDefault = join(homeDir, ".papercusp", "fs-mutex-locks");
-  return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? stableDefault);
+  // A process-local caller can opt into a different metadata filesystem (for
+  // example XDG_RUNTIME_DIR's tmpfs for scratch quota). The operator-wide env
+  // override remains authoritative so tests and operators can force every
+  // mutex call onto one inspected root.
+  return resolve(env.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? options.lockRootDir ?? stableDefault);
 }
 
 function staleMsFromEnv(env) {
@@ -310,7 +314,7 @@ function measureFsMutexOperation(phaseTimingsMs, phase, operation) {
  * production callers use the platform defaults.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, lockRootDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
  */
 async function ensureFsMutexLockRootUncached(env = process.env, options = {}) {
   const io = options.io ?? {};
@@ -324,10 +328,11 @@ async function ensureFsMutexLockRootUncached(env = process.env, options = {}) {
   const hasOverride =
     env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== undefined &&
     env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== null;
+  const hasPerCallRoot = options.lockRootDir !== undefined && options.lockRootDir !== null;
   const legacyRootValue =
     options.legacyRoot ?? (platform === "win32" ? null : LEGACY_FS_MUTEX_LOCK_ROOT);
 
-  if (hasOverride || legacyRootValue === null) {
+  if (hasOverride || hasPerCallRoot || legacyRootValue === null) {
     await measure("mkdir", () => mkdir(root, { recursive: true }));
     return root;
   }
@@ -457,7 +462,8 @@ function fsMutexRootCacheKey(env, options) {
   const platform = options?.platform ?? process.platform;
   const homeDir = options?.homeDir ?? userInfo().homedir;
   const override = effectiveEnv.PAPERCUSP_FS_MUTEX_LOCK_DIR ?? '';
-  return JSON.stringify({ platform, homeDir, override });
+  const lockRootDir = options?.lockRootDir ?? '';
+  return JSON.stringify({ platform, homeDir, override, lockRootDir });
 }
 
 /**
@@ -467,7 +473,7 @@ function fsMutexRootCacheKey(env, options) {
  * next caller must be allowed to complete the migration.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, lockRootDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
  */
 export async function ensureFsMutexLockRoot(env = process.env, options = {}) {
   if (!canCacheFsMutexRoot(options)) {
@@ -764,7 +770,7 @@ async function waitForReaders(
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -791,8 +797,9 @@ export async function withFsMutex(name, fn, opts = {}) {
   // Root resolution is outside the mutex's timeout budget, but remains visible in
   // caller timing maps. The nested `lock-root.*` phases intentionally overlap
   // `lock-root.ensure`; they identify which root-resolution operation consumed time.
-  /** @type {{ phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} */
+  /** @type {{ phaseTimingsMs?: Record<string, number>, lockRootDir?: string, io?: FsMutexIo }} */
   const rootOptions = {};
+  if (opts.lockRootDir !== undefined) rootOptions.lockRootDir = opts.lockRootDir;
   if (admissionSubphaseTimingsMs) rootOptions.phaseTimingsMs = admissionSubphaseTimingsMs;
   if (opts.io) rootOptions.io = opts.io;
   const root = await measureAdmissionSubphase(
@@ -980,7 +987,7 @@ export async function withFsMutex(name, fn, opts = {}) {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutexRead(name, fn, opts = {}) {
@@ -988,7 +995,10 @@ export async function withFsMutexRead(name, fn, opts = {}) {
 
   const io = opts.io ?? {};
   const writeFileIo = io.writeFile ?? writeFile;
-  const root = await ensureFsMutexLockRoot(undefined, opts.io ? { io: opts.io } : undefined);
+  const rootOptions = {};
+  if (opts.lockRootDir !== undefined) rootOptions.lockRootDir = opts.lockRootDir;
+  if (opts.io) rootOptions.io = opts.io;
+  const root = await ensureFsMutexLockRoot(undefined, Object.keys(rootOptions).length > 0 ? rootOptions : undefined);
   const writerDir = join(root, `${safeName(name)}.lock`);
   const readersDir = readerRoot(root, name);
   const timeoutMs = opts.timeoutMs ?? resolveFsMutexTimeoutMs();
@@ -1095,16 +1105,18 @@ export async function withFsMutexRead(name, fn, opts = {}) {
  * fail-open error handling).
  *
  * @param {string} name
+ * @param {{ lockRootDir?: string }} [options]
  * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, acquiredAt?: string, runningAt?: string, phase?: 'draining-readers' | 'running', name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
-export function peekFsMutexSync(name) {
+export function peekFsMutexSync(name, options = {}) {
   const lockName = safeName(name) + ".lock";
-  const defaultLockDir = join(lockRoot(), lockName);
+  const defaultLockDir = join(resolveFsMutexLockRoot(process.env, options), lockName);
   const hasOverride =
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== undefined &&
     process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR !== null;
+  const hasPerCallRoot = options.lockRootDir !== undefined && options.lockRootDir !== null;
   const roots =
-    hasOverride || process.platform === "win32"
+    hasOverride || hasPerCallRoot || process.platform === "win32"
       ? [defaultLockDir]
       : [join(LEGACY_FS_MUTEX_LOCK_ROOT, lockName), defaultLockDir];
   const seen = new Set();

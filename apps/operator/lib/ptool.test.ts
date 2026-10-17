@@ -41,6 +41,7 @@ import {
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_SCORECARD_REPAIR_TIMEOUT_MS,
   PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
+  PTOOL_LOCKS_LIST_TIMEOUT_MS,
   timeoutForTool,
   isLoopPressureShed,
   callToolWithPressureRetry,
@@ -846,6 +847,22 @@ describe('ptool timeoutForTool — release:cut reclaim budget (EI-26107428212758
 
   it('does not widen confirmed reclaim writes', () => {
     expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — locks:list compound inventory read (EI-25384303042233581)', () => {
+  it('keeps the client deadline beyond the measured slow success path', () => {
+    expect(timeoutForTool('locks:list', { resource: 'git-sync:papercusp' }))
+      .toBe(PTOOL_LOCKS_LIST_TIMEOUT_MS);
+    expect(PTOOL_LOCKS_LIST_TIMEOUT_MS).toBeGreaterThan(72_441);
+    expect(PTOOL_LOCKS_LIST_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('applies the same budget through the sanctioned tools:invoke fallback', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'locks:list',
+      args: { resource: 'git-sync:papercusp' },
+    })).toBe(PTOOL_LOCKS_LIST_TIMEOUT_MS);
   });
 });
 

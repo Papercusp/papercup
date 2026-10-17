@@ -5380,7 +5380,12 @@ async function amendAcceptanceBarRubric(
             changes,
             revisionMovement: {
               rubric: { from: oldRubricRevision, to: projectionOnly ? oldRubricRevision : nextRubricRevision },
-              subject: { from: oldSubjectRevision, to: changedBars.length || requirementsRerender.rerendered.length ? nextSubjectRevision : oldSubjectRevision },
+              subject: {
+                from: oldSubjectRevision,
+                to: changedBars.length || provenanceChanged || requirementsRerender.rerendered.length
+                  ? nextSubjectRevision
+                  : oldSubjectRevision,
+              },
             },
             ...proofPartition,
             invalidatedScorecardIds: changedBars.length ? [...snapshot.sourceRevisions.scorecardIds].sort() : [],

@@ -1903,6 +1903,15 @@ export const PTOOL_SCORECARDS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // still-running heartbeat batch before its per-lock results are returned.
 export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 
+// EI-25384303042233581: locks:list is a compound, read-only inventory. It
+// retries transient PostgreSQL connection setup and fans out across every live
+// lock domain plus the file-lock summary. A measured successful call took
+// 72.441s on the background host, so the ordinary 30s client cutoff can discard
+// a valid result (or hide the server's structured timeout) before MCP settles.
+// Keep the client beyond that observed path; the server-side deadline remains
+// authoritative when a call cannot complete.
+export const PTOOL_LOCKS_LIST_TIMEOUT_MS = 90_000;
+
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // EI-25679147891530264: graph:query permits a 60s compiler worker plus
   // a bounded runtime-source join inside its declared 90s handler budget.
@@ -2207,6 +2216,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Observe the bounded dispatch receipt before the client deadline, including
   // through tools:invoke, using the existing foreground transport allowance.
   ['plans:bind-spec-evidence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25924578200401207: a successful spec-test adequacy evaluation took
+  // 30.906s server-side, beyond ptool's ordinary 30s client cutoff. Keep both
+  // direct and tools:invoke routes on the foreground allowance so the typed
+  // evaluator result wins instead of surfacing an outcome-unknown timeout.
+  ['plans:evaluate-spec-test-adequacy', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-25882027630574649: the claim handler declares timeoutSec=120, giving
   // MCP a 125s deadline with settlement buffer. A successful claim took
   // 69.467s, beyond ptool's old 60s budget; cover direct and wrapped calls.
@@ -2257,6 +2271,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // cutoff so a completed release is not surfaced as outcome-unknown.
   ['locks:release', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
+  ['locks:list', PTOOL_LOCKS_LIST_TIMEOUT_MS],
 ]);
 
 /**

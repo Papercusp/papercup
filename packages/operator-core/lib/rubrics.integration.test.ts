@@ -3517,6 +3517,10 @@ describe('template_data persistence boundary — the set-template-data door', ()
     };
     expect(await rubrics.previewAcceptanceBarAmendment(amendment)).toMatchObject({
       changedBars: [], approvalRequired: false, nextBarSetHash: before.barSetHash,
+      revisionMovement: {
+        rubric: { from: before.revision, to: before.revision + 1 },
+        subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 },
+      },
     });
     await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
     expect((await rubrics.getRubric(seeded.rubricSlug))!.criteria).toEqual(before.criteria);

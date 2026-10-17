@@ -2,8 +2,10 @@
  * wake-executor.test.ts — the liveness ladder, pure (injected deps, no PG)
  * (await-event-primitive-2026-06-05 P-006, D-003/D-009).
  */
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -46,6 +48,10 @@ import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
 import { getLoopStatus } from '../../harness/routines/loop';
+import {
+  codexFreshDefaultAuthPreflight,
+  rehealResumeCodexAuth,
+} from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A per-session codex home (session-42) with two rollouts; the newer UUID wins.
 const ROLLOUT_UUID = '019ea541-e6ed-71c2-bc67-aa25b5164ec5';
@@ -538,6 +544,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: the production repair helper rebuilds its launch
     // spec through PG. Dedicated Codex archive tests inject the ordering seam.
     ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+    // Hermetic by default: tests of unrelated wake behavior do not depend on
+    // the runner's actual ~/.codex login.
+    prepareDirectCodexWakeAuth: vi.fn(() => ({ checked: true, ready: true, reason: 'test-ready' })),
     // Hermetic by default (turn-provenance P-002): the real tagger writes ledger
     // rows under ~/.papercusp/turn-provenance — stub it to a passthrough so the
     // long-standing exact-text assertions stay byte-identical. The dedicated
@@ -1682,6 +1691,22 @@ describe('wakeTurnText', () => {
       expect(sent[0].summary).toBe(`[await-event] ${DONE_KEY} fired — delivered to your coord inbox (no live pty)`);
     });
 
+    it('uses one stable message id when the same delivery retries its inbox fallback', async () => {
+      const sent: { msgId?: string; summary?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { msgId?: string; summary?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+      const delivery = work({ id: 764769, eventKey: 'work-item:claimable', payload: null });
+
+      await degradeToInboxOrDrop(delivery, 'first attempt', send);
+      await degradeToInboxOrDrop(delivery, 'retry after outcome-unknown append', send);
+
+      expect(sent).toHaveLength(2);
+      expect(sent[0].msgId).toBe('event-wake-inbox-764769');
+      expect(sent[1].msgId).toBe(sent[0].msgId);
+    });
+
     it('does not report a loop fire as delivered when only an inbox notice was written', async () => {
       const sent: { summary?: string; body?: string }[] = [];
       const send = (async (_identity: unknown, opts: { summary?: string; body?: string }) => {
@@ -2304,6 +2329,69 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     const block = out.slice(0, out.indexOf(STALE_TEXT));
     expect(block.indexOf('CARRIED PROBES')).toBeGreaterThan(block.indexOf('LIVE RE-CHECK'));
     expect(block.indexOf('CARRIED PROBES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
+  });
+
+  it.each([
+    ['su-tenant-a', 'workspace-a'],
+    ['su-tenant-b', 'workspace-b'],
+  ])('resolves coordination-namespace checks and references in subscriber %s workspace', async (ownerId, workspaceId) => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Waiting on WI-1234.',
+      checks: [{
+        claim: 'control is green', recheck: 'read control',
+        probe: { kind: 'state-cell', cell: 'control', schemaRevision: 'rev-test', expect: { path: '$.value', op: 'eq', value: 'green' } } as never,
+      }],
+    });
+    const workspaceForCoordOwnerFn = vi.fn(async () => workspaceId);
+    const carriedProbeBlockFn = vi.fn(async (input: { workspaceId: string }) =>
+      input.workspaceId === workspaceId ? 'CHANGED — control is red' : 'COULD NOT RUN — harness_not_found',
+    );
+    const carryRefBlockFn = vi.fn(async (input: { workspaceId: string | null | undefined }) =>
+      input.workspaceId === workspaceId ? 'CHANGED — WI-1234 is wip' : 'GONE — wrong namespace',
+    );
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({ note, updatedAtMs: Date.now() }));
+    const out = await rehydrateLoopWakeText(
+      work({ subscriberId: ownerId, workspaceId: 'default', payload: { harness: 'papercusp', wakeCount: 3 } }),
+      STALE_TEXT,
+      { getLoopCarryNoteWithMetaFn, carriedProbeBlockFn, carryRefBlockFn, ...{ workspaceForCoordOwnerFn } },
+    );
+    expect(workspaceForCoordOwnerFn).toHaveBeenCalledWith(ownerId);
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'default' }));
+    expect(carriedProbeBlockFn).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, ownerId }));
+    expect(carryRefBlockFn).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, ownerId }));
+    expect(out).toContain('CHANGED — control is red');
+    expect(out).toContain('CHANGED — WI-1234 is wip');
+    expect(out).not.toContain('harness_not_found');
+    expect(out).not.toContain('GONE — wrong namespace');
+  });
+
+  it('reports unavailable subscriber scope without dispatching checks or references in the host namespace', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Waiting on WI-1234.',
+      checks: [{
+        claim: 'control is green', recheck: 'read control',
+        probe: { kind: 'state-cell', cell: 'control', schemaRevision: 'rev-test', expect: { path: '$.value', op: 'eq', value: 'green' } } as never,
+      }],
+    });
+    const carriedProbeBlockFn = vi.fn(async () => 'control holds');
+    const carryRefBlockFn = vi.fn(async () => null);
+    const out = await rehydrateLoopWakeText(
+      work({ workspaceId: 'default', payload: { harness: 'papercusp', wakeCount: 3 } }),
+      STALE_TEXT,
+      {
+        getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() })),
+        carriedProbeBlockFn, carryRefBlockFn,
+        ...{ workspaceForCoordOwnerFn: vi.fn(async () => null) },
+      },
+    );
+    expect(carriedProbeBlockFn).not.toHaveBeenCalled();
+    expect(carryRefBlockFn).not.toHaveBeenCalled();
+    expect(out).toContain('CARRIED PROBES — COULD NOT RUN');
+    expect(out).toContain('CARRIED REFERENCES — COULD NOT RE-CHECK');
+    expect(out).toContain('subscriber workspace');
+    expect(out).toContain(STALE_TEXT);
   });
 
   // P-002 (carry-recheck-and-governed-memory-2026-10-14, R-2 / R-12 / R-21): the LIVE RE-CHECK block
@@ -4295,6 +4383,110 @@ describe('executeWake — the liveness ladder', () => {
     }
   });
 
+  it('parks a direct/default Codex wake before spawn when system auth is unavailable', async () => {
+    const advSessionId = 1003;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const spawnDetached = vi.fn(() => 4321);
+    const prepareDirectCodexWakeAuth = vi.fn(() => ({
+      checked: true,
+      ready: false,
+      reason: 'missing-auth-json',
+    }));
+    rmSync(home, { recursive: true, force: true });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '07');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, `rollout-2026-10-07T18-00-00-${nativeId}.jsonl`), '{}');
+    try {
+      const out = await executeWake(
+        work({ subscriberId: 'su-codex-default-auth', wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: nativeId,
+              coordOwnerId: 'su-codex-default-auth',
+              launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
+            }),
+          ) as never,
+          ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+          prepareDirectCodexWakeAuth,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({
+        kind: 'park',
+        reason: 'Codex default-account auth unavailable (missing-auth-json); parked before provider request',
+      });
+      expect(prepareDirectCodexWakeAuth).toHaveBeenCalledWith(home);
+      expect(spawnDetached).not.toHaveBeenCalled();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('restores native auth into the managed home before a direct/default Codex wake', async () => {
+    const advSessionId = 1004;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const globalHome = mkdtempSync(join(tmpdir(), 'wake-codex-native-auth-'));
+    const nativeAuthPath = join(globalHome, '.codex', 'auth.json');
+    const spawnDetached = vi.fn(() => 4321);
+    const prepareDirectCodexWakeAuth = vi.fn((codexHome: string) => {
+      rehealResumeCodexAuth(codexHome, { home: globalHome });
+      return codexFreshDefaultAuthPreflight({
+        agent: 'codex',
+        headless: true,
+        account: 'default',
+        codexHome,
+      });
+    });
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(join(globalHome, '.codex'), { recursive: true });
+    writeFileSync(nativeAuthPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: NEVER_EMIT_MARKER,
+        refresh_token: NEVER_EMIT_MARKER,
+        id_token: NEVER_EMIT_MARKER,
+      },
+    }), { mode: 0o600 });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '07');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, 'rollout-2026-10-07T19-00-00-' + nativeId + '.jsonl'), '{}');
+    try {
+      const out = await executeWake(
+        work({ subscriberId: 'su-codex-default-auth', wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: nativeId,
+              coordOwnerId: 'su-codex-default-auth',
+              launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
+            }),
+          ) as never,
+          ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+          prepareDirectCodexWakeAuth,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(prepareDirectCodexWakeAuth).toHaveBeenCalledWith(home);
+      expect(readlinkSync(join(home, 'auth.json'))).toBe(nativeAuthPath);
+      expect(spawnDetached).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(globalHome, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { repairResult: { ok: false, reason: 'repair-failed' }, reason: 'repair-failed', error: null },
     { repairResult: { ok: true, repaired: false, reason: 'no-launch-spec' }, reason: 'no-launch-spec', error: null },
@@ -5134,6 +5326,58 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       rmSync(claudeRoot, { recursive: true, force: true });
       rmSync(tokenDir, { recursive: true, force: true });
     }
+  });
+
+  it('parks before claiming or spawning when Codex reports an active native thread writer', async () => {
+    const codexThreadWriterHolder = vi.fn(() => ({
+      held: true,
+      pid: 12345,
+      lockPath: join(CODEX_HOMES_DIR, 'session-42', 'thread-writer-locks', `${ROLLOUT_UUID}.lock`),
+      sessionId: ROLLOUT_UUID,
+      reason: 'held',
+    }));
+    const claimResume = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 5555);
+    const out = await executeWake(
+      work({ subscriberId: 'su-owner-9', wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
+        codexThreadWriterHolder,
+        claimResume,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toMatchObject({
+      kind: 'park',
+      reason: `Codex thread ${ROLLOUT_UUID} already has an active writer (pid 12345); parked before resume claim/spawn`,
+    });
+    expect(codexThreadWriterHolder).toHaveBeenCalledWith(join(CODEX_HOMES_DIR, 'session-42'), ROLLOUT_UUID);
+    expect(claimResume).not.toHaveBeenCalled();
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('fails open and resumes when the Codex writer-lock probe cannot read the lock state', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const codexThreadWriterHolder = vi.fn(() => {
+      throw new Error('ENOENT: /proc/locks');
+    });
+    const spawnDetached = vi.fn(() => 5555);
+    const out = await executeWake(
+      work({ subscriberId: 'su-owner-9', wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
+        codexThreadWriterHolder,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(codexThreadWriterHolder).toHaveBeenCalledTimes(1);
+    expect(spawnDetached).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('writer-lock probe failed open'));
   });
 });
 

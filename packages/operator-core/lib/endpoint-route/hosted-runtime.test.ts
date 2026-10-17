@@ -243,6 +243,24 @@ describe('hosted runtime composition', () => {
     expect(() => readHostedRuntimeConfiguration({ ...env, WORKOS_API_KEY_REF: '' })).toThrow(
       'hosted_runtime_configuration_missing:WORKOS_API_KEY_REF',
     );
+    const trial = { assignmentDurationMs: 86_400_000, bundle: {
+      schemaVersion: 1, bundleId: 'production-trial-config', bundleVersion: 1,
+      record: { source: 'trial', actor: { kind: 'service', principalId: 'service:trial-policy' },
+        auditReceiptId: 'trial-policy:production-config', effectiveFrom: '2020-01-01', effectiveUntil: null },
+      entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 1 },
+        browserAccess: { pty: true, files: true }, supportTier: 'trial',
+        quotas: { 'pool.agents': 50, 'pool.hosts': 1, 'pool.cpu-millicores': 4000,
+          'pool.memory-mib': 8192, 'pool.db-gib': 256, 'pool.workspace-gib': 100 },
+        budgets: { 'pool.cost.usd.minor': 10000 }, rolloutFlags: {} },
+    } };
+    expect(readHostedRuntimeConfiguration({ ...env,
+      PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT: JSON.stringify(trial) })).toMatchObject({
+      trialEntitlementPolicy: { assignmentDurationMs: 86_400_000,
+        bundle: { bundleId: trial.bundle.bundleId, record: { effectiveFrom: new Date('2020-01-01') } } },
+    });
+    for (const policy of ['{', '{}', JSON.stringify({ ...trial, assignmentDurationMs: 0 })]) {
+      expect(() => readHostedRuntimeConfiguration({ ...env, PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT: policy })).toThrow();
+    }
   });
 
   it('selects the hosted branch only through the explicit distribution profile', () => {

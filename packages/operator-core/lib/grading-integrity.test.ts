@@ -1058,6 +1058,9 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain('read the cited binding\'s full details with plans:get-spec-evidence');
     expect(brief).toContain('inspect measurementPin.files and measurementPin.repos');
     expect(brief).toContain('repos[].repo may name a submodule inside it');
+    expect(brief).toContain('strip that repository prefix from the file path and pass it as repositoryPath');
+    expect(brief).toContain("path:'<child-relative path>', repositoryPath:'<repo>'");
+    expect(brief).toContain('when rootHarnessSlug is absent, keep the plan harness as the resolved root');
     expect(brief).toContain('Do not send a submodule\'s commit to the parent repository');
     expect(brief).toContain('Use only a supported exact-blob route for the recorded repository');
     expect(brief).toContain('report the exact unsupported locator');
@@ -1848,14 +1851,20 @@ describe('dispatchPendingGradingAudits', () => {
   });
 
   it.each(['live', 'suspect', 'ended', 'unknown', 'unavailable'])
-  ('does not resume an existing lease when auditor liveness is %s', async (state) => {
+  ('delivers the retained lease notice when auditor liveness is %s', async (state) => {
     const f = parkedAuditorFixture();
     if (state === 'unavailable') f.resolveOwnerLiveness.mockRejectedValue(new Error('oracle unavailable'));
     else f.resolveOwnerLiveness.mockResolvedValue(state === 'unknown' ? null
       : { sessionState: state as 'live' | 'suspect' | 'ended' });
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: f.prior });
-    expect(f.d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    expect(result.receipts[0]).toMatchObject({ renewalNotification: { state: 'delivered' } });
+    const notice = f.d.notifyRetainedAuditor.mock.calls[0]?.[0];
+    expect(notice).toEqual(expect.objectContaining({
+      reservation: f.prior,
+      task: expect.objectContaining({ taskId: 'retained' }),
+    }));
+    expect(notice).not.toHaveProperty('resumeParked');
     expect(f.d.launch).not.toHaveBeenCalled();
     expect(f.killTask).not.toHaveBeenCalled();
   });

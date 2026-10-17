@@ -3504,6 +3504,74 @@ export async function findAnnouncementsForKey(
   return rows.map(mapAwait);
 }
 
+/**
+ * Announced gates that would be stranded by a terminal work-item close.
+ *
+ * A gate declaration is intentionally durable after its owner disappears, so
+ * normal lifecycle-binding retirement must not cancel it. A terminal close is
+ * different: if the declaration names the item (in its lifecycle binding,
+ * logical key, or note), or the closing owner declared it, closing the item is
+ * only safe after every live waiter has been given a real fire or an explicit
+ * retirement. Keep this read in the await store so the close path can inspect
+ * declaration and waiter rows from one authoritative surface.
+ */
+export interface PendingAnnouncementForTerminalClose {
+  announcement: AwaitRow;
+  liveWaiters: number;
+}
+
+export async function findPendingAnnouncementsForTerminalClose(input: {
+  ownerId?: string | null;
+  workItemId?: string | null;
+  limit?: number;
+}): Promise<PendingAnnouncementForTerminalClose[]> {
+  const ownerId = input.ownerId?.trim() || null;
+  const workItemId = input.workItemId?.trim() || null;
+  if (!ownerId && !workItemId) return [];
+
+  const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 20), 100));
+  const ws = eventsWs();
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+      SELECT a.*,
+             (
+               SELECT count(*)::int
+                 FROM harness_shared.event_awaits waiter
+                WHERE waiter.workspace_id = a.workspace_id
+                  AND waiter.event_key = a.event_key
+                  AND waiter.policy <> 'announce'
+                  AND waiter.fired_at IS NULL
+                  AND waiter.cancelled_at IS NULL
+                  AND waiter.superseded_at IS NULL
+             ) AS live_waiters
+        FROM harness_shared.event_awaits a
+       WHERE a.workspace_id = ${ws}
+         AND a.policy = 'announce'
+         AND a.fired_at IS NULL
+         AND a.cancelled_at IS NULL
+         AND a.superseded_at IS NULL
+         AND (
+           (${ownerId !== null}::boolean AND a.subscriber_id = ${ownerId ?? ''})
+           OR (${workItemId !== null}::boolean AND (
+             (a.bound_to->>'kind' = 'work-item' AND a.bound_to->>'ref' = ${workItemId ?? ''})
+             OR a.logical_gate_key = ${workItemId ?? ''}
+             OR position(${workItemId ?? ''} in coalesce(a.note, '')) > 0
+           ))
+         )
+       ORDER BY a.created_at DESC
+       LIMIT ${limit}
+    `,
+    AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
+  );
+
+  return rows
+    .map((row: any) => ({
+      announcement: mapAwait(row),
+      liveWaiters: Number(row.live_waiters) || 0,
+    }))
+    .filter((entry) => entry.liveWaiters > 0);
+}
+
 /** A key that nearly matches one being emitted/awaited — the advisory
  *  near-miss read (event-key-nearmiss-guard-2026-07-10 P-003). */
 export interface NearMissKey {

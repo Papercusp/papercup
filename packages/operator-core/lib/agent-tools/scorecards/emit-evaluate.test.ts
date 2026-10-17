@@ -365,6 +365,32 @@ describe('emitScorecard', () => {
     });
   });
 
+  // EI-25880885804871835: plans:evaluate-spec-quality returns a terminal draft
+  // without identity fields; scorecards:emit must stamp the reviewed rubric
+  // revision/hash before persistence so scorecards:get can classify currentness.
+  it('stamps rubric identity on evaluator-produced spec-quality cards', async () => {
+    const criteriaHash = 'a'.repeat(64);
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-quality' });
+    getRubricPlanRevisionM.mockResolvedValue(5);
+    getRubricCriteriaHashM.mockResolvedValue(criteriaHash);
+
+    const r = await emitScorecard({
+      rubricRef: 'spec-quality',
+      subject: { kind: 'plan', ref: 'quality-plan:plan-class-feature-ship:spec-set' },
+      ratings: RATINGS,
+      terminal: true,
+    }, { createdBy: 'su-evaluator' });
+
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: {
+        rubricRef: 'spec-quality',
+        rubricRevision: 5,
+        criteriaHash,
+      } },
+    });
+  });
+
   it('stamps a graded subject rubric separately from the scoring rubric', async () => {
     getRubricM.mockImplementation(async (ref) => ref === 'subject-rubric'
       ? { ...RUBRIC, rubricId: ref, revision: 4, criteriaHash: 'subject-hash' }

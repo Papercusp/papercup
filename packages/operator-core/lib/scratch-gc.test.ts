@@ -80,6 +80,7 @@ import { createTextCollector } from './child-output.js';
 // override is the only reliable swap.
 let prevScratchRoot: string | undefined;
 let prevFsMutexLockDir: string | undefined;
+let prevXdgRuntimeDir: string | undefined;
 let prevDisableFsMutex: string | undefined;
 let prevRetentionRoot: string | undefined;
 let sandbox: string;
@@ -88,6 +89,7 @@ beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-scratch-test-'));
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
   prevFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  prevXdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
   prevDisableFsMutex = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   prevRetentionRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
   process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = join(sandbox, 'retention-leases');
@@ -104,6 +106,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
   if (prevFsMutexLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = prevFsMutexLockDir;
+  if (prevXdgRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+  else process.env.XDG_RUNTIME_DIR = prevXdgRuntimeDir;
   if (prevDisableFsMutex === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   else process.env.PAPERCUSP_DISABLE_FS_MUTEX = prevDisableFsMutex;
   if (prevRetentionRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
@@ -202,6 +206,33 @@ function startScratchChild(script: string, env: Record<string, string>) {
 
 /** A complete /proc scan that saw no holder anywhere. */
 const noHolders = async (): Promise<OpenWriterScan> => ({ byPath: new Map(), complete: true });
+
+describe('scratch quota mutex root', () => {
+  it('uses XDG_RUNTIME_DIR for scratch mutex metadata when no global override is set', async () => {
+    const runtimeDir = join(sandbox, 'xdg-runtime');
+    delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+
+    makeRunDir('ws-runtime-lock', 'demo:tool', UUID(10), 8);
+    await runScratchGc({ workspaceRegistry: ['ws-runtime-lock'], enforceQuota: false });
+
+    expect(existsSync(join(runtimeDir, 'papercusp', 'fs-mutex-locks'))).toBe(true);
+    expect(existsSync(join(sandbox, 'fs-mutex-locks'))).toBe(false);
+  });
+
+  it('keeps PAPERCUSP_FS_MUTEX_LOCK_DIR authoritative over the runtime root', async () => {
+    const runtimeDir = join(sandbox, 'xdg-runtime');
+    const explicitRoot = join(sandbox, 'explicit-locks');
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = explicitRoot;
+
+    makeRunDir('ws-explicit-lock', 'demo:tool', UUID(11), 8);
+    await runScratchGc({ workspaceRegistry: ['ws-explicit-lock'], enforceQuota: false });
+
+    expect(existsSync(explicitRoot)).toBe(true);
+    expect(existsSync(join(runtimeDir, 'papercusp', 'fs-mutex-locks'))).toBe(false);
+  });
+});
 
 describe('scratch retention pins', () => {
   function pin(path: string, expiresAt = new Date(Date.now() + 3600_000).toISOString()) {

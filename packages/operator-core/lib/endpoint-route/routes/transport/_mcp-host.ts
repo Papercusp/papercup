@@ -3016,6 +3016,8 @@ async function buildMcpToolContext(
         fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
         sourceProjection: projectionSpec, indirect: true,
       }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec), progressBridge.onProgress),
+      undefined,
+      baseCtx.requestOrigin?.mcpRequestTraceId,
     );
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
@@ -6446,8 +6448,16 @@ export function dispatchNestedWithMcpDeadline(
   toolTimeoutSec: number | null | undefined,
   run: () => Promise<McpCallResult>,
   baseDeadlineMs: number = MCP_DEADLINE_MS,
+  requestTraceId?: string | null,
 ): Promise<McpCallResult> {
   const deadlineMs = effectiveMcpDeadlineMs(toolTimeoutSec, baseDeadlineMs);
+  const timeoutReceipt = requestTraceId
+    ? {
+        status: 'recovery-incomplete' as const,
+        reason: `nested tool "${toolName}" exceeded ${deadlineMs}ms before the target settled`,
+        mcpRequestTraceId: requestTraceId,
+      }
+    : undefined;
   return raceDeadline(
     deadlineMs,
     run,
@@ -6460,9 +6470,10 @@ export function dispatchNestedWithMcpDeadline(
             `request_timeout: nested tool "${toolName}" exceeded ${deadlineMs}ms via tools:invoke ` +
             `(commit status is UNKNOWN: the target may still be running server-side. This nested call has no ` +
             `independent idempotent replay. Re-read the target's state before retrying; a blind retry may ` +
-            `repeat a mutation.`,
+            `repeat a mutation.${requestTraceId ? ` request trace id: ${requestTraceId}.` : ''}`,
         },
       ],
+      ...(timeoutReceipt ? { _meta: { abortCompletionReceipt: timeoutReceipt } } : {}),
     }),
   );
 }

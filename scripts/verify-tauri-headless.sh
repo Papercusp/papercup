@@ -1009,6 +1009,71 @@ trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
 trap 'handle_signal HUP' HUP
 
+# Repository snapshots must satisfy scratchClone's filesystem admission before
+# native checks allocate anything. Reuse pinned-deps' independent copy mode for
+# root-device donors; hardlinks remain the default on eligible data devices.
+select_verifier_snapshot_root() {
+  local work_root="${TMPDIR:-/tmp}" donor_device work_device root_device data_root data_device
+  local mode="${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}"
+  case "$mode" in
+    hardlink|copy) ;;
+    *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
+  esac
+  if [ -f "$REPO_DIR/.verifier-source.json" ] && [[ "$work_root/" == "$REPO_DIR/"* ]]; then
+    work_root="$(dirname "$REPO_DIR")"
+  fi
+  donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
+  work_device="$(stat -c %d -- "$work_root")" || return 1
+  if [ "$(uname -s)" = Linux ]; then
+    root_device="$(stat -c %d -- /)" || return 1
+    if [ "$donor_device" = "$root_device" ]; then
+      if [ "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE+x}" = x ] && [ "$mode" = hardlink ]; then
+        echo 'FATAL: root-filesystem donors require VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE=copy' >&2
+        return 2
+      fi
+      mode=copy
+    fi
+    if [ "$mode" = copy ] && { [ "$donor_device" = "$root_device" ] || [ "$work_device" = "$root_device" ]; }; then
+      data_root="$(realpath -e -- /mnt/data)" || return 1
+      data_device="$(stat -c %d -- "$data_root")" || return 1
+      if [ "$data_device" = "$root_device" ]; then
+        echo 'FATAL: verifier snapshot requires a separate /mnt/data filesystem' >&2
+        return 1
+      fi
+      work_root="$data_root/tmp"
+      mkdir -p -- "$work_root" || return 1
+      work_root="$(realpath -e -- "$work_root")" || return 1
+      work_device="$(stat -c %d -- "$work_root")" || return 1
+      if [ "$work_device" != "$data_device" ]; then
+        echo 'FATAL: verifier snapshot scratch resolves outside the data filesystem' >&2
+        return 1
+      fi
+    fi
+  fi
+  if [ "$mode" = hardlink ]; then
+    if [ "$donor_device" != "$work_device" ]; then
+      if [ -f "$REPO_DIR/.verifier-source.json" ]; then
+        work_root="$(dirname "$REPO_DIR")"
+      else
+        work_root="$REPO_DIR/.papercusp/scratch"
+      fi
+      mkdir -p -- "$work_root" || return 1
+      work_device="$(stat -c %d -- "$work_root")" || return 1
+    fi
+    if [ "$donor_device" != "$work_device" ]; then
+      echo "FATAL: no verifier snapshot root on the dependency donor filesystem: $work_root" >&2
+      return 1
+    fi
+  fi
+  [ -d "$work_root" ] || return 1
+  OPERATOR_SNAPSHOT_PARENT="$work_root"
+  VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE="$mode"
+  export VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE
+  printf '%s\n' "$OPERATOR_SNAPSHOT_PARENT"
+}
+# Run in this shell: a command substitution would discard the selected mode.
+vh_run_step verifier-snapshot-root select_verifier_snapshot_root || exit $?
+
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
 # slot descriptor for the whole run; tauri-guarded inherits this exact target.
@@ -1192,40 +1257,6 @@ shared_schema_readiness_preflight() {
 }
 vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
 
-# Hardlinks need the donor device; an explicitly selected independent copy
-# uses the requested temporary device. Bulk SPA/profile/database payloads
-# remain on TMPDIR in either mode.
-# .papercusp is excluded from both source and dependency snapshots.
-select_verifier_snapshot_root() {
-  local work_root="${TMPDIR:-/tmp}" donor_device work_device
-  # A nested invocation may itself run from a frozen archive. Generated source
-  # belongs beside that archive, never inside its attested file population.
-  if [ -f "$REPO_DIR/.verifier-source.json" ] && [[ "$work_root/" == "$REPO_DIR/"* ]]; then
-    work_root="$(dirname "$REPO_DIR")"
-  fi
-  case "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" in
-    hardlink) ;;
-    copy) [ -d "$work_root" ] || return 1; printf '%s\n' "$work_root"; return 0 ;;
-    *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
-  esac
-  donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
-  work_device="$(stat -c %d -- "$work_root")" || return 1
-  if [ "$donor_device" != "$work_device" ]; then
-    if [ -f "$REPO_DIR/.verifier-source.json" ]; then
-      work_root="$(dirname "$REPO_DIR")"
-    else
-      work_root="$REPO_DIR/.papercusp/scratch"
-    fi
-    mkdir -p -- "$work_root" || return 1
-    work_device="$(stat -c %d -- "$work_root")" || return 1
-  fi
-  if [ "$donor_device" != "$work_device" ]; then
-    echo "FATAL: no verifier snapshot root on the dependency donor filesystem: $work_root" >&2
-    return 1
-  fi
-  printf '%s\n' "$work_root"
-}
-OPERATOR_SNAPSHOT_PARENT="$(vh_run_step verifier-snapshot-root select_verifier_snapshot_root)" || exit $?
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 # The operator sidecar must not compile the mutable shared checkout while this

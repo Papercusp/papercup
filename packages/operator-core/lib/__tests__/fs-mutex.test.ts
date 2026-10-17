@@ -43,6 +43,32 @@ describe('resolveFsMutexLockRoot', () => {
     ).toBe('/operator/serialized-locks');
   });
 
+  it('uses a per-call lock root and keeps the process-wide override authoritative', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-per-call-root-'));
+    const perCallRoot = join(temp, 'runtime-locks');
+    const explicitRoot = join(temp, 'operator-locks');
+    delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    try {
+      await expect(withFsMutex('per-call-root', async () => 'runtime', {
+        lockRootDir: perCallRoot,
+        timeoutMs: 1_000,
+        retryMs: 5,
+      })).resolves.toBe('runtime');
+      await expect(readdir(perCallRoot)).resolves.toContain('per-call-root.queue');
+
+      process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = explicitRoot;
+      await expect(withFsMutex('override-root', async () => 'explicit', {
+        lockRootDir: perCallRoot,
+        timeoutMs: 1_000,
+        retryMs: 5,
+      })).resolves.toBe('explicit');
+      await expect(readdir(explicitRoot)).resolves.toContain('override-root.queue');
+      await expect(readdir(perCallRoot)).resolves.toContain('per-call-root.queue');
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+
   it('accepts a legacy symlink to the OS account root when HOME is private and there is no lock-root override', async () => {
     const temp = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-private-home-'));
     const privateHome = join(temp, 'private-home');

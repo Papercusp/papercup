@@ -4278,6 +4278,39 @@ export async function setWorkItemState(
   // work_items:set_state { force: true } instead.
   const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked';
   const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
+  // EI-6554700010011175: a terminal close must not strand an announced event
+  // gate that still has live waiters. The announcement is deliberately durable
+  // across owner death, so generic lifecycle-binding cleanup cannot retire it
+  // for us. Check both declarations that explicitly reference this item and
+  // gates declared by the closer; the latter is the common case for a worker
+  // that announces a handoff before finishing its work. Complete or retire the
+  // gate first, then retry the close. `force` is the explicit set_state escape
+  // hatch; trusted system paths use skipCompletionGate.
+  if (!opts.force && !opts.skipCompletionGate && isCompletingTransition) {
+    const { findPendingAnnouncementsForTerminalClose } = await import('./events/await/store');
+    let pending: Awaited<ReturnType<typeof findPendingAnnouncementsForTerminalClose>>;
+    try {
+      pending = await findPendingAnnouncementsForTerminalClose({ ownerId: opts.by, workItemId: id });
+    } catch (error) {
+      throw new Error(
+        `completion gate unavailable for work_item '${id}': could not verify announced event gates ` +
+        `before closing (${error instanceof Error ? error.message : String(error)}). Retry the close; ` +
+        'no terminal state transition was written.',
+      );
+    }
+    if (pending.length > 0) {
+      const gates = pending.slice(0, 10).map(({ announcement, liveWaiters }) =>
+        `${announcement.eventKey} (announcement ${announcement.id}, ${liveWaiters} live waiter${liveWaiters === 1 ? '' : 's'})`,
+      );
+      const more = pending.length - gates.length;
+      throw new Error(
+        `refusing to complete work_item '${id}': announced event gate${pending.length === 1 ? '' : 's'} ` +
+        `remain declared and unfired with live waiters: ${gates.join('; ')}${more > 0 ? `; plus ${more} more` : ''}. ` +
+        'Fire each exact key with events:emit, or explicitly retire its declaration with events:cancel ' +
+        '{ announcement_id }; then retry the terminal close. No terminal state transition was written.',
+      );
+    }
+  }
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
     const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
     const block = await planItemLaneBlockReason(wi).catch(() => null);

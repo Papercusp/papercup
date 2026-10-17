@@ -1588,9 +1588,11 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     }) as never;
     const selected = binding(38382);
     const excluded = binding(38344, 'The unit-only row leaves cancellation coverage unproven.');
+    const otherActive = binding(38345);
+    const active = [selected, excluded, otherActive];
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockImplementation(async (options) =>
-      options.bindingIds ? [selected] as never : [selected, excluded] as never,
+      (options.bindingIds ? [selected] : active).slice(0, options.limit) as never,
     );
 
     const result = await call({
@@ -1599,6 +1601,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       classRef: 'plan-class-feature-ship',
       specIds: ['SPEC-001'],
       bindingIds: [38382],
+      // Exercise an older persisted replay whose limit equals its selected cohort;
+      // the universal disclosure read must still see the whole active population.
+      limit: 2,
       detail: 'full',
     });
 
@@ -1606,6 +1611,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listEvidence).toHaveBeenCalledTimes(2);
     expect(listEvidence.mock.calls[1]?.[0]).toMatchObject({ specIds: ['SPEC-001'] });
     expect(listEvidence.mock.calls[1]?.[0]).not.toHaveProperty('bindingIds');
+    expect(listEvidence.mock.calls[1]?.[0].limit).toBeGreaterThan(2);
     expect(result.rows[0].ratings['disclosed-gap']).toMatchObject({ rating: 'fail' });
     expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain('id=38344');
     expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain(

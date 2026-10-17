@@ -1,6 +1,8 @@
 /** P-537: the production callback composes real identity, session and trial stores. */
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { serve } from '@hono/node-server';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -12,6 +14,7 @@ import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle
 import { readHostedEntitlementAuthority, writeHostedEntitlementAuthority,
   type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
 import { createHostedAuthRuntime } from './hosted-auth-runtime';
+import { createHostedRuntime } from './hosted-runtime';
 import type { HostedAuthFlow, HostedAuthFlowConsumeResult } from './routes/hosted-auth/flow';
 import { HOSTED_AUTH_FLOW_COOKIE } from './routes/hosted-auth';
 import { HOSTED_SESSION_COOKIE } from '../auth/hosted-session';
@@ -50,11 +53,13 @@ function policy(): HostedTrialEntitlementPolicy {
   } };
 }
 
-describe('configured hosted authentication trial rollout (real PG)', () => {
+describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted authentication trial rollout (%s, real PG + HTTP)', runtimeKind => {
   let db: OrgTestDb;
+  const servers = new Set<ReturnType<typeof serve>>();
   const pending = new Set<Promise<unknown>>();
   const runService: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>): Promise<T> => {
     const task = db.appSql.begin(async tx => {
+      await tx`SELECT set_config('app.workspace_id', 'hosted-control-plane-service', true)`;
       await tx.unsafe('SET LOCAL ROLE hosted_service');
       return fn(tx as unknown as Sql);
     }) as Promise<T>;
@@ -65,7 +70,13 @@ describe('configured hosted authentication trial rollout (real PG)', () => {
     db = await createOrgTestDb();
     await db.adminSql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/1524-hosted-entitlement-authority.sql', import.meta.url), 'utf8'));
   }, 180_000);
-  afterAll(async () => { await Promise.allSettled([...pending]); await db?.cleanup(); });
+  afterAll(async () => {
+    await Promise.all([...servers].map(server => new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+      if ('closeAllConnections' in server) server.closeAllConnections();
+    })));
+    await Promise.allSettled([...pending]); await db?.cleanup();
+  });
 
   async function fixture(trialEntitlementPolicy?: HostedTrialEntitlementPolicy) {
     const identity = { externalUserId: `callback-${randomUUID()}`, primaryEmail: `${randomUUID()}@example.test`,
@@ -84,15 +95,26 @@ describe('configured hosted authentication trial rollout (real PG)', () => {
         authenticatedAtMs: Date.now() - 1000, expiresAtMs: Date.now() + 3_600_000,
         authenticationMethods: ['pwd'], mfaVerified: false } });
     h.provider = provider;
-    const runtime = await createHostedAuthRuntime({ ...configuration, trialEntitlementPolicy }, {
+    const dependencies = {
       runService, resolveSecret: async () => 'callback-fixture-cookie-secret-at-least-32-bytes',
-    });
-    async function callback(invalidState = false) {
-      const start = await runtime.app.request('/api/hosted/auth/sign-in?returnTo=%2Fworkspaces');
+    };
+    const runtime = runtimeKind === 'auth-only'
+      ? await createHostedAuthRuntime({ ...configuration, trialEntitlementPolicy }, dependencies)
+      : await createHostedRuntime({ ...configuration, workosWebhookSecretRef: 'env:WEBHOOK',
+          trialEntitlementPolicy }, dependencies);
+    const server = serve({ fetch: runtime.app.fetch, hostname: '127.0.0.1', port: 0 });
+    servers.add(server);
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('private callback HTTP listener unavailable');
+    const request = (path: string, init?: RequestInit) =>
+      fetch(`http://127.0.0.1:${address.port}${path}`, { ...init, redirect: 'manual' });
+    async function callback(invalidState = false, intent: 'sign-in' | 'sign-up' = 'sign-in') {
+      const start = await request(`/api/hosted/auth/sign-in?returnTo=%2Fworkspaces&intent=${intent}`);
       expect(start.status).toBe(302);
       const state = new URL(start.headers.get('location')!).searchParams.get('state')!;
       const cookie = start.headers.get('set-cookie')!.match(new RegExp(`${HOSTED_AUTH_FLOW_COOKIE}=([^;,]+)`))![1];
-      const response = await runtime.app.request(`/api/hosted/auth/callback?code=valid&state=${invalidState ? randomUUID() : state}`, {
+      const response = await request(`/api/hosted/auth/callback?code=valid&state=${invalidState ? randomUUID() : state}`, {
         headers: { cookie: `${HOSTED_AUTH_FLOW_COOKIE}=${cookie}` },
       });
       // onSessionEstablished is intentionally a nonblocking metadata observer.
@@ -139,5 +161,19 @@ describe('configured hosted authentication trial rollout (real PG)', () => {
     expect(response.headers.get('location')).not.toBe('https://app.papercusp.com/workspaces');
     expect(configured.provider.calls.exchangeCallback).toHaveLength(0);
     expect(await configured.stored()).toMatchObject({ authority: null, authority_revision: 0 });
+  });
+
+  it('routes returning signup through canonical admission without replacing or renewing the trial', async () => {
+    const f = await fixture(policy());
+    expect((await f.callback(false, 'sign-up')).headers.get('location'))
+      .toBe('https://app.papercusp.com/workspaces');
+    const original = await f.stored();
+    expect(Number(original.authority_revision)).toBe(1);
+    expect(original.authority.assignments[0].record).toMatchObject({
+      effectiveFrom: f.createdAt.toISOString(),
+      effectiveUntil: new Date(f.createdAt.getTime() + 86_400_000).toISOString(),
+    });
+    expect((await f.callback(false, 'sign-up')).status).toBe(303);
+    expect(await f.stored()).toEqual(original);
   });
 });

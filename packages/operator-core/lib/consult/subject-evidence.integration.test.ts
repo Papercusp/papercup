@@ -137,20 +137,112 @@ describe('registered subject evidence with the real local scorer', () => {
       expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(privateDb?.url);
     }
     const failures: { contracts: string[]; reason: string }[] = [];
+    let scorerFailureCaptured = false;
+    const readScorerFailureState = async () => {
+      const health = url ? await probeSidecarHealth(url, 1000).catch(() => null) as {
+        pid?: number; uptimeMs?: number;
+        models?: Record<string, string>; warmups?: Record<string, string>;
+        rerankExecutionHealth?: { active?: unknown };
+        rerankExecution?: unknown;
+        workers?: { reranker?: unknown };
+      } | null : null;
+      if (!privateDb) return { health, admission: null };
+      const sql = postgres(privateDb.url, { max: 1, connect_timeout: 3, onnotice: () => {} });
+      try {
+        await sql`SET statement_timeout = '3000ms'`;
+        const admissions = await sql`
+          SELECT receipt_id, state,
+            record->>'admissionClass' AS admission_class,
+            record->'metadata'->>'operation' AS operation,
+            record->'metadata'->>'model' AS model,
+            record->'metadata'->>'kind' AS kind,
+            record->>'enqueuedAtMs' AS enqueued_at_ms,
+            record->>'updatedAtMs' AS updated_at_ms,
+            record->'decision'->>'reason' AS decision_reason,
+            record->'lease'->>'owner' AS lease_owner
+          FROM harness_shared.resource_governor_admissions
+          WHERE namespace = 'embed-sidecar'
+          ORDER BY enqueued_at_ms ASC NULLS LAST, receipt_id ASC
+        `;
+        const activity = await sql`
+          SELECT state, wait_event_type, wait_event, count(*)::int AS count
+          FROM pg_stat_activity
+          WHERE datname = current_database() AND pid <> pg_backend_pid()
+          GROUP BY state, wait_event_type, wait_event
+          ORDER BY count DESC
+          LIMIT 8
+        `;
+        const sidecar = health ? {
+          pid: health.pid ?? null,
+          uptimeMs: health.uptimeMs ?? null,
+          model: health.models?.rerank ?? null,
+          warmup: health.warmups?.rerank ?? null,
+          rerankExecution: health.rerankExecution ?? null,
+          rerankExecutionHealth: health.rerankExecutionHealth ?? null,
+          rerankerWorker: health.workers?.reranker ?? null,
+        } : null;
+        return { sidecar, admission: { database: privateDb.name, admissions, activity } };
+      } catch (error) {
+        return { health, admission: { database: privateDb.name,
+          error: error instanceof Error ? error.message : String(error) } };
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+    };
     const baseScorer = await buildSidecarAwareReranker();
     const scorer: typeof baseScorer = async (query, contracts, opts) => {
+      const callStartedAt = Date.now();
+      const phaseSamples: Record<string, unknown>[] = [];
+      let sampleBusy = false;
+      let samplePromise: Promise<void> | undefined;
+      const samplePhase = async () => {
+        if (!url) return;
+        try {
+          const health = await probeSidecarHealth(url, 1000) as {
+            models?: Record<string, string>; warmups?: Record<string, string>;
+            rerankExecutionHealth?: { active?: unknown };
+            rerankExecution?: unknown;
+            workers?: { reranker?: unknown };
+          } | null;
+          phaseSamples.push({ elapsedMs: Date.now() - callStartedAt,
+            model: health?.models?.rerank ?? null,
+            warmup: health?.warmups?.rerank ?? null,
+            execution: health?.rerankExecutionHealth?.active ?? null,
+            rerankExecution: health?.rerankExecution ?? null,
+            rerankerWorker: health?.workers?.reranker ?? null });
+        } catch (error) {
+          phaseSamples.push({ elapsedMs: Date.now() - callStartedAt,
+            probeError: error instanceof Error ? error.message : String(error) });
+        }
+      };
+      const timer = setInterval(() => {
+        if (sampleBusy || !url) return;
+        sampleBusy = true;
+        samplePromise = samplePhase().finally(() => { sampleBusy = false; });
+      }, 500);
+      const stopSampling = async () => {
+        clearInterval(timer);
+        await samplePromise;
+      };
       try {
         const scores = await baseScorer(query, contracts, opts);
-        console.info('subject-contract-scores', JSON.stringify({ contracts: contracts.map(c => c.split('\n')[0]), scores }));
+        await stopSampling();
+        console.info('subject-contract-scores', JSON.stringify({ elapsedMs: Date.now() - callStartedAt,
+          contracts: contracts.map(c => c.split('\n')[0]), scores }));
         if (contracts[0]?.includes('?')) {
           console.info('subject-natural-contract-pairs', JSON.stringify({ passage: query, contracts, scores }));
         }
         return scores;
       } catch (error) {
-        const failure = { contracts: contracts.map(c => c.split('\n')[0]),
+        await stopSampling();
+        if (phaseSamples.length === 0) await samplePhase();
+        const failure = { elapsedMs: Date.now() - callStartedAt,
+          contracts: contracts.map(c => c.split('\n')[0]),
           reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown' };
         failures.push(failure);
-        console.info('subject-contract-unavailable', JSON.stringify(failure));
+        console.info('subject-contract-unavailable', JSON.stringify({ ...failure, phaseSamples }));
+        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerFailureState()));
+        scorerFailureCaptured = true;
         throw error;
       }
     };
@@ -179,31 +271,10 @@ describe('registered subject evidence with the real local scorer', () => {
       }
       await scorer('SQL migration file', ['Apply a numbered PostgreSQL DDL transaction.'], { deadline: Date.now() + 15_000 });
     } catch (error) {
-      // Preserve the distinction between model construction and admission before
-      // teardown removes the owned process and database. Never infer either
-      // from endpoint liveness or a missing model slot alone.
-      console.info('subject-scorer-failed-health', JSON.stringify(url ? await probeSidecarHealth(url, 5000) : null));
-      if (privateDb) {
-        const sql = postgres(privateDb.url, { max: 1, connect_timeout: 5, onnotice: () => {} });
-        try {
-          await sql`SET statement_timeout = '5000ms'`;
-          const admissions = await sql`
-            SELECT receipt_id, record
-            FROM harness_shared.resource_governor_admissions
-            ORDER BY receipt_id LIMIT 8
-          `;
-          const activity = await sql`
-            SELECT state, wait_event_type, wait_event, left(query, 200) AS query
-            FROM pg_stat_activity
-            WHERE datname = current_database() AND pid <> pg_backend_pid()
-            LIMIT 8
-          `;
-          console.info('subject-scorer-failed-admission', JSON.stringify({ database: privateDb.name, admissions, activity }));
-        } catch (diagnosticError) {
-          console.info('subject-scorer-diagnostic-unavailable', String(diagnosticError));
-        } finally {
-          await sql.end({ timeout: 5 });
-        }
+      // Preserve phase evidence before teardown removes the owned process and
+      // database. Per-call failures already captured this in the scorer wrapper.
+      if (!scorerFailureCaptured) {
+        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerFailureState()));
       }
       throw error;
     }

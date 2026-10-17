@@ -20,6 +20,7 @@ import {
   evaluateSpecTestAdequacy,
   latestLogicalEvidence,
   PLAN_CLASS_RUBRIC_REFS,
+  SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   type PlanClassRubricRef,
 } from './spec-test-adequacy';
@@ -1100,6 +1101,11 @@ export default defineTool({
     // disclosed-gap rubric is universal: every active binding for each clause must
     // be checked. Keep that population separate so binding selectors cannot hide a
     // disclosure without widening the rest of the diagnostic read.
+    // A persisted diagnostic replay may carry a `limit` sized exactly to its pinned
+    // bindingIds cohort. The disclosed-gap criterion is universal, so that limit must
+    // not truncate the separate clause-wide active population. Keep the smallest
+    // bounded replay ceiling as the floor; larger caller limits remain authoritative.
+    const disclosedGapEvidenceLimit = Math.max(evidenceLimit, SPEC_TEST_ADEQUACY_REPLAY_LIMIT);
     const disclosedGapEvidence = bindingSelection && eligible.length > 0
       ? await timePhase('disclosedGapEvidenceRead', () => listSpecEvidence({
           harnessSlug,
@@ -1112,10 +1118,10 @@ export default defineTool({
             ? { currentProvenance: 'replayed-snapshot' as const }
             : {}),
           current,
-          limit: evidenceLimit,
+          limit: disclosedGapEvidenceLimit,
         }))
       : allEvidence;
-    if (bindingSelection && disclosedGapEvidence.length >= evidenceLimit) {
+    if (bindingSelection && disclosedGapEvidence.length >= disclosedGapEvidenceLimit) {
       return {
         data: {
           ok: false,
@@ -1129,7 +1135,7 @@ export default defineTool({
           classRefSource: classResolution.source,
           count: disclosedGapEvidence.length,
           selectedEvidenceCount: allEvidence.length,
-          limit: evidenceLimit,
+          limit: disclosedGapEvidenceLimit,
           remedy:
             'The unscoped active-binding population needed for disclosed-gap reached the evidence-row ceiling; narrow the selected clauses or raise limit. A capped population cannot produce a safe disclosed-gap verdict.',
         },

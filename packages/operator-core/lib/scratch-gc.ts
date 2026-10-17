@@ -110,6 +110,19 @@ function scratchWorkspaceMutexName(workspaceId: string): string {
   return 'papercusp-scratch-quota-' + digest;
 }
 
+/**
+ * Scratch quota admission is high-churn metadata work. Keep its queue, ticket,
+ * and lease markers on the per-user runtime filesystem when one is available so
+ * quota spills do not contend with the persistent home-disk mutex root used by
+ * package installs and other control-plane operations. `withFsMutex` still gives
+ * PAPERCUSP_FS_MUTEX_LOCK_DIR precedence, which keeps the test/operator override
+ * authoritative and lets operators inspect or co-locate all locks deliberately.
+ */
+function scratchQuotaMutexLockRoot(): string | undefined {
+  const runtimeDir = process.env.XDG_RUNTIME_DIR?.trim();
+  return runtimeDir ? join(runtimeDir, 'papercusp', 'fs-mutex-locks') : undefined;
+}
+
 function sharedScratchQuotaStatePath(workspaceId: string): string {
   const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
   const digest = createHash('sha256').update(workspaceRoot).digest('hex');
@@ -138,10 +151,12 @@ function withScratchWorkspaceMutex<T>(
     workspaceId,
     ...(requestTraceId ? { requestTraceId: requestTraceId.slice(0, 120) } : {}),
   };
+  const lockRootDir = scratchQuotaMutexLockRoot();
   if (process.env.PAPERCUSP_DISABLE_FS_MUTEX !== '1') {
     const filesystemAdmissionStartedAt = performance.now();
     return withFsMutex(mutexName, run, {
       intent,
+      ...(lockRootDir ? { lockRootDir } : {}),
       waitingNoticeIntervalMs: 5_000,
       onWaiting,
       onAcquired: onAcquired
@@ -220,6 +235,7 @@ function withScratchWorkspaceMutex<T>(
     try {
       return await withFsMutex(mutexName, run, {
         intent,
+        ...(lockRootDir ? { lockRootDir } : {}),
         waitingNoticeIntervalMs: 5_000,
         onWaiting: observedOnWaiting,
         onAcquired: onAcquired

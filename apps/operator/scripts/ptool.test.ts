@@ -840,6 +840,21 @@ describe('ptool call deadlines', () => {
     expect(deferred).toBe(direct);
   });
 
+  it('keeps plans:evaluate-spec-test-adequacy alive through server evaluation on direct and deferred calls', () => {
+    const args = { slug: 'adequacy-plan', classRef: 'plan-class-investigation' };
+    const direct = timeoutForTool('plans:evaluate-spec-test-adequacy', args);
+    const deferred = timeoutForTool('tools:invoke', {
+      name: 'plans:evaluate-spec-test-adequacy',
+      args,
+    });
+
+    // EI-25924578200401207: the server completed successfully at 30.906s,
+    // after the old 30s ptool client deadline had already elapsed.
+    expect(direct).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(deferred).toBe(direct);
+    expect(direct).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
   it('lets logs:read return its structured journal timeout on both call routes', () => {
     expect(timeoutForTool('logs:read')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {

@@ -1555,7 +1555,7 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     `Historical source evidence: when a criterion cites a committed file, use capability:git-evidence { op:'readFileAtCommit', commitSha:'<full SHA from the stored evidence>', path:'<repository-relative path>' } to inspect that exact blob. Do not use capability:git or current-tree capability:read as proof of historical contents. If the stored evidence lacks the full commit SHA or path, state that exact gap and do not infer from HEAD.`,
     `Historical source page budgeting: code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms (${DEFAULT_SCRIPT_TIMEOUT_MS / 1000} seconds); explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms (${FOREGROUND_TIMEOUT_CEILING_MS / 1000} seconds) foreground ceiling. Do not fan out byte-page chains for multiple large blobs in one call; read one oversized blob's chain per code:run. If a single blob's full chain might approach the ceiling, read a bounded page segment and continue its exact next_cursor in a separate call, or issue the page reads directly. Preserve the complete bytes for the cited blob's integrity check.`,
     `External-checkout source evidence: when the cited binding's repository measurement names rootHarnessSlug, copy that exact registered slug into capability:git-evidence { op:'readFileAtCommit', commitSha, path, rootHarnessSlug }. Evidence attributed to the plan harness may have executed in another registered repository. A commit lookup failure in the plan repository does not establish absence in the recorded evidence repository; do not guess a directory or substitute HEAD. Follow byte-page next_cursor unchanged so the registered root remains pinned.`,
-    `Repository-pin recovery: before declaring a committed-file citation unresolvable, read the cited binding's full details with plans:get-spec-evidence and inspect measurementPin.files and measurementPin.repos. The recorded repo, head, gitlink, rootHarnessSlug and headBlob identify the source repository and exact blob; a test-run's shorter filePath does not replace the measurement pin's root-relative path. rootHarnessSlug selects a registered checkout, while repos[].repo may name a submodule inside it. Do not send a submodule's commit to the parent repository and treat that lookup failure as absent evidence. Use only a supported exact-blob route for the recorded repository; if that route cannot express the pin, report the exact unsupported locator instead of claiming the stored repository pin is missing.`,
+    `Repository-pin recovery: before declaring a committed-file citation unresolvable, read the cited binding's full details with plans:get-spec-evidence and inspect measurementPin.files and measurementPin.repos. The recorded repo, head, gitlink, rootHarnessSlug and headBlob identify the source repository and exact blob; a test-run's shorter filePath does not replace the measurement pin's root-relative path. rootHarnessSlug selects a registered checkout, while repos[].repo may name a submodule inside it. For a nested pin (measurementPin.files[].repositoryPath/repo !== '.'), strip that repository prefix from the file path and pass it as repositoryPath in capability:git-evidence { op:'readFileAtCommit', commitSha, path:'<child-relative path>', repositoryPath:'<repo>' }; when rootHarnessSlug is absent, keep the plan harness as the resolved root. Do not send a submodule's commit to the parent repository and treat that lookup failure as absent evidence. Use only a supported exact-blob route for the recorded repository; if that route cannot express the pin, report the exact unsupported locator instead of claiming the stored repository pin is missing.`,
     `Session-turn evidence: this judge may use sessions:read only with session:'self'; sessions:search and non-self transcript reads are outside its role. Do not try to open a referenced external session_turn. Use preserved evidence in the scorecard or linked plan/work-item records as those records; if the cited turn is not preserved there, state the exact unresolved ref and rate the criterion from the available evidence without inferring the missing turn from a summary.`,
     `Wake delivery: if an in-turn inbox nudge requires acknowledgment and identifies this judge's own delivery_id, acknowledge only that delivery with events:cancel { delivery_id }. Never cancel an await, tree, announcement, or another principal's delivery; do not guess an id.`,
     `Dispatch lease: key 'grading-audit:${card.issueId}', reservedAt '${reservationReservedAt}'. Before reading criterion evidence, re-read the exact target and continue only if gradingAudit.state is 'pending' and dispatchReservation.key and dispatchReservation.reservedAt exactly match this lease. A missing reservation at the START means this kickoff is stale: report the current state and stop. If a present reservation differs, treat it as a renewal only when your direct coord inbox contains a message from system:grading-audit-dispatch with summary "Renewed grading-audit lease for ${card.issueId}", and the message says your existing independent audit task is retained. Require the notice to identify this exact target '${card.issueId}', the current evidence fingerprint '${card.evidenceFingerprint ?? 'not recorded'}', the expected key 'grading-audit:${card.issueId}', and a renewed reservedAt that matches the target's current dispatchReservation exactly. Re-read scorecards:get and require the target is still current and pending with that exact target, fingerprint, key, and reservedAt; then use the renewed key and reservedAt as your effective lease for the audit and eventual gradingAuditReservation. Without that direct matching renewal, report the current state and stop without grading or emitting. This strict check applies only at the START of the audit; it does not authorize any unrelated reservation change. A lease that lapses after you began is handled by the pre-emit rule below.`,
@@ -2411,20 +2411,22 @@ export async function dispatchPendingGradingAudits(
           return { issueId, rubricRef: card.rubricRef, state: 'skipped', idempotencyKey,
             reason: 'reservation restore CAS lost; renewal handoff abandoned', ...recoveryFields() };
         }
-        // A prior epoch needs no renewal, but its retained task can be parked
-        // before finishing. Resume only one positively parked owner; unknown
-        // liveness and ambiguous task identity do not authorize a wake.
+        // A prior epoch needs no replacement lease, but its retained task still
+        // needs the exact lease brief when the dispatcher has reclaimed and
+        // restored the row. A parked owner gets the resume wording; every
+        // other identified single owner gets the normal renewal notice. An
+        // ambiguous or ownerless task remains untouched and fail-closed.
         let resumeParked = false;
-        if (priorReservation && viableLiveTasks.length === 1) {
-          const ownerId = typeof viableLiveTasks[0]!.detail?.coordOwnerId === 'string'
-            ? viableLiveTasks[0]!.detail.coordOwnerId.trim() : '';
-          if (ownerId) {
-            try {
-              resumeParked = (await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(ownerId))
-                ?.sessionState === 'parked';
-            } catch {
-              // An unavailable oracle preserves the retained task and lease.
-            }
+        const retainedTask = viableLiveTasks.length === 1 ? viableLiveTasks[0] : undefined;
+        const retainedOwnerId = typeof retainedTask?.detail?.coordOwnerId === 'string'
+          ? retainedTask.detail.coordOwnerId.trim() : '';
+        if (priorReservation && retainedOwnerId) {
+          try {
+            resumeParked = (await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(retainedOwnerId))
+              ?.sessionState === 'parked';
+          } catch {
+            // An unavailable oracle preserves the retained task and still
+            // permits the durable renewal notice below.
           }
         }
         markPhase('retained-auditor-notification');
@@ -2435,13 +2437,13 @@ export async function dispatchPendingGradingAudits(
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 })
-          : resumeParked
-            ? await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
-                card, task: viableLiveTasks[0]!, reservation: retainedReservation,
+          : !retainedTask || !retainedOwnerId
+            ? undefined
+            : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
+                card, task: retainedTask, reservation: retainedReservation,
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
-                resumeParked: true,
-              })
-            : undefined;
+                ...(resumeParked ? { resumeParked: true } : {}),
+              });
         if (renewalNotification?.state === 'failed') {
           // A pre-append failure delivered nothing. Clear only this exact epoch
           // so the next scheduled repair can reissue and retry the handoff.

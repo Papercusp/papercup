@@ -928,6 +928,7 @@ export const PTOOL_PLANS_NEW_TIMEOUT_MS: 60000;
 export const PTOOL_WORK_ITEMS_GET_TIMEOUT_MS: 60000;
 export const PTOOL_SCORECARDS_GET_TIMEOUT_MS: 60000;
 export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS: 60000;
+export const PTOOL_LOCKS_LIST_TIMEOUT_MS: 90000;
 /**
  * Automatic reconnect replays after a connected tools/call are disabled.
  * A key can replay a completed call, but it is not an in-flight claim: an

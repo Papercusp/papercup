@@ -2613,6 +2613,11 @@ export async function degradeToInboxOrDrop(
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
       to: [inboxDelivery.subscriberId],
+      // The delivery pump may retry after an outcome-unknown failure between
+      // this durable inbox append and markDeliveryDelivered. Reuse the delivery
+      // row as the message replay key so that retry returns the first durable
+      // notice instead of appending another inbox entry.
+      msgId: `event-wake-inbox-${inboxDelivery.id}`,
       summary: `${wakeSummaryHeadline(inboxDelivery.eventKey, inboxDelivery.payload)} — delivered to your coord inbox (${reason})`,
       body: wakeTurnText(inboxDelivery),
       category: 'event',

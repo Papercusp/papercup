@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const SOURCE = readFileSync(new URL('../../work-items.ts', import.meta.url), 'utf8');
+const ISSUE_SOURCE = readFileSync(new URL('../../issues-engineer.ts', import.meta.url), 'utf8');
 const issueStart = SOURCE.indexOf('function issueSearchSource(');
 const featureStart = SOURCE.indexOf('function featureSearchSource(');
 const featureHydrationStart = SOURCE.indexOf('/** Batch-hydrate feature-family rows by id', featureStart);
@@ -40,5 +41,15 @@ describe('direct work-item D-016 exact-list fusion guard', () => {
     expect(fusionSource).toContain('EXACT_LIST_MAX_AND_ROWS');
     expect(fusionSource).toContain('mergeExactAndBm25');
     expect(fusionSource).toContain('if (exactRows.length === 0) return opts.bm25Rows');
+  });
+
+  it('keeps improvements:capture dedup on the D-016 exact-list path when BM25 is active', () => {
+    const start = ISSUE_SOURCE.indexOf('export async function searchIssuesForDedup(');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const source = ISSUE_SOURCE.slice(start);
+    expect(ISSUE_SOURCE).toContain("import { boundedExactTopK, bm25LegIfAvailable, mergeExactAndBm25 }");
+    expect(source).toContain('boundedExactTopK(');
+    expect(source).toContain("'exact-candidate-query'");
+    expect(source).toContain('mergeExactAndBm25(');
   });
 });
