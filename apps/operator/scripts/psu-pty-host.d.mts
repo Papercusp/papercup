@@ -730,13 +730,15 @@ export function retainRunningNativeExecution(previous: {
     pendingTools: number;
 };
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
- * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
+ * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number,
+ *   nativeSessionId?: string|null}} options
  */
-export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs }: {
+export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs, nativeSessionId }: {
     agent?: string;
     env?: EnvironmentMap;
     receivedAtMs?: number;
     nowMs?: number;
+    nativeSessionId?: string | null;
 }): {
     observedAt: number;
     phase: string;
@@ -784,10 +786,11 @@ export function currentNativeSessionId(childPid: number | null | undefined, reso
  * completion after any newer owner/machine submit, so a mid-turn wake cannot
  * use stale history to bypass the anti-wedge gate. Missing/partial proof stays
  * false and falls back to the existing output-silence gate. */
-export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, }: {
+export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, nativeSessionId, }: {
     agent: any;
     env: any;
     completedAtOrAfterMs?: number | undefined;
+    nativeSessionId: any;
 }): boolean;
 /**
  * P-001: the backend-agnostic form of the probe above — an ordinary warm wake
@@ -801,14 +804,15 @@ export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, }: 
  * 180s cap against an agent that was in fact idle at its prompt.
  *
  * @param {{agent?: string, env?: EnvironmentMap, completedAtOrAfterMs?: number,
- *   home?: string, nowMs?: number}} options
+ *   home?: string, nowMs?: number, nativeSessionId?: string|null}} options
  */
-export function nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs, home, nowMs, }: {
+export function nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs, home, nowMs, nativeSessionId, }: {
     agent?: string;
     env?: EnvironmentMap;
     completedAtOrAfterMs?: number;
     home?: string;
     nowMs?: number;
+    nativeSessionId?: string | null;
 }): boolean;
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
@@ -2014,7 +2018,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, waitWakeModeRetry, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, deliveryRetryMs, waitWakeModeRetry, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -2038,6 +2042,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     isSuperseded?: ((_msg: any) => boolean) | undefined;
     readWakeMode?: (() => Promise<string>) | undefined;
     wakeModeRetryMs?: number | undefined;
+    deliveryRetryMs?: number | undefined;
     waitWakeModeRetry?: ((delayMs: any) => Promise<any>) | undefined;
 }): {
     /** Live count of accepted first attempts and re-armed retries.

@@ -57,7 +57,7 @@ describe('vm/build-test-deb.sh (fake build steps)', () => {
     writeFileSync(path.join(root, 'markers.txt'), body);
     return path.join(root, 'markers.txt');
   };
-  const run = (env: Record<string, string>) => {
+  const run = (env: Record<string, string | undefined>) => {
     const r = spawnSync('bash', [path.join(root, 'scripts/agent-capacity/vm/build-test-deb.sh')], {
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',

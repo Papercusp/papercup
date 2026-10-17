@@ -81,6 +81,19 @@ describe('guarded host adoption before the connection picker', () => {
     expect(connectionFrontController).toHaveBeenCalledExactlyOnceWith([]);
   });
 
+  it.each(['0', '1'])('does not warn that connection flags are ignored before their controller (count %s)', async (count) => {
+    bareLauncher(count);
+    const argv = ['--connect-program=pui', '--connect'];
+    process.argv.push(...argv);
+    const warnings = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const connectionFrontController = vi.fn().mockResolvedValue({ handled: true, argv: [] });
+
+    await main({ readHandoff: () => null, connectionFrontController });
+
+    expect(connectionFrontController).toHaveBeenCalledExactlyOnceWith(argv);
+    expect(warnings).not.toHaveBeenCalled();
+  });
+
   it('chooses the machine before local context and leaves context selection to remote psu once', async () => {
     bareLauncher('0');
     const home = mkdtempSync(join(tmpdir(), 'psu-machine-first-'));

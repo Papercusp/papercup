@@ -206,7 +206,9 @@ describe('native CLI fixture runtime and deadline guards', () => {
     expect(timing.phases.map((phase: { line: string }) => phase.line)).toEqual([
       'NATIVE_INCIDENT_API_STAGE=private-pg-start', 'NATIVE_INCIDENT_API_STAGE=cli-start:work_items:claim',
     ]);
-    expect(timing.phases[1].elapsedMs).toBeGreaterThan(timing.phases[0].elapsedMs);
+    // Both stages can be observed within one millisecond tick; ordering is
+    // already asserted by the phase lines and the clock stream remains monotonic.
+    expect(timing.phases[1].elapsedMs).toBeGreaterThanOrEqual(timing.phases[0].elapsedMs);
     // Loaders may emit diagnostics before the first fixture stage. Require the
     // stage in the retained startup section, without assuming it is byte zero.
     const startup = output.split('\nstartup:\n')[1]?.split('\ntail:\n')[0];

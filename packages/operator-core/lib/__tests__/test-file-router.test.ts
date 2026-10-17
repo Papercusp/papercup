@@ -2716,6 +2716,11 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
     delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
     delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    // main forwards child bytes directly. Keep this synthetic warning inside
+    // the fixture so the outer real router does not diagnose its own worker.
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let capturedStderr = '';
     let code: number;
     try {
       code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
@@ -2733,6 +2738,9 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
       else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
       if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
       else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+      capturedStderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join('');
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
     }
     const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
     const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
@@ -2740,6 +2748,8 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
     expect(output).toContain('finalizationError=true');
     expect(errors).toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
+    expect(capturedStderr)
+      .toContain('[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.');
   });
 
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {

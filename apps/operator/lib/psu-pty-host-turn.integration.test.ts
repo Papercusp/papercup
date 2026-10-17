@@ -1213,10 +1213,10 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
     const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-pending-'));
     const sessions = join(root, 'sessions');
     mkdirSync(sessions);
-    const transcript = join(sessions, 'rollout-pending.jsonl');
+    const nativeId = '12345678-1234-4234-8234-123456789abd';
+    const transcript = join(sessions, `rollout-${nativeId}.jsonl`);
     const ownerId = uniqueOwner('UNBINDABLE-PENDING');
     const sock = socketPathFor(ownerId);
-    const nativeId = '12345678-1234-4234-8234-123456789abd';
     const { captured, io } = fakeIo();
     let resolvedNativeId: string | null = null;
     // Native work, rather than repaint timer punctuality, holds the busy gate.
@@ -1270,7 +1270,8 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       expect(await waitForEvent((event) => event.kind === 'respawn-binding-unconfirmed')).toBe(true);
       expect(await injectIntoHost(sock, { mode: 'raw', data: '\x01', ownerId })).toBeTruthy();
       expect(await waitForOutput(captured, 'NATIVE_RUNNING')).toBe(true);
-      expect(nativeLatestExecution({ agent: 'codex', env: { CODEX_HOME: root }, receivedAtMs: hostStartedAt }))
+      expect(nativeLatestExecution({ agent: 'codex', env: { CODEX_HOME: root }, nativeSessionId: nativeId,
+        receivedAtMs: hostStartedAt }), 'fixture must expose the exact native rollout before exercising pending binding')
         .toMatchObject({ phase: 'running' });
 
       // (2) Admitted inside the window. childStartedAt >= hostStartedAt, so this
@@ -1313,8 +1314,10 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       // retry keeps its idempotent duplicate answer.
       resolvedNativeId = nativeId;
       expect(await injectIntoHost(sock, { mode: 'raw', data: '\x02', ownerId })).toBeTruthy();
-      expect(await waitForOutput(captured, 'INPUT:pending x', 6_000)).toBe(true);
-      expect(await waitForEvent((event) => event.kind === 'wake-rearm-delivered', 6_000)).toBe(true);
+      expect(await waitForOutput(captured, 'INPUT:pending x', 6_000),
+        JSON.stringify({ events: readEvents(ownerId).slice(-20), output: captured().slice(-1000) })).toBe(true);
+      expect(await waitForEvent((event) => event.kind === 'wake-rearm-delivered', 6_000),
+        JSON.stringify(readEvents(ownerId).slice(-20))).toBe(true);
       expect(await injectIntoHostWithConfirmation(sock, wake))
         .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
       await sleep(200);

@@ -108,7 +108,7 @@ function reexecExitCodeAnnounced(env) {
   if (code == null) warnMissingReexecLoop({ diagnosis: missingReexecLoopDiagnosis(env) });
   return code;
 }
-import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
+import { parsePsuConnectionArgs, runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import { runTerminalCheck, terminalStartupNotice } from "./psu-terminal-diagnostics.mjs";
 // DERIVED tool-delivery map (deterministic-tool-definition-delivery-2026-09-21).
 // A plain generated .mjs of frozen literals, deliberately: this launcher is
@@ -17801,7 +17801,14 @@ export async function main({
   // its validated parent-bound handoff before the connection picker: a plain
   // interactive shim replays argv=[], otherwise stopping here for human input
   // until the handoff expires. Legacy shims may have no owner in their env.
-  const adoptionEventOwnerId = adoptionOwnerId || parseArgs(rawArgv).ownerId || null;
+  // Only adoption needs a pre-controller launch-argument inspection. Reuse
+  // the connection parser to strip its namespace first: those flags are still
+  // handled below and must not be reported as unknown or ignored here.
+  const adoptionArgv = isHostAdoptionReexec
+    ? parsePsuConnectionArgs(rawArgv).forwardedArgv
+    : null;
+  const adoptionEventOwnerId = adoptionOwnerId ||
+    (adoptionArgv ? parseArgs(adoptionArgv).ownerId : null) || null;
   const handoffReadStartedAt = Date.now();
   const hostHandoff = isHostAdoptionReexec
     ? readHandoff(process.ppid, {
@@ -17844,7 +17851,7 @@ export async function main({
     // Old hosts omitted headless posture from childEnv. The shim still replays
     // the original --headless flag; restore it before this fast path skips the
     // ordinary launch setup, or the detached successor loses its injectable PTY.
-    if (parseArgs(rawArgv).headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
+    if (parseArgs(adoptionArgv).headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
     await launchHandoff(hostHandoff);
     return;
   }

@@ -1938,10 +1938,11 @@ export function retainRunningNativeExecution(previous, current) {
 }
 
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
- * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
+ * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number,
+ *   nativeSessionId?: string|null}} options
  */
-export function nativeLatestExecution({ agent, env = process.env, receivedAtMs = 0, nowMs = Date.now() }) {
-  const transcriptPath = newestNativeTranscriptPath(agent, env);
+export function nativeLatestExecution({ agent, env = process.env, receivedAtMs = 0, nowMs = Date.now(), nativeSessionId }) {
+  const transcriptPath = newestNativeTranscriptPath(agent, env, homedir(), nativeSessionId);
   const rows = transcriptPath && readIsolatedNativeTranscriptRows({ agent, env, transcriptPath });
   return {
     ...(rows ? nativeExecutionFromRows(rows, { agent, receivedAtMs, nowMs })
@@ -2003,9 +2004,13 @@ export function currentNativeSessionId(childPid, resolveNativeId) {
  * @param {string | undefined} agent
  * @param {EnvironmentMap} [env]
  * @param {string} [home]
+ * @param {string|null} [nativeSessionId] Exact writer binding when supplied;
+ * null or invalid means unknown, never a fallback to a sibling transcript.
  * @returns {string | null}
  */
-function newestNativeTranscriptPath(agent, env = process.env, home = homedir()) {
+function newestNativeTranscriptPath(agent, env = process.env, home = homedir(), nativeSessionId) {
+  if (nativeSessionId !== undefined && (typeof nativeSessionId !== 'string' ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(nativeSessionId))) return null;
   if (!nativeTurnVerifierSupport(agent, env).supported) return null;
   const rootDir = nativeTranscriptRoot(agent, env, home);
   if (!rootDir) return null;
@@ -2029,6 +2034,11 @@ function newestNativeTranscriptPath(agent, env = process.env, home = homedir()) 
         continue;
       }
       if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      if (nativeSessionId !== undefined) {
+        const name = entry.name.toLowerCase();
+        const suffix = `${nativeSessionId.toLowerCase()}.jsonl`;
+        if (name !== suffix && !name.endsWith(`-${suffix}`)) continue;
+      }
       try {
         const st = statSync(path);
         if (!st.isFile() || st.size === 0 || st.size > 64 * 1024 * 1024) continue;
@@ -2055,9 +2065,10 @@ export function codexLatestTurnCompleted({
   agent,
   env,
   completedAtOrAfterMs = 0,
+  nativeSessionId,
 }) {
   if (agent !== 'codex') return false;
-  return nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs });
+  return nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs, nativeSessionId });
 }
 
 /**
@@ -2072,7 +2083,7 @@ export function codexLatestTurnCompleted({
  * 180s cap against an agent that was in fact idle at its prompt.
  *
  * @param {{agent?: string, env?: EnvironmentMap, completedAtOrAfterMs?: number,
- *   home?: string, nowMs?: number}} options
+ *   home?: string, nowMs?: number, nativeSessionId?: string|null}} options
  */
 export function nativeLatestTurnCompleted({
   agent,
@@ -2080,9 +2091,10 @@ export function nativeLatestTurnCompleted({
   completedAtOrAfterMs = 0,
   home = homedir(),
   nowMs = Date.now(),
+  nativeSessionId,
 }) {
   if (!Number.isFinite(completedAtOrAfterMs)) return false;
-  const transcriptPath = newestNativeTranscriptPath(agent, env, home);
+  const transcriptPath = newestNativeTranscriptPath(agent, env, home, nativeSessionId);
   return transcriptPath
     ? nativeTurnCompletedInTranscript({
       agent, env, transcriptPath, receivedAtMs: completedAtOrAfterMs, home, nowMs,
@@ -5194,6 +5206,9 @@ export function makeCarryRearmController({
   // policy and are not gated here.
   readWakeMode = async () => 'auto',
   wakeModeRetryMs = 30_000,
+  // Native submission/binding prerequisites can settle while the same child
+  // stays alive. Their retry must not inherit the much slower mode-policy poll.
+  deliveryRetryMs = 250,
   waitWakeModeRetry = (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 }) {
   const pending = new Set();
@@ -5619,12 +5634,12 @@ export function makeCarryRearmController({
               continue;
             }
             if (deliveryDeferred) {
-              // A retryable pre-write ordering block is already beyond the prompt gate;
-              // poll at the same bounded cadence used for wake-mode recovery.
+              // Re-enter the identity and prompt gates on a paced native retry.
+              // Mode-policy recovery keeps its independent, slower cadence.
               try {
-                await waitWakeModeRetry(wakeModeRetryMs);
+                await waitWakeModeRetry(deliveryRetryMs);
               } catch {
-                await new Promise((resolve) => setTimeout(resolve, wakeModeRetryMs));
+                await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
               }
               continue;
             }
@@ -11435,8 +11450,10 @@ export function hostThroughPty(o) {
   function currentNativeExecution() {
     const receivedAtMs = Math.max(childStartedAtMs,
       Number(activity.snapshot().lastInputAt ?? 0), lastMachineTurnSubmittedAtMs);
-    const fence = `${childGeneration}:${receivedAtMs}`;
-    const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs });
+    const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
+      ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : undefined;
+    const fence = `${childGeneration}:${receivedAtMs}:${nativeSessionId ?? ''}`;
+    const observed = nativeLatestExecution({ agent: env.PAPERCUSP_AGENT, env, receivedAtMs, nativeSessionId });
     const execution = nativeExecutionFence === fence
       ? retainRunningNativeExecution(lastNativeExecution, observed)
       : observed;
@@ -13389,6 +13406,7 @@ export function hostThroughPty(o) {
       boundary: () => nativeLatestTurnCompleted({
         agent,
         env,
+        nativeSessionId: agent === 'codex' ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : undefined,
         completedAtOrAfterMs: Math.max(
           childStartedAtMs,
           Number(activity.snapshot().lastInputAt ?? 0),
@@ -13452,8 +13470,11 @@ export function hostThroughPty(o) {
         if (!outcome.delivered && nativeSubmission?.child === child) {
           return { ...outcome, reason: 'native-turn-start-unverified', nativeSubmission };
         }
+        // A child can finish binding after a quiet repaint gap. Keep the
+        // already-accepted delivery pending until that exact binding exists;
+        // missing identity cannot authorize a write or retire its witness.
         return !outcome.delivered &&
-          ['carry-respawn-pending', 'native-turn-start-pending'].includes(outcome.reason)
+          ['carry-respawn-pending', 'native-turn-start-pending', 'successor-native-id-missing'].includes(outcome.reason)
           ? { ...outcome, retryable: true }
           : outcome;
       }
