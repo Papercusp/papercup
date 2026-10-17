@@ -462,12 +462,17 @@ export function findUnextractedDeps({ repoRoot = REPO_ROOT, workspaceDirs, deps 
 }
 
 const RUNTIME_IMPORT_CHILD = `
+import { fileURLToPath } from 'node:url';
 try {
   await import(process.argv[1]);
 } catch (error) {
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'IMPORT_FAILED';
   const message = error instanceof Error ? error.message : String(error);
-  console.error(code + ': ' + message);
+  let missingPath;
+  if (code === 'ERR_MODULE_NOT_FOUND' && typeof error.url === 'string' && error.url.startsWith('file:')) {
+    try { missingPath = fileURLToPath(error.url); } catch {}
+  }
+  console.error(JSON.stringify({ detail: code + ': ' + message, ...(missingPath ? { code, missingPath } : {}) }));
   process.exitCode = 1;
 }
 `;
@@ -491,6 +496,10 @@ function defaultRuntimeImportProbe({ repoRoot, specifier }) {
       .map((line) => line.trim())
       .find(Boolean) ??
     `child exited ${result.status ?? result.signal ?? "without status"}`;
+  try {
+    const failure = JSON.parse(detail);
+    if (typeof failure.detail === 'string') return { ok: false, ...failure };
+  } catch {}
   return { ok: false, detail };
 }
 
@@ -518,6 +527,9 @@ export function findUnusableRuntimeDeps({
         typeof result === "string"
           ? result
           : (result?.detail ?? "runtime import failed"),
+      ...(result?.code === 'ERR_MODULE_NOT_FOUND' && typeof result.missingPath === 'string'
+        ? { code: result.code, missingPath: result.missingPath }
+        : {}),
     });
   }
   return failures;

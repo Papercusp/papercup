@@ -41,6 +41,7 @@ import {
   resolvePtoolInvocationCandidates,
   canDispatchOnFallbackOperator,
   canBypassMissingServingGeneration,
+  canUseListedToolWithoutServingGeneration,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -1623,6 +1624,27 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(canBypassMissingServingGeneration('rubrics:get', 'file', missingGeneration)).toBe(true);
     expect(canBypassMissingServingGeneration('rubrics:get', null, missingGeneration)).toBe(false);
     expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', new Error('other catalog error'))).toBe(false);
+  });
+
+  it('keeps an interactive listed tool usable when only serving generation is missing', () => {
+    const missingGeneration = Object.assign(new Error('legacy tools/list'), {
+      code: 'serving_generation_missing',
+    });
+    const listedTool = {
+      name: 'fleet:take-leadership',
+      inputSchema: {
+        type: 'object',
+        properties: { fleet: { type: 'string' } },
+        required: ['fleet'],
+      },
+    };
+
+    expect(canUseListedToolWithoutServingGeneration(listedTool, missingGeneration)).toBe(true);
+    expect(canUseListedToolWithoutServingGeneration(
+      { name: 'fleet:take-leadership' },
+      missingGeneration,
+    )).toBe(false);
+    expect(canUseListedToolWithoutServingGeneration(listedTool, new Error('other catalog error'))).toBe(false);
   });
 
   it('dispatches supplied arguments with protocol-only validation when the catalog is bypassed', async () => {

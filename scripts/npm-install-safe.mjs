@@ -464,6 +464,43 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
   return targets;
 }
 
+/** Re-extract only the locked package containing a measured missing import file.
+ * Keep lockfile intent intact. Generic import errors, workspace links, external
+ * paths and symlinked parents are not evidence of a damaged installed package.
+ */
+function runtimeContentRepairFindings({ repoRoot, failures }) {
+  const missingFiles = failures.filter((failure) =>
+    failure.code === 'ERR_MODULE_NOT_FOUND' && isAbsolute(failure.missingPath ?? ''));
+  if (missingFiles.length === 0) return [];
+  const root = realpathSync(repoRoot);
+  const lockPath = existsSync(join(root, 'npm-shrinkwrap.json'))
+    ? join(root, 'npm-shrinkwrap.json') : join(root, 'package-lock.json');
+  if (!existsSync(lockPath)) return [];
+  const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+  const findings = [];
+  for (const failure of missingFiles) {
+    const missing = resolve(failure.missingPath);
+    if (!isStrictlyWithin(root, missing) || existsSync(missing)) continue;
+    const parts = relative(root, missing).split(sep);
+    const index = parts.lastIndexOf('node_modules');
+    if (index < 0 || !parts[index + 1]) continue;
+    const packageLength = parts[index + 1].startsWith('@') ? 2 : 1;
+    if (parts.length <= index + 1 + packageLength) continue;
+    const packageName = parts.slice(index + 1, index + 1 + packageLength).join('/');
+    const key = parts.slice(0, index + 1 + packageLength).join('/');
+    const entry = lock.packages?.[key];
+    if (!entry?.version || entry.link) continue;
+    const target = join(root, key);
+    // Validate physical identity before any repair deletion, including ancestors.
+    if (!existsSync(target) || realpathSync(target) !== target) continue;
+    let manifest;
+    try { manifest = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')); } catch { continue; }
+    if (manifest.name !== packageName || manifest.version !== entry.version) continue;
+    findings.push({ workspace: parts.slice(0, index).join('/') || '.', package: packageName });
+  }
+  return findings;
+}
+
 /**
  * Remove a detector-confirmed stale package-local entry from package-lock.json
  * before npm reifies it again. The on-disk target alone is insufficient: npm
@@ -850,6 +887,8 @@ export async function verifyDepsExtracted({
     );
     return 1;
   }
+  const runtimeFindings = first.runtimeFailures.length > 0
+    ? runtimeContentRepairFindings({ repoRoot, failures: first.runtimeFailures }) : [];
   // Validate every parent before modifying any detected link or its local owner.
   // unlink removes only the link; it cannot recursively delete its target.
   const binTargets = first.brokenBinLinks.map((finding) => {
@@ -881,7 +920,7 @@ export async function verifyDepsExtracted({
   });
   const removedTargets = removePackageLocalRepairTargets({
     repoRoot,
-    findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings],
+    findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings, ...runtimeFindings],
     deps,
   });
   if (removedTargets.length > 0) {
@@ -902,7 +941,7 @@ export async function verifyDepsExtracted({
   // the originally selected workspace cannot repair drift elsewhere in it.
   const repairArgs = [
     ...REPAIR_ARGS,
-    ...(first.lockTreeDefects.length > 0 ? [] : repairWorkspaceArgs),
+    ...(first.lockTreeDefects.length > 0 || runtimeFindings.length > 0 ? [] : repairWorkspaceArgs),
   ];
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,

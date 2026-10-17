@@ -544,6 +544,14 @@ export function canDispatchWithoutCatalog(toolName: any, inputKind: any): boolea
  * the input schema to collect arguments.
  */
 export function canBypassMissingServingGeneration(toolName: any, inputKind: any, error: any): boolean;
+/**
+ * A named interactive call already has its input schema from tools/list. When
+ * only the serving-generation marker is absent, keep that schema for prompting
+ * and use the protocol-only request path after the user supplies the args.
+ * This is the interactive counterpart to canBypassMissingServingGeneration:
+ * it does not guess an argument object or bypass an unknown tool.
+ */
+export function canUseListedToolWithoutServingGeneration(tool: any, error: any): boolean;
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName: any, error: any): string;

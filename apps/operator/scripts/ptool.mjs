@@ -2765,6 +2765,22 @@ export function canBypassMissingServingGeneration(toolName, inputKind, error) {
     canDispatchWithoutCatalog(toolName, inputKind);
 }
 
+/**
+ * A named interactive call already has its input schema from tools/list. When
+ * only the serving-generation marker is absent, keep that schema for prompting
+ * and use the protocol-only request path after the user supplies the args.
+ * This is the interactive counterpart to canBypassMissingServingGeneration:
+ * it does not guess an argument object or bypass an unknown tool.
+ */
+export function canUseListedToolWithoutServingGeneration(tool, error) {
+  return Boolean(error?.code === 'serving_generation_missing' &&
+    typeof tool?.name === 'string' &&
+    tool.name.trim().length > 0 &&
+    tool.inputSchema &&
+    typeof tool.inputSchema === 'object' &&
+    !Array.isArray(tool.inputSchema));
+}
+
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName, error) {
@@ -4595,13 +4611,28 @@ async function main() {
       console.error(`ptool: no tool named "${toolName}". Try \`ptool --list ${serviceOf(toolName)}\`.`);
       process.exit(1);
     }
+    let catalogBypass = false;
     try {
       // The old release handler cannot enforce a generation it does not know
       // about. Refuse before dispatch when the selected listing lacks the
       // marker, even if the old handler would otherwise accept the arguments.
       requireServingGeneration(tool);
     } catch (error) {
-      if (canBypassMissingServingGeneration(args.tool, inputKind, error)) {
+      if (inputKind == null && canUseListedToolWithoutServingGeneration(tool, error)) {
+        if (operatorFallbackUsed) {
+          console.error(
+            `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
+              'because its read-only metadata could not be verified. Pass --url=<intended operator> to pin the call.',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        console.error(
+          `ptool: ${toolName} is listed without a serving-generation marker; ` +
+            'using its listed input schema and protocol-only dispatch after prompting for arguments.',
+        );
+        catalogBypass = true;
+      } else if (canBypassMissingServingGeneration(args.tool, inputKind, error)) {
         if (operatorFallbackUsed) {
           console.error(
             `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
@@ -4698,21 +4729,40 @@ async function main() {
       currentTool = refreshed.tool;
       return refreshed.params;
     };
-    const currentCallParams = () => buildCallToolParams(toolName, callArgs, {
-      outputSchema: currentTool.outputSchema,
-      servingGeneration: requireServingGeneration(currentTool),
-      idempotencyKey,
-    });
+    const currentCallParams = () => catalogBypass
+      ? buildCallToolParams(toolName, callArgs, { idempotencyKey })
+      : buildCallToolParams(toolName, callArgs, {
+        outputSchema: currentTool.outputSchema,
+        servingGeneration: requireServingGeneration(currentTool),
+        idempotencyKey,
+      });
     try {
-      let recovered = await callToolWithReplayRecovery(
-        client,
-        currentCallParams(),
-        {
-          timeoutMs: timeoutForTool(toolName, callArgs),
-          reconnect: () => connectOperator(),
-          onStaleToolContract,
-        },
-      );
+      let recovered;
+      if (catalogBypass) {
+        recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
+          client,
+          toolName,
+          callArgs,
+          {
+            idempotencyKey,
+            tokenPaths,
+            initialTokenPath: ptoolTokenPathByClient.get(client),
+            reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
+            timeoutMs: timeoutForTool(toolName, callArgs),
+          },
+        );
+      } else {
+        recovered = await callToolWithReplayRecovery(
+          client,
+          currentCallParams(),
+          {
+            timeoutMs: timeoutForTool(toolName, callArgs),
+            reconnect: () => connectOperator(),
+            onStaleToolContract,
+            schemaNeutral: catalogBypass,
+          },
+        );
+      }
       if (isRecoverableAuthorityDenial(recovered.result) && !args.url && operatorCandidates.length > 1) {
         console.error(
           `ptool: ${operatorUrl} rejected the session authority before dispatch; ` +
@@ -4726,6 +4776,7 @@ async function main() {
             timeoutMs: timeoutForTool(toolName, callArgs),
             reconnect: () => connectOperator(),
             onStaleToolContract,
+            schemaNeutral: catalogBypass,
           },
         );
       }

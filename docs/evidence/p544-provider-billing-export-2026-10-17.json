@@ -139,16 +139,80 @@
     },
     "qualification": "Local staging source and test file hashes; no complete import-graph, settled commit, deployed runtime or full-suite gate claim."
   },
+  "categoryRefresh": {
+    "recordedAtUtc": "2026-10-17T10:32:50.931110Z",
+    "scope": "Complete retrieval of the existing query result, not complete provider export coverage or monthly trial qualification",
+    "sourceDirectory": "/tmp/p544-cost-refresh-20261017_103152",
+    "providerJob": "gcp://bigquery/projects/active-alcove-504205-q3/jobs/p544_category_refresh_20261017_103152",
+    "queryFile": "/tmp/p544-cost-refresh-20261017_103152/query.sql",
+    "querySha256": "f862a2046761a311b76788afc490c2461c616f69527105872756f274c18400dd",
+    "resultFile": "/tmp/p544-cost-refresh-20261017_103152/rows-complete.json",
+    "resultSha256": "6d302042776ef9cb8e05a3eaf55752af4f81679f78a0051ed5ddbf20c09e00a7",
+    "jobMetadataSha256": "b7fda49b04fa0aca786b3eef2e5c490a907b7cfbbf8eaf1953d8476fa7bd707e",
+    "totalGroupedRows": 1720,
+    "retrievedGroupedRows": 1720,
+    "paginationGuard": "COUNT(*) OVER() detected the initial bq --max_rows=1000 truncation. Read the original job destination table with bq head --max_rows=5000; no query rerun. The complete result count is 1720/1720.",
+    "queryBytesBilled": "27262976",
+    "queryMaximumBytesBilled": "100000000",
+    "cacheHit": false,
+    "latestExportUtc": "2026-10-17T07:22:51Z",
+    "latestUsageEndUtc": "2026-10-17T00:00:00Z",
+    "programmeGrossMicrosSumOfRoundedSkuGroups": "40788958",
+    "roundingQualification": "Each service/SKU/run group was rounded once in SQL; the displayed programme sum adds those rounded groups and is not an independently rounded exact programme aggregate.",
+    "partialRunCosts": [
+      {
+        "runId": "p544-8g-1016",
+        "grossMicrosSumOfRoundedSkuGroups": "8433",
+        "skuGroups": 18,
+        "latestUsageEndUtc": "2026-10-16T23:00:00Z",
+        "coverage": "Includes one E2 RAM charge and network lines. No core or IPv4 charge is yet present for this run, and its teardown was after23:00Z. Do not interpret the subset as a complete experiment price."
+      },
+      {
+        "runId": "p544-min-1016",
+        "grossMicrosSumOfRoundedSkuGroups": "73399",
+        "skuGroups": 23,
+        "latestUsageEndUtc": "2026-10-16T22:00:00Z",
+        "coverage": "Includes custom core/RAM, IPv4 and network lines; retained disk costs remain unassigned by run."
+      }
+    ],
+    "unlabelledBalancedDisk": {
+      "skuId": "6AE1-525F-8B80",
+      "sku": "Balanced PD Capacity",
+      "grossMicros": "1361750",
+      "creditMicros": "-1358862",
+      "pricingAmount": "13.618344516",
+      "pricingUnit": "gibibyte month",
+      "rows": 193,
+      "coverage": "Programme-wide disk charge across multiple experiments. The export run label is null; this amount cannot be assigned to P544 alone or divided by one candidate VM lifetime."
+    },
+    "categoryQualification": {
+      "compute": "Partial observed core/RAM charges exist; complete same-profile coverage remains open.",
+      "retainedStorage": "Observed programme disk charges exist but need accountable candidate/run allocation.",
+      "backup": "No qualified same-profile backup/restore usage and charge allocation in this query; unknown, not zero.",
+      "network": "Observed run network lines exist; final exposure and monthly workload scaling remain open.",
+      "controlPlane": "Programme logging/networking overhead exists; applicable workspace control allocation is unresolved, not zero.",
+      "inference": "Not covered by the GCP project export. Saved native/coding estimates remain estimates; actual applicable account or subscription allocation is unresolved."
+    },
+    "providerCensus": {
+      "readWindowUtc": "2026-10-17T10:31:52Z/2026-10-17T10:32:10Z",
+      "instances": 0,
+      "disks": 0,
+      "snapshots": 0,
+      "staticAddresses": 0,
+      "files": ["instances.json", "disks.json", "snapshots.json", "addresses.json"],
+      "qualification": "Sequential authoritative project lists saved in sourceDirectory; no VM or model call created. The conservative168.5USD programme reservation is not released by partial exported charges."
+    }
+  },
   "friction": {
     "taskId": "0mvc3tkd41c6y17qu5u",
     "detail": "Optional bq job-history list exceeded its caller25second deadline. Cause unproven; not retried. Subsequent CLI query used an explicit durable job id; production reader supplies provider job ids."
   },
   "remaining": [
     "D-076 strict all-in under-$20 measured monthly trial qualification",
-    "Monthly task/inference duty profile and applicable actual inference/control/retained storage/backup/network charges",
+    "D081 monthly task profile is now recorded; applicable actual inference/control/retained storage/backup/network charges remain open",
     "Complete experiment export coverage and accountable allocation of unlabelled/shared costs",
     "D-075 qualifying burst response pass; historical6.775s burst remains a failure",
-    "Valid application cold readiness and retained data resize/growth durability evidence",
+    "Cold readiness and retained disk/CPU growth fixture proofs are recorded separately in p544-cold-growth-2026-10-17.json; full product backup/restore and cost qualification remain open",
     "P-537 authenticated production acceptance and exact source-to-serving parity"
   ]
 }
