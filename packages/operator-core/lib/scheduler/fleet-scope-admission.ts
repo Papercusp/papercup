@@ -2183,12 +2183,14 @@ export async function diagnoseFleetScopeTerminalExhaustion(args: {
  * from the standing backlog-interest watch (EI-15185); neither substitutes for the other.
  */
 const FLEET_MISS_WIND_DOWN_ADVICE =
-  'First finish independent work on held items. If work remains blocked, a blocked item you still hold stays held. ' +
+  'First finish independent work on held items. After that work completes, reassess the remaining held obligations in this same turn. ' +
+  'If work remains blocked, a blocked item you still hold stays held. ' +
   'If no independently actionable blocker event is recorded or supplied by the dependency owner, do not call work_items:set_blocker or events:await: ' +
   'checkpoint the missing dependency and keep the loop armed, or arrange an authorized handoff before releasing claims. ' +
   'Never fabricate a blocker ref or derive an event key from an item id. ' +
   'Otherwise copy the supplied dependency event key exactly, record its typed blocker with work_items:set_blocker if not already recorded, ' +
   'then register events:await for the exact recorded blocker event with a positive timeout_sec matched to its recheckAt and on_timeout:"wake". ' +
+  'An already-armed loop is not a substitute for this exact dependency await: register it before ending this turn, even if the loop remains armed. ' +
   'Keep the existing loop armed until registration succeeds. In either case, do not invent an event from blocked status or await a ' +
   'lifecycle transition that this session itself must perform. A standing work-item:claimable watch is backlog interest only; ' +
   'it does not provide the bounded wake for retained work. Only after a guaranteed wake is registered, no unfinished obligations ' +

@@ -1492,6 +1492,10 @@ describe('fleet scope assignment admission (P-016)', () => {
       const { advice } = buildMiss();
       // A scheduler miss describes the pool, not whether this caller has finished its own work.
       expect(advice).toContain('First finish independent work on held items');
+      // S41 repeats 0 and 2 completed local verification but treated the armed
+      // loop as a substitute for registering the known dependency's exact wake.
+      expect(advice).toContain('After that work completes, reassess the remaining held obligations in this same turn');
+      expect(advice).toContain('An already-armed loop is not a substitute for this exact dependency await');
       expect(advice).toContain('a blocked item you still hold stays held');
       expect(advice).toContain('retained blocked claims stay held');
       expect(advice).toContain('work_items:set_blocker');

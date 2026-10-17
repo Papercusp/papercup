@@ -1070,15 +1070,18 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
-  it('retries initial snapshot persistence after the foreground durability budget expires', async () => {
+  it('waits for timed-out initial snapshot SQL to settle before retrying', async () => {
     vi.useFakeTimers();
     try {
       let attempts = 0;
+      let rejectInitial!: (reason: Error) => void;
       let releaseRetry!: () => void;
       let retrySettled = false;
       const sql = vi.fn(async () => {
         attempts += 1;
-        if (attempts === 1) return new Promise<unknown[]>(() => {});
+        if (attempts === 1) return new Promise<unknown[]>((_resolve, reject) => {
+          rejectInitial = reject;
+        });
         if (attempts === 2) {
           return new Promise<unknown[]>((resolve) => {
             releaseRetry = () => {
@@ -1094,9 +1097,16 @@ describe('durable detached snapshot lifecycle', () => {
       await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS + 1);
       const result = await pending;
 
-      // The child-first response contract remains intact even while the
-      // background retry is waiting on a recovered database attempt.
+      // Returning the child handle does not cancel the still-live SQL. A
+      // concurrent retry must not overtake it and later overwrite progress.
       expect(result.durable).toBe(false);
+      expect(attempts).toBe(1);
+      expect(retrySettled).toBe(false);
+
+      // Once the original attempt actually fails, the already-scheduled
+      // bounded retry can use the recovered database and settle independently.
+      rejectInitial(new Error('initial snapshot connection closed'));
+      await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS[0]);
       expect(attempts).toBe(2);
       expect(retrySettled).toBe(false);
 

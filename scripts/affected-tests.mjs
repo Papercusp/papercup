@@ -44,6 +44,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { readFile as readFileAsync } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadavg, availableParallelism, tmpdir, homedir } from "node:os";
@@ -143,7 +144,7 @@ import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 // source-corroborated graph dependency SUGGESTIONS. Superset-only and file-read-only — see
 // the module header. Nothing here may remove a workspace the baseline selected.
 import {
-  computeGraphSuggestions,
+  computeGraphSuggestionsAsync,
   formatSuggestionLine,
   resolveSnapshotPath,
   unionSuperset,
@@ -4944,7 +4945,7 @@ function localDependencyWorkspaceClosure(startWorkspaces) {
 // selection below, so this probe reports the same guard tasks that a real run would
 // attach. It still exits before any test task runs.
 
-function affectedWorkspaces() {
+async function affectedWorkspaces() {
   if (runAll) return [...wsByDir.values()];
 
   // --changed-paths <a,b,c>: compute the affected set from an EXPLICIT path list
@@ -5047,20 +5048,20 @@ function affectedWorkspaces() {
  *   PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS   snapshot age ceiling (default 24h)
  *   PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT  where importer SOURCE is read for corroboration (hermetic-test seam; default repo root)
  */
-function graphSuggestionsFor(changed) {
+async function graphSuggestionsFor(changed) {
   if (process.env.PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS === "0") {
     return { status: "unavailable", reason: "disabled", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null, source: null };
   }
   const resolved = resolveSnapshotPath({ env: process.env, root: ROOT });
   const sourceRoot = process.env.PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT || ROOT;
   const maxAge = Number(process.env.PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS);
-  const report = computeGraphSuggestions({
+  const report = await computeGraphSuggestionsAsync({
     changed,
     snapshotPath: resolved.path,
     readFile: (p) => readFileSync(p, "utf8"),
-    readSource: (rel) => {
+    readSource: async (rel) => {
       try {
-        return readFileSync(join(sourceRoot, rel), "utf8");
+        return await readFileAsync(join(sourceRoot, rel), "utf8");
       } catch {
         return null;
       }
@@ -5075,7 +5076,7 @@ function graphSuggestionsFor(changed) {
   return { ...report, source: resolved.source };
 }
 
-function resolveAffected(changed) {
+async function resolveAffected(changed) {
   const directlyChanged = new Set();
   for (const file of changed) {
     let matchedAWorkspace = false;
@@ -5107,7 +5108,7 @@ function resolveAffected(changed) {
   // (monotone), so the final set is a superset of the baseline by construction;
   // `unionSuperset` additionally asserts it. Stale/invalid/absent snapshot => nothing added.
   const baselineSeeds = new Set(directlyChanged);
-  const graphReport = graphSuggestionsFor(changed);
+  const graphReport = await graphSuggestionsFor(changed);
   const merged = unionSuperset(baselineSeeds, graphReport.workspaces);
   for (const name of merged.names) directlyChanged.add(name);
   // EVERY run, including absent/stale/disabled (gitnexus-deterministic-integration P-001): the
@@ -5166,7 +5167,7 @@ if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
   globalThis.__autoElSuite = true;
 }
 
-const affected = affectedWorkspaces();
+const affected = await affectedWorkspaces();
 
 // EI-19454727576364875 — there is DELIBERATELY no `if (!affected.length) exit` here, and it
 // must not be reintroduced. It used to sit at this line, 46 lines above the
