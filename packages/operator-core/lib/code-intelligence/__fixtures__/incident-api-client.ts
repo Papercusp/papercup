@@ -348,9 +348,12 @@ async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, en
   let shell: ReturnType<typeof shellRead> | undefined;
   let nativeEvent: Record<string, unknown>;
   if (leg === 'first-touch') {
-    const toolInput = { file_path: join(root, target) };
+    // Explicit byte pages preserve the reader's machine-readable response;
+    // ordinary line reads intentionally render numbered text in the CLI.
+    const toolInput = { file_path: join(root, target), byte_offset: 0, byte_limit: 4096 };
     const read = await call('capability:read', toolInput);
     assert.equal(read.encoding, 'base64', JSON.stringify(read));
+    assert.equal(read.eof, true, JSON.stringify(read));
     assert.deepEqual(Buffer.from(read.data, 'base64'), readFileSync(join(root, target)));
     nativeEvent = { hook_event_name: 'PostToolUse', cwd: root,
       tool_name: 'mcp__papercusp_su__capability_read', tool_input: toolInput, tool_response: read };
@@ -366,7 +369,7 @@ async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, en
     await new Promise(done => setTimeout(done, 25));
     delivered = await dispatcher.post(nativeEvent);
   }
-  assert(delivered.text.includes(heading), delivered.text);
+  assert(delivered.text.includes(heading), `Installed dispatcher did not deliver ${heading}: ${JSON.stringify(delivered)}`);
   assert(delivered.text.includes('@fixture/consumer'), delivered.text);
   assert(delivered.text.includes(consumer), delivered.text);
   if (leg === 'first-touch') {

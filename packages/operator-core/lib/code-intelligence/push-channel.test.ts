@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { readPushIncidentAttribution, type PushInput } from './push-channel';
@@ -304,12 +304,25 @@ describe('shared snapshot-backed push channel', () => {
     expect(d.commit).not.toHaveBeenCalled();
   });
 
-  it('answers a literal grep with a unique snapshot symbol and aliases, remaining quiet for ambiguous regexes', () => {
+  it('accepts serialized native Read/Edit inputs without guessing malformed or oversized digests', () => {
+    for (const tool of ['Read', 'Edit', 'mcp__papercusp_su__capability_read', 'capability:edit']) {
+      expect(firstTouchPaths({ ...input, calls: [{ tool, toolInput: JSON.stringify({ file_path: 'lib/target.ts' }) }] }))
+        .toEqual(['lib/target.ts']);
+    }
+    for (const toolInput of ['{"file_path":"lib/target.ts"', 'null', '[]', '"lib/target.ts"',
+      JSON.stringify({ file_path: 'lib/target.ts', extra: 'x'.repeat(4000) })]) {
+      expect(firstTouchPaths({ ...input, calls: [{ tool: 'Read', toolInput }] })).toEqual([]);
+      expect(grepLookupSubject({ tool: 'exec_command', toolInput })).toBeNull();
+    }
+  });
+
+  it.each([false, true])('answers a literal grep with a unique snapshot symbol and aliases (serialized native input: %s)', serialized => {
     const snap = snapshot();
     snap.symbols = new Map([['target', [{ id: 'target', name: 'target', path: 'lib/target.ts', line: 2, column: 1,
       sha256: 'b'.repeat(64), signature: 'function target()', aliases: ['target'], sources: [{ path: 'lib/target.ts', sha256: 'b'.repeat(64) }],
       callers: [{ path: 'app/use.ts', line: 3, column: 1, sha256: 'c'.repeat(64), spelling: 'alias', workspace: '@example/app (app)' }] }]]]);
-    const call = { tool: 'exec_command', toolInput: { cmd: "rg -n 'target\\(' packages" } };
+    const toolInput = { cmd: "rg -n 'target\\(' packages" };
+    const call = { tool: 'exec_command', toolInput: serialized ? JSON.stringify(toolInput) : toolInput };
     expect(grepLookupSubject(call)).toBe('target');
     const facts = snapshotGrepLeg({ ...input, calls: [call] }, snap);
     expect(facts[0]?.text).toContain('definition lib/target.ts:2');

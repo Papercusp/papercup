@@ -113,6 +113,11 @@ describe('registered subject evidence with the real local scorer', () => {
       build: health?.sha ?? null, modelState: health?.models?.rerank ?? null,
       execution: health?.rerankExecutionHealth?.active ?? null };
     console.info('subject-scorer-preflight', JSON.stringify(runtime));
+    if (url) {
+      expect(health?.rerankScorerGate, 'sidecar health must expose scorer queue diagnostics').toEqual(expect.objectContaining({
+        active: expect.any(Number), queued: expect.any(Number), maxConcurrent: expect.any(Number), observations: expect.any(Number),
+      }));
+    }
     if (privateHome) {
       // Fail before measurements if a shared/installed runtime was adopted.
       expect(isEmbedSidecarRunning(), 'owned scorer must be spawned by this test').toBe(true);
@@ -136,14 +141,17 @@ describe('registered subject evidence with the real local scorer', () => {
       expect(privateDb?.name).toMatch(/^subjectscorer_/);
       expect(process.env.HARNESS_ADMIN_DATABASE_URL).toBe(privateDb?.url);
     }
-    const failures: { contracts: string[]; reason: string }[] = [];
+    const failures: { query: string; contracts: string[];
+      pairInputs: { index: number; text: string; textChars: number; admissionTextChars: number }[];
+      callStartedAtMs: number; callFinishedAtMs: number; elapsedMs: number; reason: string }[] = [];
     let scorerFailureCaptured = false;
-    const readScorerState = async () => {
+    const readScorerState = async (callStartedAtMs?: number) => {
       const health = url ? await probeSidecarHealth(url, 1000).catch(() => null) as {
         pid?: number; uptimeMs?: number;
         models?: Record<string, string>; warmups?: Record<string, string>;
         rerankExecutionHealth?: { active?: unknown };
         rerankExecution?: unknown;
+        rerankScorerGate?: { active?: number; queued?: number; maxConcurrent?: number; msPerPair?: number | null; observations?: number };
         workers?: { embedder?: unknown; reranker?: unknown };
         admission?: { mode?: string };
         queue?: { depth?: number; active?: number; saturated?: boolean };
@@ -161,7 +169,8 @@ describe('registered subject evidence with the real local scorer', () => {
             record->>'enqueuedAtMs' AS enqueued_at_ms,
             record->>'updatedAtMs' AS updated_at_ms,
             record->'decision'->>'reason' AS decision_reason,
-            record->'lease'->>'owner' AS lease_owner
+            record->'lease'->>'owner' AS lease_owner,
+            record->'metadata'->>'textChars' AS text_chars
           FROM harness_shared.resource_governor_admissions
           WHERE namespace = 'embed-sidecar'
           ORDER BY enqueued_at_ms ASC NULLS LAST, receipt_id ASC
@@ -183,10 +192,11 @@ describe('registered subject evidence with the real local scorer', () => {
           rerankExecutionHealth: health.rerankExecutionHealth ?? null,
           admission: health.admission ?? null,
           queue: health.queue ?? null,
+          scorerGate: health.rerankScorerGate ?? null,
           embedderWorker: health.workers?.embedder ?? null,
           rerankerWorker: health.workers?.reranker ?? null,
         } : null;
-        return { sidecar, admission: { database: privateDb.name, admissions, activity } };
+        return { sidecar, admission: { database: privateDb.name, observedAtMs: Date.now(), callStartedAtMs, admissions, activity } };
       } catch (error) {
         return { health, admission: { database: privateDb.name,
           error: error instanceof Error ? error.message : String(error) } };
@@ -215,13 +225,15 @@ describe('registered subject evidence with the real local scorer', () => {
             models?: Record<string, string>; warmups?: Record<string, string>;
             rerankExecutionHealth?: { active?: unknown };
             rerankExecution?: unknown;
+            rerankScorerGate?: { active?: number; queued?: number; maxConcurrent?: number; msPerPair?: number | null; observations?: number };
             workers?: { embedder?: unknown; reranker?: unknown };
             admission?: { mode?: string };
             queue?: { depth?: number; active?: number; saturated?: boolean };
           } | null;
-          phaseSamples.push({ elapsedMs, healthAvailable: true, healthStatus: response.status,
+          phaseSamples.push({ sampledAtMs: Date.now(), elapsedMs, healthAvailable: true, healthStatus: response.status,
             admission: health?.admission ?? null,
             queue: health?.queue ?? null,
+            scorerGate: health?.rerankScorerGate ?? null,
             model: health?.models?.rerank ?? null,
             warmup: health?.warmups?.rerank ?? null,
             execution: health?.rerankExecutionHealth?.active ?? null,
@@ -229,7 +241,7 @@ describe('registered subject evidence with the real local scorer', () => {
             embedderWorker: health?.workers?.embedder ?? null,
             rerankerWorker: health?.workers?.reranker ?? null });
         } catch (error) {
-          phaseSamples.push({ elapsedMs: Date.now() - callStartedAt,
+          phaseSamples.push({ sampledAtMs: Date.now(), elapsedMs: Date.now() - callStartedAt,
             healthAvailable: false,
             probeError: error instanceof Error ? error.message : String(error) });
         }
@@ -260,12 +272,16 @@ describe('registered subject evidence with the real local scorer', () => {
       } catch (error) {
         await stopSampling();
         if (phaseSamples.length === 0) await samplePhase();
-        const failure = { elapsedMs: Date.now() - callStartedAt,
+        const callFinishedAtMs = Date.now();
+        const failure = { callStartedAtMs: callStartedAt, callFinishedAtMs, elapsedMs: callFinishedAtMs - callStartedAt,
+          query,
           contracts: contracts.map(c => c.split('\n')[0]),
+          pairInputs: contracts.map((text, index) => ({ index, text, textChars: text.length,
+            admissionTextChars: query.length + text.length })),
           reason: error instanceof Error ? error.message.slice(0, 300) : 'unknown' };
         failures.push(failure);
         console.info('subject-contract-unavailable', JSON.stringify({ ...failure, phaseSamples }));
-        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerState()));
+        console.info('subject-scorer-failure-state', JSON.stringify(await readScorerState(callStartedAt)));
         scorerFailureCaptured = true;
         throw error;
       }

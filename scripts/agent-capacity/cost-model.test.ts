@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { capacityRow, parseRampLog } from './capacity-table';
 import {
   buildRows,
+  allocatePoolBill,
   CAPACITY,
   capacity,
   dedicatedHosts,
@@ -15,6 +16,7 @@ import {
   serverRamGiB,
   TARGET,
   tenantsPerHost,
+  type PoolBillLine,
 } from './cost-model';
 
 const perActiveSpot = (id: string) => hostMonthUsd(capacity(id).machineType, true) / capacity(id).active;
@@ -207,5 +209,143 @@ describe('on-demand workspace month', () => {
   it('rejects finite inputs whose computed monthly charge overflows', () => {
     expect(() => onDemandMonthUsd({ ...profile, activeHours: 730,
       computeHourlyUsd: Number.MAX_VALUE })).toThrow(/finite/);
+  });
+});
+
+describe('pool bill conservation (synthetic accounting fixtures, not measured prices)', () => {
+  const line = (patch: Partial<PoolBillLine> = {}): PoolBillLine => ({
+    id: 'compute', periodRef: 'invoice:2026-10', provider: 'gcp', currency: 'USD',
+    category: 'compute', kind: 'charge', amountMicros: 101, sourceRef: 'fixture:invoice',
+    allocation: { kind: 'compute', achievedAgentMilliseconds: 1000,
+      capacityEvidenceRef: 'fixture:measured-capacity', tenants: [{ tenantId: 'tenant-a', activeAgentMilliseconds: 500 }] },
+    ...patch,
+  });
+  const bill = (lines: PoolBillLine[], totalMicros = lines.reduce((sum, row) => sum + (row.amountMicros ?? 0), 0)) =>
+    allocatePoolBill({ periodRef: 'invoice:2026-10', currency: 'USD', totalMicros, lines });
+
+  it.each([1, 50])('conserves a bill for %i agents and exposes unused achieved capacity as overhead', (agents) => {
+    const result = bill([line({ allocation: { kind: 'compute', achievedAgentMilliseconds: (agents + 1) * 1000,
+      capacityEvidenceRef: 'fixture:measured-capacity',
+      tenants: Array.from({ length: agents }, (_, n) => ({ tenantId: `tenant-${n}`, activeAgentMilliseconds: 1000 })) } })]);
+    expect(result.complete).toBe(true);
+    expect(result.tenants).toHaveLength(agents);
+    expect(result.tenants.reduce((sum, row) => sum + row.amountMicros, 0) + result.overheadMicros).toBe(101);
+    expect(result.unallocatedMicros).toBe(0);
+    expect(result.overheadMicros).toBeGreaterThan(0);
+  });
+
+  it('uses achieved capacity rather than nominal slots when allocating compute', () => {
+    expect(bill([line({ amountMicros: 100 })]).tenants[0].amountMicros).toBe(50);
+    const result = bill([line({ amountMicros: 100, allocation: { kind: 'compute', achievedAgentMilliseconds: 500,
+      capacityEvidenceRef: 'fixture:measured-lower-capacity', tenants: [{ tenantId: 'tenant-a', activeAgentMilliseconds: 500 }] } })]);
+    expect(result.tenants[0].amountMicros).toBe(100);
+    expect(result.overheadMicros).toBe(0);
+  });
+
+  it('retains every resource class and mixed-provider costs at zero activity', () => {
+    const categories: PoolBillLine['category'][] = ['compute', 'persistent-storage', 'provisioned-performance',
+      'backup', 'object-storage', 'network', 'control-plane', 'warm-capacity', 'inference'];
+    const result = bill(categories.map((category, n) => line({ id: category, category,
+      provider: n % 2 ? 'aws' : 'gcp', amountMicros: n + 1,
+      allocation: { kind: 'compute', achievedAgentMilliseconds: 0, capacityEvidenceRef: 'fixture:idle', tenants: [] } })));
+    expect(result.overheadMicros).toBe(45);
+    expect(result.tenantTotalMicros).toBe(0);
+    expect(result.lines.map((row) => row.category)).toEqual(categories);
+    expect(result.complete).toBe(true);
+  });
+
+  it('splits indivisible micros deterministically, independent of tenant order', () => {
+    const tenants = [{ tenantId: 'b', weight: 1 }, { tenantId: 'a', weight: 1 }];
+    const project = (rows: typeof tenants) => bill([line({ amountMicros: 2,
+      allocation: { kind: 'weighted', tenants: rows, overheadWeight: 1 } })]);
+    const result = project(tenants);
+    expect(result.tenants).toEqual([{ tenantId: 'a', amountMicros: 1 }, { tenantId: 'b', amountMicros: 1 }]);
+    expect(result.overheadMicros).toBe(0);
+    expect(project([...tenants].reverse())).toEqual(result);
+  });
+
+  it('conserves signed credits while exposing the credits-excluded steady-state total', () => {
+    const result = bill([line({ amountMicros: 101 }), line({ id: 'credit', kind: 'credit', amountMicros: -51 })]);
+    expect(result.totalMicros).toBe(50);
+    expect(result.creditsMicros).toBe(-51);
+    expect(result.creditsExcludedTotalMicros).toBe(101);
+    expect(result.tenantTotalMicros + result.overheadMicros + result.unallocatedMicros).toBe(50);
+    expect(result.lines[1].tenants[0].amountMicros).toBe(-26);
+    expect(result.lines[1].overheadMicros).toBe(-25);
+  });
+
+  it.each([0, 29])('keeps missing prices unknown even with a %i-micro invoice residual', (residual) => {
+    const result = bill([line(), line({ id: 'unpriced-backup', category: 'backup', amountMicros: null })], 101 + residual);
+    expect(result.complete).toBe(false);
+    expect(result.unpricedLineIds).toEqual(['unpriced-backup']);
+    expect(result.unknownRateAllocationMicros).toBe(residual);
+    expect(result.unallocatedMicros).toBe(residual);
+    expect(result.creditsExcludedTotalMicros).toBeNull();
+    expect(result.lines[1]).toMatchObject({ amountMicros: null, overheadMicros: null, unallocatedMicros: null });
+    expect(result.tenantTotalMicros + result.overheadMicros + result.unallocatedMicros).toBe(result.totalMicros);
+  });
+
+  it('preserves unresolved tenant ownership separately from shared overhead', () => {
+    const result = bill([line({ allocation: { kind: 'unresolved', reason: 'usage-census-missing' } })]);
+    expect(result).toMatchObject({ complete: false, overheadMicros: 0, unallocatedMicros: 101, tenantTotalMicros: 0 });
+    expect(result.gaps).toEqual(['unresolved-allocation:compute']);
+  });
+
+  it('keeps an unpriced credit as an unresolved reduction rather than free capacity', () => {
+    const result = bill([line(), line({ id: 'unpriced-credit', kind: 'credit', amountMicros: null })], 99);
+    expect(result).toMatchObject({ totalMicros: 99, unknownRateAllocationMicros: -2,
+      unallocatedMicros: -2, complete: false, creditsExcludedTotalMicros: null });
+    expect(result.tenantTotalMicros + result.overheadMicros + result.unallocatedMicros).toBe(99);
+  });
+
+  it('rejects currency, period, identity, sign and total mismatches', () => {
+    for (const patch of [{ currency: 'EUR' }, { periodRef: 'invoice:other' }, { sourceRef: '' }, { provider: '' },
+      { amountMicros: -1 }, { kind: 'credit', amountMicros: 1 }]) {
+      expect(() => bill([line(patch as Partial<PoolBillLine>)])).toThrow();
+    }
+    expect(() => bill([line(), line()])).toThrow('duplicate');
+    expect(() => bill([line()], 100)).toThrow('does not reconcile');
+    expect(() => bill([line({ amountMicros: null })], -1)).toThrow('does not reconcile');
+    expect(() => bill([line({ amountMicros: null, kind: 'credit' })], 1)).toThrow('does not reconcile');
+  });
+
+  it('rejects unmeasured capacity, over-allocation and invalid integer counters', () => {
+    for (const achieved of [-1, NaN, Infinity, 0.5, 499, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => bill([line({ allocation: { kind: 'compute', achievedAgentMilliseconds: achieved,
+        capacityEvidenceRef: 'fixture:measured-capacity', tenants: [{ tenantId: 'a', activeAgentMilliseconds: 500 }] } })])).toThrow();
+    }
+    expect(() => bill([line({ allocation: { kind: 'compute', achievedAgentMilliseconds: 1000,
+      capacityEvidenceRef: '', tenants: [] } })])).toThrow('reference');
+    expect(() => bill([line({ allocation: { kind: 'weighted', overheadWeight: 0,
+      tenants: [{ tenantId: 'a', weight: 1 }, { tenantId: 'a', weight: 1 }] } })])).toThrow('duplicate');
+    expect(() => bill([line({ amountMicros: 0.5 })], 0)).toThrow('line amount');
+  });
+
+  it('conserves every small signed bill across a census of asymmetric and empty allocation weights', () => {
+    for (let micros = -17; micros <= 17; micros++) {
+      for (let a = 0; a <= 3; a++) for (let b = 0; b <= 3; b++) for (let shared = 0; shared <= 3; shared++) {
+        const result = bill([line({ amountMicros: micros, kind: micros < 0 ? 'credit' : 'charge',
+          allocation: { kind: 'weighted', overheadWeight: shared,
+            tenants: [{ tenantId: 'a', weight: a }, { tenantId: 'b', weight: b }] } })]);
+        expect(result.tenantTotalMicros + result.overheadMicros + result.unallocatedMicros).toBe(micros);
+        const weights = a + b + shared === 0 ? [0, 0, 1] : [a, b, shared];
+        const shares = [...result.tenants.map((tenant) => tenant.amountMicros), result.overheadMicros];
+        for (let n = 0; n < shares.length; n++) {
+          const exact = Math.abs(micros) * weights[n] / weights.reduce((sum, value) => sum + value, 0);
+          expect(Math.abs(shares[n])).toBeGreaterThanOrEqual(Math.floor(exact));
+          expect(Math.abs(shares[n])).toBeLessThanOrEqual(Math.ceil(exact));
+          expect(shares[n] * micros).toBeGreaterThanOrEqual(0);
+        }
+      }
+    }
+  });
+
+  it('conserves exact large values and refuses unsafe aggregate projections', () => {
+    const result = bill([line({ amountMicros: Number.MAX_SAFE_INTEGER })]);
+    expect(BigInt(result.tenantTotalMicros) + BigInt(result.overheadMicros)).toBe(BigInt(Number.MAX_SAFE_INTEGER));
+    expect(() => bill([line({ id: 'one', amountMicros: Number.MAX_SAFE_INTEGER }),
+      line({ id: 'two', amountMicros: Number.MAX_SAFE_INTEGER }),
+      line({ id: 'offset', kind: 'credit', amountMicros: -Number.MAX_SAFE_INTEGER })])).toThrow('overflow');
+    expect(() => bill([line({ amountMicros: Number.MAX_SAFE_INTEGER }), line({ id: 'one-more', amountMicros: 1 })])).toThrow();
   });
 });

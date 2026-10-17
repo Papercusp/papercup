@@ -368,6 +368,35 @@ describe('Settings → Integrations', () => {
     expect(H.openExternal).not.toHaveBeenCalled();
   });
 
+  it.each(['devto', 'hashnode'])('saves the actual %s publishing credential through the generic card without OAuth', async (id) => {
+    const d = packageDescriptor(id);
+    const credentials = d.setup!.credentials!.map((field) => ({ ...field, configured: false, savedAt: null }));
+    serve({ providers: [{
+      ...CHAT, id: d.id, displayName: d.displayName, capabilities: d.capabilities, datatypes: d.datatypes,
+      requiredConfig: d.configSchema?.required ?? [],
+      connectHref: null, credentials, appRegistration: providerAppRegistrationView(d), oauthClient: null,
+    }], sources: [] });
+    const path = `/api/user/integrations/providers/${d.id}/credentials`;
+    route('PUT', path, { ok: true });
+    render(<Page />);
+    const card = within(await screen.findByRole('region', { name: d.displayName }));
+    expect(card.getByRole('status').textContent).toBe('Needs 1 of 1 credential');
+    expect(card.getByText('blog.post')).toBeTruthy();
+    expect(card.queryByRole('button', { name: /^Connect/ })).toBeNull();
+    expect(card.queryByLabelText('Client ID')).toBeNull();
+    expect(card.queryByLabelText('Client secret')).toBeNull();
+    expect(card.getByRole('link', { name: 'Where to find it' }).getAttribute('href')).toBe(credentials[0].helpUrl);
+    const input = card.getByLabelText(credentials[0].label) as HTMLInputElement;
+    expect(input.type).toBe('password');
+    expect(input.value).toBe('');
+    fireEvent.change(input, { target: { value: 'fixture-publishing-key' } });
+    fireEvent.click(card.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(call('PUT', path)?.body).toEqual({ values: { [credentials[0].key]: 'fixture-publishing-key' } }));
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(H.calls.filter((entry) => /oauth|gql\.hashnode|dev\.to\/api/.test(entry.url))).toEqual([]);
+    expect(H.openExternal).not.toHaveBeenCalled();
+  });
+
   it('renders each provider from the overview and subscribes the live query as the resolved user', async () => {
     serve({ providers: [LINEAR, ASANA], sources: [source({ mirrored: 1, admitted: 0 })] });
     render(<Page />);

@@ -6,8 +6,15 @@ const require = createRequire(import.meta.url);
 const publicationId = '0123456789abcdef01234567';
 const args = { title: 'Provider packages', markdown: '# A real post\n\nDetails.', canonicalUrl: 'https://papercusp.com/blog/providers' };
 const config = { publicationId };
-const adapters = Object.fromEntries(['devto', 'hashnode'].map((id) => [id,
-  require(`../../../../../libs/papercusp/plugins/${id}/index.cjs`).providerAdapter as ProviderAdapter]));
+// The maintained mutation runner supplies its frozen copy through {}. Load that
+// exact copy during a probe so the normal source guard remains enabled and the
+// production checkout stays untouched; ordinary runs use the installed package.
+const adapters = Object.fromEntries(['devto', 'hashnode'].map((id) => {
+  const entry = id === 'devto' && process.env.PAPERCUSP_MUTATION_PROBE === '1' && process.env.PROBE_FILE
+    ? process.env.PROBE_FILE
+    : `../../../../../libs/papercusp/plugins/${id}/index.cjs`;
+  return [id, require(entry).providerAdapter as ProviderAdapter];
+}));
 function response(id: string, published = false) {
   return id === 'devto' ? jsonResponse(201, { id: 123, url: 'https://dev.to/papercusp/providers' }) :
     jsonResponse(200, { data: published ? { publishPost: { post: { id: 'post-123', url: 'https://custom-blog.example/providers' } } } : { createDraft: { draft: { id: 'draft-123' } } } });

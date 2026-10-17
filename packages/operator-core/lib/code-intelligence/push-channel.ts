@@ -108,10 +108,20 @@ export type PushLeg = (input: PushInput, snapshot: PushSnapshot) => readonly Pus
 const state = pinModuleState('@papercusp/operator-core.code-intel-push-legs', () => ({ legs: new Map<PushLegId, PushLeg>() }));
 export function registerCodeIntelPushLeg(id: PushLegId, leg: PushLeg): void { state.legs.set(id, leg); }
 
+/** Installed hooks send bounded JSON strings; incomplete digests prove no lookup. */
+function pushCallInput(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'string') {
+    if (value.length > 4000) return null;
+    try { value = JSON.parse(value); } catch { return null; }
+  }
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
 export function firstTouchPaths(input: PushInput): string[] {
   return [...new Set(input.calls.flatMap(call => {
     if (!/(?:^|_|:)(?:Read|Edit|read|edit)$/.test(call.tool ?? '')) return [];
-    const args = call.toolInput as { file_path?: unknown; path?: unknown } | null;
+    const args = pushCallInput(call.toolInput);
     const raw = args?.file_path ?? args?.path;
     if (typeof raw !== 'string') return [];
     const path = isAbsolute(raw) && input.root ? relative(input.root, raw) : raw;
@@ -350,7 +360,7 @@ registerCodeIntelPushLeg('incident', snapshotIncidentLeg);
 
 /** Only a single literal identifier lookup is resolved; arbitrary regexes remain quiet. */
 export function grepLookupSubject(call: PushCall): string | null {
-  const args = call.toolInput as { command?: unknown; cmd?: unknown; pattern?: unknown } | null;
+  const args = pushCallInput(call.toolInput);
   const tool = call.tool ?? '';
   let pattern: string | null = null;
   if (/(?:^|_|:)(?:Grep|grep)$/.test(tool) && typeof args?.pattern === 'string') pattern = args.pattern;

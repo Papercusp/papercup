@@ -42,7 +42,7 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     for (const line of lines) {
       // Cleanup can erase the assertion from both bounded stdout/stderr tails.
       // Retain the first exception and its context independently of that noise.
-      if (failureLines === 0 && !failureOutput && /\b(?:[A-Z]\w*Error|Error)(?:\s*\[[^\]]+\])?:/.test(line)) {
+      if (failureLines === 0 && !failureOutput && /\b(?:[A-Z]\w*Error|Error)(?:\s*\[[^\]]+\])?(?::|\s*$)/.test(line)) {
         failureLines = 24;
       }
       if (failureLines > 0 && failureOutput.length < 8_000) {

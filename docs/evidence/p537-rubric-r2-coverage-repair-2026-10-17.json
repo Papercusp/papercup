@@ -32,13 +32,23 @@
     "critiqueReadback": "/tmp/p537-review-live-0345.json",
     "blockingFinding": "R-6, R-9, R-10 and R-11 require structured test bindings. Other five meta dimensions pass; live and deployed manual remainders are justified. This is rubric quality only.",
     "preparedPartialRepair": {
-      "status": "dry-run-only-approval-required",
+      "status": "applied-after-routed-outside-lineage-approval",
       "argsPath": "/tmp/p537-r3-tree-binding-preview-args.json",
       "previewPath": "/tmp/p537-r3-tree-binding-preview-v2.json",
       "bars": ["R-6", "R-9"],
       "proofLayers": ["unit", "integration"],
       "remaining": "R-10 bill-conservation detector belongs to P-538; R-11 bounded autoscaling detector belongs to P-539. Existing arithmetic/lifecycle suites alone have not been established to decide their complete claims.",
-      "next": "Obtain governed outside-lineage review with dryRun/requestReview before applying the prepared R-6/R-9 change. Never attest revision 3 against this blocking critique."
+      "approvalConversation": "conv-mvbuca4w-0000-41bd645c757e47a585a78be0eb2d1991",
+      "previewPostRef": "thread-post:1185796",
+      "approvalRef": "thread-post:1185802",
+      "reviewer": "su-869f8876-49d7-441b-8bca-ec380ace7b46",
+      "applyReceipt": "/tmp/p537-r3-tree-binding-apply.json",
+      "readback": "/tmp/p537-rubric-r4-readback.json",
+      "rubricRevision": 4,
+      "subjectPlanRevision": 220,
+      "barSetHash": "30ec3f300876da7b3612e34ef4ba30f00d4a1187a0c3db5d64a290dbd533b59e",
+      "verification": "All 16 outcome and method texts match the prepared revision-3 source exactly. Independent canonical readback confirms revision 4, the applied BAR-set hash and 16 criteria. R-6/R-9 metadata only; no implementation acceptance.",
+      "next": "Implement and verify complete R-10/R-11 detectors before further binding and independent vetting. Revision 4 is not attested; never attest revision 3 against its blocking critique."
     },
     "receiptPath": "/tmp/p537-r3-vet-request-0322.json",
     "limitation": "Accepted pending request is not critique, attestation, implementation acceptance or shipment."

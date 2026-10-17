@@ -5563,6 +5563,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       isReservedControlPlanePath("/api/agent-mcp/console/bootstrap-su/"),
     ).toBe(true);
     for (const path of [
+      "/api/adv/sessions/ensure-codex-home",
       "/api/agent-mcp/console/bootstrap-su/session-ended",
       "/api/agent-mcp/console/bootstrap-su/session-resumed",
       "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
