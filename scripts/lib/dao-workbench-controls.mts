@@ -16,6 +16,11 @@ export function workbenchTextField(label: string, value: string, scope = '.dao-g
   return `(()=>{const l=[...document.querySelectorAll(${JSON.stringify(scope + ' label')})].find(e=>e.firstChild?.textContent?.trim()===${JSON.stringify(label)});const e=l?.querySelector('input:not([type="hidden"]),textarea,select');if(!e)throw Error('Missing text field '+${JSON.stringify(label)});const p=e instanceof HTMLInputElement?HTMLInputElement.prototype:e instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event(e instanceof HTMLSelectElement?'change':'input',{bubbles:true}));return true})()`;
 }
 
+/** Open the named disclosure through its summary, preserving an already-open form. */
+export function openWorkbenchDisclosure(label: string, scope = '.dao-governance'): string {
+  return `(()=>{const e=[...document.querySelectorAll(${JSON.stringify(scope + ' details > summary')})].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!e)throw Error('Missing disclosure '+${JSON.stringify(label)});if(!e.parentElement.open)e.click();return true})()`;
+}
+
 export function openWorkbenchSelect(label: string, scope = '.dao-governance'): string {
   return `(()=>{const e=[...document.querySelectorAll(${JSON.stringify(scope + ' [role="combobox"]')})].find(e=>e.getAttribute('aria-label')===${JSON.stringify(label)});if(!e||e.matches(':disabled,[aria-disabled="true"]'))throw Error('Missing enabled select '+${JSON.stringify(label)});e.focus();e.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()`;
 }

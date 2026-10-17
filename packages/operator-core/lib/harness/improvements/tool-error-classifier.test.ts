@@ -538,6 +538,29 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     })).toMatchObject({ class: 'caller', direct: false });
   });
 
+  it('classifies the persisted abbreviated native cleanup refusal without promoting its expected/actual prose', () => {
+    const message = 'Rejected rm -f style commands; use safer approach';
+    expect(classifyToolError('shell-command-rejected', undefined, message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode: 'shell-command-rejected',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'Verifier command starts after removing stale unique receipt paths',
+        actual: 'CreateProcess rejected command containing rm -f before node ran.',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+
+    for (const unrelated of [
+      'The shell command validator crashed before dispatch.',
+      'rm -f returned permission denied from the container filesystem',
+      message + '; the guard then crashed with an internal error',
+    ]) {
+      expect(classifyToolError('shell-command-rejected', 'error', unrelated)).toBe('structural');
+    }
+  });
+
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
     const errorCode = 'resolver_owner_mismatch_or_not_executing';
     const message = 'The bulk-resolve run is stopped and no report was written.';

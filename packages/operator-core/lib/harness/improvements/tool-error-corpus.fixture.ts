@@ -39,6 +39,8 @@
  * The events:await self-await refusal was added 2026-10-12 from
  * EI-25327017880527713; the guard intentionally refuses an unsatisfiable wait
  * on the current assignee's own work-item lifecycle.
+ * The session:end busy refusal was added 2026-10-17 from EI-26251588319744742;
+ * tools:invoke preserves this intentional active-turn refusal inside handler_error.
  *
  * This fixture is the corpus for BOTH:
  *   - tool-error-classifier.test.ts (pure: classifyToolError must agree per row), and
@@ -224,6 +226,24 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
   },
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
+  {
+    n: 1, errorCode: 'shell-command-rejected', status: 'error',
+    message: 'Rejected rm -f style commands; use safer approach',
+    expectedClass: 'caller',
+    note: 'the persisted native exec capture abbreviated the intentional pre-execution refusal (EI-25990844380340083)',
+  },
+  {
+    n: 1, errorCode: 'shell-command-rejected', status: 'error',
+    message: 'The shell command validator crashed before dispatch.',
+    expectedClass: 'structural',
+    note: 'the generic shell-command-rejected code must not mask unrelated guard implementation errors',
+  },
+  {
+    n: 1, errorCode: 'shell-command-rejected', status: 'error',
+    message: 'Rejected rm -f style commands; use safer approach; the guard then crashed with an internal error',
+    expectedClass: 'structural',
+    note: 'the abbreviated native-refusal match is bounded to its proven message, not arbitrary suffixes',
+  },
   {
     n: 1, errorCode: 'blocked_command', status: 'denied',
     message: 'The shell command was refused before execution by the PreToolUse guard: the command contains rm -f style cleanup, which is not permitted.',
@@ -413,6 +433,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: '{"ok":false,"error":"checkpoint_conflict","retryable":false,"expectedHash":"aaaaaaaaaaaa","currentHash":"bbbbbbbbbbbb"}',
     expectedClass: 'caller',
     note: 'nested tools:invoke wrapper preserves the expected loop:checkpoint CAS refusal in JSON error_message; classify the stale-state refusal as caller-side too',
+  },
+  {
+    n: 1, errorCode: 'handler_error', status: 'error',
+    message: '{"ok":false,"result":"refused-agent-busy","note":"REFUSED — the agent is still emitting output (mid-turn). Reach a settled prompt and retry, or pass force:true if you are certain the turn is finished.","shutdownWakeGuardRecorded":null,"agentLaunched":true,"hostSupportsShutdown":true}',
+    expectedClass: 'caller',
+    note: 'session:end deliberately refused shutdown while the agent was mid-turn; tools:invoke retained the refusal inside handler_error (EI-26251588319744742)',
   },
   {
     n: 1, errorCode: 'handler_error', status: 'error',

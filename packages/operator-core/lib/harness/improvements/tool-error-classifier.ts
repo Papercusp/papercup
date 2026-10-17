@@ -161,9 +161,11 @@ export const INFRA_TRANSIENT_MESSAGE_PATTERN =
 export const PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN =
   '(^|[^A-Za-z0-9_])nsenter: cannot open /proc/[0-9]+/ns/[A-Za-z_]+: (permission denied|operation not permitted)';
 
-/** The native exec pre-tool guard deliberately rejects rm -f cleanup syntax. */
+/** The native exec pre-tool guard deliberately rejects rm -f cleanup syntax.
+ *  Preserve its proven abbreviated capture message as caller input as well;
+ *  the generic shell-command-rejected code can also describe unrelated bugs. */
 export const NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN =
-  'rm -f style (commands are not permitted|cleanup[^.]*not permitted)';
+  'rm -f style (commands are not permitted|cleanup[^.]*not permitted)|^Rejected rm -f style commands; use safer approach$';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
@@ -200,6 +202,11 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'caller',
     errorCodes: ['aborted'],
     why: 'the parent request/session cancelled the tool call; dispatch reports this control-flow outcome separately from a tool or handler defect',
+  },
+  {
+    class: 'caller',
+    messagePattern: '(^|[^a-zA-Z0-9_])refused-agent-busy([^a-zA-Z0-9_]|$)',
+    why: 'session:end deliberately refuses a mid-turn shutdown; when tools:invoke preserves that nested refusal under handler_error, it is caller control flow rather than a structural tool defect',
   },
   {
     class: 'caller',
