@@ -29,8 +29,8 @@ export const DISK_RECLAIM_STEP = 'disk-retention-reclaim';
 export const DISK_RECLAIM_CRONTAB = '0 12 * * * *';
 export const DISK_HEADROOM_BYTES = 100 * 1024 ** 3;
 export const DEFAULT_RECLAIM_RUN_BUDGET_MS = 15 * 60_000;
-/** Bound one scheduled pass to the drain window so productive partial receipts
- * can continue in a later batch instead of consuming the whole window. */
+/** Keep later scheduled passes inside the deadline established by the first
+ * persisted receipt. The first pass uses the normal run budget. */
 export function reclaimRunBudgetForDrain(notAfterMs: number | undefined, nowMs = Date.now()): number | undefined {
   if (notAfterMs === undefined) return undefined;
   return Math.max(1, Math.min(DEFAULT_RECLAIM_RUN_BUDGET_MS, notAfterMs - nowMs));
@@ -110,6 +110,9 @@ export interface DiskReclaimOptions {
   effectBudgetMs?: number;
   /** Whole-pass deadline, including all roots and delegates. */
   runBudgetMs?: number;
+  /** Scheduled drains checkpoint productive partial roots before inspecting
+   * another root. Standalone passes retain their independent-root fairness. */
+  yieldAfterProductiveEffects?: boolean;
   sample?: () => Promise<DiskSnapshot[]>;
   scanHolders?: (paths: readonly string[]) => Promise<OpenWriterScan>;
   registeredWorkspaces?: () => string[];
@@ -1118,8 +1121,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         // the next scheduled batch rotates from stoppedAtRoot and rebuilds all
         // safety evidence. This specifically prevents the first batch from
         // consuming its full drain window before any later root can run.
-        const productiveStop = receipt.effects?.at(-1)?.stopped === true &&
-          (receipt.effects.at(-1)?.processed ?? 0) > 0;
+        const productiveStop = options.yieldAfterProductiveEffects === true &&
+          receipt.effects?.at(-1)?.stopped === true && selected.some(entry =>
+            receipt.entries.some(outcome => outcome.path === entry.path && outcome.status === 'removed'));
         if (productiveStop) {
           progress.stoppedAtRoot = root.path;
           for (const remaining of roots.slice(roots.indexOf(root) + 1)) {
@@ -1525,7 +1529,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
   const inspectTrees: typeof inspectRetentionTrees = (root, options) =>
     inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, previousReceipt, delegates, readProtection, inspectTrees,
+  try { return await runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, previousReceipt, delegates, readProtection, inspectTrees,
     removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
     scanHolders: holders.scan, acquireRegularFileLease: holders.acquireRegularFileLease,
     record: async (phase, detail) => {

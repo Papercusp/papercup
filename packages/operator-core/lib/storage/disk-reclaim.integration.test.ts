@@ -1136,6 +1136,7 @@ describe('retention on a real fixture tree', () => {
         activeBatch = batch;
         if (notAfterMs !== undefined && clock >= notAfterMs) return null;
         const receipt = await runDiskReclaimOnce({ ...options, nowMs: clock, effectBudgetMs: 50,
+          yieldAfterProductiveEffects: true,
           runBudgetMs: notAfterMs === undefined ? 1000 : notAfterMs - clock,
           previousReceipt: receipts.at(-1),
           policy: [...options.policy, { ...options.policy[0]!, id: 'slow', roots: [slowRoot] }],
