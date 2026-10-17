@@ -661,6 +661,118 @@ describe('gather + execute against a real temporary repo', () => {
     } finally { process.env.PATH = previous; }
   });
 
+  it('finishes a productive usage walk past ten seconds and counts only complete root totals', async () => {
+    const tree = path.join(tmp, 'productive-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    const bin = path.join(tmp, 'streaming-du');
+    fs.mkdirSync(bin);
+    // One root can contain millions of files: summaries alone give no progress
+    // until its whole walk ends. Keep the real child alive beyond the old 10s
+    // absolute timeout, emitting the same NUL-framed records as du --all.
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+const root = ${JSON.stringify(tree)};
+let index = 0;
+const timer = setInterval(() => {
+  if (index++ < 11) process.stdout.write('4096\\t' + root + '/file-' + index + '\\0');
+  else { clearInterval(timer); process.stdout.write('8192\\t' + root + '\\0'); }
+}, 1000);
+`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 });
+      expect(result.errors).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.cap.beforeBytes).toBe(8192);
+      expect(result.cap.retainedPaths).toEqual([tree]);
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  }, 25_000);
+
+  it.each(['missing-root', 'duplicate-root', 'malformed', 'outside-root', 'partial'])('refuses %s usage evidence before any removal', async (kind) => {
+    const tree = path.join(tmp, 'invalid-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const row = `8192\t${tree}\0`;
+    const output = kind === 'missing-root' ? `4096\t${tree}/child\0`
+      : kind === 'duplicate-root' ? row + row
+      : kind === 'malformed' ? `NaN\t${tree}\0`
+      : kind === 'outside-root' ? `8192\t${tree}-outside\0` : row.slice(0, -1);
+    const bin = path.join(tmp, 'invalid-du');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)});\n`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan);
+      expect(result.ok).toBe(false);
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(result.cap.afterBytes).toBeNull();
+      expect(result.errors[0]).toContain('usage before reclaim');
+      expect(fs.existsSync(tree)).toBe(true);
+      expect(fs.existsSync(path.join(ret, 'reclaim-archive'))).toBe(false);
+    } finally { process.env.PATH = previous; }
+  });
+
+  it('stops a still-productive usage walk at the existing shared run deadline', async () => {
+    const tree = path.join(tmp, 'deadline-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const bin = path.join(tmp, 'deadline-du');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+let index = 0;
+setInterval(() => process.stdout.write('4096\\t' + ${JSON.stringify(tree)} + '/child-' + index++ + '\\0'), 20);
+`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan, { notAfterMs: Date.now() + 300 });
+      expect(result.ok).toBe(false);
+      expect(result.errors[0]).toContain('run deadline exhausted');
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  });
+
+  it('does not let partial records or stderr noise renew an idle usage walk', async () => {
+    const tree = path.join(tmp, 'idle-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const bin = path.join(tmp, 'idle-du');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); }, 100);
+`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan);
+      expect(result.ok).toBe(false);
+      expect(result.errors[0]).toContain('no metadata progress for 10 seconds');
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  }, 20_000);
+
+  it('measures allocated bytes for paths containing tabs and newlines without following symlinks or opening FIFOs', async () => {
+    const tree = path.join(tmp, 'usage\twith\nseparators');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const data = path.join(tree, 'file\twith\nseparators');
+    fs.writeFileSync(data, Buffer.alloc(8192, 1));
+    fs.symlinkSync(tmp, path.join(tree, 'outside'));
+    execFileSync('mkfifo', [path.join(tree, 'fifo')]);
+    const plan = await gather();
+    const result = await reclaimCutWorktrees(plan, { dryRun: true });
+    expect(result.ok).toBe(true);
+    expect(result.cap.beforeBytes).toBeGreaterThanOrEqual(fs.statSync(data).blocks * 512);
+    expect(result.cap.retainedPaths).toEqual([tree]);
+  });
+
   it('removes an OFFLOADED tree: the real directory and the symlink both go', async () => {
     const tree = path.join(tmp, 'relcut-0023-win');
     const offload = path.join(tmp, 'offload');

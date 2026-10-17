@@ -53,7 +53,7 @@ export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLea
 export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 import { RETENTION_POLICY } from './storage/retention-policy';
-import type { RetentionCapReceipt } from './storage/disk-reclaim';
+import { DEFAULT_RECLAIM_RUN_BUDGET_MS, type RetentionCapReceipt } from './storage/disk-reclaim';
 import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
@@ -1247,14 +1247,77 @@ export async function executeCutReclaim(
   );
 }
 
+// Reuse the retention census's validated-record progress contract. --all exposes
+// progress even inside one large flat directory; only root rows contribute bytes.
+// Keep one du process so its inode table deduplicates hardlinks across roots.
+function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<Map<string, number>> {
+  return new Promise((resolve, reject) => {
+    const bytes = new Map<string, number>();
+    let pending = '', stderr = '', failure: string | undefined, settled = false;
+    let progressTimer: ReturnType<typeof setTimeout>;
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    if (!Number.isFinite(notAfterMs) || notAfterMs <= Date.now()) {
+      reject(new Error('release-cut usage run deadline exhausted')); return;
+    }
+    const child = spawn('du', ['--all', '--one-file-system', '--block-size=1', '--null', '--', ...roots], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stop = (reason: string) => {
+      failure ??= reason;
+      child.kill('SIGKILL');
+    };
+    const armProgress = () => {
+      clearTimeout(progressTimer);
+      progressTimer = setTimeout(() => stop('release-cut usage made no metadata progress for 10 seconds'), 10_000);
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(progressTimer); clearTimeout(deadlineTimer);
+      if (error) reject(error); else resolve(bytes);
+    };
+    armProgress();
+    deadlineTimer = setTimeout(() => stop('release-cut usage run deadline exhausted'), notAfterMs - Date.now());
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (failure) return;
+      const rows = (pending + chunk).split('\0'); pending = rows.pop() ?? '';
+      for (const row of rows) {
+        const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
+        if (tab < 1 || !/^\d+$/.test(value) || !Number.isSafeInteger(n) ||
+            path.resolve(p) !== p || !roots.some((root) => p === root || p.startsWith(`${root}/`)) || bytes.has(p)) {
+          stop('invalid release-cut usage output'); return;
+        }
+        if (roots.includes(p)) bytes.set(p, n);
+      }
+      // Bound an unterminated row, not the streamed population. Partial records
+      // and stderr noise cannot renew a stuck command's inactivity deadline.
+      if (pending.length > 64 * 1024) { stop('oversized release-cut usage record'); return; }
+      if (rows.length) armProgress();
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.once('error', (error) => finish(error));
+    child.once('close', (code, signal) => {
+      if (!failure && (code !== 0 || signal)) failure = 'release-cut usage command failed';
+      if (!failure && (pending || bytes.size !== roots.length)) failure = 'incomplete release-cut usage output';
+      if (!failure && !Number.isSafeInteger([...bytes.values()].reduce((sum, n) => sum + n, 0))) {
+        failure = 'release-cut usage exceeds safe integer bytes';
+      }
+      finish(failure ? Object.assign(new Error(failure), { code, signal, killed: child.killed, stderr }) : undefined);
+    });
+  });
+}
+
 /** The scheduled adapter holds the pin mutex across discovery and this owner call.
  * A cap never overrides the existing published/authored/lease/holder guards. All
  * expired eligible cuts are still collected, even when usage is already below cap. */
 export async function reclaimCutWorktrees(
   plan: ReclaimPlan,
-  options: { dryRun?: boolean; maxBytes?: number } = {},
+  options: { dryRun?: boolean; maxBytes?: number; notAfterMs?: number } = {},
   deps: ReclaimExecDeps = {},
 ) {
+  const notAfterMs = options.notAfterMs ?? Date.now() + DEFAULT_RECLAIM_RUN_BUDGET_MS;
   const maxBytes = options.maxBytes ?? RETENTION_POLICY.find((c) => c.id === 'release-cut-worktrees')!.maxBytes!;
   const targets = plan.verdicts.filter((v) => v.disposition === 'reclaimable')
     .sort((a, b) => {
@@ -1284,7 +1347,7 @@ export async function reclaimCutWorktrees(
     ])];
   };
   // GNU du supplies allocated bytes without following descendant symlinks or
-  // opening FIFOs. One process and one deadline cover the whole population. A
+  // opening FIFOs. One process and the existing run deadline cover the population. A
   // failed/partial measurement refuses deletion rather than treating it as zero.
   const measure = async () => {
     const existing: string[] = [];
@@ -1299,19 +1362,7 @@ export async function reclaimCutWorktrees(
     const pinned = (p: string) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!));
     roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
     if (!roots.length) return new Map<string, number>();
-    const { stdout } = await execFileAsync('du', ['--summarize', '--one-file-system', '--block-size=1', '--null', '--', ...roots], {
-      encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL', maxBuffer: 4 * 1024 * 1024,
-    });
-    const bytes = new Map<string, number>();
-    for (const row of String(stdout).split('\0').filter(Boolean)) {
-      const tab = row.indexOf('\t'), n = Number(row.slice(0, tab)), p = row.slice(tab + 1);
-      if (tab < 1 || !Number.isSafeInteger(n) || n < 0 || !roots.includes(p) || bytes.has(p)) throw new Error('invalid release-cut usage output');
-      bytes.set(p, n);
-    }
-    if (bytes.size !== roots.length) throw new Error('incomplete release-cut usage output');
-    const total = [...bytes.values()].reduce((sum, n) => sum + n, 0);
-    if (!Number.isSafeInteger(total)) throw new Error('release-cut usage exceeds safe integer bytes');
-    return bytes;
+    return measureCutUsage(roots, notAfterMs);
   };
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.

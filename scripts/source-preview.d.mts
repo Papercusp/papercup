@@ -223,16 +223,13 @@ export function captureVerifierDependencies({ dest, receipt }: {
  * plane, without copying the config file or unrelated secrets into the archive.
  * Explicit database pins and isolated PG selection keep their precedence.
  * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
+ * @returns {NodeJS.ProcessEnv}
  */
 export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
     repo: string;
     env?: NodeJS.ProcessEnv;
     preflight?: typeof runTreeRestrictedHoldPreflight;
-}): {
-    PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: "admitted-by-test-router";
-} | {
-    [key: string]: string | undefined;
-};
+}): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options

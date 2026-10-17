@@ -879,6 +879,7 @@ export function captureVerifierDependencies({ dest, receipt }) {
  * plane, without copying the config file or unrelated secrets into the archive.
  * Explicit database pins and isolated PG selection keep their precedence.
  * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
+ * @returns {NodeJS.ProcessEnv}
  */
 export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight = runTreeRestrictedHoldPreflight }) {
   const verdict = preflight({ roots: [repo], env });

@@ -293,7 +293,50 @@
     "outDir": "/mnt/data/agent-capacity/corpus/p544-route-pilot-20261017T1410",
     "prerequisiteEvidence": "docs/evidence/p544-recorder-clock-2026-10-17.json; maintained budget+clock 47 pass, zero skipped, zero child substitutions. Do not replay settled proof.",
     "reservationPolicy": "Retain all prior reservations and this full maximum regardless of tokens/errors/partial export. Exclusive append-only fsynced final-send journal reserves before every provider fetch including retries/OAuth recovery. Hard account/complete-header/target pin; mismatch fails closed.",
-    "acceptance": "Pilot evidence only; cannot qualify monthly 40/40/20 workload, D075 native50 UX/capacity, D076 actual all-in under20 or P537 authenticated product/source-serving acceptance. No new VM authorized."
+    "acceptance": "Pilot evidence only; cannot qualify monthly 40/40/20 workload, D075 native50 UX/capacity, D076 actual all-in under20 or P537 authenticated product/source-serving acceptance. No new VM authorized.",
+    "outcome": {
+      "classification": "Provider route and bounded final-send path verified; coding task incomplete at its declared four-request cap",
+      "sessionId": "codex-exc-light-2-20261017T141119",
+      "cliVersion": "codex-cli 0.163.0",
+      "startedAtUtc": "2026-10-17T14:11:39.372Z",
+      "nativeExitCode": 1,
+      "outerRecorderExitCode": 0,
+      "timedOut": false,
+      "wallMs": 26336,
+      "memPeakBytes": 407207936,
+      "cpuUsec": 8979412,
+      "toolCalls": { "command_execution": 4 },
+      "diffBytes": 0,
+      "providerSendsAdmitted": 4,
+      "providerResponsesCompleted": 4,
+      "providerResponseStatuses": [200, 200, 200, 200],
+      "providerReportedModels": ["gpt-6-luna"],
+      "providerReportedEfforts": ["low"],
+      "finalSendDenials": 0,
+      "finalSendRefusalReasons": {},
+      "recordingProxyRequestsAdmitted": 4,
+      "recordingProxyRequestsDenied": 1,
+      "terminalErrorType": "recording_request_limit",
+      "terminalError": "batch model request allowance exhausted",
+      "journalReservedUsdMicros": 2873200,
+      "journalStopped": true,
+      "tokenTotals": {
+        "inputTokensInclusive": 83423,
+        "outputTokens": 565,
+        "cacheReadTokensIncludedInInput": 65408,
+        "cacheCreationTokens": 0
+      },
+      "measuredInvoiceUsd": null,
+      "programmeMaximumReservationRetainedUsd": 2.8732,
+      "log": "/tmp/p544-clock-fixed-pilot-20261017.log",
+      "artifactSha256": {
+        "recording-budget.jsonl": "9a7eff0d3f91f3179c116e92d63b6d7619a42006b7640e67aacd660669d9b0a9",
+        "codex-exc-light-2-20261017T141119/meta.json": "13a7f363ed23c834251b9ec6c810836ea6bf8368fd7e05ca108aff979c1003b4",
+        "codex-exc-light-2-20261017T141119/cli.jsonl": "c49226527d869c6be05a53ee5c810dc05ae5dbbac96750c97cf243f28d5c02ea",
+        "codex-exc-light-2-20261017T141119/exchanges.jsonl": "aae403ff2a7ba6e3941f8c6cb90db6491989dcc23c70202c3bfc8b32cd7d0355"
+      },
+      "nextExperimentPrecondition": "Inspect saved task commands and complete-task requirements before allocating another batch; do not repeat this route proof. Any new provider attempts need a separate maximum reservation, fresh admission and complete-header binding. P544 and P537 remain open."
+    }
   },
   "limitations": [
     "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",

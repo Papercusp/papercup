@@ -55,7 +55,7 @@ interface BuildRemovalResult { removed: Array<{ path: string; bytes: number }>; 
 export interface RetentionFileLease { release: () => Promise<void>; }
 export interface ReclaimDelegate {
   classId: string;
-  run: (dryRun: boolean, onPhase?: (event: ReclaimPhaseTiming) => void) => Promise<{ ok: boolean; detail: unknown }>;
+  run: (dryRun: boolean, onPhase?: (event: ReclaimPhaseTiming) => void, notAfterMs?: number) => Promise<{ ok: boolean; detail: unknown }>;
 }
 export interface RetentionCapReceipt {
   root: string; classId: string; maxBytes: number; beforeBytes: number;
@@ -791,7 +791,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await options.record?.('progress', { phase: 'delegate-start', classId: delegate.classId });
         let result: { ok: boolean; detail: unknown };
-        try { result = await delegate.run(receipt.dryRun, onPhase); }
+        try { result = await delegate.run(receipt.dryRun, onPhase, runDeadline); }
         catch (err) { result = { ok: false, detail: message(err) }; }
         finally { acceptingPhases = false; await phaseWrites; }
         const measured = { classId: delegate.classId, ...result, elapsedMs: performance.now() - delegateStarted,
@@ -1472,7 +1472,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
       // internal reuse context scoped to this one enrolled child.
       env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' },
     }) },
-    { classId: 'release-cut-worktrees', run: async (dryRun, onPhase) => {
+    { classId: 'release-cut-worktrees', run: async (dryRun, onPhase, notAfterMs) => {
       const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
       const plan = await gatherCutReclaimPlan({
@@ -1485,7 +1485,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
           return rows.map((row) => ({ version: row.version, gitSha: row.git_sha, cutAtMs: new Date(row.cut_at).getTime(), publishedAtMs: row.published_at ? new Date(row.published_at).getTime() : null }));
         },
       });
-      const detail = await reclaimCutWorktrees(plan, { dryRun }, { retentionMutexHeld: true });
+      const detail = await reclaimCutWorktrees(plan, { dryRun, notAfterMs }, { retentionMutexHeld: true });
       return { ok: detail.ok, detail };
     } },
     { classId: 'unregistered-workspaces', run: async () => {
