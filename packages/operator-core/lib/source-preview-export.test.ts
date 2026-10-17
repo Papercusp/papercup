@@ -907,6 +907,92 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
     });
 
+  it.each(['snapshot', 'census', 'child', 'sigkill'] as const)(
+    'retains plain CLI ownership and truthful cleanup on cancellation during %s', async phase => {
+      const fixture = makeSuperproject(join(tmp, 'verifier-cli-cancel-' + phase));
+      git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+      const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const preflight = 'scripts/source-preview.mjs';
+      const provider = 'scripts/cancellation-fixture.mjs';
+      write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+      write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+      write(fixture.repo, helper, [
+        '#!/bin/bash', 'set -eu',
+        'if [ "$1" = trees ]; then',
+        '  if [ "$VERIFIER_CANCEL_PHASE" = census ]; then printf "%s\\n" "$2" > "$VERIFIER_CANCEL_READY"; sleep 1; fi',
+        '  echo node_modules; exit', 'fi',
+        'if [ "$VERIFIER_CANCEL_PHASE" = snapshot ] || [ "$VERIFIER_CANCEL_PHASE" = sigkill ]; then',
+        '  printf "%s\\n" "$3" > "$VERIFIER_CANCEL_READY"; exec sleep 60', 'fi',
+        'cp -al -- "$2/node_modules" "$3/node_modules"',
+      ].join('\n') + '\n');
+      write(fixture.repo, provider, [
+        "import { writeFileSync } from 'node:fs';",
+        "writeFileSync(process.env.VERIFIER_CANCEL_READY, process.cwd());",
+        "setInterval(() => {}, 1000);",
+      ].join('\n'));
+      write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+      git(fixture.repo, ['add', helper, preflight, provider, '.gitignore', DEPENDENCY_POLICY_PATH]);
+      git(fixture.repo, ['commit', '-qm', 'plain CLI cancellation fixture']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+      write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+        name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+      write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      installVerifierTsx(fixture.repo);
+      const ready = join(tmp, 'verifier-cli-cancel-ready-' + phase);
+      const receiptPath = join(tmp, 'verifier-cli-cancel-source-' + phase + '.json');
+      const options = { repo: fixture.repo, ref, receiptPath, inputs: [helper, preflight, provider],
+        command: [process.execPath, provider] };
+      const cli = new URL('../../../scripts/source-preview.mjs', import.meta.url).href;
+      const env = childEnv({ VERIFIER_CANCEL_READY: ready, VERIFIER_CANCEL_PHASE: phase });
+      delete env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
+      const child = spawn(process.execPath, ['--input-type=module', '-e',
+        `import { runVerifierCommand } from ${JSON.stringify(cli)}; try { process.exitCode = await runVerifierCommand(${JSON.stringify(options)}); } catch (error) { console.error(error.message); process.exitCode = error.exitCode ?? 1; }`],
+      { cwd: fixture.repo, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', bytes => { output += bytes; });
+      child.stderr.on('data', bytes => { output += bytes; });
+      const closed = once(child, 'close');
+      let owned: string | undefined;
+      let peer: string | undefined;
+      try {
+        await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 20_000, interval: 20 });
+        owned = dirname(readFileSync(ready, 'utf8').trim());
+        const receipt = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        expect(receipt).toMatchObject({ schemaVersion: 'verifier-task-v1', taskId: null,
+          pid: child.pid, repoRoot: fixture.repo, ownedRoot: owned, cleanup: 'pending' });
+        expect(receipt.processIdentity).toBeTypeOf('string');
+        expect(receipt.processIdentity.length).toBeGreaterThan(0);
+        expect(statSync(receiptPath + '.task.json').mode & 0o777).toBe(0o600);
+        expect(JSON.parse(readFileSync(join(owned!, '.verifier-task.json'), 'utf8'))).toEqual(receipt);
+        peer = mkdtempSync(join(dirname(owned!), 'verifier-command-'));
+        writeFileSync(join(peer, 'peer-owned'), 'must survive');
+        const signal = phase === 'sigkill' ? 'SIGKILL' : 'SIGTERM';
+        process.kill(phase === 'sigkill' ? -child.pid! : child.pid!, signal);
+        const result = await closed;
+        const final = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        if (phase === 'sigkill') {
+          expect(result).toEqual([null, 'SIGKILL']);
+          expect(final).toEqual(receipt); // A killed finally cannot manufacture cleanup evidence.
+          expect(existsSync(owned!)).toBe(true);
+        } else {
+          expect(result, output).toEqual([143, null]);
+          expect(final).toMatchObject({ ...receipt, cleanup: 'completed', cancellationSignal: 'SIGTERM' });
+          expect(existsSync(owned!)).toBe(false);
+          const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+          expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+          if (phase !== 'child') expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+        }
+        expect(readFileSync(join(peer, 'peer-owned'), 'utf8')).toBe('must survive');
+      } finally {
+        try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+        await closed;
+        if (owned) rmSync(owned, { recursive: true, force: true });
+        if (peer) rmSync(peer, { recursive: true, force: true });
+      }
+    });
+
   it.each([
     ['spawned', 'repo'], ['pending', 'repo'], ['spawned', 'data'], ['pending', 'data'],
   ] as const)('terminal task close cleans a real SIGKILL with %s enrollment in %s scratch and preserves peers', async (enrollment, scratchLocation) => {

@@ -234,6 +234,38 @@
       "localDistinguishingObservation": "Real TSX static import and dynamic .ts import return distinct processMonotonicClock objects and UUIDs in one process; performance.now observations use the same process timeline. Paid retries suspended pending a maintained mixed-loader regression and durable fix."
     }
   },
+  "clockRepair20261017": {
+    "workItem": "WI-6554700010016836",
+    "evidence": "docs/evidence/p544-recorder-clock-2026-10-17.json",
+    "result": "Real TSX mixed-loader identity regression failed before the runtime-global singleton and passed after it; focused recorder budget and clock suites passed 47 tests with zero skipped and zero child substitutions.",
+    "completionAuthorityAtClose": "proposed",
+    "settlement": "Content identity awaiting automatic git-sync settlement at close. No re-close or repeat testing solely to reconstruct proof.",
+    "finalSendAudit": "Complete outgoing Authorization header binding, native additional_tools request guard, matching runtime clock, and synchronous fsynced reservation before fetch verified in maintained source/tests.",
+    "newProviderSends": 0,
+    "newVmAllocations": 0
+  },
+  "refresh20261017T140211Z": {
+    "sourceRoot": "/tmp/p544-admission-refresh-20261017-1403",
+    "observedAtUtc": "2026-10-17T14:01:47.642951+00:00",
+    "completedAtUtc": "2026-10-17T14:02:11.310472+00:00",
+    "queryOrder": ["budget", "admin", "instances", "disks", "snapshots", "addresses", "buckets"],
+    "sequential": true,
+    "adminRows": 0,
+    "adminLimit": 5000,
+    "adminSinceUtc": "2026-10-17T13:44:49Z",
+    "instances": [],
+    "disks": [],
+    "snapshots": [],
+    "staticAddresses": [],
+    "retainedArtifactBuckets": ["pc-agent-capacity-0930-artifacts"],
+    "budgetAlertConfirmedUsd": 200,
+    "budgetMeaning": "Monthly alert configuration only; not a hard cap, measured spend or available balance",
+    "programmeReservedUsd": 177.2464,
+    "remainingConservativeHeadroomUsd": 22.7536,
+    "reservationChangeUsd": 0,
+    "newPilotAdmitted": false,
+    "next": "Refresh selected account and complete Bearer-header digest privately, refresh census as needed, and record a separate maximum reservation before any new bounded recorder batch. This read does not authorize a provider send or a VM."
+  },
   "limitations": [
     "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",
     "Cloud audit ingestion can lag. This bounded refresh does not prove account-wide absence of unrelated charges.",
