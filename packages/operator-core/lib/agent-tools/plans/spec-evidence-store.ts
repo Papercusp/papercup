@@ -3170,11 +3170,24 @@ function certifiesCompletedTestRow(kind: string): boolean {
   return kind === 'test' || kind === 'independent-verification';
 }
 
+/** Resolve legacy isolated bindings from their original ledger, without rewriting a recipe or any pin. */
+function completedTestRuntimeRecipe(row: EvidenceRow, recipe: RepoFilesEvidenceMeasurement): RepoFilesEvidenceMeasurement | null {
+  if (recipe.completedRuntime) return recipe;
+  const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
+  const runIds = execution?.isolatedRuntimeReceipts?.map(receipt => receipt.runId).sort();
+  if (!runIds || !recipe.runtimeUnits
+    || JSON.stringify([...recipe.runtimeUnits].sort()) !== JSON.stringify(runIds.map(id => `isolated-integration:${id}`))) return null;
+  // The existing certifier still verifies original hashes, Git objects, scope,
+  // intervals and teardown. An explicit selector is authoritative, and no
+  // selector can turn a completed test into a current deployed runtime.
+  return { ...recipe, completedRuntime: { kind: 'isolated-integration', runIds } };
+}
+
 /**
  * A disposed verifier cannot be re-probed through /proc. Certify its completed
  * execution from the retained harness lifecycle and independently rehashed source
- * instead. This opt-in applies only to clean native/LLM test receipts on the live
- * test plane; it never certifies a serving/deployed production process.
+ * instead. This applies only to clean test receipts on their supported evidence
+ * planes; it never certifies a serving/deployed production process.
  */
 export async function measureCompletedTestRuntime(
   row: EvidenceRow,
@@ -3928,6 +3941,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
             });
           }
+          const completedRecipe = completedTestRuntimeRecipe(row, recipe);
           measured = {
             sourceFingerprint: detailed.sourceFingerprint,
             testFingerprint: detailed.testFingerprint,
@@ -3937,8 +3951,8 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               detailed.files.find(file => file.path === recipe.artifactReceiptPath && file.dimension === 'source')!.sha256) } : {}),
             ...(recipe.nativeInstrumentKey ? { environmentFingerprint: await measureNativeColdEnvironment(
               scope.workspaceId, scope.harnessSlug, recipe.nativeInstrumentKey) } : {}),
-            ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
-              ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
+            ...(recipe.runtimeUnits ? { environmentFingerprint: completedRecipe
+              ? await measureCompletedTestRuntime(row, completedRecipe, detailed.files, scope, measurementRoot,
                 { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
               : await measureRuntimeEnvironment(
                 await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,

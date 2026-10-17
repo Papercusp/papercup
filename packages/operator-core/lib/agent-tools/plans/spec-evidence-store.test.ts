@@ -276,6 +276,34 @@ describe('completed isolated runtime certification', () => {
     await setupIsolated();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it('certifies original isolated receipts when the first binding omitted the completion selector without changing its recipe', async () => {
+    const state = await setupIsolated();
+    delete state.basis.completedRuntime;
+    const originalRecipe = structuredClone(state.basis);
+    const evidence = await read();
+    expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+      dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+    expect(state.row.details.currentMeasurement).toEqual(originalRecipe);
+  });
+  it.each(['tampered-receipt', 'missing-artifact', 'missing-receipts', 'wrong-unit', 'wrong-scope',
+    'wrong-source', 'wrong-commit', 'missing-teardown', 'deployed', 'explicit-wrong-selector'])(
+    'keeps inferred completion fail-closed for %s', async failure => {
+      const state = await setupIsolated();
+      delete state.basis.completedRuntime;
+      if (failure === 'tampered-receipt') state.life.pgPort++;
+      if (failure === 'wrong-source') state.source.files[0].gitSha256 = 'b'.repeat(64);
+      if (failure === 'wrong-scope') state.source.workspaceId = 'foreign';
+      if (failure === 'missing-teardown') state.life.ended.pgDataRemoved = false;
+      await state.save(failure !== 'tampered-receipt');
+      if (failure === 'missing-artifact') await rm(join(state.dir, 'phases/execute/lifecycle.json'));
+      if (failure === 'missing-receipts') delete (state.execution as any).isolatedRuntimeReceipts;
+      if (failure === 'wrong-unit') state.basis.runtimeUnits = ['bg-host'];
+      if (failure === 'wrong-commit') state.row.test_run_commit_sha = 'b'.repeat(40);
+      if (failure === 'deployed') state.row.details.evidencePlane = 'deployed';
+      if (failure === 'explicit-wrong-selector') state.basis.completedRuntime = {
+        kind: 'isolated-integration', runIds: ['20261008T000022Z-202'] };
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
   it.each(['tree', 'live', 'deployed', 'unknown', undefined])(
     'certifies the retained isolated lifetime only for tree or live evidence: %s', async evidencePlane => {
       const state = await setupIsolated();

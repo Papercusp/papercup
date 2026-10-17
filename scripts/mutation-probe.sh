@@ -1372,6 +1372,10 @@ propagate_test_run_scope() {
   fi
   if [ -n "$workspace_scope" ]; then
     export PAPERCUSP_WORKSPACE_ID="$workspace_scope"
+    # Isolated guards replace the product workspace. Pin the reporter's
+    # existing ledger-only override before that boundary, while preserving an
+    # explicit evidence workspace independently of the product identity.
+    export PAPERCUSP_TEST_RUN_WORKSPACE="${PAPERCUSP_TEST_RUN_WORKSPACE:-$workspace_scope}"
   fi
 }
 

@@ -248,6 +248,43 @@ describe('real Luna load and swap tuning', () => {
     expect(receipt.typed).toEqual([['a1', 'dummy']]);
   });
 
+  it.each(['native-complete', 'native-error', 'stub'])('avoids unused terminal captures after submission: %s', (mode) => {
+    const code = [
+      'import importlib.util, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `mode=${JSON.stringify(mode)}`,
+      'clock=[0]; submitted=set(); captures=[]; polls=[]; typed=[]',
+      'm.REAL_MODEL=mode!="stub"; m.CODEX_SESSIONS={"a1":{}}',
+      'm.time.time=lambda:clock[0]; m.time.sleep=lambda *a:clock.__setitem__(0,clock[0]+1)',
+      'm.type_text=lambda *a:typed.append(a); m.press_enter=lambda n:submitted.add(n)',
+      'def pane(n):',
+      ' captures.append({"agent":n,"submitted":n in submitted})',
+      ' return "MARKER DONE-MARKER"',
+      'def completed(n, marker):',
+      ' polls.append([n,marker])',
+      ' if mode=="native-error": raise m.NativeTaskError("native failure")',
+      ' return len(polls)>=2',
+      'm.pane=pane; m.codex_completed=completed',
+      'state=m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",10)',
+      'print(json.dumps({"state":state,"captures":captures,"polls":polls,"typed":typed}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.typed).toEqual([['a1', 'dummy']]);
+    expect(receipt.captures).toEqual(mode === 'stub'
+      ? [{ agent: 'a1', submitted: false }, { agent: 'a1', submitted: true }]
+      : [{ agent: 'a1', submitted: false }]);
+    if (mode === 'native-error') {
+      expect(receipt.state.a1).toMatchObject({ tDone: null, error: 'native failure' });
+      expect(receipt.polls).toHaveLength(1);
+    } else {
+      expect(receipt.state.a1).toMatchObject({ tDone: mode === 'stub' ? 1 : 2, error: null });
+      expect(receipt.polls).toHaveLength(mode === 'stub' ? 0 : 2);
+    }
+  });
+
   it('keeps each native runtime in its measured scope without requiring a daemon socket', () => {
     const code = [
       'import importlib.util, types, json, io, builtins',

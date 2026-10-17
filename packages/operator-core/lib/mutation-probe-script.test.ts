@@ -387,6 +387,51 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it.each(['PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE'] as const)(
+    'pins the ledger workspace before an isolated guard rebinds %s',
+    (workspaceKey) => {
+      const env = { ...process.env };
+      delete env.PAPERCUSP_TEST_RUN_WORKSPACE;
+      delete env.PAPERCUSP_WORKSPACE_ID;
+      delete env.PAPERCUSP_WORKSPACE;
+      env[workspaceKey] = 'probe-workspace';
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', [
+          'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = probe-workspace || exit 3',
+          'PAPERCUSP_WORKSPACE_ID=private-guard-workspace',
+          'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = probe-workspace || exit 3',
+          'test -f {} || exit 3',
+          'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+        ].join('; '),
+      ], env);
+      expect(code, out).toBe(0);
+      expect(out).toMatch(/MUTANT CAUGHT/);
+      expect(read()).toBe(ORIGINAL);
+    },
+  );
+
+  it('preserves an explicit ledger workspace independently of the product workspace', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', [
+        'test "$PAPERCUSP_WORKSPACE_ID" = product-workspace || exit 3',
+        'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = ledger-workspace || exit 3',
+        'PAPERCUSP_WORKSPACE_ID=private-guard-workspace',
+        'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = ledger-workspace || exit 3',
+        'test -f {} || exit 3',
+        'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+      ].join('; '),
+    ], {
+      ...process.env,
+      PAPERCUSP_WORKSPACE_ID: 'product-workspace',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-workspace',
+    });
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   describe('test-run ledger sink routing', () => {
     const resolvedSink = 'postgresql://harness_admin:harness_admin_pwd@localhost:6543/papercusp';
 
@@ -647,6 +692,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       'PAPERCUSP_TEST_RUN_HARNESS',
       'HARNESS_SLUG',
       'PAPERCUSP_HARNESS_SLUG',
+      'PAPERCUSP_TEST_RUN_WORKSPACE',
       'PAPERCUSP_WORKSPACE_ID',
       'PAPERCUSP_WORKSPACE',
     ] as const) {
@@ -659,7 +705,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
         '--mutate',
         's/beta/BETA/',
         '--test',
-        'test -z "${PAPERCUSP_TEST_RUN_HARNESS:-}" && test -z "${PAPERCUSP_WORKSPACE_ID:-}" && test -f {} && if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+        'test -z "${PAPERCUSP_TEST_RUN_HARNESS:-}" && test -z "${PAPERCUSP_TEST_RUN_WORKSPACE:-}" && test -z "${PAPERCUSP_WORKSPACE_ID:-}" && test -f {} && if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
       ],
       env,
     );

@@ -697,15 +697,17 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
         for name, s in state.items():
             if s["tDone"] is not None or s["error"]:
                 continue
-            text = pane(name)
             if s["tEnter"] is None:
+                text = pane(name)
                 if marker_for(name) in text:
                     s["tEcho"] = time.time()
                     press_enter(name)
                     s["tEnter"] = time.time()
             else:
                 try:
-                    completed = codex_completed(name, marker_for(name)) if REAL_MODEL else "DONE-" + marker_for(name) in text
+                    # Native history owns completion. Repeated tmux captures
+                    # here add observer work without providing any evidence.
+                    completed = codex_completed(name, marker_for(name)) if REAL_MODEL else "DONE-" + marker_for(name) in pane(name)
                 except NativeTaskError as e:
                     s["error"] = str(e)
                     continue

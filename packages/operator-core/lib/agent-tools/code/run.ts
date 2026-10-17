@@ -19,6 +19,7 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
+  type OrchestrationInputs,
   type AbortCompletionContext,
   type AbortCompletionReceipt,
   type FieldMiss,
@@ -550,7 +551,14 @@ export default defineTool({
       wrapDispatch: bindCurrentCallerDispatch,
       // A cell can mutate live VM state even with zero nested write tools. It is not replay-safe.
       ...(args.kernel ? {} : { requestHash }),
-      ...(contract ? { inputs: contract.inputs } : args.inputs ? { inputs: args.inputs } : {}),
+      // The zod boundary intentionally accepts unknown values so the runtime can return its
+      // stable `inputs_not_serializable` error. `runOrchestrationScript` performs that validation
+      // before constructing the worker; carry the validated runtime type across this boundary.
+      ...(contract
+        ? { inputs: contract.inputs }
+        : args.inputs
+          ? { inputs: args.inputs as OrchestrationInputs }
+          : {}),
     });
 
     // EI-21570021207351896 / EI-21569537333182760: DISCLOSE the clamp on the envelope the caller
