@@ -84,6 +84,42 @@ describe('original-item durable admission recovery', () => {
     expect((await current()).taken_by).toBeNull();
   });
 
+  it.each(['pending', 'unreviewed'] as const)(
+    'preserves the screening opportunity after an unjudged twin hold on a %s row', async (admission) => {
+      await heldComponentRequest();
+      for (const structured of [false, true]) {
+        const heldAt = '2099-01-01T00:00:00Z';
+        await db.sql`UPDATE harness_shared.work_items SET admission = ${admission}, payload = payload ||
+          ${db.sql.json({
+            admissionHold: {
+              reason: 'deferred: twin WI-protected is claimed; held until it can be judged',
+              actor: 'system:work-item-admission-promoter', heldAt,
+              ...(structured ? { screeningDeferred: true } : {}),
+            },
+            ...(admission === 'unreviewed' ? { admissionReview: { lastRetryAt: heldAt } } : {}),
+          })}`;
+        const before = (await current()).payload;
+        expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([scope.workItemId]);
+        expect((await current()).payload).toEqual(before);
+      }
+    },
+  );
+
+  it.each(['judged', 'foreign-actor'])(
+    'retires a hold that resembles a structural deferral but is %s', async (kind) => {
+      await heldComponentRequest();
+      await db.sql`UPDATE harness_shared.work_items SET payload = payload || ${db.sql.json({
+        admissionHold: {
+          reason: 'deferred: twin WI-protected is claimed; held until it can be judged',
+          actor: kind === 'foreign-actor' ? 'unverified' : 'system:work-item-admission-promoter',
+          heldAt: '2099-01-01T00:00:00Z',
+          ...(kind === 'judged' ? { screeningDeferred: false } : {}),
+        },
+      })}`;
+      expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([]);
+    },
+  );
+
   it.each(['signature', 'authority', 'peer', 'routine', 'foreign', 'malformed', 'changed', 'claim-during-authorization', 'reviewed', 'held-after-screen'])(
     'does not prioritize an ineligible component request: %s', async (failure) => {
       await heldComponentRequest();
