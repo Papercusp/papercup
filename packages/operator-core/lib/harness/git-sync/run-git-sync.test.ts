@@ -2937,7 +2937,7 @@ describe('runGitSync (real git, no submodule)', () => {
     ]);
     expect(failedOnce).toEqual(new Set(['fetch', 'push']));
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
-      ['-c', rewrite, 'fetch', 'origin', 'main'],
+      ['-c', rewrite, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
       ...(!revoked ? [['-c', rewrite, 'push', 'origin', 'HEAD:main']] : []),
     ]);
     if (revoked) {
@@ -2988,7 +2988,7 @@ describe('runGitSync (real git, no submodule)', () => {
     if (out.status === 'synced') expect(out.pushed).toContain('superproject');
     expect(failedOnce).toEqual(new Set(['fetch', 'push']));
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
-      ['-c', rewrite, 'fetch', 'origin', 'main'],
+      ['-c', rewrite, 'fetch', 'origin', '+refs/heads/main:refs/remotes/origin/main'],
       ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
     ]);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('ssh-alias-fallback.txt');

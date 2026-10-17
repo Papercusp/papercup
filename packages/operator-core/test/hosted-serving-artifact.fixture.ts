@@ -11,13 +11,12 @@ const root = resolve(import.meta.dirname, '../../..');
 const secretFields = ['PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF', 'WORKOS_API_KEY_REF',
   'WORKOS_COOKIE_PASSWORD_REF', 'WORKOS_WEBHOOK_SECRET_REF'] as const;
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-let credentialStage = 'launcher-import';
+let credentialStage = 'environment-parser-import';
 
 async function credentials() {
-  const launcher = await import('../../../apps/operator/scripts/systemd/portal-hosted-launcher');
-  const { parseEnvFile } = { ...(launcher as unknown as { default?: typeof launcher }).default, ...launcher };
+  const { parseEnvFile } = await import('../../../scripts/lib/pg-url.mjs');
   credentialStage = 'operator-environment';
-  const operator = parseEnvFile(readFileSync(join(root, 'apps/operator/.env.local'), 'utf8'));
+  const operator = Object.fromEntries(parseEnvFile(readFileSync(join(root, 'apps/operator/.env.local'), 'utf8')));
   // This process reads only the encrypted credential store; it never admits a user.
   Object.assign(process.env, operator);
   process.env.HARNESS_ADMIN_DATABASE_URL = operator.HARNESS_ADMIN_DATABASE_URL ?? operator.DATABASE_URL;
@@ -26,7 +25,7 @@ async function credentials() {
   const file = process.env.PAPERCUSP_TEST_HOSTED_SERVING_ENV_FILE
     ?? join(process.env.HOME!, '.config/papercusp/hosted-control-plane.env');
   credentialStage = 'hosted-environment';
-  const configuration = parseEnvFile(readFileSync(file, 'utf8'));
+  const configuration = Object.fromEntries(parseEnvFile(readFileSync(file, 'utf8')));
   credentialStage = 'secret-resolver-import';
   const { resolveHostedSecretRef } = await import('../lib/auth/hosted/secret-ref');
   const environment: Record<string, string> = {};
@@ -200,7 +199,8 @@ async function acceptance() {
 if (process.argv.includes('--credentials')) {
   credentials().then(value => process.stdout.write(JSON.stringify(value), () => process.exit(0)),
     error => { console.error('HOSTED_SERVING_CREDENTIAL_PREFLIGHT_FAILED ' + JSON.stringify({
-      stage: credentialStage, name: error?.name, code: error?.code })); process.exit(1); });
+      stage: credentialStage, name: error?.name, code: error?.code,
+      sourceGuardRefusal: String(error?.message).startsWith('COMMITTED_SOURCE refused ') })); process.exit(1); });
 } else {
   acceptance().catch(error => { console.error('HOSTED_SERVING_FAILURE ' + String(error)); process.exitCode = 1; });
 }

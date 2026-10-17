@@ -6904,7 +6904,11 @@ async function reconcileAndPushOneRepo(
     };
   }
   const tempPacksBeforeFetch = await listTempPackFiles(runGit, repoPath);
-  const fetch = await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
+  // A single-branch clone can exclude this branch from remote.<name>.fetch.
+  // A name-only fetch then writes only FETCH_HEAD: reconciliation cannot find
+  // the tracking ref, and later ticks download the same unreferenced history.
+  const fetchArgs = ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`];
+  const fetch = await runNetworkGitWithGitHubHttpsFallback(runGit, fetchArgs, repoPath, o.log);
   if (fetch.code !== 0) {
     const reclaimed = await pruneFailedFetchTempPacks(runGit, repoPath, tempPacksBeforeFetch, o.log);
     const cleanupNote =
@@ -7086,7 +7090,7 @@ async function reconcileAndPushOneRepo(
       );
       if (push.code !== 0 && rejectedNonFastForward(push)) {
         // A peer pushed between our fetch and push — re-fetch + re-merge once.
-        await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
+        await runNetworkGitWithGitHubHttpsFallback(runGit, fetchArgs, repoPath, o.log);
         const m2 = await recoverIndexLockContention(
           await runGit(mergeArgs, repoPath),
           () => runGit(mergeArgs, repoPath),

@@ -55,8 +55,32 @@
         "provision operation count delta",
         "final successful test receipt"
       ]
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run4.log",
+      "result": "failed before credential resolution, identity creation or private runtime startup",
+      "cause": "The committed-source guard rejects the launcher TypeScript module after tsx rewrites it through CommonJS. A separate guarded import reproduced this exact refusal.",
+      "sourceGuardRetained": true,
+      "repair": "Reuse the existing ESM parseEnvFile from scripts/lib/pg-url.mjs through Object.fromEntries; remove the CommonJS launcher import.",
+      "guardedImportPreflight": {
+        "path": "/tmp/p537-guarded-credential-imports-run5.json",
+        "esmEnvironmentParser": true,
+        "secretResolver": true,
+        "scope": "Both imports pass with the committed-source guard enabled; full credential resolution and the corrected fixture still require their committed-byte preflight."
+      }
     }
   ],
+  "commitBlockerRepair": {
+    "workItem": "EI-26241540058524748",
+    "rootCause": "mirror_copy_unlinked creates unignored .mirror-tree.tmp.* staging files at the caller package root and renames them away while git-sync enumerates source. The recorded git add failure named one such file.",
+    "fix": "Extend .gitignore for this staging name and the existing maintained paused-copy regression; preserve atomic asset replacement.",
+    "baseline": "5 passed, 1 failed because the live staging file appeared in Git's untracked source census",
+    "verification": "6 passed, 0 failed, 0 skipped; authored positive control remains visible, live staging is excluded, final asset bytes and cleanup pass",
+    "runId": "b7daf53a-96f8-4bf2-8f41-f499247d2ea2",
+    "testRunId": 21338935,
+    "committedBytesVerifiedAt": "e8a32eb23ea209dece5622eff0cbcbd7c6aeb5ab",
+    "scope": "Local source and commit verified; no deployed gate or hosted acceptance claim"
+  },
   "typecheck": {
     "evidence": "/tmp/p537-hosted-serving-typecheck-final-local.json",
     "requestedFileErrors": 0,
@@ -64,7 +88,7 @@
     "scope": "Both new files after credential fix, before final admission assertion and cleanup receipt edits"
   },
   "remaining": [
-    "Commit corrected response assertion through background git-sync, retaining source loader safety",
+    "Commit the ESM credential-parser repair through background git-sync and pass complete credential preflight with the same committed-source guard",
     "Run maintained opted-in test through revocation, zero provision delta and successful cleanup",
     "Verify final source and artifact provenance separately from private runtime behavior",
     "P544 D075 and D076 qualification and final shipment remain open"
