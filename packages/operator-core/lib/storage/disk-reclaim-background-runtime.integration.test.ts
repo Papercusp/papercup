@@ -48,6 +48,8 @@ const buildSelected = [
 const buildSelectedCount = 7;
 const specialSelected = ['preserves old live Unix sockets and FIFOs when path holder evidence is empty'];
 const specialSelectedCount = 2;
+const receiptSelected = ['persists protected census summaries without private allocation metadata'];
+const receiptSelectedCount = 2;
 const hardlinkSelected = [
   'keeps a hardlinked population already within its cap',
   'keeps shared bytes after removing a link beside a',
@@ -168,8 +170,8 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
 };
 it('reclaims private fixtures and reads back the exact durable receipt in the observed background runtime',
-  context => runSelection({ reclaimTitles: [...selected, ...buildSelected, ...specialSelected],
-    expectedReclaimCases: selected.length + buildSelectedCount + specialSelectedCount, census: true }, context),
+  context => runSelection({ reclaimTitles: [...selected, ...buildSelected, ...specialSelected, ...receiptSelected],
+    expectedReclaimCases: selected.length + buildSelectedCount + specialSelectedCount + receiptSelectedCount, census: true }, context),
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),

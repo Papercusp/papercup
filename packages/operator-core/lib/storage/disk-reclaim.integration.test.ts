@@ -1326,6 +1326,34 @@ describe('retention on a real fixture tree', () => {
       expect(await stat(join(owner, 'data'))).toBeTruthy();
     } finally { await chmod(protectedPath, 0o700); }
   });
+  it.each([false, true])('persists protected census summaries without private allocation metadata (partial=%s)', async (partial) => {
+    const { root, options } = await setup();
+    const path = join(root, 'protected-tree'); await mkdir(path);
+    const identity = await stat(path);
+    const allocation = { path, dev: identity.dev, ino: identity.ino, bytes: 4096, newestWriteMs: options.nowMs,
+      hardlinks: [{ dev: identity.dev, ino: identity.ino, bytes: 4096, paths: [join(path, 'shared')] }] };
+    // A large real allocation graph can exceed the serializer's string limit.
+    // Model that boundary without allocating hundreds of megabytes in CI.
+    const serializeAllocation = vi.fn(() => { throw new RangeError('Invalid string length'); });
+    Object.defineProperty(allocation, 'toJSON', { value: serializeAllocation });
+    const stored: DiskReclaimReceipt[] = [];
+    const sql = { unsafe: vi.fn(async (_query: string, values: unknown[]) => {
+      if (values[3] === 'disk-retention:receipt') stored.push(JSON.parse(values[5] as string));
+      return [];
+    }) } as unknown as ReclaimSql;
+    const receipt = await runDiskReclaimOnce({ ...options,
+      inspectTrees: async () => ({ entries: [], retained: [{ path, reason: 'symlink boundary', entry: allocation }],
+        inspectedNodes: 2, retainedRecentTrees: 0, ...(partial ? { error: 'retention native census timed out' } : {}) }),
+      record: (phase, detail) => writeReclaimAudit(sql, 'fixture-workspace', 'summary-fixture', phase, detail),
+    });
+    expect(serializeAllocation).not.toHaveBeenCalled();
+    expect(receipt.complete).toBe(!partial);
+    expect(receipt.policyExhausted).toBe(partial ? null : true);
+    expect(receipt.errors).toEqual(partial ? [`inspect:${root}: retention native census timed out`] : []);
+    expect(receipt.entries).toEqual([{ path, reason: 'symlink boundary', classId: 'fixture', status: 'protected', bytes: 0 }]);
+    expect(stored).toEqual([receipt]);
+    expect(await stat(path)).toBeTruthy();
+  });
   it('native census retains a new write between planning and the effect and fails closed on unreadable trees', async () => {
     const { root, options } = await setup(); const parent = join(root, 'tree'); await mkdir(parent);
     const child = join(parent, 'data'); await writeFile(child, 'expired');

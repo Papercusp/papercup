@@ -856,7 +856,10 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             }));
             progress.inspectedNodes += census.inspectedNodes;
             progress.retainedRecentTrees += census.retainedRecentTrees;
-            receipt.entries.push(...census.retained.map((entry) => ({ ...entry, classId: root.classId, status: 'protected' as const, bytes: 0 })));
+            // Allocation graphs belong to selection below. Persist only the
+            // public outcome: spreading retained.entry duplicated potentially
+            // huge hardlink/build inventories into the terminal receipt.
+            receipt.entries.push(...census.retained.map(({ path, reason }) => ({ path, reason, classId: root.classId, status: 'protected' as const, bytes: 0 })));
             if (census.error) {
               receipt.errors.push(`inspect:${root.path}: ${census.error}`);
               progress.stoppedAtRoot ??= root.path; progress.incompleteRoots.push(root.path);
