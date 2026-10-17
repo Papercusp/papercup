@@ -73,6 +73,17 @@ function readExchanges(file: string): RecordedExchange[] {
 }
 
 describe('record proxy', () => {
+  it('overrides caller auth with host-owned private gateway headers without recording the token', async () => {
+    const file = path.join(dir, 'private.jsonl');
+    const proxy = await startRecordProxy({ upstream: upstreamUrl, outFile: file, sessionId: 'private',
+      upstreamHeaders: { authorization: 'Bearer PRIVATE_GATEWAY_TOKEN' } });
+    try {
+      expect((await post(proxy.url + '/v1/responses', '{}', { authorization: 'Bearer CALLER_TOKEN' })).status).toBe(200);
+      expect(seen[0].auth).toBe('Bearer PRIVATE_GATEWAY_TOKEN');
+    } finally { await proxy.close(); }
+    expect(readExchanges(file)).toHaveLength(1);
+    expect(readFileSync(file, 'utf8')).not.toContain('PRIVATE_GATEWAY_TOKEN');
+  });
   it('refuses an oversized UTF-8 request before upstream and admits the exact byte boundary without changing the body', async () => {
     const body = JSON.stringify({ model: 'gpt-6-luna', reasoning: { effort: 'low' }, input: 'héllo' });
     const maxRequestBytes = Buffer.byteLength(body);

@@ -7,6 +7,8 @@
  *     [--codex-model <model> --codex-effort low|medium|high]
  *     [--max-model-requests <batch-wide positive integer; requires explicit Codex selection>]
  *     [--max-request-bytes <positive integer; requires --max-model-requests>]
+ *     [--max-model-usd <USD, six decimal places max> --max-provider-attempts <integer>
+ *      --provider-account <id> --provider-credential-sha256 <digest> --provider-target <exact HTTPS URL>]
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -30,6 +32,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { assertHostAdmission, capacityCacheRoot } from './host-admission';
 import { recordingRequestLimit, startRecordProxy, type RecordingRequestLimit } from './record-proxy';
+import { recordingBudgetFromArgv, startRecordingBudgetGateway } from './record-budget';
 import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
 
 // Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
@@ -305,6 +308,7 @@ export async function recordSession(opts: {
   claudeModel: string;
   codexSelection?: CodexSelection;
   requestLimit?: RecordingRequestLimit;
+  upstreamHeaders?: Readonly<Record<string, string>>;
   keepWork: boolean;
   /** Default `systemd`: per-session cgroup accounting in caprec.slice. */
   isolation?: Isolation;
@@ -325,7 +329,8 @@ export async function recordSession(opts: {
   mkdirSync(sessionDir, { recursive: true });
   await copyTree(prepared, workDir);
 
-  const proxy = await startRecordProxy({ upstream: opts.upstream, outFile: path.join(sessionDir, 'exchanges.jsonl'), sessionId, requestLimit: opts.requestLimit });
+  const proxy = await startRecordProxy({ upstream: opts.upstream, outFile: path.join(sessionDir, 'exchanges.jsonl'), sessionId,
+    requestLimit: opts.requestLimit, upstreamHeaders: opts.upstreamHeaders });
   const home = path.join(CACHE, 'cli-home', sessionId);
   mkdirSync(home, { recursive: true });
   let env: Record<string, string>;
@@ -414,6 +419,10 @@ async function main(): Promise<void> {
   const codexSelection = codexSelectionFromArgv(process.argv);
   if (cli !== 'codex' && codexSelection) throw new Error('--codex-model/--codex-effort require --cli codex');
   const requestLimit = recordingLimitFromArgv(process.argv, cli, codexSelection);
+  const budgetConfig = recordingBudgetFromArgv(process.argv, codexSelection);
+  if (budgetConfig && (cli !== 'codex' || !requestLimit || process.argv.includes('--upstream'))) {
+    throw new Error('Provider budget requires bounded Codex recording and its private gateway (no --upstream)');
+  }
   const sel = arg('tasks', 'all')!;
   const tasks = sel === 'all' ? corpus.tasks : corpus.tasks.filter((t) => sel.split(',').includes(t.id));
   if (!tasks.length) throw new Error(`no tasks match ${sel}`);
@@ -421,6 +430,13 @@ async function main(): Promise<void> {
   const parallel = Math.max(1, Number(arg('parallel', '1')));
   const isolation = arg('isolation', 'systemd');
   if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
+  mkdirSync(outDir, { recursive: true });
+  if (budgetConfig && existsSync(path.join(outDir, 'recording-budget.json'))) {
+    throw new Error('Recording budget output already exists; preserve prior reservations and use a newly admitted batch directory');
+  }
+  const boundedGateway = budgetConfig ? await startRecordingBudgetGateway(budgetConfig, snapshot => {
+    writeFileSync(path.join(outDir, 'recording-budget.json'), JSON.stringify(snapshot, null, 2) + '\n');
+  }) : undefined;
   const queue = [...tasks];
   const worker = async () => {
     for (let task = queue.shift(); task; task = queue.shift()) {
@@ -430,7 +446,8 @@ async function main(): Promise<void> {
           task,
           cli,
           outDir,
-          upstream: arg('upstream', 'http://127.0.0.1:8788')!,
+          upstream: boundedGateway?.upstream ?? arg('upstream', 'http://127.0.0.1:8788')!,
+          upstreamHeaders: boundedGateway?.headers,
           claudeModel: arg('claude-model', 'sonnet')!,
           codexSelection,
           requestLimit,
@@ -445,10 +462,13 @@ async function main(): Promise<void> {
       }
     }
   };
-  await Promise.all(Array.from({ length: parallel }, worker));
-  if (requestLimit) {
-    mkdirSync(outDir, { recursive: true });
-    writeFileSync(path.join(outDir, 'recording-limit.json'), JSON.stringify(requestLimit.snapshot(), null, 2) + '\n');
+  try {
+    await Promise.all(Array.from({ length: parallel }, worker));
+  } finally {
+    await boundedGateway?.stop();
+    if (requestLimit) {
+      writeFileSync(path.join(outDir, 'recording-limit.json'), JSON.stringify(requestLimit.snapshot(), null, 2) + '\n');
+    }
   }
 }
 

@@ -275,6 +275,8 @@ export interface RecordProxyOptions {
   /** 0 = pick a free port. */
   port?: number;
   requestLimit?: RecordingRequestLimit;
+  /** Host-owned overrides for a private bounded gateway; never recorded. */
+  upstreamHeaders?: Readonly<Record<string, string>>;
 }
 
 export interface RecordProxy {
@@ -340,6 +342,7 @@ export async function startRecordProxy(opts: RecordProxyOptions): Promise<Record
         for (const [k, v] of Object.entries(req.headers)) {
           if (!HOP_BY_HOP.has(k.toLowerCase()) && v !== undefined) headers[k] = v;
         }
+        for (const [key, value] of Object.entries(opts.upstreamHeaders ?? {})) headers[key.toLowerCase()] = value;
         // Record plain bytes, never a compressed stream the replay would have to re-frame.
         headers['accept-encoding'] = 'identity';
         headers['content-length'] = String(body.length);
