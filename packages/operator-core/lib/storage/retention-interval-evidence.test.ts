@@ -1,5 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples, assessPostgresRetentionEvidence } from './retention-interval-evidence';
+
+describe('native R-8 Postgres retention binding', () => {
+  const base = (): Parameters<typeof assessPostgresRetentionEvidence>[0] => ({
+    routine: { completedAt: '2026-10-17T00:00:00.000Z', tableRetentionComplete: true,
+      targets: ['route-invocations', 'tool-invocations', 'harness-run-output', 'agent-activity', 'memory-recall-query-text'].map(category => ({ category, complete: true })) },
+    ages: [
+      { category: 'route-invocations', oldestAgeDays: 29, measured: true },
+      { category: 'tool-invocations', oldestAgeDays: 29, measured: true },
+      { category: 'harness-run-output', oldestAgeDays: 29, measured: true },
+      { category: 'agent-activity', oldestAgeDays: 29, measured: true },
+      { category: 'memory-recall-query-text', oldestAgeDays: 2, measured: true },
+    ],
+    coldIntegrity: { verdict: 'pass' as const, detail: 'dual compressed cold archives verified' },
+    servingRuntimes: [{ runtime: 'release-operator', applicable: true, containsColdFallback: true }],
+  });
+  it('requires the production receipt, bounded ages, cold bytes and serving fallback together', () => {
+    expect(assessPostgresRetentionEvidence(base()).verdict).toBe('pass');
+    const stale = base(); stale.ages[1]!.oldestAgeDays = 31;
+    expect(assessPostgresRetentionEvidence(stale).verdict).toBe('fail');
+    const missing = base(); missing.routine = null;
+    expect(assessPostgresRetentionEvidence(missing).verdict).toBe('unknown');
+    const unbound = base(); unbound.servingRuntimes[0]!.containsColdFallback = null;
+    expect(assessPostgresRetentionEvidence(unbound).verdict).toBe('unknown');
+  });
+});
 
 describe('durable R-10 exact headroom targets', () => {
   const at = (h: number) => new Date(Date.UTC(2026, 9, 10) + h * 3_600_000).toISOString();

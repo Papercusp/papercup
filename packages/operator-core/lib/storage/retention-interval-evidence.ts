@@ -6,6 +6,9 @@
  */
 import { z } from 'zod';
 import { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY } from './disk-space-alarm';
+import { observeColdArchiveIntegrity, type ColdEvidence } from './cold-tier-evidence';
+import { getStorageCategory, isPgCategory } from './categories';
+import { tableRetentionTargets } from './table-retention';
 
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const identity = z.string().regex(/^v1-[a-f0-9]{64}$/);
@@ -88,6 +91,73 @@ const soakRequirementsSchema = z.object({
 export const DISK_HEADROOM_SOAK_INSTRUMENT_KEY = 'storage:disk-headroom-post-shipment-72h';
 /** The durable-headroom requirement has stronger targets and cadence than the native policy soak. */
 export const DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY = 'storage:durable-headroom-targets-72h';
+/** Native R-8 binding: routine completion, live age probes, cold archive integrity,
+ * and serving-reader containment are one evidence record. */
+export const POSTGRES_RETENTION_INSTRUMENT_KEY = 'storage:postgres-retention-30d';
+
+export interface PostgresRetentionEvidence {
+  routine: { completedAt: string; tableRetentionComplete: boolean; targets: Array<{ category: string; complete: boolean }> } | null;
+  ages: Array<{ category: string; oldestAgeDays: number | null; measured: boolean }>;
+  coldIntegrity: ColdEvidence;
+  servingRuntimes: Array<{ runtime: string; applicable: boolean; containsColdFallback: boolean | null }>;
+}
+
+/** Pure R-8 assessor. Missing native receipts/readers is UNKNOWN; a measured bad
+ * age, failed routine, failed cold verification, or explicit serving refusal FAILS. */
+export function assessPostgresRetentionEvidence(input: PostgresRetentionEvidence) {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
+  if (!input.routine) add('routine-receipt', 'unknown', 'No completed production telemetry-retention receipt was found.');
+  else add('routine-receipt', input.routine.tableRetentionComplete && input.routine.targets.length > 0 && input.routine.targets.every(t => t.complete)
+    ? 'pass' : 'fail', 'The completed routine must report every configured target complete.');
+  const expected = tableRetentionTargets();
+  for (const target of expected) {
+    const row = input.ages.find(a => a.category === target.category);
+    add(`age:${target.category}`, !row || !row.measured ? 'unknown' : row.oldestAgeDays !== null && row.oldestAgeDays > target.retention_days ? 'fail' : 'pass',
+      `Measured oldest age must be <= ${target.retention_days} days.`);
+  }
+  add('cold-integrity', input.coldIntegrity.verdict, input.coldIntegrity.detail);
+  const applicable = input.servingRuntimes.filter(r => r.applicable);
+  add('serving-cold-fallback', applicable.length === 0 || applicable.some(r => r.containsColdFallback === false) ? 'fail' :
+    applicable.some(r => r.containsColdFallback === null) ? 'unknown' : 'pass',
+    'Every applicable serving reader must be positively bound to the maintained cold fallback.');
+  return { verdict: checks.some(c => c.status === 'fail') ? 'fail' as const : checks.some(c => c.status === 'unknown') ? 'unknown' as const : 'pass' as const,
+    detail: JSON.stringify({ checks, scope: 'R-8 native routine/age/cold-integrity/serving-reader evidence' }), checks };
+}
+
+/** Production adapter for the R-8 instrument. It reads the existing DBOS routine
+ * output and category registry rather than inventing a second retention ledger. */
+export async function measurePostgresRetentionEvidence(sql: Pick<import('postgres').Sql, 'unsafe'>, input: {
+  workspaceId: string; host: string; servingRuntimes: PostgresRetentionEvidence['servingRuntimes'];
+  coldIntegrity?: ColdEvidence;
+}) {
+  const categories = tableRetentionTargets();
+  const ages = (await Promise.all(categories.map(async target => {
+    const cat = getStorageCategory(target.category);
+    if (!cat || !isPgCategory(cat) || !cat.ageColumn) return { category: target.category, oldest_age_days: null, measured: false };
+    const ident = /^[a-z_][a-z0-9_]*$/;
+    if (!ident.test(cat.table) || !ident.test(cat.ageColumn)) return { category: target.category, oldest_age_days: null, measured: false };
+    try {
+      const rows = await sql.unsafe(`SELECT extract(epoch FROM now() - min(${cat.ageColumn}))/86400.0 AS oldest_age_days FROM ${cat.schema}.${cat.table}`);
+      return { category: target.category, oldest_age_days: rows[0]?.oldest_age_days ?? null, measured: true };
+    } catch { return { category: target.category, oldest_age_days: null, measured: false }; }
+  }))).map(row => row);
+  const routineRows = await sql.unsafe(`SELECT o.completed_at_epoch_ms, o.output
+    FROM dbos.operation_outputs o JOIN dbos.workflow_status w ON w.workflow_uuid=o.workflow_uuid
+    WHERE o.function_name='system:telemetry-retention' AND w.name='routineFire' AND o.error IS NULL
+    ORDER BY o.completed_at_epoch_ms DESC LIMIT 1`);
+  const output = routineRows[0]?.output ? JSON.parse(String(routineRows[0].output)) : null;
+  const diagnostics = output?.json?.diagnostics?.retention ?? output?.diagnostics?.retention ?? null;
+  const evidence: PostgresRetentionEvidence = {
+    routine: diagnostics ? { completedAt: new Date(Number(routineRows[0]?.completed_at_epoch_ms)).toISOString(),
+      tableRetentionComplete: diagnostics.tableRetentionComplete === true,
+      targets: Array.isArray(diagnostics.targets) ? diagnostics.targets.map((t: any) => ({ category: String(t.category), complete: t.complete === true })) : [] } : null,
+    ages: ages.map((row: any) => ({ category: String(row.category), oldestAgeDays: row.oldest_age_days == null ? null : Number(row.oldest_age_days), measured: row.measured === true })),
+    coldIntegrity: input.coldIntegrity ?? await observeColdArchiveIntegrity(sql, input.workspaceId),
+    servingRuntimes: input.servingRuntimes,
+  };
+  return assessPostgresRetentionEvidence(evidence);
+}
 
 const targetRecordsSchema = z.object({
   censuses: soakCensusRows(),

@@ -83,11 +83,15 @@ describe('admission off-thread host (WI-10005223)', () => {
       git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${pin},component`);
       git(fixture, 'commit', '-q', '-m', 'frozen paired tree');
       const commit = git(fixture, 'rev-parse', 'HEAD');
-      const missingHelper = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8' });
+      // The focused test runner preloads committed-source-loader through NODE_OPTIONS.
+      // These child processes intentionally execute an uncommitted temporary fixture,
+      // so inherit the normal process environment without that repository-only guard.
+      const childEnv = { ...process.env, NODE_OPTIONS: '' };
+      const missingHelper = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8', env: childEnv });
       expect(missingHelper.status).toBe(1);
       expect(missingHelper.stdout + missingHelper.stderr).toContain('ERR_MODULE_NOT_FOUND');
       writeFileSync(join(fixture, 'missing-parent-helper.mjs'), 'export const value = 1;\n');
-      const pairedControl = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8' });
+      const pairedControl = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8', env: childEnv });
       expect(pairedControl.status).toBe(0);
       expect(pairedControl.stdout).toContain('# pass 1');
       // Staging now has another checkout and untracked test; neither may enter the proof.
@@ -254,27 +258,37 @@ describe('admission off-thread host (WI-10005223)', () => {
         "parentPort.on('message', () => { while (true) {} });",
       ].join('\n'),
     );
-    configureAdmissionOffthread({ workerPath: stuckWorker });
+    // A test:file run inherits committed-source-loader via NODE_OPTIONS. The fixture
+    // worker is deliberately uncommitted and has no loader-aware source, so remove the
+    // repository guard while exercising worker termination, then restore the caller env.
+    const inheritedNodeOptions = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '';
+    try {
+      configureAdmissionOffthread({ workerPath: stuckWorker });
 
-    await expect(
-      runAdmissionJob(
-        { kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo },
-        { timeoutMs: 100, stepName: 'build-proof' },
-      ),
-    ).rejects.toMatchObject({
-      name: 'AdmissionOffthreadTimeoutError',
-      code: 'ADMISSION_OFFTHREAD_TIMEOUT',
-      jobKind: 'git',
-      stepName: 'build-proof',
-      timeoutMs: 100,
-    });
-    expect(admissionOffthreadStats().workerLive).toBe(false);
+      await expect(
+        runAdmissionJob(
+          { kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo },
+          { timeoutMs: 100, stepName: 'build-proof' },
+        ),
+      ).rejects.toMatchObject({
+        name: 'AdmissionOffthreadTimeoutError',
+        code: 'ADMISSION_OFFTHREAD_TIMEOUT',
+        jobKind: 'git',
+        stepName: 'build-proof',
+        timeoutMs: 100,
+      });
+      expect(admissionOffthreadStats().workerLive).toBe(false);
 
-    configureAdmissionOffthread({ workerPath: null });
-    await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
-      status: 0,
-    });
-    expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+      configureAdmissionOffthread({ workerPath: null });
+      await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
+        status: 0,
+      });
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+    } finally {
+      if (inheritedNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = inheritedNodeOptions;
+    }
   }, 60_000);
 
   it('reaps an idle worker and starts a fresh worker for later work', async () => {

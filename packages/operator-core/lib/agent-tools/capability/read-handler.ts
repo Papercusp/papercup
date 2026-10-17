@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
+import type { PhaseTracker } from '@papercusp/tooldef';
 import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './base-dir';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
@@ -464,6 +465,8 @@ type ReadContext = {
   codeMode?: boolean;
   transport?: string;
   requestedStructured?: boolean;
+  projectDir?: string;
+  phases?: PhaseTracker;
   uiClientId?: string | null;
   isSuperuser?: boolean;
   isPowerUser?: boolean;
@@ -708,7 +711,7 @@ export const capabilityReadDefinition = {
     seeAlso: capabilityReadSeeAlso,
   },
   capability: 'capability:fs-read',
-  requirePrincipal: false,
+  requirePrincipal: false as const,
   args: readArgs,
   result: capabilityReadResultSchema,
   async handler(args: z.infer<typeof readArgs>, ctx: ReadContext) {

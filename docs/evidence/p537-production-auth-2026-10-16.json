@@ -3,6 +3,40 @@
   "workItem": "EI-26181361607817938",
   "planItem": "P-537",
   "scope": "current-build hosted authentication composition; shipment and full customer journey remain open",
+  "committedFocusedReadback": {
+    "verifiedAt": "2026-10-17T02:24:06.697965+00:00",
+    "head": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+    "scope": "Focused committed source only; no full import-graph, origin-egress or deployed-artifact claim",
+    "files": {
+      "packages/operator-core/lib/endpoint-route/hosted-runtime.ts": {
+        "testedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "currentSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "committedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts": {
+        "testedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "currentSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "committedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": {
+        "testedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "currentSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "committedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-runtime.test.ts": {
+        "testedSha256": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218",
+        "currentSha256": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218",
+        "committedSha256": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218"
+      }
+    },
+    "integrationEvidence": "docs/evidence/p537-native-idle-2026-10-17.json",
+    "integrationVerdict": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "historicalIntegrationHashSuperseded": true
+  },
   "rootCause": "The full hosted runtime omitted the existing server-owned trial policy parser, canonical signup admission and established-session backfill that the narrow auth runtime already used.",
   "fix": "Extend HostedRuntimeConfiguration and HostedControlPlaneConfig and pass the existing signup/backfill dependencies to the production auth routes.",
   "before": {

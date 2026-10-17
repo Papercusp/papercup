@@ -2,6 +2,35 @@
   "workItem": "EI-26183307448564200",
   "plan": "agent-capacity-and-cost-gcp-2026-09-30",
   "scope": "Stable focused worker-source functional verification; not committed-source, full native/configuration closure or shipment acceptance",
+  "committedFocusedReadback": {
+    "verifiedAt": "2026-10-17T02:24:06.697965+00:00",
+    "head": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+    "scope": "Focused committed source only; no full import-graph, origin-egress or deployed-artifact claim",
+    "files": {
+      "packages/operator-core/lib/auth/hosted/first-workspace.ts": {
+        "testedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "currentSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "committedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb"
+      },
+      "packages/operator-core/lib/auth/hosted/first-workspace.test.ts": {
+        "testedSha256": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590",
+        "currentSha256": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590",
+        "committedSha256": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": {
+        "testedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "currentSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "committedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8"
+      }
+    },
+    "integrationEvidence": "docs/evidence/p537-native-idle-2026-10-17.json",
+    "integrationVerdict": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "historicalIntegrationHashSuperseded": true
+  },
   "rootCause": "Funded GCP and AWS first-workspace desired specs omitted the explicit DB/workspace allocation required by pooled storage admission.",
   "fix": "Reuse existing desired-spec data.allocation: new funded disks start at 10GiB, split 8GiB DB and 2GiB workspace under D-077. BYOC defaults and retained-disk allocations are preserved.",
   "before": {

@@ -4031,7 +4031,7 @@ describe('P-020 carry-respawn drill correlation', () => {
       // native proof can distinguish a submitted prompt from a PTY repaint.
       const nativeAwareChildCode = carryAwareChildCode.replace(
         "process.stdin.setEncoding('utf8');",
-        "process.stdin.setEncoding('utf8');const fs=require('node:fs'),path=require('node:path');let nativeInput='',nativeWritten=false;process.stdin.on('data',d=>{nativeInput+=d;if(!nativeWritten&&nativeInput.includes(process.env.TURN_MARKER)&&nativeInput.includes('\\r')){nativeWritten=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:process.env.TURN_MARKER}})+'\\n');}});",
+        "process.stdin.setEncoding('utf8');const fs=require('node:fs'),path=require('node:path');let nativeInput='',nativeWritten=false;process.stdin.on('data',d=>{nativeInput+=d;if(!nativeWritten&&nativeInput.includes(process.env.TURN_MARKER)&&(nativeInput.includes('\\r')||nativeInput.includes('\\n'))){nativeWritten=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:process.env.TURN_MARKER}})+'\\n');}});",
       );
       let exitCode: number | null = null;
       const done = hostThroughPty({

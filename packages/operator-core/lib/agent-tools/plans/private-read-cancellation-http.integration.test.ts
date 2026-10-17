@@ -46,10 +46,15 @@ it('records governed cancellation after a real private HTTP caller disconnects d
       expect(receipt.wait.blockingPids).toContain(receipt.holderPid);
       expect(receipt.serverSettledAtMs - receipt.abortedAtMs).toBeLessThan(5_000);
       expect(receipt.ledger.errorCode === 'aborted' || receipt.ledger.metadata?.softFailureReason === 'cancelled').toBe(true);
+      expect(receipt.queryReleasedAtMs - receipt.serverSettledAtMs).toBeLessThan(5_000);
+      expect(receipt.beforeRollback.locks).toEqual(expect.arrayContaining([
+        expect.objectContaining({ pid: receipt.holderPid, mode: 'AccessExclusiveLock', granted: true }),
+      ]));
       const diagnostics = (await readFile(join(evidenceDir, 'read-cancellation-pg.ndjson'), 'utf8'))
         .trim().split('\n').map(line => JSON.parse(line));
       expect(diagnostics.map(row => row.stage)).toEqual(expect.arrayContaining([
-        'selected-http-wait', 'cancellation-settled', 'post-rollback', 'direct-readback-settled',
+        'selected-http-wait', 'cancellation-settled', 'pg-query-release-check',
+        'post-rollback', 'direct-readback-settled',
       ]));
       console.info('PRIVATE_READ_CANCELLATION_HTTP_VERIFIED ' + JSON.stringify(receipt));
     },

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { assessColdMounts, assessColdMoves, hasColdMoveAside, kopiaJson, measureColdMounts, measureNativeColdEnvironment, parseColdMounts,
   COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, type ColdMountObservation } from './cold-tier-evidence';
 import { COLD_ARCHIVE_INTEGRITY_ACTION, observeColdArchiveIntegrity } from './cold-tier-evidence';
-import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './retention-interval-evidence';
+import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './retention-interval-evidence';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
 
 const at = (h: number) => new Date(Date.UTC(2026, 9, 15, h)).toISOString();
@@ -130,7 +130,7 @@ describe('native cold mount evidence', () => {
     expect(unsafe.mock.calls[1]![0]).toContain('WHERE NOT EXISTS');
   });
   it('registers executable platform checks on the maintained rescore seam', () => {
-    for (const key of [COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY]) {
+    for (const key of [COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY]) {
       expect(getRegisteredInstrument(key)).toMatchObject({ evaluator: 'platform', rescore: { scope: 'harness', resolve: expect.any(Function) } });
     }
   });

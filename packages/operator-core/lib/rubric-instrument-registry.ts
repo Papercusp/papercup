@@ -33,7 +33,7 @@ import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics'
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
-import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, POSTGRES_RETENTION_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
 import {
@@ -677,6 +677,7 @@ export function platformComputedInstrumentKeys(): string[] {
     DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,
     COLD_MOUNTS_INSTRUMENT_KEY,
     COLD_MOVES_INSTRUMENT_KEY,
+    POSTGRES_RETENTION_INSTRUMENT_KEY,
     NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
     PG_TABLE_GROWTH_INSTRUMENT_KEY,
     ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
@@ -708,7 +709,22 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(key === NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY ? { rescore: {
+      ...(key === POSTGRES_RETENTION_INSTRUMENT_KEY ? { rescore: {
+        windowMs: 30 * 24 * 60 * 60_000,
+        unit: 'count' as const,
+        scope: 'harness' as const,
+        resolve: async window => {
+          if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const, detail: 'Canonical harness required.' };
+          const { getOrgPg } = await import('@papercusp/db-org');
+          const { hostname } = await import('node:os');
+          const { gitPipelinePosition } = await import('./git-pipeline-position');
+          const { measurePostgresRetentionEvidence } = await import('./storage/retention-interval-evidence');
+          const position = await gitPipelinePosition({ path: 'packages/operator-core/lib/storage/session-archive-read.ts' });
+          return measurePostgresRetentionEvidence(getOrgPg().sql, { workspaceId: window.workspaceId, host: hostname(),
+            servingRuntimes: (position.servingRuntimes ?? []).map(runtime => ({ runtime: runtime.runtime,
+              applicable: true, containsColdFallback: runtime.containsChange })) });
+        },
+      } } : key === NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY ? { rescore: {
         windowMs: 90 * 60_000, unit: 'count' as const, scope: 'harness' as const,
         resolve: async window => {
           if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const, detail: 'Canonical harness required.' };

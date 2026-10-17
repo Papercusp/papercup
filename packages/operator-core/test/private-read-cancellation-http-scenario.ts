@@ -121,6 +121,24 @@ export async function measurePrivateReadCancellationScenario(o: Options) {
     assert.ok(ledger.errorCode === 'aborted' || (ledger.metadata?.resultOutcome === 'soft-failure'
       && ledger.metadata.softFailureReason === 'cancelled'), 'client rejection alone is not server cancellation evidence');
     assert.ok(serverSettledAtMs - abortedAtMs < 5_000);
+    // A cancellation disposition can settle while its SQL is still running.
+    // Keep the holder locked: rollback would otherwise release the query and
+    // let a leaked read masquerade as successful cancellation cleanup.
+    const releaseDeadline = performance.now() + 5_000;
+    let queryReleasedAtMs: number | undefined;
+    while (performance.now() < releaseDeadline) {
+      const active = await sql`SELECT pid FROM pg_stat_activity WHERE pid = ${Number(wait.pid)}
+        AND backend_start::text = ${wait.backendStart} AND query_start::text = ${wait.queryStart}
+        AND state = 'active'`;
+      if (active.length === 0) { queryReleasedAtMs = performance.now(); break; }
+      await snapshot('pg-query-still-active-before-rollback', { wait });
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    const beforeRollback = await snapshot('pg-query-release-check', { queryReleasedAtMs, wait });
+    assert.ok(beforeRollback.locks.some(row => row.pid === Number(holder.pid)
+      && row.granted && row.mode === 'AccessExclusiveLock'), 'query release must be checked while the exact holder is still locked');
+    assert.ok(queryReleasedAtMs !== undefined,
+      'governed cancellation must stop the exact PostgreSQL query before the fixture rolls back its holder');
     await lock`ROLLBACK`;
     transactionOpen = false;
     const afterRollback = await snapshot('post-rollback', { holderPid: Number(holder.pid) });
@@ -146,7 +164,8 @@ export async function measurePrivateReadCancellationScenario(o: Options) {
     assert.equal(remainingWaits.length, 0);
     const receipt = { workspace: o.workspace, harness: o.harness, itemId: item.id, expectedSha: o.expectedSha,
       holderPid: Number(holder.pid), wait, abortedAtMs, serverSettledAtMs, clientResult, ledger,
-      afterRollback, recovered, exactReadback: true, remainingWaits, healthBefore, healthAfter: await health() };
+      queryReleasedAtMs, beforeRollback, afterRollback, recovered,
+      exactReadback: true, remainingWaits, healthBefore, healthAfter: await health() };
     await writeFile(`${o.evidenceDir}/read-cancellation-observation.json`, JSON.stringify(receipt), { flag: 'wx' });
     return receipt;
   } catch (error) {
