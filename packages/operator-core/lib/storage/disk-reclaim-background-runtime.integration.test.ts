@@ -46,6 +46,15 @@ const buildSelected = [
 ];
 // The first two are parameterized over local and native metadata walks.
 const buildSelectedCount = 7;
+const hardlinkSelected = [
+  'keeps a hardlinked population already within its cap',
+  'keeps shared bytes after removing a link beside a',
+  'subtracts a shared allocation only at its last planned link',
+  'refuses effects on a hardlink cap when a sibling census fails',
+  'releases shared bytes after removing both build directories',
+  'accounts shared build-only removals with source and sibling links',
+];
+const hardlinkSelectedCount = 21;
 const options = isolatedTestFileWorkerOptions(process.env, 1);
 
 type RuntimeSelection = { reclaimTitles: string[]; expectedReclaimCases: number; census: boolean };
@@ -120,6 +129,11 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
           expect(original.sources.find((value: any) => value.path === sourceFile), mapFile)
             .toMatchObject({ basis: 'vite-pre-transform',
               sha256: createHash('sha256').update(readFileSync(join(root, sourceFile))).digest('hex') });
+          if (sourceFile === reclaimSource) {
+            expect(original.sources.find((value: any) => value.path === censusSource), mapFile)
+              .toMatchObject({ basis: 'vite-pre-transform',
+                sha256: createHash('sha256').update(readFileSync(join(root, censusSource))).digest('hex') });
+          }
         }
         const rows = readFileSync(receipts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const row = rows.find(value => value.filePath === assertion);
@@ -151,6 +165,9 @@ it('reclaims private fixtures and reads back the exact durable receipt in the ob
   options.testTimeoutMs);
 it('persists bounded delegate diagnostics in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['persists delegate phases before the delegate ends', 'bounds delegate phase receipts and persisted writes'], expectedReclaimCases: 2, census: false }, context),
+  options.testTimeoutMs);
+it('accounts hardlinks and retained siblings in the observed private background runtime',
+  context => runSelection({ reclaimTitles: hardlinkSelected, expectedReclaimCases: hardlinkSelectedCount, census: false }, context),
   options.testTimeoutMs);
 it('accepts the real isolated privileged release holder scanner in the observed private background runtime',
   context => runSelection({ reclaimTitles: ['finds cwd executable and deleted fd holders through the real isolated privileged release scanner'], expectedReclaimCases: 1, census: false }, context),

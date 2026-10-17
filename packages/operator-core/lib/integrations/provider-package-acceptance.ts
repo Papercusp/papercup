@@ -37,7 +37,7 @@ export interface PackageMeasurement {
 }
 
 const ADDITIONS = [
-  { label: 'LinkedIn company page', ids: ['linkedin'], matches: (p: ObjectValue) =>
+  { label: 'LinkedIn company page', ids: ['linkedin-company', 'linkedin'], matches: (p: ObjectValue) =>
     strings(p.capabilities).includes('social.post') && strings(p.oauth?.scopes).includes('w_organization_social') &&
     object(p.configSchema?.properties?.organizationId) },
   { label: 'X', ids: ['x-twitter'], matches: (p: ObjectValue) => strings(p.capabilities).includes('social.post') },
@@ -73,9 +73,8 @@ function positiveLiveClaim(text: string): boolean {
   return /\blive[- ]verified\b|\bverified\s+live\b|\blive(?:[- ]account)?[- ]verification\b/i.test(withoutNegatives);
 }
 
-/** D-002 currently authorizes only the self-serve LinkedIn member contract. A
- * newly claimed organization/reply/read scope requires independently reviewed
- * approval evidence, not a date or capability string copied into a manifest.
+/** D-002 keeps the member package self-serve and the separate company package
+ * approval-blocked. Contract dates do not establish a real partner grant.
  */
 export function measureProviderVerificationClaims(packages: readonly ProviderPackageInput[]): PackageMeasurement {
   const failures: PackageFinding[] = [], unknown: PackageFinding[] = [], checked: string[] = [];
@@ -102,6 +101,15 @@ export function measureProviderVerificationClaims(packages: readonly ProviderPac
         strings(p.oauth?.scopes).some(scope => !['openid', 'profile', 'w_member_social'].includes(scope)) ||
         object(p.configSchema?.properties?.organizationId))) {
       failures.push({ package: id, reason: 'LinkedIn claims exceed the self-serve member grant; organization/community approval is not evidenced (D-002).' });
+    }
+    if (id === 'linkedin-company' && (typeof p.verification?.blockedOn !== 'string' || !p.verification.blockedOn.trim())) {
+      failures.push({ package: id, reason: 'LinkedIn company access must remain approval-blocked until independent partner-grant and data-flow review (D-002).' });
+    }
+    if (id === 'linkedin-company' && (p.oauth?.clientRegistrationRef !== 'linkedin-company' ||
+        !['openid', 'profile', 'r_organization_social', 'w_organization_social'].every(scope => strings(p.oauth?.scopes).includes(scope)) ||
+        p.oauth?.identity?.url !== 'https://api.linkedin.com/v2/userinfo' || p.oauth?.identity?.idField !== 'sub' ||
+        !object(p.configSchema?.properties?.organizationId))) {
+      failures.push({ package: id, reason: 'LinkedIn company identity, Page resource or independent registration is missing; the personal member grant cannot stand in for it.' });
     }
     if (before === failures.length + unknown.length) checked.push(id);
   }

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync, readlinkSync } from 'node:fs';
-import { closeInspector, createCdpClient, discoverInspector } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, discoverInspector, type CdpSocket } from '../../../scripts/cdp-inspector.mjs';
 import { applyTerminalIdentityRepair, closeLateInspectorWhenAvailable, hasTerminalSafeInspectorPublication, repairTerminalHost, terminalIdentityRepairSource, LEGACY_IDENTITY_FUNCTION } from './psu-terminal-repair.mjs';
 import { mockImplementationTyped, mockReturnTyped } from '../../../packages/operator-core/lib/testing/typed-mock';
 
@@ -121,7 +121,8 @@ describe('terminal identity repair adoption', () => {
     let polls = 0;
     let release!: () => void;
     const closing = new Promise<{ closed: boolean }>(resolve => { release = () => resolve({ closed: true }); });
-    const client = { connect: vi.fn(async () => {}), close: vi.fn(),
+    const client = { ws: { readyState: 1, send: vi.fn(), close: vi.fn() },
+      send: vi.fn(async () => ({})), connect: vi.fn(async () => {}), close: vi.fn(),
       evaluate: vi.fn(async () => ({ result: { value: { pid, entry } } })) };
     const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
     mockImplementationTyped(vi.mocked(readFileSync), (path, ...args) => {
@@ -133,7 +134,7 @@ describe('terminal identity repair adoption', () => {
     });
     vi.mocked(readlinkSync).mockReturnValue('/usr/bin/node');
     vi.mocked(discoverInspector).mockImplementation(async () => (++polls <= 31 ? null : { port: 9229, wsUrl: 'ws://late' }));
-    mockReturnTyped(vi.mocked(createCdpClient), client);
+    mockReturnTyped(vi.mocked(createCdpClient<CdpSocket>), client);
     mockImplementationTyped(vi.mocked(closeInspector), () => closing);
     let settled = false;
     const result = repairTerminalHost({ pid, ownerId }).then(

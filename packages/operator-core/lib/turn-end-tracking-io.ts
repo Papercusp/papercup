@@ -10,6 +10,7 @@ import { withBoundedTimeout } from './bounded-timeout';
 import { createHash } from 'node:crypto';
 import { redactSensitiveText } from './sensitive-text';
 import { modeImpliesAutonomy } from './modes/registry';
+import type { CarryBriefHeldItem } from './carry-brief';
 import {
   isUnpublishedReportTurn,
   awaitGuaranteesRewake,
@@ -141,6 +142,12 @@ export async function autoCheckpointStaleHeldItems(input: {
   nowMs?: number;
   /** Respawn snapshots every held item, including fresh ones, without preview caps. */
   mode?: 'respawn';
+  /**
+   * Carry snapshot already read by the flush gate. Advisory paths can reuse it
+   * instead of paying a second held-item/checkpoint read; host respawn snapshots
+   * intentionally omit it so they still read the complete population.
+   */
+  heldItems?: readonly CarryBriefHeldItem[];
 }): Promise<AutoCheckpointResult[]> {
   let checkpointStage: 'load-writer' | 'read-held-items' | 'write-item' = 'load-writer';
   let workItemId: string | undefined;
@@ -155,8 +162,9 @@ export async function autoCheckpointStaleHeldItems(input: {
       ]);
     const nowMs = input.nowMs ?? Date.now();
     checkpointStage = 'read-held-items';
-    const held = await readHeldWorkItems(input.ownerId, input.workspaceId,
-      input.mode === 'respawn' ? { limit: null } : {});
+    const held = input.mode === 'respawn'
+      ? await readHeldWorkItems(input.ownerId, input.workspaceId, { limit: null })
+      : input.heldItems ?? await readHeldWorkItems(input.ownerId, input.workspaceId);
     const selected = input.mode === 'respawn' ? held
       : held.filter((h) => isStaleHeldCheckpoint(h, nowMs)).slice(0, MAX_AUTO_CHECKPOINTS);
     if (selected.length === 0) return [];
@@ -175,9 +183,7 @@ export async function autoCheckpointStaleHeldItems(input: {
     } catch {
       /* the block is still useful with the journal note alone */
     }
-    for (const item of selected) {
-      checkpointStage = 'write-item';
-      workItemId = item.id;
+    const writeItem = async (item: (typeof selected)[number]): Promise<AutoCheckpointResult | null> => {
       try {
         const block = composeMechanicalCheckpoint({
           atIso: new Date(nowMs).toISOString(),
@@ -206,11 +212,28 @@ export async function autoCheckpointStaleHeldItems(input: {
         if (result.blockedReason && input.mode === 'respawn') {
           throw new CheckpointWriteBlockedError(item.id, result.blockedReason);
         }
-        if (!result.blockedReason) written.push({ id: item.id, mechanical: true });
+        return result.blockedReason ? null : { id: item.id, mechanical: true };
       } catch (error) {
         if (input.mode === 'respawn') throw error;
         /* per-item fail-soft */
+        return null;
       }
+    };
+
+    if (input.mode === 'respawn') {
+      // Mandatory host snapshots retain sequential attribution: if one write
+      // fails, the wrapper reports the exact item and completed prefix.
+      for (const item of selected) {
+        checkpointStage = 'write-item';
+        workItemId = item.id;
+        const result = await writeItem(item);
+        if (result) written.push(result);
+      }
+    } else {
+      // Advisory turn-end writes are independent and fail-soft. Launch them as
+      // one batch so N stale items do not serialize behind N checkpoint writes.
+      const results = await Promise.all(selected.map(writeItem));
+      written.push(...results.filter((result): result is AutoCheckpointResult => result !== null));
     }
     return written;
   } catch (error) {

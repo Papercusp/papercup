@@ -285,7 +285,7 @@ afterEach(() => {
 });
 
 describe('Settings → Integrations', () => {
-  it.each(['facebook-pages', 'instagram', 'x', 'threads', 'tiktok', 'linkedin', 'youtube', 'reddit'])('renders actual %s package setup in the generic provider card', async (id) => {
+  it.each(['facebook-pages', 'instagram', 'x', 'threads', 'tiktok', 'linkedin', 'linkedin-company', 'youtube', 'reddit'])('renders actual %s package setup in the generic provider card', async (id) => {
     const d = packageDescriptor(id);
     // The backend's real installer/registry integration tests the overview projection;
     // this browser test uses the package's actual descriptor and SDK setup view.

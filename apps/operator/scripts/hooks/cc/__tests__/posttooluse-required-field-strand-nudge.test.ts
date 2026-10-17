@@ -36,7 +36,7 @@ describe('P-037 merged interface consequence collector', () => {
     expect(result?.changes).toEqual([]);
     expect(result?.sourceChange).toMatchObject({ root: ROOT, path: 'packages/operator-core/lib/example.ts',
       symbols: [{ name: 'changed', line: 1 }], base: 'a'.repeat(40) });
-    expect(result?.sourceChange.sha256).not.toBe(result?.sourceChange.beforeSha256);
+    expect(result?.sourceChange?.sha256).not.toBe(result?.sourceChange?.beforeSha256);
   });
   async function collect(before: string, after: string) {
     const hook = await loadHook();

@@ -13,16 +13,15 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 vi.mock('./su-lock-store', () => ({
-  getTxPool: vi.fn(() => ({})),
+  getTxPool: vi.fn(),
   listResources: vi.fn(),
   readResourceQueue: vi.fn(),
 }));
 
 import { checkBashCommand, matchCommandToResources } from './resource-command-match';
-import { getTxPool, listResources, readResourceQueue } from './su-lock-store';
+import { listResources, readResourceQueue } from './su-lock-store';
 import type { ResourceRegistryRow } from './su-lock-store';
 
-const getPoolM = vi.mocked(getTxPool);
 const listResourcesM = vi.mocked(listResources);
 const readResourceQueueM = vi.mocked(readResourceQueue);
 
@@ -37,7 +36,6 @@ const reg = (resource: string, patterns: string[] | null): ResourceRegistryRow =
 
 beforeEach(() => {
   vi.clearAllMocks();
-  getPoolM.mockReturnValue({} as never);
 });
 
 describe('matchCommandToResources — pure matcher (unit tier)', () => {
@@ -99,7 +97,7 @@ describe('checkBashCommand — transient Postgres connection resilience', () => 
       .mockResolvedValueOnce(registry);
     readResourceQueueM
       .mockRejectedValueOnce(connectTimeout())
-      .mockResolvedValueOnce({ holders: [], draining: false } as never);
+      .mockResolvedValueOnce({ holders: [], draining: false });
 
     await expect(
       checkBashCommand({

@@ -627,8 +627,11 @@ export async function readHeldWorkItems(
         const { getWorkItemCheckpointWithMeta } = await import('./work-item-checkpoint');
         return getWorkItemCheckpointWithMeta(ref);
       });
-  const out: CarryBriefHeldItem[] = [];
-  for (const h of held) {
+  // Checkpoint metadata is independent per held item. Read every row together so
+  // the carry/flush gate pays one round-trip window instead of the sum of each
+  // checkpoint read (the latter can consume the whole bounded gate budget when a
+  // host holds several items). Promise.all preserves the SQL row order.
+  return Promise.all(held.map(async (h): Promise<CarryBriefHeldItem> => {
     // EI-8813: reuse the SAME scope→harness resolution the write/read paths use
     // (harnessOfScope — null for the explicit global `operator` scope), instead of
     // an ad-hoc parse that defaulted a harness-null item to the literal string
@@ -651,7 +654,7 @@ export async function readHeldWorkItems(
       concreteHolderIdentity(h.taken_by) && concreteHolderIdentity(h.workspace_id)
         ? { ownerId: h.taken_by!, workspaceId: h.workspace_id! }
         : null;
-    out.push({
+    return {
       id: h.issue_id,
       title: h.title,
       body: h.body,
@@ -663,9 +666,8 @@ export async function readHeldWorkItems(
       ...(holderProof ? { holderProof } : {}),
       ...(h.source_plan_slug !== undefined ? { sourcePlanSlug: h.source_plan_slug } : {}),
       ...(h.source_plan_item_ids !== undefined ? { sourcePlanItemIds: h.source_plan_item_ids } : {}),
-    });
-  }
-  return out;
+    };
+  }));
 }
 
 // ── Deferred-work read (shared by carry surfaces and wind-down receipts) ──────

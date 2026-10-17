@@ -12,7 +12,7 @@ function pkg(id: string): ProviderPackageInput {
       capabilities: ['social.post'], verification: { capabilities: { 'social.post': '2026-10-16' } } } } };
 }
 function completePopulation() {
-  const linkedin = pkg('linkedin');
+  const linkedin = pkg('linkedin-company');
   Object.assign(linkedin.manifest.provider, { oauth: { scopes: ['w_organization_social'] },
     configSchema: { properties: { organizationId: { type: 'string' } } } });
   return [linkedin, pkg('x-twitter'), pkg('devto'), pkg('hashnode'), pkg('discord')];
@@ -23,7 +23,7 @@ describe('D-018 R6 requested provider additions detector', () => {
     expect(measureRequestedProviderAdditions(completePopulation())).toMatchObject({ verdict: 'pass', checked: [
       'LinkedIn company page', 'X', 'dev.to', 'Hashnode', 'Discord community bot' ], failures: [] });
   });
-  it.each(['linkedin', 'x-twitter', 'devto', 'hashnode', 'discord'])('detects the missing-package inverse for %s', id => {
+  it.each(['linkedin-company', 'x-twitter', 'devto', 'hashnode', 'discord'])('detects the missing-package inverse for %s', id => {
     const result = measureRequestedProviderAdditions(completePopulation().filter(p => p.manifest.provider.id !== id));
     expect(result.verdict).toBe('fail'); expect(result.failures).toHaveLength(1); expect(result.checked).toHaveLength(4);
   });
@@ -74,6 +74,20 @@ describe('D-018 R7 verification and capability claims detector', () => {
     subject.manifest.provider.verification.capabilities['social.reply'] = '2026-10-16';
     subject.manifest.provider.verification.blockedOn = { 'social.reply': 'Application approval pending' };
     expect(measureProviderVerificationClaims([subject]).verdict).toBe('fail');
+  });
+  it('accepts a separately registered blocked company package but detects a missing approval wall or borrowed identity', () => {
+    const subject = pkg('linkedin-company');
+    Object.assign(subject.manifest.provider, { oauth: { clientRegistrationRef: 'linkedin-company',
+      scopes: ['openid', 'profile', 'r_organization_social', 'w_organization_social'],
+      identity: { url: 'https://api.linkedin.com/v2/userinfo', idField: 'sub' } },
+      configSchema: { properties: { organizationId: { type: 'string' } } } });
+    subject.manifest.provider.verification.blockedOn = 'Partner approval and Member Data review pending';
+    expect(measureProviderVerificationClaims([subject]).verdict).toBe('pass');
+    delete subject.manifest.provider.verification.blockedOn;
+    expect(measureProviderVerificationClaims([subject]).failures).toContainEqual(expect.objectContaining({ reason: expect.stringContaining('approval-blocked') }));
+    subject.manifest.provider.verification.blockedOn = 'Partner approval pending';
+    subject.manifest.provider.oauth.clientRegistrationRef = 'linkedin';
+    expect(measureProviderVerificationClaims([subject]).failures).toContainEqual(expect.objectContaining({ reason: expect.stringContaining('personal member grant') }));
   });
   it('keeps missing verification labels and an empty population unknown', () => {
     for (const readme of [null, 'Contract reviewed 2026-10-16.', 'Live verification pending.']) {

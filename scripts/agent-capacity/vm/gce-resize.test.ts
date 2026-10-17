@@ -244,8 +244,8 @@ describe('vm/gce-resize.sh (faked gcloud + gcp-rails)', () => {
     expect(runLog()).not.toMatch(/^DONE /m);
   });
 
-  it.each([{ FAKE_FAIL_PHASE: 'describe' }, { FAKE_INVALID_JSON: '1' }])('fails closed on unreadable provider scheduling: %j', env => {
-    const r = run(env);
+  it.each(['describe-failure', 'invalid-json'])('fails closed on unreadable provider scheduling: %s', kind => {
+    const r = run(kind === 'describe-failure' ? { FAKE_FAIL_PHASE: 'describe' } : { FAKE_INVALID_JSON: '1' });
     expect(r.status).toBe(5);
     expect(calls().some(line => line.includes('instances stop'))).toBe(false);
     expect(calls().at(-1)).toContain(' teardown ');

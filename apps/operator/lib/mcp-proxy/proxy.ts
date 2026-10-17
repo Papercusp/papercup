@@ -70,6 +70,7 @@ import {
   isBoundedTestingRunStatusArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
+import { decodeToolsInvokeArgs } from "@papercusp/operator-core/lib/agent-tools/tools/invoke-args";
 import { foreignLoopbackPeerForSocket } from "@papercusp/operator-core/lib/auth/loopback-peer-trust";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
@@ -2853,7 +2854,12 @@ function classifyImprovementsCaptureCall(
         typeof target === "string" &&
         normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME;
       if (isDeferredCapture) {
-        const deferredArgs = (invokeArgs as { args?: unknown }).args;
+        // ptool serializes the nested tools:invoke args once at its second JSON
+        // boundary. Decode that wrapper here so the proxy's admission class
+        // matches the inner dispatcher (especially for toolFailure captures).
+        const deferredArgs = decodeToolsInvokeArgs(
+          (invokeArgs as { args?: unknown }).args,
+        );
         readOnlyDuplicateCheck =
           readOnlyDuplicateCheck &&
           isReadOnlyDuplicateCheckArgs(deferredArgs);

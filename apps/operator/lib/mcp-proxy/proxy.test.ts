@@ -9057,7 +9057,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         method: "tools/call",
         params: { name: "improvements:capture", arguments: args },
       });
-    const deferredToolFailureBody = (id: number) =>
+    const deferredToolFailureBody = (id: number, stringifyArgs = false) =>
       JSON.stringify({
         jsonrpc: "2.0",
         id,
@@ -9066,12 +9066,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           name: "tools:invoke",
           arguments: {
             name: "improvements:capture",
-            args: {
-              toolFailure: {
-                toolName: "storage:usage",
-                message: "The read exceeded its request deadline.",
-              },
-            },
+            args: stringifyArgs
+              ? JSON.stringify({
+                  toolFailure: {
+                    toolName: "storage:usage",
+                    message: "The read exceeded its request deadline.",
+                  },
+                })
+              : {
+                  toolFailure: {
+                    toolName: "storage:usage",
+                    message: "The read exceeded its request deadline.",
+                  },
+                },
           },
         },
       });
@@ -9089,7 +9096,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
 
       failure = request(
         port(proxy),
-        deferredToolFailureBody(2),
+        // ptool's tools:invoke transport stringifies the nested args object;
+        // this must still enter the dedicated toolFailure lane.
+        deferredToolFailureBody(2, true),
         "/api/mcp?client=held-tool-failure",
       );
       await waitFor(() => hits.includes("held-tool-failure"));
