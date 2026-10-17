@@ -3,7 +3,21 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, codexSelectionFromArgv, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, codexSelectionFromArgv, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, recordingLimitFromArgv, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+
+describe('batch recording request allowance', () => {
+  const selection = { model: 'gpt-6-luna', effort: 'low' as const };
+  it('requires explicit Codex binding and preserves legacy absence', () => {
+    expect(recordingLimitFromArgv([], 'codex')).toBeUndefined();
+    expect(recordingLimitFromArgv(['--max-model-requests', '20'], 'codex', selection)?.snapshot())
+      .toEqual({ ...selection, maxRequests: 20, admitted: 0, denied: 0 });
+    expect(() => recordingLimitFromArgv(['--max-model-requests', '20'], 'codex')).toThrow(/explicit Codex/);
+    expect(() => recordingLimitFromArgv(['--max-model-requests', '20'], 'claude', selection)).toThrow(/explicit Codex/);
+  });
+  it.each(['0', '-1', '1.5', 'NaN', 'Infinity', '9007199254740992', '--tasks', ''])('rejects an invalid allowance %j before sessions start', (value) => {
+    expect(() => recordingLimitFromArgv(['--max-model-requests', value], 'codex', selection)).toThrow();
+  });
+});
 
 describe('default recording placement', () => {
   it('places shared-host recording checkouts on data and preserves an explicit cache', () => {
