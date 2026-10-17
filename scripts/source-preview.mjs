@@ -62,6 +62,7 @@ import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync 
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 import { runTreeRestrictedHoldPreflight, formatTreeRestrictedHoldRefusal,
   RESTRICTED_HOLD_PREFLIGHT_ENV, RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } from './lib/restricted-hold-preflight.mjs';
+import { applyEnvLocal, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -866,17 +867,24 @@ export function captureVerifierDependencies({ dest, receipt }) {
 }
 
 /** Admit against the caller's disclosure ledger before leaving its checkout.
- * Frozen source excludes local operator configuration; forward only a genuine
- * admission, never the operator credentials or a fabricated skip marker.
+ * Frozen source excludes local operator configuration. Preserve its database
+ * pins in the child environment so governed admission uses the same control
+ * plane, without copying the config file or unrelated secrets into the archive.
+ * Explicit database pins and isolated PG selection keep their precedence.
  * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
  */
 export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight = runTreeRestrictedHoldPreflight }) {
   const verdict = preflight({ roots: [repo], env });
   if (verdict.verdict === 'refuse')
     throw new PreviewError(formatTreeRestrictedHoldRefusal('verifier-run', verdict), 3);
-  return verdict.verdict === 'admit'
+  const childEnv = verdict.verdict === 'admit'
     ? { ...env, [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER }
     : { ...env };
+  // Resolve while the caller's .env.local still exists. A frozen child otherwise
+  // discovers a different desktop cluster when its dedicated queue client opens.
+  if (!PG_URL_ENV_VARS.some(key => childEnv[key]))
+    applyEnvLocal({ root: join(repo, 'apps', 'operator'), env: childEnv });
+  return childEnv;
 }
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.

@@ -9,6 +9,7 @@
  *     [--max-request-bytes <positive integer; requires --max-model-requests>]
  *     [--max-model-usd <USD, six decimal places max> --max-provider-attempts <integer>
  *      --provider-account <id> --provider-credential-sha256 <digest> --provider-target <exact HTTPS URL>]
+ * The credential digest binds the complete outgoing Authorization header, including its Bearer prefix.
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI

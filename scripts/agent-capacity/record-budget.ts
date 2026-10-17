@@ -13,6 +13,7 @@ export interface RecordingBudgetConfig {
   model: 'gpt-6-luna';
   effort: 'low';
   accountId: string;
+  /** SHA256 of the complete outgoing Authorization header (including "Bearer "), not the raw token. */
   credentialSha256: string;
   target: string;
   maxAttempts: number;

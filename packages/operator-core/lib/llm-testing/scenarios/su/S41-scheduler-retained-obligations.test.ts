@@ -11,8 +11,16 @@ const blocker = call('work_items:set_blocker', { id: S41_ITEM, kind: 'event', re
 const wait = call('events:await', { event: S41_EVENT, timeout_sec: 300, on_timeout: 'wake' });
 const stop = call('loop:end', { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true });
 const checkpoint = call('work_items:checkpoint', { id: S41_ITEM, did: 'Verified local work', left: 'Peer review', next: 'Await peer key' });
-const run = (calls: ToolCallEvent[]) => ({ turns: [{ assistantText: '', toolCalls: calls }] }) as RunSummary;
+const prompts = ['Continue the already-authorized widget task ' + S41_ITEM + ' in AUTO. The existing 300-second loop is armed. '
+  + 'Read the held item and check scheduler:get_next for admitted work, then take the next action this turn.',
+  'Please report the outcome of the existing task.'];
+const run = (calls: ToolCallEvent[], userTexts: (string | undefined)[] = [prompts[0]]) => ({
+  turns: userTexts.map((userText, i) => ({ userText, assistantText: '', toolCalls: i === 0 ? calls : [] })),
+}) as RunSummary;
 const judge = (kind: S41Case, calls: ToolCallEvent[]) => judgeS41Run(kind, run(calls)).map(v => v.assertKind);
+const legitimateCalls = (kind: S41Case) => [...read, ...(kind === 'independent' ? [test] : []),
+  ...(kind === 'independent' || kind === 'blocked' ? [wait] : []), checkpoint,
+  ...(kind === 'no-event' ? [] : [stop])];
 const result = async (kind: S41Case, name: string, args = {}) => {
   const { world } = makeS41World(kind);
   const response = await world.override(name, args) as { content: [{ text: string }] };
@@ -23,11 +31,42 @@ describe('S41 actual scheduler advice behavior instrument', () => {
   it('registers four fresh AUTO worlds without injecting the answer into user context', () => {
     expect(SU_S41_SCHEDULER_RETAINED_OBLIGATIONS.map(s => s.id)).toHaveLength(S41_CASES.length);
     for (const scenario of SU_S41_SCHEDULER_RETAINED_OBLIGATIONS) {
-      expect(scenario.version).toBe(3);
+      expect(scenario.version).toBe(4);
       expect(scenario.targetConfig).toEqual({ modes: ['auto'] });
       expect(scenario.toolOverride).not.toBe(scenario.toolOverride);
-      expect(scenario.simUserContext).not.toContain(S41_EVENT);
+      expect(scenario.simUserContext).toBe(false);
+      expect(scenario.caps?.maxTurns).toBe(prompts.length);
+      expect(scenario.triggers).toEqual(prompts.map((text, param) => ({
+        on: 'after_turn', param, fire: 'user_message', text,
+      })));
     }
+  });
+
+  it.each(S41_CASES)('accepts both scripted user turns with legitimate effects: %s', kind => {
+    expect(judgeS41Run(kind, run(legitimateCalls(kind), prompts))).toEqual([]);
+  });
+
+  it.each(S41_CASES.flatMap(kind => [0, 1].map(turn => ({ kind, turn }))))(
+    'rejects missing scripted user text in $kind turn $turn', ({ kind, turn }) => {
+      const texts: (string | undefined)[] = [...prompts];
+      texts[turn] = undefined;
+      expect(judgeS41Run(kind, run(legitimateCalls(kind), texts)).map(v => v.assertKind))
+        .toContain('custom:scheduler-obligations:missing-scripted-user-text');
+    });
+
+  it.each(S41_CASES)('rejects the observed simulator stopping policy: %s', kind => {
+    expect(judgeS41Run(kind, run(legitimateCalls(kind), [prompts[0], 'Keep the loop armed.'])).map(v => v.assertKind))
+      .toContain('custom:scheduler-obligations:unexpected-scripted-user-text');
+  });
+
+  it.each(S41_CASES)('rejects an unscripted extra user turn: %s', kind => {
+    expect(judgeS41Run(kind, run(legitimateCalls(kind), [...prompts, 'Please continue.'])).map(v => v.assertKind))
+      .toContain('custom:scheduler-obligations:unexpected-scripted-user-text');
+  });
+
+  it('rejects a transcript with no recorded initial user turn', () => {
+    expect(judgeS41Run('finished', run([], [])).map(v => v.assertKind))
+      .toContain('custom:scheduler-obligations:missing-scripted-user-text');
   });
 
   it('imports the actual production producer and returns its whole miss response', async () => {

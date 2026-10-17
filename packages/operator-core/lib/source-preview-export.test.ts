@@ -86,6 +86,46 @@ describe('verifier command disclosure admission', () => {
     expect(verifierCommandAdmissionEnv({ repo: '/caller/checkout', env: upstream,
       preflight: () => ({ verdict: 'skipped', reason: 'testing-run' }) })).toEqual(upstream);
   });
+
+  it('keeps the caller database available after freezing excludes its local config', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'verifier-control-plane-'));
+    try {
+      write(repo, 'apps/operator/.env.local',
+        'DATABASE_URL=postgresql://fixture.invalid/caller-control-plane\nUNRELATED_SECRET=must-not-forward\n');
+      const env = { PATH: '/fixture/bin' };
+      const child = verifierCommandAdmissionEnv({ repo, env, preflight: () => ({ verdict: 'admit' }) });
+      rmSync(join(repo, 'apps/operator/.env.local'));
+      expect(child.DATABASE_URL).toBe('postgresql://fixture.invalid/caller-control-plane');
+      expect(child[marker]).toBe('admitted-by-test-router');
+      expect(child).not.toHaveProperty('UNRELATED_SECRET');
+      expect(env).toEqual({ PATH: '/fixture/bin' });
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
+  it.each(['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'])(
+    'preserves an explicit %s instead of importing a higher-priority local pin', (key) => {
+      const repo = mkdtempSync(join(tmpdir(), 'verifier-control-plane-pin-'));
+      try {
+        write(repo, 'apps/operator/.env.local', 'HARNESS_ADMIN_DATABASE_URL=postgresql://fixture.invalid/local\n');
+        const env = { [key]: 'postgresql://fixture.invalid/explicit' };
+        const child = verifierCommandAdmissionEnv({ repo, env,
+          preflight: () => ({ verdict: 'skipped', reason: 'nested-in-test-runner' }) });
+        expect(child).toEqual(env);
+      } finally { rmSync(repo, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each([{ PAPERCUSP_PG_PORT: '54321' }, { PAPERCUSP_SKIP_PG_DISCOVERY: '1' }])(
+    'keeps isolated PG selection %j away from caller database credentials', (env) => {
+      const repo = mkdtempSync(join(tmpdir(), 'verifier-control-plane-isolation-'));
+      try {
+        write(repo, 'apps/operator/.env.local', 'DATABASE_URL=postgresql://fixture.invalid/live\n');
+        const child = verifierCommandAdmissionEnv({ repo, env,
+          preflight: () => ({ verdict: 'skipped', reason: 'nested-in-test-runner' }) });
+        expect(child).toEqual(env);
+      } finally { rmSync(repo, { recursive: true, force: true }); }
+    },
+  );
 });
 let manifest: Awaited<ReturnType<typeof exportSnapshot>>['manifest'];
 

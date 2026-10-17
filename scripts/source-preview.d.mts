@@ -216,8 +216,10 @@ export function captureVerifierDependencies({ dest, receipt }: {
     }[];
 };
 /** Admit against the caller's disclosure ledger before leaving its checkout.
- * Frozen source excludes local operator configuration; forward only a genuine
- * admission, never the operator credentials or a fabricated skip marker.
+ * Frozen source excludes local operator configuration. Preserve its database
+ * pins in the child environment so governed admission uses the same control
+ * plane, without copying the config file or unrelated secrets into the archive.
+ * Explicit database pins and isolated PG selection keep their precedence.
  * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
  */
 export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
