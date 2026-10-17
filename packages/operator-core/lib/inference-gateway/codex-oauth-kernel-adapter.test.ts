@@ -279,7 +279,7 @@ it.each(['cancelled', 'ttfb-timeout'] as const)(
       expect(failed).not.toHaveBeenCalled();
     } else {
       expect(cooled).toEqual([{ key: 'chatgpt-a:default', ms: 30_000 }]);
-      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a', expect.anything());
+      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a', expect.anything(), undefined);
     }
   },
 );
@@ -604,7 +604,7 @@ describe('codex OAuth kernel adapter — sibling-egress re-attempt precedes rota
     await executeGatewayRequestKernel(options).catch(() => undefined);
 
     // The failure carries the fetch rejection itself (the gateway classifies it: DNS here).
-    expect(failed).toHaveBeenCalledWith('chatgpt-a', dnsFailure);
+    expect(failed).toHaveBeenCalledWith('chatgpt-a', dnsFailure, undefined);
     // A 429 is still an HTTP response: the network path works, whatever the account's capacity.
     expect(responded).toHaveBeenCalledWith('chatgpt-b', 429);
     expect(responded).not.toHaveBeenCalledWith('chatgpt-a', expect.anything());

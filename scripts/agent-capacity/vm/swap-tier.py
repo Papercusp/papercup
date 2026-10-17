@@ -41,6 +41,9 @@ Save that receipt's manifestSha256 and the manifest locally BEFORE the operation
 witness-verify with the same --manifest/--pg-config and --manifest-sha256 from the saved receipt.
 Verification never recreates a missing SQL row or file. These commands prove retained bytes only;
 application-ready timing, capacity, billed cost and provider teardown are separate acceptance gates.
+Keep this instrument under /data/tooling for lifecycle runs: guest /tmp may be cleared on boot.
+Use `wait-health --port PORT --expected-sha SHA` for strict API readiness; measure the provider
+start request separately so its time is included in cold-wake acceptance.
 Run as root (cgroup writes, swapon); the agents run as --user (claude refuses bypass mode as root).
 """
 import argparse
@@ -48,6 +51,7 @@ import datetime
 import errno
 import glob
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -85,6 +89,41 @@ def launch_delay_seconds(env=None):
 
 LAUNCH_DELAY_SEC = launch_delay_seconds()
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def wait_for_operator_health(ports, timeout=120, interval=0.2, expected_sha=None):
+    """A listening socket or successful HTML response is not application readiness."""
+    if (not ports or any(type(p) is not int or not 1 <= p <= 65535 for p in ports) or
+            not 0 < timeout <= 600 or not 0 < interval <= 10):
+        raise ValueError("valid ports and bounded positive health timing are required")
+    started = time.monotonic()
+    deadline = started + timeout
+    attempts = 0
+    while time.monotonic() < deadline:
+        for port in dict.fromkeys(ports):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            attempts += 1
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health",
+                                            timeout=min(1, remaining)) as response:
+                    if response.status != 200:
+                        continue
+                    raw = response.read(65537)
+                    if len(raw) > 65536:
+                        continue
+                    health = json.loads(raw)
+                    if (isinstance(health, dict) and health.get("ok") is True and
+                            health.get("service") == "papercusp-operator" and
+                            (expected_sha is None or health.get("sha") == expected_sha)):
+                        return {"ready": True, "port": port, "health": health,
+                                "seconds": time.monotonic() - started, "attempts": attempts}
+            except (OSError, ValueError, http.client.HTTPException):
+                # SSH banners and disconnected non-HTTP sockets must not hide a later valid API.
+                continue
+        time.sleep(max(0, min(interval, deadline - time.monotonic())))
+    return {"ready": False, "seconds": time.monotonic() - started, "attempts": attempts}
 
 
 def durability_file(path):
@@ -1332,6 +1371,10 @@ def main(argv=None):
     v = sub.add_parser("verify-archive")
     v.add_argument("--archive", required=True, help="locally copied native-evidence.tar.gz; required before teardown")
     v.add_argument("--results", required=True, help="locally copied results.jsonl from the exact run being torn down")
+    h = sub.add_parser("wait-health", help="wait for strict operator API health, tolerating non-HTTP candidates")
+    h.add_argument("--port", type=int, action="append", required=True)
+    h.add_argument("--timeout", type=float, default=120)
+    h.add_argument("--expected-sha")
     for command in ("witness-create", "witness-verify"):
         w = sub.add_parser(command, help="retained file/SQL witness before or after cold wake/disk growth")
         w.add_argument("--manifest", required=True)
@@ -1366,6 +1409,10 @@ def main(argv=None):
         probe(a.out)
     elif a.cmd == "verify-archive":
         print(json.dumps(verify_native_archive(a.archive, a.results)))
+    elif a.cmd == "wait-health":
+        receipt = wait_for_operator_health(a.port, a.timeout, expected_sha=a.expected_sha)
+        print(json.dumps(receipt))
+        return 0 if receipt["ready"] else 1
     elif a.cmd == "witness-create":
         print(json.dumps(create_durability_witness(a.manifest, a.file, a.pg_config, a.psql, a.id)))
     elif a.cmd == "witness-verify":

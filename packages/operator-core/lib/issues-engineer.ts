@@ -3349,6 +3349,13 @@ export async function claimIssue(
        AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
          payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',
        })}
+       -- Reviewer pickup is self-select, even though it reaches the shared by-id writer.
+       -- The capability lifts the intake floor only; a concurrent durable park still wins.
+       AND ${
+         agentReviewAdmission
+           ? sql`COALESCE(target.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`
+           : sql`TRUE`
+       }
        -- EI-15027: a literal 'unassigned' sentinel (case/whitespace-insensitive) — some
        -- federated/legacy writers use it as a "not taken" placeholder instead of NULL/''
        -- (mirrors EI-7939's normalizeTakenBy for the feature-family taken_by column) —

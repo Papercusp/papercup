@@ -90,6 +90,42 @@ describe('host mechanical carry-respawn checkpoint (R-13)', () => {
     expect(saved.match(/auto-checkpoint mechanical/g)).toHaveLength(1);
   });
 
+  it('reuses the supplied carry snapshot and writes advisory checkpoints concurrently', async () => {
+    const heldItems = [
+      { id: 'WI-1', title: 'one', body: '', harness: 'papercusp', checkpoint: null, checkpointUpdatedAtMs: null },
+      { id: 'WI-2', title: 'two', body: '', harness: 'papercusp', checkpoint: null, checkpointUpdatedAtMs: null },
+    ] as const;
+    const started: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    mocks.set.mockImplementation(async ({ workItemId }: { workItemId: string }, _note: string | null | undefined, opts: SnapshotOptions) => {
+      started.push(workItemId);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await gate;
+      active -= 1;
+      const prior = notes.get(workItemId) ?? null;
+      const stored = opts.transform ? opts.transform(prior, _note) : _note ?? null;
+      notes.set(workItemId, stored ?? null);
+      return { stored, priorLength: prior?.length ?? 0 };
+    });
+    const pending = autoCheckpointStaleHeldItems({ ...input, heldItems });
+    try {
+      await vi.waitFor(() => expect(started).toEqual(['WI-1', 'WI-2']));
+      expect(maxActive).toBe(2);
+      expect(mocks.sql).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await pending;
+    }
+    await expect(pending).resolves.toEqual([
+      { id: 'WI-1', mechanical: true },
+      { id: 'WI-2', mechanical: true },
+    ]);
+  });
+
   it('merges into the locked current row when an authored note changes during tool-log IO', async () => {
     notes.set('WI-1', 'Old judgment.');
     mocks.log.mockImplementation(async () => { notes.set('WI-1', 'New judgment: keep the wall.'); return []; });

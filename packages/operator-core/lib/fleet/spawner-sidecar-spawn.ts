@@ -424,30 +424,38 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     let childReady = false;
     let timedOut = false;
     const timeout = setTimeout(() => {
-      // Settle the deadline before kill(): injected children can emit exit
-      // synchronously, but that exit is the guard's effect, not its cause.
-      timedOut = true;
-      reject(new Error('Spawner sidecar startup timeout'));
-      if (!childReady && sidecarProcess === child) {
-        // EI-20200233989444731: kill the SCOPE first. This path then drops the only
-        // reference we hold (`sidecarProcess = null`), so a payload that survived a
-        // client-only signal here would be orphaned with nothing left to stop it —
-        // a live process in a scope no ledger row claims, i.e. the "unaccounted
-        // cgroup" the task-manager alarm reports. A sidecar that missed its 10s
-        // handshake is exactly the case most likely to still be mid-startup.
-        const proc = sidecarProcess;
-        const scopeUnit = sidecarScopeUnit;
-        sidecarProcess = null;
-        sidecarScopeUnit = null;
-        sidecarReady = false;
-        void killOwnedScope(scopeUnit).then(() => {
-          try {
-            proc.kill();
-          } catch {
-            /* already gone */
-          }
-        });
-      }
+      // Timers run before the poll phase. A child can write its ready line before
+      // this deadline while the stdout `data` callback is already waiting in the
+      // poll queue; rejecting in the timer phase turns that successful startup
+      // into a false timeout. Let one poll pass deliver any queued handshake before
+      // declaring failure (the same ordering guard used by probeUnixSocketAlive).
+      setImmediate(() => {
+        if (childReady || timedOut || sidecarProcess !== child) return;
+        // Settle the deadline before kill(): injected children can emit exit
+        // synchronously, but that exit is the guard's effect, not its cause.
+        timedOut = true;
+        reject(new Error('Spawner sidecar startup timeout'));
+        if (!childReady && sidecarProcess === child) {
+          // EI-20200233989444731: kill the SCOPE first. This path then drops the only
+          // reference we hold (`sidecarProcess = null`), so a payload that survived a
+          // client-only signal here would be orphaned with nothing left to stop it —
+          // a live process in a scope no ledger row claims, i.e. the "unaccounted
+          // cgroup" the task-manager alarm reports. A sidecar that missed its 10s
+          // handshake is exactly the case most likely to still be mid-startup.
+          const proc = sidecarProcess;
+          const scopeUnit = sidecarScopeUnit;
+          sidecarProcess = null;
+          sidecarScopeUnit = null;
+          sidecarReady = false;
+          void killOwnedScope(scopeUnit).then(() => {
+            try {
+              proc.kill();
+            } catch {
+              /* already gone */
+            }
+          });
+        }
+      });
     }, 10000);
 
     // Listen for ready handshake. Decode across chunk boundaries — the

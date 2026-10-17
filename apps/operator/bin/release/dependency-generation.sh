@@ -3188,6 +3188,25 @@ dependency_generation_ensure_once() {
     incumbent_token=''
   fi
 
+  # Reject an incomplete donor before copying it. The immutable destination is
+  # still audited after copy, but discovering a missing locked package only then
+  # wastes the entire copy (WI-6554700010016798: over seven minutes for P030).
+  # Cache hits above retain their audit against the selected immutable tree.
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    phase_started_ms="$(dependency_generation_now_ms)"
+    if ! dependency_generation_audit_lock_tree "$integration_root" "$build/.lock-inputs"; then
+      dependency_generation_emit_phase source-lock-tree-audit "$phase_started_ms" failed
+      dependency_generation_emit_summary \
+        lock-tree-incomplete "$total_started_ms" "$source_before" "$identity" \
+        "$predecessor_identity" "$tree_total" 0 0 0
+      dependency_generation_log \
+        'FATAL: source dependency trees do not realise their lockfiles; refusing to publish before copy (repair the source install, e.g. npm run install:safe)'
+      dependency_generation_remove_build "$build"
+      return 75
+    fi
+    dependency_generation_emit_phase source-lock-tree-audit "$phase_started_ms" ok
+  fi
+
   # WI-10004094: build this identity at most once at a time. A live peer's build
   # is joined, not duplicated; a peer that published between our validation and
   # our acquisition is re-validated rather than rebuilt.

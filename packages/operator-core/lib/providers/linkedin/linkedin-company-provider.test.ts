@@ -123,7 +123,10 @@ describe('LinkedIn company-page package (P-022)', () => {
   it('refuses malformed cursors, foreign authors, nonprogressing/off-host and substituted next links', async () => {
     const adapter = approvedFixture();
     await expect(drain(adapter, world().fetch, '{}')).rejects.toMatchObject({ kind: 'cursor-expired' });
-    for (const href of [nextUrl(0), nextUrl().replace('api.linkedin.com', 'evil.example'), nextUrl().replace('123', '456'), nextUrl() + '&q=other', nextUrl().replace('/rest/posts?', '/rest/organizationAcls?')]) {
+    for (const href of [nextUrl(0), nextUrl().replace('api.linkedin.com', 'evil.example'),
+      nextUrl().replace('https:', 'http:'), nextUrl().replace('api.linkedin.com', 'user:password@api.linkedin.com'),
+      nextUrl() + '#fragment', nextUrl().replace('123', '456'), nextUrl() + '&q=other',
+      nextUrl().replace('/rest/posts?', '/rest/organizationAcls?')]) {
       await expect(drain(adapter, async () => jsonResponse(200, { elements: [], paging: { links: [{ rel: 'next', href }] } }))).rejects.toMatchObject({ kind: 'cursor-expired' });
     }
     await expect(drain(adapter, async () => jsonResponse(200, { elements: [{ ...row(1), author: 'urn:li:person:other' }], paging: { links: [] } }))).rejects.toThrow('malformed_organization_post');
@@ -170,6 +173,26 @@ describe('LinkedIn company-page package (P-022)', () => {
       invocations: [{ capability: 'social.post', args: postArgs }] });
     expect(report.failures).toEqual([]);
     expect(report.ok).toBe(true);
+  });
+
+  it('refuses a company package missing its daemon declaration before installation effects', async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), 'linkedin-company-refused-'));
+    const globalPluginsDir = join(root, 'plugins');
+    const grant = vi.fn(), invalidateHost = vi.fn();
+    try {
+      await expect(installPluginFromCupboardCore({ githubUrl: 'https://github.com/papercusp/plugins', listingRef: 'linkedin-company' }, {
+        cloneRepo: async (_url, dest) => {
+          await fs.cp(directory, dest, { recursive: true });
+          const fixture = structuredClone(manifest);
+          delete fixture.runtime;
+          await fs.writeFile(join(dest, 'papercusp.json'), JSON.stringify(fixture));
+        },
+        globalPluginsDir: () => globalPluginsDir, tmpDir: () => root, grant, invalidateHost,
+      })).rejects.toMatchObject({ code: 'provider_runtime_not_sandboxed' });
+      expect(await fs.readdir(globalPluginsDir).catch(() => [])).toEqual([]);
+      expect(grant).not.toHaveBeenCalled();
+      expect(invalidateHost).not.toHaveBeenCalled();
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
   it('installs and loads the shipped standalone daemon, then refuses the actual approval wall before network access', async () => {

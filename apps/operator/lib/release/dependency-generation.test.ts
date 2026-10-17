@@ -2180,6 +2180,11 @@ exec /bin/cp "$@"
     expect(result.stderr).toContain('refusing to publish');
     expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
     expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    // A known-incomplete donor must refuse before spending time copying it.
+    expect(telemetryRecords(result.stderr, 'PHASE')).toContainEqual(
+      expect.objectContaining({ phase: 'source-lock-tree-audit', outcome: 'failed' }),
+    );
+    expect(telemetryRecords(result.stderr, 'PHASE').map(({ phase }) => phase)).not.toContain('tree-copy');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it.each([

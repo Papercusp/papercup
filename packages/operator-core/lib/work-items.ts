@@ -5998,6 +5998,10 @@ export async function claimWorkItem(
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          AND ${selection.where}
+         -- The reviewer admission is used by self-selecting pickup after a queue read. It
+         -- lifts only the pending-review intake floor; it must retain the durable self-select
+         -- park even though ordinary named claims may intentionally bypass that floor.
+         AND ${agentReviewAdmission ? claimHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
            payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
          })}
@@ -7238,7 +7242,7 @@ export function claimHoldExclusionSql(
   // caller (harness_features_consolidated, unaliased) passes 'payload'; the stranded
   // checkpoint reader uses the explicit `ei` view alias. A closed literal union, never
   // interpolated user input, so composing it via sql.unsafe is injection-safe.
-  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' = 'wi.payload',
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' | 'target.payload' = 'wi.payload',
 ) {
   // COALESCE the payload so a NULL-payload row (no hold tag) reads as '{}'::jsonb->>'...' =
   // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).

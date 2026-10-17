@@ -476,6 +476,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // EI-22449230917085417: keep ordinary wake tests hermetic; the production
     // default reads the live SU-lock table at the delivery boundary.
     readLockGrantOwnership: vi.fn(async () => true),
+    observeFallback: vi.fn(),
     getCurrentWorkItem: vi.fn(async () => null) as never,
     // Keep the Channel 2 grading-audit checks hermetic by default. Only their
     // focused freshness tests should provide task/scorecard rows; the production
@@ -2491,6 +2492,7 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
       ownerId: 'su-probe',
       checks: [],
       harness: 'papercusp',
+      workspaceId: 'ws',
       readAtIso: '2026-10-14T09:00:00.000Z',
     });
     // no checks → nothing to run → no block at all (never a false "all hold")
@@ -5329,6 +5331,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
   });
 
   it('parks before claiming or spawning when Codex reports an active native thread writer', async () => {
+    const observeFallback = vi.fn();
     const codexThreadWriterHolder = vi.fn(() => ({
       held: true,
       pid: 12345,
@@ -5344,6 +5347,7 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
         alive: vi.fn(() => false),
         getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
         codexThreadWriterHolder,
+        observeFallback,
         claimResume,
         spawnDetached,
       }),
@@ -5355,10 +5359,14 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
     });
     expect(codexThreadWriterHolder).toHaveBeenCalledWith(join(CODEX_HOMES_DIR, 'session-42'), ROLLOUT_UUID);
     expect(claimResume).not.toHaveBeenCalled();
+    expect(observeFallback).toHaveBeenCalledWith('routine-capability-read', {
+      eligible: 1, applied: 1, reason: 'applied', scope: 'wake-codex-writer-lock',
+    }, { workspaceId: expect.any(String) });
     expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   it('fails open and resumes when the Codex writer-lock probe cannot read the lock state', async () => {
+    const observeFallback = vi.fn();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const codexThreadWriterHolder = vi.fn(() => {
       throw new Error('ENOENT: /proc/locks');
@@ -5370,12 +5378,16 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
         alive: vi.fn(() => false),
         getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
         codexThreadWriterHolder,
+        observeFallback,
         spawnDetached,
       }),
     );
 
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
     expect(codexThreadWriterHolder).toHaveBeenCalledTimes(1);
+    expect(observeFallback).toHaveBeenCalledWith('routine-capability-read', {
+      eligible: 1, applied: 0, reason: 'writer-lock-probe-failed', scope: 'wake-codex-writer-lock',
+    }, { workspaceId: expect.any(String) });
     expect(spawnDetached).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('writer-lock probe failed open'));
   });

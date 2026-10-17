@@ -147,6 +147,9 @@ describe('runFlushGate ladder', () => {
     // the fallback write fails soft with no DB in the unit env — checkpointedItems is
     // an array either way, and the verdict/marker transition is what matters here.
     expect(Array.isArray(second.fallback?.checkpointedItems)).toBe(true);
+    expect(autoCheckpointStaleHeldItems).toHaveBeenCalledWith(
+      expect.objectContaining({ heldItems: args.brief?.heldItems }),
+    );
     // the marker is retired after the fallback fires
     expect(await wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(false);
   });

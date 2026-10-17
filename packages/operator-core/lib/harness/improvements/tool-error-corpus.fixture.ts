@@ -571,6 +571,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'the client called an unseeded deferred wrapper before tools:find discovery; no MCP request reached the server (EI-25486226169848485)',
   },
   {
+    n: 1, errorCode: 'client_wrapper_unavailable', status: 'not_dispatched',
+    message: 'The normalized direct wrapper tools.mcp__papercusp_su__coord_read was not callable (TypeError) before dispatch. The tool is present in the registry; reading the directed message must use the sanctioned ptool route.',
+    expectedClass: 'caller',
+    note: 'the normalized wrapper was absent before MCP dispatch; the catalog/ptool route remained available (EI-25654124340277423)',
+  },
+  {
     n: 1, errorCode: 'unknown_tool_wrapper', status: 'client',
     message: 'Normalized direct wrapper mcp__papercusp_su__locks_acquire was not callable; tools:find returned locks:acquire schema, so switched to ptool CLI fallback. Reproduced: true. Direct evidence kind: valid-input-reproduction. Direct evidence expected: callable locks:acquire wrapper or equivalent lock acquisition. Direct evidence actual: TypeError: tools.mcp__papercusp_su__locks_acquire is not a function',
     expectedClass: 'caller',

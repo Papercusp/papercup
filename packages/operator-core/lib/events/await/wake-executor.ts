@@ -55,6 +55,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { concreteWorkspaceIdOrNull } from '../../workspace-registry';
 import { redactSensitiveText } from '../../sensitive-text';
+import { observeFallback as defaultObserveFallback } from '../../degradation/fallback-observations';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -2993,6 +2994,8 @@ export async function injectOmpWakeTurnWhenReady(input: {
 }
 
 export interface ExecuteWakeDeps {
+  carriedProbeBlockFn?: typeof defaultCarriedProbeBlock;
+  carryRefBlockFn?: typeof defaultCarryRefBlock;
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
   /** Delivery-time owner-session election used when a captured session is no longer live. */
@@ -3085,6 +3088,7 @@ export interface ExecuteWakeDeps {
   claimResume?: (advSessionId: number, key?: string | null, windowSec?: number, ownerId?: string | null) => Promise<boolean | 'retired'>;
   /** Codex's native single-writer flock probe; a confirmed holder parks the wake before claiming/spawning. */
   codexThreadWriterHolder?: typeof codexThreadWriterHolder;
+  observeFallback?: typeof defaultObserveFallback;
   /** Delivery-time grading-auditor task lookup before a Channel 2 resume claim. */
   readGradingAuditTasks?: GradingAuditResumeGuardDeps['readTasks'];
   /** Delivery-time exact scorecard read for a grading-auditor task. */
@@ -3996,6 +4000,7 @@ function newestDeliveryCarryNoteMeta(
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
+  const observeFallback = deps.observeFallback ?? defaultObserveFallback;
   const getSession = deps.getSession ?? getAdvSession;
   const getLatestSessionForOwner = deps.getLatestSessionForOwner ?? latestAdvSessionByCoordOwner;
   const findPty = deps.findPty ?? findPtyByPid;
@@ -5350,6 +5355,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     if (resumeAgent === 'codex' && codexHome && nativeResumeSessionId) {
       try {
         const writer = (deps.codexThreadWriterHolder ?? codexThreadWriterHolder)(codexHome, nativeResumeSessionId);
+        observeFallback('routine-capability-read', {
+          eligible: 1, applied: 1, reason: 'applied', scope: 'wake-codex-writer-lock',
+        }, { workspaceId: d.workspaceId });
         if (writer.held) {
           return {
             kind: 'park',
@@ -5359,6 +5367,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           };
         }
       } catch (error) {
+        observeFallback('routine-capability-read', {
+          eligible: 1, applied: 0, reason: 'writer-lock-probe-failed', scope: 'wake-codex-writer-lock',
+        }, { workspaceId: d.workspaceId });
         console.warn(
           `[wake-executor] Codex writer-lock probe failed open for ${nativeResumeSessionId}: ` +
             `${redactSensitiveText(error instanceof Error ? error.message : String(error))}`,

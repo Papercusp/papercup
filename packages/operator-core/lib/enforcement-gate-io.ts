@@ -117,6 +117,10 @@ export async function writeFlushFallback(input: {
         journalNote: input.journalNote,
         nowMs,
         ...(input.snapshotAllHeld ? { mode: 'respawn' as const } : {}),
+        // The advisory gate already built this carry snapshot to detect its
+        // tripwires. Reuse its held rows; a mandatory respawn deliberately omits
+        // this preview so autoCheckpointStaleHeldItems reads every held item.
+        ...(!input.snapshotAllHeld && input.brief ? { heldItems: input.brief.heldItems } : {}),
       });
       result.checkpointedItems = written.map((w) => w.id);
     } catch (error) {

@@ -290,6 +290,30 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     expect(secondSettled).toBe(true);
   });
 
+  it('accepts a ready line delivered in the poll phase as the startup timer expires', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar-ready-at-deadline.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+
+    // Hold the timeout's setImmediate callback to model a ready line already
+    // queued for the poll phase when Node runs the deadline timer first.
+    const pendingImmediate: Array<() => void> = [];
+    vi.spyOn(globalThis, 'setImmediate').mockImplementation(((callback: (...args: never[]) => void) => {
+      pendingImmediate.push(() => callback());
+      return {} as ReturnType<typeof setImmediate>;
+    }) as typeof setImmediate);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pendingImmediate).toHaveLength(1);
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    pendingImmediate.shift()?.();
+
+    await expect(ready).resolves.toBeUndefined();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(isSpawnerSidecarRunning()).toBe(true);
+  });
+
   it('retains the startup timeout cause when its kill emits exit synchronously', async () => {
     const child = makeChild();
     spawnMock.mockReturnValueOnce(child);

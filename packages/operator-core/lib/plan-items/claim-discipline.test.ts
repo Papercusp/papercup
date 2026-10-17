@@ -4,6 +4,7 @@ import { getClaim, listClaimsForPlan, releaseClaim, type PlanItemClaim } from '.
 import { claimPlanItem } from './liveness';
 import { findImplementingWorkItem } from './convert';
 import { releaseWorkItem } from '../work-items';
+import { workItemFixture } from '../testing/work-item-fixture';
 
 vi.mock('./claims', () => ({
   getClaim: vi.fn(),
@@ -164,13 +165,13 @@ describe('releaseOwnClaim', () => {
   it('also releases the caller-owned linked work item', async () => {
     mockGetClaim.mockResolvedValue(fakeClaim());
     mockReleaseClaim.mockResolvedValue(true);
-    mockFindImplementingWorkItem.mockResolvedValue({
+    mockFindImplementingWorkItem.mockResolvedValue(workItemFixture({
       id: 'WI-001',
       harness: 'papercup',
       state: 'wip',
       assignee: 'su-me',
-    } as never);
-    mockReleaseWorkItem.mockResolvedValue({ id: 'WI-001' } as never);
+    }));
+    mockReleaseWorkItem.mockResolvedValue(workItemFixture({ id: 'WI-001' }));
 
     await releaseOwnClaim('ws', 'papercup', 'plan-a', 'P-001', 'su-me');
 
@@ -242,13 +243,13 @@ describe('reconcileDeclaredClaims', () => {
     mockGetClaim.mockResolvedValue(null);
     mockListClaims.mockResolvedValue([fakeClaim({ itemId: 'P-009' })]);
     mockReleaseClaim.mockResolvedValue(true);
-    mockFindImplementingWorkItem.mockResolvedValue({
+    mockFindImplementingWorkItem.mockResolvedValue(workItemFixture({
       id: 'WI-009',
       harness: 'papercup',
       state: 'wip',
       assignee: 'su-me',
-    } as never);
-    mockReleaseWorkItem.mockResolvedValue({ id: 'WI-009' } as never);
+    }));
+    mockReleaseWorkItem.mockResolvedValue(workItemFixture({ id: 'WI-009' }));
 
     await reconcileDeclaredClaims({ ...scope, items: [] });
 

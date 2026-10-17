@@ -1499,7 +1499,10 @@ export default defineTool({
     // a second merge against a staler prior that could disagree with it.
     const captured: {
       merged?: ReturnType<typeof mergeCarryRows>;
-      mergeRefused?: { droppedWalls: string[]; droppedChecks: string[] };
+      mergeRefused?: Pick<
+        ReturnType<typeof mergeCarryRows>,
+        'droppedWalls' | 'droppedChecks' | 'droppedWallRows' | 'droppedCheckRows'
+      >;
     } = {};
     // A legacy note may already carry more checks than today's cap. The
     // transform records that fact from its authoritative locked prior so the
@@ -1588,6 +1591,8 @@ export default defineTool({
                 captured.mergeRefused = {
                   droppedWalls: merged.droppedWalls,
                   droppedChecks: merged.droppedChecks,
+                  droppedWallRows: merged.droppedWallRows,
+                  droppedCheckRows: merged.droppedCheckRows,
                 };
                 // Reverse the composition order mergeCarryRows uses on the way out
                 // (withCarryNoteWalls(withCarryNoteChecks(body, checks), walls)) so the
@@ -1681,6 +1686,8 @@ export default defineTool({
                 currentHash: stored === null ? null : shortCarryHash(stored),
                 wallsDropped: captured.mergeRefused.droppedWalls,
                 checksDropped: captured.mergeRefused.droppedChecks,
+                wallsDroppedRows: captured.mergeRefused.droppedWallRows,
+                checksDroppedRows: captured.mergeRefused.droppedCheckRows,
                 message:
                   'YOUR NARRATIVE WAS SAVED; only the ROW write was refused. ' +
                   "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above, so the " +
@@ -1688,9 +1695,10 @@ export default defineTool({
                   'did/left/insight/next note DID commit, so a cold successor reads this turn, not a stale one. ' +
                   'confirmRetire:true cannot authorize cap eviction. ' +
                   "If you were RE-WORDING a carried row, retry with that row only plus `replaces: '<its [#id] or " +
-                  "exact old claim>'` — an edit is not an addition. To make room for a genuinely new row, retry " +
-                  "with `retireIds: ['<stable row id>']` for the row(s) you no longer need. Neither needs a " +
-                  'full resend.',
+                  "exact old claim>'` — an edit is not an addition. Use the returned `checksDroppedRows`/" +
+                  '`wallsDroppedRows` IDs for `replaces` or `retireIds`; the claims are only human-readable labels. ' +
+                  'To record new plan-placement evidence while the check cap is full, keep it in the narrative ' +
+                  '(`did`/`insight`/`next`) instead of adding a new check row. Neither retry needs a full resend.',
               }),
             },
           ],
@@ -1863,9 +1871,13 @@ export default defineTool({
       checks,
       narrativeBody,
       droppedWalls,
+      droppedWallRows,
       droppedChecks,
+      droppedCheckRows,
       overflowWalls,
+      overflowWallRows,
       overflowChecks,
+      overflowCheckRows,
       retiredWalls,
       retiredChecks,
       unmatchedRowRefs,
@@ -2365,6 +2377,7 @@ export default defineTool({
             ...(droppedChecks.length
               ? {
                   checksDropped: droppedChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  checksDroppedRows: droppedCheckRows,
                   checksDroppedNote:
                     rowsMode === 'merge'
                       ? legacyOverCapNormalization.checks > 0
@@ -2405,6 +2418,7 @@ export default defineTool({
             ...(droppedWalls.length
               ? {
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  wallsDroppedRows: droppedWallRows,
                   wallsDroppedNote:
                     rowsMode === 'merge'
                       ? `The proposed rowsMode:'merge' composition UNIONED your ` +
@@ -2426,10 +2440,16 @@ export default defineTool({
             ...(overflowChecks.length || overflowWalls.length
               ? {
                   ...(overflowChecks.length
-                    ? { checksOverflowed: overflowChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) }
+                    ? {
+                        checksOverflowed: overflowChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                        checksOverflowedRows: overflowCheckRows,
+                      }
                     : {}),
                   ...(overflowWalls.length
-                    ? { wallsOverflowed: overflowWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) }
+                    ? {
+                        wallsOverflowed: overflowWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                        wallsOverflowedRows: overflowWallRows,
+                      }
                     : {}),
                   overflowNote:
                     `the row cap (${CARRY_NOTE_MAX_CHECKS} checks / ${CARRY_NOTE_MAX_WALLS} walls) cut ` +

@@ -47,6 +47,8 @@ import {
   getWorkItemDetail,
   mergeWorkItemPayload,
   releaseWorkItem,
+  isClaimHoldParked,
+  claimHoldExclusionSql,
   type WorkItem,
 } from '../../work-items';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -1829,6 +1831,7 @@ export async function claimNextAgentReview(
        AND (taken_by IS NULL OR btrim(taken_by) = '')
        AND ${depsBlockedExclusionSql(sql)}
        AND ${agentReviewPendingSelectorSql(sql)}
+       AND ${claimHoldExclusionSql(sql, 'wi.payload')}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.reviewer}
        AND NOT ${verificationConflictSql(sql, input.reviewer, { payload: 'wi.payload', terminalOwner: 'wi.terminal_owner' })}
        AND ${input.harnessSlug ? sql`harness_slug = ${input.harnessSlug}` : sql`TRUE`}
@@ -1864,6 +1867,11 @@ export async function claimNextAgentReview(
     const found = await measure('getWorkItem', () => deps.getWorkItem(row.feature_id, input.harnessSlug));
     if (!found) {
       if (stage) stage.outcome = 'missing';
+      emitDiagnostics();
+      continue;
+    }
+    if (isClaimHoldParked(found.payload)) {
+      if (stage) stage.outcome = 'claim-held';
       emitDiagnostics();
       continue;
     }
@@ -1941,6 +1949,7 @@ export async function claimNextAgentReview(
         ...(agentReviewAdmission ? { agentReviewAdmission } : {}),
       }),
       (item) => readAgentReviewState(item.payload)?.status === 'pending'
+        && !isClaimHoldParked(item.payload)
         && !verificationConflict(verificationParties(item), input.reviewer),
     ));
     if (claimed) {

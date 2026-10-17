@@ -187,6 +187,12 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
         message: 'The capability is present in tools:find, but tools.mcp__papercusp_su__logs_read is not callable in this Codex session; calling it raised TypeError before dispatch. Switching to ptool logs:read via the sanctioned CLI fallback.',
       },
       {
+        toolName: 'coord:read',
+        errorCode: 'client_wrapper_unavailable',
+        status: 'not_dispatched',
+        message: 'The normalized direct wrapper tools.mcp__papercusp_su__coord_read was not callable (TypeError) before dispatch. The tool is present in the registry; reading the directed message must use the sanctioned ptool route.',
+      },
+      {
         toolName: 'docs:outline',
         errorCode: 'wrapper-unavailable',
         status: 'client_surface_gap',

@@ -300,6 +300,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     ],
     messagePattern:
       'Normalized direct wrapper mcp__papercusp_su__[A-Za-z0-9_]+ was not callable|' +
+      'The normalized direct wrapper [A-Za-z0-9_.]+ was not callable(?: \\([^)]*\\))? before dispatch|' +
       'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +
       'The catalog exposed [^,]+, but the normalized functions\\.exec method [A-Za-z0-9_.]+ was undefined and raised a TypeError before dispatch|' +
       'the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch|' +
