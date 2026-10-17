@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * psu-pty-discovery — the operator's READ side of the session-hosted managed-pty
  * control socket (turn-lifecycle-control-2026-06-08 Phase 3, P-014).
@@ -38,7 +39,7 @@ import { recordMcpRequestTraceOperation } from '../../mcp-request-trace';
 /** Shared with psu-pty-host.mjs PSU_PTY_DIR. */
 // Keep discovery aligned with the host writer, while allowing integration tests
 // and disposable probes to redirect both sides away from the live corpus.
-export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || join(homedir(), '.papercusp', 'psu-pty');
+export const PSU_PTY_DIR = process.env.PAPERCUSP_PSU_PTY_DIR || papercuspPath('psu-pty');
 
 /** Mirror of psu-pty-host.mjs HOST_HANDOFF_FILE_SUFFIX (WI-6554700010008431). */
 export const HOST_HANDOFF_FILE_SUFFIX = '.handoff.json';

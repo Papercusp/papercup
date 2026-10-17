@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * Release-gating system actions — plan release-gate-ready-branch-2026-06-04
  * (Phase 1 green-checkpoint); staging→main auto-serve model since
@@ -745,7 +746,7 @@ export const CHECKPOINT_SCOPE_RUNTIME_MAX_SEC = 4 * 60 * 60;
 
 /** Keep the scheduled wrapper's evidence directory aligned with the CLI's release config. */
 function scheduledCheckpointLogDir(): string {
-  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? path.join(homedir(), '.papercusp', 'checkpoint-logs');
+  return process.env.PAPERCUSP_CHECKPOINT_LOG_DIR ?? papercuspPath('checkpoint-logs');
 }
 
 function shellQuote(value: string): string {

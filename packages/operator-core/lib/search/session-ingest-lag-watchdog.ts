@@ -39,6 +39,7 @@ import {
   readInteractiveUsageFreshness,
   type InteractiveUsageFreshness,
 } from '../interactive-usage/freshness';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const CONDITION_PREFIX = 'alarm:session-ingest:';
 type IngestConditionKind = 'backlog' | 'parts' | 'usage';
@@ -388,7 +389,7 @@ export async function sessionIngestLagSweep(
   const thresholdSec = ingestLagThresholdSec();
   if (thresholdSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
   const thresholdMs = thresholdSec * 1_000;
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: IngestLagSweepResult[] = [];
   try {
@@ -727,7 +728,7 @@ export async function sessionPartsWriterSweep(
   const windowSec = partsWriterWindowSec();
   if (windowSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
   const windowMs = windowSec * 1_000;
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: IngestLagSweepResult[] = [];
   try {

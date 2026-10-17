@@ -43,7 +43,7 @@ import { join } from 'node:path';
  * @param {NodeJS.ProcessEnv} [env]
  */
 export function ledgerDir(env = process.env) {
-  return join(env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'state', 'turn-start-delivery');
+  return join(papercuspHome(env), 'state', 'turn-start-delivery');
 }
 
 /**

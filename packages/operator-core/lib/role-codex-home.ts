@@ -1,3 +1,4 @@
+import { papercuspPath } from '@papercusp/host-platform/home';
 /**
  * role-codex-home.ts — materialize a per-session CODEX_HOME for an
  * INTERACTIVE codex role session (psu --role=<role> --agent=codex).
@@ -749,7 +750,7 @@ export function writeCodexLockHooks(
     mcpUsesSuperuserToken?: boolean;
   } = {},
 ): boolean {
-  const dir = join(homedir(), '.papercusp', 'hooks', 'cc');
+  const dir = papercuspPath('hooks', 'cc');
   const pre = join(dir, 'pretooluse-locks-acquire.sh');
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
@@ -878,7 +879,7 @@ export function writeCodexLockHooks(
   // codex adapter's portForEvent. UserPromptSubmit -> turn-start,
   // PostToolUse -> mid-turn (PER CALL on codex — it has no batch event; D-002
   // §5 explains why the frozen array interface absorbs that).
-  const injectDispatcher = join(homedir(), '.papercusp', 'hooks', 'inject', 'index.mjs');
+  const injectDispatcher = papercuspPath('hooks', 'inject', 'index.mjs');
   const userPromptSubmit: CodexHook[] = [];
   const provenance = join(dir, 'userpromptsubmit-provenance.sh');
   if (opts.injectSid && existsSync(provenance)) {
@@ -1279,7 +1280,7 @@ function repairSuCodexHomeIdentityImpl(
         ['Stop', CODEX_TURN_JOURNAL_HOOK],
         ['UserPromptSubmit', 'userpromptsubmit-provenance.sh'],
       ].every(([event, script]) =>
-        !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', script)) ||
+        !existsSync(papercuspPath('hooks', 'cc', script)) ||
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
             (hook) =>
@@ -1297,7 +1298,7 @@ function repairSuCodexHomeIdentityImpl(
   // otherwise read as current, so a RESUMED su codex session would keep running
   // its shell without RTK. Gated on the script being installed, like the writer.
   const rtkRewriteHookMatches = (() => {
-    if (!hooksExpected || !existsSync(join(homedir(), '.papercusp', 'hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
+    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', CODEX_RTK_REWRITE_HOOK))) {
       return true;
     }
     try {

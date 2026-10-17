@@ -20,7 +20,7 @@ import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
 import { RetentionAllocationCounter, type RetentionHardlink } from './disk-consumer-census';
 import {
-  RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
+  retentionPolicyForWorkspaceRoot, compilePolicy, containsClassRoot, deletionClassFor,
   retentionRootSizeCap, buildDirsEligible, isBuildDirName, BUILD_DIR_NAMES, CACHEDIR_TAG_SIGNATURE,
   type CompiledPolicy, type RetentionClass, type RetentionPinProtection,
 } from './retention-policy';
@@ -92,9 +92,11 @@ export interface DiskReclaimReceipt {
   effects?: Array<{
     root: string; selected: number; processed: number; remaining: number;
     nextPath: string | null; elapsedMs: number; stopped: boolean;
-    /** Measured effect phases, including failed/incomplete checks. Progress
-     * writes, initial policy census and delegates are outside these counters. */
-    timings?: { initialHolderScanMs: number; freshHolderScanMs: number; reinspectionMs: number; removalMs: number; removalAuditMs: number };
+    /** Measured effect phases, including failed/incomplete checks. Initial
+     * policy census and delegates are outside these counters. New counters are
+     * optional when reading receipts written before their introduction. */
+    timings?: { initialHolderScanMs: number; freshHolderScanMs: number; reinspectionMs: number; removalMs: number; removalAuditMs: number;
+      progressRecordMs?: number; yieldWaitMs?: number; leaseReleaseMs?: number };
   }>;
 }
 export interface DiskReclaimOptions {
@@ -739,7 +741,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
   };
   const home = options.home ?? homedir();
-  const policy = compilePolicy(options.policy ?? RETENTION_POLICY, home);
+  const policy = compilePolicy(options.policy ?? retentionPolicyForWorkspaceRoot(), home);
   const sample = options.sample ?? (() => sampleDiskSnapshots(['/', '/mnt/data']));
   const scan = options.scanHolders ?? scanRetentionHolders;
   const snapshots = async (): Promise<DiskSnapshot[]> => {
@@ -960,12 +962,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         }
         const effectStarted = Date.now();
         let effectDeadline = Math.min(runDeadline, effectStarted + (options.effectBudgetMs ?? 60_000));
+        const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0,
+          progressRecordMs: 0, yieldWaitMs: 0, leaseReleaseMs: 0 };
         const yieldEffects = async function* () {
           const pausedMs = yield* yieldToWaiter();
+          timings.yieldWaitMs += pausedMs;
           budget.deadline += pausedMs;
           effectDeadline = Math.min(runDeadline, effectDeadline + pausedMs);
         };
-        const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 };
         const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
           nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false, timings };
         (receipt.effects ??= []).push(effect);
@@ -979,8 +983,9 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           effect.remaining = selected.length - effect.processed;
           effect.nextPath = selected[effect.processed]?.path ?? null;
           effect.elapsedMs = Math.max(0, Date.now() - effectStarted);
-          await outsideInspectionBudget(async () => options.record?.('progress', { ...effect }));
+          await measureEffect('progressRecordMs', () => outsideInspectionBudget(async () => options.record?.('progress', { ...effect })));
           lastProgressAt = Date.now();
+          effect.elapsedMs = Math.max(0, lastProgressAt - effectStarted);
         };
         const stopEffects = () => {
           if (Date.now() < effectDeadline) return false;
@@ -1103,7 +1108,8 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);
           } finally {
             if (regularLease) {
-              try { await regularLease.release(); }
+              const lease = regularLease;
+              try { await measureEffect('leaseReleaseMs', () => lease.release()); }
               catch (err) {
                 outcome.status = 'failed'; outcome.reason = `regular-file lease release: ${message(err)}`;
                 receipt.errors.push(`lease-release:${entry.path}: ${message(err)}`);

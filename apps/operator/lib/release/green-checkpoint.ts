@@ -246,6 +246,7 @@ import {
   type FrozenRepairFullGateTrigger,
   type FrozenRepairRoundExecution,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import { parseLegErrorKeys } from "@papercusp/operator-core/lib/release/case-level-signature";
 import {
   deriveTickFreezeDisposition,
   type FreezeAndConvergeDisposition,
@@ -6736,19 +6737,37 @@ export function partitionRepairSignatureEntries(
 export function repairSignatureFromVerdict(result: {
   failingTests?: readonly string[];
   postSuiteMeasured?: boolean;
-  postSuiteLegs?: readonly Pick<PostSuiteLegRecord, "id" | "status">[];
+  postSuiteLegs?: readonly (Pick<PostSuiteLegRecord, "id" | "status"> &
+    Partial<Pick<PostSuiteLegRecord, "errorKeys">>)[];
   typecheckPreflight?: { status: string } | null;
   /** P-016: whether the affected-test sweep ran. Round 1 runs it even after an early
    *  typecheck red, so the preflight status alone no longer answers this. */
   suiteMeasured?: boolean;
+  /** P-017: failed case names per failing test file, from the suite's own output. */
+  failingCasesByFile?: ReadonlyMap<string, readonly string[]> | null;
 }): {
   failingTests: string[];
   measuredKinds: RepairSignatureKind[];
   signatureContext: RepairSignatureContext;
+  /** P-017: carried onto each `test-file` entry, so a new failing case in an already red file
+   *  is a new failure. Plain object (not a Map) so it survives JSON persistence. */
+  casesByFile?: Record<string, string[]>;
+  /** P-017: per-error keys per red leg id, so a new error inside an already red lint leg is a
+   *  new failure. */
+  legErrors?: Record<string, string[]>;
 } {
-  const redLegIds = (result.postSuiteLegs ?? [])
-    .filter((leg) => leg.status === "failed")
-    .map((leg) => leg.id);
+  const redLegs = (result.postSuiteLegs ?? []).filter(
+    (leg) => leg.status === "failed",
+  );
+  const redLegIds = redLegs.map((leg) => leg.id);
+  const casesByFile: Record<string, string[]> = {};
+  for (const [file, cases] of result.failingCasesByFile ?? []) {
+    if (cases.length) casesByFile[file] = [...cases];
+  }
+  const legErrors: Record<string, string[]> = {};
+  for (const leg of redLegs) {
+    if (leg.errorKeys?.length) legErrors[leg.id] = [...leg.errorKeys];
+  }
   const failingTests = [
     ...new Set([...(result.failingTests ?? []), ...redLegIds]),
   ];
@@ -6771,6 +6790,10 @@ export function repairSignatureFromVerdict(result: {
       gateRegistry: NON_TEST_GATE_SCRIPTS,
       postSuiteLegIds: redLegIds,
     },
+    // Present = measured (even when empty); absent = not measured, so the queue keeps each
+    // entry's last measured detail instead of reading a missing list as a crash.
+    ...(suiteRan && result.failingCasesByFile ? { casesByFile } : {}),
+    ...(result.postSuiteMeasured === true ? { legErrors } : {}),
   };
 }
 
@@ -14775,6 +14798,7 @@ async function runGreenCheckpointInner(
           postSuiteLegs,
           typecheckPreflight,
           suiteMeasured,
+          failingCasesByFile,
         }),
         ...(!suiteMeasured
           ? {}
@@ -18411,6 +18435,10 @@ export interface PostSuiteLegRecord extends LegOutcome {
   id: string;
   /** Repo-relative failing paths captured from full command output before tailing. */
   subjectPaths?: string[];
+  /** P-017 (R-14): one `<file>|<TS code or lint rule>` key per error in a FAILED leg, parsed
+   *  from the full command output before tailing (`parseLegErrorKeys`). Absent when the leg
+   *  passed or its output had no recognised error rows (the leg is then keyed on its id). */
+  errorKeys?: string[];
   /** End-to-end wall time for this logical leg. Parallel subcommands use their union span. */
   durationMs: number;
   executionIdentity?: {
@@ -19799,6 +19827,10 @@ export async function runPostSuiteLegs(
       .map((command) => command.stdout + "\n" + command.stderr)
       .join("\n");
     const output = fullOutput.slice(-2000);
+    // P-017 (R-14): one key per typecheck / lint error, read from the FULL output — the
+    // stored `output` keeps only the tail, and keying on a tail would drop errors that a later
+    // round then reports as new.
+    const errorKeys = outcome.status === "failed" ? parseLegErrorKeys(fullOutput) : [];
     const subjectPaths = outcome.status === "failed"
       ? [...new Set(commands.filter((command) => command.code !== 0).flatMap((command) =>
           extractSubjectPathsFromLegOutput(
@@ -19817,6 +19849,7 @@ export async function runPostSuiteLegs(
       status: outcome.status,
       durationMs,
       ...(subjectPaths.length ? { subjectPaths } : {}),
+      ...(errorKeys.length ? { errorKeys } : {}),
       ...(outcome.skipReason ? { skipReason: outcome.skipReason } : {}),
       ...(identity
         ? {

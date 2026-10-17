@@ -1176,7 +1176,7 @@ describe('retention on a real fixture tree', () => {
       const receipt = await runDiskReclaimOnce({ ...options,
         record: async (phase) => {
           if (phase === 'remove-intent' || phase === 'removed') { clock += 7; intent = true; }
-          else clock += 1000; // Progress/receipt persistence is outside the named counters.
+          else clock += 1000;
         },
         scanHolders: async () => {
           clock += intent ? 30 : 20;
@@ -1186,10 +1186,47 @@ describe('retention on a real fixture tree', () => {
       expect(receipt.complete).toBe(complete);
       expect(reinspectionMs).toBeGreaterThan(0);
       expect(receipt.effects?.[0]?.timings).toEqual({ initialHolderScanMs: 20, freshHolderScanMs: 30,
-        reinspectionMs, removalMs: 0, removalAuditMs: complete ? 14 : 7 });
+        reinspectionMs, removalMs: 0, removalAuditMs: complete ? 14 : 7,
+        progressRecordMs: 2000, yieldWaitMs: 0, leaseReleaseMs: 0 });
       expect(receipt.entries[0]?.status).toBe(complete ? 'removed' : 'protected');
       if (complete) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
       else expect(await readFile(path, 'utf8')).toBe('expired');
+    } finally { now.mockRestore(); }
+  });
+  it.each([false, true])('attributes progress and regular-file lease release time, including a failed release (%s)', async (releaseFails) => {
+    const { root, options } = await setup(); const path = join(root, 'timed-lease'); await writeFile(path, 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options,
+        record: async phase => { if (phase === 'progress') clock += 11; },
+        acquireRegularFileLease: async () => ({ release: async () => {
+          clock += 37;
+          if (releaseFails) throw new Error('fixture release failure');
+        } }),
+      });
+      expect(receipt.complete).toBe(!releaseFails);
+      expect(receipt.effects?.[0]).toMatchObject({ elapsedMs: 59, timings: {
+        progressRecordMs: 22, yieldWaitMs: 0, leaseReleaseMs: 37,
+      } });
+      expect(receipt.entries[0]?.status).toBe(releaseFails ? 'failed' : 'removed');
+      if (releaseFails) expect(receipt.errors).toContain(`lease-release:${path}: fixture release failure`);
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { now.mockRestore(); }
+  });
+  it('keeps regular-file lease release time charged to the effect budget', async () => {
+    const { root, options } = await setup();
+    for (const name of ['old-a', 'old-b']) await writeFile(join(root, name), 'expired');
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, effectBudgetMs: 30,
+        acquireRegularFileLease: async () => ({ release: async () => { clock += 40; } }),
+      });
+      expect(receipt.complete).toBe(false);
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, stopped: true,
+        timings: { leaseReleaseMs: 40 } });
+      expect(receipt.entries.filter(entry => entry.status === 'removed')).toHaveLength(1);
     } finally { now.mockRestore(); }
   });
   it('charges durable intent waits to the effect budget before launching another safety check', async () => {
@@ -1230,26 +1267,31 @@ describe('retention on a real fixture tree', () => {
     const finishRemoval = new Promise<void>((resolve) => { finish = resolve; });
     const waiting = new Promise<void>((resolve) => { queued = resolve; });
     const delegate = vi.fn(async () => ({ ok: true, detail: 'fixture owner' }));
-    const reclaim = runDiskReclaimOnce({ ...options, policy, delegates: [{ classId: 'fixture-owner', run: delegate }],
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const reclaim = runDiskReclaimOnce({ ...options, policy, effectBudgetMs: 100, delegates: [{ classId: 'fixture-owner', run: delegate }],
       removeEntry: async (entry) => { entered(); await finishRemoval; await rm(entry.path); } });
     await removing;
     let peerEntered = false;
-    const peer = withFsMutex('papercusp-disk-retention', async () => { peerEntered = true; },
+    const peer = withFsMutex('papercusp-disk-retention', async () => { peerEntered = true; clock += 250; },
       { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
     try {
-      await waiting;
-      expect(peerEntered).toBe(false);
-    } finally { finish(); }
-    const receipt = await reclaim;
-    await peer;
-    expect(peerEntered).toBe(true);
-    expect(receipt.complete).toBe(true); expect(receipt.policyExhausted).toBe(true);
-    expect(receipt.errors).toEqual([]);
-    expect(receipt.entries.filter((entry) => entry.status === 'removed')).toHaveLength(2);
-    expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 8192, afterBytes: 0, overByBytes: 0 });
-    expect(receipt.effects?.[0]).toMatchObject({ processed: 2, remaining: 0, stopped: false });
-    expect(delegate).toHaveBeenCalledOnce();
-    for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      try {
+        await waiting;
+        expect(peerEntered).toBe(false);
+      } finally { finish(); }
+      const receipt = await reclaim;
+      await peer;
+      expect(peerEntered).toBe(true);
+      expect(receipt.complete).toBe(true); expect(receipt.policyExhausted).toBe(true);
+      expect(receipt.errors).toEqual([]);
+      expect(receipt.entries.filter((entry) => entry.status === 'removed')).toHaveLength(2);
+      expect(receipt.caps?.[0]).toMatchObject({ beforeBytes: 8192, afterBytes: 0, overByBytes: 0 });
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 2, remaining: 0, stopped: false,
+        timings: { yieldWaitMs: 250 } });
+      expect(delegate).toHaveBeenCalledOnce();
+      for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { finish(); now.mockRestore(); }
   });
   it.each(['pin', 'lease'] as const)('refreshes a new %s after a FIFO handoff without repeating the census', async (kind) => {
     const { root, options } = await setup();
