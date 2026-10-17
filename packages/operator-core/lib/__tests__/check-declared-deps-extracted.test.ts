@@ -528,14 +528,14 @@ describe('runtime-content probes catch partial packages that directory checks ca
         },
       },
       extracted: {
-        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web'],
+        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons'],
       },
     });
     writeFileSync(
       join(root, 'package-lock.json'),
       JSON.stringify({
         packages: Object.fromEntries(
-          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web'].map(
+          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons'].map(
             (name) => [`node_modules/${name}`, {}],
           ),
         ),
@@ -572,6 +572,9 @@ describe('runtime-content probes catch partial packages that directory checks ca
     );
     writePackage('rocksdb-native', { type: 'module', exports: './binding.js' });
     writePackage('onnxruntime-web', { type: 'module', exports: './dist/ort.node.min.mjs' });
+    writePackage('react-icons', { exports: { './ai': './ai/index.mjs' } }, {
+      'ai/index.mjs': "export { IconBase } from '../lib/index.mjs';",
+    });
 
     const failures = findUnusableRuntimeDeps({ repoRoot: root }) as RuntimeProbeFailure[];
     expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
@@ -602,6 +605,34 @@ describe('runtime-content probes catch partial packages that directory checks ca
     ]);
 
     writeFileSync(join(dir, 'dist/ort.node.min.mjs'), 'export const env = {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+  });
+
+  it('detects a missing shared icon ESM payload despite a working CommonJS icon set', () => {
+    const root = fixture({
+      packages: { 'apps/ui': { dependencies: { 'react-icons': '*' } } },
+      extracted: { '': ['react-icons'] },
+    });
+    writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+      packages: { 'node_modules/react-icons': { version: '5.6.0' } },
+    }));
+    const dir = join(root, 'node_modules/react-icons');
+    mkdirSync(join(dir, 'ai'));
+    mkdirSync(join(dir, 'lib'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'react-icons', version: '5.6.0',
+      exports: { './ai': { import: './ai/index.mjs', require: './ai/index.js' } },
+    }));
+    writeFileSync(join(dir, 'ai/index.js'), 'module.exports = {};');
+    writeFileSync(join(dir, 'ai/index.mjs'), "export { IconBase } from '../lib/index.mjs';");
+    execFileSync(process.execPath, ['-e', "require('react-icons/ai')"], { cwd: root });
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(resolveRuntimeContentProbes(root)).toEqual(['react-icons/ai']);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      { specifier: 'react-icons/ai', detail: expect.stringMatching(/ERR_MODULE_NOT_FOUND.*lib\/index\.mjs/),
+        code: 'ERR_MODULE_NOT_FOUND', missingPath: join(dir, 'lib/index.mjs') },
+    ]);
+    writeFileSync(join(dir, 'lib/index.mjs'), 'export const IconBase = {};');
     expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
   });
 

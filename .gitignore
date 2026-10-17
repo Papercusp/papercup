@@ -17,6 +17,10 @@ node_modules.old*/
 # sweep those transient files into the source tree while a rename is in flight.
 apps/operator/scripts/hooks/cc/*.tmp*
 
+# Runtime mirrors stage atomic asset replacements at the caller's package root.
+# Git-sync must not enumerate these files while the producer renames them away.
+.mirror-tree.tmp.*
+
 .next/
 .next-prod/
 .next-build-cache/

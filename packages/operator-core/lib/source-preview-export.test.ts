@@ -1399,6 +1399,24 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent file');
   });
 
+  it('refuses incomplete icon ESM content before verifier input admission and accepts restored content', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-incomplete-icon-content'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    write(fixture.repo, 'package-lock.json', JSON.stringify({
+      packages: { 'node_modules/react-icons': { version: '5.6.0' } },
+    }));
+    write(fixture.repo, 'node_modules/react-icons/package.json', JSON.stringify({
+      name: 'react-icons', exports: { './ai': './ai/index.mjs' },
+    }));
+    write(fixture.repo, 'node_modules/react-icons/ai/index.mjs', "export { IconBase } from '../lib/index.mjs';");
+    const args = ['verifier-inputs-check', '--repo', fixture.repo, '--ref', fixture.commit, '--inputs', input];
+    await expect(runCli(args)).rejects.toThrow(/RUNTIME_DEPS_UNUSABLE[\s\S]*react-icons\/ai/);
+    write(fixture.repo, 'node_modules/react-icons/lib/index.mjs', 'export const IconBase = {};');
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try { expect(await runCli(args)).toBe(0); }
+    finally { output.mockRestore(); }
+  });
+
   it('checks committed inputs without allocating a snapshot and rejects later source edits', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-input-check-fixture'));
     const input = SHIPPED.find((p) => p.startsWith('apps/'))!;

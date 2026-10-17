@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-537",
+  "workItem": "WI-6554700010015799",
+  "status": "incomplete",
+  "scope": "Private actual hosted serve artifact, genuine WorkOS TEST identity; not production rollout, cloud provisioning, cost qualification or final source-to-serving parity",
+  "artifact": {
+    "path": "/tmp/p537-hosted-serving-20261017/serve.mjs",
+    "sha256": "9a3fa4a5ee4ea3dc69fbe636bd235c7358f3beba1ddc0dac327395c94608c9ba",
+    "metafile": "/tmp/p537-hosted-serving-20261017/serve.mjs.meta.json",
+    "buildLog": "/tmp/p537-hosted-serving-build-20261017.log",
+    "buildExited": 0,
+    "syntaxCheckPassed": true,
+    "completeInputByteBinding": "not measured"
+  },
+  "attempts": [
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017.log",
+      "result": "failed before credential resolution",
+      "cause": "Source loader refused untracked child fixture; fixture subsequently committed by background sync"
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run2.log",
+      "result": "failed before identity or private runtime creation",
+      "cause": "tsx dynamic import exposes launcher CommonJS exports under default; fixed by merging default and named exports",
+      "diagnostic": "/tmp/p537-credential-diagnostic.jsonl",
+      "correctedReadOnlyPreflight": "/tmp/p537-credential-diagnostic2.jsonl"
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run3.log",
+      "evidenceDirectory": "/tmp/pcv/p537-hosted-serving-proof-zEc5x8",
+      "result": "failed at new test's admission error-shape assertion",
+      "cause": "HTTP status was the expected 403; hosted-browser-context.jsonError emits error:string, while the new fixture asserted error.code",
+      "configuration": "Separately verified read-only secret resolution passed in memory; source loader remained enabled, committed fixture acceptance branch executed",
+      "verified": {
+        "hostedBranchListening": true,
+        "jsonHealth": true,
+        "malformedPolicyStartupRefused": true,
+        "missingSession401": true,
+        "localOperatorRoute404": true,
+        "genuineWorkOSTestSession200": true,
+        "organizationMatches": true,
+        "sessionIdMatches": true,
+        "admissionStatus403": true,
+        "hostStopped": true,
+        "privateRuntimeRemoved": true,
+        "privatePostgresRemoved": true,
+        "lifetimeObservationError": null
+      },
+      "userCleanup": "finally awaited fixture cleanup and close without a cleanup AggregateError; no independent provider census",
+      "unmeasured": [
+        "successful admission error-code assertion",
+        "revoked session 401",
+        "provision operation count delta",
+        "final successful test receipt"
+      ]
+    }
+  ],
+  "typecheck": {
+    "evidence": "/tmp/p537-hosted-serving-typecheck-final-local.json",
+    "requestedFileErrors": 0,
+    "otherLoadedGraphDiagnostics": 30,
+    "scope": "Both new files after credential fix, before final admission assertion and cleanup receipt edits"
+  },
+  "remaining": [
+    "Commit corrected response assertion through background git-sync, retaining source loader safety",
+    "Run maintained opted-in test through revocation, zero provision delta and successful cleanup",
+    "Verify final source and artifact provenance separately from private runtime behavior",
+    "P544 D075 and D076 qualification and final shipment remain open"
+  ]
+}

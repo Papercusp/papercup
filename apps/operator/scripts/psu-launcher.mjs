@@ -11888,6 +11888,19 @@ export async function reportSessionPortLaunchFailure(
   );
 }
 
+// Old installed shims and host-adoption envelopes can still carry the
+// launcher's Node inspector publication option. It is not a native-backend
+// setting: Claude 2.1.293 exits 1 without output when it inherits it, while
+// --version misleadingly succeeds. Preserve other Node options and the parent
+// launcher's own environment (WI-6554700010016842).
+function stripLauncherInspectorOption(env) {
+  if (typeof env.NODE_OPTIONS !== "string") return;
+  const clean = env.NODE_OPTIONS.replace(/(?:^|\s)--inspect-publish-uid=\S+/g, "").trim();
+  if (clean === env.NODE_OPTIONS) return;
+  if (clean) env.NODE_OPTIONS = clean;
+  else delete env.NODE_OPTIONS;
+}
+
 /** EI-8868/EI-8877: strip inherited `npm run`-lifecycle env pollution before it
  *  reaches an agent child. This box's long-lived gnome-terminal-server (every
  *  terminal window is forked from ONE persistent daemon, inheriting whatever
@@ -11918,6 +11931,7 @@ export async function reportSessionPortLaunchFailure(
  * only the credential source selected for this child. */
 export function sanitizeInheritedEnv(env) {
   const out = stripRecoveryMarkers(env);
+  stripLauncherInspectorOption(out);
   delete out.PAPERCUSP_ORIGINAL_CODEX_ROUTING;
   delete out[SCOPED_INFERENCE_GATEWAY_ENV];
   // Only this host's explicit code-adoption envelope may carry its slot. A
@@ -12791,6 +12805,9 @@ export function runWrapper(options) {
     );
   }
   const launchNative = () => {
+  // Reapply after the explicit envelope and any host handoff. A successor can
+  // adopt an environment captured by an older launcher/shim.
+  stripLauncherInspectorOption(env);
   const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
   args = prepareCodexGatewayLaunch(env, args);
   if (env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined && !managedPtyEnabled) {

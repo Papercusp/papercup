@@ -43,6 +43,7 @@ import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalFollowupDecline, na
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRefused } from '../su-session-attached-live-rate-limit';
+import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { isClaudeConfigDirLaunchReady, sessionProcessHolder, sessionTranscriptFile } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
@@ -187,6 +188,21 @@ vi.mock('../su-session-claude-engine', async (original) => {
           strictMcp: sdkOptions.strictMcpConfig === true,
           hooksOff: typeof sdkOptions.settings === 'object' && sdkOptions.settings?.disableAllHooks === true,
         });
+        // This peer stands in for an already configured native installation.
+        // Its private HOME has no user .claude.json for bootstrap to mirror;
+        // leave the same ready configuration that seeded sessions provide so
+        // the real resume guard can validate it. Never replace an existing
+        // config (including a dangling link) or write outside this fixture.
+        const configDir = sdkOptions.env?.CLAUDE_CONFIG_DIR;
+        if (!configDir) throw new Error('Scripted Claude requires a private configuration directory');
+        const relativeConfig = path.relative(home, configDir);
+        expect(path.isAbsolute(relativeConfig) || relativeConfig.startsWith('..'),
+          'scripted Claude configuration escaped the fixture').toBe(false);
+        const configFile = path.join(configDir, '.claude.json');
+        if (!existsSync(configFile)) {
+          writeFileSync(configFile, JSON.stringify({ mcpServers: {} }), { flag: 'wx' });
+        }
+        expect(isClaudeConfigDirLaunchReady(configDir), 'scripted native configuration is resumable').toBe(true);
         // The real SDK launches the native CLI through this hook, and it is the
         // ONLY place the engine learns its pid (su-session-claude-engine.ts
         // `spawnClaudeCodeProcess`). Resume readiness refuses a null pid
@@ -210,7 +226,6 @@ vi.mock('../su-session-claude-engine', async (original) => {
         // Real Claude appends every native line to its per-session JSONL as it
         // goes, and exact resume (su-session-resume.ts) requires that file. An
         // engine that never received the prompt leaves none.
-        const configDir = sdkOptions.env?.CLAUDE_CONFIG_DIR;
         const persist = (line: Record<string, unknown>) => {
           if (!configDir || !nativeId) return;
           mkdirSync(path.join(configDir, 'projects', 'pui-e2e'), { recursive: true });
@@ -1841,6 +1856,7 @@ beforeAll(async () => {
     'PAPERCUSP_WORKSPACES_ROOT',
     'PAPERCUSP_SERVE_UI',
     'PAPERCUSP_HONO_PORT',
+    'OPERATOR_DEV_PORT',
     'PAPERCUSP_OPERATOR_URL',
     'PAPERCUSP_MCP_PROXY_BASE',
     'PAPERCUSP_LAUNCH_CONTEXT_DIR',
@@ -2256,11 +2272,17 @@ beforeAll(async () => {
   // Native lifecycle hooks and MCP must rendezvous with this isolated host,
   // never the developer's inherited live/staging endpoint or shared proxy.
   process.env.PAPERCUSP_HONO_PORT = String(operatorPort);
+  // with-test-pg supplies a closed runtime port here. The production spawn
+  // resolver gives it precedence over HONO_PORT, including on resume's
+  // configuration and archive calls, so rebind both host identities.
+  process.env.OPERATOR_DEV_PORT = String(operatorPort);
   process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${operatorPort}`;
   process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${operatorPort}`;
   // Fail at the actual rendezvous boundary instead of spending every PTY
   // timeout on a fixture operator that the installed client cannot identify.
-  const identityResponse = await fetch(`http://127.0.0.1:${operatorPort}/api/tui/identity`);
+  const spawnHostUrl = resolveSpawnHostOperatorBaseUrl();
+  expect(new URL(spawnHostUrl).port, 'native lifecycle calls use the fixture operator').toBe(String(operatorPort));
+  const identityResponse = await fetch(`${spawnHostUrl}/api/tui/identity`);
   const identity = await identityResponse.json();
   expect(identityResponse.status, JSON.stringify(identity)).toBe(200);
   expect(identity).toMatchObject({

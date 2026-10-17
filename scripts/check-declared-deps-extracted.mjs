@@ -80,6 +80,9 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   '@lydell/node-pty',
   'rocksdb-native',
   'onnxruntime-web',
+  // The SPA uses the ESM icon-set entrypoint. CommonJS and package.json can
+  // survive a partial extraction while its shared lib/index.mjs is missing.
+  'react-icons/ai',
 ]);
 
 export function packageNameFromSpecifier(specifier) {

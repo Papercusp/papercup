@@ -1718,12 +1718,17 @@ export async function writeShim(
   // default publish destinations include stderr, which appends a debugger URL
   // directly to an interactive TUI. Keep the diagnostic endpoint available
   // over loopback HTTP while leaving an explicit caller setting untouched.
+  // This is a LAUNCHER argv option, never an exported NODE_OPTIONS addition:
+  // native Claude 2.1.293 silently exits 1 at startup when it inherits that
+  // Node-only option, even though its --version probe succeeds (WI-6554700010016842).
   const terminalSafeInspector = label === 'superuser launcher (psu)'
-    ? 'case " ${NODE_OPTIONS:-} " in\n' +
+    ? 'psu_inspector_args=()\n' +
+      'case " ${NODE_OPTIONS:-} " in\n' +
       "  *' --inspect-publish-uid='*) ;;\n" +
-      '  *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--inspect-publish-uid=http" ;;\n' +
+      '  *) psu_inspector_args=(--inspect-publish-uid=http) ;;\n' +
       'esac\n'
     : '';
+  const inspectorArgv = terminalSafeInspector ? ' "${psu_inspector_args[@]}"' : '';
   const body =
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
@@ -1770,7 +1775,7 @@ export async function writeShim(
     'launcher="$(resolve_launcher)" || exit $?\n' +
     `printf '%s\\n' ${shellLiteral(`papercusp ${label}: launcher`)} "$launcher" >&2\n` +
     (runtime.reexecExitCode == null
-      ? `exec ${shellLiteral(nodeCmd)} "$launcher" "$@"\n`
+      ? `exec ${shellLiteral(nodeCmd)}${inspectorArgv} "$launcher" "$@"\n`
       : // WI-38292 re-exec loop. NOT `exec`: bash must survive the swap so the
         // terminal's foreground process group outlives it (see reexecExitCode).
         // The launcher is RE-RESOLVED each pass — picking up new code is the
@@ -1790,7 +1795,7 @@ export async function writeShim(
         // Capability is advertised on every pass; only passes after exit 87
         // have a predecessor handoff to recover. Overwrite inherited markers.
         '  export PAPERCUSP_PSU_REEXEC_COUNT="$psu_reexecs"\n' +
-        `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
+        `  ${shellLiteral(nodeCmd)}${inspectorArgv} "$launcher" "$@"\n` +
         '  psu_code=$?\n' +
         `  [ "$psu_code" -eq ${runtime.reexecExitCode} ] || exit "$psu_code"\n` +
         // EI-20994934425970874: kickoff is a ONE-SHOT launch input. The shim's

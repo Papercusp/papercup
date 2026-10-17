@@ -4842,6 +4842,10 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     markAccepted(id: any): void;
     size(): number;
 };
+/** A re-armed wake can retry a known pre-write refusal, never an uncertain write. */
+export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?: {
+    submittedToCurrentChild?: boolean | undefined;
+}): any;
 /** Decide how the detached host pipeline settles one delivery ID.
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay

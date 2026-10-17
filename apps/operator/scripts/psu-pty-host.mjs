@@ -6731,9 +6731,12 @@ export function encodeControl({ mode, data, ...extra }) {
 
 /** Content identity survives a sender accidentally rebuilding the wrong envelope. */
 export function continuationIdentityRefusal(message, ownerId) {
-  if (message.mode !== 'carry-respawn' && message.mode !== 'turn') return null;
+  if (!['carry-respawn', 'turn', 'launch-kickoff'].includes(message.mode)) return null;
   const text = typeof message.data === 'string' ? message.data : '';
-  const body = text.replace(/^\s*⟦turn-origin:[^\n]*⟧\s*\n/, '').trimStart();
+  // Claude records a whole pasted prompt inside a paired pasted_content block.
+  // Reuse the native transcript parser so wrapped continuation headers are
+  // checked with the same envelope grammar as marker verification.
+  const body = unwrapWholePaste(text).replace(/^\s*⟦turn-origin:[^\n]*⟧\s*\n/, '').trimStart();
   const addressed = /^ADDRESSED TO\s+([^\s]+)\s+[—-]/.exec(body)?.[1];
   if (!addressed || addressed === ownerId) return null;
   return { ok: false, reason: 'continuation-owner-mismatch', expected: ownerId, got: addressed };
@@ -9415,6 +9418,24 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
       return entries.size;
     },
   };
+}
+
+const PREWRITE_WAKE_TURN_RETRY_REASONS = new Set([
+  'carry-respawn-pending',
+  'native-turn-start-pending',
+  'successor-native-id-missing',
+  // This check runs before injectTurnAtPrompt writes any bytes. A Codex quota
+  // recovery can replace the child and clear the latch, after which the same
+  // accepted wake may safely make its first submission.
+  'submit-verification-aborted-quota-blocked',
+]);
+
+/** A re-armed wake can retry a known pre-write refusal, never an uncertain write. */
+export function rearmWakeTurnOutcome(outcome, { submittedToCurrentChild = false } = {}) {
+  return !outcome?.delivered && !submittedToCurrentChild &&
+    PREWRITE_WAKE_TURN_RETRY_REASONS.has(outcome?.reason)
+    ? { ...outcome, retryable: true }
+    : outcome;
 }
 
 /** Decide how the detached host pipeline settles one delivery ID.
@@ -12542,6 +12563,17 @@ export function hostThroughPty(o) {
       let kickoffChild = child;
       let kickoffSubmittedAtMs = null;
       const injectLaunchKickoff = () => {
+        const identityRefusal = continuationIdentityRefusal({
+          mode: 'launch-kickoff',
+          data: launchKickoff,
+        }, ownerId);
+        if (identityRefusal) {
+          appendHostEvent(ownerId, 'launch-kickoff-rejected', {
+            ...identityRefusal,
+            mode: 'launch-kickoff',
+          });
+          throw new Error(`launch kickoff refused: ${identityRefusal.reason}`);
+        }
         // Keep proof and preparation tied to the child that this kickoff
         // submitted to. A same-host respawn can replace the mutable `child`
         // binding while the native proof is still settling.
@@ -13446,6 +13478,7 @@ export function hostThroughPty(o) {
         const nativeProofAvailable = Boolean(marker) &&
           nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
         let nativeSubmission = null;
+        let submittedTurn = null;
         const outcome = await injectTurnAtPrompt({
           text,
           label: 'turn re-arm',
@@ -13453,6 +13486,7 @@ export function hostThroughPty(o) {
           terminateOnSubmitVerifyExhaustion: false,
           submitVerificationRequired: true,
           onSubmitted: (submission) => {
+            submittedTurn = submission;
             if (nativeProofAvailable) nativeSubmission = { ...submission, marker, submissionOnly: true,
               submissionRecovery: pendingSubmissionRecovery(submission.submittedAtMs, submission.composerGenerationAtWrite) };
           },
@@ -13478,10 +13512,9 @@ export function hostThroughPty(o) {
         // A child can finish binding after a quiet repaint gap. Keep the
         // already-accepted delivery pending until that exact binding exists;
         // missing identity cannot authorize a write or retire its witness.
-        return !outcome.delivered &&
-          ['carry-respawn-pending', 'native-turn-start-pending', 'successor-native-id-missing'].includes(outcome.reason)
-          ? { ...outcome, retryable: true }
-          : outcome;
+        return rearmWakeTurnOutcome(outcome, {
+          submittedToCurrentChild: submittedTurn?.child === child,
+        });
       }
       return recycleChild(message?.data, {
         systemPromptAddendum: message?.systemPromptAddendum ?? '',

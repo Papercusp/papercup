@@ -166,9 +166,11 @@ async function acceptance() {
       headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify({
         attemptKey: 'p537-private-serving-0123456789', displayName: 'Private acceptance', label: 'Private acceptance',
         hosting: 'papercusp', organizationId: randomUUID(), quotas: { 'pool.hosts': 999999 } }) });
-    assert.equal(closed.status, 403);
-    assert.equal((await closed.json()).error.code, 'first_workspace_not_enabled');
     receipt.closedAdmissionStatus = closed.status;
+    const closedBody = await closed.json();
+    receipt.closedAdmissionError = closedBody.error;
+    assert.equal(closed.status, 403);
+    assert.equal(closedBody.error, 'first_workspace_not_enabled');
     await user.cleanup('P537 private serving acceptance complete');
     user = undefined;
     receipt.testUserCleaned = true;
@@ -180,7 +182,9 @@ async function acceptance() {
     assert.equal(sha(readFileSync(artifact)), bundleSha256, 'artifact must remain unchanged through requests');
   } finally {
     const failures: unknown[] = [];
-    for (const clean of [async () => { if (user) await user.cleanup('P537 failed acceptance cleanup'); },
+    for (const clean of [async () => { if (user) {
+      await user.cleanup('P537 failed acceptance cleanup'); receipt.testUserCleaned = true;
+    } },
       async () => { await kit?.close(); }, ...processes.map(child => async () => stop(child)),
       async () => { await sql.end({ timeout: 5 }); }]) {
       try { await clean(); } catch (error) { failures.push(error); }

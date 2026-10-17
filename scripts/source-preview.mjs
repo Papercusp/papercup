@@ -63,6 +63,7 @@ import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 import { runTreeRestrictedHoldPreflight, formatTreeRestrictedHoldRefusal,
   RESTRICTED_HOLD_PREFLIGHT_ENV, RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } from './lib/restricted-hold-preflight.mjs';
 import { applyEnvLocal, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
+import { findUnusableRuntimeDeps, formatRuntimeFailures } from './check-declared-deps-extracted.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -2220,8 +2221,13 @@ async function main(argv) {
     if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
       throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);
     }
-    console.log(JSON.stringify(await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
-      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true })));
+    const result = await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true });
+    // This command runs inside the private dependency snapshot before the
+    // native child. A stable census alone cannot detect an incomplete donor.
+    const failures = findUnusableRuntimeDeps({ repoRoot: opts.repo });
+    if (failures.length) throw new PreviewError(formatRuntimeFailures(failures), 2);
+    console.log(JSON.stringify(result));
     return 0;
   }
   if (cmd === 'verifier-measure') {

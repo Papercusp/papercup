@@ -8326,7 +8326,7 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
 
   function harness({
     promptResults = [{ deferred: false }] as Array<{ deferred: boolean }>,
-    deliver = async (): Promise<{ delivered: boolean; reason?: string }> => ({ delivered: true }),
+    deliver = async (): Promise<{ delivered: boolean; reason?: string; retryable?: boolean }> => ({ delivered: true }),
     waitWakeModeRetry = async () => {},
   } = {}) {
     const events: Ev[] = [];
@@ -8400,6 +8400,38 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
     expect(h.events.filter((e) => e.kind === 'wake-rearm-dropped')).toEqual([]);
     expect(h.events.filter((e) => e.kind === 'wake-rearm-delivered')).toEqual([
       expect.objectContaining({ deliveryIds: ['d-carry-order'] }),
+    ]);
+    expect(unjoined(h.events)).toEqual([]);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('retries a pre-write quota refusal once and does not retry the same verdict after a write', async () => {
+    const quotaRefusal = {
+      delivered: false,
+      reason: 'submit-verification-aborted-quota-blocked',
+    };
+    expect(realHost.rearmWakeTurnOutcome(quotaRefusal)).toEqual({ ...quotaRefusal, retryable: true });
+    expect(realHost.rearmWakeTurnOutcome(quotaRefusal, { submittedToCurrentChild: true })).toBe(quotaRefusal);
+    const nativeUnverified = { delivered: false, reason: 'native-turn-start-unverified' };
+    expect(realHost.rearmWakeTurnOutcome(nativeUnverified, { submittedToCurrentChild: true })).toBe(nativeUnverified);
+
+    let deliveries = 0;
+    const h = harness({
+      waitWakeModeRetry: async () => {},
+      deliver: async () => {
+        deliveries += 1;
+        return deliveries === 1
+          ? realHost.rearmWakeTurnOutcome(quotaRefusal)
+          : { delivered: true, reason: 'delivered' };
+      },
+    });
+    expect(h.controller.schedule({ mode: 'turn', data: 'loop wake', deliveryId: 'd-quota-prewrite' })).toBe('queued');
+    await h.drain();
+
+    expect(deliveries).toBe(2);
+    expect(h.events.filter((e) => e.kind === 'wake-rearm-dropped')).toEqual([]);
+    expect(h.events.filter((e) => e.kind === 'wake-rearm-delivered')).toEqual([
+      expect.objectContaining({ deliveryIds: ['d-quota-prewrite'] }),
     ]);
     expect(unjoined(h.events)).toEqual([]);
     expect(h.controller.pendingCount()).toBe(0);
