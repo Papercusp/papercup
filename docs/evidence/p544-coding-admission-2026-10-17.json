@@ -11,8 +11,8 @@
   "additionalPriorCpuGuestReserveUsd": 3,
   "additionalPriorCpuGuest": "cap-p544-cpu-1017",
   "additionalReserveBasis": "Keep the full previous reservation. Add a separate padded allowance for the later two-hour 4vCPU/8GiB CPU guest, its 32GiB boot disk, IPv4, transfer and uncertainty. No model workload ran on that guest according to the saved P544 checkpoint. This is an allowance, not a measured charge. The previous cold guest starts/resize retain its existing full two-hour larger-shape reserve and fixed original deadline.",
-  "totalReservedUsd": 171.5,
-  "remainingConservativeHeadroomUsd": 28.5,
+  "totalReservedUsd": 174.3732,
+  "remainingConservativeHeadroomUsd": 25.6268,
   "reservationWriterSemantics": {
     "source": "scripts/agent-capacity/gcp-rails.ts",
     "worstCaseCents": "Requested compute and provisioned disks/performance over maximum lifetime, rounded up to cents; writer of papercusp-maxcost-cents VM label",
@@ -90,6 +90,77 @@
       "meaning": "Arithmetic only. No inference/VM commitment made. Thirty-two attempts are not proven sufficient for the pinned TS/Python 40/40/20 corpus; incomplete tasks cannot qualify D075/D076. Refresh census again immediately before any create."
     },
     "preparation": "Pinned clean dependency checkouts exist under the old home cache; maintained shared-host recorder requires mounted /mnt/data/agent-capacity/prepared, currently absent. Prepare using pc-heavy and existing copyTree/storage admission."
+  },
+  "preparedDependencies20261017": {
+    "classification": "Local preparation only; no model, cloud capacity or monthly cost acceptance",
+    "root": "/mnt/data/agent-capacity/prepared",
+    "storage": "Mounted data device 66304 differs from root device 66307; cache root provisioned uid/gid 1000, mode 0755 and verified writable",
+    "provisioningIssue": "EI-26231924907241440",
+    "rootCause": "The default cache root did not exist and its mounted /mnt/data parent was root-owned mode 0755. The maintained copy helper correctly refused mkdir before copying. Provisioned the intended cache root for marsh-office without changing /mnt/data ownership.",
+    "copy": "Existing session-process.copyTree under scripts/pc-heavy.sh; absent destinations checked before copying, storage guard retained",
+    "copyLog": "/tmp/p544-prepared-copy-20261017-v2.log",
+    "originalRefusalLog": "/tmp/p544-prepared-copy-20261017.log",
+    "repos": [
+      {
+        "name": "excalidraw",
+        "head": "35e854ecf7a1ace3467922965ce07ec1a6f0ea54",
+        "clean": true,
+        "dependencyCheck": "typescript and vitest resolve inside the copied node_modules"
+      },
+      {
+        "name": "mealie",
+        "head": "7e03d041d7571e8b2a918140fcf9237f2d7a903d",
+        "clean": true,
+        "setup": "uv sync --frozen --project /mnt/data/agent-capacity/prepared/mealie, admitted through scripts/pc-heavy.sh",
+        "setupLog": "/tmp/p544-mealie-sync-20261017.log",
+        "dependencyCheck": "Python 3.14.7 prefix, mealie source and pytest import paths resolve inside the data copy; editable package rebuilt from old home path"
+      }
+    ],
+    "recurrenceGuard": "Existing assertCapacityStorage refuses root-filesystem destinations and copyTree propagates mkdir/copy failure; explicit write-access preflight verified the provisioned cache before this copy. No bypass of storage or host admission."
+  },
+  "modelRoutePilot20261017": {
+    "admitted": true,
+    "providerCensus": "/tmp/p544-admission-refresh-20261017-1311/summary.json",
+    "providerCensusObservedAtUtc": "2026-10-17T13:09:14.562423+00:00",
+    "providerCensusResult": "No instances, disks, snapshots or static addresses; no admin rows since 12:55:45Z; existing artifact bucket retained. Billing-account budget alert read succeeded without an unrelated compute-project quota override.",
+    "outDir": "/mnt/data/agent-capacity/corpus/p544-route-pilot-20261017T1312",
+    "outcome": {
+      "classification": "Pilot failed closed; no coding-task or served-model acceptance",
+      "sessionId": "codex-exc-light-2-20261017T131216",
+      "nativeExitCode": 1,
+      "timedOut": false,
+      "wallMs": 10801,
+      "exchanges": 5,
+      "toolCalls": {},
+      "providerSendsAdmitted": 0,
+      "attemptsDenied": 4,
+      "journalReservedUsdMicros": 0,
+      "journalStopped": true,
+      "programmeMaximumReservationRetainedUsd": 2.8732,
+      "observedRefusal": "carry trial attempt not authorized",
+      "rootCause": "Unresolved; distinguish native request-shape validation from credential/target/binding mismatch before retrying",
+      "log": "/tmp/p544-route-pilot-20261017T1312.log",
+      "processEnvelope": "Outer recorder exited 0 after native task exited 1; success follows meta/journal evidence, not outer process status",
+      "servedModel": null,
+      "measuredInvoiceUsd": null
+    },
+    "task": "exc-light-2",
+    "scope": "Bounded route and recorder pilot only; one light task cannot qualify the required 40/40/20 workload or D075/D076",
+    "requestedModel": "gpt-6-luna",
+    "requestedEffort": "low",
+    "accountId": "aviynw2_codex",
+    "credentialSha256": "85bddc10c2ff3600ad739a8ab471aba0d1eb1d960c938faf567f90debe3c4b7e",
+    "target": "https://chatgpt.com/backend-api/codex/responses",
+    "maxProviderAttempts": 4,
+    "maxModelRequests": 4,
+    "maxRequestBytes": 1048576,
+    "perActualProviderAttemptReserveUsdMicros": 718300,
+    "maxModelUsd": 2.8732,
+    "priorProgrammeReservedUsd": 171.5,
+    "programmeReservedAfterAdmissionUsd": 174.3732,
+    "remainingHeadroomAfterAdmissionUsd": 25.6268,
+    "reservationPolicy": "Keep the full maximum pilot reservation after admission; no refunds from observed tokens, response errors or partial invoices. Final-send gate covers retries and outer OAuth recovery; credential/route mismatch refuses before provider fetch.",
+    "requiredBeforeSend": "Fresh sequential census complete and admission recorded. Re-read selected credential SHA at launch; final-send validation refuses any changed binding. No VM authorized."
   },
   "limitations": [
     "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",
