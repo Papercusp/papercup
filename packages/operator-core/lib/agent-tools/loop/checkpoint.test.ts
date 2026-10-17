@@ -3932,14 +3932,22 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   });
 
   it('refuses a merge that would evict a carried check at the cap', async () => {
-    getLoopCarryNote.mockResolvedValue(
-      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
-    );
+    const carriedChecks = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+      id: `check-${i + 1}`,
+      claim: `carried ${i + 1}`,
+    }));
+    getLoopCarryNote.mockResolvedValue(buildPrior(carriedChecks));
     const b = body(await call({ did: 'progress', checks: [{ claim: 'one row past the cap' }], rowsMode: 'merge' }));
 
     expect(b.ok).toBe(false);
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
+    expect(b.checksDroppedRows).toEqual([
+      { id: `check-${CARRY_NOTE_MAX_CHECKS}`, claim: `carried ${CARRY_NOTE_MAX_CHECKS}` },
+    ]);
+    expect(b.message).toContain('checksDroppedRows');
+    const storedChecks = splitCarryNoteChecks(setLoopCarryNote.mock.calls[0]?.[1] as string).checks;
+    expect(storedChecks.map(({ id, claim }) => ({ id, claim }))).toEqual(carriedChecks);
     // EI-22377179869127416: the ROW write is still refused, but the narrative is no
     // longer taken hostage with it — the message must say so, or a caller reading
     // "NOTHING was written" would re-send a note that already committed.
@@ -3949,17 +3957,21 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   });
 
   it('refuses a merge that would evict a carried wall at the cap', async () => {
-    getLoopCarryNote.mockResolvedValue(
-      buildPrior(
-        [],
-        Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` })),
-      ),
-    );
+    const carriedWalls = Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({
+      id: `wall-${i + 1}`,
+      claim: `carried wall ${i + 1}`,
+    }));
+    getLoopCarryNote.mockResolvedValue(buildPrior([], carriedWalls));
     const b = body(await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge' }));
 
     expect(b.ok).toBe(false);
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
+    expect(b.wallsDroppedRows).toEqual([
+      { id: `wall-${CARRY_NOTE_MAX_WALLS}`, claim: `carried wall ${CARRY_NOTE_MAX_WALLS}` },
+    ]);
+    const storedWalls = splitCarryNoteWalls(setLoopCarryNote.mock.calls[0]?.[1] as string).walls;
+    expect(storedWalls.map(({ id, claim }) => ({ id, claim }))).toEqual(carriedWalls);
     expect(b.message).toContain('confirmRetire:true');
     // P-025: the refusal teaches the one-row remedies, not a full resend.
     expect(b.message).toContain('replaces');

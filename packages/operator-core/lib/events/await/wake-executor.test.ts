@@ -1185,6 +1185,124 @@ describe('executeWake — delivery-time fleet member-dead liveness re-check (EI-
   });
 });
 
+describe('executeWake — delivery-time fleet context-critical member actionability (EI-26207385902174159)', () => {
+  const contextCriticalWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'fleet:context-critical:pui-cockpit',
+      payload: {
+        fleetSlug: 'pui-cockpit',
+        agentId: 'su-worker',
+        transition: 'context-critical',
+        contextEpoch: 18,
+      },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  const liveness = (sessionState: string | null, wakeable = false) =>
+    vi.fn(async () => new Map([
+      ['su-worker', { ownerId: 'su-worker', sessionState, wakeable, liveTurn: false } as never],
+    ]));
+
+  const presenceRow = { source: 'presence' } as never;
+
+  it('downgrades an absent fleet target before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-should-not-run' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentFleetContextAssignments = vi.fn(async () => []);
+    const resolveMemberLiveness = liveness(null);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentFleetContextAssignments: getCurrentFleetContextAssignments as never,
+      resolveMemberLiveness: resolveMemberLiveness as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(getCurrentFleetContextAssignments).toHaveBeenCalledWith({
+      workspaceId: 'ws', fleet: 'pui-cockpit', agent: 'su-worker',
+    });
+    expect(resolveMemberLiveness).toHaveBeenCalledWith([{ ownerId: 'su-worker' }], { hydratePerId: true });
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain('no current fleet presence or active claim');
+    expect(opts.summary).toContain('STALE');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('downgrades a target that ended after emit even while its presence row remains', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-should-not-run' }));
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const d = deps({
+      findPty: findPty as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentFleetContextAssignments: vi.fn(async () => [presenceRow]) as never,
+      resolveMemberLiveness: liveness('ended') as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string }];
+    expect(opts.summary).toContain("target session is currently 'ended'");
+    expect(findPty).not.toHaveBeenCalled();
+  });
+
+  it('preserves a current target wake when the roster read is unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    try {
+      const d = deps({
+        findPty: findPty as never,
+        write: write as never,
+        getCurrentFleetContextAssignments: vi.fn(async () => { throw new Error('roster unavailable'); }) as never,
+        resolveMemberLiveness: liveness('live', true) as never,
+        getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+        getCurrentContextEpoch: vi.fn(async () => 18),
+      });
+
+      const out = await executeWake(contextCriticalWork(), d);
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+      expect(findPty).toHaveBeenCalled();
+      expect(write).toHaveBeenCalled();
+      expect(d.sendCoordMessage).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet context-critical roster/su-worker failed'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('preserves a current target that still has fleet presence and a critical context', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      getCurrentFleetContextAssignments: vi.fn(async () => [presenceRow]) as never,
+      resolveMemberLiveness: liveness('live', true) as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+  });
+});
+
 describe('executeWake — delivery-time canonical claimable freshness (EI-21584263523911583)', () => {
   const claimableWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
     work({

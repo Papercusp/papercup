@@ -2,7 +2,7 @@
  * The remote psu/HTTP fixtures observe transport behavior; this is not release GUI proof. */
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -113,7 +113,7 @@ beforeAll(async () => {
   for (const name of ['client', 'host']) {
     execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(root, name)], { timeout: 10_000 });
   }
-  writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,sys,time\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd()}),flush=True)\nif '--transport-stdin' in sys.argv:\n print('PERSONAL_SSH_INPUT_READY',flush=True)\n print(json.dumps({'stdin':sys.stdin.readline()}),flush=True)\ntime.sleep(0.2)\n`);
+  writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,socket,sys,time\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd(),'hostname':socket.gethostname()}),flush=True)\nif '--transport-stdin' in sys.argv:\n print('PERSONAL_SSH_INPUT_READY',flush=True)\n print(json.dumps({'stdin':sys.stdin.readline()}),flush=True)\ntime.sleep(0.2)\n`);
   writeFileSync(join(root, 'gui.py'), `from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write(b'personal-computer-gui')\nHTTPServer(('127.0.0.1',3070),H).serve_forever()\n`);
   process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
   await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
@@ -162,10 +162,21 @@ afterAll(async () => {
   if (allocations) expect(await allocations.close()).toBe('cleanup-verified');
 }, FIXTURE_HOOK_TIMEOUT_MS);
 
-test('native psu entrypoint selects the saved machine and preserves remote argv, stdin/stdout and cwd over pinned SSH', async () => {
+test('native psu entrypoint selects the saved machine and preserves remote host identity, argv, stdin/stdout and cwd over pinned SSH', async () => {
   savePsuConnectionStore({ version: PSU_CONNECTION_STORE_VERSION,
     profiles: [normalizeSshProfile({ name: 'native-desktop', host: 'personal-fixture' })],
   }, defaultPsuConnectionStorePath(root));
+  const help = await nativePsu(['--help']);
+  expect(help.code, help.output).toBe(0);
+  expect(help.output).toContain('Run on a saved remote host');
+  const guide = readFileSync(new URL(
+    '../../../../apps/operator-docs/src/content/docs/harness/remote-access-guide.mdx', import.meta.url), 'utf8');
+  expect(guide).toContain('Context and tool calls belong to the selected remote workspace');
+  // Docker's configured UTS identity is independent of the command under test.
+  // A local fallback must fail even when it preserves the forwarded arguments.
+  const remoteHostname = (await docker(['inspect', '--format', '{{.Config.Hostname}}', container])).trim();
+  expect(remoteHostname).not.toBe('');
+  expect(remoteHostname).not.toBe(hostname());
   const result = await nativePsu(['--connect=native-desktop', '--resume=native session',
     '--label=quoted $value', '--transport-stdin'], 'native input $value');
   expect(result.code, result.output).toBe(0);
@@ -173,6 +184,7 @@ test('native psu entrypoint selects the saved machine and preserves remote argv,
   expect(result.output).toContain('"argv": ["--resume=native session", "--label=quoted $value", "--transport-stdin"]');
   expect(result.output).toContain('"forwarded": "1"');
   expect(result.output).toContain('"cwd": "/root"');
+  expect(result.output).toContain(`"hostname": ${JSON.stringify(remoteHostname)}`);
   expect(result.output).toContain('"stdin": "native input $value\\n"');
 }, 40_000);
 

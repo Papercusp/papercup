@@ -114,7 +114,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
 import { getWorkItem, isClaimHoldParked, isSettledWorkItemState } from '../../work-items';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
-import { lastProductiveToolCallAtByOwner } from '../../fleet/assignments';
+import { lastProductiveToolCallAtByOwner, listFleetAssignments } from '../../fleet/assignments';
 // EI-21901188813309549: the SAME shared liveness oracle fleet-transition-events.ts's
 // emit-time revalidation reads (there via the gatherCurrentFleetMemberObservation ⇒
 // reconcileWakeability path). Imported directly here rather than importing that
@@ -1056,21 +1056,70 @@ type FleetContextCriticalFreshness = {
   stale: boolean;
   currentPressure: ContextPressureBucket | null;
   currentEpoch: number | null;
+  memberStaleReason: string | null;
 };
+
+/**
+ * A queued fleet context-critical delivery can outlive the member that caused
+ * it. Confirm the target still has a current presence or active claim in that
+ * fleet, and suppress a known ended or recorded/non-wakeable claimless session.
+ * Failed or timed-out reads remain unknown and preserve the wake.
+ */
+async function currentFleetContextCriticalMemberStaleReason(
+  d: DeliveryWork,
+  getCurrentAssignments: typeof listFleetAssignments,
+  resolveStates: typeof resolveSessionStates,
+  timeoutMs: number,
+): Promise<string | null> {
+  const parsed = parseFleetContextCriticalPayload(d.payload);
+  if (!parsed || d.eventKey.slice(FLEET_CONTEXT_CRITICAL_PREFIX.length) !== parsed.fleetSlug) return null;
+
+  const [rows, verdicts] = await Promise.all([
+    withWakeTimeout(
+      Promise.resolve().then(() =>
+        getCurrentAssignments({ workspaceId: d.workspaceId, fleet: parsed.fleetSlug, agent: parsed.agentId }),
+      ),
+      `fleet context-critical roster/${parsed.agentId}`,
+      Math.max(1, timeoutMs),
+    ),
+    withWakeTimeout(
+      Promise.resolve().then(() => resolveStates([{ ownerId: parsed.agentId }], { hydratePerId: true })),
+      `fleet context-critical liveness/${parsed.agentId}`,
+      Math.max(1, timeoutMs),
+    ),
+  ]);
+
+  const activeClaimCount = rows?.filter(
+    (row) => row.source === 'plan_item_claim' || row.source === 'work_item_claim',
+  ).length;
+  const hasPresence = rows?.some((row) => row.source === 'presence') ?? false;
+  if (rows !== null && !hasPresence && activeClaimCount === 0) {
+    return 'the target has no current fleet presence or active claim';
+  }
+
+  const current = verdicts?.get(parsed.agentId);
+  if (current?.sessionState === 'ended') return "the target session is currently 'ended'";
+  if (current?.sessionState === 'recorded' && current.wakeable === false && activeClaimCount === 0) {
+    return 'the target is recorded, non-wakeable, and claimless';
+  }
+  return null;
+}
 
 async function currentFleetContextCriticalIsStale(
   d: DeliveryWork,
   getCurrentPressure: (agentId: string) => Promise<ContextPressureBucket | null>,
   getCurrentEpoch: (agentId: string) => Promise<number | null>,
+  getCurrentAssignments: typeof listFleetAssignments,
+  resolveStates: typeof resolveSessionStates,
   timeoutMs: number,
 ): Promise<FleetContextCriticalFreshness> {
   if (!d.eventKey.startsWith(FLEET_CONTEXT_CRITICAL_PREFIX) || d.eventKey.length <= FLEET_CONTEXT_CRITICAL_PREFIX.length) {
-    return { stale: false, currentPressure: null, currentEpoch: null };
+    return { stale: false, currentPressure: null, currentEpoch: null, memberStaleReason: null };
   }
   const parsed = parseFleetContextCriticalPayload(d.payload);
-  if (!parsed) return { stale: false, currentPressure: null, currentEpoch: null };
+  if (!parsed) return { stale: false, currentPressure: null, currentEpoch: null, memberStaleReason: null };
 
-  const [pressureRead, epochRead] = await Promise.all([
+  const [pressureRead, epochRead, memberStaleReason] = await Promise.all([
     withWakeTimeout(
       Promise.resolve().then(() => getCurrentPressure(parsed.agentId)),
       `fleet context-critical pressure/${parsed.agentId}`,
@@ -1083,6 +1132,7 @@ async function currentFleetContextCriticalIsStale(
           `fleet context-critical generation/${parsed.agentId}`,
           Math.max(1, timeoutMs),
         ),
+    currentFleetContextCriticalMemberStaleReason(d, getCurrentAssignments, resolveStates, timeoutMs),
   ]);
   const currentPressure =
     pressureRead === 'ok' || pressureRead === 'high' || pressureRead === 'critical' ? pressureRead : null;
@@ -1091,7 +1141,12 @@ async function currentFleetContextCriticalIsStale(
   const pressureStale = currentPressure !== null && currentPressure !== 'critical';
   const generationStale =
     parsed.contextEpoch !== null && currentEpoch !== null && currentEpoch > parsed.contextEpoch;
-  return { stale: pressureStale || generationStale, currentPressure, currentEpoch };
+  return {
+    stale: pressureStale || generationStale || memberStaleReason !== null,
+    currentPressure,
+    currentEpoch,
+    memberStaleReason,
+  };
 }
 
 type CoalescedDeliveryEvent = {
@@ -3074,6 +3129,8 @@ export interface ExecuteWakeDeps {
   fleetMemberDeadLookupTimeoutMs?: number;
   /** EI-220670: delivery-time context-pressure read for fleet context-critical wakes. */
   getCurrentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
+  /** EI-26207385902174159: current fleet presence/claim rows for context-critical targets. */
+  getCurrentFleetContextAssignments?: typeof listFleetAssignments;
   /** Upper bound for the delivery-time fleet context-critical lookup. */
   fleetContextCriticalLookupTimeoutMs?: number;
   /** EI-220670: current compaction/context generation for the event's member. */
@@ -4022,6 +4079,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const getCurrentContextPressure =
     deps.getCurrentContextPressure ??
     (async (agentId: string) => (await fetchContextPressure([agentId])).get(agentId) ?? null);
+  const getCurrentFleetContextAssignments = deps.getCurrentFleetContextAssignments ?? listFleetAssignments;
   const fleetContextCriticalLookupTimeoutMs =
     deps.fleetContextCriticalLookupTimeoutMs ?? FLEET_CONTEXT_CRITICAL_LOOKUP_TIMEOUT_MS;
   const getCurrentContextEpoch =
@@ -4429,12 +4487,15 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       d,
       getCurrentContextPressure,
       getCurrentContextEpoch,
+      getCurrentFleetContextAssignments,
+      resolveMemberLiveness,
       fleetContextCriticalLookupTimeoutMs,
     );
     if (contextCriticalCheck.stale) {
       const parsedContextCritical = parseFleetContextCriticalPayload(d.payload);
       const staleAgentId = parsedContextCritical?.agentId ?? 'unknown';
       const staleReasons = [
+        contextCriticalCheck.memberStaleReason,
         contextCriticalCheck.currentPressure !== null && contextCriticalCheck.currentPressure !== 'critical'
           ? `currently '${contextCriticalCheck.currentPressure}', not 'critical'`
           : null,

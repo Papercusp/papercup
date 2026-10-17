@@ -528,14 +528,14 @@ describe('runtime-content probes catch partial packages that directory checks ca
         },
       },
       extracted: {
-        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native'],
+        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web'],
       },
     });
     writeFileSync(
       join(root, 'package-lock.json'),
       JSON.stringify({
         packages: Object.fromEntries(
-          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native'].map(
+          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web'].map(
             (name) => [`node_modules/${name}`, {}],
           ),
         ),
@@ -571,10 +571,37 @@ describe('runtime-content probes catch partial packages that directory checks ca
       { 'index.js': "import '@lydell/node-pty-linux-x64'; export const fork = () => {};" },
     );
     writePackage('rocksdb-native', { type: 'module', exports: './binding.js' });
+    writePackage('onnxruntime-web', { type: 'module', exports: './dist/ort.node.min.mjs' });
 
     const failures = findUnusableRuntimeDeps({ repoRoot: root }) as RuntimeProbeFailure[];
     expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
     for (const failure of failures) expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
+  });
+
+  it('rejects ONNX with working CommonJS but missing ESM content, and accepts the restored entrypoint', () => {
+    const root = fixture({
+      packages: { 'apps/operator': { dependencies: { 'onnxruntime-web': '*' } } },
+      extracted: { '': ['onnxruntime-web'] },
+    });
+    writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+      packages: { 'node_modules/onnxruntime-web': { version: '1.24.1' } },
+    }));
+    const dir = join(root, 'node_modules/onnxruntime-web');
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'onnxruntime-web', version: '1.24.1',
+      exports: { '.': { node: { import: './dist/ort.node.min.mjs', require: './dist/ort.node.min.js' } } },
+    }));
+    writeFileSync(join(dir, 'dist/ort.node.min.js'), 'module.exports = {};');
+    execFileSync(process.execPath, ['-e', "require('onnxruntime-web')"], { cwd: root });
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(resolveRuntimeContentProbes(root)).toEqual(['onnxruntime-web']);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      { specifier: 'onnxruntime-web', detail: expect.stringMatching(/ERR_MODULE_NOT_FOUND.*ort\.node\.min\.mjs/) },
+    ]);
+
+    writeFileSync(join(dir, 'dist/ort.node.min.mjs'), 'export const env = {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
   });
 
   it('retries a real import so a filesystem-settle race does not become a false failure', async () => {

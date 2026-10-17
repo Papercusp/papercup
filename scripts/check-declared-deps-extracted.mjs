@@ -79,6 +79,7 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   'hono',
   '@lydell/node-pty',
   'rocksdb-native',
+  'onnxruntime-web',
 ]);
 
 export function packageNameFromSpecifier(specifier) {
