@@ -1189,6 +1189,7 @@ export function projectAcceptanceBarContractSnapshot(
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
     const adequacyDeclared = requiredTestLayers.length > 0 || hasStructuredTestsCheck;
+    const mechanicalProofBindingIds = new Set<number>();
     const adequacyChecks = !adequacyDeclared ? [] : enforceableClauses.map((clause) => {
       // Keep plan grading on the same measured proof path as work-item completion.
       // Structured checks name their tests; passing runs plus a calibrated caught
@@ -1198,6 +1199,7 @@ export function projectAcceptanceBarContractSnapshot(
         const bindingIds = new Set([
           ...Object.values(mechanical.passingTestBindingIds), ...mechanical.caughtMutantBindingIds,
         ]);
+        if (mechanical.verdict === 'pass') for (const id of bindingIds) mechanicalProofBindingIds.add(id);
         return { specId: clause.specId, revision: clause.revision, verdict: mechanical.verdict,
           wouldBlock: mechanical.gaps,
           evidenceRefs: evidence.filter(row => row.id !== undefined && bindingIds.has(row.id)).map(row => row.evidenceRef) };
@@ -1215,6 +1217,21 @@ export function projectAcceptanceBarContractSnapshot(
     const adequacyState = !adequacyDeclared ? 'undeclared' as const
       : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
         : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
+    // A tree/unit tests check declares its named tests and calibrated mutant as
+    // proof. Supplementary observations must not add a runtime-currentness
+    // obligation after that exact proof has passed. Preserve those observations
+    // in history, without claiming they are current. Explicit wider planes or
+    // test layers retain the full uncertainty check.
+    const mechanicalTreeProof = hasStructuredTestsCheck && criterion.evidencePlane === 'tree'
+      && normalized(criterion.requiredScope).every(scope => scope === 'tree')
+      && requiredTestLayers.every(layer => layer === 'unit')
+      && enforceableClauses.every(clause =>
+        normalized(clause.requiredTestLayers).every(layer => layer === 'unit')
+        && !normalized(clause.requiredEvidence).some(kind => kind === 'live' || kind === 'deployed'))
+      && mechanicalProofBindingIds.size > 0;
+    const uncertaintyEvidence = mechanicalTreeProof
+      ? currentEvidence.filter(row => row.id !== undefined && mechanicalProofBindingIds.has(row.id))
+      : currentEvidence;
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
@@ -1486,7 +1503,7 @@ export function projectAcceptanceBarContractSnapshot(
         // Only evidence for the current exact spec cohort can make the current proof
         // uncertain. Historical rows remain in `history`, but a superseded revision
         // with an unmeasurable legacy dimension must not poison newer complete proof.
-        uncertainEvidence: currentEvidence.filter((row) => {
+        uncertainEvidence: uncertaintyEvidence.filter((row) => {
           const currentness = (
             row as {
               currentness?: { overall?: string; dimensions?: Record<string, string>; comparisonSupplied?: boolean };

@@ -24,10 +24,22 @@
     "verification": "Read canonical rubric and plan after recovery. Revision 3 has all 16 criteria; its first 13 complete criterion objects exactly equal the saved revision 2. This records the existing application and does not reapply it."
   },
   "currentVetting": {
-    "status": "requested-not-attested",
+    "status": "blocking-critique-not-attested",
     "requestKey": "p537-acceptance-rubric-r3-vet-20261017",
     "conversation": "conv-request-ca3ce552eeaf76627670e459e66aab0cc510737a2534099b3a8dbd1c1d08d51a",
     "criteriaHash": "46ef024dfb659f63f154b9e101a1aaa90ad5a704c123f25d628deec3415ddc69",
+    "critiquePost": "thread-post:1185771",
+    "critiqueReadback": "/tmp/p537-review-live-0345.json",
+    "blockingFinding": "R-6, R-9, R-10 and R-11 require structured test bindings. Other five meta dimensions pass; live and deployed manual remainders are justified. This is rubric quality only.",
+    "preparedPartialRepair": {
+      "status": "dry-run-only-approval-required",
+      "argsPath": "/tmp/p537-r3-tree-binding-preview-args.json",
+      "previewPath": "/tmp/p537-r3-tree-binding-preview-v2.json",
+      "bars": ["R-6", "R-9"],
+      "proofLayers": ["unit", "integration"],
+      "remaining": "R-10 bill-conservation detector belongs to P-538; R-11 bounded autoscaling detector belongs to P-539. Existing arithmetic/lifecycle suites alone have not been established to decide their complete claims.",
+      "next": "Obtain governed outside-lineage review with dryRun/requestReview before applying the prepared R-6/R-9 change. Never attest revision 3 against this blocking critique."
+    },
     "receiptPath": "/tmp/p537-r3-vet-request-0322.json",
     "limitation": "Accepted pending request is not critique, attestation, implementation acceptance or shipment."
   },

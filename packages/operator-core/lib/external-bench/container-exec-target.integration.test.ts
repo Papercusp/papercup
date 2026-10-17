@@ -250,6 +250,59 @@ describe('container exec target against a live container', () => {
     finally { await removeContainer(cid, primaryError); }
   });
 
+  it('preserves the git submission diff and opaque session carry across wrapper recreation', async () => {
+    const base = mkdtempSync(join(root, 'resume-'));
+    const checkout = join(base, 'checkout');
+    const homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
+    const home = join(homes, 'session-7');
+    for (const dir of [checkout, home, perHomes]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(home, 'config.toml'), 'model = "frozen"\n');
+    writeFileSync(join(checkout, 'answer.txt'), 'before\n');
+    // Git owns only this disposable fixture. No operation touches the shared checkout.
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout;
+    };
+    git('init', '--quiet');
+    git('add', 'answer.txt');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgSign=false', 'commit', '--quiet', '-m', 'fixture base');
+    const head = git('rev-parse', 'HEAD');
+    const carry = '{"type":"compacted","encrypted_content":"opaque-session-context"}\n';
+    const cid = await startContainer(['-v', `${checkout}:/app`, '-v', `${perHomes}:${homes}`]);
+    let primaryError: unknown;
+    try {
+      const target = { kind: 'docker-exec' as const, containerId: cid, workdir: '/app', binPath: '/bin/sh',
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } };
+      const env = { PATH: process.env.PATH ?? '', CODEX_HOME: home };
+      const first = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'before-resume-')) });
+      const written = await command(first.wrapperPath, ['-c',
+        'test "$PWD" = /app && printf "after\\n" > answer.txt && printf "%s" "$1" > "$CODEX_HOME/rollout.jsonl"',
+        'carry-fixture', carry,
+      ], env);
+      expect(written.status, written.stderr).toBe(0);
+      expect(readFileSync(join(home, 'rollout.jsonl'), 'utf8')).toBe(carry);
+      const diff = git('diff', '--', 'answer.txt');
+      expect(diff).toContain('-before\n+after');
+      rmSync(first.dir, { recursive: true, force: true });
+
+      // A fresh wrapper must reuse the relocated home and original task checkout.
+      const resumed = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'after-resume-')) });
+      const read = await command(resumed.wrapperPath, ['-c',
+        'test "$PWD" = /app && test "$(cat answer.txt)" = after && cat "$CODEX_HOME/rollout.jsonl"',
+      ], env);
+      expect(read.status, read.stderr).toBe(0);
+      expect(read.stdout).toBe(carry);
+      expect(readFileSync(join(home, 'rollout.jsonl'), 'utf8')).toBe(carry);
+      expect(readFileSync(join(perHomes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe(carry);
+      expect(git('rev-parse', 'HEAD')).toBe(head);
+      expect(git('diff', '--', 'answer.txt')).toBe(diff);
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
+  });
+
   it('runs the musl Codex from the host install, mounted read-only at the seam path, with no network', async () => {
     const musl = resolveContainerCodexBinary();
     const cid = await startContainer(['-v', `${musl}:${CONTAINER_CODEX_BIN_PATH}:ro`]);

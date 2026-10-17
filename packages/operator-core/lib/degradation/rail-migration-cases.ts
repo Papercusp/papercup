@@ -2716,8 +2716,14 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       resolve: async ({ conditionKey }) => { open.delete(conditionKey); resolvedKeys.push(conditionKey); return true; },
       prune: async () => 0,
     });
-    const leg = { status: 'ran', candidates: 5, blocked: null, failures: [] };
-    const legs = { lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' }, degraded: true } as import('@papercusp/search').SearchLegs;
+    const leg = {
+      status: 'ran', candidates: 5, floored: 0, stage2Added: 0, callsRun: 0, callsFailed: 0,
+      blocked: null, failures: [],
+    };
+    const legs = {
+      lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' },
+      degraded: true, warning: 'semantic leg blocked',
+    } as import('@papercusp/search').SearchLegs;
     const partialSourceFailureLegs = {
       lexical: leg,
       semantic: { ...leg, failures: [{ source: 'semantic-source', ranker: 'semantic', error: 'vector query timed out' }], callsFailed: 1 },
@@ -4303,11 +4309,14 @@ RAIL_MIGRATION_CASES.push({
     const host = await import('../system-health/retrieval-degradation-watchdog');
     const { expect } = await import('vitest');
     const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
-    const leg = { status: 'ran', candidates: 5, blocked: null, failures: [] };
+    const leg = {
+      status: 'ran', candidates: 5, floored: 0, stage2Added: 0, callsRun: 0, callsFailed: 0,
+      blocked: null, failures: [],
+    };
     try {
       host.startRetrievalDegradationWatchdog({ observe: (_mechanism, decision) => { observations.push(decision); return true; } });
-      search.observeLegs({ lexical: leg, semantic: { ...leg, candidates: 0, blocked: 'timeout' }, degraded: true } as import('@papercusp/search').SearchLegs);
-      search.observeLegs({ lexical: leg, semantic: leg, degraded: false } as import('@papercusp/search').SearchLegs);
+      search.observeLegs({ lexical: leg, semantic: { ...leg, candidates: 0, blocked: 'timeout' }, degraded: true, warning: 'semantic leg blocked' } as import('@papercusp/search').SearchLegs);
+      search.observeLegs({ lexical: leg, semantic: leg, degraded: false, warning: null } as import('@papercusp/search').SearchLegs);
       expect(observations.map((row) => row.applied)).toEqual([0, 1]);
       return { route: 'observation', mechanism: 'retrieval', observations };
     } finally { search.setLegHealthObserver(null); }

@@ -257,19 +257,36 @@ export function collectVerifierInputClosure(repo, roots) {
 export async function qualifySyncLintProofInputs({ repo, roots = syncLintProofRoots(repo) }) {
   const headStart = git(repo, ['rev-parse', '--verify', 'HEAD']);
   const closure = collectVerifierInputClosure(repo, roots);
-  let refusal = null;
+  let validationRefusal = null;
   try {
     if (closure.unresolved.length) throw new Error('unresolved local imports: ' + JSON.stringify(closure.unresolved));
     await validateVerifierInputs({ repo, ref: headStart, inputs: closure.paths });
-  } catch (error) { refusal = String(error); }
+  } catch (error) { validationRefusal = String(error); }
   const headAfter = git(repo, ['rev-parse', '--verify', 'HEAD']);
-  const workingDrift = closure.paths.filter(path => {
-    try { return hash(readFileSync(join(repo, path))) !== closure.workingHashes[path]; }
-    catch { return true; }
-  });
-  if (headAfter !== headStart || workingDrift.length) refusal = 'source changed during qualification';
-  return { schemaVersion: 'p037-source-admission-v1', measuredAt: new Date().toISOString(),
-    headStart, headAfter, ...closure, workingDrift, refusal, qualification: refusal ? 'refused' : 'qualified' };
+  const finalWorkingHashes = {}, finalReadErrors = {}, workingHashMismatches = [], workingDrift = [];
+  for (const path of closure.paths) {
+    try {
+      const finalHash = hash(readFileSync(join(repo, path)));
+      finalWorkingHashes[path] = finalHash;
+      if (finalHash !== closure.workingHashes[path]) {
+        workingHashMismatches.push(path);
+        workingDrift.push(path);
+      }
+    } catch (error) {
+      // An unreadable input is a refusal, not evidence that its bytes changed.
+      // Retain it separately so a later successful read cannot erase the cause.
+      finalWorkingHashes[path] = null;
+      finalReadErrors[path] = { name: error?.name ?? 'Error', code: error?.code ?? null,
+        message: error?.message ?? String(error) };
+      workingDrift.push(path);
+    }
+  }
+  const stabilityRefusal = headAfter !== headStart || workingDrift.length
+    ? 'source changed during qualification' : null;
+  const refusal = stabilityRefusal ?? validationRefusal;
+  return { schemaVersion: 'p037-source-admission-v2', measuredAt: new Date().toISOString(),
+    headStart, headAfter, ...closure, finalWorkingHashes, finalReadErrors, workingHashMismatches,
+    workingDrift, validationRefusal, stabilityRefusal, refusal, qualification: refusal ? 'refused' : 'qualified' };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -280,6 +297,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   console.log('P037_CENSUS_SUMMARY ' + JSON.stringify({ qualification: receipt.qualification,
     headStart: receipt.headStart, headAfter: receipt.headAfter, roots: receipt.roots.length,
     paths: receipt.paths.length, unresolved: receipt.unresolved, workingDrift: receipt.workingDrift,
+    workingHashMismatches: receipt.workingHashMismatches, finalReadErrors: receipt.finalReadErrors,
+    validationRefusal: receipt.validationRefusal, stabilityRefusal: receipt.stabilityRefusal,
     refusal: receipt.refusal, receipt: resolve(args[1]) }));
   process.exitCode = receipt.qualification === 'qualified' ? 0 : 2;
 }

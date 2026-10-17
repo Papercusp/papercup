@@ -550,6 +550,45 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
   });
 
+  it('keeps supplementary native evidence visible without adding uncertainty to complete tree unit proof', () => {
+    const input = mechanicallyProvedFixture();
+    const native = currentRegisteredTestEvidence(input.evidence.rows[0]!, 'e2e/native.spec.mts', 13);
+    native.currentness = { ...native.currentness, overall: 'unknown', comparisonSupplied: true,
+      provenance: 'server-measured', dimensions: { ...native.currentness.dimensions, environment: 'unknown' },
+      unknownReasons: ['environment-current-fingerprint-not-supplied'] };
+    input.evidence.rows.push(native);
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(snapshot.bars[0]!.proof.history).toContainEqual(expect.objectContaining({
+      id: 13, currentness: expect.objectContaining({ overall: 'unknown' }),
+    }));
+    expect(snapshot.bars[0]!.proof.uncertainEvidence).toBe(0);
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-grading').codes).not.toContain('bar_snapshot_proof_uncertain');
+  });
+
+  it.each(['required-test', 'required-mutant', 'live-plane', 'deployed-plane', 'clause-live', 'e2e-layer'] as const)(
+    'preserves uncertainty in mechanical snapshot proof for %s', requirement => {
+      const input = mechanicallyProvedFixture();
+      const optional = currentRegisteredTestEvidence(input.evidence.rows[0]!, 'e2e/native.spec.mts', 13);
+      const uncertain = requirement === 'required-test' ? input.evidence.rows[0]!
+        : requirement === 'required-mutant' ? input.evidence.rows[1]! : optional;
+      uncertain.currentness = { ...uncertain.currentness, overall: 'unknown', comparisonSupplied: true,
+        provenance: 'server-measured', dimensions: { ...uncertain.currentness.dimensions, environment: 'unknown' },
+        unknownReasons: ['environment-current-fingerprint-not-supplied'] };
+      input.evidence.rows.push(optional);
+      if (requirement === 'live-plane' || requirement === 'deployed-plane')
+        input.rubrics.rows[0]!.criteria[0]!.evidencePlane = requirement === 'live-plane' ? 'live' : 'deployed';
+      if (requirement === 'clause-live') input.clauses.rows[0]!.requiredEvidence.push('live');
+      if (requirement === 'e2e-layer') input.clauses.rows[0]!.requiredTestLayers.push('e2e');
+
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.uncertainEvidence).toBe(1);
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-grading').codes).toContain('bar_snapshot_proof_uncertain');
+      if (requirement.startsWith('required-')) expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('fail');
+    },
+  );
+
   it.each(['missing-mutant', 'uncalibrated', 'stale-test', 'stale-mutant', 'unmeasured', 'other-test'] as const)(
     'keeps mechanical snapshot proof blocked for %s', defect => {
       const input = mechanicallyProvedFixture();

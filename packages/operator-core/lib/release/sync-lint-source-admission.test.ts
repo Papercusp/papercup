@@ -1,13 +1,18 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { collectVerifierInputClosure, qualifySyncLintProofInputs, syncLintProofRoots } from '../../../../scripts/qualify-sync-lint-proof.mjs';
+import * as sourcePreview from '../../../../scripts/source-preview.mjs';
 import { validateVerifierInputs } from '../../../../scripts/source-preview.mjs';
 import { git, makeSuperproject, write } from '../source-preview.fixture';
 
 const owned: string[] = [];
-afterEach(() => { for (const path of owned.splice(0)) rmSync(path, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const path of owned.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 const testPath = 'packages/core/proof.test.ts';
 const runtimePath = 'libs/papercusp/runtime.mjs';
 function fixture() {
@@ -37,12 +42,51 @@ describe('P037 maintained source admission', () => {
     const { repo } = fixture();
     const receipt = await qualifySyncLintProofInputs({ repo, roots: [testPath] });
     expect(receipt).toMatchObject({ qualification: 'qualified', unresolved: [], workingDrift: [], refusal: null });
+    expect(receipt).toMatchObject({ validationRefusal: null, stabilityRefusal: null,
+      workingHashMismatches: [], finalWorkingHashes: receipt.workingHashes, finalReadErrors: {} });
     expect(receipt.paths).toEqual(expect.arrayContaining([testPath, 'packages/core/entry.ts',
       'libs/papercusp/index.d.ts', runtimePath, 'libs/papercusp/cycle.mjs',
       'libs/papercusp/import.mjs', 'libs/papercusp/import-only.mjs',
       'libs/papercusp/package.json', 'package-lock.json']));
     expect(receipt.paths).not.toContain('libs/papercusp/index.mjs');
     expect(new Set(receipt.paths).size).toBe(receipt.paths.length);
+  });
+
+  it.each([
+    { name: 'changed bytes after successful validation', dirty: false, remove: false },
+    { name: 'changed bytes after refused validation', dirty: true, remove: false },
+    { name: 'unreadable input after refused validation', dirty: true, remove: true },
+  ])('retains distinct final evidence for $name', async ({ dirty, remove }) => {
+    const { repo, sub } = fixture();
+    const initial = dirty ? 'export const value = 2;\n' : "export const value = 1; import('./cycle.mjs');\n";
+    const final = 'export const value = 3;\n';
+    if (dirty) write(sub, 'runtime.mjs', initial);
+    const validate = sourcePreview.validateVerifierInputs;
+    // Run the real validator, then change the fixture at its awaited boundary.
+    // This reproduces both original causes without racing a background writer.
+    const validation = vi.spyOn(sourcePreview, 'validateVerifierInputs').mockImplementationOnce(async args => {
+      try { return await validate(args); }
+      finally {
+        if (remove) rmSync(join(repo, runtimePath));
+        else write(sub, 'runtime.mjs', final);
+      }
+    });
+    const receipt = await qualifySyncLintProofInputs({ repo, roots: [testPath] });
+    const digest = (text: string) => createHash('sha256').update(text).digest('hex');
+    expect(validation).toHaveBeenCalledOnce();
+    expect(receipt.headAfter).toBe(receipt.headStart);
+    expect(receipt).toMatchObject({ qualification: 'refused', workingDrift: [runtimePath],
+      refusal: 'source changed during qualification', stabilityRefusal: 'source changed during qualification',
+      validationRefusal: dirty ? expect.stringContaining('dirty tested-input mismatch: ' + runtimePath) : null });
+    expect(receipt.workingHashes[runtimePath]).toBe(digest(initial));
+    expect(Object.keys(receipt.finalWorkingHashes).sort()).toEqual(receipt.paths);
+    expect(receipt.finalWorkingHashes[runtimePath]).toBe(remove ? null : digest(final));
+    expect(receipt.workingHashMismatches).toEqual(remove ? [] : [runtimePath]);
+    if (remove) {
+      expect(Object.keys(receipt.finalReadErrors)).toEqual([runtimePath]);
+      expect(receipt.finalReadErrors[runtimePath]).toMatchObject({ name: 'Error', code: 'ENOENT',
+        message: expect.stringContaining(join(repo, runtimePath)) });
+    } else expect(receipt.finalReadErrors).toEqual({});
   });
 
   it('does not admit inactive generated require/default exports but refuses them when require is active', async () => {

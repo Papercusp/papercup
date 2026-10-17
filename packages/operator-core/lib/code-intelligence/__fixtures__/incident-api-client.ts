@@ -98,8 +98,8 @@ try {
   const identity = await call('coord:whoami', {}); assert.equal(identity.workspaceId, workspace);
   const root = (await loadHarnessRegistry(workspace)).projects.find(p => p.slug === workspace)?.path;
   assert(root, 'Maintained private home harness must resolve');
-  if (argv[4] === 'first-touch') {
-    await runNativeFirstTouchJourney({ call, workspace, root, owner: identity.ownerId, repo, endpoint });
+  if (argv[4] === 'first-touch' || argv[4] === 'grep') {
+    await runNativeSnapshotJourney({ call, workspace, root, owner: identity.ownerId, repo, endpoint, leg: argv[4] });
   } else if (argv[4] === 'task-brief') {
     await runNativeTaskBriefJourney({ call, workspace, root, owner: identity.ownerId });
   } else {
@@ -309,14 +309,15 @@ async function installedNativeDispatcher({ repo, root, endpoint, workspace, owne
     } };
 }
 
-async function runNativeFirstTouchJourney({ call, workspace, root, owner, repo, endpoint }: {
+async function runNativeSnapshotJourney({ call, workspace, root, owner, repo, endpoint, leg }: {
   call: (name: string, args: Record<string, unknown>) => Promise<Record<string, any>>;
   workspace: string; root: string; owner: string; repo: string; endpoint: URL;
+  leg: 'first-touch' | 'grep';
 }) {
   const { getOrgPg } = await import('@papercusp/db-org');
   const target = 'a-target.ts', consumer = 'b-consumer.ts', testPath = 'target.test.ts';
   await writeFile(join(root, target), 'export function firstTouchTarget() { return 1; }\n');
-  await writeFile(join(root, consumer), 'import { firstTouchTarget } from "./a-target.ts";\nexport function consumer() { return firstTouchTarget(); }\n');
+  await writeFile(join(root, consumer), 'import { firstTouchTarget as localTarget } from "./a-target.ts";\nexport function consumer() { return localTarget(); }\n');
   await writeFile(join(root, testPath), 'import { consumer } from "./b-consumer.ts";\nexport const observed = consumer();\n');
   const sha = (path: string) => createHash('sha256').update(readFileSync(join(root, path))).digest('hex');
   const snapshotPath = join(homedir(), '.papercusp/graph-snapshot/papercusp/dependency-snapshot.json');
@@ -328,47 +329,85 @@ async function runNativeFirstTouchJourney({ call, workspace, root, owner, repo, 
     symbols: { schema: 'code-intel-symbol-snapshot-v1', knowledge: 'syntax-bound', symbols: [{
       id: 'private-first-touch-target', name: 'firstTouchTarget', path: target, line: 1, column: 17,
       sha256: sha(target), signature: 'firstTouchTarget()', aliases: [],
+      sources: [target, consumer].map(path => ({ path, sha256: sha(path) })),
       callers: [{ path: consumer, line: 2, column: 37, sha256: sha(consumer),
-        spelling: 'firstTouchTarget', workspace: '@fixture/consumer' }],
+        spelling: 'localTarget', workspace: '@fixture/consumer' }],
     }] } });
   await writeFile(snapshotPath, snapshot);
   const dispatcher = await installedNativeDispatcher({ repo, root, endpoint, workspace, owner });
-  const toolInput = { file_path: join(root, target) };
-  const read = await call('capability:read', toolInput);
-  assert.equal(read.encoding, 'base64', JSON.stringify(read));
-  assert.deepEqual(Buffer.from(read.data, 'base64'), readFileSync(join(root, target)));
-  const nativeEvent = { hook_event_name: 'PostToolUse', cwd: root,
-    tool_name: 'mcp__papercusp_su__capability_read', tool_input: toolInput, tool_response: read };
+  const shellRead = (name: string) => {
+    const result = spawnSync('rg', [name, target], { cwd: root, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(result.error, undefined);
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+  };
+  const shellEvent = (name: string, result: ReturnType<typeof shellRead>) => ({
+    hook_event_name: 'PostToolUse', cwd: root, tool_name: 'exec_command',
+    tool_input: { cmd: `rg ${name} ${target}`, workdir: root },
+    tool_response: { exit_code: result.status, output: result.stdout + result.stderr },
+  });
+  let shell: ReturnType<typeof shellRead> | undefined;
+  let nativeEvent: Record<string, unknown>;
+  if (leg === 'first-touch') {
+    const toolInput = { file_path: join(root, target) };
+    const read = await call('capability:read', toolInput);
+    assert.equal(read.encoding, 'base64', JSON.stringify(read));
+    assert.deepEqual(Buffer.from(read.data, 'base64'), readFileSync(join(root, target)));
+    nativeEvent = { hook_event_name: 'PostToolUse', cwd: root,
+      tool_name: 'mcp__papercusp_su__capability_read', tool_input: toolInput, tool_response: read };
+  } else {
+    shell = shellRead('firstTouchTarget');
+    assert.equal(shell.status, 0, JSON.stringify(shell));
+    assert.match(shell.stdout, /export function firstTouchTarget/);
+    nativeEvent = shellEvent('firstTouchTarget', shell);
+  }
+  const heading = `Code intelligence (${leg})`;
   let delivered = await dispatcher.post(nativeEvent);
-  for (let attempt = 0; attempt < 10 && !delivered.text.includes('Code intelligence (first-touch)'); attempt++) {
+  for (let attempt = 0; attempt < 10 && !delivered.text.includes(heading); attempt++) {
     await new Promise(done => setTimeout(done, 25));
     delivered = await dispatcher.post(nativeEvent);
   }
-  assert.match(delivered.text, /Code intelligence \(first-touch\)/);
-  assert.match(delivered.text, /firstTouchTarget:1 >=1 static calls/);
+  assert(delivered.text.includes(heading), delivered.text);
   assert(delivered.text.includes('@fixture/consumer'), delivered.text);
   assert(delivered.text.includes(consumer), delivered.text);
-  assert(delivered.text.includes(`testing:run ${JSON.stringify({ files: [testPath], harness: workspace })}`), delivered.text);
-  assert.match(delivered.text, /dynamic dispatch.*runtime execution are unknown/);
+  if (leg === 'first-touch') {
+    assert.match(delivered.text, /firstTouchTarget:1 >=1 static calls/);
+    assert(delivered.text.includes(`testing:run ${JSON.stringify({ files: [testPath], harness: workspace })}`), delivered.text);
+    assert.match(delivered.text, /dynamic dispatch.*runtime execution are unknown/);
+  } else {
+    assert(delivered.text.includes(`firstTouchTarget: definition ${target}:1`), delivered.text);
+    assert.match(delivered.text, /@fixture\/consumer: 1/);
+    assert.match(delivered.text, /Aliases a literal grep can miss: localTarget/);
+    assert.match(delivered.text, /Comments\/strings are excluded/);
+    assert.match(delivered.text, /runtime execution remain unknown/);
+  }
   const rows = await getOrgPg().sql<{ id: string; subject: string; chars: number; cited_paths: string[] }[]>`
     SELECT id, subject, chars, cited_paths FROM harness_shared.code_intel_pushes
-    WHERE workspace_id = ${workspace} AND owner_id = ${owner} AND leg = 'first-touch'`;
+    WHERE workspace_id = ${workspace} AND owner_id = ${owner} AND leg = ${leg}`;
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.subject, target);
+  assert.equal(rows[0]!.subject, leg === 'first-touch' ? target : 'firstTouchTarget');
   assert.equal(rows[0]!.chars, delivered.text.length + 2);
   const duplicate = await dispatcher.post(nativeEvent);
-  assert(!duplicate.text.includes('Code intelligence (first-touch)'), duplicate.text);
+  assert(!duplicate.text.includes(heading), duplicate.text);
+  let unresolvedSuppressed: boolean | undefined;
+  if (leg === 'grep') {
+    const unknown = shellRead('unresolvedFixtureSymbol');
+    assert.equal(unknown.status, 1);
+    const unresolved = await dispatcher.post(shellEvent('unresolvedFixtureSymbol', unknown));
+    assert(!unresolved.text.includes(heading), unresolved.text);
+    unresolvedSuppressed = true;
+  }
   const [count] = await getOrgPg().sql<{ count: number }[]>`SELECT count(*)::int AS count
     FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}
-      AND owner_id = ${owner} AND leg = 'first-touch'`;
+      AND owner_id = ${owner} AND leg = ${leg}`;
   assert.equal(count!.count, 1);
-  console.log('NATIVE_FIRST_TOUCH_API_PROOF=' + JSON.stringify({ workspace, transport: 'real-cli-http',
-    readPath: target, delivered: delivered.text, duplicateSuppressed: true, ledger: rows[0],
+  console.log((leg === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF=' : 'NATIVE_GREP_API_PROOF=')
+    + JSON.stringify({ workspace, transport: 'real-cli-http',
+    readPath: target, shell, unresolvedSuppressed, delivered: delivered.text, duplicateSuppressed: true, ledger: rows[0],
     deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
     installed: { ...dispatcher.installation, processes: dispatcher.processes(), nodeOptions: '',
       envelope: delivered.envelope, duplicateEnvelope: duplicate.envelope },
     snapshotSha256: createHash('sha256').update(snapshot).digest('hex'), sourceSha256: sha(target),
-    scope: 'private current-source installed dispatcher replay after real capability:read; synthetic snapshot commit; no live Codex model session or final shipment' }));
+    scope: `private current-source installed dispatcher replay after real ${leg === 'first-touch' ? 'capability:read' : 'rg'}; synthetic snapshot commit; no live Codex model session or final shipment` }));
 }
 
 /** Reuse the same private handler/CLI/PG boundary without replaying the incident leg. */

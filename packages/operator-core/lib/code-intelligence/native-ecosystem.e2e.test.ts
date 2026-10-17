@@ -48,7 +48,7 @@ function nativeFixtureFailureDiagnostic(
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch') {
+async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep') {
     const root = resolve(import.meta.dirname, '../../../..');
     const sourcePaths = ['packages/operator-core/lib/code-intelligence/push-channel.ts',
       'packages/operator-core/lib/code-intelligence/push-snapshot.ts',
@@ -116,17 +116,32 @@ async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-tou
       });
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
     const prefix = mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
-      : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
+      : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF='
+      : mode === 'grep' ? 'NATIVE_GREP_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
     const line = result.output.split('\n').find(row => row.startsWith(prefix));
     expect(line, result.output).toBeDefined();
     const proof = JSON.parse(line!.slice(prefix.length));
     const afterHashes = sourceHashes();
     expect(afterHashes).toEqual(beforeHashes);
     writeSync(2, `${mode === 'incident' ? 'NATIVE_P038_RUNTIME_PROOF'
-      : mode === 'first-touch' ? 'NATIVE_P036_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
+      : mode === 'first-touch' ? 'NATIVE_P036_RUNTIME_PROOF'
+      : mode === 'grep' ? 'NATIVE_P035_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
     return proof;
     } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
 }
+
+describe('native P035 private operator installed grep answer', () => {
+  it('lets real rg finish, supplies the resolved alias caller and stays quiet for an unresolved symbol', async () => {
+    const proof = await privateNativeJourney('grep');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', duplicateSuppressed: true,
+      unresolvedSuppressed: true, shell: { status: 0, stdout: expect.stringContaining('firstTouchTarget') },
+      ledger: { subject: 'firstTouchTarget' },
+      installed: { nodeOptions: '', envelope: { hookSpecificOutput: {
+        hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('Code intelligence (grep)') } } },
+      scope: expect.stringContaining('no live Codex model session'),
+    });
+  }, 120_000 + 180_000 + 20_000);
+});
 
 describe('native P036 private operator installed first-touch Read', () => {
   it('delivers the snapshot brief through fresh installed hook processes and suppresses a second Read', async () => {

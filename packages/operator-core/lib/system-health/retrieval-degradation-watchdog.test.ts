@@ -103,8 +103,14 @@ describe('retrieval samples on the durable degradation primitive (P-005)', () =>
     const observe = vi.fn((_mechanism: string, _decision: unknown, _opts?: unknown) => true);
     startRetrievalDegradationWatchdog({ observe });
     startRetrievalDegradationWatchdog({ observe });
-    const leg = { status: 'ran', candidates: 5, blocked: null, failures: [] };
-    const legs = { lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' }, degraded: true } as SearchLegs;
+    const leg = {
+      status: 'ran', candidates: 5, floored: 0, stage2Added: 0, callsRun: 0, callsFailed: 0,
+      blocked: null, failures: [],
+    };
+    const legs = {
+      lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' },
+      degraded: true, warning: 'semantic leg blocked',
+    } as SearchLegs;
     const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
     observeLegs(legs, 1000, correlationId);
     observeLegs({ ...legs, semantic: leg, degraded: false } as SearchLegs, 1001);
