@@ -130,6 +130,10 @@ export const RATE_LIMIT_MESSAGE_PATTERN =
 export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
   'operator MCP admission(?: is)? saturated|reason[=: ]+(loop_pressure_critical|operator_admission_capacity)';
 
+/** The release admission worker deliberately rejects overlapping same-process jobs. */
+export const ADMISSION_OFFTHREAD_BUSY_MESSAGE_PATTERN =
+  'an admission job is already running in this process; retry after it settles';
+
 /** Shared-infra exhaustion (PG `max_connections` / DB-unavailable), an operator
  *  shutdown-window response, and a stale-pooled-connection reset against
  *  PgBouncer. These recur identically in SHAPE across tools during a wedge /
@@ -317,6 +321,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'transient',
     messagePattern: OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN,
     why: 'the operator MCP admission gate returned retryable backpressure under critical loop pressure or full capacity — not a per-tool defect',
+  },
+  {
+    class: 'transient',
+    errorCodes: ['ADMISSION_OFFTHREAD_BUSY'],
+    messagePattern: ADMISSION_OFFTHREAD_BUSY_MESSAGE_PATTERN,
+    why: 'release:repair-queue deliberately refuses an overlapping same-process admission job and asks the caller to retry after it settles; this is expected transient backpressure, not a structural tool defect',
   },
   {
     class: 'transient',

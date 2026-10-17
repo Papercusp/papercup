@@ -121,6 +121,20 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     )).toBe('transient');
   });
 
+  it('classifies the release admission worker busy refusal as transient, while retaining structural fallback', () => {
+    const message = 'an admission job is already running in this process; retry after it settles';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('transient');
+    expect(classifyToolError('ADMISSION_OFFTHREAD_BUSY', 'error', 'busy')).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'admission failed with an unrelated error')).toBe('structural');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'release:repair-queue',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    })).toMatchObject({ class: 'transient', direct: false });
+  });
+
   it('D-010: the filing signature ignores schema/runtime churn but keeps tool, family, error code and field', () => {
     const original = normalizeSuspectedToolFailure(metadataToolFailure);
     const signature = toolFailureSignatureKey(metadataToolFailure, original.class);

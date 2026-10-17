@@ -98,6 +98,7 @@ import {
 } from "./check-declared-deps-extracted.mjs";
 import { findBrokenBinLinks } from "./check-partial-install.mjs";
 import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
+import { EMBEDDED_EXTENSIONS, installEmbeddedExtensions, missingWarning } from "./install-embedded-pgvector.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -874,8 +875,26 @@ export async function verifyDepsExtracted({
     runtimeFailures.length === 0 &&
     brokenBinLinks.length === 0;
 
+  // Scoped npm reify/repair can replace native packages without running the
+  // root postinstall. Imports still work, but a fresh database then fails its
+  // first VECTOR column. Reuse the postinstall provisioner before accepting
+  // either healthy dependency path, while the install writer is still held.
+  const verifyNativeExtensions = () => {
+    const extensions = installEmbeddedExtensions({ root: repoRoot, env });
+    for (const missing of extensions.missingSource) console.error(missingWarning(missing));
+    const required = new Set(EMBEDDED_EXTENSIONS.filter(extension => extension.required).map(extension => extension.name));
+    const unavailable = extensions.trees.filter(tree => required.has(tree.extension) &&
+      !["present", "installed", "updated"].includes(tree.status));
+    if (unavailable.length > 0) {
+      console.error("NPM_INSTALL_SAFE_FATAL: required embedded Postgres extensions are unavailable: " +
+        unavailable.map(tree => `${tree.location} (${tree.extension}: ${tree.status})`).join(", "));
+      return 1;
+    }
+    return 0;
+  };
+
   const first = await inspect();
-  if (healthy(first)) return 0;
+  if (healthy(first)) return verifyNativeExtensions();
 
   report(first);
   // A prefix reifies an independent package tree. Keep the full-root verdict,
@@ -963,6 +982,7 @@ export async function verifyDepsExtracted({
 
   const second = await inspect();
   if (healthy(second)) {
+    if (verifyNativeExtensions() !== 0) return 1;
     console.log(
       "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, executable links, and critical runtime imports are healthy",
     );

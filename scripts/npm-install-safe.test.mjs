@@ -1073,6 +1073,77 @@ test("npmChildEnv preserves an explicit caller install choice in offline-safe mo
   );
 });
 
+for (const needsRepair of [false, true]) {
+  test(`dependency verification provisions embedded extensions after scoped reify (repair=${needsRepair})`, async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-pg-extensions-"));
+    const nativePackages = [
+      "node_modules/@embedded-postgres/linux-x64",
+      "apps/operator/node_modules/@embedded-postgres/linux-x64",
+    ];
+    const put = (path, content) => {
+      const target = join(repoRoot, path);
+      mkdirSync(join(target, ".."), { recursive: true });
+      writeFileSync(target, typeof content === "string" ? content : JSON.stringify(content));
+    };
+    put("package.json", { workspaces: ["apps/operator"] });
+    put("apps/operator/package.json", {
+      name: "operator-fixture",
+      dependencies: needsRepair ? { "was-missing": "^1" } : {},
+    });
+    const packages = { "": {} };
+    for (const path of nativePackages) {
+      packages[path] = { version: "18.4.0-beta.1" };
+      put(path + "/package.json", { name: "@embedded-postgres/linux-x64", version: "18.4.0-beta.1" });
+      mkdirSync(join(repoRoot, path, "native"));
+    }
+    put("package-lock.json", { lockfileVersion: 3, packages });
+    put("host/vector.so", "fixture-vector-library");
+    put("host/extension/vector.control", "default_version = '0.8.1'");
+    put("host/extension/vector--0.8.1.sql", "-- fixture extension SQL");
+    let repairs = 0;
+    try {
+      const status = await verifyDepsExtracted({
+        repoRoot,
+        npmArgs: ["install", "--workspace=operator-fixture"],
+        probeSpecifiers: [],
+        env: {
+          PAPERCUSP_PGVECTOR_LIB: join(repoRoot, "host/vector.so"),
+          PAPERCUSP_PGVECTOR_EXT_DIR: join(repoRoot, "host/extension"),
+        },
+        deps: { sleep: async () => {} },
+        runNpm: () => {
+          repairs++;
+          mkdirSync(join(repoRoot, "node_modules/was-missing"), { recursive: true });
+          return 0;
+        },
+      });
+      assert.equal(status, 0);
+      assert.equal(repairs, needsRepair ? 1 : 0);
+      for (const path of nativePackages) {
+        assert.equal(readFileSync(join(repoRoot, path, "native/lib/postgresql/vector.so"), "utf8"), "fixture-vector-library");
+        assert.equal(readFileSync(join(repoRoot, path, "native/share/postgresql/extension/vector.control"), "utf8"), "default_version = '0.8.1'");
+        assert.ok(existsSync(join(repoRoot, path, "native/share/postgresql/extension/vector--0.8.1.sql")));
+      }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+test("dependency verification refuses an embedded server without a required extension source", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-pg-unavailable-"));
+  const pkg = join(repoRoot, "node_modules/@embedded-postgres/linux-x64");
+  mkdirSync(join(pkg, "native"), { recursive: true });
+  writeFileSync(join(repoRoot, "package.json"), JSON.stringify({ workspaces: [] }));
+  // A distinct major keeps the fixture independent of host-installed extensions.
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ version: "97.0.0" }));
+  try {
+    assert.equal(await verifyDepsExtracted({ repoRoot, probeSpecifiers: [], env: {} }), 1);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
 test("verifyDepsExtracted passes the selected npm environment to bounded repairs", async () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-repair-env-"));
   const workspace = join(repoRoot, "apps/operator");

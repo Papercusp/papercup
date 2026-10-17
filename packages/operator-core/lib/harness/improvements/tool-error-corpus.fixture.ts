@@ -202,6 +202,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'the operator admission gate explicitly shed this call for critical loop pressure; retryable shared backpressure, not a per-tool bug',
   },
+  {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: 'an admission job is already running in this process; retry after it settles',
+    expectedClass: 'transient',
+    note: 'EI-26223225337009975: the release admission worker intentionally refuses overlapping same-process jobs; this retryable busy condition must not enter the structural tool-bug lane',
+  },
 
   // ── rate-limit: external provider 429 (capacity, not a code bug) ────────────
   {
