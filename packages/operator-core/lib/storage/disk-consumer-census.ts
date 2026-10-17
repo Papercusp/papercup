@@ -34,6 +34,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 import { alarmWatchedPaths } from './disk-space-alarm';
+import { getBuildInfo } from '../build-info';
 import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from '../dbos/routine-tick-overlap-guard';
 import {
   attributeOwnFiles,
@@ -1012,17 +1013,23 @@ export async function writeCensusRun(
     complete: boolean;
     note: string | null;
     consumers: readonly CensusConsumer[];
+    /** Loaded producer identity; null preserves explicitly identity-less/legacy fixtures. */
+    producerBuildSha?: string | null;
   },
 ): Promise<void> {
   // One row per consumer key: du never repeats a path, but keep the PK safe regardless.
   const unique = [...new Map(run.consumers.map((c) => [c.consumer, c])).values()];
+  // Extend the existing run metadata instead of introducing a parallel ledger or
+  // attributing historical rows to whatever build happens to grade them later.
+  const build = run.producerBuildSha === undefined ? getBuildInfo().sha : run.producerBuildSha;
+  const note = build ? `census-producer:${encodeURIComponent(build)}; ${run.note ?? ''}` : run.note;
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.disk_census_runs
         (run_id, host, device, started_at, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note)
       VALUES (${run.runId}, ${run.host}, ${run.device.device}, ${run.startedAt}, ${run.finishedAt},
               ${run.device.sizeBytes}, ${run.device.usedBytes}, ${run.device.availBytes},
-              ${run.attributedBytes}, ${run.complete}, ${run.note})`;
+              ${run.attributedBytes}, ${run.complete}, ${note})`;
     for (let i = 0; i < unique.length; i += 500) {
       const batch = unique.slice(i, i + 500);
       await tx`
@@ -1049,6 +1056,8 @@ export interface CensusDeviceView {
   host?: string;
   runId?: string;
   baselineRunId?: string | null;
+  producerBuildSha?: string | null;
+  baselineProducerBuildSha?: string | null;
   /** No census run has ever been written for this watched device on this host. */
   missing?: true;
   sampledAt?: string;
@@ -1101,6 +1110,11 @@ function censusVisibility(note: string | null): 'root' | 'unprivileged' | 'legac
   return 'legacy';
 }
 
+function censusProducerBuild(note: string | null): string | null {
+  const encoded = note?.match(/^census-producer:([^;]+); /)?.[1];
+  try { return encoded ? decodeURIComponent(encoded) : null; } catch { return null; }
+}
+
 /** The census read: per device, each consumer's size and its growth over the last ~24h. */
 export async function readDiskConsumerCensus(
   sql: CensusSql,
@@ -1111,6 +1125,8 @@ export async function readDiskConsumerCensus(
     limit?: number;
     /** Watched devices expected to have rows; one with none is reported `missing`. */
     expectedDevices?: readonly string[];
+    /** Historical selection ceiling, separate from the staleness clock. */
+    asOf?: Date;
     now?: Date;
   } = {},
 ): Promise<{ host: string; devices: CensusDeviceView[] }> {
@@ -1121,7 +1137,8 @@ export async function readDiskConsumerCensus(
     SELECT DISTINCT ON (device) run_id, device, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note
       FROM harness_shared.disk_census_runs
      WHERE host = ${host} ${opts.device ? sql`AND device = ${opts.device}` : sql``}
-     ORDER BY device, finished_at DESC`;
+       ${opts.asOf ? sql`AND finished_at <= ${opts.asOf}` : sql``}
+     ORDER BY device, finished_at DESC, run_id`;
   const devices: CensusDeviceView[] = [];
   for (const run of latest) {
     const finishedAt = new Date(run.finished_at);
@@ -1130,7 +1147,7 @@ export async function readDiskConsumerCensus(
       SELECT run_id, finished_at, note, avail_bytes, size_bytes FROM harness_shared.disk_census_runs
        WHERE host = ${host} AND device = ${run.device} AND complete
          AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
-       ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz)))
+       ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz))), run_id
        LIMIT 100`;
     // Changed visibility is not changed consumption. Prefer a comparable clean
     // baseline; otherwise growth stays unknown instead of inventing a spike.
@@ -1147,6 +1164,8 @@ export async function readDiskConsumerCensus(
       host,
       runId: run.run_id,
       baselineRunId: base?.run_id ?? null,
+      producerBuildSha: censusProducerBuild(run.note),
+      baselineProducerBuildSha: censusProducerBuild(base?.note ?? null),
       sampledAt: finishedAt.toISOString(),
       stale: now.getTime() - finishedAt.getTime() > CENSUS_STALE_MS,
       complete: run.complete && censusCoverageReadable(run.note),

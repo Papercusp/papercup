@@ -45,7 +45,10 @@
  * weekday load) rather than adding a second routine (reuse-first).
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
+import { hostname } from 'node:os';
+import { getBuildInfo } from '../../build-info';
 import { pruneStorageCategory } from '../../storage/prune';
+import { observeColdArchiveIntegrity, type ColdEvidence } from '../../storage/cold-tier-evidence';
 import { DEFAULT_PACKAGE_CACHE_MAX_BYTES, runPackageCacheRetention } from '../../storage/package-cache-retention';
 import { cleanupExpiredSessionPorts } from '../../session-port/cleanup';
 import { DEFAULT_RETENTION_TARGETS, type RetentionTarget } from './telemetry-retention-targets';
@@ -186,9 +189,15 @@ export function resolveTargets(cfg: Record<string, unknown>): RetentionTarget[] 
 }
 
 registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
+  const startedAt = new Date().toISOString();
   const cfg = ctx.triggerConfig ?? {};
   const dryRun = cfg.dry_run === true;
   const targets = resolveTargets(cfg);
+  const failures: string[] = [];
+  const results: Array<{ category: string; retentionDays: number; complete: boolean;
+    removed: number; calls: number; vacuumed: boolean; partial: boolean; error?: string }> = [];
+  let coldMigration: Record<string, unknown> = { skipped: dryRun ? 'dry_run' : 'disabled' };
+  let coldIntegrity: ColdEvidence | { skipped: 'dry_run' } = { skipped: 'dry_run' };
 
   // `dry_run` is a complete preview: it must not export or delete archive
   // rows, even though the regular retention targets still receive a preview.
@@ -198,16 +207,39 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
         maxArchives: Number(cfg.cold_archive_max_archives),
         root: typeof cfg.cold_archive_root === 'string' ? cfg.cold_archive_root : undefined,
       });
+      coldMigration = cold;
+      if (cold.failed > 0) failures.push(`cold archive migration: ${cold.failed} failure(s)`);
       console.log(`[telemetry-retention] cold archive migration: scanned ${cold.scanned}, migrated ${cold.migrated}, failed ${cold.failed}`);
       for (const error of cold.errors) console.warn(`[telemetry-retention] cold archive migration: ${error}`);
     } catch (error) {
+      coldMigration = { error: error instanceof Error ? error.message : String(error) };
+      failures.push(`cold archive migration: ${coldMigration.error}`);
       console.warn(`[telemetry-retention] cold archive migration failed — ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // Verify existing cold bytes independently of the migration enablement gate.
+  // This bounded read records an audit witness, never exports/deletes payloads,
+  // and is linked by id from this routine's existing completion receipt.
+  if (!dryRun) {
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      coldIntegrity = await observeColdArchiveIntegrity(getOrgPg().sql, ctx.workspaceId);
+      if (coldIntegrity.verdict === 'fail') failures.push(`cold archive integrity: ${coldIntegrity.detail}`);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      coldIntegrity = { verdict: 'unknown', detail };
+      failures.push(`cold archive integrity observation: ${detail}`);
+      console.warn(`[telemetry-retention] cold archive integrity observation failed — ${detail}`);
     }
   }
 
   for (const t of targets) {
     const days = Number(t.retention_days);
     if (!Number.isFinite(days) || days < 0) {
+      failures.push(`${t.category}: invalid retention_days`);
+      results.push({ category: t.category, retentionDays: days, complete: false,
+        removed: 0, calls: 0, vacuumed: false, partial: false, error: 'invalid retention_days' });
       console.warn(`[telemetry-retention] skipping "${t.category}": invalid retention_days ${t.retention_days}`);
       continue;
     }
@@ -216,6 +248,7 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
     let calls = 0;
     let vacuumed = false;
     let failed: string | undefined;
+    let partial = false;
 
     // Drain the category — the prune is chunked + returns `partial` past its
     // per-call ceiling. Bounded by MAX_CALLS_PER_TARGET; the next tick continues.
@@ -233,8 +266,13 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
       totalRemoved += r.removed;
       calls += 1;
       vacuumed = vacuumed || r.vacuumed;
+      partial = r.partial === true;
       if (!r.partial || dryRun || calls >= MAX_CALLS_PER_TARGET) break;
     }
+
+    results.push({ category: t.category, retentionDays: days, complete: !dryRun && !failed && !partial,
+      removed: totalRemoved, calls, vacuumed, partial, ...(failed ? { error: failed } : {}) });
+    if (failed || (!dryRun && partial)) failures.push(`${t.category}: ${failed ?? 'prune call ceiling reached with remaining rows'}`);
 
     if (failed) {
       console.warn(`[telemetry-retention] "${t.category}" prune failed — ${failed}`);
@@ -327,4 +365,15 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
       );
     }
   }
+  // The routine executor persists this return in its existing DBOS step output.
+  // A scheduled/started fire, dry run, swallowed error or exhausted drain is
+  // explicitly distinct from a completed table-retention execution.
+  return { diagnostics: { retention: { schemaVersion: 1, kind: 'telemetry-retention-completion',
+    workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, routineId: ctx.routineId ?? null,
+    workflowId: ctx.workflowId ?? null, host: hostname(), runtimeBuild: getBuildInfo().sha,
+    pid: process.pid, processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    startedAt, finishedAt: new Date().toISOString(), dryRun,
+    tableRetentionComplete: !dryRun && results.length === targets.length && results.length > 0 && results.every(r => r.complete),
+    targets: results, coldMigration, coldIntegrity,
+  } }, ...(failures.length ? { softError: failures.join('; ').slice(0, 600) } : {}) };
 });

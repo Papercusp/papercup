@@ -42,8 +42,13 @@
  * so it can never affect the system it watches.
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
+import { z } from 'zod';
 import { desc, inArray } from 'drizzle-orm';
 import { escalateAlarm, resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
+import { getBuildInfo } from '../build-info';
 
 export const STORAGE_GROWTH_ALARM_CONDITION_KEY = 'alarm:storage-growth';
 import { notifySyncInvalidate } from '../sync-sse';
@@ -102,7 +107,7 @@ export interface GrowthAlarmDeps extends Pick<AlarmAttentionDeps, 'broadcast' | 
   /** Injectable for tests — defaults to a sizes-only (cheap) usage scan. */
   computeUsage?: () => Promise<StorageUsageRow[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
-  emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
+  emitToast?: (t: StorageGrowthToast, observation?: DiskHeadroomObservation) => Promise<void>;
   /** Injectable for tests — defaults to a live `pg_stat_user_tables` size scan.
    *  Feeds the UNDECLARED sweep below, which deliberately does NOT go through
    *  `computeStorageUsage` (that is category-derived — the blind spot). */
@@ -648,17 +653,134 @@ export function detectBreaches(rows: StorageUsageRow[]): StorageBreach[] {
   return breaches;
 }
 
-async function defaultEmitToast(t: { level: string; message: string; description: string }): Promise<void> {
+type StorageGrowthToast = { level: string; message: string; description: string };
+export const DISK_HEADROOM_OBSERVATION_ACTION = 'storage:disk-headroom-alarm';
+const HEADROOM_DEVICES = ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'] as const;
+const NATIVE_HEADROOM_FRESH_MS = 90 * 60_000;
+const nativeHeadroomObservation = z.object({
+  schemaVersion: z.literal(1), observedAt: z.string().datetime({ offset: true }),
+  runtime: z.object({ host: z.string().min(1), pid: z.number().int().positive(),
+    startedAt: z.string().datetime({ offset: true }), buildSha: z.string().min(1) }),
+  floors: z.unknown(), horizonDays: z.number(), devices: z.array(z.unknown()),
+  breaches: z.array(z.unknown()), growth: z.array(z.unknown()), projectionUnknown: z.array(z.string()),
+  notification: z.object({ id: z.string().min(1), level: z.string(), message: z.string(), description: z.string() }),
+});
+
+/** Recompute the recorded decision from native census rows, never from the
+ * observation's self-reported inputs. A surviving toast alone cannot pass. */
+export function assessNativeDiskHeadroomAlarm(observation: unknown, devices: readonly CensusDeviceView[],
+  notification: unknown, scope: { host: string; buildSha: string | null; now: number; hourlyCoverage: boolean }): {
+    verdict: 'pass' | 'fail' | 'unknown'; detail: string;
+  } {
+  const unknown = (detail: string) => ({ verdict: 'unknown' as const, detail });
+  const parsed = nativeHeadroomObservation.safeParse(observation);
+  if (!parsed.success || !scope.buildSha || !scope.hourlyCoverage) return unknown('Native identity, notification evidence or hourly census coverage is incomplete.');
+  const o = parsed.data, observed = Date.parse(o.observedAt);
+  if (o.runtime.host !== scope.host || o.runtime.buildSha !== scope.buildSha ||
+      Date.parse(o.runtime.startedAt) > observed || observed > scope.now || scope.now - observed > NATIVE_HEADROOM_FRESH_MS) {
+    return unknown('The alarm is stale, future-dated, or belongs to another host/build.');
+  }
+  // An unrelated mount is outside this criterion's four-volume population.
+  devices = devices.filter(d => (HEADROOM_DEVICES as readonly string[]).includes(d.device));
+  if (new Set(devices.map(d => d.device)).size !== devices.length || HEADROOM_DEVICES.some(path => !devices.some(d => d.device === path)) ||
+      devices.some(d => d.host !== scope.host || !d.runId || !d.baselineRunId || d.missing || d.stale || d.complete !== true ||
+        d.producerBuildSha !== scope.buildSha || d.baselineProducerBuildSha !== scope.buildSha ||
+        d.coverageGap || d.truncatedByLimit !== false || diskGrowthRate(d) === null || Date.parse(d.sampledAt ?? '') > observed ||
+        observed - Date.parse(d.sampledAt ?? '') > NATIVE_HEADROOM_FRESH_MS)) return unknown('A required native census, comparable producer baseline or complete consumer attribution is missing.');
+  const ordered = (rows: readonly unknown[]) => [...rows].sort((a, b) =>
+    String((a as CensusDeviceView)?.device).localeCompare(String((b as CensusDeviceView)?.device)));
+  if (!isDeepStrictEqual(ordered(o.devices), ordered(devices))) return unknown('Saved alarm inputs do not match the original native census identities and bytes.');
+  // PG may return devices in a different order. Preserve only the original
+  // presentation order after every identity and byte has been verified above.
+  const nativeByDevice = new Map(devices.map(d => [d.device, d]));
+  devices = o.devices.map(d => nativeByDevice.get((d as CensusDeviceView).device)!);
+  const breaches = detectDiskHeadroom(devices), growth = detectDiskGrowthWarnings(devices);
+  if (growth.some(g => !g.topGrowers.length)) return unknown('A fast-growing volume has no measured top grower.');
+  if (!isDeepStrictEqual(o.floors, DISK_HEADROOM_FLOORS) || o.horizonDays !== DISK_GROWTH_HORIZON_DAYS ||
+      o.projectionUnknown.length || !isDeepStrictEqual(o.breaches, breaches) || !isDeepStrictEqual(o.growth, growth)) {
+    return { verdict: 'fail', detail: 'The persisted alarm differs from the native floor/growth/top-grower decision.' };
+  }
+  if (!breaches.length && !growth.length) return unknown('No current native breach exercises notification delivery.');
+  const expected = { id: o.notification.id, ...formatDiskHeadroomToast(breaches, growth) };
+  if (!isDeepStrictEqual(o.notification, expected) || !isDeepStrictEqual(notification, expected)) {
+    return unknown('The exact successful notification is absent or differs from the recorded native decision.');
+  }
+  return { verdict: 'pass', detail: `Native census, 24 hourly buckets per device, exact <7-day/floor decision and notification ${expected.id} verified on ${scope.host}/${scope.buildSha}.` };
+}
+
+/** Read-only acceptance adapter on the existing audit/census/toast ledgers.
+ * No new census, notification, schedule or reclaim is started by measurement. */
+export async function measureNativeDiskHeadroomAlarm(sql: Pick<import('postgres').Sql, 'unsafe'>,
+  scope: { workspaceId: string; host: string; buildSha: string | null; now?: number; windowStart?: string; windowEnd?: string }) {
+  // A rescore is a fresh snapshot at its requested end, never at regrade wall time.
+  const now = scope.windowEnd === undefined ? scope.now ?? Date.now() : Date.parse(scope.windowEnd);
+  const start = scope.windowStart === undefined ? now - NATIVE_HEADROOM_FRESH_MS : Date.parse(scope.windowStart);
+  if (!Number.isFinite(now) || !Number.isFinite(start) || start > now || !scope.buildSha) {
+    return { verdict: 'unknown' as const, detail: 'Native build identity or requested snapshot window is invalid.' };
+  }
+  const rows = await sql.unsafe(`SELECT a.details, t.id::text AS notification_id, t.level, t.message, t.description
+    FROM (SELECT details FROM harness_shared.audit_log WHERE workspace_id=$1
+      AND actor='system:storage-growth-alarm' AND action=$2 AND details->'runtime'->>'host'=$3
+      AND ts BETWEEN $4 AND $5 ORDER BY ts DESC,id DESC LIMIT 1) a
+    LEFT JOIN harness_shared.toast_log t ON t.id::text=a.details->'notification'->>'id'`,
+  [scope.workspaceId, DISK_HEADROOM_OBSERVATION_ACTION, scope.host, Math.max(start, now - NATIVE_HEADROOM_FRESH_MS), now]);
+  const row = rows[0];
+  const observation = nativeHeadroomObservation.safeParse(row?.details);
+  if (!observation.success) return { verdict: 'unknown' as const, detail: 'No native alarm observation in the requested snapshot window.' };
+  const observed = Date.parse(observation.data.observedAt);
+  if (observed < start || observed > now || now - observed > NATIVE_HEADROOM_FRESH_MS) {
+    return { verdict: 'unknown' as const, detail: 'Alarm observation is outside the requested fresh snapshot.' };
+  }
+  const producerPrefix = `census-producer:${encodeURIComponent(scope.buildSha)}; `;
+  const coverage = await sql.unsafe(`SELECT bool_and(EXISTS(SELECT 1 FROM harness_shared.disk_census_runs r
+    WHERE r.host=$1 AND r.device=d.device AND r.complete AND r.finished_at<=to_timestamp($2/1000.0)
+      AND starts_with(r.note,$3)
+      AND r.started_at>=to_timestamp($2/1000.0)-interval '24 hours'+h*interval '1 hour'
+      AND r.started_at<to_timestamp($2/1000.0)-interval '24 hours'+(h+1)*interval '1 hour')) AS complete
+    FROM (VALUES ('/'),('/mnt/data'),('/mnt/cold-a'),('/mnt/cold-b')) d(device)
+    CROSS JOIN generate_series(0,23) h`, [scope.host, observed, producerPrefix]);
+  const { readDiskConsumerCensus } = await import('./disk-consumer-census');
+  const native = await Promise.all(HEADROOM_DEVICES.map(device => readDiskConsumerCensus(sql as never, {
+    host: scope.host, device, orderBy: 'growth', limit: 20, expectedDevices: [device],
+    asOf: new Date(observed), now: new Date(observed),
+  })));
+  return assessNativeDiskHeadroomAlarm(row?.details, native.flatMap(r => r.devices), row?.notification_id ? {
+    id: row.notification_id, level: row.level, message: row.message, description: row.description,
+  } : null, { ...scope, now, hourlyCoverage: coverage[0]?.complete === true });
+}
+/** Inputs and decision from this invocation. Missing identities stay missing: an
+ * audit row is an observation, not by itself an acceptance verdict. */
+export interface DiskHeadroomObservation {
+  schemaVersion: 1;
+  observedAt: string;
+  runtime: { host: string; pid: number; startedAt: string; buildSha: string | null };
+  floors: typeof DISK_HEADROOM_FLOORS;
+  horizonDays: number;
+  devices: readonly CensusDeviceView[];
+  breaches: DiskHeadroomBreach[];
+  growth: DiskGrowthWarning[];
+  projectionUnknown: string[];
+}
+
+/** The notification and its native evidence share one transaction. Neither a
+ * failed notification nor a failed evidence write can leave a success receipt.
+ * Reuses toast_log + audit_log, including the toast's actual persisted id. */
+export async function emitStorageGrowthToast(t: StorageGrowthToast, observation?: DiskHeadroomObservation,
+  options: { db?: ReturnType<typeof getOrgPg>['db']; workspaceId?: string } = {}): Promise<void> {
   const tl = generated.toastLogInHarnessShared;
-  const { db } = getOrgPg();
-  await db.insert(tl).values({
-    level: t.level,
-    message: t.message,
-    description: t.description,
-    harnessSlug: null,
-    createdAt: Date.now(),
-    actionLabel: null,
-    actionHref: null,
+  const db = options.db ?? getOrgPg().db;
+  const workspaceId = observation ? options.workspaceId ?? (await import('../workspace-registry')).activeWorkspaceId() : null;
+  await db.transaction(async tx => {
+    const [notification] = await tx.insert(tl).values({
+      level: t.level, message: t.message, description: t.description, harnessSlug: null,
+      createdAt: Date.now(), actionLabel: null, actionHref: null,
+    }).returning({ id: tl.id });
+    if (!notification) throw new Error('Storage alarm notification insert returned no identity');
+    if (observation) await tx.insert(generated.auditLogInHarnessShared).values({
+      id: randomUUID(), ts: Date.now(), actor: 'system:storage-growth-alarm',
+      action: DISK_HEADROOM_OBSERVATION_ACTION, subject: String(notification.id), workspaceId: workspaceId!,
+      details: { ...observation, notification: { id: String(notification.id), ...t } },
+    });
   });
   // Bound the ring buffer (mirrors agent-governor-observer).
   void (async () => {
@@ -673,6 +795,8 @@ async function defaultEmitToast(t: { level: string; message: string; description
   })().catch(() => {});
   void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
 }
+
+const defaultEmitToast = emitStorageGrowthToast;
 
 /** Build the toast body for a set of breaches. Pure — unit-testable. */
 export function formatBreachToast(breaches: StorageBreach[]): { level: string; message: string; description: string } {
@@ -881,9 +1005,10 @@ async function defaultListTableSizes(): Promise<TableSizeRow[]> {
 async function defaultReadDiskCensus(): Promise<readonly CensusDeviceView[]> {
   const { readDiskConsumerCensus, resolveCensusDevices } = await import('./disk-consumer-census');
   const { sql } = getOrgPg();
-  const expectedDevices = (await resolveCensusDevices()).map(d => d.device);
+  const expectedDevices = (await resolveCensusDevices()).map(d => d.device)
+    .filter(device => (HEADROOM_DEVICES as readonly string[]).includes(device));
   const result = await readDiskConsumerCensus(sql as never, { orderBy: 'growth', limit: 20, expectedDevices });
-  return result.devices;
+  return result.devices.filter(d => (HEADROOM_DEVICES as readonly string[]).includes(d.device));
 }
 
 /** Cheap persisted-history leg, also used by the existing 30-minute disk alarm. */
@@ -894,7 +1019,14 @@ export async function runDiskHeadroomAlarmOnce(deps: Pick<GrowthAlarmDeps, 'read
     const devices = await (deps.readDiskCensus ?? defaultReadDiskCensus)();
     const diskHeadroom = detectDiskHeadroom(devices), diskGrowth = detectDiskGrowthWarnings(devices);
     const diskProjectionUnknown = devices.filter(d => diskGrowthRate(d) === null).map(d => d.device);
-    if (diskHeadroom.length || diskGrowth.length) await (deps.emitToast ?? defaultEmitToast)(formatDiskHeadroomToast(diskHeadroom, diskGrowth));
+    if (diskHeadroom.length || diskGrowth.length) await (deps.emitToast ?? defaultEmitToast)(
+      formatDiskHeadroomToast(diskHeadroom, diskGrowth), {
+        schemaVersion: 1, observedAt: new Date().toISOString(),
+        runtime: { host: hostname(), pid: process.pid,
+          startedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(), buildSha: getBuildInfo().sha },
+        floors: DISK_HEADROOM_FLOORS, horizonDays: DISK_GROWTH_HORIZON_DAYS,
+        devices, breaches: diskHeadroom, growth: diskGrowth, projectionUnknown: diskProjectionUnknown,
+      });
     return { diskHeadroom, diskGrowth, diskProjectionUnknown: devices.length ? diskProjectionUnknown : ['census unavailable'] };
   } catch (err) {
     console.warn(`[storage-growth-alarm] disk headroom projection skipped (UNKNOWN, non-fatal): ${(err as Error)?.message ?? String(err)}`);

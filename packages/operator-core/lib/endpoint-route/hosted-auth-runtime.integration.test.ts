@@ -1,5 +1,6 @@
 /** P-537: the production callback composes real identity, session and trial stores. */
 import { randomUUID } from 'node:crypto';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { serve } from '@hono/node-server';
@@ -26,11 +27,34 @@ import { parseHostedPaidEntitlementBundle } from '../auth/hosted/billing/entitle
 import { computeStripeSignature } from '../cupboard/payment-adapters/stripe';
 import { createHostedBillingRuntime } from './hosted-billing-runtime';
 import { firstWorkspaceIdentity } from '../auth/hosted/first-workspace';
+import { launchWithHostedAgentSlot, reserveHostedAgentSlot } from '../workspace-host/hosted-agent-admission-client';
+import { admitHostedLifecycleJob, recordHostedPoolActivity,
+  type AdmitHostedLifecycleJobInput } from '../workspace-host/hosted-lifecycle-store';
 
-const h = vi.hoisted(() => ({ provider: undefined as unknown as HostedIdentityProvider, sql: null as unknown as Sql }));
+const h = vi.hoisted(() => ({ provider: undefined as unknown as HostedIdentityProvider,
+  sql: null as unknown as Sql, adminSql: null as unknown as Sql, admissionErrors: [] as string[] }));
+// Keep the production reservation path intact, retaining its otherwise hidden
+// failure only in this test process. Public HTTP errors remain content-free.
+vi.mock('../workspace-host/hosted-agent-admission', async original => {
+  const actual = await original<typeof import('../workspace-host/hosted-agent-admission')>();
+  return { ...actual, createHostedPoolAgentReservations: (...args: Parameters<typeof actual.createHostedPoolAgentReservations>) => {
+    const reserve = actual.createHostedPoolAgentReservations(...args);
+    return async (...input: Parameters<typeof reserve>) => {
+      try { return await reserve(...input); }
+      catch (error) {
+        const value = error as Error & { code?: string; cause?: unknown };
+        h.admissionErrors.push(`${input[0]}: ${value.name}: ${value.message}; code=${value.code ?? ''}; cause=${String(value.cause ?? '')}`);
+        throw error;
+      }
+    };
+  } };
+});
 // Keep the workspace transaction and harness_app RLS, selecting this test's DB.
 vi.mock('@papercusp/db-org', async original => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
+  // The production agent HTTP route resolves its canonical admin ledger here.
+  // Select the same isolated PG as the role-scoped workspace/service clients.
+  getOrgPg: () => ({ sql: h.adminSql }),
   withWorkspace: <T>(workspaceId: string, run: (tx: Sql) => Promise<T>) => h.sql.begin(async tx => {
     await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
     return run(tx as unknown as Sql);
@@ -100,6 +124,7 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.sql = db.appSql;
+    h.adminSql = db.adminSql;
     let billingMigration: string;
     try {
       billingMigration = readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/1515-hosted-billing-api-recovery.sql.DRAFT', import.meta.url), 'utf8');
@@ -124,8 +149,12 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
     await once(server, 'listening');
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('private hosted HTTP listener unavailable');
-    return (path: string, init?: RequestInit) =>
-      fetch(`http://127.0.0.1:${address.port}${path}`, { ...init, redirect: 'manual' });
+    return (path: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      // Exercise production hostname authentication over an owned local socket.
+      headers.set('host', new URL(configuration.publicOrigin).host);
+      return fetch(`http://127.0.0.1:${address.port}${path}`, { ...init, headers, redirect: 'manual' });
+    };
   }
 
   async function fixture(trialEntitlementPolicy?: HostedTrialEntitlementPolicy, pooled = false, expectedRevision = 1) {
@@ -217,6 +246,151 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
     expect(host.desired_spec.data.allocation.dbGiB + host.desired_spec.data.allocation.workspaceGiB)
       .toBe(host.desired_spec.data.volumeGiB);
   });
+
+  if (runtimeKind === 'full-control-plane') it('protects an actual native child and viewer from idle stop, then fences new starts', async () => {
+    const base = policy();
+    const trial = { ...base, bundle: { ...base.bundle, entitlements: { ...base.bundle.entitlements,
+      quotas: { ...base.bundle.entitlements.quotas, 'pool.agents': 1, 'pool.idle-stop-minutes': 5 } } } };
+    const f = await fixture(trial, true);
+    const signedIn = await f.callback();
+    const cookie = signedIn.headers.get('set-cookie')!.match(new RegExp(`${HOSTED_SESSION_COOKIE}=([^;,]+)`))![1];
+    const first = await f.request(`/api${HOSTED_BROWSER_FIRST_WORKSPACE_PATH}`, {
+      method: 'POST', headers: { origin: configuration.publicOrigin, 'content-type': 'application/json',
+        cookie: `${HOSTED_SESSION_COOKIE}=${cookie}` },
+      body: JSON.stringify({ attemptKey: 'native-attempt-0123456789abcdef',
+        displayName: 'Native trial workspace', label: 'Native hosting', hosting: 'papercusp' }),
+    });
+    expect(first.status, await first.clone().text()).toBe(201);
+    const result = await first.json();
+    const ws = configuration.controlPlaneWorkspaceId;
+    const [operation] = await db.adminSql`SELECT admission_receipt FROM harness_shared.workspace_host_operations
+      WHERE workspace_id = ${ws} AND id = ${result.provisionOperationId}`;
+    const { hostId, customerWorkspaceId } = operation.admission_receipt.result;
+    const [host] = await db.adminSql`SELECT host_generation, controller_fence, desired_revision
+      FROM harness_shared.workspace_hosts WHERE workspace_id = ${ws} AND id = ${hostId}`;
+    // Provider completion is the external seam: no cloud VM is purchased by
+    // this test. The HTTP/runtime, RLS, connector and admission ledger stay real.
+    await db.adminSql`UPDATE harness_shared.workspace_host_operations SET status = 'succeeded'
+      WHERE workspace_id = ${ws} AND id = ${result.provisionOperationId}`;
+    await db.adminSql`UPDATE harness_shared.customer_workspaces SET state = 'active'
+      WHERE workspace_id = ${ws} AND id = ${customerWorkspaceId} AND state = 'provisioning'`;
+    await db.adminSql`UPDATE harness_shared.workspace_hosts SET observed_state = 'running',
+      observed_revision = desired_revision, pool_observation = ${JSON.stringify({
+        generation: Number(host.host_generation), controllerFence: Number(host.controller_fence),
+        desiredRevision: Number(host.desired_revision), observedAtMs: Date.now(),
+      })}::jsonb WHERE workspace_id = ${ws} AND id = ${hostId}`;
+    if (!('connectorGateway' in f.runtime.components) || !f.runtime.components.connectorGateway) {
+      throw new Error('full hosted runtime must compose its production connector gateway');
+    }
+    const gateway = f.runtime.components.connectorGateway;
+    const enrollment = await gateway.enroll({ controlPlaneWorkspaceId: ws,
+      organizationId: f.organizationId, customerWorkspaceId, hostId,
+      routeLabel: 'native-trial', transport: 'websocket' });
+    const registered = await f.request('/api/hosted/connectors/register', {
+      method: 'POST', headers: { 'x-papercusp-connector-ticket': enrollment.ticket },
+    });
+    expect(registered.status, await registered.clone().text()).toBe(200);
+    const credential = await registered.json();
+    const binding = { ...credential.binding, hosting: 'papercusp' as const };
+    // Preflight every prerequisite before launching a native child. Earlier
+    // attempts exposed an incomplete provider-completion fixture and an opaque
+    // HTTP refusal; neither should require another full run to distinguish.
+    const [readyCustomer] = await db.adminSql`SELECT state, workspace_host_id FROM harness_shared.customer_workspaces
+      WHERE workspace_id = ${ws} AND id = ${customerWorkspaceId}`;
+    expect(readyCustomer).toMatchObject({ state: 'active', workspace_host_id: hostId });
+    const [readyHost] = await db.adminSql`SELECT observed_state, observed_revision, desired_revision, pool_observation,
+      host_generation, controller_fence FROM harness_shared.workspace_hosts WHERE workspace_id = ${ws} AND id = ${hostId}`;
+    expect(readyHost.observed_state).toBe('running');
+    expect(readyHost.observed_revision).toBe(readyHost.desired_revision);
+    expect(readyHost.pool_observation).toMatchObject({ generation: Number(readyHost.host_generation),
+      controllerFence: Number(readyHost.controller_fence), desiredRevision: Number(readyHost.desired_revision) });
+    expect(await gateway.authenticate(credential.bearer)).toMatchObject({ state: 'active',
+      customerWorkspaceId, hostId, organizationId: f.organizationId, generation: binding.generation });
+    const authority = await runService(sql => readHostedEntitlementAuthority(sql, f.organizationId));
+    expect(authority).toMatchObject({ ok: true, authorityRevision: 1, resolution: { quotas: { 'pool.agents': 1 } } });
+    const env = { PAPERCUSP_SID: `native-test-${randomUUID()}`,
+      PAPERCUSP_HOSTED_CONNECTOR_BEARER: credential.bearer,
+      PAPERCUSP_HOSTED_CONTROL_PLANE_URL: configuration.publicOrigin };
+    h.admissionErrors.length = 0;
+    const actions: Array<{ action: string; status: number; receiptId?: string; state?: string; body: string }> = [];
+    const http: typeof fetch = async (url, init) => {
+      const response = await f.request(new URL(String(url)).pathname, init);
+      const body = await response.clone().text();
+      const value = JSON.parse(body);
+      actions.push({ action: JSON.parse(String(init!.body)).action, status: response.status,
+        receiptId: value.receiptId, state: value.state, body });
+      return response;
+    };
+    const reserve = async (key: string, childEnv?: NodeJS.ProcessEnv) => {
+      try { return await reserveHostedAgentSlot(key, childEnv, http); }
+      catch (error) {
+        throw new Error(`${(error as Error).message}; HTTP=${JSON.stringify(actions)}; reservation=${JSON.stringify(h.admissionErrors)}`, { cause: error });
+      }
+    };
+    const stop: AdmitHostedLifecycleJobInput = {
+      workspaceId: ws, customerWorkspaceId, hostId, providerTarget: 'gcp', action: 'stop',
+      actorId: 'service:idle-sweep', operationId: `idle-${randomUUID()}`, idleStop: true,
+      billingOwner: { kind: 'organization', id: f.organizationId },
+      riskTier: 'low', approvalStatus: 'not-required',
+      estimate: { cents: 0, currency: 'USD', source: 'fixture-provider', evidenceRef: 'fixture:stop',
+        estimatedAt: new Date().toISOString() }, request: { hostId, action: 'stop' },
+    };
+    const ageActivity = () => db.adminSql`UPDATE harness_shared.customer_workspaces
+      SET last_activity_at = now() - interval '1 hour' WHERE workspace_id = ${ws} AND id = ${customerWorkspaceId}`;
+    const receipts = () => db.adminSql`SELECT receipt_id, state, record FROM harness_shared.resource_governor_admissions
+      WHERE workspace_id = ${ws} AND record->'metadata'->>'hostedCustomerWorkspaceId' = ${customerWorkspaceId}`;
+    expect(await recordHostedPoolActivity(binding, { activeCommands: 0, attachedViewers: 0 })).toBe(true);
+    await ageActivity();
+    let child: ChildProcess | undefined;
+    let settled: Promise<void> | undefined;
+    try {
+      await launchWithHostedAgentSlot(env, finish => {
+        child = spawn(process.execPath, ['-e', 'process.stdin.resume(); process.stdin.on("end", () => process.exit(0));'],
+          { stdio: ['pipe', 'ignore', 'ignore'] });
+        settled = (async () => { const [code] = await once(child!, 'exit'); expect(code).toBe(0); await finish(); })();
+      }, reserve);
+      expect(child?.pid).toBeGreaterThan(0);
+      expect(actions.map(x => [x.action, x.status, x.state])).toEqual([
+        ['reserve', 200, 'queued'], ['start', 200, 'running'],
+      ]);
+      expect(await receipts()).toMatchObject([{ state: 'running', record: { metadata: {
+        hostedOrganizationId: f.organizationId, hostedHostId: hostId, hostedConnectorGeneration: binding.generation,
+      } } }]);
+      const refusedSpawn = vi.fn();
+      await expect(launchWithHostedAgentSlot({ ...env, PAPERCUSP_HOSTED_NATIVE_SLOT: '' }, refusedSpawn, reserve))
+        .rejects.toThrow('hosted_pool_agent_admission_refused');
+      expect(refusedSpawn).not.toHaveBeenCalled();
+      // Even a fresh zero-work report cannot erase a real running receipt.
+      await expect(admitHostedLifecycleJob(stop)).rejects.toThrow('hosted_pool_idle_active_work');
+      expect(child?.exitCode).toBeNull();
+    } finally {
+      child?.stdin?.end();
+      await settled;
+    }
+    expect(actions.at(-1)).toMatchObject({ action: 'finish', status: 200, state: 'cancelled',
+      receiptId: actions[0].receiptId });
+    expect(await receipts()).toMatchObject([{ state: 'cancelled' }]);
+    expect(await recordHostedPoolActivity(binding, { activeCommands: 0, attachedViewers: 1 })).toBe(true);
+    await ageActivity();
+    await expect(admitHostedLifecycleJob(stop)).rejects.toThrow('hosted_pool_idle_active_work');
+    expect(await recordHostedPoolActivity(binding, { activeCommands: 0, attachedViewers: 0 })).toBe(true);
+    await ageActivity();
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET pool_observation = jsonb_set(pool_observation, '{workload,observedAtMs}',
+        ${JSON.stringify(Date.now() - 90_000)}::jsonb) WHERE workspace_id = ${ws} AND id = ${hostId}`;
+    await expect(admitHostedLifecycleJob(stop)).rejects.toThrow('hosted_pool_idle_workload_unverified');
+    expect(await recordHostedPoolActivity(binding, { activeCommands: 0, attachedViewers: 0 })).toBe(true);
+    const stopped = await admitHostedLifecycleJob(stop);
+    expect(stopped).toMatchObject({ created: true, action: 'stop', idleStop: {
+      authorityRevision: 1, idleStopAfterMinutes: 5, connectorGeneration: binding.generation,
+      hostGeneration: Number(host.host_generation), controllerFence: Number(host.controller_fence),
+    } });
+    const fencedSpawn = vi.fn();
+    await expect(launchWithHostedAgentSlot({ ...env, PAPERCUSP_HOSTED_NATIVE_SLOT: '' }, fencedSpawn, reserve))
+      .rejects.toThrow('hosted_pool_agent_admission_refused');
+    expect(fencedSpawn).not.toHaveBeenCalled();
+    expect(await receipts()).toMatchObject([{ state: 'cancelled' }]);
+  }, 30_000);
 
   if (runtimeKind === 'full-control-plane') it('uses signed configured billing authority for paid admission and revokes it without deleting retained state', async () => {
     const f = await fixture(policy(2000), true, 2);

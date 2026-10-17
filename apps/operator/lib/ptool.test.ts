@@ -1046,6 +1046,26 @@ describe('ptool timeoutForTool — fleet:assignments outlives BYOC live-recheck 
   });
 });
 
+describe('ptool timeoutForTool — fleet:leader-brief outlives projection and MCP settlement (EI-26141314393026733)', () => {
+  it('keeps direct leader briefs beyond the flat client and transport deadlines', () => {
+    const timeout = timeoutForTool('fleet:leader-brief', {
+      fleet: 'nonp2p-bug-drain-luna-max-0930',
+      harness: 'papercusp',
+      workspace: 'papercusp-workspace',
+    });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('applies the same leader-brief budget through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'fleet:leader-brief',
+      args: { fleet: 'nonp2p-bug-drain-luna-max-0930' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — db:migrate outlives the MCP request deadline (EI-22613070628418671)', () => {
   it('gives the migration call a client deadline beyond the transport cap, not the flat 30s ceiling', () => {
     expect(timeoutForTool('db:migrate', {})).toBe(PTOOL_DB_MIGRATE_TIMEOUT_MS);

@@ -53,6 +53,15 @@ if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime) || (managedTask
   process.exit(2);
 }
 
+// This internal mode sends admission/teardown receipts to its supervising
+// verifier. A plain CLI has no receiver: reject before allocating private state
+// rather than discovering the missing channel after a successful test child.
+if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' &&
+    (!isolatedRuntime || !process.connected || typeof process.send !== 'function')) {
+  console.error('[with-test-pg] proof preflight failed: PC_ISOLATED_RUNTIME_PROOF requires an isolated runtime and a connected parent IPC channel');
+  process.exit(1);
+}
+
 // An explicit-but-empty sink commonly comes from expanding an unset shell
 // variable. Refuse before allocating PG instead of silently losing evidence.
 if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined && !process.env.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {

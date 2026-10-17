@@ -389,6 +389,24 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('store(key, value)');
     expect(scriptDescription).toContain('never hidden session memory');
   });
+
+  it('accepts explicit replay inputs and seeds the stateless sandbox', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    const args = { script: 'return { cursor: inputs.cursor, label: inputs.label };', inputs: { cursor: 7, label: 'resume' } };
+    expect(codeRunTool.args.safeParse(args).success).toBe(true);
+    const res = await tool.fn(args, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'su',
+      isSuperuser: true,
+      uiClientId: 'su-test',
+    } as never);
+    const payload = JSON.parse(String((res as { content: { text: string }[] }).content[0].text));
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toEqual({ cursor: 7, label: 'resume' });
+  });
 });
 
 describe('code:run → explicit final media (P-027 / D-021)', () => {

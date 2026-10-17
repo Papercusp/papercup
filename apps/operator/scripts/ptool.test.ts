@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -48,6 +49,9 @@ import {
   formatToolCallFailure,
   formatToolCatalogBypass,
   formatToolCatalogFailure,
+  isSdkBootstrapInstallWait,
+  buildMcpCallRecoveryInvocation,
+  runMcpCallRecovery,
   isLoopPressureShed,
   isRecoverableAuthorityDenial,
   isInvalidSuperuserBearerFailure,
@@ -3267,6 +3271,76 @@ describe('ptool module-resolution failures are terminal, not retried (WI-6554700
     expect(importSdkModule).toHaveBeenCalledTimes(2);
     expect(connectOnce).not.toHaveBeenCalled();
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe('ptool SDK bootstrap recovery during install:safe drains', () => {
+  it('recognizes the pre-dispatch install wait without classifying missing SDK as a wait', () => {
+    expect(isSdkBootstrapInstallWait(new Error(
+      'ptool: SDK bootstrap timed out waiting for install:safe before operator connection',
+    ))).toBe(true);
+    expect(isSdkBootstrapInstallWait(new Error(
+      "Cannot find package '@modelcontextprotocol/sdk'",
+    ))).toBe(false);
+  });
+
+  it('keeps the same local endpoint, scope, client identity, payload and replay key', () => {
+    expect(buildMcpCallRecoveryInvocation({
+      helperPath: '/repo/scripts/mcp-call.mjs',
+      toolName: 'work_items:get',
+      callArgs: { id: 'EI-26089122200719088' },
+      inputKind: 'file',
+      operatorUrl: 'http://127.0.0.1:3170',
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+      clientId: 'su-recovery',
+      idempotencyKey: 'ptool-recovery-1',
+    })).toEqual({
+      command: process.execPath,
+      args: [
+        '/repo/scripts/mcp-call.mjs', 'work_items:get', '--json', '-', '--port', '3170',
+        '--workspace', 'papercusp-workspace', '--harness', 'papercusp',
+        '--client', 'su-recovery', '--idempotency-key', 'ptool-recovery-1',
+      ],
+      payload: { id: 'EI-26089122200719088' },
+      port: '3170',
+    });
+    expect(buildMcpCallRecoveryInvocation({
+      helperPath: '/repo/scripts/mcp-call.mjs',
+      toolName: 'work_items:get',
+      callArgs: {}, inputKind: 'file', operatorUrl: 'https://operator.example',
+    })).toBeNull();
+    expect(buildMcpCallRecoveryInvocation({
+      helperPath: '/repo/scripts/mcp-call.mjs',
+      toolName: 'work_items:get',
+      callArgs: {}, inputKind: 'file', operatorUrl: 'http://127.0.0.1:3170',
+      projection: '{}',
+    })).toBeNull();
+  });
+
+  it('writes the JSON payload to the helper and propagates its exit code', async () => {
+    const child = new EventEmitter() as EventEmitter & { stdin: { end: ReturnType<typeof vi.fn> } };
+    child.stdin = { end: vi.fn() };
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => child.emit('close', 5, null));
+      return child;
+    });
+    const result = await runMcpCallRecovery({
+      invocation: {
+        command: process.execPath,
+        args: ['/repo/scripts/mcp-call.mjs', 'coord:orient', '--json', '-'],
+        payload: { intent: 'recover' },
+        port: '3170',
+      },
+      spawnImpl,
+    });
+    expect(result).toMatchObject({ handled: true, started: true, exitCode: 5 });
+    expect(spawnImpl).toHaveBeenCalledWith(
+      process.execPath,
+      ['/repo/scripts/mcp-call.mjs', 'coord:orient', '--json', '-'],
+      expect.objectContaining({ stdio: ['pipe', 'inherit', 'inherit'] }),
+    );
+    expect(child.stdin.end).toHaveBeenCalledWith('{"intent":"recover"}');
   });
 });
 

@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCache } from '@papercusp/cache';
+import { createConcurrencyGate } from '@papercusp/sync';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessRegistry } from '../../harness-registry';
 import * as gitTools from './git';
@@ -258,6 +259,37 @@ describe('capability:git-evidence', () => {
     } finally {
       readOnlyRunner.mockRestore();
     }
+  });
+
+  it('bounds Git command admission across concurrent historical reads', async () => {
+    const commitSha = 'a'.repeat(40);
+    const paths = ['one.txt', 'two.txt', 'three.txt', 'four.txt'];
+    const gate = createConcurrencyGate(2);
+    let active = 0;
+    let peak = 0;
+    const runner = async (argv: string[]) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      if (argv[0] === 'rev-parse' && argv[1] === '--show-toplevel') return { code: 0, output: '/repo\n' };
+      if (argv[0] === 'rev-parse' && argv[1] === '--verify') return { code: 0, output: `${commitSha}\n` };
+      if (argv[0] === 'ls-tree') {
+        const path = argv.at(-1)!;
+        return { code: 0, output: `100644 blob ${'b'.repeat(40)}\t${path}\0` };
+      }
+      if (argv[0] === 'cat-file' && argv[1] === '-s') return { code: 0, output: '1\n' };
+      if (argv[0] === 'cat-file' && argv[1] === 'blob') return { code: 0, output: 'x' };
+      throw new Error(`Unexpected Git invocation: ${argv.join(' ')}`);
+    };
+
+    const results = await Promise.all(paths.map((path) => runJudgeGitEvidence(
+      { op: 'readFileAtCommit', commitSha, path },
+      { repositoryDir: '/repo', signal: never, runner, commandGate: gate },
+    )));
+
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(peak).toBe(2);
   });
 
   it('keeps interrupted or ambiguous repository probes out of the not-repository verdict', async () => {

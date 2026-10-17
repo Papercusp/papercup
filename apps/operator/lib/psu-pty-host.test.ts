@@ -4535,9 +4535,11 @@ describe('carryExhaustionDefersToNativeProof (WI-6554700010009740)', () => {
     expect(carryExhaustionDefersToNativeProof(exhausted)).toBe(true);
   });
 
+  it('hands a submitted tagged drill carry to the same native turn-start proof', () => {
+    expect(carryExhaustionDefersToNativeProof({ ...exhausted, drillId: 'drill-1' })).toBe(true);
+  });
+
   it('keeps every other verdict', () => {
-    // Drills keep their PTY-level contract and never run the native proof.
-    expect(carryExhaustionDefersToNativeProof({ ...exhausted, drillId: 'drill-1' })).toBe(false);
     // No CR reached this child, or the turn is not native-verifiable.
     expect(carryExhaustionDefersToNativeProof({ ...exhausted, nativeSubmitted: false })).toBe(false);
     // Human input and quota walls are not missing-proof timeouts.

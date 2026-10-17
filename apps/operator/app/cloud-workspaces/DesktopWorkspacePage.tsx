@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { Monitor, RefreshCw } from "lucide-react";
 import { parseAsString, useQueryStates } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
+import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 import { useOperatorWorkspaceLocation } from "@papercusp/operator-ui/seam";
 import { Button } from "@/app/harness/Button";
 import { Select } from "@/app/harness/Select";
@@ -27,7 +28,7 @@ export default function DesktopWorkspacePage() {
     desktopHost: parseAsString, host: parseAsString, desktop: parseAsString,
     desktopPins: parseAsString, desktopFilter: parseAsString,
   }, { history: "push" });
-  const requestedHost = target.desktopHost ?? target.host;
+  const requestedHost = target.desktopHost ?? target.host ?? getBrowserMachineId();
   const workspaces = useMemo(
     () =>
       (control.data ?? []).filter(
@@ -75,6 +76,7 @@ export default function DesktopWorkspacePage() {
               })),
             ]}
             onChange={(value) => {
+              setBrowserMachineId(value);
               void setTarget(desktopMachineSelection(value));
             }}
           />

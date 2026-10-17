@@ -476,6 +476,40 @@ export function formatToolCallFailure(toolName: any, error: any, { idempotencyKe
  */
 export function formatToolCatalogFailure(requestedToolName: any, error: any): string;
 /**
+ * The SDK import is deliberately protected by the install:safe reader lease,
+ * but a long writer drain must not strand a scripted coordination call before
+ * it reaches the operator. The Node-only mcp-call helper is the sanctioned
+ * recovery transport for this exact pre-dispatch condition.
+ * Pure — exported for focused recovery tests.
+ */
+export function isSdkBootstrapInstallWait(error: any): boolean;
+/** Resolve the source-tree recovery helper. Packaged sidecars may not carry it. */
+export function resolveMcpCallRecoveryPath(): string | null;
+/**
+ * Build a Node-only recovery invocation without changing the selected
+ * endpoint, session identity, scope, payload, or idempotency key.
+ * Pure — exported for focused recovery tests.
+ */
+export function buildMcpCallRecoveryInvocation({ helperPath, toolName, callArgs, inputKind, operatorUrl, workspace, harness, clientId, idempotencyKey, raw, projection, }?: {
+    callArgs?: {} | undefined;
+    raw?: boolean | undefined;
+    projection?: null | undefined;
+}): {
+    command: string;
+    args: any[];
+    payload: {};
+    port: string;
+} | null;
+/**
+ * Run the Node-only recovery helper. Its stdout/stderr are inherited so the
+ * caller receives the same result stream and diagnostic channel as ptool.
+ * `spawnImpl` is injectable for the focused lifecycle test.
+ */
+export function runMcpCallRecovery({ invocation, env, spawnImpl, }?: {
+    env?: NodeJS.ProcessEnv | undefined;
+    spawnImpl?: typeof spawn | undefined;
+}): Promise<any>;
+/**
  * A scripted named call already has the only input ptool needs to dispatch:
  * the target name and its JSON arguments. If read-only catalog discovery is
  * unavailable, bypassing it keeps tools/list from becoming a prerequisite for
@@ -1002,5 +1036,6 @@ export type EnvironmentMap = Record<string, string | undefined>;
  */
 declare function readSpilledPayload(path: any): Promise<any>;
 import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { statfs } from 'node:fs/promises';
 export {};

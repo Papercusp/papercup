@@ -6,11 +6,13 @@
  */
 import { createHash } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { createCache, type Cache } from '@papercusp/cache';
 import { defineTool } from '@papercusp/agent-mcp';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { locateCommittedBlobs, type CommittedBlobLocation } from '../plans/committed-tree-reader';
@@ -30,6 +32,14 @@ const PAGE_RESPONSE_MARGIN_CHARS = 256;
 const MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES = 8 * 1024 * 1024;
 const GIT_EVIDENCE_CACHE_MAX_ENTRIES = 16;
 const GIT_EVIDENCE_CACHE_TTL_MS = 5 * 60_000;
+// Historical reads are intentionally fan-out friendly, but each read performs
+// several short Git subprocesses. Letting an audit launch one child per command
+// makes the operator's process-spawn path queue behind itself (the first read is
+// fast while the rest wait for the host's fixed child-admission timeout). Share a
+// bounded command gate across requests so callers keep their own results and
+// cancellation while subprocesses make steady progress.
+const GIT_EVIDENCE_COMMAND_CONCURRENCY = Math.min(8, Math.max(2, availableParallelism()));
+const gitEvidenceCommandGate = createConcurrencyGate(GIT_EVIDENCE_COMMAND_CONCURRENCY);
 
 // A byte-page cursor is a separate tool invocation. Cache the validated immutable
 // blob so following its cursor does not repeat repository discovery, commit/type/
@@ -210,6 +220,8 @@ interface GitEvidenceOptions {
   runner?: typeof runGitReadOnlyEvidence;
   /** Internal cache seam for exercising bounded page reuse. */
   cache?: Cache;
+  /** Internal gate seam for proving command admission under concurrent reads. */
+  commandGate?: ConcurrencyGate;
 }
 
 /** Execute only the two operations admitted by the judge evidence contract. */
@@ -250,7 +262,8 @@ async function runJudgeGitEvidenceInner(
     repositoryDir = registeredRoot;
   }
   const runner = options.runner ?? runGitReadOnlyEvidence;
-  const invokeAt = async (cwd: string, argv: string[]) => {
+  const commandGate = options.commandGate ?? gitEvidenceCommandGate;
+  const invokeAt = (cwd: string, argv: string[]) => commandGate.run(async () => {
     const result = await runner(
       argv,
       cwd,
@@ -266,7 +279,7 @@ async function runJudgeGitEvidenceInner(
       throw new Error(`git_command_interrupted: git ${argv.join(' ')} was aborted before returning a result`);
     }
     return result;
-  };
+  }, options.signal);
   const invoke = (argv: string[]) => invokeAt(repositoryDir, argv);
 
   let selectedRepositoryPath = '.';
@@ -598,7 +611,7 @@ export default defineTool({
     when: 'A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.',
     notWhen: 'For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.',
     chaining:
-      'op:"isAncestor" takes two full SHAs; op:"readFileAtCommit" takes a full SHA and a repository-relative path. Paths below a submodule follow each parent gitlink; resolved.{repositoryPath, commitSha, blobSha} name what was read while commitSha stays the requested superproject commit. If a binding pins a nested repository HEAD, pass that path as repositoryPath (it must resolve inside that root) with the child-relative path and commit. External test checkout: copy rootHarnessSlug from the cited binding measurement. Every successful read includes contentSha256, the SHA-256 of the exact committed blob bytes, so auditors can compare mutation receipts without re-encoding text. Omit byte_offset/byte_limit for a whole file: blobs up to 128 KiB return {bytes, content, contentSha256} in one call. Larger blobs or deliberate pages return base64 {byte_offset, byte_length, total_bytes, contentSha256, eof, data, next_cursor} with no content; decode data, follow next_cursor.args unchanged, and stop only at eof:true with next_cursor null.',
+      'isAncestor takes two full SHAs; readFileAtCommit takes a full SHA and repository-relative path. Submodule paths follow parent gitlinks; resolved.{repositoryPath, commitSha, blobSha} identify the read while commitSha retains the requested superproject commit. For a nested HEAD binding, pass repositoryPath inside the registered root plus child-relative path and commit. Copy rootHarnessSlug from the cited external-checkout measurement. contentSha256 hashes exact committed blob bytes for mutation-receipt comparison without re-encoding. Omit byte_offset/byte_limit for whole blobs up to 128 KiB: {bytes, content, contentSha256}. Larger blobs or deliberate pages return base64 {byte_offset, byte_length, total_bytes, contentSha256, eof, data, next_cursor}, no content; decode data, follow next_cursor.args unchanged, stop only at eof:true with next_cursor null.',
   },
   capability: 'capability:git-evidence:read',
   effect: 'read',

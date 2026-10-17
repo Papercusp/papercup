@@ -17,6 +17,51 @@ function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): s
       code: (result.error as NodeJS.ErrnoException).code }, stdout: result.stdout, stderr: result.stderr });
 }
 
+describe('private proof IPC admission', () => {
+  it.each([
+    { isolated: true, proof: true, ipc: false, admitted: false },
+    { isolated: false, proof: true, ipc: true, admitted: false },
+    { isolated: true, proof: true, ipc: true, admitted: true },
+    { isolated: true, proof: false, ipc: false, admitted: true },
+  ])('checks the actual parent channel before allocation: %j', async ({ isolated, proof, ipc, admitted }) => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    // Stop at the real allocation dependency boundary; admission must not create
+    // a database, runtime root, migration copy or test child in any of these cases.
+    const hook = `export async function resolve(specifier, context, next) {
+      if (specifier === 'async-exit-hook') throw new Error('PROOF_ADMISSION_REACHED');
+      return next(specifier, context);
+    }`;
+    const script = `import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, ${isolated ? "'--isolated-runtime'," : ''}
+        '--', process.execPath, '-e', 'process.exit(91)'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: proof ? '1' : undefined,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' };
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, env, stdio: ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout!.on('data', chunk => { stdout += chunk; });
+    child.stderr!.on('data', chunk => { stderr += chunk; });
+    const closed = once(child, 'close');
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    try {
+      const [status, signal] = await closed;
+      const diagnostic = JSON.stringify({ status, signal, stdout, stderr });
+      expect(status, diagnostic).toBe(1);
+      expect(signal, diagnostic).toBeNull();
+      expect(stderr, diagnostic).toContain(admitted ? 'PROOF_ADMISSION_REACHED' : 'proof preflight failed');
+      expect(stderr, diagnostic).not.toContain(admitted ? 'proof preflight failed' : 'PROOF_ADMISSION_REACHED');
+      expect(stdout).not.toContain('booting throwaway PG');
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+    }
+  });
+});
+
 describe('private admission pinned manager route', () => {
   async function withRoute(route: string, check: (fixture: {
     env: NodeJS.ProcessEnv; runtime: string; source: string; alias: string; socket: string;

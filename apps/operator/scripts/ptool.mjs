@@ -63,6 +63,7 @@
  * unshaped-payload escape hatch.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile, statfs } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -1933,6 +1934,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
   ['fleet:require-checkpoint', PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS],
+  // EI-26141314393026733: fleet:leader-brief composes roster, liveness,
+  // diagnostics, and projection work for a large fleet. Its 25s server
+  // backstop leaves too little room for MCP serialization under load, so the
+  // ordinary 30s client cutoff can surface a post-connect ECONNRESET before
+  // the structured degraded brief arrives. Keep direct and tools:invoke
+  // routes outside the transport cap, like fleet:assignments.
+  ['fleet:leader-brief', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['dev:restart', PTOOL_DEV_RESTART_TIMEOUT_MS],
   // EI-22701666730811258: dev:pg_query bounds SQL execution, but the request
   // can still spend time in proxy admission/queueing before that bound starts.
@@ -2630,6 +2638,105 @@ export function formatToolCatalogFailure(requestedToolName, error) {
     `ptool: tool catalog discovery failed${requested}: ${errorDetail(error)}; ` +
     'failure_stage=tools/list; no named tool was dispatched, so retrying this CLI invocation is safe.'
   );
+}
+
+/**
+ * The SDK import is deliberately protected by the install:safe reader lease,
+ * but a long writer drain must not strand a scripted coordination call before
+ * it reaches the operator. The Node-only mcp-call helper is the sanctioned
+ * recovery transport for this exact pre-dispatch condition.
+ * Pure — exported for focused recovery tests.
+ */
+export function isSdkBootstrapInstallWait(error) {
+  const detail = errorDetail(error);
+  return /SDK bootstrap timed out waiting for install:safe|waiting for fs-mutex writer .*npm-install-|waiting for install:safe to finish before importing/i.test(detail);
+}
+
+/** Resolve the source-tree recovery helper. Packaged sidecars may not carry it. */
+export function resolveMcpCallRecoveryPath() {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const helper = join(repoRoot, 'scripts/mcp-call.mjs');
+  return existsSync(helper) ? helper : null;
+}
+
+/**
+ * Build a Node-only recovery invocation without changing the selected
+ * endpoint, session identity, scope, payload, or idempotency key.
+ * Pure — exported for focused recovery tests.
+ */
+export function buildMcpCallRecoveryInvocation({
+  helperPath,
+  toolName,
+  callArgs = {},
+  inputKind,
+  operatorUrl,
+  workspace,
+  harness,
+  clientId,
+  idempotencyKey,
+  raw = false,
+  projection = null,
+} = {}) {
+  if (
+    typeof helperPath !== 'string' || !helperPath ||
+    !canDispatchWithoutCatalog(toolName, inputKind) ||
+    projection != null
+  ) return null;
+  let parsed;
+  try { parsed = new URL(operatorUrl); } catch { return null; }
+  const localHost = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname.toLowerCase());
+  const port = parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+  if (!localHost || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) return null;
+
+  const args = [helperPath, toolName, '--json', '-', '--port', port];
+  if (workspace === '*') args.push('--all-workspaces');
+  else if (typeof workspace === 'string' && workspace) args.push('--workspace', workspace);
+  if (typeof harness === 'string' && harness) args.push('--harness', harness);
+  if (typeof clientId === 'string' && clientId) args.push('--client', clientId);
+  if (typeof idempotencyKey === 'string' && idempotencyKey) args.push('--idempotency-key', idempotencyKey);
+  if (raw) args.push('--raw');
+  return { command: process.execPath, args, payload: callArgs, port };
+}
+
+/**
+ * Run the Node-only recovery helper. Its stdout/stderr are inherited so the
+ * caller receives the same result stream and diagnostic channel as ptool.
+ * `spawnImpl` is injectable for the focused lifecycle test.
+ */
+export async function runMcpCallRecovery({
+  invocation,
+  env = process.env,
+  spawnImpl = spawn,
+} = {}) {
+  if (!invocation) return { handled: false };
+  return await new Promise((resolveResult) => {
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      resolveResult(result);
+    };
+    let child;
+    try {
+      child = spawnImpl(invocation.command, invocation.args, {
+        env: { ...env },
+        stdio: ['pipe', 'inherit', 'inherit'],
+      });
+    } catch (error) {
+      console.error(`ptool: mcp-call recovery could not start: ${errorDetail(error)}`);
+      settle({ handled: true, exitCode: 1, started: false, error });
+      return;
+    }
+    child.once('error', (error) => {
+      console.error(`ptool: mcp-call recovery could not start: ${errorDetail(error)}`);
+      settle({ handled: true, exitCode: 1, started: false, error });
+    });
+    child.once('close', (code, signal) => {
+      if (signal) console.error(`ptool: mcp-call recovery ended by ${signal}`);
+      settle({ handled: true, exitCode: Number.isInteger(code) ? code : 1, started: true, signal: signal ?? null });
+    });
+    child.stdin.end(JSON.stringify(invocation.payload));
+  });
 }
 
 /**
@@ -4352,7 +4459,43 @@ async function main() {
     activeTokenFile = ptoolTokenPathByClient.get(connected.client) ?? tokenFile ?? activeTokenFile;
     return connected.client;
   };
-  let client = await connectOperator();
+  let client;
+  try {
+    client = await connectOperator();
+  } catch (error) {
+    // The SDK reader lease protects mutable node_modules, but a scripted call
+    // can still make progress through the immutable Node-only recovery helper
+    // while install:safe drains. This branch is pre-dispatch: no MCP request
+    // has been sent and the same idempotency key is safe to carry forward.
+    const recoveryKey = args.idempotencyKey || randomUUID();
+    const recoveryInvocation = isSdkBootstrapInstallWait(error)
+      ? buildMcpCallRecoveryInvocation({
+          helperPath: resolveMcpCallRecoveryPath(),
+          toolName: args.tool,
+          callArgs: inputArgs ?? {},
+          inputKind,
+          operatorUrl,
+          workspace,
+          harness,
+          clientId: process.env.PAPERCUSP_SID,
+          idempotencyKey: recoveryKey,
+          raw: args.raw,
+          projection: args.projection,
+        })
+      : null;
+    if (recoveryInvocation) {
+      console.error(
+        'ptool: SDK bootstrap is waiting for install:safe; using the Node-only mcp-call recovery ' +
+        `transport on ${operatorUrl} with the same client identity before dispatch (${args.tool}).`,
+      );
+      const recovered = await runMcpCallRecovery({ invocation: recoveryInvocation });
+      if (recovered.handled) {
+        process.exitCode = recovered.exitCode;
+        return;
+      }
+    }
+    throw error;
+  }
   try {
     let projection;
     if (args.projection != null) {

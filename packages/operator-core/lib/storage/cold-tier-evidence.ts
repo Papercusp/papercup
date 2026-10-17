@@ -8,6 +8,7 @@ import { basename, dirname } from 'node:path';
 import { homedir, hostname } from 'node:os';
 import { z } from 'zod';
 import { getBuildInfo } from '../build-info';
+import type { ArchiveStampRow } from '../session-archive';
 
 export const COLD_MOUNTS_INSTRUMENT_KEY = 'storage:cold-mounts-reboot';
 export const COLD_MOVES_INSTRUMENT_KEY = 'storage:cold-bulk-cutover';
@@ -20,7 +21,87 @@ const TARGETS = [
 ] as const;
 type Sql = Pick<import('postgres').Sql, 'unsafe'>;
 type Verdict = 'pass' | 'fail' | 'unknown';
-export interface ColdEvidence { verdict: Verdict; detail: string }
+export interface ColdEvidence { verdict: Verdict; detail: string; observationId?: string }
+export const COLD_ARCHIVE_INTEGRITY_ACTION = 'storage:cold-archive-integrity';
+
+/** Native read-only archive census, resumed through the existing audit ledger.
+ * Each pass starts at most sixteen bounded archives. A changed PG inventory,
+ * boot/build, failed copy, or expired 24h verification epoch cannot inherit a pass.
+ * This measures physical integrity only; retention and reader rollout have their
+ * own evidence and remain required by R8. It never enables migration/deletes. */
+export async function observeColdArchiveIntegrity(sql: Sql, workspaceId: string, deps: {
+  identity?: () => Promise<{ host: string; bootId: string }>;
+  buildSha?: () => string | null;
+  now?: () => number;
+  verify?: typeof import('../session-archive').verifyColdArchiveIntegrity;
+} = {}): Promise<ColdEvidence> {
+  const identity = deps.identity ?? (async () => ({ host: hostname(),
+    bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim() }));
+  const host = z.object({ host: z.string().min(1), bootId: z.string().uuid() }).parse(await identity());
+  const runtimeBuild = (deps.buildSha ?? (() => getBuildInfo().sha))();
+  if (!runtimeBuild) return outcome('unknown', 'Cold integrity runtime build is unavailable.');
+  const now = deps.now ?? Date.now;
+  const measuredAt = now();
+  const population = async () => {
+    const rows = await sql.unsafe(`SELECT count(*)::int AS total,
+      md5(COALESCE(string_agg(md5(jsonb_build_array(source_kind,session_id,archived_at,
+        cold_storage,file_count,bytes_raw,bytes_stored,manifest)::text),'' ORDER BY source_kind,session_id),'')) AS fingerprint,
+      COALESCE(bool_or(cold_storage IS NULL),false) AS pending,
+      EXISTS(SELECT 1 FROM harness_shared.session_archive_files f
+        JOIN harness_shared.session_archives a USING(workspace_id,source_kind,session_id)
+        WHERE a.workspace_id='default' AND a.cold_storage IS NOT NULL) AS residue
+      FROM harness_shared.session_archives WHERE workspace_id='default' AND file_count>0`);
+    return z.object({ total: z.number().int().nonnegative(), fingerprint: z.string().regex(/^[a-f0-9]{32}$/),
+      pending: z.boolean(), residue: z.boolean() }).parse(rows[0]);
+  };
+  const before = await population();
+  if (!before.total || before.pending || before.residue) return outcome('unknown',
+    'Cold archive population is empty, migration is incomplete, or migrated PG payloads remain.');
+  const verify = deps.verify ?? (await import('../session-archive')).verifyColdArchiveIntegrity;
+  const priorRows = await sql.unsafe(`SELECT details FROM harness_shared.audit_log
+    WHERE workspace_id=$1 AND actor='system:storage-conformance' AND action=$2
+      AND details->>'host'=$3 AND details->>'bootId'=$4 AND details->>'runtimeBuild'=$5
+      AND details->>'populationFingerprint'=$6 AND ts BETWEEN $7 AND $8
+    ORDER BY ts DESC,id DESC LIMIT 1`, [workspaceId, COLD_ARCHIVE_INTEGRITY_ACTION,
+    host.host, host.bootId, runtimeBuild, before.fingerprint, measuredAt - 86_400_000, measuredAt]);
+  const prior = z.object({ schemaVersion: z.literal(1), total: z.literal(before.total),
+    startedAt: z.string().datetime(), verified: z.number().int().nonnegative().max(before.total),
+    cursor: z.tuple([z.string(), z.string()]), complete: z.boolean() }).safeParse(priorRows[0]?.details);
+  const resume = prior.success && !prior.data.complete && Date.parse(prior.data.startedAt) >= measuredAt - 86_400_000
+    && Date.parse(prior.data.startedAt) <= measuredAt ? prior.data : null;
+  let verified = resume?.verified ?? 0;
+  let cursor: [string, string] = resume?.cursor ?? ['', ''];
+  const startedAt = resume?.startedAt ?? new Date(measuredAt).toISOString();
+  const rows = await sql.unsafe<ArchiveStampRow[]>(`SELECT * FROM harness_shared.session_archives
+    WHERE workspace_id='default' AND file_count>0 AND (source_kind,session_id)>($1,$2)
+    ORDER BY source_kind,session_id LIMIT 16`, cursor);
+  let error: string | null = null;
+  for (const row of rows) {
+    if (now() >= measuredAt + 10_000) break;
+    try {
+      await verify({ ...row, file_count: Number(row.file_count),
+        bytes_raw: Number(row.bytes_raw), bytes_stored: Number(row.bytes_stored) });
+      verified += 1;
+      cursor = [String(row.source_kind), String(row.session_id)];
+    } catch (e) { error = `${row.source_kind}/${row.session_id}: ${String(e)}`.slice(0, 1000); break; }
+  }
+  const [after, endIdentity] = await Promise.all([population(), identity()]);
+  if (JSON.stringify(before) !== JSON.stringify(after) || host.host !== endIdentity.host || host.bootId !== endIdentity.bootId ||
+      now() - Date.parse(startedAt) > 86_400_000) {
+    return outcome('unknown', 'Archive inventory or physical host changed; a new integrity epoch is required.');
+  }
+  const complete = !error && verified === before.total;
+  const evidence = { schemaVersion: 1, ...host, runtimeBuild, pid: process.pid,
+    processStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    populationFingerprint: before.fingerprint, total: before.total, verified, cursor, startedAt,
+    measuredAt: new Date(now()).toISOString(), complete, error };
+  const observationId = randomUUID();
+  await sql.unsafe(`INSERT INTO harness_shared.audit_log(id,ts,actor,action,subject,details,workspace_id)
+    VALUES($1,$2,'system:storage-conformance',$3,$4,$5::text::jsonb,$6)`,
+  [observationId, now(), COLD_ARCHIVE_INTEGRITY_ACTION, `${host.host}:${before.fingerprint}`, JSON.stringify(evidence), workspaceId]);
+  return { ...outcome(error ? 'fail' : complete ? 'pass' : 'unknown', error ??
+    `${verified}/${before.total} archives physically verified on both independent volumes in epoch ${startedAt}.`), observationId };
+}
 interface NativeColdEnvironmentDeps {
   identity: () => Promise<{ host: string; bootId: string }>;
   buildSha: () => string | null;

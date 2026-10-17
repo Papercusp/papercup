@@ -3,6 +3,7 @@
 import { parseAsString, useQueryStates } from "nuqs";
 import { useState } from "react";
 import { useSyncQuery } from "@papercusp/sync";
+import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 import { Select } from "@/app/harness/Select";
 import { Modal } from "@/app/harness/Modal";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
@@ -33,12 +34,13 @@ function AuthorizedMachineSwitcher({ localMode, onSelect, connectHref }: Machine
   }, { history: "push" });
   return <MachineSwitcherView
     localMode={localMode === true}
-    value={target.desktopHost ?? target.host}
+    value={target.desktopHost ?? target.host ?? getBrowserMachineId() ?? null}
     rows={control.data ?? []}
     loading={control.loading}
     error={control.error?.message ?? null}
     connectHref={connectHref}
     onSelect={(hostId) => {
+      setBrowserMachineId(hostId);
       // The viewer, pins and filter belong to the old machine. No shared registry
       // default or agent lifecycle is written; each window keeps its own URL.
       const updated = setTarget(desktopMachineSelection(hostId));

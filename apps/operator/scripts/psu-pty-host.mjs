@@ -2361,21 +2361,21 @@ export function launchKickoffRequiresPreSubmissionNativeBinding({
  * deadline. A production carry already runs the stronger proof
  * (verifyNativeTurnStartWithRetry: one CR, then a fresh epoch), so treating
  * that exhaustion as a terminal drop skipped the EI-21561923024113260 retries.
- * Only the exhaustion of a submitted, native-verifiable, non-drill carry
- * defers; human input, quota and every other reason keep their verdict. Pure.
+ * Only the exhaustion of a submitted, native-verifiable carry defers; human
+ * input, quota and every other reason keep their verdict. Drills use the same
+ * tagged native proof as production carries so a late native row can settle
+ * the exact successor instead of becoming a false terminal drop. Pure.
  * @param {object} [opts]
- * @param {string} [opts.drillId]
  * @param {boolean} [opts.delivered]
  * @param {string} [opts.reason]
  * @param {boolean} [opts.nativeSubmitted] the tagged carry's CR reached this child
  */
 export function carryExhaustionDefersToNativeProof({
-  drillId = '',
   delivered = false,
   reason = '',
   nativeSubmitted = false,
 } = {}) {
-  return !drillId && !delivered && nativeSubmitted && reason === 'submit-verification-exhausted';
+  return !delivered && nativeSubmitted && reason === 'submit-verification-exhausted';
 }
 
 /** Is a carry failure safe to retry on a freshly minted child? Only transient
@@ -16975,7 +16975,7 @@ export function hostThroughPty(o) {
       };
       // WI-6554700010009740: record whether this tagged carry's CR reached the
       // child, so the native proof below can own an exhausted verifier verdict.
-      const carryNativeProofAvailable = !drillId &&
+      const carryNativeProofAvailable =
         Boolean(leadingTurnOriginMarker(carryText)) &&
         nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
       let carryNativeSubmission = null;
@@ -17081,7 +17081,6 @@ export function hostThroughPty(o) {
         });
       };
       if (carryExhaustionDefersToNativeProof({
-        drillId,
         delivered: carryResult.delivered,
         reason: carryResult.reason,
         nativeSubmitted: carryNativeSubmission?.child === child,
@@ -17099,12 +17098,12 @@ export function hostThroughPty(o) {
       let turnStartProof = null;
       // EI-21561923024113260: PTY output proves only that the successor painted
       // something. The incident had outputSeen:true and no user turn for 182s.
-      // Production carry prompts carry a unique leading turn-origin marker and
-      // a fresh native id, so require that exact pair in the fresh backend
-      // transcript before emitting respawn-carry-delivered. Drills retain their
-      // existing PTY-level contract because their synthetic payloads do not
-      // necessarily carry turn provenance.
-      if (!drillId && carryResult.delivered) {
+      // Production and drill carry prompts carry a unique leading turn-origin
+      // marker and a fresh native id (or the Codex fresh-thread proof), so
+      // require that exact pair in the fresh backend transcript before
+      // emitting a terminal delivered row. A drill's marker is added by
+      // session:carry-drill before it reaches this host.
+      if (carryResult.delivered) {
         const proofWindowMs = Math.max(250, Math.floor(nativePersistenceTimeoutMs / 2));
         turnStartProof = await verifyNativeTurnStartWithRetry({
           agent: env.PAPERCUSP_AGENT,
@@ -17197,6 +17196,8 @@ export function hostThroughPty(o) {
           attempts: carryResult.attempts,
           budgetMs: recycleCarryInjectBudgetMs,
           outputSeen: childStartupOutput.length > 0,
+          turnStartVerified: turnStartProof ? Boolean(turnStartProof.persisted) : undefined,
+          nativeRef: turnStartProof?.nativeRef ?? undefined,
         };
         appendHostEvent(ownerId, terminalKind, terminalExtra);
         appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);

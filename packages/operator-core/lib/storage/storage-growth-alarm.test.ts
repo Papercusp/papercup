@@ -16,6 +16,9 @@ import {
   runDiskHeadroomAlarmOnce,
   detectDiskHeadroom,
   detectDiskGrowthWarnings,
+  assessNativeDiskHeadroomAlarm,
+  formatDiskHeadroomToast,
+  DISK_HEADROOM_FLOORS,
   categoryCeilingBytes,
   RETENTION_COVERED_ELSEWHERE,
   detectExemptSubsetGrowth,
@@ -40,6 +43,73 @@ import type { StorageUsageRow } from './usage';
 import type { CensusDeviceView } from './disk-consumer-census';
 
 const GIB = 1024 ** 3;
+
+describe('native headroom acceptance evidence', () => {
+  function fixture() {
+    const now = Date.parse('2026-10-16T12:00:00Z');
+    const devices: CensusDeviceView[] = ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'].map(device => ({
+      device, host: 'native-host', runId: `latest:${device}`, baselineRunId: `base:${device}`,
+      producerBuildSha: 'build', baselineProducerBuildSha: 'build', truncatedByLimit: false,
+      complete: true, stale: false, coverageGap: false, sizeBytes: 2e12, availBytes: 200e9,
+      sampledAt: new Date(now - 60_000).toISOString(), baselineAt: new Date(now - 60_000 - 86400_000).toISOString(),
+      baselineSizeBytes: 2e12, baselineAvailBytes: 300e9,
+      consumers: [{ consumer: `${device}/grower`, kind: 'dir', depth: 1, bytes: 200e9,
+        baselineBytes: 100e9, growth24hBytes: 100e9 }],
+    }));
+    const breaches = detectDiskHeadroom(devices), growth = detectDiskGrowthWarnings(devices);
+    const notification = { id: '42', ...formatDiskHeadroomToast(breaches, growth) };
+    const observation = { schemaVersion: 1, observedAt: new Date(now).toISOString(),
+      runtime: { host: 'native-host', pid: 123, startedAt: new Date(now - 3600_000).toISOString(), buildSha: 'build' },
+      floors: { ...DISK_HEADROOM_FLOORS }, horizonDays: 7, devices: structuredClone(devices),
+      breaches, growth, projectionUnknown: [] as string[], notification: { ...notification } };
+    const scope = { host: 'native-host', buildSha: 'build', now, hourlyCoverage: true };
+    return { devices, notification, observation, scope };
+  }
+  const assess = (s: ReturnType<typeof fixture>) => assessNativeDiskHeadroomAlarm(s.observation, s.devices, s.notification, s.scope);
+  it('recomputes exact native floors, forecast and top growers and matches the persisted notification', () => {
+    expect(assess(fixture()).verdict).toBe('pass');
+  });
+  it.each(['host', 'build', 'producer', 'baseline-producer', 'legacy-producer', 'truncated', 'unknown-truncation', 'future', 'stale', 'coverage', 'device', 'duplicate', 'baseline', 'partial', 'attribution', 'run', 'notification'])(
+    'refuses missing or mismatched %s evidence', missing => {
+      const s = fixture();
+      if (missing === 'host') s.observation.runtime.host = 'other';
+      if (missing === 'build') s.observation.runtime.buildSha = 'other';
+      if (missing === 'producer') s.devices[0]!.producerBuildSha = 'older-build';
+      if (missing === 'baseline-producer') s.devices[0]!.baselineProducerBuildSha = 'older-build';
+      if (missing === 'legacy-producer') delete s.devices[0]!.producerBuildSha;
+      if (missing === 'truncated') s.devices[0]!.truncatedByLimit = true;
+      if (missing === 'unknown-truncation') delete s.devices[0]!.truncatedByLimit;
+      if (missing === 'future') s.scope.now -= 1;
+      if (missing === 'stale') s.scope.now += 91 * 60_000;
+      if (missing === 'coverage') s.scope.hourlyCoverage = false;
+      if (missing === 'device') s.devices.pop();
+      if (missing === 'duplicate') s.devices.push(s.devices[0]!);
+      if (missing === 'baseline') s.devices[0]!.baselineRunId = null;
+      if (missing === 'partial') s.devices[0]!.complete = false;
+      if (missing === 'attribution') s.devices[0]!.coverageGap = true;
+      if (missing === 'run') s.observation.devices[0]!.runId = 'unrelated';
+      if (missing === 'notification') s.notification.id = 'missing';
+      expect(assess(s).verdict).toBe('unknown');
+    });
+  it('ignores an unrelated unmeasured native device outside the four-volume population', () => {
+    const s = fixture();
+    s.devices.push({ device: '/mnt/unrelated', missing: true });
+    expect(assess(s).verdict).toBe('pass');
+  });
+  it('verifies the same saved notification when native device query order changes', () => {
+    const s = fixture();
+    s.devices.reverse();
+    expect(assess(s).verdict).toBe('pass');
+  });
+  it.each(['floor', 'forecast', 'grower', 'unknown'])( 'rejects a false native %s decision', wrong => {
+    const s = fixture();
+    if (wrong === 'floor') Object.assign(s.observation.floors, { rootBytes: 1 });
+    if (wrong === 'forecast') s.observation.growth[0]!.daysToFull = 8;
+    if (wrong === 'grower') s.observation.growth[0]!.topGrowers[0]!.consumer = '/invented';
+    if (wrong === 'unknown') s.observation.projectionUnknown.push('/');
+    expect(assess(s).verdict).toBe('fail');
+  });
+});
 
 // Other alarm legs must not read the live host's census during unit tests.
 function runStorageGrowthAlarmOnce(deps: Parameters<typeof runStorageGrowthAlarmWithDefaults>[0] = {}) {
@@ -104,9 +174,29 @@ describe('disk durable headroom (P-011 / R-9)', () => {
       readRetentionAges: healthyRetentionAges, readDiskCensus: async () => [census({ availBytes: 200e9, baselineAvailBytes: 300e9 })], emitToast });
     expect(result.diskHeadroom).toHaveLength(1); expect(result.diskGrowth).toHaveLength(1);
     expect(emitToast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Disk headroom alarm'),
-      description: expect.stringContaining('full in 2.0d') }));
+      description: expect.stringContaining('full in 2.0d') }), expect.objectContaining({ schemaVersion: 1 }));
     expect(emitToast.mock.calls.some(([t]) => t.description.includes('/parent/child'))).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('usage scan skipped'));
+  });
+
+  it('binds the alarm decision to saved census identities and retains unknown inputs', async () => {
+    const emitToast = vi.fn(async () => {});
+    const devices = [census({ host: 'saved-host', runId: 'latest', baselineRunId: 'baseline' }),
+      census({ device: '/mnt/cold-b', missing: true, host: undefined, runId: undefined, baselineRunId: null })];
+    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => devices, emitToast });
+    expect(emitToast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Disk headroom alarm') }),
+      expect.objectContaining({ schemaVersion: 1, devices,
+        projectionUnknown: ['/mnt/cold-b'], horizonDays: 7,
+        runtime: expect.objectContaining({ pid: process.pid }),
+        growth: [expect.objectContaining({ device: '/', daysToFull: 6 })] }));
+  });
+
+  it('does not report an emitted alarm when notification persistence fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [census()],
+      emitToast: async () => { throw new Error('notification refused'); } });
+    expect(result.diskGrowth).toEqual([]);
+    expect(result.diskProjectionUnknown).toEqual(['census read failed']);
   });
 });
 

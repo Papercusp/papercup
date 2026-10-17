@@ -273,7 +273,11 @@ export default defineTool({
       'Opt into a live JavaScript worker/VM: open creates an owner/workspace/harness-scoped id, run executes a cell, status inspects it, close cancels and cleans it up. ' +
       'Use globalThis for cross-cell objects/functions/binary state; lexical locals remain cell-local. Each cell dispatches with CURRENT caller authority. ' +
       'No Python kernel, implicit lexical-declaration persistence, or process-restart recovery is claimed. Timeout/cancel loses state; idle expires after 5 minutes. ' +
+      'Persistent kernels are refused on volatile staging :3170 because its process is recycled frequently. For restart-safe work, call store(key,value), persist the returned state, and pass it back through inputs on the next stateless or kernel call. ' +
       'Dry-run kernel operations are refused because VM state mutations cannot be previewed safely.',
+    ),
+    inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
+      'Explicit JSON-only replay state for the sandbox inputs object. Use with store/load: a successful run returns state when store/load was used; persist that state outside the process and pass it here after an operator restart. Inputs never restore arbitrary globalThis objects or functions.',
     ),
     script: z
       .string()
@@ -543,7 +547,7 @@ export default defineTool({
       wrapDispatch: bindCurrentCallerDispatch,
       // A cell can mutate live VM state even with zero nested write tools. It is not replay-safe.
       ...(args.kernel ? {} : { requestHash }),
-      ...(contract ? { inputs: contract.inputs } : {}),
+      ...(contract ? { inputs: contract.inputs } : args.inputs ? { inputs: args.inputs } : {}),
     });
 
     // EI-21570021207351896 / EI-21569537333182760: DISCLOSE the clamp on the envelope the caller

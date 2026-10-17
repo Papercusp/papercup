@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { assessColdMounts, assessColdMoves, hasColdMoveAside, kopiaJson, measureColdMounts, measureNativeColdEnvironment, parseColdMounts,
   COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, type ColdMountObservation } from './cold-tier-evidence';
+import { COLD_ARCHIVE_INTEGRITY_ACTION, observeColdArchiveIntegrity } from './cold-tier-evidence';
 import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './retention-interval-evidence';
 import { getRegisteredInstrument } from '../rubric-instrument-registry';
 
@@ -11,6 +12,64 @@ const current = (): ColdMountObservation => ({ host: 'fixture-host', bootId: uui
   { path: '/mnt/cold-b', source: '/dev/sdb3', uuidSource: '/dev/sdb3', uuid: uuid[1]!, type: 'xfs', nofail: true },
 ] });
 const previous = () => ({ ...current(), bootId: uuid[0]!, at: at(1) });
+
+describe('resumable native cold archive integrity', () => {
+  function setup(total = 2) {
+    const population = { total, fingerprint: 'a'.repeat(32), pending: false, residue: false };
+    let saved: Record<string, unknown> | null = null;
+    const unsafe = vi.fn(async (query: string, args: unknown[] = []) => {
+      if (query.includes('count(*)::int AS total')) return [population];
+      if (query.startsWith('SELECT details')) return saved ? [{ details: saved }] : [];
+      if (query.startsWith('SELECT *')) return [{ source_kind: 'codex', session_id: args[1] === '' ? 'a' : 'b',
+        file_count: 1, bytes_raw: '20', bytes_stored: '10' }];
+      saved = JSON.parse(String(args[4])); return [];
+    });
+    const deps = { identity: async () => ({ host: 'native-host', bootId: uuid[0]! }), buildSha: () => 'native-build',
+      now: () => Date.parse(at(10)), verify: vi.fn(async () => ({ fileCount: 1, bytesRaw: 20, bytesStored: 10,
+        manifestSha256: 'f'.repeat(64), primaryDevice: 2, replicaDevice: 3 })) };
+    return { sql: { unsafe } as never, unsafe, population, deps, read: () => saved,
+      set: (value: Record<string, unknown>) => { saved = value; } };
+  }
+  it('cannot pass a partial page and resumes exact verified population through the native audit seam', async () => {
+    const s = setup();
+    expect((await observeColdArchiveIntegrity(s.sql, 'workspace', s.deps)).verdict).toBe('unknown');
+    expect(s.read()).toMatchObject({ complete: false, total: 2, verified: 1, cursor: ['codex', 'a'],
+      host: 'native-host', runtimeBuild: 'native-build' });
+    const result = await observeColdArchiveIntegrity(s.sql, 'workspace', s.deps);
+    expect(result.verdict).toBe('pass');
+    expect(result.observationId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(s.read()).toMatchObject({ complete: true, total: 2, verified: 2, cursor: ['codex', 'b'] });
+    expect(s.unsafe.mock.calls.at(-1)![1]![0]).toBe(result.observationId);
+    expect(s.unsafe.mock.calls.at(-1)![1]).toContain(COLD_ARCHIVE_INTEGRITY_ACTION);
+    expect(s.deps.verify).toHaveBeenCalledTimes(2);
+  });
+  it.each(['pending', 'residue', 'empty', 'build'] as const)('refuses %s evidence before reading cold files', async missing => {
+    const s = setup();
+    if (missing === 'pending') s.population.pending = true;
+    if (missing === 'residue') s.population.residue = true;
+    if (missing === 'empty') s.population.total = 0;
+    expect((await observeColdArchiveIntegrity(s.sql, 'workspace', { ...s.deps,
+      buildSha: () => missing === 'build' ? null : 'native-build' })).verdict).toBe('unknown');
+    expect(s.deps.verify).not.toHaveBeenCalled();
+  });
+  it('records a failed actual read without advancing its cursor', async () => {
+    const s = setup(); s.deps.verify.mockRejectedValue(new Error('replica checksum mismatch'));
+    expect((await observeColdArchiveIntegrity(s.sql, 'workspace', s.deps)).verdict).toBe('fail');
+    expect(s.read()).toMatchObject({ complete: false, verified: 0, cursor: ['', ''],
+      error: expect.stringContaining('replica checksum mismatch') });
+  });
+  it('does not inherit an expired epoch or publish a pass while the population changes', async () => {
+    const s = setup();
+    s.set({ schemaVersion: 1, total: 2, verified: 1, cursor: ['codex', 'a'], complete: false,
+      startedAt: '2026-10-01T00:00:00.000Z' });
+    await observeColdArchiveIntegrity(s.sql, 'workspace', s.deps);
+    expect(s.read()).toMatchObject({ verified: 1, cursor: ['codex', 'a'] });
+    s.deps.verify.mockImplementationOnce(async () => { s.population.fingerprint = 'b'.repeat(32);
+      return { fileCount: 1, bytesRaw: 20, bytesStored: 10, manifestSha256: 'f'.repeat(64), primaryDevice: 2, replicaDevice: 3 }; });
+    expect((await observeColdArchiveIntegrity(s.sql, 'workspace', s.deps)).verdict).toBe('unknown');
+    expect(s.read()).toMatchObject({ verified: 1, populationFingerprint: 'a'.repeat(32), complete: false });
+  });
+});
 
 describe('native storage environment evidence', () => {
   const setup = () => ({ identity: vi.fn(async () => ({ host: 'fixture-host', bootId: uuid[0]! })),

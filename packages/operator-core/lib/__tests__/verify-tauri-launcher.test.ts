@@ -5,9 +5,35 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const repo = resolve(import.meta.dirname, '../../../..');
-const source = readFileSync(resolve(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
+const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || resolve(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
+
+describe('native desktop binary readiness', () => {
+  it.each([
+    ['missing log', undefined, false],
+    ['compiler output', 'Compiling papercusp-desktop v0.1.0\n', false],
+    ['plain running marker', 'Running `/tmp/debug/papercusp-desktop`\n', true],
+    ['colorized running marker', '\u001b[1m\u001b[92m     Running\u001b[0m `/tmp/debug/papercusp-desktop`\n', true],
+  ] as const)('quietly classifies %s', (_name, contents, ready) => {
+    const definitions = source.match(/^strip_ansi\(\) \{[^\n]*\}\ndesktop_binary_started\(\) \{[\s\S]*?^\}/m)?.[0];
+    if (!definitions) throw new Error('Maintained desktop readiness predicate was not found');
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-startup-readiness-'));
+    try {
+      const log = resolve(dir, 'cargo.log');
+      if (contents !== undefined) writeFileSync(log, contents);
+      // Execute the production functions, including Bash redirection failures.
+      const result = spawnSync('bash', ['-c', [
+        'set -o pipefail', 'LOG=$1', definitions, 'desktop_binary_started',
+      ].join('\n'), 'startup-readiness', log], { encoding: 'utf8', timeout: 5_000 });
+      expect(result.status, result.stderr).toBe(ready ? 0 : 1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('native Playwright assertion source preflight', () => {
   function preflight(...args: string[]) {

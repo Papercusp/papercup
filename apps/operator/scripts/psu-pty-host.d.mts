@@ -938,16 +938,16 @@ export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResum
  * deadline. A production carry already runs the stronger proof
  * (verifyNativeTurnStartWithRetry: one CR, then a fresh epoch), so treating
  * that exhaustion as a terminal drop skipped the EI-21561923024113260 retries.
- * Only the exhaustion of a submitted, native-verifiable, non-drill carry
- * defers; human input, quota and every other reason keep their verdict. Pure.
+ * Only the exhaustion of a submitted, native-verifiable carry defers; human
+ * input, quota and every other reason keep their verdict. Drills use the same
+ * tagged native proof as production carries so a late native row can settle
+ * the exact successor instead of becoming a false terminal drop. Pure.
  * @param {object} [opts]
- * @param {string} [opts.drillId]
  * @param {boolean} [opts.delivered]
  * @param {string} [opts.reason]
  * @param {boolean} [opts.nativeSubmitted] the tagged carry's CR reached this child
  */
-export function carryExhaustionDefersToNativeProof({ drillId, delivered, reason, nativeSubmitted, }?: {
-    drillId?: string | undefined;
+export function carryExhaustionDefersToNativeProof({ delivered, reason, nativeSubmitted, }?: {
     delivered?: boolean | undefined;
     reason?: string | undefined;
     nativeSubmitted?: boolean | undefined;

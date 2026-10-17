@@ -294,6 +294,39 @@ async function main() {
       hostStopped: true, bundleSha256, health }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-pg-error') {
+    const receipt = await (await import('./private-read-pg-error-http-scenario')).measurePrivateReadPgErrorScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_READ_PG_ERROR_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-cancellation') {
+    const receipt = await (await import('./private-read-cancellation-http-scenario')).measurePrivateReadCancellationScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_READ_CANCELLATION_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-deadline') {
+    const receipt = await (await import('./private-read-deadline-http-scenario')).measurePrivateReadDeadlineScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_READ_DEADLINE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-unrelated-write') {
     const receipt = await measurePrivateUnrelatedCheckpointScenario({
       workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,

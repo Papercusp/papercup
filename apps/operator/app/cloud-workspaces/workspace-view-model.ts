@@ -182,8 +182,9 @@ export type CloudWorkspacesControlRow =
 export function preferredDesktopWorkspace(
   workspaces: readonly WorkspaceHostControlRow[],
 ): WorkspaceHostControlRow | undefined {
-  return workspaces.find((row) => readHostedWorkspaceConnector(row.tunnel)) ??
-    workspaces.find((row) => row.observedState === "running") ?? workspaces[0];
+  return workspaces.find((row) => row.observedState === "running" && readHostedWorkspaceConnector(row.tunnel)) ??
+    workspaces.find((row) => row.observedState === "running") ??
+    workspaces.find((row) => readHostedWorkspaceConnector(row.tunnel)) ?? workspaces[0];
 }
 
 /** Machine-owned viewer state must move together, in this window's URL only. */

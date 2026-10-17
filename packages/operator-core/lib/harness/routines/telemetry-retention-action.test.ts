@@ -43,6 +43,12 @@ vi.mock('../../storage/package-cache-retention', () => ({
 }));
 
 const coldMigrationMock = vi.fn(async (_opts?: unknown) => ({ scanned: 0, migrated: 0, failed: 0, errors: [] }));
+const coldIntegrityMock = vi.fn(async (_sql?: unknown, _workspaceId?: string): Promise<{
+  verdict: 'pass' | 'fail' | 'unknown'; detail: string; observationId?: string;
+}> => ({ verdict: 'pass', detail: 'Both copies verified.', observationId: 'integrity-audit-id' }));
+vi.mock('../../storage/cold-tier-evidence', () => ({
+  observeColdArchiveIntegrity: (...args: [unknown, string]) => coldIntegrityMock(...args),
+}));
 vi.mock('../../session-archive', async (original) => ({
   ...(await original<typeof import('../../session-archive')>()),
   runScheduledColdArchiveMigration: (...args: [unknown]) => coldMigrationMock(...args),
@@ -302,6 +308,8 @@ describe('system:telemetry-retention action', () => {
     cleanupMock.mockClear();
     packageCacheRetentionMock.mockReset().mockResolvedValue([]);
     coldMigrationMock.mockReset().mockResolvedValue({ scanned: 0, migrated: 0, failed: 0, errors: [] });
+    coldIntegrityMock.mockReset().mockResolvedValue({ verdict: 'pass', detail: 'Both copies verified.',
+      observationId: 'integrity-audit-id' });
     // The action logs warn() on the invalid/failed-prune branches exercised below;
     // the repo's vitest-fail-on-console treats an un-mocked warn as a failure, so
     // capture it (the real assertions are on pruneMock / non-throwing).
@@ -388,6 +396,7 @@ describe('system:telemetry-retention action', () => {
     await action!(ctx({ dry_run: true }));
     expect(sqlTagMockFn).not.toHaveBeenCalled();
     expect(coldMigrationMock).not.toHaveBeenCalled();
+    expect(coldIntegrityMock).not.toHaveBeenCalled();
   });
 
   it('refuses a missing cold mount before selecting or removing any archive payload', async () => {
@@ -404,7 +413,7 @@ describe('system:telemetry-retention action', () => {
     packageCacheRetentionMock.mockRejectedValue(new Error('cache scan failed'));
     const action = getSystemAction('telemetry-retention');
 
-    await expect(action!(ctx({}))).resolves.toBeUndefined();
+    await expect(action!(ctx({}))).resolves.toMatchObject({ diagnostics: { retention: { tableRetentionComplete: true } } });
     expect(console.warn).toHaveBeenCalledWith(
       expect.stringContaining('package-cache retention failed — cache scan failed'),
     );
@@ -438,7 +447,9 @@ describe('system:telemetry-retention action', () => {
   it('stops a target on prune failure (ok:false) without throwing', async () => {
     pruneMock.mockResolvedValue({ ok: false, reason: 'invalid_category', removed: 0 });
     const action = getSystemAction('telemetry-retention');
-    await expect(action!(ctx({ targets: [{ category: 'bogus', retention_days: 7 }] }))).resolves.toBeUndefined();
+    await expect(action!(ctx({ targets: [{ category: 'bogus', retention_days: 7 }] }))).resolves.toMatchObject({
+      softError: expect.stringContaining('invalid_category'), diagnostics: { retention: { tableRetentionComplete: false } },
+    });
     expect(pruneMock).toHaveBeenCalledTimes(1);
   });
 
@@ -462,5 +473,69 @@ describe('system:telemetry-retention action', () => {
     const action = getSystemAction('telemetry-retention');
     await action!(ctx({ targets: [], dry_run: true, reindex_enabled: true, reindex_now: true }));
     expect(guardResourceMock).not.toHaveBeenCalled();
+  });
+
+  it('returns terminal per-target evidence bound to the exact native routine workflow', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    const result = await getSystemAction('telemetry-retention')!({ ...ctx({}), routineId: 'routine-1', workflowId: 'fire-1' });
+    expect(result).toMatchObject({ diagnostics: { retention: {
+      kind: 'telemetry-retention-completion', routineId: 'routine-1', workflowId: 'fire-1',
+      workspaceId: 'ws-1', installSlug: 'papercup', host: expect.any(String), pid: process.pid,
+      tableRetentionComplete: true, targets: DEFAULT_RETENTION_TARGETS.map(t => ({ category: t.category,
+        retentionDays: t.retention_days, complete: true, calls: 1, partial: false, removed: 100, vacuumed: true })),
+    } } });
+    expect(result).not.toHaveProperty('softError');
+  });
+
+  it.each(['preview', 'invalid', 'partial', 'failed'] as const)('cannot call a %s run complete', async kind => {
+    pruneMock.mockResolvedValue(okResult(kind === 'partial' ? { partial: true } : {}));
+    if (kind === 'failed') pruneMock.mockResolvedValue({ ok: false, reason: 'native failure', removed: 0 });
+    const result = await getSystemAction('telemetry-retention')!(ctx({ dry_run: kind === 'preview',
+      targets: [{ category: 'tool-invocations', retention_days: kind === 'invalid' ? -1 : 30 }] }));
+    expect(result).toMatchObject({ diagnostics: { retention: { tableRetentionComplete: false,
+      targets: [{ complete: false }] } } });
+    if (kind !== 'preview') expect(result).toHaveProperty('softError');
+    if (kind === 'partial') expect(pruneMock).toHaveBeenCalledTimes(50);
+  });
+
+  it('distinguishes a completed prune from failed or gated cold migration', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    coldMigrationMock.mockRejectedValueOnce(new Error('cold read failed'));
+    const result = await getSystemAction('telemetry-retention')!(ctx({}));
+    expect(result).toMatchObject({ softError: expect.stringContaining('cold read failed'), diagnostics: { retention: {
+      tableRetentionComplete: true, coldMigration: { error: 'cold read failed' },
+    } } });
+  });
+
+  it('observes existing cold copies with migration disabled and binds the exact audit witness', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    const result = await getSystemAction('telemetry-retention')!(ctx({ cold_archive_enabled: false }));
+    expect(coldMigrationMock).not.toHaveBeenCalled();
+    expect(coldIntegrityMock).toHaveBeenCalledWith(sqlTagMock, 'ws-1');
+    expect(result).toMatchObject({ diagnostics: { retention: {
+      tableRetentionComplete: true, coldMigration: { skipped: 'disabled' }, coldIntegrity: {
+        verdict: 'pass', observationId: 'integrity-audit-id',
+      },
+    } } });
+  });
+
+  it('retains physical corruption as a separate failed integrity observation', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    coldIntegrityMock.mockResolvedValueOnce({ verdict: 'fail', detail: 'Replica checksum mismatch.',
+      observationId: 'failed-integrity-id' });
+    const result = await getSystemAction('telemetry-retention')!(ctx({ cold_archive_enabled: false }));
+    expect(result).toMatchObject({ softError: expect.stringContaining('Replica checksum mismatch'),
+      diagnostics: { retention: { tableRetentionComplete: true,
+        coldIntegrity: { verdict: 'fail', observationId: 'failed-integrity-id' } } } });
+  });
+
+  it('cannot turn an observation exception into a pass or prevent table retention', async () => {
+    pruneMock.mockResolvedValue(okResult());
+    coldIntegrityMock.mockRejectedValueOnce(new Error('audit store unavailable'));
+    const result = await getSystemAction('telemetry-retention')!(ctx({ cold_archive_enabled: false }));
+    expect(result).toMatchObject({ softError: expect.stringContaining('audit store unavailable'),
+      diagnostics: { retention: { tableRetentionComplete: true,
+        coldIntegrity: { verdict: 'unknown', detail: 'audit store unavailable' } } } });
+    expect(pruneMock).toHaveBeenCalled();
   });
 });

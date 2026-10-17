@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { OperatorWorkspaceLocationProvider } from "@papercusp/operator-ui/seam";
 import type { WorkspaceHostControlRow } from "./workspace-view-model";
 import { MachineSwitcherView } from "./MachineSwitcher";
+import { setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
 
 const H = vi.hoisted(() => ({
   rows: [] as WorkspaceHostControlRow[],
@@ -135,6 +136,7 @@ function openDesktops(location: "local" | "cloud" = "local") {
 
 afterEach(cleanup);
 beforeEach(() => {
+  window.sessionStorage.clear();
   H.rows = [
     workspace("Old workspace", "absent"),
     workspace("Research workspace"),
@@ -148,6 +150,20 @@ beforeEach(() => {
 });
 
 describe("portal Desktops entry — approved option B", () => {
+  it("retains this window's selected machine after another app clears desktop URL state", async () => {
+    H.rows.push(workspace("Saved machine"));
+    setBrowserMachineId("Saved machine");
+    openDesktops();
+    expect(await screen.findByRole("region", { name: "Desktops for Saved machine" })).toBeTruthy();
+  });
+
+  it("keeps an unavailable persisted selection explicit instead of opening another machine", async () => {
+    setBrowserMachineId("Removed machine");
+    openDesktops();
+    expect(await screen.findByText("Workspace unavailable")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Desktops for Research workspace" })).toBeNull();
+  });
+
   it.each(["local", "cloud"] as const)(
     "keeps the persistent %s machine selector on the desktop pane's default target",
     async (location) => {

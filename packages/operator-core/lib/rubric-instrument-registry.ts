@@ -31,6 +31,7 @@ import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
+import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
@@ -46,6 +47,7 @@ import {
 
 /** The explicit manual binding: the criterion is deliberately graded by a person. */
 export const MANUAL_INSTRUMENT_KEY = 'none';
+export const NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY = 'storage:disk-headroom-alarm-native';
 
 /** The unchanged R-1 bakeoff artifact also supplies the approved R-2/R-3 outcomes. */
 export const BM25_LATENCY_ARTIFACT_PATH = 'docs/evidence/bm25-bakeoff-work-items-2026-10-11.json';
@@ -669,11 +671,13 @@ const COMMAND_INSTRUMENTS: readonly CommandInstrument[] = Object.freeze([
 export function platformComputedInstrumentKeys(): string[] {
   return [
     'woe.goal-mode-base-scorecard',
+    ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
     GATE_REUSE_AUDIT_INSTRUMENT_KEY,
     DISK_HEADROOM_SOAK_INSTRUMENT_KEY,
     DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,
     COLD_MOUNTS_INSTRUMENT_KEY,
     COLD_MOVES_INSTRUMENT_KEY,
+    NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
     PG_TABLE_GROWTH_INSTRUMENT_KEY,
     ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
     ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
@@ -704,7 +708,17 @@ export function instrumentRegistry(): ReadonlyMap<string, RegisteredInstrument> 
       evaluator: 'platform',
       description: 'Resolved in-process by scorecards:emit / scorecards:evaluate as a platform-computed snapshot.',
       resolvedBy: 'scorecards:instrument-snapshots',
-      ...(coldEvidence ? { rescore: {
+      ...(key === NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY ? { rescore: {
+        windowMs: 90 * 60_000, unit: 'count' as const, scope: 'harness' as const,
+        resolve: async window => {
+          if (!window.harnessSlug?.trim()) return { verdict: 'unknown' as const, detail: 'Canonical harness required.' };
+          const [{ getOrgPg }, { hostname }, { getBuildInfo }, { measureNativeDiskHeadroomAlarm }] = await Promise.all([
+            import('@papercusp/db-org'), import('node:os'), import('./build-info'), import('./storage/storage-growth-alarm'),
+          ]);
+          return measureNativeDiskHeadroomAlarm(getOrgPg().sql, { workspaceId: window.workspaceId,
+            host: hostname(), buildSha: getBuildInfo().sha, windowStart: window.windowStart, windowEnd: window.windowEnd });
+        },
+      } } : coldEvidence ? { rescore: {
         windowMs: 72 * 60 * 60_000,
         unit: 'count' as const,
         scope: 'harness' as const,
