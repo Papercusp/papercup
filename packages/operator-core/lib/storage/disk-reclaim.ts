@@ -1113,6 +1113,20 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
           if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
         }
+        // A productive partial root is a durable continuation point. Do not
+        // spend the remainder of this pass starting an unrelated large root:
+        // the next scheduled batch rotates from stoppedAtRoot and rebuilds all
+        // safety evidence. This specifically prevents the first batch from
+        // consuming its full drain window before any later root can run.
+        const productiveStop = receipt.effects?.at(-1)?.stopped === true &&
+          (receipt.effects.at(-1)?.processed ?? 0) > 0;
+        if (productiveStop) {
+          progress.stoppedAtRoot = root.path;
+          for (const remaining of roots.slice(roots.indexOf(root) + 1)) {
+            if (!progress.incompleteRoots.includes(remaining.path)) progress.incompleteRoots.push(remaining.path);
+          }
+          break;
+        }
       }
       for (const cls of policy.classes.values()) {
         if (cls.enforcers.some((e) => e.kind === 'standing-reclaim' && (e.via || cls.keep.kind === 'lease')) &&

@@ -59,6 +59,7 @@ import { corroborationReportersSql, VERIFICATION_SUBJECT_ID_SQL } from './corrob
 import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
+  acceptanceSourceRevision,
   createImplementationReadiness,
   evaluateImplementationAcceptance,
   type ImplementationAcceptanceContract,
@@ -1095,7 +1096,11 @@ export async function resubmitAgentReview(
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
   }
   // A pending round carries no revision kind; the next grade stamps a fresh one.
-  const { revisionKind: _resolvedRevisionKind, ...currentWithoutKind } = current;
+  const {
+    revisionKind: _resolvedRevisionKind,
+    reviewedSourceRevision: _previousReviewedSourceRevision,
+    ...currentWithoutKind
+  } = current;
   const next: AgentReviewState = {
     ...currentWithoutKind,
     status: 'pending',
@@ -1203,11 +1208,16 @@ export interface AgentReviewGradePreflight {
   applicable: boolean;
   workItemId?: string;
   state?: AgentReviewState;
-  refusal?: 'agent-review-feedback-required' | 'agent-review-not-pending';
+  refusal?:
+    | 'agent-review-feedback-required'
+    | 'agent-review-not-pending'
+    | 'agent-review-source-revision-unbound'
+    | 'agent-review-source-revision-stale'
+    | 'agent-review-reviewer-mismatch';
 }
 
 export async function preflightAgentReviewGrade(
-  input: { ideaId: string; grade: number; feedback?: string },
+  input: { ideaId: string; grade: number; gradedBy: string; feedback?: string },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<AgentReviewGradePreflight> {
   const ledger = await deps.readLedgerGrade(input.ideaId);
@@ -1217,6 +1227,15 @@ export async function preflightAgentReviewGrade(
   if (!state || state.ledgerIdeaId !== input.ideaId) return { applicable: false };
   if (state.status !== 'pending') {
     return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-not-pending' };
+  }
+  if (!state.reviewedSourceRevision) {
+    return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-source-revision-unbound' };
+  }
+  if (workItem!.assignee !== input.gradedBy) {
+    return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-reviewer-mismatch' };
+  }
+  if (acceptanceSourceRevision(workItem!) !== state.reviewedSourceRevision) {
+    return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-source-revision-stale' };
   }
   if (input.grade <= AGENT_REVIEW_MAX_REVISION_GRADE && !input.feedback?.trim()) {
     return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-feedback-required' };
@@ -1610,6 +1629,7 @@ export async function claimAgentReview(
     reviewer: input.reviewer,
     harnessSlug: input.harnessSlug,
     review: current,
+    source: workItem,
     parties,
   });
   if (!agentReviewAdmission) {
@@ -1939,6 +1959,7 @@ export async function claimNextAgentReview(
           reviewer: input.reviewer,
           harnessSlug: workItem.harness,
           review,
+          source: workItem,
           parties,
         })
       : null;

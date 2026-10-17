@@ -565,7 +565,7 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }
   });
 
-  it('keeps a caller-authored pg_query 42703 refusal out of the structural wrapper lane', () => {
+  it('keeps raw and paraphrased caller-authored pg_query 42703 refusals out of the structural lane', () => {
     const wrappedPgQueryRefusal = 'column "passed" does not exist: ' + JSON.stringify({
       error: 'column "passed" does not exist',
       code: '42703',
@@ -573,9 +573,34 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       jsonbPath: '⚠ `passed` is NOT a column',
     });
     expect(classifyToolError('handler_error', 'error', wrappedPgQueryRefusal)).toBe('caller');
+    const capturedPgQueryReport: SuspectedToolFailure = {
+      toolName: 'dev:pg_query',
+      errorCode: '42703',
+      status: 'error',
+      fieldPath: 'ORDER BY updated_at',
+      message: 'Read-only work_items query used updated_at, but the live relation exposes updated_ts ' +
+        '(and many other generated columns). Server returned knownColumns and no rows; no mutation occurred. ' +
+        'Corrected query should use updated_ts.',
+      reproduced: true,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'Filtered read over known work_items columns succeeds with updated_ts.',
+        actual: 'PostgreSQL rejected unknown column updated_at and named updated_ts.',
+      },
+    };
+    expect(classifyToolError(
+      capturedPgQueryReport.errorCode,
+      capturedPgQueryReport.status,
+      capturedPgQueryReport.message,
+    )).toBe('caller');
+    expect(normalizeSuspectedToolFailure(capturedPgQueryReport)).toMatchObject({
+      class: 'caller',
+      direct: false,
+    });
     // A plain missing-column handler failure has no pg_query correction envelope
     // and must continue to reach the structural repair lane.
     expect(classifyToolError('handler_error', 'error', 'column "initiative" does not exist')).toBe('structural');
+    expect(classifyToolError('42703', 'error', 'column "updated_at" does not exist')).toBe('structural');
   });
 
   it('does not mistake the timeoutSec argument name for a runtime timeout', () => {

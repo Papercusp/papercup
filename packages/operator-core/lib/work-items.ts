@@ -145,6 +145,7 @@ import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
+  agentReviewClaimPayloadSql,
   intakeStageClaimFloorSql,
   matchesAgentReviewClaimAdmission,
   matchesAgentReviewRevisionAdoptionAdmission,
@@ -5960,6 +5961,9 @@ export async function claimWorkItem(
           OR ${agentReviewPendingAdmissionSql(sql, agentReviewAdmission, {
             payload: 'target.payload',
             admission: 'target.admission',
+          itemKind: 'target.item_kind',
+          title: 'target.title',
+          summary: 'target.summary',
           })}
         )`
       : admittedWhereSql(sql);
@@ -5969,23 +5973,25 @@ export async function claimWorkItem(
         harness: 'target.harness_slug', goal: 'target.goal_id', payload: 'target.payload',
         sourcePlan: 'target.source_plan_slug', holder: 'target.taken_by',
       }, assignee);
+      const claimPayload = sql`CASE
+        WHEN target.taken_by = ${assignee}
+          OR (target.taken_by IS NOT NULL AND target.taken_by <> '' AND position(target.taken_by in ${assignee}) = 1)
+        THEN target.payload
+        ELSE jsonb_set(
+          COALESCE(target.payload, '{}'::jsonb),
+          '{claim_history_post_id}',
+          to_jsonb(COALESCE((
+            SELECT max(post.id)
+              FROM harness_shared.coord_thread_posts post
+             WHERE post.workspace_id = ${ws}
+          ), 0)),
+          true
+        )
+      END`;
+      const claimPayloadWithReviewRevision = agentReviewClaimPayloadSql(sql, claimPayload, agentReviewAdmission);
       return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
-         SET payload = CASE
-               WHEN target.taken_by = ${assignee}
-                 OR (target.taken_by IS NOT NULL AND target.taken_by <> '' AND position(target.taken_by in ${assignee}) = 1)
-               THEN target.payload
-               ELSE jsonb_set(
-                 COALESCE(target.payload, '{}'::jsonb),
-                 '{claim_history_post_id}',
-                 to_jsonb(COALESCE((
-                   SELECT max(post.id)
-                     FROM harness_shared.coord_thread_posts post
-                    WHERE post.workspace_id = ${ws}
-                 ), 0)),
-                 true
-               )
-             END,
+         SET payload = ${claimPayloadWithReviewRevision},
              taken_by = ${assignee}, taken_at = now(),
              -- P-001: a NEW holder starts with a clean progress slate (so the grace
              -- window anchors on the fresh taken_at, not a prior holder's stale

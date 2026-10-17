@@ -1193,10 +1193,11 @@ export async function composeOrient(
     }
   }
   // EI-21239843876346650: a post-compaction successor can recover a durable fleet
-  // route after the live presence projection was resolved. That route is authoritative
-  // for THIS call's roster scope: the old self-only read made a live peer look absent
-  // and enabled a destructive false reclaim. Keep this await before the first
-  // fleet:assignments call, and disclose the widened scope in the core result.
+  // route after the live presence projection was resolved. A recovered leader needs
+  // the fleet roster so a live peer cannot look absent and be falsely reclaimed.
+  // Other roles keep the bounded self-assignment query: they need their own claims,
+  // not peer liveness. Keep this await before the assignments call and disclose the
+  // recovered membership in the core result.
   let recoveredFleetMembership: RecoveredFleetScope | null = null;
   let recoveredFleetScope: OrientResult['recoveredFleetScope'];
   if (args.afterCompaction === true && recoveredFleetScopeFold) {
@@ -1211,7 +1212,7 @@ export async function composeOrient(
           note:
             `RECOVERED FLEET SCOPE: the post-compaction control anchor named fleet ` +
             `'${recovered.fleetSlug}' (role '${recovered.fleetRole ?? 'unknown'}'). ` +
-            "Assignment visibility follows the caller's role-specific scope; self-only readers remain self-scoped.",
+            "Leaders read the fleet roster to preserve peer visibility; other roles remain self-scoped.",
         };
       }
     } catch {
@@ -1229,7 +1230,7 @@ export async function composeOrient(
   // on settlement even if the backlog chain is still waiting.
   const mePromise = withBoundedTimeout(
     (signal) => call('fleet:assignments', {
-      ...(recoveredFleetMembership
+      ...(recoveredFleetMembership?.fleetRole === 'leader'
         ? { fleet: recoveredFleetMembership.fleetSlug, detail: 'snapshot' }
         : ownerId
           ? { agent: ownerId, detail: 'snapshot' }

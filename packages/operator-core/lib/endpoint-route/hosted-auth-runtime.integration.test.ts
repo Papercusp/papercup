@@ -18,6 +18,8 @@ import { readHostedEntitlementAuthority, writeHostedEntitlementAuthority,
   type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
 import { createHostedAuthRuntime } from './hosted-auth-runtime';
 import { createHostedRuntime, type HostedRuntimeDependencies } from './hosted-runtime';
+import { createHostedHandlerFromEnvironment, type HostedHandler } from '../../../../apps/operator/bin/hosted-handler';
+import { HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV } from '../auth/hosted/first-workspace-dependencies';
 import type { HostedAuthFlow, HostedAuthFlowConsumeResult } from './routes/hosted-auth/flow';
 import { HOSTED_AUTH_FLOW_COOKIE } from './routes/hosted-auth';
 import { HOSTED_SESSION_COOKIE } from '../auth/hosted-session';
@@ -109,9 +111,10 @@ function policy(cpuMillicores = 4000): HostedTrialEntitlementPolicy {
   } };
 }
 
-describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted authentication trial rollout (%s, real PG + HTTP)', runtimeKind => {
+describe.each(['auth-only', 'full-control-plane', 'environment-handler'] as const)('configured hosted authentication trial rollout (%s, real PG + HTTP)', runtimeKind => {
   let db: OrgTestDb;
   const servers = new Set<ReturnType<typeof serve>>();
+  const handlers = new Set<HostedHandler>();
   const pending = new Set<Promise<unknown>>();
   const runService: HostedServiceContextRunner = <T>(fn: (sql: Sql) => Promise<T>): Promise<T> => {
     const task = db.appSql.begin(async tx => {
@@ -141,6 +144,7 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
       server.close(error => error ? reject(error) : resolve());
       if ('closeAllConnections' in server) server.closeAllConnections();
     })));
+    for (const handler of handlers) handler.relay.dispose();
     await Promise.allSettled([...pending]); await db?.cleanup();
   });
 
@@ -223,11 +227,27 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
         hostedBrowser: { provisioning: { enqueue } },
       } : {}),
     };
-    const runtime = runtimeKind === 'auth-only'
+    // The production entrypoint must parse the policy and allowlist itself,
+    // then serve its final restricted handler rather than the runtime's app.
+    const handler = runtimeKind === 'environment-handler'
+      ? await createHostedHandlerFromEnvironment({
+          PAPERCUSP_HOSTED_PUBLIC_ORIGIN: configuration.publicOrigin,
+          PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID: configuration.controlPlaneWorkspaceId,
+          PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF: configuration.hostedSessionCookieSecretRef,
+          WORKOS_CLIENT_ID: configuration.workosClientId,
+          WORKOS_API_KEY_REF: configuration.workosApiKeyRef,
+          WORKOS_COOKIE_PASSWORD_REF: configuration.workosCookiePasswordRef,
+          WORKOS_WEBHOOK_SECRET_REF: 'env:WEBHOOK',
+          ...(trialEntitlementPolicy ? { PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT: JSON.stringify(trialEntitlementPolicy) } : {}),
+          ...(pooled ? { [HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV]: admitted.binding.organizationId } : {}),
+        }, dependencies)
+      : undefined;
+    if (handler) handlers.add(handler);
+    const runtime = handler?.plane ?? (runtimeKind === 'auth-only'
       ? await createHostedAuthRuntime({ ...configuration, trialEntitlementPolicy }, dependencies)
       : await createHostedRuntime({ ...configuration, workosWebhookSecretRef: 'env:WEBHOOK',
-          trialEntitlementPolicy, ...(pooled ? { firstWorkspaceOrganizations: new Set([admitted.binding.organizationId]) } : {}) }, dependencies);
-    const request = await requestFor(runtime.app);
+          trialEntitlementPolicy, ...(pooled ? { firstWorkspaceOrganizations: new Set([admitted.binding.organizationId]) } : {}) }, dependencies));
+    const request = await requestFor(handler?.app ?? runtime.app);
     async function callback(invalidState = false, intent: 'sign-in' | 'sign-up' = 'sign-in') {
       h.provider = provider;
       const start = await request(`/api/hosted/auth/sign-in?returnTo=%2Fworkspaces&intent=${intent}`);
@@ -247,7 +267,7 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
     return { ...admitted.binding, createdAt, callback, stored, provider, runtime, request, enqueue };
   }
 
-  if (runtimeKind === 'full-control-plane') it('admits a configured trial from callback through first-workspace HTTP before enqueue', async () => {
+  if (runtimeKind !== 'auth-only') it('admits a configured trial from callback through first-workspace HTTP before enqueue', async () => {
     const f = await fixture(policy(), true);
     const signedIn = await f.callback();
     const sessionCookie = signedIn.headers.get('set-cookie')!.match(new RegExp(`${HOSTED_SESSION_COOKIE}=([^;,]+)`))![1];
@@ -272,7 +292,7 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
       .toBe(host.desired_spec.data.volumeGiB);
   });
 
-  if (runtimeKind === 'full-control-plane') it('protects an actual native child and viewer from idle stop, then fences new starts', async () => {
+  if (runtimeKind !== 'auth-only') it('protects an actual native child and viewer from idle stop, then fences new starts', async () => {
     const base = policy();
     const trial = { ...base, bundle: { ...base.bundle, entitlements: { ...base.bundle.entitlements,
       quotas: { ...base.bundle.entitlements.quotas, 'pool.agents': 1, 'pool.idle-stop-minutes': 5 } } } };
@@ -417,7 +437,7 @@ describe.each(['auth-only', 'full-control-plane'] as const)('configured hosted a
     expect(await receipts()).toMatchObject([{ state: 'cancelled' }]);
   }, 30_000);
 
-  if (runtimeKind === 'full-control-plane') it('uses signed configured billing authority for paid admission and revokes it without deleting retained state', async () => {
+  if (runtimeKind !== 'auth-only') it('uses signed configured billing authority for paid admission and revokes it without deleting retained state', async () => {
     const f = await fixture(policy(2000), true, 2);
     const signedIn = await f.callback();
     expect(signedIn.status).toBe(303);

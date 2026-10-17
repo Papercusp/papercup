@@ -1121,6 +1121,51 @@ describe('retention on a real fixture tree', () => {
       expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
     } finally { vi.useRealTimers(); }
   });
+  it('checkpoints the first productive effect batch before a slow independent census and refreshes protection on continuation', async () => {
+    const { root, options } = await setup();
+    const slowRoot = join(fixture!, 'slow-root'); await mkdir(slowRoot);
+    const paths = [join(root, 'a-old'), join(root, 'b-new-pin'), join(slowRoot, 'old')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let clock = options.nowMs, activeBatch = 0;
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(clock);
+    const receipts: DiskReclaimReceipt[] = [];
+    const inspected: Array<{ batch: number; root: string }> = [];
+    const protectionReads: number[] = [];
+    try {
+      const result = await drainScheduledDiskReclaim(async (batch, notAfterMs) => {
+        activeBatch = batch;
+        if (notAfterMs !== undefined && clock >= notAfterMs) return null;
+        const receipt = await runDiskReclaimOnce({ ...options, nowMs: clock, effectBudgetMs: 50,
+          runBudgetMs: notAfterMs === undefined ? 1000 : notAfterMs - clock,
+          previousReceipt: receipts.at(-1),
+          policy: [...options.policy, { ...options.policy[0]!, id: 'slow', roots: [slowRoot] }],
+          roots: [...options.roots, { path: slowRoot, classId: 'slow' }],
+          readProtection: async () => {
+            protectionReads.push(activeBatch);
+            return { paths: activeBatch > 0 ? [paths[1]!] : [] };
+          },
+          inspectTrees: async (path, input) => {
+            if (!input.paths) {
+              inspected.push({ batch: activeBatch, root: path });
+              if (path === slowRoot) { clock += 200; vi.setSystemTime(clock); }
+            }
+            return inspectRetentionTrees(path, input);
+          },
+          record: async phase => { if (phase === 'removed') { clock += 75; vi.setSystemTime(clock); } },
+        });
+        receipts.push(receipt); return receipt;
+      }, { maxElapsedMs: 1000 });
+      expect(result).toMatchObject({ batches: 2, stop: 'complete' });
+      expect(inspected.filter(value => value.batch === 0)).toEqual([{ batch: 0, root }]);
+      expect(inspected.filter(value => value.batch === 1).map(value => value.root)).toEqual([slowRoot, root]);
+      expect(receipts[0]).toMatchObject({ complete: false, policyExhausted: null, scan: { incompleteRoots: [slowRoot] } });
+      expect(protectionReads).toContain(1);
+      expect(receipts[1]!.entries).toContainEqual(expect.objectContaining({ path: paths[1], status: 'protected' }));
+      expect(clock - options.nowMs).toBeLessThan(1000);
+      for (const path of [paths[0]!, paths[2]!]) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+    } finally { vi.useRealTimers(); }
+  });
   it.each([true, false])('attributes fresh-check and audit time even when final holder evidence is incomplete (%s)', async (complete) => {
     const { root, options } = await setup(); const path = join(root, 'timed'); await writeFile(path, 'expired');
     let clock = Date.now(), intent = false, reinspectionMs = 0;

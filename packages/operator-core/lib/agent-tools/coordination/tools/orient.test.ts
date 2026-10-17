@@ -1071,12 +1071,12 @@ describe('coord:orient args', () => {
       recoveredFleetScope: {
         fleet: 'orch-unify',
         role: 'member',
-        note: expect.stringContaining('role-specific scope'),
+        note: expect.stringContaining('other roles remain self-scoped'),
       },
     });
   });
 
-  it('uses the full-roster snapshot for a recovered member afterCompaction read', async () => {
+  it('keeps a recovered member afterCompaction assignment read self-scoped', async () => {
     const ownerId = 'su-orient-handler-snapshot-test';
     const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const recovery = {
@@ -1106,7 +1106,7 @@ describe('coord:orient args', () => {
     buildCompactionRecoveryMock.mockResolvedValue(recovery);
     readGovernorStateSnapshotMock.mockResolvedValue(null);
 
-    await orientTool.handler(
+    const result = (await orientTool.handler(
       {
         afterCompaction: true,
         harness: 'papercusp',
@@ -1128,10 +1128,20 @@ describe('coord:orient args', () => {
         progress: vi.fn(),
         activateTools: vi.fn(() => false),
       } as never,
-    );
+    )) as { data: Record<string, unknown> };
 
     const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
-    expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot', harness: 'papercusp' });
+    expect(assignmentCall?.args).toEqual({ agent: ownerId, detail: 'snapshot', harness: 'papercusp' });
+    expect(result.data).toMatchObject({
+      recoveredFleetScope: {
+        fleet: 'orch-unify',
+        role: 'member',
+        note: expect.stringContaining('other roles remain self-scoped'),
+      },
+      me: {
+        agents: [{ agentId: ownerId, isSelf: true, fleetSlug: 'orch-unify', fleetRole: 'member' }],
+      },
+    });
   });
 
   it('uses snapshot detail for a normal self-scoped assignment read', async () => {
@@ -1619,7 +1629,10 @@ describe('EI-21239843876346650 recovered fleet scope', () => {
     expect(extractRecoveredFleetScope(null)).toBeNull();
   });
 
-  it('waits for the recovered route, reads the fleet, and discloses the widened scope', async () => {
+  it.each([
+    { role: 'leader', expectedArgs: { fleet: 'orch-unify', detail: 'snapshot' } },
+    { role: 'member', expectedArgs: { agent: 'member', detail: 'snapshot' } },
+  ])('waits for a recovered $role route and applies its assignment scope', async ({ role, expectedArgs }) => {
     let resolveScope!: (scope: { fleetSlug: string; fleetRole: string | null }) => void;
     const scopePromise = new Promise<{ fleetSlug: string; fleetRole: string | null }>((resolve) => {
       resolveScope = resolve;
@@ -1648,14 +1661,13 @@ describe('EI-21239843876346650 recovered fleet scope', () => {
     await Promise.resolve();
     expect(calls.some((entry) => entry.name === 'fleet:assignments')).toBe(false);
 
-    resolveScope({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+    resolveScope({ fleetSlug: 'orch-unify', fleetRole: role });
     const result = await pending;
     const assignments = calls.find((entry) => entry.name === 'fleet:assignments');
-    expect(assignments?.args).toMatchObject({ fleet: 'orch-unify' });
-    expect(assignments?.args).not.toHaveProperty('agent');
+    expect(assignments?.args).toEqual(expectedArgs);
     expect(result.recoveredFleetScope).toMatchObject({
       fleet: 'orch-unify',
-      role: 'member',
+      role,
       note: expect.stringContaining('RECOVERED FLEET SCOPE'),
     });
   });
@@ -4806,14 +4818,14 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       }
     });
 
-    it('preserves recovered self membership when the fleet assignment roster exceeds orient budget', async () => {
+    it('preserves recovered leader membership when the fleet assignment roster exceeds orient budget', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const ownerId = 'su-recovered-membership-timeout-test';
       const { call, calls } = fakeCall({
         ...CORE,
         'fleet:assignments': () => new Promise(() => {}),
       });
-      const recoveredScope = async () => ({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+      const recoveredScope = async () => ({ fleetSlug: 'orch-unify', fleetRole: 'leader' });
       try {
         const resultPromise = composeOrient(
           { mode: 'monitor', afterCompaction: true },
@@ -4851,7 +4863,7 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
               agentId: ownerId,
               isSelf: true,
               fleetSlug: 'orch-unify',
-              fleetRole: 'member',
+              fleetRole: 'leader',
             },
           ],
         });

@@ -43,6 +43,20 @@ import {
 import { createRetentionPin } from './storage/retention-pins';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 
+// Release-cut tests exercise the mutex contract, but must not queue behind a
+// live operator's production retention pass. Map only this suite's fixed name
+// to an isolated lease while preserving all lock behavior and race assertions.
+const cutFixtureMutex = vi.hoisted(() => 'release-cut-fixture-test');
+vi.mock('../../../scripts/lib/fs-mutex.mjs', async (original) => {
+  const actual = await original<typeof import('../../../scripts/lib/fs-mutex.mjs')>();
+  const map = (name: string) => name === 'papercusp-disk-retention' ? cutFixtureMutex : name;
+  return {
+    ...actual,
+    withFsMutex: (name: string, ...rest: any[]) => actual.withFsMutex(map(name), ...rest),
+    peekFsMutexSync: (name: string, ...rest: any[]) => actual.peekFsMutexSync(map(name), ...rest),
+  };
+});
+
 const NOW = Date.parse('2026-09-30T04:00:00Z');
 const DAY = 86_400_000;
 const VERSION_PATHS = ['package.json', 'src-tauri/Cargo.toml', 'src-tauri/tauri.conf.json'] as const;
@@ -759,8 +773,8 @@ setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); },
     } finally { process.env.PATH = previous; }
   }, 20_000);
 
-  it('measures allocated bytes for paths containing tabs and newlines without following symlinks or opening FIFOs', async () => {
-    const tree = path.join(tmp, 'usage\twith\nseparators');
+  it('measures allocated bytes for descendant paths containing tabs and newlines without following symlinks or opening FIFOs', async () => {
+    const tree = path.join(tmp, 'usage-separators');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     const data = path.join(tree, 'file\twith\nseparators');
     fs.writeFileSync(data, Buffer.alloc(8192, 1));

@@ -101,6 +101,7 @@ import {
   intakeStageClaimFloorSql,
   createImplementationReadiness,
   agentReviewPendingAdmissionSql,
+  agentReviewClaimPayloadSql,
   agentReviewRevisionAdoptionSql,
   isAgentReviewClaimAdmission,
   isAgentReviewRevisionAdoptionAdmission,
@@ -3235,6 +3236,9 @@ export async function claimIssue(
         OR ${agentReviewPendingAdmissionSql(sql, agentReviewAdmission, {
           payload: 'target.payload',
           admission: 'target.admission',
+          itemKind: 'target.kind',
+          title: 'target.title',
+          summary: 'target.body',
         })}
       )`
     : admittedWhereSql(sql);
@@ -3326,6 +3330,14 @@ export async function claimIssue(
       ), 0)),
       true
     )`;
+  const claimPayload = sql`CASE
+    WHEN ${sameHolderPredicate}
+      AND target.payload -> ${CLAIM_SUBJECT_BASELINE_KEY} IS NOT DISTINCT FROM ${claimSubjectBaseline}
+    THEN target.payload
+    WHEN ${sameHolderPredicate} THEN ${stampedClaimSubjectPayload}
+    ELSE ${stampedNewClaimPayload}
+  END`;
+  const claimPayloadWithReviewRevision = agentReviewClaimPayloadSql(sql, claimPayload, agentReviewAdmission);
   const rows = await withPgContentionRetry(() => boundedOrgTxn(async (tx) => {
     const sql = tx;
     const selection = goalPlanClaimFragments(sql,
@@ -3335,13 +3347,7 @@ export async function claimIssue(
       }, assignee);
     return sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
-      payload = CASE
-        WHEN ${sameHolderPredicate}
-          AND target.payload -> ${CLAIM_SUBJECT_BASELINE_KEY} IS NOT DISTINCT FROM ${claimSubjectBaseline}
-        THEN target.payload
-        WHEN ${sameHolderPredicate} THEN ${stampedClaimSubjectPayload}
-        ELSE ${stampedNewClaimPayload}
-      END,
+      payload = ${claimPayloadWithReviewRevision},
       assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
       assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}

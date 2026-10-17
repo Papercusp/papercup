@@ -111,11 +111,13 @@ export const CALLER_MESSAGE_PATTERN =
 /** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
  *  its PostgreSQL 42703 code and a known-column correction payload. When
  *  tools:invoke wraps that `isError` result, invocation-friction sees the
- *  wrapper's `handler_error`; retain the PG refusal as caller input instead of
- *  filing the wrapper as a structural tool bug. Bare application missing-column
- *  errors remain structural. */
+ *  wrapper's `handler_error`; and the canonical capture shorthand may paraphrase
+ *  the payload instead of retaining its JSON envelope. Retain either form as
+ *  caller input instead of filing the wrapper as a structural tool bug. Bare
+ *  application missing-column errors remain structural. */
 export const PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN =
-  '^column "[^"]+" does not exist: .*"code":"42703".*"knownColumns"';
+  '^(?:column "[^"]+" does not exist: .*"code":"42703".*"knownColumns"|' +
+  'Read-only .* query used [^,]+, but the live relation exposes .*\\. Server returned knownColumns)';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
@@ -828,8 +830,17 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     'i',
   ).test(input.message);
   const nativeShellCleanupRefusal = isExpectedNativeShellCleanupRefusal(input);
+  // A 42703 response carrying dev:pg_query's knownColumns correction is the
+  // expected refusal of caller-authored SQL with a nonexistent column. The
+  // capture shorthand report may paraphrase the JSON envelope, and reporter
+  // supplied directEvidence cannot turn that invalid query into a tool defect.
+  const pgQueryUndefinedColumnCallerRefusal =
+    input.toolName.trim() === 'dev:pg_query' &&
+    input.errorCode?.trim() === '42703' &&
+    new RegExp(PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN, 'i').test(input.message);
   // Keep other caller-class overrides available for genuine contract defects.
   const structuredAttested = input.directEvidence !== undefined &&
+    !pgQueryUndefinedColumnCallerRefusal &&
     !structuredResultShapeCallerDiagnostic &&
     !processNamespacePermissionRefusal &&
     !nativeShellCleanupRefusal;
