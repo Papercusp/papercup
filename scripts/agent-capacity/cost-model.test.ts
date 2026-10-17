@@ -10,6 +10,7 @@ import {
   evaluate,
   hostMonthUsd,
   onDemandMonthUsd,
+  pricingComparison,
   renderMarkdown,
   SCENARIOS,
   serverMonthUsd,
@@ -17,6 +18,7 @@ import {
   TARGET,
   tenantsPerHost,
   type PoolBillLine,
+  type CostReportMonth,
 } from './cost-model';
 
 const perActiveSpot = (id: string) => hostMonthUsd(capacity(id).machineType, true) / capacity(id).active;
@@ -155,6 +157,84 @@ describe('cost-model rendering', () => {
     expect(md).toMatch(/\| H2 \|[^\n]*\| <=\d/);
     expect(md).toMatch(/\| M5 \|[^\n]*PENDING P-532 \|$/m);
     expect(md).not.toMatch(/\| M4 \|[^\n]*PENDING/);
+  });
+
+  const knownMonth: CostReportMonth = { retainedStorageUsd: 2, provisionedPerformanceUsd: 0,
+    backupUsd: 0.5, objectStorageUsd: 0.1, networkUsd: 0.2, controlUsd: 0.4,
+    warmCapacityUsd: 0.8, inferenceUsd: 3, sourceRef: 'synthetic:month-evidence' };
+
+  it.each([1, 50])('compares both alternatives for %s assigned agents at the same modeled activity', (agents) => {
+    const original = row('M3', agents);
+    const [result] = pricingComparison([original], knownMonth);
+    expect(result!.basePlusAgentCoreUsd).toBeCloseTo(original.totalUsd.packed);
+    expect(result!.busyHoursCoreUsd).toBeCloseTo(result!.basePlusAgentCoreUsd);
+    expect(result!.basePlusAgentTotalUsd).toBeCloseTo(original.totalUsd.packed + 7);
+    expect(result!.busyHoursTotalUsd).toBeCloseTo(result!.basePlusAgentTotalUsd!);
+    expect(result!.inferenceUsd).toBe(3);
+    expect(result!.busyAgentHours).toBeCloseTo(agents * 730 * 0.35);
+    expect(result!.sources).toEqual(original.sources);
+    expect(result!.inputSourceRef).toBe('synthetic:month-evidence');
+  });
+
+  it('keeps base and retained costs when actual busy time is zero without making assigned agents free', () => {
+    const [result] = pricingComparison([row('M3')], { ...knownMonth, busyAgentHours: 0 });
+    expect(result!.busyHoursCoreUsd).toBe(result!.baseServerUsd);
+    expect(result!.busyHoursTotalUsd).toBeCloseTo(result!.baseServerUsd + 7);
+    expect(result!.basePlusAgentCoreUsd).toBeGreaterThan(result!.busyHoursCoreUsd);
+    expect(result!.busyHoursModeled).toBe(false);
+  });
+
+  it('preserves every omitted/null cost as unknown instead of silently pricing it at zero', () => {
+    for (const key of Object.keys(knownMonth).filter((key) => key !== 'sourceRef') as (keyof CostReportMonth)[]) {
+      for (const absent of [undefined, null]) {
+        const [result] = pricingComparison([row('M3')], { ...knownMonth, [key]: absent });
+        expect(result!.missingCosts).toEqual([key]);
+        expect(result!.basePlusAgentTotalUsd).toBeNull();
+        expect(result!.busyHoursTotalUsd).toBeNull();
+      }
+    }
+    const md = renderMarkdown(buildRows(50, null));
+    expect(md).toContain('base + agent all-in');
+    expect(md).toContain('busy-hours all-in');
+    expect(md).toContain('inference');
+    expect(md).toContain('UNKNOWN');
+    expect(md).toContain('retainedStorageUsd');
+    expect(md).toContain('not observed usage');
+  });
+
+  it('accepts sourced zero costs and keeps inference separate when it crosses $20', () => {
+    const original = row('M3', 1);
+    const zeroMonth = Object.fromEntries(Object.keys(knownMonth).map((key) =>
+      [key, key === 'sourceRef' ? 'synthetic:explicit-zero-evidence' : 0])) as CostReportMonth;
+    const [zero] = pricingComparison([original], zeroMonth);
+    expect(zero!.missingCosts).toEqual([]);
+    expect(zero!.basePlusAgentTotalUsd).toBeCloseTo(original.totalUsd.packed);
+    const [inference] = pricingComparison([original], { ...zeroMonth, inferenceUsd: 20 });
+    expect(inference!.basePlusAgentTotalUsd).toBeGreaterThan(20);
+    expect(inference!.inferenceUsd).toBe(20);
+    expect(inference!.basePlusAgentCoreUsd).toBe(zero!.basePlusAgentCoreUsd);
+  });
+
+  it('rejects invalid usage, cost, missing evidence and overflow without turning them into unknowns', () => {
+    for (const bad of [-1, NaN, Infinity]) {
+      expect(() => pricingComparison([row('M3')], { ...knownMonth, inferenceUsd: bad })).toThrow(/invalid/);
+      expect(() => pricingComparison([row('M3')], { ...knownMonth, busyAgentHours: bad })).toThrow(/invalid/);
+    }
+    expect(() => pricingComparison([row('M3', 1)], { ...knownMonth, busyAgentHours: 731 })).toThrow(/population/);
+    expect(() => pricingComparison([row('M3')], { inferenceUsd: 0 })).toThrow(/sourceRef/);
+    expect(() => pricingComparison([row('M3')], { ...knownMonth, sourceRef: ' ' })).toThrow(/sourceRef/);
+    expect(() => pricingComparison([row('M3')], { ...knownMonth,
+      inferenceUsd: Number.MAX_VALUE, backupUsd: Number.MAX_VALUE })).toThrow(/overflow/);
+  });
+
+  it('keeps pending/bounded capacity provenance and excludes dedicated hosts from metered pool rates', () => {
+    const results = pricingComparison(buildRows(50, null), knownMonth);
+    expect(results.some((result) => result.id === 'M0' || result.id === 'M1')).toBe(false);
+    expect(results.find((result) => result.id === 'M5')!.pending).toBe(true);
+    expect(results.find((result) => result.id === 'M4')!.costIsUpperBound).toBe(true);
+    const md = renderMarkdown([row('M3')], knownMonth);
+    expect(md).toContain('synthetic:month-evidence');
+    expect(md).toContain('unknown: none');
   });
 });
 

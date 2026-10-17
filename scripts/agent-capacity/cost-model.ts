@@ -4,7 +4,8 @@
  * target (50 agents at a Google cost of about 60-80 USD/month; the owner's starting figure was
  * 1000 USD/month, #1064).
  *
- *   npx tsx scripts/agent-capacity/cost-model.ts [--agents 50] [--p532-saved-gib <GiB>] [--json]
+ *   npx tsx scripts/agent-capacity/cost-model.ts [--agents 50] [--p532-saved-gib <GiB>]
+ *     [--report-month <JSON file with CostReportMonth inputs>] [--json]
  *
  * Every measured input below names the plan Decision it comes from. Machine prices are NOT typed in
  * here: they come from gcp-rails (Cloud Billing Catalog list prices, on-demand and spot), so a price
@@ -22,6 +23,7 @@
  *                       floor:     Server cores and RAM at e2 spot list rates (D-022 method); reachable
  *                                  only with near-perfect packing, so it is a lower bound
  */
+import { readFileSync } from 'node:fs';
 import { hourlyPriceUsd, parseMachineType, SPOT_PRICES_2026_10_01 } from './gcp-rails';
 
 export const HOURS_PER_MONTH = 730;
@@ -417,8 +419,71 @@ export function buildRows(agents: number, p532SavedGiB: number | null): Row[] {
 
 const usd = (n: number) => n.toFixed(n < 10 ? 2 : 0);
 
-export function renderMarkdown(rows: Row[]): string {
+const MONTH_COST_KEYS = ['retainedStorageUsd', 'provisionedPerformanceUsd', 'backupUsd',
+  'objectStorageUsd', 'networkUsd', 'controlUsd', 'warmCapacityUsd', 'inferenceUsd'] as const;
+
+/** Supporting comparison inputs, not an activated tariff or a qualified trial profile.
+ * Each value is the additional monthly cost beyond the legacy compute/Server row;
+ * do not count a disk or a warm Server already included in that row twice.
+ * Omitted/null costs stay unknown. Explicit zero, like any supplied value, needs a source.
+ */
+export type CostReportMonth = Partial<Record<typeof MONTH_COST_KEYS[number], number | null>> & {
+  /** Sum of actual busy time across agents, not VM running hours or assigned slots. */
+  busyAgentHours?: number;
+  /** Binds the supplied monthly inputs/usage to their evidence; no inference from its presence. */
+  sourceRef?: string;
+};
+
+export function pricingComparison(rows: Row[], month: CostReportMonth = {}) {
+  if (!month || typeof month !== 'object' || Array.isArray(month)) throw new Error('report-month must be an object');
+  if (month.busyAgentHours === null) throw new Error('invalid busyAgentHours');
+  const supplied = [...MONTH_COST_KEYS, 'busyAgentHours' as const].some((key) => month[key] != null);
+  if (supplied && (typeof month.sourceRef !== 'string' || !month.sourceRef.trim())) {
+    throw new Error('monthly comparison inputs require sourceRef');
+  }
+  for (const key of [...MONTH_COST_KEYS, 'busyAgentHours' as const]) {
+    const value = month[key];
+    if (value != null && (!Number.isFinite(value) || value < 0)) throw new Error(`invalid ${key}`);
+  }
+  const missingCosts = MONTH_COST_KEYS.filter((key) => month[key] == null);
+  const infrastructureKeys = MONTH_COST_KEYS.filter((key) => key !== 'inferenceUsd');
+  const additionalInfrastructureUsd = infrastructureKeys.some((key) => month[key] == null)
+    ? null : infrastructureKeys.reduce((sum, key) => sum + month[key]!, 0);
+  const inferenceUsd = month.inferenceUsd ?? null;
+  const total = (core: number) => additionalInfrastructureUsd === null || inferenceUsd === null
+    ? null : core + additionalInfrastructureUsd + inferenceUsd;
+  // Dedicated VM costs are lumpy: dividing them into a metered pool rate would imply
+  // packing/reclaim behavior those measurements do not establish.
+  return rows.filter((row) => row.hosts === null).map((row) => {
+    if (!Number.isSafeInteger(row.agents) || row.agents < 1) throw new Error('invalid assigned agents');
+    for (const value of [row.serverUsd.packed, row.computeUsd]) {
+      if (!Number.isFinite(value) || value < 0) throw new Error('invalid comparison cost');
+    }
+    const assignedAgentMonthUsd = row.computeUsd / row.agents;
+    const busyAgentHourUsd = assignedAgentMonthUsd / (HOURS_PER_MONTH * DUTY.mean);
+    const busyAgentHours = month.busyAgentHours ?? row.agents * HOURS_PER_MONTH * DUTY.mean;
+    if (busyAgentHours > row.agents * HOURS_PER_MONTH) throw new Error('busy agent hours exceed assigned population month');
+    const basePlusAgentCoreUsd = row.serverUsd.packed + row.computeUsd;
+    const busyHoursCoreUsd = row.serverUsd.packed + busyAgentHours * busyAgentHourUsd;
+    const basePlusAgentTotalUsd = total(basePlusAgentCoreUsd);
+    const busyHoursTotalUsd = total(busyHoursCoreUsd);
+    for (const value of [additionalInfrastructureUsd, basePlusAgentCoreUsd, busyHoursCoreUsd,
+      basePlusAgentTotalUsd, busyHoursTotalUsd]) {
+      if (value !== null && !Number.isFinite(value)) throw new Error('comparison total overflow');
+    }
+    return { id: row.id, assignedAgents: row.agents, baseServerUsd: row.serverUsd.packed,
+      assignedAgentMonthUsd, busyAgentHourUsd, busyAgentHours,
+      busyHoursModeled: month.busyAgentHours === undefined,
+      basePlusAgentCoreUsd, busyHoursCoreUsd, additionalInfrastructureUsd, inferenceUsd,
+      basePlusAgentTotalUsd, busyHoursTotalUsd, missingCosts, pending: row.pending,
+      costIsUpperBound: row.costIsUpperBound, sources: row.sources, inputSourceRef: month.sourceRef ?? null };
+  });
+}
+
+export function renderMarkdown(rows: Row[], month: CostReportMonth = {}): string {
   const out = [
+    'Historical compute + Server cost basis (USD/month). The target below is D-003, not the all-in trial acceptance gate.',
+    '',
     `| id | lever combination | shape | compute | Server (floor-packed) | total (floor-packed) | per agent | x vs ${OWNER_BASELINE.usdMonth}/${OWNER_BASELINE.agents} | target |`,
     '|---|---|---|---|---|---|---|---|---|',
   ];
@@ -429,6 +494,21 @@ export function renderMarkdown(rows: Row[]): string {
     out.push(
       `| ${r.id} | ${r.label} | ${r.machineType}${hosts} | ${ub}${usd(r.computeUsd)} | ${usd(r.serverUsd.floor)}-${usd(r.serverUsd.packed)} | ${ub}${usd(r.totalUsd.floor)}-${usd(r.totalUsd.packed)} | ${ub}${usd(r.perAgentUsd.floor)}-${usd(r.perAgentUsd.packed)} | ${r.reductionVsBaseline.toFixed(1)}x | ${tgt} |`,
     );
+  }
+  const comparison = pricingComparison(rows, month);
+  const money = (value: number | null) => value === null ? 'UNKNOWN' : value.toFixed(2);
+  out.push('', '## Pricing alternatives (cost basis; no customer price activated)', '',
+    'Base plus agent = packed Server base + assigned agents × agent-month cost. Busy-hours = the same base + summed busy-agent-hours × busy-agent-hour cost.',
+    'Rates reuse achieved capacity and D-038 duty. Default busy hours are modeled at 35% duty, not observed usage. Dedicated VM rows are excluded because their host costs are lumpy.',
+    'Additional infrastructure and inference are separate monthly inputs. Missing categories keep both all-in totals UNKNOWN; explicit zero requires a source. PENDING and capacity-bound rows retain their qualification limits.', '',
+    '| id | base Server | per assigned agent/month | per busy-agent-hour | busy-agent-hours | base + agent core | busy-hours core | extra infrastructure | inference | base + agent all-in | busy-hours all-in | status |',
+    '|---|---|---|---|---|---|---|---|---|---|---|---|');
+  for (const r of comparison) {
+    out.push(`| ${r.id} | ${money(r.baseServerUsd)} | ${money(r.assignedAgentMonthUsd)} | ${r.busyAgentHourUsd.toFixed(6)} | ${r.busyAgentHours.toFixed(2)} (${r.busyHoursModeled ? 'modeled' : 'supplied'}) | ${money(r.basePlusAgentCoreUsd)} | ${money(r.busyHoursCoreUsd)} | ${money(r.additionalInfrastructureUsd)} | ${money(r.inferenceUsd)} | ${money(r.basePlusAgentTotalUsd)} | ${money(r.busyHoursTotalUsd)} | ${r.pending ? 'PENDING P-532' : 'supporting model'}${r.costIsUpperBound ? '; capacity lower bound' : ''} |`);
+  }
+  out.push('');
+  for (const r of comparison) {
+    out.push(`Inputs ${r.id}: ${r.sources.join('; ')}; monthly inputs: ${r.inputSourceRef ?? 'not supplied'}; unknown: ${r.missingCosts.join(', ') || 'none'}.`);
   }
   return out.join('\n');
 }
@@ -442,5 +522,10 @@ if (process.argv[1] && /cost-model\.ts$/.test(process.argv[1])) {
   const agents = Number(arg('agents') ?? TARGET.agents);
   const savedArg = arg('p532-saved-gib');
   const rows = buildRows(agents, savedArg === undefined ? null : Number(savedArg));
-  console.log(process.argv.includes('--json') ? JSON.stringify(rows, null, 2) : renderMarkdown(rows));
+  const reportPath = arg('report-month');
+  const month: CostReportMonth = reportPath === undefined ? {} : JSON.parse(readFileSync(reportPath, 'utf8'));
+  if (!month || typeof month !== 'object' || Array.isArray(month)) throw new Error('report-month must be an object');
+  console.log(process.argv.includes('--json')
+    ? JSON.stringify(reportPath === undefined ? rows : { rows, pricing: pricingComparison(rows, month) }, null, 2)
+    : renderMarkdown(rows, month));
 }

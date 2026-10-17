@@ -2532,6 +2532,7 @@ export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
 // saturated. Heartbeat is intentionally absent: it is a cheap repeating beat
 // and should fail fast rather than consume a reserved slot.
 export const RESERVED_CONTROL_PLANE_PATHS = new Set([
+  "/api/adv/sessions/ensure-codex-home",
   "/api/adv/sessions/port/delivery",
   "/api/adv/sessions/port/status",
   "/api/adv/sessions/resumable",
@@ -2552,6 +2553,7 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
 export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
   // Reconciliation follows the mutation on the same durability socket rather
   // than contending with ordinary traffic or reconnect handshakes.
+  "/api/adv/sessions/ensure-codex-home",
   "/api/adv/sessions/port/delivery",
   "/api/adv/sessions/port/status",
   "/api/agent-mcp/console/bootstrap-su/session-ended",
