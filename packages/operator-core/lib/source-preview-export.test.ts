@@ -1009,7 +1009,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
             let swept!: () => void;
             signalShutdown = new Promise<void>(resolve => { swept = resolve; });
             const schedule = globalThis.setTimeout;
-            const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback, delay, ...args) =>
+            const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
               schedule(() => { callback(...args); if (delay === 2_000) swept(); }, delay)) as typeof setTimeout);
             try { process.emit('SIGTERM', 'SIGTERM'); }
             finally { timerSpy.mockRestore(); }

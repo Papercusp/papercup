@@ -3,7 +3,7 @@ import { getRegistryEntryV2, resolveNamedQueryV2 } from './index';
 import { queryNamesForTriggerEvent } from './table-to-query-names';
 
 const mocks = vi.hoisted(() => ({
-  metrics: vi.fn(), controls: vi.fn(), history: vi.fn(), detail: vi.fn(), observations: vi.fn(), tx: {},
+  metrics: vi.fn(), controls: vi.fn(), history: vi.fn(), detail: vi.fn(), observations: vi.fn(), journal: vi.fn(), tx: {},
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'metrics-workspace' }));
 vi.mock('../route-workspace', () => ({ routeWithWorkspace: (fn: (tx: unknown) => unknown) => fn(mocks.tx) }));
@@ -11,6 +11,7 @@ vi.mock('../dream/dream-metrics', () => ({ readDreamMetrics: mocks.metrics }));
 vi.mock('../dream/dream-control', () => ({ readDreamControlSnapshot: mocks.controls }));
 vi.mock('../dream/dream-read', () => ({ readDreamHistory: mocks.history, readDreamDetail: mocks.detail }));
 vi.mock('../dream/dream-control-observations', () => ({ readDreamControlObservations: mocks.observations }));
+vi.mock('../journal-read', () => ({ readJournal: mocks.journal }));
 
 describe('learning.dream metrics use the existing scoped sync path', () => {
   beforeEach(() => {
@@ -72,7 +73,19 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     expect(mocks.observations).toHaveBeenCalledWith(mocks.tx, { workspaceId: 'metrics-workspace', potSlug: 'pot',
       since: observationArgs.since, until: observationArgs.until, expectedRuntime: observationArgs.expectedRuntime });
     expect(mocks.controls).not.toHaveBeenCalled();
-    for (const table of ['gym_autoloop_config', 'operator_gym_gates', 'scout_ticks'])
+    for (const table of ['gym_autoloop_config', 'operator_gym_gates', 'scout_ticks', 'learning_spend_reservations'])
       expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain('learning.dream');
+  });
+  it('passes explicit action identity and reads its journal before a workspace transaction', async () => {
+    const schema = getRegistryEntryV2('learning.dream')!.argsSchema!;
+    const base = { potSlug: 'pot', view: 'observations', since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z',
+      expectedRuntime: { host: 'port-3170', processId: 'p', buildSha: 'b' } };
+    expect(() => schema.parse({ ...base, actionJournalUnit: 'bg.service' })).toThrow();
+    const journal = { journalAvailable: true, entries: [] };
+    mocks.journal.mockResolvedValue(journal);
+    await resolveNamedQueryV2('learning.dream', schema.parse({ ...base, actionJournalUnit: 'bg.service', expectedActionRuntime: base.expectedRuntime }));
+    expect(mocks.journal).toHaveBeenCalledWith(expect.objectContaining({ units: ['bg.service'], since: '@1792152000', until: '@1792238400' }));
+    expect(mocks.journal.mock.invocationCallOrder.at(-1)).toBeLessThan(mocks.observations.mock.invocationCallOrder.at(-1)!);
+    expect(mocks.observations).toHaveBeenCalledWith(mocks.tx, expect.objectContaining({ actionJournalUnit: 'bg.service' }), expect.objectContaining({ journal: expect.any(Function) }));
   });
 });

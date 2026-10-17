@@ -7,10 +7,12 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { idleActivityAllowed } from '../owner-steering';
 import { readHiveIdleRatio } from '../scout/cadence-signals';
 import type { ScoutLlmCall } from '../scout/types';
-import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { DREAM_ACTION_DECISION_PREFIX, resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+export { DREAM_ACTION_DECISION_PREFIX } from './dream-config';
 import { runDreamCycle, type DreamCycleInput, type DreamCycleResult } from './dream-cycle';
 import type { DreamRunMode } from './dream-run-store';
 import { DreamPilotPinSchema, type DreamPilotPin } from './dream-evaluation';
+import { getServingHostIdentity } from '../serving-host-identity';
 
 export const DREAM_CYCLE_ACTION = 'dream-cycle';
 
@@ -68,24 +70,43 @@ const defaultActionDeps: DreamCycleActionDeps = {
 export function makeDreamCycleAction(overrides: Partial<DreamCycleActionDeps> = {}) {
   const deps = { ...defaultActionDeps, ...overrides };
   return async function dreamCycleAction(ctx: SystemActionCtx): Promise<void> {
+    // Extend the existing action journal: these are ACTUAL branch decisions,
+    // never a retrospective inference from an empty attempt ledger. A skip has
+    // zero paid calls because every return below precedes runCycle.
+    const actionId = DBOS.workflowID?.trim() || randomUUID();
+    const decision = (reason: string, config: DreamCycleActionConfig | null, detail: Record<string, unknown> = {}) => {
+      deps.log(DREAM_ACTION_DECISION_PREFIX + JSON.stringify({ schemaVersion: 1,
+        actionId, workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, capturedAt: new Date().toISOString(),
+        runtime: getServingHostIdentity(), source: 'dream/dream-cycle-action:makeDreamCycleAction',
+        mode: config?.mode ?? ctx.payloadTemplate?.mode ?? 'manual', reason,
+        cycle: config ? resolveDreamCycleConfig(config.cycle) : null, ...detail,
+      }));
+    };
     if (!(await deps.featureEnabled())) {
+      decision('feature-off', null, { disposition: 'pre-attempt-policy-skip', paidCalls: 0, model: null, usage: null, costUsd: 0 });
       deps.log(`${ctx.installSlug}: skipped — DREAM_CYCLE feature flag is OFF`);
       return;
     }
     const config = parseDreamCycleActionConfig(ctx.payloadTemplate);
     if (config.mode === 'auto') {
       if (!(await deps.idleAllowed(ctx.workspaceId, ctx.installSlug))) {
+        decision('owner-idle-disabled', config, { disposition: 'pre-attempt-policy-skip', paidCalls: 0, model: null, usage: null, costUsd: 0 });
         deps.log(`${ctx.installSlug}: skipped — owner idle-activity toggle (dream) is OFF`);
         return;
       }
       const idleRatio = await deps.readIdleRatio(ctx.workspaceId);
       const floor = resolveDreamCycleConfig(config.cycle).autoIdleRatioFloor;
       if (idleRatio < floor) {
+        decision('idle-ratio-below-floor', config, { disposition: 'pre-attempt-policy-skip', idleRatio, floor,
+          paidCalls: 0, model: null, usage: null, costUsd: 0 });
         deps.log(`${ctx.installSlug}: skipped — idle ratio ${idleRatio.toFixed(2)} < ${floor.toFixed(2)}`);
         return;
       }
     }
     const result = await deps.runCycle(ctx, config);
+    decision(result.reason, config, { disposition: 'cycle-result', cycleId: result.cycleId, attempts: result.attempts,
+      costUsd: result.costUsd, governorReason: result.governorReason ?? null,
+      modelUsageSource: 'harness_shared.dream_runs', runRefs: result.runs.map(run => run.runId) });
     deps.log(
       `${ctx.installSlug}: ${result.reason} cycle=${result.cycleId} attempts=${result.attempts} accepted=${result.accepted} cost=$${result.costUsd.toFixed(4)}`,
     );

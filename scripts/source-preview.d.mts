@@ -256,11 +256,12 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options] Source-only runtime mode permits
  * named untracked build outputs and materialized dependency directories, not source edits.
  */
 export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
+    dependencyStaging?: boolean;
 }): Promise<{
     testedInputs: {
         path: string;
@@ -284,10 +285,11 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
  * value is not awaited. Uses the same source population and receipt checks.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options]
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options]
  */
 export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
+    dependencyStaging?: boolean;
 }): {
     testedInputs: {
         path: string;

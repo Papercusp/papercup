@@ -1,5 +1,8 @@
 import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
+/** Structured actual-branch records in the existing action journal. */
+export const DREAM_ACTION_DECISION_PREFIX = 'dream-action-decision:';
+
 export const DREAM_FRAGMENT_KINDS = ['observation', 'work_item', 'memory', 'stat'] as const;
 
 export type DreamFragmentKind = (typeof DREAM_FRAGMENT_KINDS)[number];

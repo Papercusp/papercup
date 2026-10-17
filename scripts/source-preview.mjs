@@ -799,7 +799,11 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
  * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
  */
 export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal }) {
-  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt));
+  // A retry can retain staging and completed dependency trees. Only this
+  // pre-copy check permits staging; the locked helper must adopt it, and
+  // subsequent source checks still reject unfinished copies.
+  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
+    { runtimeArtifacts: true, dependencyStaging: true }));
   const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
   const run = (command, args) => runVerifierDependencyCommand(command, args, { cwd: dest, env, signal });
   const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
@@ -1148,7 +1152,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options] Source-only runtime mode permits
  * named untracked build outputs and materialized dependency directories, not source edits.
  */
 export async function verifyVerifierSource(dest, expected, options = {}) {
@@ -1159,7 +1163,7 @@ export async function verifyVerifierSource(dest, expected, options = {}) {
  * value is not awaited. Uses the same source population and receipt checks.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options]
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options]
  */
 export function verifyVerifierSourceSync(dest, expected, options = {}) {
   try {

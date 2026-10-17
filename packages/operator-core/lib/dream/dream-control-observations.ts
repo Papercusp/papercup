@@ -12,11 +12,13 @@ import { getAutoloop } from '../gym/control-plane';
 import { gymBudgetFloorUsd, isEligibleAutoloop, remainingBudgetUsd } from '../gym/autoloop-tick';
 import { DEFAULT_GYM_GATES } from '../gym-gates';
 import { getLearningLoop } from '../learning-governor/store';
-import { gymLoopId, scoutLoopId, LEARNING_GOVERNOR_BUDGET_FLOOR_USD } from '../learning-governor/core';
+import { checkLoopVerdict, gymLoopId, scoutLoopId, LEARNING_GOVERNOR_BUDGET_FLOOR_USD } from '../learning-governor/core';
 import { OWNER_STEERING_KEYS } from '../owner-steering';
 import { readDreamRoutineControls } from './dream-control';
-import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { DREAM_ACTION_DECISION_PREFIX, resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { readJournal, type JournalReadResult } from '../journal-read';
 import { dreamLoopId, sumDreamSpendSince, DREAM_ROLLING_WINDOW_MS } from './dream-governor';
+import { resolveScoutBudget } from '../scout/budget';
 
 const nonempty = z.string().trim().min(1).max(500);
 export const controlObservationRuntimeSchema = z.object({
@@ -26,10 +28,13 @@ export const controlObservationScopeSchema = z.object({
   workspaceId: nonempty, potSlug: nonempty,
   since: z.string().datetime(), until: z.string().datetime(),
   expectedRuntime: controlObservationRuntimeSchema,
+  actionJournalUnit: nonempty.optional(),
+  expectedActionRuntime: controlObservationRuntimeSchema.optional(),
 }).strict().refine(s => {
   const span = Date.parse(s.until) - Date.parse(s.since);
   return span > 0 && span <= 31 * 86_400_000;
-}, 'Observations require a scoped window of at most 31 days');
+}, 'Observations require a scoped window of at most 31 days')
+  .refine(s => Boolean(s.actionJournalUnit) === Boolean(s.expectedActionRuntime), 'Action journal requires its exact expected runtime');
 export type ControlObservationScope = z.infer<typeof controlObservationScopeSchema>;
 export const CONTROL_OBSERVATION_TTL_MS = 60_000;
 const ROW_LIMIT = 20;
@@ -61,7 +66,20 @@ function scoutObservation(row: Row) {
   const detail = row.detail && typeof row.detail === 'object' && !Array.isArray(row.detail) ? row.detail as Row : null;
   const slots = z.array(z.object({ lens: nonempty, ok: z.boolean(), raw: z.number().int().nonnegative(), produced: z.number().int().nonnegative() }).passthrough())
     .safeParse(detail?.ideators);
+  const cap = z.object({ schemaVersion: z.literal(1), supplied: z.record(z.string(), z.unknown()).nullable(),
+    resolved: z.object({ maxIdeators: z.number().int().positive(), maxCostUsd: z.number().nonnegative(), maxCriticsPerIdea: z.number().int().positive() }).strict(),
+  }).strict().safeParse(detail?.budgetProvenance);
+  const expectedCap = cap.success ? resolveScoutBudget(cap.data.supplied ?? undefined) : null;
+  const capMatches = cap.success && expectedCap && expectedCap.maxCostUsd === cap.data.resolved.maxCostUsd &&
+    expectedCap.maxIdeators === cap.data.resolved.maxIdeators && expectedCap.maxCriticsPerIdea === cap.data.resolved.maxCriticsPerIdea;
+  const supplied = cap.success ? cap.data.supplied : null;
+  const suppliedCap = capMatches && supplied && typeof supplied.maxCostUsd === 'number' && Number.isFinite(supplied.maxCostUsd) && supplied.maxCostUsd >= 0 &&
+    supplied.maxIdeators === 1 && cap.data.resolved.maxIdeators === 1 && cap.data.resolved.maxCostUsd === supplied.maxCostUsd;
+  const withinCap = suppliedCap && slots.success && slots.data.length === 1 && row.budget_used_usd != null &&
+    Number(row.budget_used_usd) >= 0 && Number(row.budget_used_usd) <= cap.data.resolved.maxCostUsd;
   return { raw: row, origin: 'scout' as const,
+    budgetProvenance: capMatches ? { status: 'observed' as const, ...cap.data } : { status: 'unknown' as const, reason: 'missing-or-invalid-tick-budget-provenance' },
+    suppliedOneIdeatorCapRespected: suppliedCap ? Boolean(withinCap) : null,
     ideatorCount: slots.success ? slots.data.length : null,
     lenses: slots.success ? slots.data.map(s => s.lens) : null,
     ideasRouted: typeof row.ideas_routed === 'number' ? row.ideas_routed : null,
@@ -78,6 +96,49 @@ export interface ControlObservationReadDeps {
   workspace: () => string;
   runtime: () => ServingHostIdentity;
   flags: () => Promise<{ dream: FlagAttestation; learningGovernor: FlagAttestation }>;
+  journal: typeof readJournal;
+}
+
+const actionDecisionSchema = z.object({
+  schemaVersion: z.literal(1), actionId: nonempty, workspaceId: nonempty, potSlug: nonempty,
+  capturedAt: z.string().datetime(), runtime: controlObservationRuntimeSchema,
+  source: z.literal('dream/dream-cycle-action:makeDreamCycleAction'), mode: z.enum(['manual', 'auto']),
+  reason: nonempty, disposition: z.enum(['pre-attempt-policy-skip', 'cycle-result']),
+  costUsd: z.number().finite().nonnegative(),
+}).passthrough();
+
+/** The bounded maintained journal is an actual decision source. No records,
+ * unavailable/clipped/truncated reads and dispatch labels never become skips. */
+export function assessDreamActionDecisions(journal: JournalReadResult, scope: ControlObservationScope) {
+  const refs = ['journal:readJournal', 'dream/dream-cycle-action:makeDreamCycleAction'];
+  if (!scope.expectedActionRuntime || !scope.actionJournalUnit) return unknown('action-runtime-and-unit-required', refs);
+  if (!journal.journalAvailable || journal.journalError || journal.truncated || journal.unitsUnknown.length > 0)
+    return unknown('incomplete-action-journal', refs);
+  const records: Array<z.infer<typeof actionDecisionSchema>> = [];
+  for (const entry of journal.entries) {
+    const index = entry.message.indexOf(DREAM_ACTION_DECISION_PREFIX);
+    if (index < 0) continue;
+    if (entry.unit !== scope.actionJournalUnit) return unknown('wrong-action-journal-unit', refs);
+    if (entry.clipped) return unknown('clipped-action-decision', refs);
+    let raw: unknown;
+    try { raw = JSON.parse(entry.message.slice(index + DREAM_ACTION_DECISION_PREFIX.length)); }
+    catch { return unknown('invalid-action-decision-json', refs); }
+    const parsed = actionDecisionSchema.safeParse(raw);
+    if (!parsed.success) return unknown('invalid-action-decision', refs);
+    const row = parsed.data;
+    if (row.workspaceId !== scope.workspaceId || row.potSlug !== scope.potSlug) continue;
+    if (!sameRuntime(row.runtime, scope.expectedActionRuntime)) return unknown('wrong-action-runtime', refs);
+    if (Date.parse(row.capturedAt) < Date.parse(scope.since) || Date.parse(row.capturedAt) >= Date.parse(scope.until) ||
+      Date.parse(entry.ts) < Date.parse(scope.since) || Date.parse(entry.ts) >= Date.parse(scope.until))
+      return unknown('wrong-window-action-decision', refs);
+    if (row.disposition === 'pre-attempt-policy-skip' &&
+      (!['feature-off', 'owner-idle-disabled', 'idle-ratio-below-floor'].includes(row.reason) ||
+        row.paidCalls !== 0 || row.model !== null || row.usage !== null || row.costUsd !== 0))
+      return unknown('invalid-pre-attempt-skip', refs);
+    records.push(row);
+  }
+  return records.length > 0 ? { status: 'observed' as const, value: { records, modelUsage: 'follow-dream-run-ledger' as const }, sourceRefs: refs }
+    : unknown('no-actual-action-decision-records', refs);
 }
 
 /** All SQL below is SELECT-only. In particular, do not call the control snapshot's
@@ -93,7 +154,7 @@ export async function readDreamControlObservations(
     now: Date.now, workspace: activeWorkspaceId, runtime: getServingHostIdentity,
     flags: async () => ({ dream: await getFlagAttestation(FLAGS.DREAM_CYCLE, 'dream-cycle'),
       learningGovernor: await getFlagAttestation(FLAGS.LEARNING_GOVERNOR, 'dream-cycle') }),
-    ...overrides,
+    journal: readJournal, ...overrides,
   };
   const startedAt = deps.now();
   requireValue(deps.workspace() === scope.workspaceId, 'wrong-serving-workspace');
@@ -167,7 +228,25 @@ export async function readDreamControlObservations(
       const steering = await sql<Row[]>`SELECT workspace_id, harness_slug, setting_key, value, updated_at FROM harness_shared.pot_settings
         WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.potSlug}
           AND setting_key = ${OWNER_STEERING_KEYS.idleActivities}`;
-      return { loops, floorUsd: LEARNING_GOVERNOR_BUDGET_FLOOR_USD, potScope, steering,
+      // Read the complete aggregate directly. The maintained store degrades a
+      // missing reservation relation to zero for production availability; an
+      // evidence reader must instead retain that read failure as UNKNOWN.
+      const reservations = await sql<Row[]>`SELECT loop_id, COALESCE(SUM(reserved_usd), 0)::float8 AS open_reserved_usd,
+          COUNT(*)::int AS open_count FROM harness_shared.learning_spend_reservations
+        WHERE workspace_id = ${scope.workspaceId} AND loop_id = ANY(${loopIds}) AND status = 'open'
+        GROUP BY loop_id`;
+      requireValue(reservations.every(row => loopIds.includes(String(row.loop_id)) && nonnegative(row.open_reserved_usd) &&
+        Number.isInteger(row.open_count) && Number(row.open_count) >= 0), 'invalid-open-reservations');
+      const governorAdmission = loops.map(row => {
+        const open = reservations.find(r => r.loop_id === row!.loopId);
+        const openReservedUsd = Number(open?.open_reserved_usd ?? 0);
+        const chargedOpenUsd = row!.budgetKind === 'lifetime' && row!.budgetUsd !== null ? openReservedUsd : 0;
+        return { loopId: row!.loopId, openReservedUsd, chargedOpenUsd, openCount: Number(open?.open_count ?? 0),
+          verdict: checkLoopVerdict({ ...row!, spentUsd: row!.spentUsd + chargedOpenUsd },
+            LEARNING_GOVERNOR_BUDGET_FLOOR_USD, potScope[0]?.enabled as boolean | undefined),
+          enforcement: row!.enforcement, scope: 'governor-budget-and-pot-only' as const };
+      });
+      return { loops, floorUsd: LEARNING_GOVERNOR_BUDGET_FLOOR_USD, potScope, steering, reservations, governorAdmission,
         admission: 'not-evaluated' as const, // includes open reservations and live gates; do not reconstruct from mirrors
       };
     }),
@@ -207,6 +286,14 @@ export async function readDreamControlObservations(
         accounting: 'maintained-conservative-admission-total' as const };
     }),
   ]);
+  const actionDecisions = scope.actionJournalUnit && scope.expectedActionRuntime
+    ? await observe(['journal:readJournal'], async () => {
+      // Journal windows are resolved by @epoch, never local-time ISO strings.
+      const journal = await deps.journal({ units: [scope.actionJournalUnit!],
+        since: `@${Date.parse(scope.since) / 1000}`, until: `@${Date.parse(scope.until) / 1000}`,
+        grep: DREAM_ACTION_DECISION_PREFIX, limit: ROW_LIMIT });
+      return { journal, assessment: assessDreamActionDecisions(journal, scope) };
+    }) : unknown('action-runtime-and-unit-required', ['journal:readJournal']);
   const completedAt = deps.now();
   const fresh = completedAt >= startedAt && completedAt - startedAt < CONTROL_OBSERVATION_TTL_MS;
   const observations = { flags, dream, gym, governors, activity, rollingSpend };
@@ -215,7 +302,7 @@ export async function readDreamControlObservations(
     status: fresh && Object.values(observations).every(o => o.status === 'observed') ? 'observed' as const : 'unknown' as const,
     reason: !fresh ? 'read-expired-or-clock-invalid' : Object.values(observations).some(o => o.status === 'unknown') ? 'incomplete-observations' : null,
     scope, runtime, capturedAt: new Date(startedAt).toISOString(),
-    expiresAt: new Date(startedAt + CONTROL_OBSERVATION_TTL_MS).toISOString(), observations,
+    expiresAt: new Date(startedAt + CONTROL_OBSERVATION_TTL_MS).toISOString(), observations, actionDecisions,
   };
 }
 
@@ -238,6 +325,14 @@ export function assessDreamControlObservationCurrentness(
   if (value.scope.workspaceId !== expected.workspaceId || value.scope.potSlug !== expected.potSlug ||
     value.scope.since !== expected.since || value.scope.until !== expected.until) return { current: false, reason: 'wrong-scope-or-window' };
   if (!sameRuntime(value.runtime, expected.expectedRuntime)) return { current: false, reason: 'wrong-runtime' };
+  if (expected.expectedActionRuntime) {
+    if (value.scope.actionJournalUnit !== expected.actionJournalUnit || !value.scope.expectedActionRuntime ||
+      !sameRuntime(value.scope.expectedActionRuntime, expected.expectedActionRuntime))
+      return { current: false, reason: 'wrong-action-runtime-or-unit' };
+    if (!('actionDecisions' in value) || value.actionDecisions.status !== 'observed' ||
+      value.actionDecisions.value.assessment.status !== 'observed')
+      return { current: false, reason: 'incomplete-action-decisions' };
+  }
   const captured = Date.parse(value.capturedAt), expires = Date.parse(value.expiresAt);
   if (!Number.isFinite(nowMs) || !Number.isFinite(captured) || !Number.isFinite(expires) ||
     expires - captured !== CONTROL_OBSERVATION_TTL_MS || nowMs < captured || nowMs >= expires)

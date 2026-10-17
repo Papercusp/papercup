@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SystemActionCtx } from '../harness/routines/system-actions';
 import type { DreamCycleResult } from './dream-cycle';
-import { makeDreamCycleAction, parseDreamCycleActionConfig } from './dream-cycle-action';
+import { DREAM_ACTION_DECISION_PREFIX, makeDreamCycleAction, parseDreamCycleActionConfig } from './dream-cycle-action';
 
 const CTX: SystemActionCtx = {
   installSlug: 'papercusp',
@@ -66,6 +66,22 @@ describe('parseDreamCycleActionConfig', () => {
 });
 
 describe('makeDreamCycleAction', () => {
+  it.each(['feature-off', 'owner-idle-disabled', 'idle-ratio-below-floor'])(
+    'records the actual %s policy branch with zero paid calls before any cycle', async reason => {
+      const log = vi.fn(), runCycle = vi.fn(async () => result());
+      const action = makeDreamCycleAction({ featureEnabled: async () => reason !== 'feature-off',
+        idleAllowed: async () => reason !== 'owner-idle-disabled', readIdleRatio: async () => 0,
+        runCycle, log });
+      await action({ ...CTX, payloadTemplate: { mode: 'auto' } });
+      expect(runCycle).not.toHaveBeenCalled();
+      const line = log.mock.calls.map(args => args[0]).find(line => line.startsWith(DREAM_ACTION_DECISION_PREFIX));
+      expect(line).toBeDefined();
+      expect(JSON.parse(line!.slice(DREAM_ACTION_DECISION_PREFIX.length))).toMatchObject({ schemaVersion: 1,
+        workspaceId: CTX.workspaceId, potSlug: CTX.installSlug, mode: 'auto', reason,
+        disposition: 'pre-attempt-policy-skip', paidCalls: 0, model: null, usage: null, costUsd: 0,
+        runtime: expect.objectContaining({ processId: expect.any(String) }), capturedAt: expect.any(String),
+      });
+    });
   it('gates the whole surface on DREAM_CYCLE', async () => {
     const runCycle = vi.fn(async () => result());
     const idleAllowed = vi.fn(async () => true);
