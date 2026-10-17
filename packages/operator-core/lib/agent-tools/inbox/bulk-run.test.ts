@@ -119,7 +119,7 @@ beforeEach(() => {
   h.getRunItems.mockResolvedValue([item]);
   h.recordRunHeartbeat.mockResolvedValue(run);
   h.failRunIfExecuting.mockResolvedValue({ ...run, phase: 'failed' });
-  h.reportOutcomes.mockResolvedValue({ unknown: [], preserved: [], refused: null });
+  h.reportOutcomes.mockResolvedValue({ updated: [], unknown: [], preserved: [], refused: null });
   h.callPlansRead.mockResolvedValue({
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
   });
@@ -212,6 +212,53 @@ describe('inbox:bulk-run-report conditional error contract', () => {
     expect(schemaText).toContain('constraint:$');
     expect(schemaText).toContain('skipped or failed');
     expect(schemaText).toContain('non-empty reason');
+  });
+});
+
+describe('inbox:bulk-run-report late-return evidence', () => {
+  it('returns the exact rows updated when a bulk report partially matches the run snapshot', async () => {
+    const unknownItemId = 'attention-outside-run';
+    h.reportOutcomes.mockResolvedValue({
+      updated: [item.itemId],
+      unknown: [unknownItemId],
+      preserved: [],
+      refused: null,
+    });
+
+    const result = body(
+      await bulkRunReport.handler(
+        {
+          runId: run.runId,
+          items: [
+            { itemId: item.itemId, outcome: 'failed', error: 'The resolver could not handle this item.' },
+            { itemId: unknownItemId, outcome: 'failed', error: 'This id is not in the run snapshot.' },
+          ],
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({ runId: run.runId, wrote: 1, updatedItemIds: [item.itemId] });
+    expect(result.ignored).toMatchObject({ itemIds: [unknownItemId] });
+  });
+
+  it('returns explicit zero-write evidence when the active run is absent', async () => {
+    h.getActiveRun.mockResolvedValueOnce(null);
+
+    const result = body(
+      await bulkRunReport.handler(
+        { itemId: item.itemId, outcome: 'failed', error: 'No run is active.' },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'no_active_run',
+      runId: null,
+      wrote: 0,
+      updatedItemIds: [],
+    });
   });
 });
 

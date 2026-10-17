@@ -11,6 +11,38 @@ import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle } from '
 
 const root = resolve(import.meta.dirname, '../../..');
 
+describe('required private database extensions', () => {
+  it.each([false, true])('checks required extensions before runtime allocation (ready=%s)', ready => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    // Replace only the prerequisite provider. The real entry must call it and
+    // stop before importing runtime dependencies when the extension is absent.
+    const extension = 'data:text/javascript,' + encodeURIComponent(
+      `export function ensureRequiredEmbeddedExtensions() { ${ready ? '' : "throw new Error('REQUIRED_EXTENSION_NOT_READY');"} }`,
+    );
+    const hook = `export async function resolve(specifier, context, next) {
+      if (specifier === './install-embedded-pgvector.mjs') return { url: ${JSON.stringify(extension)}, shortCircuit: true };
+      if (specifier === 'async-exit-hook') throw new Error('EXTENSION_ADMISSION_REACHED');
+      return next(specifier, context);
+    }`;
+    const script = `import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--', process.execPath, '-e', 'process.exit(91)'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined },
+    });
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.signal, diagnostic).toBeNull();
+    expect(result.stderr, diagnostic).toContain(ready ? 'EXTENSION_ADMISSION_REACHED' :
+      '[with-test-pg] extension preflight failed: REQUIRED_EXTENSION_NOT_READY');
+    expect(result.stderr, diagnostic).not.toContain(ready ? 'REQUIRED_EXTENSION_NOT_READY' : 'EXTENSION_ADMISSION_REACHED');
+    expect(result.stdout, diagnostic).not.toContain('booting throwaway PG');
+  });
+});
+
 function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): string {
   return JSON.stringify({ elapsedMs: performance.now() - startedAt, status: result.status, signal: result.signal,
     error: result.error && { name: result.error.name, message: result.error.message,

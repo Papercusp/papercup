@@ -28,7 +28,7 @@ import type { PersonalSearchResult } from '../personal-vault/types';
 import { formatSocialPostRef, parseSocialPostRef } from './social';
 const anUnverifiedPlatformId = () => 'unverified-social';
 const listSocialPlatforms = () => providerRegistry().forDatatype('social-post').map(({ descriptor: d }) => ({
-  id: d.id, verifiedAt: d.verification?.verifiedAt, blockedOn: d.verification?.blockedOn,
+  id: d.id, verifiedAt: d.verification?.verifiedAt ?? null, blockedOn: d.verification?.blockedOn,
 }));
 beforeEach(installDefaultSocialPackages);
 

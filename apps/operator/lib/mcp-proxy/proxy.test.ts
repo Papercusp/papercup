@@ -2718,6 +2718,74 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
   );
 
   it(
+    "EI-25709337570583795: tools:invoke-wrapped events:emit reset exposes a replay receipt",
+    withKeyedRetry("1", async () => {
+      const upstream = applyThenResetUpstream();
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 2_000,
+          retryBackoffMs: 40,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const call = {
+        jsonrpc: "2.0",
+        id: "announce-1",
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "events:emit",
+            args: {
+              event: "gate:control:ready",
+              announce: true,
+              announceScope: "global",
+            },
+          },
+        },
+      };
+      const first = await request(port(proxy), JSON.stringify(call));
+      expect(first.status).toBe(502);
+      const failure = JSON.parse(first.body) as {
+        forwardingResult?: string;
+        recovery?: {
+          idempotencyKeys?: Array<{
+            requestId: string | number;
+            toolName: string;
+            key: string;
+          }>;
+        };
+      };
+      expect(failure.forwardingResult).toBe("outcome_unknown");
+      expect(failure.recovery?.idempotencyKeys).toMatchObject([
+        { requestId: "announce-1", toolName: "tools:invoke" },
+      ]);
+      const recoveryKey = failure.recovery?.idempotencyKeys?.[0]?.key;
+      expect(recoveryKey).toBeTruthy();
+      expect(upstream.receivedKeys()).toEqual([recoveryKey]);
+      expect(upstream.appliedEffects()).toBe(1);
+
+      const replayed = await request(
+        port(proxy),
+        JSON.stringify({
+          ...call,
+          params: { ...call.params, _meta: { idempotencyKey: recoveryKey } },
+        }),
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toBe('{"result":{"receipt":"applied-once"}}');
+      expect(upstream.receivedKeys()).toEqual([recoveryKey, recoveryKey]);
+      expect(upstream.appliedEffects()).toBe(1);
+    }),
+  );
+
+  it(
     "P-005: an idempotent method (tools/list) retries post-connect EVEN with keying disabled — the toolless-session fix",
     withKeyedRetry("0", async () => {
       const upstream = resetOnceUpstream(

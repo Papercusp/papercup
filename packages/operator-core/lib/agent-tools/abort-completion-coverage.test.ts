@@ -23,6 +23,7 @@ import storagePrune from './storage/prune';
 import bindSpecEvidence from './plans/bind-spec-evidence';
 import plansSetSpecs, { SET_SPECS_MAX_CONCURRENCY, setSpecsAbortCompletionReceipt } from './plans/set-specs';
 import buildTypecheck, { buildTypecheckAbortCompletionReceipt } from './build/typecheck';
+import { bulkRunReport } from './inbox/bulk-run';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -78,6 +79,8 @@ const LATE_RETURN_MUTATORS = {
   'plans:set-specs': plansSetSpecs,
   // EI-25833565319673625: the long compiler tail needs an attempt receipt so a late verdict is not retried blindly.
   'build:typecheck': buildTypecheck,
+  // EI-26207329377923256: a late report must name its exact updated run rows.
+  'inbox:bulk-run-report': bulkRunReport,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */
@@ -97,6 +100,44 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     for (const [name, tool] of Object.entries(LATE_RETURN_MUTATORS)) {
       expect(tool.name).toBe(name);
     }
+  });
+
+  it('inbox:bulk-run-report identifies partial writes and explicit no-write results', () => {
+    const receipt = bulkRunReport.abortCompletionReceipt;
+    expect(receipt).toBeTypeOf('function');
+    const attempt = { callId: 'bulk-report-call-1', toolName: 'inbox:bulk-run-report' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    }) as ToolResult;
+
+    expect(receipt!({}, result({
+      ok: false,
+      runId: 'run-1',
+      wrote: 2,
+      updatedItemIds: ['item-1', 'item-2'],
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'inbox-bulk-run-report:bulk-report-call-1:run-1:items:item-1,item-2',
+      diagnostics: { runId: 'run-1', wrote: 2, updatedItemIds: ['item-1', 'item-2'] },
+    });
+
+    expect(receipt!({}, result({
+      ok: false,
+      error: 'no_active_run',
+      runId: null,
+      wrote: 0,
+      updatedItemIds: [],
+    }), attempt)).toMatchObject({ status: 'not-recorded' });
+
+    expect(receipt!({}, result({
+      ok: true,
+      runId: 'run-1',
+      wrote: 1,
+      updatedItemIds: [],
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-report-write-evidence'],
+    });
   });
 
   it('testing:run distinguishes completed verdicts, durable recovery, and unknown outcomes', () => {

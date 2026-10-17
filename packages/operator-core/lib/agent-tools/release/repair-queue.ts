@@ -951,6 +951,7 @@ async function recordAudit(actor: string, details: Record<string, unknown>): Pro
 
 export default defineTool({
   name: 'release:repair-queue',
+  timeoutSec: 295,
   profile: 'engineer',
   description:
     'Inspect, admit exact paths onto, claim a manifest leg of, or retire the frozen repair queue for the selected harness (operator home if unscoped). For gate-red fixes, `admit{paths}` is the only door: it replays named integration-branch paths onto repairHead as one proved commit; `wholeBlob:true, sourceCommit:<ancestor SHA>` pins reviewed source against staging drift. Dry-run unless `confirm:true`. R6 test files first return `precheck-running`; no background leg publishes. `converge` aliases `admit`; `retire` uses exact-identity CAS and is dry-run unless confirmed.',

@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { resolveFsMutexLockRoot } from './lib/fs-mutex.mjs';
 import { snapshotMigrationSource } from './lib/with-test-pg-migrations.mjs';
+import { ensureRequiredEmbeddedExtensions } from './install-embedded-pgvector.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -213,6 +214,15 @@ let sqlDir;
 try { sqlDir = resolveSqlDir(); }
 catch (error) {
   console.error('[with-test-pg] migration preflight failed: ' + error.message);
+  process.exit(1);
+}
+
+// npm can replace the native tree after postinstall provisioned its extensions.
+// Repair from the existing compatible host source, or refuse before allocating
+// private state and applying migrations that require vector columns.
+try { ensureRequiredEmbeddedExtensions({ root: ROOT }); }
+catch (error) {
+  console.error('[with-test-pg] extension preflight failed: ' + error.message);
   process.exit(1);
 }
 

@@ -437,6 +437,10 @@ beforeEach(() => {
 });
 
 describe('release:repair-queue', () => {
+  it('allows the four-minute admission preview to finish before the MCP deadline', () => {
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(295);
+  });
+
   it('refuses a queue mutation by a nonowner while a live gate fixer holds the condition', async () => {
     mocks.gateOwnership.mockResolvedValue({
       assessment: 'held-live', claimState: 'held', workItem: 'WI-38026', takenBy: 'su-live-peer',

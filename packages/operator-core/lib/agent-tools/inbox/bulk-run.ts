@@ -34,6 +34,7 @@
  */
 
 import { z } from 'zod';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -101,6 +102,7 @@ import {
   intakeSourceRevision,
   readIntakeSource,
 } from '../../attention/intake-promotion';
+import { completedResultPayload } from '../abort-completion-payload';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -360,6 +362,8 @@ function actionDiscoveryRetryResponse(runId: string, details: Record<string, unk
           retryable: true,
           message: 'The live attention action snapshot could not be read; no action or report was accepted. Retry shortly.',
           runId,
+          wrote: 0,
+          updatedItemIds: [],
           ...details,
         }),
       },
@@ -1304,6 +1308,59 @@ const OutcomeItem = z
   })
   .meta({ 'x-papercusp-call-constraint': BULK_RUN_REPORT_ITEM_ERROR_CONSTRAINT });
 
+function bulkRunReportAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const runId = payload?.runId;
+  const wrote = payload?.wrote;
+  const updatedItemIds = payload?.updatedItemIds;
+  if (
+    typeof wrote !== 'number' ||
+    !Number.isSafeInteger(wrote) ||
+    wrote < 0 ||
+    !Array.isArray(updatedItemIds) ||
+    !updatedItemIds.every((itemId) => typeof itemId === 'string' && itemId.length > 0) ||
+    new Set(updatedItemIds).size !== updatedItemIds.length ||
+    wrote !== updatedItemIds.length
+  ) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'inbox:bulk-run-report did not return an exact outcome-write receipt',
+      failures: ['missing-report-write-evidence'],
+    };
+  }
+
+  const diagnostics = {
+    runId: typeof runId === 'string' ? runId : null,
+    wrote,
+    updatedItemIds,
+  };
+  if (wrote === 0) {
+    return {
+      status: 'not-recorded',
+      reason: 'inbox:bulk-run-report completed without updating an outcome row',
+      diagnostics,
+    };
+  }
+  if (typeof runId !== 'string' || runId.length === 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'inbox:bulk-run-report reported updated rows without their run id',
+      failures: ['missing-report-run-id'],
+      diagnostics,
+    };
+  }
+
+  return {
+    status: 'recorded',
+    effectRef: `inbox-bulk-run-report:${context.callId}:${runId}:items:${updatedItemIds.join(',')}`,
+    diagnostics,
+  };
+}
+
 export const bulkRunReport = defineTool({
   name: 'inbox:bulk-run-report',
   description:
@@ -1313,6 +1370,7 @@ export const bulkRunReport = defineTool({
     notWhen: 'Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage).',
   },
   capability: 'coord:write',
+  abortCompletionReceipt: bulkRunReportAbortCompletionReceipt,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z
@@ -1379,7 +1437,10 @@ export const bulkRunReport = defineTool({
     const runId = await resolveRunId(args.runId);
     if (!runId) {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no_active_run' }) }],
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ ok: false, error: 'no_active_run', runId: null, wrote: 0, updatedItemIds: [] }),
+        }],
       };
     }
 
@@ -1399,6 +1460,7 @@ export const bulkRunReport = defineTool({
               flag: FLAGS.INBOX_BULK_RESOLVE,
               runId,
               wrote: 0,
+              updatedItemIds: [],
               message:
                 "Bulk resolve has been turned OFF by the owner while this run was in flight. Nothing from this report was written. STOP: take no further action on any item in this run, and do NOT re-route the work to the item's own verb outside the run. If you already took an action before this refusal, say so plainly in your final message rather than retrying or hiding it.",
             }),
@@ -1424,6 +1486,7 @@ export const bulkRunReport = defineTool({
               refused: 'resolver_owner_mismatch_or_not_executing',
               runId,
               wrote: 0,
+              updatedItemIds: [],
             }),
           },
         ],
@@ -1552,6 +1615,7 @@ export const bulkRunReport = defineTool({
     );
 
     let unknown: string[] = [];
+    let updatedItemIds: string[] = [];
     let preservedOutcomes: Array<Record<string, unknown>> = [];
     let autoAccept = autoAcceptSummary({
       reportedRecommendations: 0,
@@ -1567,6 +1631,7 @@ export const bulkRunReport = defineTool({
         workspaceId: heartbeat.workspaceId,
       });
       unknown = res.unknown;
+      updatedItemIds = [...new Set(res.updated)];
       const preservedRows = res.preserved ?? [];
       preservedOutcomes = preservedRows.map((row) => ({
         itemId: row.itemId,
@@ -1598,6 +1663,7 @@ export const bulkRunReport = defineTool({
                 phase: res.refused.phase,
                 runId,
                 wrote: 0,
+                updatedItemIds: [],
                 preservedOutcomes,
                 message:
                   'This run is no longer accepting reports — the owner stopped it, or it has already settled. STOP: take no further action on any item in this run. Nothing from this report was written.',
@@ -1686,7 +1752,14 @@ export const bulkRunReport = defineTool({
     }
 
     if (unknown.length === 0) {
-      return bulkContent({ ...(env as unknown as Record<string, unknown>), autoAccept, preservedOutcomes });
+      return bulkContent({
+        ...(env as unknown as Record<string, unknown>),
+        runId,
+        wrote: updatedItemIds.length,
+        updatedItemIds,
+        autoAccept,
+        preservedOutcomes,
+      });
     }
     // Unknown ids are surfaced BESIDE the bulk envelope rather than as failures:
     // each reported item that existed still landed, and the resolver needs to
@@ -1698,6 +1771,9 @@ export const bulkRunReport = defineTool({
         itemIds: unknown,
         why: 'A run acts on exactly the items the owner was looking at; widening it silently would break that guarantee.',
       },
+      runId,
+      wrote: updatedItemIds.length,
+      updatedItemIds,
       autoAccept,
       preservedOutcomes,
     });
