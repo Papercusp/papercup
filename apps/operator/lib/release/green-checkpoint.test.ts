@@ -106,6 +106,7 @@ import {
   acquireCheckpointRunLock,
   checkpointRunLockSkipSummary,
   activateCheckpointQualificationRunner,
+  checkpointQualificationRunnerRefreshInput,
   scheduledAttemptPinnedCandidate,
   scheduledAttemptPrewarmTarget,
   startCheckpointQualificationProgress,
@@ -3979,6 +3980,23 @@ describe("qualification attach race (WI-6554700010009570)", () => {
       adoptOwnUnitRunnerReservationAfterAttachConflict(foreignActivation, input, selfUnits, retry),
     ).resolves.toMatchObject({ activation: foreignActivation, runnerId: input.gateFireId, adopted: false });
     expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the adopted physical runner id for the post-preflight reservation refresh", () => {
+    const input = {
+      target: { workspaceId: "workspace", installSlug: "papercusp" },
+      attemptId: "attempt-1",
+      gateFireId: "fire-1",
+      runId: "run-1",
+      candidate: "candidate-sha",
+      pid: 456,
+    };
+
+    expect(checkpointQualificationRunnerRefreshInput(input, "manual:attempt-1:123")).toEqual({
+      ...input,
+      gateFireId: "manual:attempt-1:123",
+    });
+    expect(checkpointQualificationRunnerRefreshInput(input, undefined)).toEqual(input);
   });
 
   it("reads this process's systemd units from a cgroup v2 path and fails open to [] when unreadable", () => {

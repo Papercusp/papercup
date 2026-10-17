@@ -488,6 +488,15 @@ describe('selectDeadOneShotConditions (WI-6554700010016120)', () => {
     });
     expect(selectDeadOneShotConditions([state], new Map([['origin-freshness:papercusp', 'unknown']]))).toEqual([]);
   });
+
+  it('does not resolve a degraded one-shot condition from emitter death alone', () => {
+    const state = mkState({
+      condition_key: 'degraded:retrieval:mixed',
+      one_shot: true,
+      latest_emitter: emitter,
+    });
+    expect(selectDeadOneShotConditions([state], new Map([['degraded:retrieval:mixed', 'dead']]))).toEqual([]);
+  });
 });
 
 describe('runConditionStalenessTick — one-shot emitter death reconciliation', () => {
@@ -547,6 +556,42 @@ describe('runConditionStalenessTick — one-shot emitter death reconciliation', 
     const result = await runConditionStalenessTick({
       readStates: async () => [state],
       probeEmitter: () => 'unknown',
+      readHealthByKey: async () => new Map(),
+      readGitSyncHealthByKey: async () => new Map(),
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        broadcasts.push(conditionKeys);
+        return true;
+      },
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      escalate: async () => undefined,
+      now: () => Date.parse('2026-10-16T19:00:00.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+    });
+    expect(result.reconciled).toEqual([]);
+    expect(broadcasts).toEqual([]);
+  });
+
+  it('keeps a degraded one-shot condition open until metric recovery is emitted', async () => {
+    const key = 'degraded:retrieval:mixed';
+    const state = mkState({
+      condition_key: key,
+      one_shot: true,
+      latest_emitter: {
+        pid: 4242,
+        startedAt: '2026-10-16T17:00:00.000Z',
+        uptimeSec: 60,
+        cwd: '/repo',
+        host: 'host-a',
+        processIdentity: 'linux:boot:4242',
+      },
+      last_seen: '2026-10-16T17:30:00.000Z',
+    });
+    const broadcasts: string[][] = [];
+    const result = await runConditionStalenessTick({
+      readStates: async () => [state],
+      probeEmitter: () => 'dead',
       readHealthByKey: async () => new Map(),
       readGitSyncHealthByKey: async () => new Map(),
       broadcastResolvedMany: async ({ conditionKeys }) => {

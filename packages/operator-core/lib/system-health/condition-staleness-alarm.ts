@@ -45,6 +45,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { coordScopeWorkspace } from '../agent-tools/coordination/log';
 import { SELF_RECONCILING_META_KEY } from '../attention/reconcile-escalations';
 import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
+import { DEGRADATION_CONDITION_PREFIX } from '../coord/actionable-conditions';
 import {
   actionableConditionFor,
   reconcileConditions,
@@ -494,7 +495,20 @@ export function selectDeadOneShotConditions(
   livenessByKey: ReadonlyMap<string, SevereEventEmitterLiveness>,
 ): string[] {
   return states
-    .filter((s) => s.open && s.one_shot === true && livenessByKey.get(s.condition_key) === 'dead')
+    .filter(
+      (s) =>
+        s.open &&
+        s.one_shot === true &&
+        livenessByKey.get(s.condition_key) === 'dead' &&
+        // Degradation conditions are owned by the degradation watchdog, which
+        // has the durable fallback-observation window needed to establish
+        // recovery.  Emitter death/replacement is not evidence that the
+        // degraded signal recovered: the 2026-10-17 retrieval incident closed
+        // `degraded:retrieval:mixed` at 65–69% recovery solely because its old
+        // emitter exited.  Leave this family open until its source emits the
+        // metric-backed resolution (or a replacement alarm changes the fold).
+        !s.condition_key.startsWith(DEGRADATION_CONDITION_PREFIX),
+    )
     .map((s) => s.condition_key);
 }
 

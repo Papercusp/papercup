@@ -3748,6 +3748,14 @@ export async function activateCheckpointQualificationRunner(
   });
 }
 
+/** Keep the adopted physical runner identity when refreshing a joined attempt's candidate. */
+export function checkpointQualificationRunnerRefreshInput(
+  input: Parameters<typeof activateCheckpointQualificationRunner>[0],
+  runnerId: string | undefined,
+): Parameters<typeof activateCheckpointQualificationRunner>[0] {
+  return { ...input, gateFireId: runnerId ?? input.gateFireId };
+}
+
 /**
  * Recover only the legacy launcher skew where a refused reservation is positively tied to this
  * process's own systemd unit. Re-attaching with the stored physical runner id updates the existing
@@ -24088,17 +24096,23 @@ if (require.main === module) {
       if (lock.acquired) {
         // The preflight may resolve the final executable candidate after dependency preparation.
         // Refresh the reservation against that exact candidate before entering the suite.
-        const refreshed = await activateCheckpointQualificationRunner({
+        const refreshInput = checkpointQualificationRunnerRefreshInput({
           target: qualificationTarget,
           attemptId: qualificationAttemptId,
           gateFireId,
           runId,
           candidate: resolvedCandidateForRun,
           pid: process.pid,
-        });
+        }, qualificationRunnerId);
+        const refreshed = await activateCheckpointQualificationRunner(refreshInput);
         if (refreshed.status !== 'not-qualifying' && refreshed.status !== 'updated' && refreshed.status !== 'idempotent') {
           lock.release();
-          throw new Error(`checkpoint qualification runner candidate refresh refused: ${refreshed.status}`);
+          throw new Error(checkpointQualificationAttachmentRefusalSummary(refreshed, {
+            attemptId: qualificationAttemptId,
+            gateFireId: refreshInput.gateFireId,
+            candidate: resolvedCandidateForRun,
+            runId,
+          }, ownCgroupUnits()));
         }
       }
     } catch (e) {

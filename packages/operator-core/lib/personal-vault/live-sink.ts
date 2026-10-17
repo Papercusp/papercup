@@ -9,9 +9,9 @@ export interface NormalizedExternalEvent {
   externalId: string;
   /**
    * Canonical datatype registry id (`email-message`, `calendar-event`, …).
-   * This — never the provider-named event key — selects the Vault and app
-   * route (D-010), so any registered provider emitting a known datatype lands
-   * in the same place Google does.
+   * This — never the provider-named event key — selects the document shape
+   * and app route (D-010). Bound social records use the server-owned provider
+   * kind for their Vault permission partition.
    */
   datatypeId: string;
   /** Server-owned source id, present on every canonical ingestion event. */
@@ -43,8 +43,9 @@ interface VaultRouteShape {
 interface VaultRoute {
   /**
    * Vault partition (documents.source, so also the `personal:<category>` scope).
-   * Named for the DATATYPE, never a provider: every provider's mail lands in
-   * `mail` (migration 1414 renamed the old Google-named `gmail`, WI-10006490).
+   * Default for the datatype: every provider's mail lands in `mail` (migration
+   * 1414 renamed `gmail`, WI-10006490). Bound social records override this
+   * default with their server-owned provider kind to match social read grants.
    */
   category: string;
   shape(payload: Record<string, unknown>, category: string): VaultRouteShape;

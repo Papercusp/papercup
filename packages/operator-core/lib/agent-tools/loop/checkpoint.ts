@@ -72,7 +72,7 @@ import {
 } from '../../carry-note';
 import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
 import { getOrgPg } from '@papercusp/db-org';
-import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopStatus, readActiveLoopFacts } from '../../harness/routines/loop';
 import { getSessionBrief } from '../../session-brief';
 import { HARVESTED_FIRST_LINE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { modeImpliesAutonomy } from '../../modes/registry';
@@ -836,7 +836,7 @@ export default defineTool({
     const ownerId = resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
     // WI-2148: the carry-note scope key MUST match what the cold-wake READER resolves —
     // and the reader gets `harness` from the ColdLoopMarker the FIRE stamped on the wake
-    // payload, which is the ARMED ROUTINE's fixed `install_slug` (loop.ts's getLoopStatus),
+    // payload, which is the ARMED ROUTINE's fixed `install_slug` (the routine facts reader),
     // NOT the checkpointing session's own ctx.harnessSlug. Those two can legitimately
     // differ wake-to-wake for the SAME loop (observed live: wakes 1-3 wrote
     // 'loop:*:<owner>', wake-4 wrote 'loop:papercusp:<owner>' because ctx.harnessSlug
@@ -875,7 +875,7 @@ export default defineTool({
     // EI-211835's wildcard transport behavior by consulting the durable session
     // scope before the normal session-context/home fallback.
     // EI-22166372050218668: WI-2148's fail-open contract (below) is deliberate and stays
-    // untouched — a checkpoint write must never block on a getLoopStatus hiccup. But
+    // untouched — a checkpoint write must never block on a routine-read hiccup. But
     // fail-open was previously SILENT: a caller whose probe failed got byte-identical
     // `ok:true` whether or not the resolved scope actually matched the armed routine, so
     // a session whose loop lived under a DIFFERENT harness than its current ctx.harnessSlug
@@ -885,7 +885,12 @@ export default defineTool({
     // well-formed but frozen note. Track whether the probe itself failed (vs. genuinely
     // resolved "no active routine") so the response below can say so out loud.
     let routineProbeFailed = false;
-    const routineProbe = await withBoundedTimeout(() => getLoopStatus(ownerId), {
+    // Scope is a property of the routine row, not of its derived wake/turn
+    // diagnostics. Reuse the arm-time facts reader so an unrelated telemetry
+    // query cannot make a healthy routine look absent and strand this note in
+    // the session's fallback harness (EI-25721153056316145). Full status remains
+    // appropriate for the advisory continuation reads below.
+    const routineProbe = await withBoundedTimeout(() => readActiveLoopFacts(ownerId), {
       fallback: null,
       timeoutMs: CONTINUATION_READ_BUDGET_MS,
       label: 'loop:checkpoint armed-routine scope probe',
@@ -897,7 +902,7 @@ export default defineTool({
       routineProbeFailed = true;
       const reason = routineProbe.errorMessage ?? routineProbe.reason ?? 'unknown bounded-read failure';
       console.warn(
-        '[loop:checkpoint] getLoopStatus probe failed while resolving carry-note scope (fail-open, WI-2148):',
+        '[loop:checkpoint] routine facts probe failed while resolving carry-note scope (fail-open, WI-2148):',
         routineProbe.error ?? new Error(reason),
       );
     }
@@ -1137,7 +1142,10 @@ export default defineTool({
                 ? {
                     routineProbeFailed: {
                       resolvedTo: harness,
-                      why: 'The armed-loop scope probe (getLoopStatus) failed, so this harness could not be confirmed against the actually-armed routine and was resolved from session/context fallback instead. If a cold wake reads a stale-looking note, re-check with loop:status and pass an explicit `harness` here to be sure.',
+                      reason: routineProbe.reason ?? 'error',
+                      elapsedMs: routineProbe.elapsedMs,
+                      ...(routineProbe.errorMessage ? { errorMessage: routineProbe.errorMessage } : {}),
+                      why: 'The armed-loop routine facts probe failed, so this harness could not be confirmed against the actually-armed routine and was resolved from session/context fallback instead. If a cold wake reads a stale-looking note, re-check with loop:status and pass an explicit `harness` here to be sure.',
                     },
                   }
                 : {}),
@@ -2325,7 +2333,10 @@ export default defineTool({
               ? {
                   routineProbeFailed: {
                     wroteTo: harness,
-                    why: 'The armed-loop scope probe (getLoopStatus) failed, so this write could NOT confirm which harness the loop is actually armed under and fell back to session/context scope instead (fail-open, per WI-2148 — a checkpoint write is never blocked by this). If the loop is really armed elsewhere, this note is stranded: call loop:status to check loop.harnessSlug, and if it disagrees with `harness` above, re-checkpoint with an explicit `harness` matching it.',
+                    reason: routineProbe.reason ?? 'error',
+                    elapsedMs: routineProbe.elapsedMs,
+                    ...(routineProbe.errorMessage ? { errorMessage: routineProbe.errorMessage } : {}),
+                    why: 'The armed-loop routine facts probe failed, so this write could NOT confirm which harness the loop is actually armed under and fell back to session/context scope instead (fail-open, per WI-2148 — a checkpoint write is never blocked by this). If the loop is really armed elsewhere, this note is stranded: call loop:status to check loop.harnessSlug, and if it disagrees with `harness` above, re-checkpoint with an explicit `harness` matching it.',
                   },
                 }
               : {}),

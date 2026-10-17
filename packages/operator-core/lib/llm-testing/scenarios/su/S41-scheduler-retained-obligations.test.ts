@@ -163,4 +163,17 @@ describe('S41 actual scheduler advice behavior instrument', () => {
     expect(judge('blocked', [call('mcp__papercusp_su__work_items_get', { id: S41_ITEM }),
       read[1], blocker, wait, stop])).toEqual([]);
   });
+
+  it('rejects the observed fabricated peer-review ref without creating a dependency or stopping its loop', async () => {
+    const invented = call('tools:invoke', { name: 'work_items:set_blocker', args: {
+      id: S41_ITEM, kind: 'event', ref: `peer-review:${S41_ITEM}`,
+    } });
+    const { world, state } = makeS41World('no-event');
+    const response = await world.override(invented.name, invented.input) as { content: [{ text: string }] };
+    expect(JSON.parse(response.content[0].text)).toEqual({ ok: false, error: 'blocker_not_recorded' });
+    expect(state.blockerRecorded).toBe(false);
+    expect(state.loopActive).toBe(true);
+    expect(judge('no-event', [...read, invented, checkpoint]))
+      .toContain('custom:scheduler-obligations:invented-or-wrong-blocker');
+  });
 });

@@ -4,6 +4,7 @@
  *   npx tsx scripts/agent-capacity/record-session.ts --cli claude|codex --tasks all|<id,id> \
  *     [--parallel 3] [--out ~/.cache/agent-capacity/corpus] [--upstream http://127.0.0.1:8788] \
  *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work] [--tasks-file <tasks.json>]
+ *     [--codex-model <model> --codex-effort low|medium|high]
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -93,9 +94,34 @@ export function claudeEnv(base: NodeJS.ProcessEnv, proxyUrl: string, configDir: 
   };
 }
 
+export interface CodexSelection { model: string; effort: 'low' | 'medium' | 'high' }
+
+function validateCodexSelection(selection: CodexSelection): CodexSelection {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(selection.model) ||
+      !['low', 'medium', 'high'].includes(selection.effort)) {
+    throw new Error('Codex selection needs a model id and effort low|medium|high');
+  }
+  return { model: selection.model, effort: selection.effort };
+}
+
+/** No selection means unknown defaults; never backfill a historical binding. */
+export function codexSelectionFromArgv(argv: readonly string[]): CodexSelection | undefined {
+  const modelIndex = argv.indexOf('--codex-model');
+  const effortIndex = argv.indexOf('--codex-effort');
+  if (modelIndex < 0 && effortIndex < 0) return undefined;
+  const model = modelIndex < 0 ? undefined : argv[modelIndex + 1];
+  const effort = effortIndex < 0 ? undefined : argv[effortIndex + 1];
+  if (!model || model.startsWith('--') || !effort || effort.startsWith('--')) {
+    throw new Error('--codex-model and --codex-effort must both have values');
+  }
+  return validateCodexSelection({ model, effort: effort as CodexSelection['effort'] });
+}
+
 /** config.toml for a fresh CODEX_HOME whose only model provider is the recording proxy. */
-export function codexConfigToml(proxyUrl: string): string {
+export function codexConfigToml(proxyUrl: string, selection?: CodexSelection): string {
+  const chosen = selection === undefined ? undefined : validateCodexSelection(selection);
   return [
+    ...(chosen ? [`model = ${JSON.stringify(chosen.model)}`, `model_reasoning_effort = ${JSON.stringify(chosen.effort)}`] : []),
     'model_provider = "capture"',
     'check_for_update_on_startup = false',
     '',
@@ -218,6 +244,8 @@ export interface SessionMeta {
   cli: Cli;
   cliVersion: string;
   claudeModel: string | null;
+  /** Requested settings, not proof of the model served; inspect exchanges for that. */
+  codexSelection?: CodexSelection;
   startedAt: string;
   wallMs: number;
   exitCode: number | null;
@@ -253,11 +281,14 @@ export async function recordSession(opts: {
   outDir: string;
   upstream: string;
   claudeModel: string;
+  codexSelection?: CodexSelection;
   keepWork: boolean;
   /** Default `systemd`: per-session cgroup accounting in caprec.slice. */
   isolation?: Isolation;
 }): Promise<SessionMeta> {
   const { corpus, task, cli } = opts;
+  const codexSelection = cli === 'codex' && opts.codexSelection !== undefined
+    ? validateCodexSelection(opts.codexSelection) : undefined;
   const isolation = opts.isolation ?? 'systemd';
   const repo = corpus.repos[task.repo];
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
@@ -278,7 +309,7 @@ export async function recordSession(opts: {
   if (cli === 'claude') {
     env = claudeEnv(process.env, proxy.url, home);
   } else {
-    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(proxy.url));
+    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(proxy.url, codexSelection));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
   const prompt = promptFor(corpus, task);
@@ -327,6 +358,7 @@ export async function recordSession(opts: {
     cli,
     cliVersion: await versionOn(cli, env.PATH, 'unknown'),
     claudeModel: cli === 'claude' ? opts.claudeModel : null,
+    ...(codexSelection ? { codexSelection } : {}),
     startedAt,
     wallMs,
     exitCode,
@@ -355,6 +387,8 @@ async function main(): Promise<void> {
   const corpus = loadCorpus(corpusFileFromArgv(process.argv));
   const cli = arg('cli') as Cli;
   if (cli !== 'claude' && cli !== 'codex') throw new Error('--cli claude|codex required');
+  const codexSelection = codexSelectionFromArgv(process.argv);
+  if (cli !== 'codex' && codexSelection) throw new Error('--codex-model/--codex-effort require --cli codex');
   const sel = arg('tasks', 'all')!;
   const tasks = sel === 'all' ? corpus.tasks : corpus.tasks.filter((t) => sel.split(',').includes(t.id));
   if (!tasks.length) throw new Error(`no tasks match ${sel}`);
@@ -373,6 +407,7 @@ async function main(): Promise<void> {
           outDir,
           upstream: arg('upstream', 'http://127.0.0.1:8788')!,
           claudeModel: arg('claude-model', 'sonnet')!,
+          codexSelection,
           keepWork: process.argv.includes('--keep-work'),
           isolation,
         });

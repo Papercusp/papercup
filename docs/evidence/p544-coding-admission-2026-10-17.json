@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016277",
+  "recordedAtUtc": "2026-10-17T11:54:45Z",
+  "classification": "Conservative programme reservation refresh; not billed spend, verified credit balance, monthly trial qualification or permission to launch a new candidate",
+  "programmeCapUsd": 200,
+  "priorReservedUsd": 168.5,
+  "priorEvidence": "docs/evidence/p544-cold-growth-admission-2026-10-17.json",
+  "additionalPriorCpuGuestReserveUsd": 3,
+  "additionalPriorCpuGuest": "cap-p544-cpu-1017",
+  "additionalReserveBasis": "Keep the full previous reservation. Add a separate padded allowance for the later two-hour 4vCPU/8GiB CPU guest, its 32GiB boot disk, IPv4, transfer and uncertainty. No model workload ran on that guest according to the saved P544 checkpoint. This is an allowance, not a measured charge. The previous cold guest starts/resize retain its existing full two-hour larger-shape reserve and fixed original deadline.",
+  "totalReservedUsd": 171.5,
+  "remainingConservativeHeadroomUsd": 28.5,
+  "reservationWriterSemantics": {
+    "source": "scripts/agent-capacity/gcp-rails.ts",
+    "worstCaseCents": "Requested compute and provisioned disks/performance over maximum lifetime, rounded up to cents; writer of papercusp-maxcost-cents VM label",
+    "committedWorstCaseCents": "Sum of those labels for current non-TERMINATED instances; concurrent commitment only, not historical programme spend",
+    "admitCreate": "Compare new plus live committed worst-case cents against 5000 cents; does not enforce the 200 USD historical programme cap",
+    "programmeReservation": "Explicit conservative evidence allocations; never subtract partial billing exports or credit offsets"
+  },
+  "liveProviderEvidence": {
+    "project": "pc-agent-capacity-0930",
+    "sourceRoot": "/tmp/p544-admission-refresh-20261017-1156",
+    "queryOrder": ["budget", "admin", "instances", "disks", "snapshots", "addresses"],
+    "sequential": true,
+    "adminStartUtc": "2026-10-17T09:37:00Z",
+    "adminRows": 28,
+    "adminQueryLimit": 5000,
+    "latestAdminTimestampUtc": "2026-10-17T11:17:37.899414Z",
+    "observedInsertNames": ["cap-p544-cold-1017", "cap-p544-cpu-1017"],
+    "instances": [],
+    "disks": [],
+    "snapshots": [],
+    "staticAddresses": [],
+    "budgetAlertName": "agent-capacity-gcp-test-cap-200",
+    "budgetAmountUsd": 200,
+    "budgetCreditTreatment": "INCLUDE_ALL_CREDITS",
+    "budgetMeaning": "Monthly alert configuration, not a hard provider spending cap or a current-spend response. No inference/control billing balance follows from it."
+  },
+  "nextCandidate": {
+    "admitted": false,
+    "reason": "Prepare explicit current-model/effort corpus recording and bounded inference accounting before allocating a new candidate. Refresh sequential census again immediately before create; preserve programme headroom and existing provider DELETE deadline/teardown rails.",
+    "plannedModel": "gpt-6-luna",
+    "plannedEffort": "low",
+    "workload": "Reuse pinned TypeScript/Python corpus, 40/40/20 light/typical/heavy and D081 monthly task counts, alongside D075 assigned/active/burst native profile. Requested settings require served-model evidence; no new inference or cloud spend is admitted by this record."
+  },
+  "limitations": [
+    "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",
+    "Cloud audit ingestion can lag. This bounded refresh does not prove account-wide absence of unrelated charges.",
+    "No old cold/CPU guest may be resurrected; no settled lifecycle, quota, installer or private-PG proof was replayed.",
+    "P544 D075/D076 and P537 product/source-serving acceptance remain open."
+  ]
+}

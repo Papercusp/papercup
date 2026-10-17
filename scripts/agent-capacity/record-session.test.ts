@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, codexSelectionFromArgv, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
 
 describe('default recording placement', () => {
   it('places shared-host recording checkouts on data and preserves an explicit cache', () => {
@@ -77,6 +77,29 @@ describe('recorded CLI environment', () => {
   it('runs codex non-interactively in the work dir and claude with bypassed permissions', () => {
     expect(cliArgs('codex', 'do it', '/w', 'sonnet')).toEqual(['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', '/w', 'do it']);
     expect(cliArgs('claude', 'do it', '/w', 'sonnet')).toContain('--dangerously-skip-permissions');
+  });
+  it('writes explicit requested model/effort as root TOML settings for a corpus run', () => {
+    const selection = codexSelectionFromArgv(['--cli', 'codex', '--codex-model', 'gpt-6-luna', '--codex-effort', 'low']);
+    const parsed = JSON.parse(execFileSync('python3', ['-c', 'import sys,json,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))'], {
+      input: codexConfigToml('http://127.0.0.1:5000', selection), encoding: 'utf8',
+    }));
+    expect(selection).toEqual({ model: 'gpt-6-luna', effort: 'low' });
+    expect(parsed).toMatchObject({ model: 'gpt-6-luna', model_reasoning_effort: 'low', model_provider: 'capture' });
+    expect(parsed.model_providers.capture).not.toHaveProperty('model');
+  });
+  it('keeps legacy selections unknown instead of inventing a model or effort', () => {
+    expect(codexSelectionFromArgv(['--cli', 'codex'])).toBeUndefined();
+    expect(codexConfigToml('http://127.0.0.1:5000')).not.toMatch(/^model(?:_reasoning_effort)? =/m);
+  });
+  it.each([
+    ['--codex-model', 'gpt-6-luna'],
+    ['--codex-effort', 'low'],
+    ['--codex-model', '--codex-effort', 'low'],
+    ['--codex-model', 'gpt-6-luna', '--codex-effort'],
+    ['--codex-model', 'gpt-6-luna', '--codex-effort', 'typo'],
+    ['--codex-model', 'gpt-6-luna\n[features]', '--codex-effort', 'low'],
+  ])('refuses incomplete or invalid explicit Codex settings: %j', (...argv) => {
+    expect(() => codexSelectionFromArgv(argv)).toThrow(/Codex|codex/);
   });
 });
 

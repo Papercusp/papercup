@@ -1502,6 +1502,13 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(advice).toContain('Keep the existing loop armed until registration succeeds');
       expect(advice).toContain('If no independently actionable blocker event is recorded');
       expect(advice).toContain('do not invent an event from blocked status');
+      // The missing-key branch must be decided before an instruction to create a blocker.
+      // S41 observed an invented peer-review:<item id> ref when registration came first.
+      const missingKey = advice.indexOf('If no independently actionable blocker event is recorded');
+      const knownKey = advice.indexOf('Otherwise copy the supplied dependency event key exactly');
+      expect(knownKey).toBeGreaterThan(missingKey);
+      expect(advice.slice(missingKey, knownKey)).toContain('do not call work_items:set_blocker or events:await');
+      expect(advice.slice(missingKey, knownKey)).toContain('Never fabricate a blocker ref or derive an event key from an item id');
       expect(advice).toContain('backlog interest only');
       expect(advice).not.toContain('recovery.steps');
       // D-009 still permits replacing the loop AFTER a guaranteed wake exists, and stopping

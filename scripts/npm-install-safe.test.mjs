@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -1071,6 +1072,37 @@ test("npmChildEnv preserves an explicit caller install choice in offline-safe mo
     npmChildEnv({ env: callerEnv, offlineSafe: true }),
     callerEnv,
   );
+});
+
+test('dependency verification repairs nested dependency executable links before publishing', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-nested-bin-'));
+  const owner = join(repoRoot, 'node_modules/@scope/owner');
+  const bin = join(owner, 'node_modules/.bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(repoRoot, 'package.json'), JSON.stringify({ workspaces: [] }));
+  writeFileSync(join(owner, 'package.json'), JSON.stringify({ name: '@scope/owner', version: '1.0.0' }));
+  const broken = join(bin, '.tool-retired');
+  const healthy = join(bin, 'healthy.cmd');
+  symlinkSync('../missing/cli.js', broken);
+  writeFileSync(healthy, 'healthy shim');
+  let repairs = 0;
+  try {
+    const result = await verifyDepsExtracted({
+      repoRoot, probeSpecifiers: [], env: {}, deps: { sleep: async () => {} },
+      runNpm: () => {
+        repairs++;
+        assert.throws(() => lstatSync(broken), { code: 'ENOENT' });
+        assert.equal(readFileSync(healthy, 'utf8'), 'healthy shim');
+        return 0;
+      },
+    });
+    assert.equal(result, 0);
+    assert.equal(repairs, 1);
+    assert.throws(() => lstatSync(broken), { code: 'ENOENT' });
+    assert.equal(readFileSync(healthy, 'utf8'), 'healthy shim');
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 for (const needsRepair of [false, true]) {

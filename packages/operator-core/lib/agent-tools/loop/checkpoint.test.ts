@@ -53,6 +53,7 @@ const listLoopCarryNoteScopes = vi.fn(
   async (..._a: unknown[]) => [] as { harness: string; updatedAtMs: number | null }[],
 );
 const getLoopStatus = vi.fn();
+const readActiveLoopFacts = vi.fn();
 const getSessionBrief = vi.fn();
 const getPresence = vi.fn();
 const readInbox = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
@@ -225,7 +226,10 @@ vi.mock('../../pot/wake', () => ({
 // harness is only a fallback when no routine is active; otherwise a transient project
 // scope must not create a verified note invisible to the cold reader. Most tests have no
 // armed routine (null), so they fall through to the old arg/ctx/home-hive chain.
-vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
+vi.mock('../../harness/routines/loop', () => ({
+  getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+  readActiveLoopFacts: (...a: unknown[]) => readActiveLoopFacts(...a),
+}));
 vi.mock('../../session-brief', () => ({ getSessionBrief: (...a: unknown[]) => getSessionBrief(...a) }));
 vi.mock('../../bounded-timeout', () => ({
   withBoundedTimeout: (...a: unknown[]) => withBoundedTimeout(...a),
@@ -289,6 +293,9 @@ const call = (args: Record<string, unknown>, ctx: unknown = { harnessSlug: 'pape
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => {
+  // Existing scope fixtures also describe the lean routine facts. Tests that
+  // distinguish telemetry availability override this independently below.
+  readActiveLoopFacts.mockImplementation((...args: unknown[]) => getLoopStatus(...args));
   vi.clearAllMocks();
   storePriorOverride = undefined; // default: the store's prior IS getLoopCarryNote's value
   lastStoredNote = null; // WI-7124: reset the verify-read fixture between tests
@@ -324,8 +331,11 @@ beforeEach(() => {
           degraded: false,
           elapsedMs: 0,
         };
-      } catch {
-        return { value: null, degraded: true, elapsedMs: 0 };
+      } catch (error) {
+        return {
+          value: null, degraded: true, reason: 'error', elapsedMs: 0,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        };
       }
     }
     if (label === 'loop:checkpoint decision-ref advisory') {
@@ -1648,6 +1658,26 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it.each([undefined, 'papercusp'])('keeps the active routine scope when diagnostic status fails (explicit harness: %s)', async (harness) => {
+    // The scope lives in the routine row even when the diagnostic reader's
+    // wake/transcript enrichment fails. Falling back would strand the note in
+    // papercusp while the cold reader still opens sb-devboard-hive.
+    getLoopStatus.mockRejectedValue(new Error('diagnostic wake-history query failed'));
+    readActiveLoopFacts.mockResolvedValue({ active: true, harnessSlug: 'sb-devboard-hive' });
+
+    const result = body(await call({ next: 'continue the existing loop', ...(harness ? { harness } : {}) }, {
+      harnessSlug: 'papercusp', workspaceId: 'ws-1',
+    }));
+
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
+      expect.any(String),
+    );
+    expect(result).toMatchObject({ ok: true, harness: 'sb-devboard-hive', verified: true });
+    expect(readActiveLoopFacts).toHaveBeenCalledWith('su-caller');
+    expect(result.routineProbeFailed).toBeUndefined();
+  });
+
   it('WI-2148: falls back to args/ctx/home-hive when getLoopStatus errors (fail-open, never blocks a checkpoint write)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     getLoopStatus.mockRejectedValueOnce(new Error('pg down'));
@@ -1661,7 +1691,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     // routine — the write is no longer silently indistinguishable from a verified one.
     const body = JSON.parse(result.content[0].text as string);
     expect(body.routineProbeFailed).toEqual(
-      expect.objectContaining({ wroteTo: 'papercusp' }),
+      expect.objectContaining({ wroteTo: 'papercusp', reason: 'error', errorMessage: 'pg down', elapsedMs: 0 }),
     );
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -1686,7 +1716,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(resultBody).toMatchObject({
       ok: true,
       harness: 'papercusp',
-      routineProbeFailed: { wroteTo: 'papercusp' },
+      routineProbeFailed: { wroteTo: 'papercusp', reason: 'timeout', elapsedMs: 5_000 },
     });
     expect(setLoopCarryNoteWithPrior).toHaveBeenCalledOnce();
     const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');

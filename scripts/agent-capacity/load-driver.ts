@@ -304,7 +304,7 @@ async function runOne(o: {
   if (meta.cli === 'claude') {
     env = claudeEnv(process.env, base, home);
   } else {
-    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base));
+    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base, meta.codexSelection));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
   // cleanEnv drops every PAPERCUSP_* variable, so a host-provided agent variable (hostedFixedEnv's
