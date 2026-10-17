@@ -1,17 +1,15 @@
 /** P024 request fixture. Real operator, database and installed daemons; synthetic vendor transport only. */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { readProcessIdentity } from '../lib/process-identity';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
+// @ts-ignore -- native ESM fixture keeps the already-built host outside tsx.
+import { KEY, CANONICAL, PUBLICATION, spawnBlogPostHttpHost } from './blog-post-http-host.mjs';
 
-const KEY = 'synthetic-blog-request-key';
-const CANONICAL = 'https://papercusp.com/blog/request-proof';
-const PUBLICATION = '0123456789abcdef01234567';
 const root = resolve(import.meta.dirname, '../../..');
 const evidenceDir = process.env.BLOG_POST_EVIDENCE_DIR!;
 let host: ChildProcess | undefined;
@@ -21,35 +19,6 @@ async function stopHost() {
   if (!host) return;
   await stopPrivateOperatorHost(host);
   assert.notEqual(readProcessIdentity(host.pid!), hostIdentity, 'private operator survived cleanup');
-}
-
-async function serve(bundle: string) {
-  // Intercept at the host's actual network boundary, after credential injection.
-  // No provider, dispatcher, authorization or storage implementation is replaced.
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input, init) => {
-    const url = new URL(input instanceof Request ? input.url : String(input));
-    if (['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) return originalFetch(input, init);
-    assert.ok(['dev.to', 'gql.hashnode.com'].includes(url.hostname), 'unexpected external fetch refused');
-    assert.equal(url.protocol, 'https:');
-    assert.equal(init?.method, 'POST');
-    const headers = new Headers(init?.headers);
-    const devto = url.hostname === 'dev.to';
-    assert.equal(url.pathname, devto ? '/api/articles' : '/');
-    assert.equal(headers.get(devto ? 'api-key' : 'authorization'), devto ? KEY : `Bearer ${KEY}`);
-    const body = JSON.parse(String(init?.body));
-    assert.ok(!JSON.stringify(body).includes(KEY), 'credential leaked into provider arguments');
-    if (devto) assert.deepEqual(body.article, { title: 'Request proof', body_markdown: '# Synthetic content', published: false, canonical_url: CANONICAL });
-    else {
-      assert.ok(body.query.includes('CreateDraftInput!') && !body.query.includes('PublishPostInput'));
-      assert.deepEqual(body.variables.input, { publicationId: PUBLICATION, title: 'Request proof', contentMarkdown: '# Synthetic content', originalArticleURL: CANONICAL });
-    }
-    appendFileSync(join(evidenceDir, 'vendor-requests.jsonl'), JSON.stringify({ provider: devto ? 'devto' : 'hashnode',
-      canonicalUrl: CANONICAL, published: false, credentialHeaderMatched: true, credentialInBody: false }) + '\n');
-    return devto ? Response.json({ id: 123, url: 'https://dev.to/synthetic/proof' }, { status: 201 })
-      : Response.json({ data: { createDraft: { draft: { id: 'synthetic-draft' } } } });
-  };
-  await import(pathToFileURL(bundle).href);
 }
 
 function toolData(body: any): any {
@@ -92,8 +61,7 @@ async function main() {
   for (const module of ['agent-tools/blog/post.ts', 'capability-verbs/blog.ts', 'provider-credentials.ts', 'host-fetch.ts'])
     assert.ok(bundleBytes.includes(Buffer.from(module)), `${module} absent from executed bundle`);
   const hostEnv = { ...privateBundleRuntimeEnv(e), PAPERCUSP_FLAG_PAPERCUSP_SOCIAL_AUTO_PUBLISH: '0' };
-  host = spawn(process.execPath, ['--import', 'tsx', join(root, 'packages/operator-core/test/blog-post-http-fixture.ts'), '--host', bundle],
-    { cwd: root, env: hostEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  host = spawnBlogPostHttpHost(bundle, { cwd: root, env: hostEnv }) as ChildProcess;
   host.stdout!.on('data', chunk => process.stdout.write(chunk));
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
   hostIdentity = readProcessIdentity(host.pid!);
@@ -179,8 +147,7 @@ async function main() {
 
 try {
   assert.ok(evidenceDir, 'retained evidence directory required');
-  if (process.argv[2] === '--host') await serve(process.argv[3]);
-  else await main();
+  await main();
 } catch (error) {
   console.error('BLOG_POST_FAILURE ' + (error instanceof Error ? error.stack : String(error)));
   process.exitCode = 1;

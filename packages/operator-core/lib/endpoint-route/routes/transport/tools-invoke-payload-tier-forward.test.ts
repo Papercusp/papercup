@@ -131,6 +131,13 @@ describe('resultDoorPreservePathsForDispatch', () => {
     expect(paths).toEqual([pick]);
   });
 
+  it('ignores an explicitly null nested projection without dereferencing its absent spec', () => {
+    expect(resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'work_items:get',
+      args: { id: 'WI-1', projection: null },
+    }, undefined)).toBeUndefined();
+  });
+
   it('keeps picked post bodies through the budgeted outer result-door projection', () => {
     const paths = resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
       name: 'work_items:get',

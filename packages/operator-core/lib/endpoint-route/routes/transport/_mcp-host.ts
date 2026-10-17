@@ -343,7 +343,7 @@ export function resultDoorPreservePathsForDispatch(
       const rawProjection = (nestedArgs as Record<string, unknown>)[PROJECTION_ARG];
       if (rawProjection !== undefined) {
         const parsed = parseProjection(rawProjection);
-        if (parsed.ok) nestedPaths = parsed.spec.pick;
+        if (parsed.ok && parsed.spec) nestedPaths = parsed.spec.pick;
       }
     }
   }

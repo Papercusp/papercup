@@ -133,7 +133,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     };
     visit(source);
   }
-  expect(callers.sort()).toEqual([routingProof, nativeProof, 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
     'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });

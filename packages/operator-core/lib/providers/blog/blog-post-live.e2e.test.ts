@@ -15,6 +15,7 @@ it.runIf(process.env.PAPERCUSP_TEST_BLOG_POST_HTTP === '1')(
       filePath: 'packages/operator-core/lib/providers/blog/blog-post-live.e2e.test.ts',
       retainedArtifacts: ['phases/execute/vendor-requests.jsonl'],
       sourcePaths: ['scripts/with-test-pg.mjs', FIXTURE, 'packages/operator-core/test/isolated-integration-proof.ts',
+        'packages/operator-core/test/blog-post-http-host.mjs',
         'packages/operator-core/test/private-http-workspace-preflight.ts',
         ...['devto', 'hashnode'].flatMap(id => ['papercusp.json', 'index.cjs', 'daemon.cjs'].map(file => `libs/papercusp/plugins/${id}/${file}`)),
         'packages/operator-core/lib/agent-tools/blog/post.ts', 'packages/operator-core/lib/capability-verbs/blog.ts',
