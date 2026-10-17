@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
@@ -88,6 +88,13 @@ describe('exact retention receipt readback', () => {
 });
 
 describe('bounded scheduled retention drain', () => {
+  it('bounds each scheduled pass to the remaining drain window', () => {
+    expect(reclaimRunBudgetForDrain(undefined, 1000)).toBeUndefined();
+    expect(reclaimRunBudgetForDrain(901_000, 1000)).toBe(900_000);
+    expect(reclaimRunBudgetForDrain(2_000_000, 1000)).toBe(900_000);
+    expect(reclaimRunBudgetForDrain(1000, 1001)).toBe(1);
+  });
+
   const partial = (overrides: Partial<DiskReclaimReceipt> = {}): DiskReclaimReceipt => ({
     schemaVersion: 1, id: 'batch-receipt', startedAt: new Date(0).toISOString(), finishedAt: new Date(1000).toISOString(),
     dryRun: false, complete: false, policyExhausted: null, devices: [], delegates: [],

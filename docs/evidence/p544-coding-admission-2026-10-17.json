@@ -214,7 +214,25 @@
     "remainingHeadroomAfterAdmissionUsd": 22.7536,
     "outDir": "/mnt/data/agent-capacity/corpus/p544-route-pilot-20261017T1348",
     "reservationPolicy": "Preserve both pilot maximum reservations regardless of response, observed usage or partial billing export; fsynced append-only final-send journal covers retries and OAuth recovery. No automatic failover outside the admitted account/credential/target binding.",
-    "acceptance": "One light route pilot cannot qualify 40/40/20 monthly coding, D075 native50 UX/capacity, D076 actual all-in under20 or P537 authenticated product acceptance."
+    "acceptance": "One light route pilot cannot qualify 40/40/20 monthly coding, D075 native50 UX/capacity, D076 actual all-in under20 or P537 authenticated product acceptance.",
+    "outcome": {
+      "sessionId": "codex-exc-light-2-20261017T134628",
+      "nativeExitCode": 1,
+      "timedOut": false,
+      "wallMs": 9089,
+      "exchanges": 5,
+      "toolCalls": {},
+      "providerSendsAdmitted": 0,
+      "attemptsDenied": 4,
+      "refusalReasons": { "clock": 4 },
+      "journalReservedUsdMicros": 0,
+      "journalStopped": true,
+      "programmeMaximumReservationRetainedUsd": 2.8732,
+      "classification": "Failed closed; no provider send, served-model evidence, coding-task success or invoice measurement",
+      "log": "/tmp/p544-header-pilot-20261017.log",
+      "rootCauseWorkItem": "WI-6554700010016836",
+      "localDistinguishingObservation": "Real TSX static import and dynamic .ts import return distinct processMonotonicClock objects and UUIDs in one process; performance.now observations use the same process timeline. Paid retries suspended pending a maintained mixed-loader regression and durable fix."
+    }
   },
   "limitations": [
     "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",

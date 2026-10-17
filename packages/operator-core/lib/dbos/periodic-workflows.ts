@@ -1374,7 +1374,9 @@ async function diskRetentionReclaimTick(): Promise<void> {
     const startedAt = new Date().toISOString();
     const { runScheduledDiskReclaim } = await import('../storage/disk-reclaim');
     try {
-      const receipt = await runScheduledDiskReclaim();
+      const { reclaimRunBudgetForDrain } = await import('../storage/disk-reclaim');
+      const runBudgetMs = reclaimRunBudgetForDrain(notAfterMs);
+      const receipt = await runScheduledDiskReclaim({ runBudgetMs });
       if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
       return receipt;
     } catch (err) {

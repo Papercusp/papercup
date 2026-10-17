@@ -1,4 +1,7 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -8,23 +11,39 @@ import { processMonotonicClock } from './process-monotonic-clock';
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 
-// Use the recorder's real TSX loader: Vitest's module cache unifies these paths
-// and would conceal the CommonJS/ESM split seen by the gateway in production.
+// Use the recorder's real TSX loader: Vitest unifies these paths. Capture the
+// exact source as a test fixture so TSX's CJS transform does not conflict with
+// the inherited committed-source guard, which remains enabled in the child.
 async function readMixedLoaderClock() {
+  const source = await readFile(new URL('./process-monotonic-clock.ts', import.meta.url));
+  const fixture = await mkdtemp(path.join(tmpdir(), 'process-clock-loader-'));
+  const clockFile = path.join(fixture, 'clock.ts');
+  // operator-core is ESM while tsx -e uses CJS, as in the recorder's imports.
+  await writeFile(path.join(fixture, 'package.json'), JSON.stringify({ type: 'module' }));
+  await writeFile(clockFile, source);
   const script = `
-    import { processMonotonicClock as direct } from './packages/operator-core/lib/process-monotonic-clock';
+    import { processMonotonicClock as direct } from ${JSON.stringify(clockFile)};
+    import { readFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
     (async () => {
-      const module = await import('./packages/operator-core/lib/process-monotonic-clock.ts');
+      const module = await import(${JSON.stringify(clockFile)});
       const dynamic = module.processMonotonicClock ?? module.default.processMonotonicClock;
       console.log(JSON.stringify({ directId: direct.id, dynamicId: dynamic.id,
         sameObject: direct === dynamic, frozen: Object.isFrozen(direct),
+        sourceSha256: createHash('sha256').update(readFileSync(${JSON.stringify(clockFile)})).digest('hex'),
         directNow: direct.now(), dynamicNow: dynamic.now() }));
     })();
   `;
-  const { stdout } = await run(path.join(root, 'node_modules/.bin/tsx'), ['-e', script], {
-    cwd: root, timeout: 15_000,
-  });
-  return JSON.parse(stdout.trim());
+  try {
+    const { stdout } = await run(path.join(root, 'node_modules/.bin/tsx'), ['-e', script], {
+      cwd: root, timeout: 15_000,
+    });
+    const result = JSON.parse(stdout.trim());
+    expect(result.sourceSha256).toBe(createHash('sha256').update(source).digest('hex'));
+    return result;
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 }
 
 describe('process monotonic clock runtime identity', () => {

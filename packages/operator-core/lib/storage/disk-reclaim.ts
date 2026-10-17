@@ -28,6 +28,13 @@ import {
 export const DISK_RECLAIM_STEP = 'disk-retention-reclaim';
 export const DISK_RECLAIM_CRONTAB = '0 12 * * * *';
 export const DISK_HEADROOM_BYTES = 100 * 1024 ** 3;
+export const DEFAULT_RECLAIM_RUN_BUDGET_MS = 15 * 60_000;
+/** Bound one scheduled pass to the drain window so productive partial receipts
+ * can continue in a later batch instead of consuming the whole window. */
+export function reclaimRunBudgetForDrain(notAfterMs: number | undefined, nowMs = Date.now()): number | undefined {
+  if (notAfterMs === undefined) return undefined;
+  return Math.max(1, Math.min(DEFAULT_RECLAIM_RUN_BUDGET_MS, notAfterMs - nowMs));
+}
 const HOUR = 3_600_000;
 const EFFECT_BUDGET_SUFFIX = ': effect budget exhausted; resume with a fresh policy census';
 const effectBudgetError = (root: string) => `incomplete retention effects:${root}${EFFECT_BUDGET_SUFFIX}`;
@@ -723,7 +730,7 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
 
 export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Promise<DiskReclaimReceipt> {
   const started = options.nowMs ?? Date.now();
-  const runDeadline = Date.now() + (options.runBudgetMs ?? 15 * 60_000);
+  const runDeadline = Date.now() + (options.runBudgetMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS);
   const receipt: DiskReclaimReceipt = {
     schemaVersion: 1, id: randomUUID(), host: hostname(), startedAt: new Date(started).toISOString(), finishedAt: '',
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
@@ -1425,7 +1432,7 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
 }
 
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
-export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun'> = {}): Promise<DiskReclaimReceipt> {
+export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs'> = {}): Promise<DiskReclaimReceipt> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');

@@ -9277,8 +9277,9 @@ export async function claimNextIssueWorkItem(
   // postgres-js cannot cancel an in-flight query from JS once it stalls. Every SQL
   // fragment below is compiled against the TRANSACTION client `tx` — not the outer
   // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
-  const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => boundedOrgTxn(
-    async (tx) => {
+  const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => withPgContentionRetry(
+    () => boundedOrgTxn(
+      async (tx) => {
       // Cross-family priority comparison (EI-21288979130080074): an issue may jump ahead of
       // the feature-family ladder only when it has an explicit priority and no eligible
       // feature with an equal-or-better (lower) feature_order exists. Build the feature side
@@ -9498,7 +9499,14 @@ export async function claimNextIssueWorkItem(
       }
       return { issue };
     },
-    { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
+        { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
+      ),
+    // The transaction is fully atomic: a 55P03/57014 abort rolls back both the
+    // candidate UPDATE and its in-transaction facade read, so a short retry is
+    // safe and prevents a transient goal/policy lock race from surfacing as a
+    // failed scheduler pull. Keep this to one retry because the claim's own
+    // lock timeout is already bounded and the caller has a ladder deadline.
+    { backoffsMs: [100] },
   )).catch(async (error) => {
     const { CurrentBugReproductionRefusal } = await import('./attention/bug-reproduction');
     if (error instanceof CurrentBugReproductionRefusal) return null;
