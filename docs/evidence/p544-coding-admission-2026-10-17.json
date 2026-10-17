@@ -96,7 +96,7 @@
     "root": "/mnt/data/agent-capacity/prepared",
     "storage": "Mounted data device 66304 differs from root device 66307; cache root provisioned uid/gid 1000, mode 0755 and verified writable",
     "provisioningIssue": "EI-26231924907241440",
-    "rootCause": "The default cache root did not exist and its mounted /mnt/data parent was root-owned mode 0755. The maintained copy helper correctly refused mkdir before copying. Provisioned the intended cache root for marsh-office without changing /mnt/data ownership.",
+    "rootCause": "The default cache root did not exist and its mounted /mnt/data parent was root-owned mode 0755. The maintained copy helper correctly refused mkdir before copying. Provisioned the intended cache root for the invoking UID without changing /mnt/data ownership.",
     "copy": "Existing session-process.copyTree under scripts/pc-heavy.sh; absent destinations checked before copying, storage guard retained",
     "copyLog": "/tmp/p544-prepared-copy-20261017-v2.log",
     "originalRefusalLog": "/tmp/p544-prepared-copy-20261017.log",

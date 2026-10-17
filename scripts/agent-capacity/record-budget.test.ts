@@ -19,6 +19,19 @@ const config: RecordingBudgetConfig = { model: 'gpt-6-luna', effort: 'low', acco
   maxAttempts: 8, maxUsdMicros: 8_000_000 };
 const request = { model: config.model, reasoning: { effort: config.effort }, input: 'PRIVATE_TASK_TEXT',
   tools: [{ type: 'function', name: 'local_exec', parameters: { type: 'object' } }] };
+// Codex Responses-lite captured against a loopback-only refusal server. Tool
+// schemas are local definitions, not message content or hosted provider tools.
+const nativeTools = [{ type: 'namespace', name: 'functions', tools: [
+  { type: 'custom', name: 'exec', format: { type: 'text' } },
+  { type: 'function', name: 'wait', parameters: { type: 'object', properties: {
+    cell_id: { type: 'string' }, options: { type: 'array', items: { type: 'string' } },
+  } } },
+] }];
+const nativeRequest = { model: config.model, reasoning: { effort: config.effort, context: 'all_turns' },
+  stream: true, store: false, input: [
+    { type: 'additional_tools', id: 'local-tools', role: 'developer', tools: nativeTools },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'PRIVATE_TASK_TEXT' }] },
+  ] };
 
 function attempt(budget: ReturnType<typeof recordingProviderBudget>, overrides: Partial<GatewayCarryTrialAttempt> = {}): GatewayCarryTrialAttempt {
   const body = JSON.stringify(request);
@@ -53,6 +66,52 @@ describe('recording provider budget', () => {
     const denied = await budget.binding.authorizeAttempt(attempt(budget));
     expect(() => denied!.validateAuthorization!()).toThrow(/exhausted/);
     expect(budget.snapshot().reservedUsdMicros).toBe(1_436_600);
+  });
+
+  it.each(['inline', 'top-level'] as const)('admits native local tool namespaces (%s) without treating JSON schemas as content', async form => {
+    const budget = recordingProviderBudget(config, () => {});
+    const body = JSON.stringify(form === 'inline' ? nativeRequest : { ...request, tools: nativeTools });
+    const receipt = await budget.binding.authorizeAttempt(attempt(budget, { body, bodySha256: sha256(body) }));
+    expect(receipt).not.toBeNull();
+    receipt!.validateAuthorization!();
+    expect(budget.snapshot()).toMatchObject({ admitted: 1, reservedUsdMicros: 718_300 });
+  });
+
+  it.each(['hosted', 'nested-namespace', 'missing-name', 'missing-tools', 'empty', 'user-role', 'extra-image'] as const)(
+    'refuses invalid native inline tool declarations (%s) before reserving', async changed => {
+      const budget = recordingProviderBudget(config, () => {});
+      const value = structuredClone(nativeRequest);
+      const entry = value.input[0] as Record<string, any>;
+      const namespace = entry.tools[0];
+      if (changed === 'hosted') namespace.tools = [{ type: 'web_search' }];
+      if (changed === 'nested-namespace') namespace.tools = [{ type: 'namespace', name: 'nested', tools: [] }];
+      if (changed === 'missing-name') delete namespace.name;
+      if (changed === 'missing-tools') delete namespace.tools;
+      if (changed === 'empty') namespace.tools = [];
+      if (changed === 'user-role') entry.role = 'user';
+      if (changed === 'extra-image') entry.content = [{ type: 'input_image', image_url: 'https://remote/image' }];
+      const body = JSON.stringify(value);
+      expect(await budget.binding.authorizeAttempt(attempt(budget, { body, bodySha256: sha256(body) }))).toBeNull();
+      expect(budget.snapshot()).toMatchObject({ admitted: 0, reservedUsdMicros: 0, refusalReasons: { 'request-shape': 1 } });
+    });
+
+  it('records safe refusal categories that distinguish request shape from provider credentials', async () => {
+    const budget = recordingProviderBudget(config, () => {});
+    const body = JSON.stringify({ ...request, input: [{ type: 'input_image', image_url: 'PRIVATE_TASK_TEXT' }] });
+    await budget.binding.authorizeAttempt(attempt(budget, { body, bodySha256: sha256(body) }));
+    await budget.binding.authorizeAttempt(attempt(budget, { credentialSha256: sha256('changed credential') }));
+    expect(budget.snapshot()).toMatchObject({ admitted: 0, denied: 2,
+      refusalReasons: { 'request-shape': 1, credential: 1 } });
+    expect(JSON.stringify(budget.snapshot())).not.toContain('PRIVATE_TASK_TEXT');
+    expect(JSON.stringify(budget.snapshot())).not.toContain('changed credential');
+  });
+
+  it('refuses malformed request JSON even when its digest and provider binding match', async () => {
+    const budget = recordingProviderBudget(config, () => {});
+    const body = '{invalid';
+    expect(await budget.binding.authorizeAttempt(attempt(budget, { body, bodySha256: sha256(body) }))).toBeNull();
+    expect(budget.snapshot()).toMatchObject({ admitted: 0, reservedUsdMicros: 0,
+      refusalReasons: { 'malformed-request': 1 } });
   });
 
   it('retains full reservations after fetch failure and successful usage reports', async () => {
@@ -137,7 +196,7 @@ describe('recording provider budget', () => {
     try {
       const send = async () => {
         const response = await fetch(service.upstream + '/v1/responses', { method: 'POST',
-          headers: { ...service.headers, originator: 'codex_cli_rs', 'content-type': 'application/json' }, body: JSON.stringify(request) });
+          headers: { ...service.headers, originator: 'codex_cli_rs', 'content-type': 'application/json' }, body: JSON.stringify(nativeRequest) });
         await response.text(); return response.status;
       };
       expect(await send()).toBe(200);

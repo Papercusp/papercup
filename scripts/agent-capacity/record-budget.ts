@@ -108,18 +108,29 @@ function validateConfig(input: RecordingBudgetConfig): RecordingBudgetConfig {
 
 function localTextRequest(body: string, config: RecordingBudgetConfig): boolean {
   const request = JSON.parse(body);
+  const object = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  const named = (tool: Record<string, unknown>) => typeof tool.name === 'string' && tool.name.trim().length > 0;
+  const localTool = (tool: unknown) => object(tool) && named(tool) && ['function', 'custom'].includes(String(tool.type));
+  // Match the existing current-su input contract: native namespaces contain
+  // local definitions whose JSON-schema types are not multimodal content.
+  const localTools = (value: unknown): boolean => Array.isArray(value) && value.length > 0 && value.every(tool =>
+    localTool(tool) || object(tool) && tool.type === 'namespace' && named(tool) &&
+      Array.isArray(tool.tools) && tool.tools.length > 0 && tool.tools.every(localTool));
   if (!request || request.model !== config.model || request.reasoning?.effort !== config.effort ||
       request.background === true || request.previous_response_id != null || request.conversation != null ||
       request.prompt != null || request.context_management != null ||
       request.audio != null || request.modalities != null ||
-      request.tools !== undefined && (!Array.isArray(request.tools) || !request.tools.every((tool: { type?: string }) =>
-        tool && (tool.type === 'function' || tool.type === 'custom')))) return false;
+      request.tools !== undefined && (!Array.isArray(request.tools) ||
+        !request.tools.every((tool: unknown) => localTools([tool])))) return false;
   const types = new Set(['message', 'input_text', 'output_text', 'function_call', 'function_call_output',
     'custom_tool_call', 'custom_tool_call_output', 'reasoning', 'summary_text']);
   const textOnly = (value: unknown): boolean => {
     if (value === null || typeof value !== 'object') return true;
     if (Array.isArray(value)) return value.every(textOnly);
     const item = value as Record<string, unknown>;
+    if (item.type === 'additional_tools') return item.role === 'developer' && localTools(item.tools) &&
+      Object.keys(item).every(key => ['type', 'id', 'role', 'tools'].includes(key));
     return (item.type === undefined || typeof item.type === 'string' && types.has(item.type)) &&
       Object.values(item).every(textOnly);
   };
@@ -137,9 +148,10 @@ export function recordingProviderBudget(input: RecordingBudgetConfig, persist: (
     outcome: string; responseStatus: number | null; usage?: unknown }> = [];
   let reservedUsdMicros = 0;
   let denied = 0;
+  const refusalReasons: Record<string, number> = {};
   let stopped = false;
   const snapshot = () => ({ ...config, ...reserve, manifestSha256, armId, reservedUsdMicros,
-    admitted: attempts.length, denied, stopped, measuredInvoiceUsd: null,
+    admitted: attempts.length, denied, refusalReasons: { ...refusalReasons }, stopped, measuredInvoiceUsd: null,
     attempts: attempts.map(attempt => ({ ...attempt })) });
   // Write-ahead: failure to save the reservation prevents the provider send.
   const save = () => persist(snapshot());
@@ -147,16 +159,24 @@ export function recordingProviderBudget(input: RecordingBudgetConfig, persist: (
     armId, manifestSha256, ownerId: 'agent-capacity-corpus', protocols: ['openai-responses'] as const,
     requestTokenSha256: createHash('sha256').update(token).digest('hex'),
     async authorizeAttempt(attempt: GatewayCarryTrialAttempt) {
-      let valid = false;
+      let refusalReason = 'malformed-request';
       try {
-        valid = attempt.manifestSha256 === manifestSha256 && attempt.armId === armId &&
-          attempt.accountId === config.accountId && attempt.credentialSha256 === config.credentialSha256 &&
-          attempt.target === config.target && attempt.credentialHeader === 'authorization' &&
-          attempt.transport === (config.target.startsWith('https://chatgpt.com/') ? 'oauth-http' : 'bearer-http') &&
-          attempt.bodySha256 === createHash('sha256').update(attempt.body).digest('hex') &&
-          attempt.clockId === processMonotonicClock.id && localTextRequest(attempt.body, config);
-      } catch { /* Malformed request refuses before fetch. */ }
-      if (!valid || stopped || attempt.signal.aborted) { denied++; save(); return null; }
+        const checks: Array<[string, boolean]> = [
+          ['binding', attempt.manifestSha256 === manifestSha256 && attempt.armId === armId],
+          ['account', attempt.accountId === config.accountId],
+          ['credential', attempt.credentialSha256 === config.credentialSha256 && attempt.credentialHeader === 'authorization'],
+          ['target', attempt.target === config.target],
+          ['transport', attempt.transport === (config.target.startsWith('https://chatgpt.com/') ? 'oauth-http' : 'bearer-http')],
+          ['body-integrity', attempt.bodySha256 === createHash('sha256').update(attempt.body).digest('hex')],
+          ['clock', attempt.clockId === processMonotonicClock.id],
+        ];
+        refusalReason = checks.find(([, valid]) => !valid)?.[0] ?? '';
+        if (!refusalReason && !localTextRequest(attempt.body, config)) refusalReason = 'request-shape';
+      } catch { refusalReason = 'malformed-request'; }
+      if (refusalReason || stopped || attempt.signal.aborted) {
+        const reason = refusalReason || (stopped ? 'stopped' : 'aborted');
+        denied++; refusalReasons[reason] = (refusalReasons[reason] ?? 0) + 1; save(); return null;
+      }
       const reservationRef = `${armId}:${attempt.attemptId}`;
       let reserved = false;
       const observe = async (result: GatewayCarryTrialAttemptResult) => {
