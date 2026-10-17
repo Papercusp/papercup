@@ -106,6 +106,7 @@ import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/stor
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 import { postLearnedAtLevel } from '../../effort-thread';
+import { hasPotentialActionClaim, readSuccessfulActionInvocations } from '../../carry-surface-action-proof';
 import { LIMITS } from '../limits';
 import {
   evaluateFrozenLineageCarryText,
@@ -1441,7 +1442,20 @@ export default defineTool({
     })();
     // P-016 / EI-212678: persist owner-attribution caveats in the carry note so
     // a later cold wake cannot mistake the response-only lint for authority.
+    // Same-turn coordination receipts are stronger evidence than the prose-only
+    // action lint.  A loop checkpoint is itself a carry surface, so it needs the
+    // same bounded successful-action lookup as work_items:checkpoint; otherwise a
+    // valid `coord:send`/`events:await` immediately followed by this write still
+    // returns provenanceLint until the caller invents a turn ref (EI-25298018130887432).
+    const successfulActions = hasPotentialActionClaim(currentProvenanceText)
+      ? await readSuccessfulActionInvocations({
+          workspaceId,
+          spawnId: ctx.spawnId,
+          coordOwnerId: ownerId,
+        })
+      : undefined;
     const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId, {
+      successfulActions,
       currentTurnStamp: sentinelTurn ?? undefined,
     });
     const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
@@ -2212,9 +2226,10 @@ export default defineTool({
     // only to derive inherited lines; current lint receives submitted bytes.
     const provenanceFields =
       stored !== null
-            ? await carryProvenanceFields(currentProvenanceText, ownerId, {
-                retainedText: retainedProvenanceText(stored, currentProvenanceText),
-                precomputedStamp: preWriteStamp,
+        ? await carryProvenanceFields(currentProvenanceText, ownerId, {
+            retainedText: retainedProvenanceText(stored, currentProvenanceText),
+            precomputedStamp: preWriteStamp,
+            successfulActions,
           })
         : {};
     // P-017: the durable half of this private note, posted to the effort thread in the

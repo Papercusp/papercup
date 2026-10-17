@@ -815,6 +815,78 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
       "KEY123",
     );
   });
+  it.each([
+    [
+      "direct",
+      {
+        name: "capability:bash_output",
+        arguments: { task_id: "task-1", peek: true },
+      },
+    ],
+    [
+      "tools:invoke with object args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "capability:bash_output",
+          args: { task_id: "task-1", peek: true },
+        },
+      },
+    ],
+    [
+      "tools:invoke with ptool-stringified args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "capability:bash_output",
+          args: JSON.stringify({ task_id: "task-1", peek: true }),
+        },
+      },
+    ],
+  ])(
+    "EI-25459298107511969: %s cursor-preserving capability:bash_output read is replay-safe",
+    (_label, params) => {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params,
+        }),
+      );
+      const r = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(r.klass).toBe("readonly");
+      expect(r.body).toBe(body);
+      expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+    },
+  );
+  it("EI-25459298107511969: a consuming capability:bash_output poll remains keyed", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:bash_output",
+            args: { task_id: "task-1" },
+          },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("keyed");
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe(
+      "KEY123",
+    );
+  });
   it("tools:invoke wrapping a mutator remains keyed", () => {
     const body = Buffer.from(
       JSON.stringify({
@@ -2997,6 +3069,42 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-25459298107511969: tools:invoke-wrapped bash_output peek retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"output":"still available"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:bash_output",
+            args: { task_id: "task-1", peek: true },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"output":"still available"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-24734741850141953: tools:invoke-wrapped logs:read retries after a post-connect reset", async () => {
     const upstream = resetOnceUpstream(
       '{"result":{"entries":[{"unit":"papercup-staging-sync.service","message":"sync completed"}],"matched":1}}',
@@ -4922,6 +5030,48 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("state:read"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:inbox"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:thread"))).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        targetedCall("coord:feed", {
+          owner: "su-target",
+          since: "2026-10-17T06:00:00.000Z",
+          limit: 20,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__coord_feed",
+                args: {
+                  from: "su-target",
+                  since_ts: "2026-10-17T06:00:00.000Z",
+                  limit: 20,
+                },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(isReservedControlPlaneCall(call("coord:feed"))).toBe(false);
+    expect(
+      isReservedControlPlaneCall(targetedCall("coord:feed", { limit: 20 })),
+    ).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        targetedCall("coord:feed", {
+          owner: "su-target",
+          since: "2026-10-17T06:00:00.000Z",
+          include_retracted: true,
+        }),
+      ),
+    ).toBe(false);
     expect(isReservedControlPlaneCall(call("fleet:assignments"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:leader-brief"))).toBe(true);
     expect(isReservedControlPlaneCall(call("loop:checkpoint"))).toBe(true);
@@ -6274,6 +6424,72 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       threadRead,
     ]);
     expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
+  it("routes a bounded coord:feed read around a saturated ordinary class", async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const upstream = track(
+      http.createServer(
+        (_req, res) => void gate.then(() => res.end('{"result":"ok"}')),
+      ),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        maxInFlight: 2,
+        controlPlaneReserve: 1,
+        maxOrdinaryQueue: 0,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({
+      method: "tools/call",
+      params: { name: "work_items:list", arguments: {} },
+    });
+    const heldOrdinary = request(port(proxy), ordinaryBody);
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    const boundedFeed = request(
+      port(proxy),
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "coord:feed",
+          arguments: {
+            owner: "su-target",
+            since: "2026-10-17T06:00:00.000Z",
+            limit: 20,
+          },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 40));
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight).toMatchObject({
+      ordinary: 1,
+      reservedControlPlane: 1,
+      maxInFlight: 2,
+    });
+
+    releaseUpstream();
+    const [ordinaryResult, feedResult] = await Promise.all([
+      heldOrdinary,
+      boundedFeed,
+    ]);
+    expect(ordinaryResult.status).toBe(200);
+    expect(feedResult.status).toBe(200);
   });
 
   it("EI-21548622458694037: reserved traffic cannot consume ordinary capacity when the reserved class fills first", async () => {

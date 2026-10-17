@@ -208,7 +208,7 @@ describe('evaluatePlanSpecQuality', () => {
       expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-1-P-001 on P-001 -> P-002');
     });
 
-    it('does not classify a later exempt verification item as a dependent implementation prerequisite', () => {
+    it('blocks an active BAR projection on a later exempt verification item', () => {
       const verificationExemption = clause({
         specId: 'VERIFY-P-002',
         sourceValId: null,
@@ -241,7 +241,13 @@ describe('evaluatePlanSpecQuality', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(result.wouldBlock).toContain('item-contract-coverage');
+      expect(result.details.exemptSourceBarProjectionMismatches).toEqual([{
+        exemptItemId: 'P-002',
+        barKey: 'R-1',
+        projectionSpecId: 'AUTO-BAR-R-1-P-002',
+      }]);
       expect(result.details.prerequisiteRuntimeBarMismatches).toEqual([]);
     });
 

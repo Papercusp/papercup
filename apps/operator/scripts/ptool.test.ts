@@ -1655,6 +1655,28 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(client.request.mock.calls[0][2]).toEqual({ timeout: 1, maxTotalTimeout: 1 });
   });
 
+  it('keeps scheduler:get_next on its foreground budget when tools/list timed out', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":false,"error":"all_matches_gated"}' }] };
+    const client = {
+      listTools: vi.fn(),
+      callTool: vi.fn(),
+      request: vi.fn().mockResolvedValue(result),
+    };
+
+    await expect(dispatchScriptedToolWithoutCatalog(
+      client,
+      'scheduler:get_next',
+      { harness: 'papercusp' },
+      { idempotencyKey: 'scheduler-catalog-bypass-timeout-1' },
+    )).resolves.toEqual({ client, result });
+
+    expect(client.listTools).not.toHaveBeenCalled();
+    expect(client.request.mock.calls[0][2]).toEqual({
+      timeout: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+      maxTotalTimeout: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+    });
+  });
+
   it('retries the exact pre-dispatch bearer refusal with the next implicit token and same key', async () => {
     const rejected = {
       isError: true,

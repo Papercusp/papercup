@@ -1485,6 +1485,7 @@ const READ_ONLY_TOOLS_LOOKUP: ReadonlySet<string> = new Set(
 
 const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 const CAPABILITY_BASH_NAME = normalizeMcpName("capability:bash");
+const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName("capability:bash_output");
 const RELEASE_CUT_NAME = normalizeMcpName("release:cut");
 
 function forwardedToolName(m: unknown): string | null {
@@ -1540,6 +1541,19 @@ function isReadOnlyToolCall(m: unknown): boolean {
   const name = forwardedToolName(m);
   if (name === null) return false;
   if (READ_ONLY_TOOLS_LOOKUP.has(name)) return true;
+  // A consuming bash_output poll advances the job's output cursor, so replaying
+  // it after a post-connect reset could skip the chunk whose response was lost.
+  // `peek:true` leaves that cursor untouched and is the only bash_output shape
+  // safe for the bounded read-only replay path.
+  if (name === CAPABILITY_BASH_OUTPUT_NAME) {
+    const args = forwardedToolArgs(m);
+    return (
+      !!args &&
+      typeof args === "object" &&
+      !Array.isArray(args) &&
+      (args as { peek?: unknown }).peek === true
+    );
+  }
   // loop:checkpoint is mixed-effect: `{ read: true }` is a pure carry snapshot,
   // while every other shape can write. Replay only that exact read mode after a
   // post-connect reset; leave checkpoint writes on the keyed path.
@@ -2405,8 +2419,104 @@ const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 const ACTIVITY_TOOL_LOG_TOOL_NAME = normalizeMcpName("activity:tool-log");
 const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
 const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
+const COORD_FEED_TOOL_NAME = normalizeMcpName("coord:feed");
 const TESTING_RUN_STATUS_TOOL_NAME = normalizeMcpName("testing:run-status");
 const RECIPES_SEARCH_TOOL_NAME = normalizeMcpName("recipes:search");
+
+/**
+ * A filtered coordination-feed read is a recovery surface: agents use it to
+ * verify a handoff or reconstruct the owner/time-bounded history after a
+ * control-plane failure. Keep only explicitly narrowed pages on the reserved
+ * lane. The unfiltered firehose remains ordinary traffic so it cannot consume
+ * the capacity reserved for recovery.
+ */
+const RESERVED_COORD_FEED_FILTER_KEYS = new Set([
+  "owner",
+  "from",
+  "plan_slug",
+  "audience",
+  "fleet",
+  "q",
+  "since",
+  "since_ts",
+  "before_ts",
+  "before_msg_id",
+  "kinds",
+]);
+const RESERVED_COORD_FEED_MAX_LIMIT = 30;
+const RESERVED_COORD_FEED_MAX_TOKEN_BUDGET = 12_000;
+const RESERVED_COORD_FEED_MAX_STRING_CHARS = 512;
+
+function isBoundedCoordFeedArgs(args: unknown): boolean {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const allowed = new Set([
+    ...RESERVED_COORD_FEED_FILTER_KEYS,
+    "limit",
+    "token_budget",
+    "include_retracted",
+  ]);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return false;
+
+  const hasFilter = [...RESERVED_COORD_FEED_FILTER_KEYS].some((key) => {
+    const value = record[key];
+    if (value === undefined || value === null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    return typeof value === "string" ? value.trim().length > 0 : true;
+  });
+  if (!hasFilter) return false;
+
+  if (
+    record.limit !== undefined &&
+    (!Number.isInteger(record.limit) ||
+      (record.limit as number) < 1 ||
+      (record.limit as number) > RESERVED_COORD_FEED_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  if (
+    record.token_budget !== undefined &&
+    (!Number.isInteger(record.token_budget) ||
+      (record.token_budget as number) < 1 ||
+      (record.token_budget as number) > RESERVED_COORD_FEED_MAX_TOKEN_BUDGET)
+  ) {
+    return false;
+  }
+  if (
+    record.include_retracted !== undefined &&
+    record.include_retracted !== false
+  ) {
+    return false;
+  }
+  for (const key of RESERVED_COORD_FEED_FILTER_KEYS) {
+    const value = record[key];
+    if (value === undefined || value === null) continue;
+    if (key === "kinds") {
+      if (
+        !Array.isArray(value) ||
+        value.length < 1 ||
+        value.length > 8 ||
+        !value.every(
+          (kind) =>
+            typeof kind === "string" &&
+            kind.trim().length > 0 &&
+            kind.length <= 80,
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (
+      typeof value !== "string" ||
+      value.trim().length === 0 ||
+      value.length > RESERVED_COORD_FEED_MAX_STRING_CHARS
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: string): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
@@ -2417,6 +2527,7 @@ function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: 
   if (name === ACTIVITY_TOOL_LOG_TOOL_NAME) return isBoundedActivityToolLogArgs(args);
   if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
   if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
+  if (name === COORD_FEED_TOOL_NAME) return isBoundedCoordFeedArgs(args);
   if (name === TESTING_RUN_STATUS_TOOL_NAME) return isBoundedTestingRunStatusArgs(args);
   if (name === RECIPES_SEARCH_TOOL_NAME) return isBoundedRecipesSearchArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);

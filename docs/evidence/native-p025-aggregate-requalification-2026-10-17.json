@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10007888",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "wake": 69,
+  "scope": "Focused current-source Dream guards through the registered aggregate files; original continuation105 test-name selection.",
+  "testNamePattern": "source-backed capability extraction|capability packets through the pinned secret-scanned packer|graph-enriched sampler inputs|independent capability source and skeptical review|production capability and Blender source adapter|frozen Dream evaluation protocol|source-grounded benchmark validity|native current graph study pre-registration|native P024 current existing-integration source priors",
+  "change": {
+    "issue": "EI-26209699772905503",
+    "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
+    "sha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+    "rootCause": "The semantic fixture test imposed a separate100ms VM timer on trusted bounded repository code.",
+    "fix": "Compile the same fixture source and expression in a fresh VM context and invoke it under the test runner deadline, retaining every expected-value assertion.",
+    "failureLog": "/tmp/native-p025-w69-unit.log"
+  },
+  "runs": [
+    {
+      "file": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+      "testRunId": 21310148,
+      "runGroup": "native-p025-w69-unit-v2-20261017",
+      "passed": 137,
+      "failed": 0,
+      "excludedByNameFilter": 117,
+      "exitCode": 0,
+      "childSubstituted": 0,
+      "unhandledErrorCount": 0,
+      "log": "/tmp/native-p025-w69-unit-v2.log",
+      "sourceCapture": "/tmp/native-p025-w69-unit-v2-source.json",
+      "sourceCaptureSha256": "19b3736753bbc2d46ff9eab1d3477dab19147d4d890ba48074e0c06620a87b3c",
+      "sourceScope": "repository-worker-vite-original-sources",
+      "capturedOriginalCount": 1217,
+      "currentSourceMismatches": [],
+      "ledgerWorktreeDirty": true,
+      "isScratchConfig": false
+    },
+    {
+      "file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+      "testRunId": 21310164,
+      "runGroup": "native-p025-w69-integration-20261017",
+      "passed": 17,
+      "failed": 0,
+      "excludedByNameFilter": 154,
+      "exitCode": 0,
+      "childSubstituted": 0,
+      "unhandledErrorCount": 0,
+      "log": "/tmp/native-p025-w69-integration.log",
+      "sourceCapture": "/tmp/native-p025-w69-integration-source.json",
+      "sourceCaptureSha256": "454425bc07d224b87b4e0cb069e408d2056104ff84b60a01888ba180a382f3eb",
+      "sourceScope": "repository-worker-vite-original-sources",
+      "capturedOriginalCount": 1300,
+      "currentSourceMismatches": [],
+      "ledgerWorktreeDirty": true,
+      "isScratchConfig": false
+    }
+  ],
+  "limits": [
+    "Excluded sibling tests produced no evidence in these runs.",
+    "Named worker originals matched current source at readback; config-loaded sources, main-process loaded sources and the full execution graph remain unknown.",
+    "Dirty test-run rows remain unknown under current spec-evidence-store currentness rules. These passes do not satisfy clean governing P025 proof or shipment.",
+    "Frozen Dream protocol, four spent trials, two rejected labels and historical independent audit records were not reset or replayed."
+  ],
+  "recovery": {
+    "priorAggregateOrigin": "eb969917-d962-4bc7-8ee0-6ab4ee8c79bd",
+    "priorAggregateDetached": "6e2702dc-02cf-448b-905e-228df7273f62",
+    "priorUnitRows": [
+      21303568,
+      21303570
+    ],
+    "priorResult": "Unit pass only; integration terminal-no-result and bindings review-required.",
+    "acceptanceRuntime": "http://127.0.0.1:3170",
+    "acceptanceBuild": "ad79774f51",
+    "releaseBuild": "d740fc3802",
+    "acceptanceState": "R20-R23 unknown; SPEC-NATIVE-P-025 fail. See authoritative staging evaluator rather than older release semantics.",
+    "gitSyncReceipt": "/tmp/native-p025-w69-git-sync.json",
+    "gitSyncResult": "No fire: existing system git-sync exclusive holder. Completion event resource:released:git-sync:papercusp.",
+    "next": "After exact commit/resource event, qualify the changed source in a maintained clean committed test run using this saved selection and original-source capture; then bind original recipes and exact test cases before selective retirement."
+  }
+}

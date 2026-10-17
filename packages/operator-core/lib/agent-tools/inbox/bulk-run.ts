@@ -283,8 +283,14 @@ async function liveActionsById(
     if (missingMessages.length > 0) {
       const wanted = new Map(missingMessages.map((target) => [target.msgId, target.itemId] as const));
       const exact = await runWithWorkspaceIfConcrete(workspaceId, () =>
+        // The attention feed's coord-message source is addressed to the human
+        // audience. ADMIN_COORD_UI_OWNER is the author identity for the ack
+        // fold below, not a recipient in the message envelope. Using it here
+        // drops human-directed messages from the exact-window hydration once
+        // they age out of plans:attention, even though coord:read still sees
+        // them.
         readInboxWindow(
-          ADMIN_COORD_UI_OWNER,
+          'human',
           { kinds: ['message'] },
           (entries) => {
             const seen = new Set(entries.map((entry) => entry.msg_id).filter((id): id is string => typeof id === 'string'));

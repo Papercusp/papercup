@@ -147,6 +147,7 @@ import { readDeployInFlight } from "../../release-deploy-launch";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { mainWaitPlanReviewForWait } from "../../acceptance-runtime-wait-guard";
 import { checkpointPipelineName } from "./sugar";
+import { mockResolvedOnceTyped } from "../../testing/typed-mock";
 
 const checkpointTool = definedTools.find(
   (tool) => tool.name === "checkpoint:await",
@@ -921,13 +922,29 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
         code: "57014",
       });
       vi.mocked(registerAwait)
-        .mockRejectedValueOnce(contention)
-        .mockResolvedValueOnce({
+        .mockRejectedValueOnce(contention);
+      mockResolvedOnceTyped(vi.mocked(registerAwait), {
           id: 100,
+          workspaceId: "ws-x",
+          subscriberId: "su-awaiter",
           eventKey: "git-sync:committed",
+          policy: "wake",
+          note: null,
+          wakeHandle: null,
           expiresTs: "2030-01-01",
           timeoutBehavior: "wake",
-        } as never);
+          createdAt: "2030-01-01",
+          firedAt: null,
+          firedReason: null,
+          cancelledAt: null,
+          cancelReason: null,
+          once: true,
+          minSleepSec: null,
+          urgency: false,
+          payloadFilter: null,
+          scopeKind: null,
+          scopeRef: null,
+        });
 
       const pending = gitSyncTool.handler(
         { harness: "harness-a" } as never,

@@ -88,6 +88,7 @@ const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
 const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn());
 const verifyTurnRefs = vi.hoisted(() => vi.fn());
+const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -246,6 +247,10 @@ vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
   resolveCurrentTurnStamp: (...a: unknown[]) => resolveCurrentTurnStamp(...a),
   verifyTurnRefs: (...a: unknown[]) => verifyTurnRefs(...a),
 }));
+vi.mock('../../carry-surface-action-proof', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readSuccessfulActionInvocations: (...a: unknown[]) => readSuccessfulActionInvocations(...a),
+}));
 // P-005 / D-030 (7). The suite-wide withBoundedTimeout double never runs the guard's
 // work, so this spy is reached only by tests that route its label through for real.
 const checkFleetZeroWorkers = vi.fn(
@@ -292,6 +297,7 @@ beforeEach(() => {
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
   resolveCurrentTurnStamp.mockResolvedValue(null);
   verifyTurnRefs.mockResolvedValue([]);
+  readSuccessfulActionInvocations.mockResolvedValue([]);
   getSessionBrief.mockResolvedValue(null); // default: no durable coord:orient scope found
   getPresence.mockResolvedValue(null);
   readInbox.mockResolvedValue([]);
@@ -332,6 +338,9 @@ beforeEach(() => {
       } catch {
         return { value: undefined, degraded: true, elapsedMs: 0 };
       }
+    }
+    if (label === 'carry-provenance-stamp') {
+      return { value: [[], null], degraded: false, elapsedMs: 0 };
     }
     return { value: undefined, degraded: false, elapsedMs: 0 };
   });
@@ -2909,6 +2918,54 @@ describe('loop:checkpoint — current-turn sentinel reuses its resolved transcri
       { ref: currentTurn.ref, found: true, checked: true, verdict: 'agent-injected', origin: 'loop-fire' },
     ]);
     expect(result.provenanceLint?.flagged ?? false).toBe(false);
+  });
+});
+
+describe('loop:checkpoint — same-turn action proof (EI-25298018130887432)', () => {
+  const actionContext = {
+    harnessSlug: 'papercusp',
+    workspaceId: 'ws-1',
+    spawnId: 'spawn-action-proof',
+  };
+
+  it('suppresses a matching successful coord action and scopes the ledger read to this caller', async () => {
+    readSuccessfulActionInvocations.mockResolvedValueOnce([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+
+    const result = body(await call({ note: 'Messaged fleet leader su-bce40c51 directly' }, actionContext));
+
+    expect(result).toMatchObject({ ok: true, verified: true });
+    expect(result.provenanceLint).toBeUndefined();
+    expect(readSuccessfulActionInvocations).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      spawnId: 'spawn-action-proof',
+      coordOwnerId: 'su-caller',
+    });
+  });
+
+  it('uses the successful action proof when the documented current-turn sentinel cannot resolve', async () => {
+    resolveCurrentTurnStamp.mockResolvedValueOnce(null);
+    readSuccessfulActionInvocations.mockResolvedValueOnce([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+
+    const result = body(
+      await call({ did: '[turn:self] Messaged fleet leader su-bce40c51 directly' }, actionContext),
+    );
+
+    expect(result).toMatchObject({ ok: true, verified: true });
+    expect(result.provenanceLint).toBeUndefined();
+    expect(String(setLoopCarryNote.mock.calls[0]?.[1] ?? '')).toContain('[turn:self]');
+  });
+
+  it('keeps the warning when the same-turn action ledger is unavailable', async () => {
+    readSuccessfulActionInvocations.mockResolvedValueOnce(null);
+
+    const result = body(await call({ note: 'Messaged fleet leader su-bce40c51 directly' }, actionContext));
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches[0]?.kind).toBe('unverified-action-claim');
   });
 });
 
