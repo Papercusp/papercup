@@ -78,8 +78,11 @@ describe('mutation-free Dream/Gym/Scout control observations', () => {
       workspaceId: 'ws', potSlug: gate === 'owner-idle' ? null : 'pot', capturedAt: scope.since, runtime,
       source: 'harness/routines/gym-actions:runGymCycleInline', gate, status: 'passed', inputs: {} }));
     const journal = (rows: Row[], prefix: string): JournalReadResult => ({ journalAvailable: true, journalError: null,
-      truncated: false, unitsUnknown: [], entries: rows.map(row => ({ ts: scope.since, unit: 'bg.service',
-        level: 'info', repeat: 1, message: prefix + JSON.stringify(row) })) } as JournalReadResult);
+      backend: 'systemd', matched: rows.length, collapsed: 0, truncated: false,
+      window: { since: scope.since, until: scope.until, resolved: null }, units: ['bg.service'], unitsUnknown: [],
+      windowOutsideJournal: null, command: 'fixture:captured-journal',
+      entries: rows.map(row => ({ ts: scope.since, unit: 'bg.service',
+        level: 'info', repeat: 1, message: prefix + JSON.stringify(row) })) });
     const { sql } = fixture({ 'FROM harness_shared.scout_ticks': ticks, 'FROM harness_shared.dream_runs': attempt ? [{
       id: 'run-1', workspace_id: 'ws', pot_slug: 'pot', started_at: new Date(now - 1000).toISOString(),
       dreamer_model: 'fixture-model', dream_usage: fault === 'usage-null' ? null : { inputTokens: 2, outputTokens: 1 }, cost_usd: 0.12,
@@ -228,7 +231,7 @@ describe('mutation-free Dream/Gym/Scout control observations', () => {
       expect(activity?.status).toBe('observed');
       if (activity?.status !== 'observed') throw new Error('missing activity');
       expect(activity.value.scout.observations[0].suppliedOneIdeatorCapRespected).toBe(
-        fault === 'valid' ? true : ['overspend', 'missing-cost'].includes(fault) ? false : null);
+        fault === 'valid' ? true : fault === 'overspend' ? false : null);
       expect(activity.value.scout.rows[0]).toEqual(tick);
     });
   it('reads actual persisted per-mode limits, loaded floor and NULL budgets without setup or paid dispatch', async () => {
