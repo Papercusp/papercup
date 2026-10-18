@@ -265,12 +265,14 @@ async function copyOmpFile(src: string, dst: string, contents?: Uint8Array): Pro
   }
 }
 
-const OMP_IMPORT_RE =
-  /\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-
-function ompPackageImports(source: string): string[] {
-  return Array.from(source.matchAll(OMP_IMPORT_RE), match => match[1] ?? match[2] ?? match[3])
-    .filter(specifier => !specifier.startsWith('.') && !path.isAbsolute(specifier) && !isBuiltin(specifier));
+async function ompRuntimeImports(source: string): Promise<string[]> {
+  // Use the existing compiler's import metadata: prose in strings/comments can
+  // contain "from '...'", and TypeScript-only imports never load at runtime.
+  const { build } = await import('esbuild');
+  const result = await build({ stdin: { contents: source, loader: 'ts' },
+    bundle: false, platform: 'node', format: 'esm', target: 'node20',
+    write: false, metafile: true, logLevel: 'silent' });
+  return Object.values(result.metafile!.outputs).flatMap(output => output.imports.map(entry => entry.path));
 }
 
 async function isRegularFile(filePath: string): Promise<boolean> {
@@ -321,9 +323,7 @@ async function findUnresolvedOmpImports(filePath: string): Promise<string[]> {
   }
 
   const unresolved: string[] = [];
-  for (const match of source.matchAll(OMP_IMPORT_RE)) {
-    const specifier = match[1] ?? match[2] ?? match[3];
-    if (!specifier) continue;
+  for (const specifier of await ompRuntimeImports(source)) {
     if (isBuiltin(specifier)) continue;
     if (!specifier.startsWith('.') && !path.isAbsolute(specifier)) {
       try { createRequire(filePath).resolve(specifier); }
@@ -439,7 +439,8 @@ export async function installOmpHookBundle(opts: {
   const bundled = new Map<string, Uint8Array>();
   for (const file of sourceFiles) {
     const sourcePath = path.join(opts.sourceDir, file);
-    if (ompPackageImports(await fs.readFile(sourcePath, 'utf8')).length === 0) continue;
+    const imports = await ompRuntimeImports(await fs.readFile(sourcePath, 'utf8'));
+    if (!imports.some(specifier => !specifier.startsWith('.') && !path.isAbsolute(specifier) && !isBuiltin(specifier))) continue;
     try {
       const { build } = await import('esbuild');
       const result = await build({ entryPoints: [sourcePath], bundle: true, platform: 'node',

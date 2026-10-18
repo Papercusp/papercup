@@ -1641,8 +1641,12 @@ import * as path from 'node:path';
 import { createRequire, isBuiltin } from 'node:module';
 
 const [sourceDir, destinationDir, sourceEntry, destinationEntry, scriptDir] = process.argv.slice(2);
-const pattern = /\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-const imports = source => Array.from(source.matchAll(pattern), m => m[1] ?? m[2] ?? m[3]);
+const { build } = createRequire(path.join(scriptDir, 'install-standalone-mcp.sh'))('esbuild');
+const imports = async source => {
+  const result = await build({ stdin: { contents: source, loader: 'ts' }, bundle: false,
+    platform: 'node', format: 'esm', target: 'node20', write: false, metafile: true, logLevel: 'silent' });
+  return Object.values(result.metafile.outputs).flatMap(output => output.imports.map(entry => entry.path));
+};
 const packageImport = specifier => !specifier.startsWith('.') && !path.isAbsolute(specifier) && !isBuiltin(specifier);
 const files = fs.readdirSync(sourceDir, { withFileTypes: true })
   .filter(entry => entry.isFile() && entry.name.endsWith('.ts')).map(entry => entry.name).sort();
@@ -1652,8 +1656,7 @@ try {
   for (const file of files) {
     const sourcePath = path.join(sourceDir, file);
     let contents = fs.readFileSync(sourcePath, 'utf8');
-    if (imports(contents).some(packageImport)) {
-      const { build } = createRequire(path.join(scriptDir, 'install-standalone-mcp.sh'))('esbuild');
+    if ((await imports(contents)).some(packageImport)) {
       const result = await build({ entryPoints: [sourcePath], bundle: true, platform: 'node',
         format: 'esm', target: 'node20', write: false, logLevel: 'silent' });
       if (!result.outputFiles?.[0]) throw new Error(`No compiled OMP hook: ${sourcePath}`);
@@ -1672,7 +1675,7 @@ try {
   const unresolved = [];
   for (const { name, contents } of prepared) {
     const importer = path.join(destinationDir, name);
-    for (const specifier of imports(contents)) {
+    for (const specifier of await imports(contents)) {
       if (isBuiltin(specifier)) continue;
       if (packageImport(specifier)) {
         try { createRequire(importer).resolve(specifier); }

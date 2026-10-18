@@ -325,10 +325,12 @@ describe('installInjectionHooks — install provenance', () => {
     await fs.writeFile(path.join(destination, 'papercusp-coord.ts'), '// healthy installed hook\n');
     await fs.writeFile(path.join(ompSource, 'coord-hook.ts'),
       "import '@papercusp/missing-hook-dependency';\nexport default {};\n");
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await expect(installOmpHookBundle({ sourceDir: ompSource, entryFile: 'coord-hook.ts',
       destinationDir: destination, destinationEntry: 'papercusp-coord.ts' })).rejects.toThrow();
     expect(await fs.readFile(path.join(destination, 'papercusp-coord.ts'), 'utf8')).toBe('// healthy installed hook\n');
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('OMP hook bundle load check FAILED'), expect.anything());
   });
 
   it('installs one self-contained vm-release .mjs bundle under the established .ts destination', async () => {
