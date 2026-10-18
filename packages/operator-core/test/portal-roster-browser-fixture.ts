@@ -209,11 +209,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // going through the full SPA root. Keep the same per-window workspace
   // transport seam the real RootSyncProvider installs so query resolvers run
   // under the workspace selected by ?ws= rather than the process-global one.
-  const workspaceHeaderBootstrap = `
-    import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
-    installWorkspaceHeaderFetch();
-  `;
-  const entry = workspaceHeaderBootstrap + (input.dev ? `
+  const entry = withPrivateBrowserWorkspaceHeader(input.dev ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -696,6 +692,14 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
     'Executed bundle must contain the actual product control');
   return { portal, entry, bundle, css, originals };
+}
+
+/** Keep the real per-window workspace fetch seam ahead of every standalone product entry. */
+export function withPrivateBrowserWorkspaceHeader(entry: string): string {
+  return `
+    import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
+    installWorkspaceHeaderFetch();
+  ` + entry;
 }
 
 /** A failing action must leave its original rendered state before teardown. */

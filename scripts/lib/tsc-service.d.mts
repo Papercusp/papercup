@@ -2,8 +2,8 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/tsc-service.mjs and regenerate.
 /**
- * Resolve the configured service budget while keeping a slow or wedged service from delaying
- * the caller for minutes. A shorter explicit value remains useful for local diagnostics.
+ * Resolve a configured or per-call service budget while keeping a slow or wedged service from
+ * delaying the caller for minutes. A shorter explicit value remains useful for local diagnostics.
  *
  * @param {string | number | undefined} [value]
  * @returns {number}

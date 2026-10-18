@@ -36,9 +36,17 @@ import type { ChangeKindsView } from './work-item-change-kinds';
 
 /**
  * D-003: claims that began before this instant and carry no declaration close with a warning
- * instead of a refusal. Every claim at or after it is enforced. Set to the release of P-002.
+ * instead of a refusal. Every claim at or after it is enforced. A claim whose start is unknown
+ * (no takenAt and no createdAt) is treated as pre-cutover: warn, never refuse.
+ *
+ * PLACEHOLDER until P-002 is live on :3070 (change-kind-declared-proof-2026-10-15#D-008): this
+ * value is deliberately later than any realistic release, so the first release is warn-only and
+ * a claim taken between this constant and the actual deploy is never refused by code it never
+ * saw. At ship it is re-pinned to the actual :3070 release instant of P-002 — that re-pin is
+ * what makes D-003's "set to the release time of P-002" true. Tests derive their fixtures from
+ * this constant, so moving it never strands them.
  */
-export const CHANGE_KIND_GATE_CUTOVER = '2026-10-18T04:00:00.000Z';
+export const CHANGE_KIND_GATE_CUTOVER = '2026-10-21T00:00:00.000Z';
 const CUTOVER_MS = Date.parse(CHANGE_KIND_GATE_CUTOVER);
 
 /** The root completion fields a single-kind close may use as its proof. */

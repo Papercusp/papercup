@@ -188,6 +188,7 @@ describe('bounded shared-service timeout', () => {
     expect(TSC_SERVICE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
     expect(resolveTscServiceTimeoutMs(undefined)).toBe(30_000);
     expect(resolveTscServiceTimeoutMs('240000')).toBe(30_000);
+    expect(resolveTscServiceTimeoutMs(240_000)).toBe(30_000);
     expect(resolveTscServiceTimeoutMs('15000')).toBe(15_000);
   });
 

@@ -29,8 +29,8 @@ export const TSC_SERVICE_MAX_CHECKED_FILES = Number(process.env.PAPERCUSP_TSC_SE
 const TSC_SERVICE_TIMEOUT_CAP_MS = 30_000;
 
 /**
- * Resolve the configured service budget while keeping a slow or wedged service from delaying
- * the caller for minutes. A shorter explicit value remains useful for local diagnostics.
+ * Resolve a configured or per-call service budget while keeping a slow or wedged service from
+ * delaying the caller for minutes. A shorter explicit value remains useful for local diagnostics.
  *
  * @param {string | number | undefined} [value]
  * @returns {number}
@@ -751,7 +751,7 @@ export async function typecheckViaService({
     const response = await requestTscService({
       socketPath,
       request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
-      timeoutMs,
+      timeoutMs: resolveTscServiceTimeoutMs(timeoutMs),
     });
     if (response.ok) return response;
     log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead.`);
