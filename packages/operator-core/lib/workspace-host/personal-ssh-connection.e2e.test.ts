@@ -116,7 +116,10 @@ beforeAll(async () => {
   writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,socket,sys,time\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd(),'hostname':socket.gethostname()}),flush=True)\nif '--transport-stdin' in sys.argv:\n print('PERSONAL_SSH_INPUT_READY',flush=True)\n print(json.dumps({'stdin':sys.stdin.readline()}),flush=True)\ntime.sleep(0.2)\n`);
   writeFileSync(join(root, 'gui.py'), `from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write(b'personal-computer-gui')\nHTTPServer(('127.0.0.1',3070),H).serve_forever()\n`);
   process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
-  await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
+  // The external allocation owner performs the stop/remove and verifies that
+  // the labeled container is gone. Docker's --rm would race that owner-side
+  // rm --force when stopping this running fixture.
+  await docker(['create', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
     '--mount', `type=bind,source=${root},target=/fixture,readonly`, image, 'sh', '-ec',
     'set -eu; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server tmux python3; '
     + 'mkdir -p /run/sshd /root/.ssh; cp /fixture/client.pub /root/.ssh/authorized_keys; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; '
