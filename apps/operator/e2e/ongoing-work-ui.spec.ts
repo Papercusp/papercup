@@ -143,10 +143,13 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
         return payload.rows[0]?.goal?.id === goal.id
           && payload.rows[0]?.goalData?.collections?.[property]?.selection?.policyVersion === expectedVersion;
       });
-      await action();
       try {
-        expect((await saved).status()).toBe(200);
-        const payload = await (await readback).json();
+        // Observe both responses while Playwright waits for the control. A
+        // disabled control can outlast either response deadline; handle those
+        // rejections here so the fixture evidence still reaches the attachment.
+        const [, savedResponse, canonicalReadback] = await Promise.all([action(), saved, readback]);
+        expect(savedResponse.status()).toBe(200);
+        const payload = await canonicalReadback.json();
         expect(payload.rows[0].goalData.collections[property].selection.policyVersion).toBe(version);
         const expected = selection();
         if (!expected.ok || !expected.configured) throw new Error('collection unavailable');
