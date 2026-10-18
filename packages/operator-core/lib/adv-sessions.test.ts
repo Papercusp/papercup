@@ -74,6 +74,7 @@ import {
   ADV_SESSION_LIVENESS_EVIDENCE_AGENT,
   getLatestActiveAdvSessionByOwner,
   readAdvSessionLaunchRecordByOwner,
+  readSuLaunchSpecByOwner,
   listResumableSessions,
   markAdvSessionShutdownAcceptedByOwner,
   reactivateAdvSessionByOwner,
@@ -547,6 +548,18 @@ describe('readAdvSessionLaunchRecordByOwner', () => {
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
     expect((template as readonly string[]).join(' ')).toContain('agent');
+  });
+});
+
+describe('exact session launch receipt', () => {
+  it('requires both the owner and requested ADV id without borrowing the newest receipt', async () => {
+    advSessionRowsMock.mockResolvedValue([{ launch_spec: { codexSqliteHome: '/original-state' } }]);
+    expect(await readSuLaunchSpecByOwner('su-exact-owner', 123)).toEqual({ codexSqliteHome: '/original-state' });
+    const [query, ...values] = advSessionRowsMock.mock.calls.at(-1)!;
+    expect((query as readonly string[]).join(' ')).toContain('AND (');
+    expect((query as readonly string[]).join(' ')).toMatch(/\bid =/);
+    expect(values).toContain('su-exact-owner');
+    expect(values).toContain(123);
   });
 });
 

@@ -266,7 +266,17 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
   }
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
-  const text = readFileSync(configPath, 'utf8');
+  let text: string;
+  try {
+    text = readFileSync(configPath, 'utf8');
+  } catch (error) {
+    // A native container can atomically replace this private file under a
+    // host-owned directory. Only the exact launch receipt can recover its
+    // state binding when the host cannot read it; never guess from TMPDIR.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (recordedHome && (code === 'EACCES' || code === 'EPERM')) return recordedHome;
+    throw error;
+  }
   if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
   let config: ReturnType<typeof parseToml>;
   try {
@@ -1749,6 +1759,8 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  */
 function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   sessionKey: string | number;
+  /** SQLite binding from this exact session's persisted launch receipt. */
+  recordedSqliteHome?: string | null;
   /** Canonical, current SU render; supplied by the operator repair route. */
   promptText?: string;
   /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
@@ -1763,7 +1775,7 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   reason?: 'no-home';
 } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
-  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey);
+  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) {
     if (!opts.recoverMissingHome || !opts.promptText?.trim()) {
@@ -1888,6 +1900,8 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
 
 type EnsureSuCodexHomeConfigOptions = SuCodexConfigInput & {
   sessionKey: string | number;
+  /** SQLite binding from this exact session's persisted launch receipt. */
+  recordedSqliteHome?: string | null;
   /** Canonical, current SU render; supplied by the operator repair route. */
   promptText?: string;
   /** A carry starts a fresh thread, so a GC-removed home can be recreated safely. */
