@@ -26,6 +26,10 @@ function productionFiles(): string[] {
       'packages/operator-core/lib/storage/disk-space-alarm.ts',
       'packages/operator-core/lib/desktop-install/stamp-installed-cc-hooks.ts',
       'packages/operator-core/lib/voice-node/local-whisper-service.ts',
+      // Installed as raw files outside the checkout; workspace-package imports
+      // are unavailable there. Their existing isolation-pin suites cover them.
+      'apps/operator/scripts/hooks/omp/inject-hook.ts',
+      'apps/operator/scripts/hooks/inject/delivery-ledger.mjs',
     ].includes(file));
 }
 

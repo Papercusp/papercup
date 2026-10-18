@@ -31,6 +31,7 @@ import {
   pruneRunsWithReport,
   loadRunResult,
   PREFLIGHT_PHASE_ID,
+  type RunPruneReport,
   writeRunResult,
 } from './runner.js';
 import { type PlannedPhase, parseSelectionArgs, planSelection } from './select.js';
@@ -132,10 +133,29 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
   return { line: formatSummaryLine(result), result };
 }
 
-export async function retainRunsCommand(argv: string[]) {
+export async function retainRunsCommand(argv: string[]): Promise<RunPruneReport & { deferred?: boolean }> {
   const evidenceRoot = flag(argv, '--evidence-root');
   assertEvidenceRootPlacement(path.basename(evidenceRoot), evidenceRoot);
-  return pruneRunsWithReport(evidenceRoot, undefined, undefined, { dryRun: argv.includes('--dry-run') });
+  const busy = new Error('retention-mutex-busy');
+  try {
+    return await pruneRunsWithReport(evidenceRoot, undefined, undefined, {
+      dryRun: argv.includes('--dry-run'),
+      onWaiting: argv.includes('--defer-busy') ? () => { throw busy; } : undefined,
+    });
+  } catch (error) {
+    if (error !== busy) throw error;
+    return {
+      deferred: true as const,
+      removed: [],
+      runDirsSeen: 0,
+      disk: {
+        status: 'unmeasured' as const,
+        reserveBytes: null,
+        availableBeforeBytes: null,
+        availableAfterBytes: null,
+      },
+    };
+  }
 }
 
 const GUARD_RAIL_REPORT = 'guard-rails.json';
@@ -174,6 +194,10 @@ async function main(): Promise<number> {
   const [cmd, ...argv] = process.argv.slice(2);
   if (cmd === 'retain') {
     const report = await retainRunsCommand(argv);
+    if ('deferred' in report && report.deferred) {
+      process.stderr.write('VH_RETENTION_DEFERRED stage=before reason=retention-mutex-busy\n');
+      return 0;
+    }
     if (report.preview) {
       process.stdout.write(JSON.stringify(report) + '\n');
       return 0;

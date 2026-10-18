@@ -11,6 +11,13 @@ import { describe, expect, it } from 'vitest';
 import { criticalAreaAcknowledgementProblem, classifyCriticalArea } from './critical-area-registry';
 import { memoryTestDowngradeStore, testDowngradeKey } from './test-downgrade-store';
 import {
+  FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  createFrozenCandidateQueue,
+  markFrozenCandidateVerificationRed,
+  parseFrozenCandidateRepairQueue,
+} from './frozen-candidate-repair-queue';
+import { likeForLikeTrajectory } from './round-one-measurement';
+import {
   FLAKY_QUARANTINE_AUTHOR,
   FLAKY_QUARANTINE_KIND,
   activeQuarantineKeys,
@@ -318,5 +325,50 @@ describe('compareRoundsOverSamePopulation — falsifier 3: like for like only', 
       new Set(),
     );
     expect(cmp.direction).toBe('improved');
+  });
+});
+
+// Falsifier (3) in production: the bounded-life rule compares PERSISTED repair rounds. A test
+// quarantined at round 2 left round 2's count, but round 1 still counted it; without the
+// population rule round 2 reads as a new low that no repair produced (#D-015).
+describe('P-008 production round comparison (persisted repair rounds)', () => {
+  const cap = { saturationCap: FROZEN_REPAIR_PERSISTED_FAILURE_CAP };
+  const rounds = [
+    { round: 1, failingCount: 3, failingTests: ['lib/a.test.ts', 'lib/b.test.ts', 'lib/flaky.test.ts'] },
+    { round: 2, failingCount: 2, failingTests: ['lib/a.test.ts', 'lib/b.test.ts'], excludedFromCount: ['lib/flaky.test.ts'] },
+  ];
+
+  it('removes every round’s exclusions from every round before comparing counts', () => {
+    const t = likeForLikeTrajectory(rounds, cap);
+    expect(t.comparableRounds).toBe(2);
+    expect(t.lowestFailingCount).toBe(2);
+    expect(t.latestFailingCount).toBe(2);
+    // Round 2 is NOT a new low: the quarantine changed the population, not the failures.
+    expect(t.roundsSinceLow).toBe(1);
+    const naive = likeForLikeTrajectory(rounds.map(({ excludedFromCount: _x, ...r }) => r), cap);
+    expect(naive.roundsSinceLow).toBe(0);
+  });
+
+  it('skips a round whose failing list is unknown once anything is excluded', () => {
+    const t = likeForLikeTrajectory([{ round: 1, failingCount: 3 }, rounds[1]!], cap);
+    expect(t.excludedRounds).toEqual([{ round: 1, reason: 'population-unknown' }]);
+    expect(t.comparableRounds).toBe(1);
+    // With nothing excluded a legacy round keeps its count (behaviour unchanged).
+    expect(likeForLikeTrajectory([{ round: 1, failingCount: 3 }], cap).comparableRounds).toBe(1);
+  });
+
+  it('persists the exclusions on the round a red produces and reads them back', () => {
+    const queue = createFrozenCandidateQueue({ candidate: 'c'.repeat(40), base: null, nowMs: 1_000 });
+    const red = markFrozenCandidateVerificationRed(queue, {
+      failingTests: ['lib/a.test.ts'],
+      excludedFromCount: ['lib/flaky.test.ts', 'lib/flaky.test.ts'],
+      nowMs: 2_000,
+    });
+    expect(red.convergenceRounds?.at(-1)?.excludedFromCount).toEqual(['lib/flaky.test.ts']);
+    expect(red.convergenceRounds?.at(-1)?.failingTests).toEqual(['lib/a.test.ts']);
+    const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(red)));
+    expect(parsed?.convergenceRounds?.at(-1)?.excludedFromCount).toEqual(['lib/flaky.test.ts']);
+    const clean = markFrozenCandidateVerificationRed(queue, { failingTests: ['lib/a.test.ts'], nowMs: 2_000 });
+    expect(clean.convergenceRounds?.at(-1)).not.toHaveProperty('excludedFromCount');
   });
 });

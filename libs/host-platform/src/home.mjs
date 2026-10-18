@@ -18,3 +18,19 @@ export function papercuspHome(env = process.env, fallbackHome = homedir()) {
 export function papercuspPath(...parts) {
   return join(papercuspHome(), ...parts);
 }
+
+/**
+ * Resolve the host-wide PTY discovery directory.
+ *
+ * Session processes may carry a workspace-scoped PAPERCUSP_HOME, while the
+ * operator that discovers their local control sockets serves several
+ * workspaces from one process. PTY discovery therefore has one host-level
+ * default; isolated hosts and tests opt into their own directory through the
+ * dedicated PAPERCUSP_PSU_PTY_DIR pin.
+ */
+export function papercuspPtyPath(env = process.env, fallbackHome = homedir()) {
+  const override = typeof env?.PAPERCUSP_PSU_PTY_DIR === 'string'
+    ? env.PAPERCUSP_PSU_PTY_DIR.trim()
+    : '';
+  return override || join(fallbackHome, '.papercusp', 'psu-pty');
+}

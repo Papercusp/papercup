@@ -46,6 +46,24 @@ describe('evidence placement guard', () => {
 });
 
 describe('harness retention admission', () => {
+  it('shell retention preflight defers a busy mutex without waiting for the lock holder', async () => {
+    const root = tmp();
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        const child = spawnSync('bash', ['-c',
+          'source "$1"; vh_phase proof ""; vh_init shell-busy "$2"; test "$VH_DISABLED" = 0 && test -f "$VH_RUN_DIR/plan.json"',
+          'vh-preflight', new URL('../bin/vh.sh', import.meta.url).pathname, root],
+        { encoding: 'utf8', env: process.env, timeout: 8000 });
+        expect(child.error, child.stderr + child.stdout).toBeUndefined();
+        expect(child.status).toBe(0);
+        expect(child.stderr).toContain('VH_RETENTION_DEFERRED stage=before reason=retention-mutex-busy');
+        expect(child.stdout).toContain('VH_RUN harness=shell-busy');
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it.each([true, false])('shell finalization defers busy GC and retains the original %s verdict and declared receipt', async passes => {
     const root = tmp();
     const old = '20200101T000000Z-1', runId = '20260101T000000Z-1';

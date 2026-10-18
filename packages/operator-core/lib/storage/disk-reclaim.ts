@@ -759,15 +759,22 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
     };
     // Keep the census/effect cursor across FIFO handoffs. Ending the whole pass
     // here made a queued writer discard minutes of inspection on every tick.
-    const yieldToWaiter = async function* (): AsyncGenerator<void, number, void> {
+    const yieldToWaiter = async function* (onPaused?: (elapsedMs: number) => void): AsyncGenerator<void, number, void> {
       if (!await mutex?.hasWaiters()) return 0;
       const pausedAt = Date.now();
-      await options.record?.('progress', { phase: 'yield-to-queued-writer' });
-      yield;
-      // A pin or lease writer may have changed eligibility while we released
-      // the mutex. Never reuse that protection snapshot after reacquisition.
-      await refreshProtection();
-      return Math.max(0, Date.now() - pausedAt);
+      try {
+        await options.record?.('progress', { phase: 'yield-to-queued-writer' });
+        yield;
+        // A pin or lease writer may have changed eligibility while we released
+        // the mutex. Never reuse that protection snapshot after reacquisition.
+        await refreshProtection();
+        return Math.max(0, Date.now() - pausedAt);
+      } finally {
+        // If the owning mutex times out while this generator is suspended, its
+        // `return()` runs this finally without returning a value to yieldEffects.
+        // Attribute that terminal wait immediately instead of dropping it.
+        onPaused?.(Math.max(0, Date.now() - pausedAt));
+      }
     };
     const reclaim = async function* (): AsyncGenerator<void, void, void> {
       // Pins and native cleanup share this writer lock. Yield only between
@@ -965,10 +972,15 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0,
           progressRecordMs: 0, yieldWaitMs: 0, leaseReleaseMs: 0 };
         const yieldEffects = async function* () {
-          const pausedMs = yield* yieldToWaiter();
-          timings.yieldWaitMs += pausedMs;
-          budget.deadline += pausedMs;
-          effectDeadline = Math.min(runDeadline, effectDeadline + pausedMs);
+          try {
+            const pausedMs = yield* yieldToWaiter(ms => { timings.yieldWaitMs += ms; });
+            budget.deadline += pausedMs;
+            effectDeadline = Math.min(runDeadline, effectDeadline + pausedMs);
+          } finally {
+            // A failed reacquisition closes the cursor before its normal root
+            // epilogue. Keep the terminal receipt's continuation and time current.
+            updateEffectProgress();
+          }
         };
         const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
           nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false, timings };
@@ -979,10 +991,13 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           finally { timings[phase] += Math.max(0, Date.now() - began); }
         };
         let lastProgressAt = effectStarted;
-        const recordProgress = async () => {
+        const updateEffectProgress = () => {
           effect.remaining = selected.length - effect.processed;
           effect.nextPath = selected[effect.processed]?.path ?? null;
           effect.elapsedMs = Math.max(0, Date.now() - effectStarted);
+        };
+        const recordProgress = async () => {
+          updateEffectProgress();
           await measureEffect('progressRecordMs', () => outsideInspectionBudget(async () => options.record?.('progress', { ...effect })));
           lastProgressAt = Date.now();
           effect.elapsedMs = Math.max(0, lastProgressAt - effectStarted);

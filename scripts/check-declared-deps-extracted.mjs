@@ -95,7 +95,12 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   // inside the Node installer. Keep the existing lock-selected probe registry.
   { specifier: 'posthog-js', declarationsOnly: true },
   { specifier: '@assistant-ui/react', declarationsOnly: true },
+  // React's public declarations re-export this locked transitive package. Its
+  // manifest can survive while missing declarations make those exports `any`.
+  { specifier: '@assistant-ui/core', declarationsOnly: true },
   { specifier: '@azure/identity', declarationsOnly: true },
+  // Production CSS imports can retain their entry file while losing fonts.
+  { specifier: '@blocknote/core/fonts/inter.css', css: true },
 ]);
 
 export function packageNameFromSpecifier(specifier) {
@@ -527,6 +532,32 @@ function defaultRuntimeImportProbe({ repoRoot, specifier }) {
   return { ok: false, detail };
 }
 
+/** Let the maintained CSS bundler resolve local URLs; do not execute browser code. */
+function defaultCssContentProbe({ repoRoot, specifier }) {
+  try {
+    const entry = createRequire(join(repoRoot, 'package.json')).resolve(specifier);
+    require('esbuild').buildSync({
+      absWorkingDir: repoRoot, entryPoints: [entry], bundle: true, write: false,
+      outdir: join(repoRoot, '.papercusp-css-content-probe'), logLevel: 'silent',
+      loader: Object.fromEntries(['.woff', '.woff2', '.ttf', '.otf', '.eot',
+        '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif'].map(ext => [ext, 'file'])),
+    });
+    return { ok: true, resolvedPath: entry };
+  } catch (error) {
+    for (const failure of error.errors ?? []) {
+      if (!failure.location || !failure.text.startsWith('Could not resolve ')) continue;
+      let reference;
+      try { reference = JSON.parse(failure.text.slice('Could not resolve '.length)); } catch { continue; }
+      if (typeof reference !== 'string' || !reference.startsWith('.')) continue;
+      const missingPath = resolve(repoRoot, dirname(failure.location.file), reference.split(/[?#]/)[0]);
+      if (fsExistsSync(missingPath)) continue;
+      return { ok: false, code: 'ERR_MODULE_NOT_FOUND', missingPath,
+        detail: `CSS asset is missing: ${missingPath}` };
+    }
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 // Match type declarations to the entrypoint Node actually imported. Inspecting
 // every export would reject unused, unpublished SDK root entries. Prefer an
 // exact runtime target over a wildcard alias of the same file (SDK 1.29).
@@ -596,7 +627,8 @@ export function findUnusableRuntimeDeps({
     : typeof manifest?.typings === 'string' ? [manifest.typings] : [];
   for (const entry of specifiers) {
     const specifier = typeof entry === 'string' ? entry : entry.specifier;
-    const result = entry?.declarationsOnly === true ? { ok: true } : probe({ repoRoot, specifier });
+    const result = entry?.css === true ? defaultCssContentProbe({ repoRoot, specifier })
+      : entry?.declarationsOnly === true ? { ok: true } : probe({ repoRoot, specifier });
     if (result !== true && result?.ok !== true) {
       failures.push({
         specifier,

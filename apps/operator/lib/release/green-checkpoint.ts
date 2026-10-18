@@ -62,6 +62,12 @@ import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name"
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
 import { npmWorkspaceDirsByName } from "@papercusp/operator-core/lib/release/npm-workspace-dirs";
+import { FLAKY_QUARANTINE_KIND } from "@papercusp/operator-core/lib/release/verdict-flip-quarantine";
+import {
+  runVerdictFlipQuarantine,
+  verdictFlipGateDepsFor,
+  type VerdictFlipQuarantineHealth,
+} from "@papercusp/operator-core/lib/release/verdict-flip-quarantine-gate";
 import {
   decidePromotionRatchet,
   makeDowngradeCoverage,
@@ -833,6 +839,12 @@ export interface CheckpointDeps {
      *  downgraded-failing counts of a red suite. ABSENT ⇒ the rule did not run (a green suite,
      *  a build failure, no gate target, a stub dep) — never read as "nothing was downgraded". */
     promotionRatchet?: PromotionRatchetHealth;
+    /** green-main-ratchet-convergence-2026-10-17 P-008 (R-7): what the same-commit verdict-flip
+     *  quarantine did this run. ABSENT ⇒ it did not run (no gate target, a build failure). */
+    verdictFlipQuarantine?: VerdictFlipQuarantineHealth;
+    /** P-008 (#D-015): failing entries this run removed from its count (quarantine.txt, a flaky
+     *  quarantine, an active downgrade), recorded on the repair round it produces. */
+    excludedFromCount?: string[];
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -1798,6 +1810,10 @@ export interface CheckpointResult {
    *  persists it as `gate_health.promotionRatchet` (blocking-failure count, downgraded-failing
    *  count, whether the red was promoted because every failure was downgraded). */
   promotionRatchet?: PromotionRatchetHealth;
+  /** P-008 (R-7): carried from `runGreen`; persisted as `gate_health.verdictFlipQuarantine`. */
+  verdictFlipQuarantine?: VerdictFlipQuarantineHealth;
+  /** P-008 (#D-015): carried from `runGreen` onto the repair round this verdict produces. */
+  excludedFromCount?: string[];
   /** P-014: exact inputs/decision for the suite interpretation replay canary. */
   suiteVerdictReplay?: GateSuiteVerdictReplay;
   suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
@@ -14375,6 +14391,8 @@ async function runGreenCheckpointInner(
     infraFault,
     testPassReuse,
     promotionRatchet,
+    verdictFlipQuarantine,
+    excludedFromCount,
   } = candidateSuiteResult;
   // P-013: what this round observed about itself, attached once to every result that carries
   // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
@@ -14385,10 +14403,13 @@ async function runGreenCheckpointInner(
     : null;
   const roundObservations: Pick<
     CheckpointResult,
-    "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1" | "promotionRatchet"
+    | "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1" | "promotionRatchet"
+    | "verdictFlipQuarantine" | "excludedFromCount"
   > = {
     ...(testPassReuse ? { testPassReuse } : {}),
     ...(promotionRatchet ? { promotionRatchet } : {}),
+    ...(verdictFlipQuarantine ? { verdictFlipQuarantine } : {}),
+    ...(excludedFromCount?.length ? { excludedFromCount } : {}),
     roundPhaseStamps: [...setupStretch.stamps],
     ...(freezeCut ? { freezeCut } : {}),
     ...(redLegsAtR1 ? { redLegsAtR1 } : {}),
@@ -14800,6 +14821,8 @@ async function runGreenCheckpointInner(
           suiteMeasured,
           failingCasesByFile,
         }),
+        // P-008 (#D-015): what this run removed from its count rides onto the round it produces.
+        ...(excludedFromCount?.length ? { excludedFromCount } : {}),
         ...(!suiteMeasured
           ? {}
           : {
@@ -22562,6 +22585,8 @@ export function realCheckpointDeps(
       // `workspace::file` labels quarantine removed; the promotion ratchet below must not count
       // them (the parsed per-file pairs still carry them).
       const quarantinedFileLabels = new Set<string>();
+      // P-008 (#D-015): the count before quarantine and downgrades remove anything from it.
+      const failingBeforeExclusions = [...failingTests];
       if (!green && buildOk && failingTests.length) {
         try {
           const quarantinePath = path.join(treeDir, "quarantine.txt");
@@ -22583,6 +22608,76 @@ export function realCheckpointDeps(
           log(
             `quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`,
           );
+        }
+      }
+      // green-main-ratchet-convergence-2026-10-17 P-008 (R-7, #D-015): a file that failed in the
+      // suite and passed alone on this same tree flipped on one commit. It is quarantined (its
+      // owner's de-quarantine work-item first, then the row), and every ACTIVE flaky quarantine
+      // is removed from this run's count. Runs on a green too: an isolation-absorbed green still
+      // saw the flip. Fails closed: no gate target, no candidate sha, or a failed read keeps the
+      // count exactly as measured.
+      let verdictFlipQuarantine: VerdictFlipQuarantineHealth | undefined;
+      const flipTarget = buildOk ? gateVerdictTargetFromEnv() : null;
+      const flipCandidateSha = flipTarget ? resolveCandidateSha(treeDir) : null;
+      if (flipTarget && flipCandidateSha) {
+        try {
+          const dirByName = npmWorkspaceDirsByName(treeDir);
+          const { health, active } = await runVerdictFlipQuarantine(
+            {
+              candidateSha: flipCandidateSha,
+              retries: retriedTests ?? [],
+              workspaceDirOf: (ws) => dirByName[ws] ?? null,
+            },
+            await verdictFlipGateDepsFor(flipTarget),
+          );
+          verdictFlipQuarantine = {
+            ...health,
+            quarantined: health.quarantined.slice(0, 10),
+            unowned: health.unowned.slice(0, 10),
+            errors: health.errors.slice(0, 10).map((e) => e.slice(0, 300)),
+          };
+          const quarantineRows = active.filter((row) => row.kind === FLAKY_QUARANTINE_KIND);
+          if (!green && failingTests.length && quarantineRows.length) {
+            const repoPathOf = (f: { workspace: string; file: string }) => {
+              const dir = dirByName[f.workspace];
+              return dir ? path.posix.join(dir, f.file) : null;
+            };
+            const casesByFile = extractFailingCasesByFile(fullOutput);
+            const files = inferFailingFilesFromEntries(
+              failingTests,
+              parseFailingFilesByWorkspace(signatureOutput),
+            ).filter((f) => !quarantinedFileLabels.has(`${f.workspace}::${f.file}`));
+            // The promotion rule over flaky rows only: the same file/case coverage and the
+            // same critical-area acknowledgement requirement as a downgrade.
+            const flaky = decidePromotionRatchet({
+              failingCasesOf: (f) => casesByFile.get(f.file) ?? null,
+              failingTests,
+              failingFiles: files,
+              downgrades: quarantineRows,
+              repoPathOf,
+            });
+            if (flaky.downgraded.length) {
+              const covered = new Set(flaky.downgraded);
+              for (const f of files) {
+                if (covered.has(repoPathOf(f) ?? `${f.workspace}::${f.file}`)) {
+                  quarantinedFileLabels.add(`${f.workspace}::${f.file}`);
+                }
+              }
+              failingTests = flaky.blockingFailingTests;
+              const note = `\n\nQuarantined as flaky (verdict flipped on one commit): ${flaky.downgraded.join(", ")}`;
+              summary = `${summary}${note}`.slice(-2000);
+            }
+            if (flaky.allFailuresDowngraded) green = true;
+          }
+          log(
+            `VERDICT_FLIP_QUARANTINE flips=${health.flips} quarantined=${health.quarantined.length} ` +
+              `covered=${health.alreadyCovered} unowned=${health.unowned.length} errors=${health.errors.length} ` +
+              `active=${quarantineRows.length}`,
+          );
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          verdictFlipQuarantine = { flips: 0, quarantined: [], alreadyCovered: 0, unowned: [], errors: [message.slice(0, 300)] };
+          log(`verdict-flip quarantine failed; preserving the measured count: ${message}`);
         }
       }
       // green-main-ratchet-convergence-2026-10-17 P-004 (R-3, D-002/D-005/D-006): every failing
@@ -22629,6 +22724,11 @@ export function realCheckpointDeps(
           }
         }
       }
+      // P-008 (#D-015): what quarantine and downgrades removed from this run's count. The repair
+      // round records it, so the convergence trajectory compares rounds over one population.
+      const excludedFromCount = green
+        ? []
+        : failingBeforeExclusions.filter((entry) => !failingTests.includes(entry));
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
       // cwd to re-run it in). Prefer the raw output's authoritative pairs, with a conservative
       // fallback for a durable flat GATE_HELD_BY signature that outlived those rows.
@@ -22718,6 +22818,8 @@ export function realCheckpointDeps(
         ...(infraFault ? { infraFault } : {}),
         ...(testPassReuse ? { testPassReuse } : {}),
         ...(promotionRatchet ? { promotionRatchet } : {}),
+        ...(verdictFlipQuarantine ? { verdictFlipQuarantine } : {}),
+        ...(excludedFromCount.length ? { excludedFromCount } : {}),
       };
     },
     advance: (candidate) =>

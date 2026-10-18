@@ -41,6 +41,7 @@ import {
 } from '@papercusp/operator-core/lib/owner-directives';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { getHarnessAdminUrl } from '@papercusp/operator-core/lib/embedded-pg-discovery';
+import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { POSTHOG_PUBLIC_DEFAULTS } from '@papercusp/operator-core/lib/posthog-public-defaults';
 import {
   hydrateRelease,
@@ -1995,7 +1996,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   const outDir = arg(argv, '--out') ?? path.join(bundleDir, 'release-history');
   const scope: Scope = {
     workspaceId: arg(argv, '--workspace') ?? 'papercusp-workspace',
-    harnessSlug: arg(argv, '--harness') ?? 'papercusp',
+    harnessSlug: arg(argv, '--harness') ?? operatorHomeHarnessSlug(),
   };
   return {
     version: (arg(argv, '--version') ?? '') as string,

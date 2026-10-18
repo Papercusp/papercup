@@ -1293,6 +1293,65 @@ describe('retention on a real fixture tree', () => {
       for (const path of paths) await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally { finish(); now.mockRestore(); }
   });
+  it('attributes a failed FIFO reacquisition wait and preserves the unprocessed continuation', async () => {
+    const { root, options } = await setup();
+    const paths = [join(root, 'old-a'), join(root, 'old-b')];
+    for (const path of paths) await writeFile(path, 'expired');
+    let entered!: () => void, finish!: () => void, queued!: () => void, releasePeer!: () => void;
+    const removing = new Promise<void>(resolve => { entered = resolve; });
+    const finishRemoval = new Promise<void>(resolve => { finish = resolve; });
+    const waiting = new Promise<void>(resolve => { queued = resolve; });
+    const peerRelease = new Promise<void>(resolve => { releasePeer = resolve; });
+    let reacquisitionQueued!: () => void;
+    const reacquiring = new Promise<void>(resolve => { reacquisitionQueued = resolve; });
+    let clock = Date.now(), peerEntered = false, failedWait = false, requests = 0;
+    const phases: string[] = [];
+    const waitFor = async <T>(pending: Promise<T>, phase: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([pending, new Promise<T>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(`FIFO fixture stalled at ${phase}: ${phases.join(',')}`)), 10_000);
+        })]);
+      } finally { clearTimeout(timer); }
+    };
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    fixtureMutex.observe = phase => {
+      if (phases.length < 32) phases.push(phase);
+      if (phase === 'mutex-request') requests++;
+      // Advance only after admission has captured its start time. A second
+      // waiting notice cannot drive a frozen clock: it is itself time-throttled.
+      if (phase === 'mutex-waiting' && requests === 3) reacquisitionQueued();
+    };
+    const reclaim = runDiskReclaimOnce({ ...options, runBudgetMs: 1_000,
+      removeEntry: async entry => { entered(); await finishRemoval; await rm(entry.path); } });
+    let peer: Promise<unknown> | undefined;
+    try {
+      await waitFor(removing, 'first removal');
+      peer = withFsMutex('papercusp-disk-retention', async () => {
+        peerEntered = true;
+        await reacquiring;
+        clock += 2_000;
+        failedWait = true;
+        await peerRelease;
+      },
+        { timeoutMs: 5_000, retryMs: 5, onWaiting: queued });
+      try {
+        await waitFor(waiting, 'peer queued');
+        // FIFO tickets use an epoch-ms prefix plus a random tie-breaker. Give
+        // reacquisition a strictly younger timestamp than the queued peer.
+        clock++;
+      } finally { finish(); }
+      const receipt = await waitFor(reclaim, 'failed reacquisition receipt');
+      expect(failedWait).toBe(true);
+      expect(receipt.complete).toBe(false); expect(receipt.policyExhausted).toBeNull();
+      expect(receipt.errors.join('; ')).toContain('waiting for fs-mutex');
+      expect(receipt.effects?.[0]).toMatchObject({ processed: 1, remaining: 1, nextPath: paths[1],
+        elapsedMs: 2_001, timings: { yieldWaitMs: 2_000 } });
+      expect(receipt.entries.filter(entry => entry.status === 'removed')).toHaveLength(1);
+      await expect(stat(paths[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readFile(paths[1]!, 'utf8')).toBe('expired');
+    } finally { finish(); reacquisitionQueued(); releasePeer(); now.mockRestore(); await Promise.allSettled([reclaim, peer]); }
+  });
   it.each(['pin', 'lease'] as const)('refreshes a new %s after a FIFO handoff without repeating the census', async (kind) => {
     const { root, options } = await setup();
     const paths = [join(root, 'old-a'), join(root, 'old-b')];

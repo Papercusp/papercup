@@ -327,7 +327,7 @@ vh_init() {
   # release/build phases. Disk-pressure pruning is independent of VH_KEEP_RUNS and
   # refuses to remove latest, live, unfinished, or .vh-keep-protected evidence.
   local retention_line=""
-  if retention_line="$(_vh_cli retain --evidence-root "$root")"; then
+  if retention_line="$(_vh_cli retain --defer-busy --evidence-root "$root")"; then
     [ -z "$retention_line" ] || _vh_say "$retention_line"
   else
     local retention_rc=$?
