@@ -55,7 +55,7 @@ function publicPageViolations(expected: PageOracle, page: ReturnType<typeof page
   return errors;
 }
 
-function recordDigest(row: AuditRecord): string {
+function recordDigest(row: unknown): string {
   const text = JSON.stringify(row);
   let h = 2166136261;
   for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
@@ -87,14 +87,68 @@ describe('R-1 public pager detector controls', () => {
   });
 });
 
+/** A refused dispatch ran no script; semantic failures and unknown outcomes are never retried. */
+async function retryAuditRead<T>(read: () => Promise<T>, wait: (ms: number) => Promise<void> =
+  ms => new Promise(resolveWait => setTimeout(resolveWait, ms)), frozenReadOnly = false): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await read(); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const refused = message.includes('operator rejected the request before dispatch (loop_pressure_critical)')
+        && message.includes('"reason":"loop_pressure_critical"');
+      const interruptedRead = frozenReadOnly && message.includes('authenticated audit read exit 4:')
+        && /UND_ERR_SOCKET|ECONNRESET|ECONNREFUSED/.test(message);
+      if (attempt === 5 || (!refused && !interruptedRead)) throw error;
+      process.stdout.write(`PARKED_AUDIT_TRANSPORT_RETRY ${JSON.stringify({ attempt: attempt + 1,
+        reason: refused ? 'refused-before-dispatch' : 'frozen-read-interrupted' })}\n`);
+      await wait(Math.min(1000 * 2 ** attempt, 10_000));
+    }
+  }
+}
+
+describe('R-1 public pager transport controls', () => {
+  it('retries an explicit refusal before dispatch without losing the measured result', async () => {
+    let attempts = 0; const waits: number[] = [];
+    expect(await retryAuditRead(async () => {
+      if (++attempts < 3) throw new Error('operator rejected the request before dispatch (loop_pressure_critical) {"reason":"loop_pressure_critical"}');
+      return { offset: 17, digest: 'measured' };
+    }, async ms => { waits.push(ms); })).toEqual({ offset: 17, digest: 'measured' });
+    expect(waits).toEqual([1000, 2000]);
+  });
+  it('fails immediately on a semantic error or an unknown dispatch outcome', async () => {
+    for (const message of ['record-stream-changed', 'authenticated audit read exceeded 90s', 'connection lost']) {
+      let attempts = 0;
+      await expect(retryAuditRead(async () => { attempts++; throw new Error(message); }, async () => {
+        throw new Error('must not retry');
+      })).rejects.toThrow(message);
+      expect(attempts).toBe(1);
+    }
+  });
+  it('bounds repeated admission refusals', async () => {
+    let attempts = 0;
+    await expect(retryAuditRead(async () => {
+      attempts++; throw new Error('operator rejected the request before dispatch (loop_pressure_critical) {"reason":"loop_pressure_critical"}');
+    }, async () => {})).rejects.toThrow('loop_pressure_critical');
+    expect(attempts).toBe(6);
+  });
+  it('replays an interrupted frozen read only when the caller explicitly declares no writes', async () => {
+    let attempts = 0;
+    expect(await retryAuditRead(async () => {
+      if (++attempts === 1) throw new Error('authenticated audit read exit 4: UND_ERR_SOCKET');
+      return { offset: 42 };
+    }, async () => {}, true)).toEqual({ offset: 42 });
+    expect(attempts).toBe(2);
+  });
+});
+
 /** Use stdin for large independent page oracles; never shell-interpolate evidence. */
-async function authenticatedAuditCode<T>(script: string, inputs: object = {}): Promise<T> {
+async function authenticatedAuditCode<T>(script: string, inputs: object = {}, frozenReadOnly = false): Promise<T> {
   expect(process.env.PAPERCUSP_SID).toBeTruthy();
   expect(process.env.PAPERCUSP_WORKSPACE).toBeTruthy();
   expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(AUDIT_LIVE_PROFILE);
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
   const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
-  const result = await new Promise<{ stdout: string; stderr: string }>((resolveResult, reject) => {
+  const result = await retryAuditRead(() => new Promise<{ stdout: string; stderr: string }>((resolveResult, reject) => {
     const child = spawn(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--json', '-',
       '--port', '3170', '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!,
       '--harness', '*'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -110,7 +164,7 @@ async function authenticatedAuditCode<T>(script: string, inputs: object = {}): P
     });
     child.stdin.end(JSON.stringify({ script, inputs, timeoutSec: 45,
       projection: { pick: ['ok', 'summary', 'summaryNotice', 'error', 'partial', 'childFailures'] } }));
-  });
+  }), undefined, frozenReadOnly);
   const value = JSON.parse(result.stdout);
   expect(value.ok, result.stderr).toBe(true);
   expect(value.partial).not.toBe(true);
@@ -716,26 +770,22 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partiti
     let state = { cursor: null as string | null, offset: 0, covered: 0, pages: 0, complete: false };
     while (!state.complete) {
       const before = state.offset;
-      const batch = await authenticatedAuditCode<{ pages: Array<{ auditId: string; asOf: string; offset: number; recordDigests: string[]; coverage: any; nextCursor: string | null }>; final: typeof state }>(
+      const batch = await authenticatedAuditCode<{ digest: string; final: typeof state }>(
         `const digest=r=>{const t=JSON.stringify(r);let h=2166136261;for(let i=0;i<t.length;i++){h^=t.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16).padStart(8,'0')+':'+t.length;};`
-        + "const s={cursor:inputs.cursor??null,offset:inputs.offset??0,covered:inputs.covered??0,pages:0,complete:false};const out=[];const start=Date.now();"
-        + "while(!s.complete&&out.length<2&&Date.now()-start<8000){const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:inputs.auditId,cursor:s.cursor??undefined,pageSize:10});"
-        + "if(!p.records?.length)throw Error('public pager returned no records at offset '+s.offset);out.push({auditId:p.auditId,asOf:p.asOf,offset:p.projection.offset,recordDigests:p.records.map(digest),coverage:p.coverage,nextCursor:p.nextCursor});"
-        + "s.offset+=p.records.length;s.covered=p.coverage.covered;s.cursor=p.nextCursor;s.complete=p.coverage.complete;s.pages++;}return {pages:out,final:s};",
-        { auditId: oracle.auditId, cursor: state.cursor, offset: state.offset, covered: state.covered });
-      for (const page of batch.pages) {
-        const expectedRecords = oracle.records.slice(page.offset, page.offset + page.recordDigests.length);
-        expect(page.auditId).toBe(oracle.auditId); expect(page.asOf).toBe(oracle.asOf);
-        expect(page.recordDigests).toEqual(expectedRecords.map(recordDigest));
-        expect(page.coverage.total).toBe(oracle.expectedPopulation);
-        expect(page.coverage.missing).toBe(0); expect(page.coverage.duplicates).toBe(0);
-        expect(page.coverage.recordsRead).toBe(page.offset + page.recordDigests.length);
-        expect(page.coverage.totalRecords).toBe(oracle.records.length);
-        expect(page.coverage.complete).toBe(page.nextCursor === null);
-        expect(page.coverage.truncatedByLimit).toBe(page.nextCursor !== null);
-      }
+        + "const s={cursor:inputs.cursor??null,offset:inputs.offset??0,covered:inputs.covered??0,pages:inputs.pages??0,complete:false};const seen=[];const start=Date.now();let count=0;"
+        + "while(!s.complete&&count<20&&Date.now()-start<10000){const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:inputs.auditId,cursor:s.cursor??undefined,pageSize:10});"
+        + "if(!p.records?.length)throw Error('public pager returned no records at offset '+s.offset);"
+        + "const end=s.offset+p.records.length;const covered=s.covered+p.records.filter(r=>r.kind==='agent').length;const complete=end===inputs.recordCount;"
+        + "if(p.auditId!==inputs.auditId||p.asOf!==inputs.asOf)throw Error('snapshot-changed');if(p.projection.offset!==s.offset)throw Error('offset-changed');"
+        + "if(p.coverage.total!==inputs.populationCount||p.coverage.covered!==covered||p.coverage.missing!==0||p.coverage.duplicates!==0||p.coverage.recordsRead!==end||p.coverage.totalRecords!==inputs.recordCount||p.coverage.complete!==complete||p.coverage.truncatedByLimit!==!complete)throw Error('coverage-changed');"
+        + "if(complete?p.nextCursor!==null:!p.nextCursor||p.nextCursor===s.cursor)throw Error('cursor-did-not-progress');"
+        + "seen.push(...p.records);s.offset=end;s.covered=covered;s.cursor=p.nextCursor;s.complete=complete;s.pages++;count++;}return {digest:digest(seen),final:s};",
+        { auditId: oracle.auditId, asOf: oracle.asOf, populationCount: oracle.expectedPopulation,
+          recordCount: oracle.records.length, ...state }, true);
+      expect(batch.digest).toBe(recordDigest(oracle.records.slice(before, batch.final.offset)));
       state = batch.final;
       expect(state.offset).toBeGreaterThan(before);
+      expect(state.covered).toBe(oracle.records.slice(0, state.offset).filter(row => row.kind === 'agent').length);
       process.stdout.write(`PARKED_AUDIT_R1_PAGE ${JSON.stringify(state)}\n`);
     }
     expect(state.offset).toBe(oracle.records.length);
