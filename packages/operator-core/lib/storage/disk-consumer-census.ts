@@ -610,7 +610,7 @@ export async function inspectRetentionTrees(root: string, opts: {
         // Only explicit supervisor evidence identifies which deadline fired.
         // A locale-specific timeout message or an external kill stays unknown.
         timeoutKind ??= stderr.split('\n').includes('papercusp-retention-census: progress timeout') ? 'progress'
-          : /^timeout: sending signal KILL to command /m.test(stderr) ? 'absolute' : 'native-signal';
+          : /^(?:[^\n]*\/)?timeout: sending signal KILL to command /m.test(stderr) ? 'absolute' : 'native-signal';
         finish('retention native census timed out'); return;
       }
       // GNU find's ignore_readdir_race covers a failed stat, but not a
