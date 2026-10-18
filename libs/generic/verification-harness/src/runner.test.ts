@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { assertEvidenceRootPlacement, formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
 import { planCommand, retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
@@ -33,6 +33,16 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllEnvs();
   rmSync(privateRetention, { recursive: true, force: true });
+});
+
+describe('evidence placement guard', () => {
+  it('rejects an implicit legacy home-state root when offload storage is available', () => {
+    const home = tmp();
+    const legacy = path.join(home, '.local/state/verification-harness/legacy');
+    expect(() => assertEvidenceRootPlacement('legacy', legacy, { HOME: home })).toThrow('root filesystem');
+    expect(() => assertEvidenceRootPlacement('legacy', path.join('/tmp', 'vh-data', 'legacy'), { HOME: home })).not.toThrow();
+    rmSync(home, { recursive: true, force: true });
+  });
 });
 
 describe('harness retention admission', () => {

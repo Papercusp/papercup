@@ -33,6 +33,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from '../alarm-attention';
 import {
@@ -390,7 +391,7 @@ export async function sessionIngestLagSweep(
   if (thresholdSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
   const thresholdMs = thresholdSec * 1_000;
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const results: IngestLagSweepResult[] = [];
   try {
     const observations = await (deps.observe ?? observeAdapterLag)();
@@ -729,7 +730,7 @@ export async function sessionPartsWriterSweep(
   if (windowSec <= 0) return [{ sourceKind: '*', outcome: 'skipped', reason: 'kill switch' }];
   const windowMs = windowSec * 1_000;
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const results: IngestLagSweepResult[] = [];
   try {
     const observations = await (deps.observe ?? observePartsWriter)(windowMs);

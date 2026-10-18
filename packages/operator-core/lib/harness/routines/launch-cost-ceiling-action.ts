@@ -1,4 +1,5 @@
 import { papercuspPath } from '@papercusp/host-platform/home';
+import { operatorHomeHarnessSlug } from '../operator-home-harness';
 /**
  * `system:launch-cost-ceiling` — the standing watch on agent launch cost
  * (plan `agent-launch-context-cost-2026-09-18`, P-009(c); decision D-016).
@@ -301,7 +302,7 @@ export async function runLaunchCostCeiling(
   deps: LaunchCostCeilingDeps = {},
 ): Promise<LaunchCostRunResult> {
   const workspaceId = opts.workspaceId ?? activeWorkspaceId();
-  const installSlug = opts.installSlug ?? 'papercusp';
+  const installSlug = opts.installSlug?.trim() || operatorHomeHarnessSlug();
   const recentDays = opts.recentDays ?? DEFAULT_RECENT_DAYS;
   const baselineDays = opts.baselineDays ?? DEFAULT_BASELINE_DAYS;
   const base: LaunchCostRunResult = {

@@ -156,10 +156,10 @@ describe('install-scoped watchdog dispatch', () => {
     });
     expect(result.failures).toEqual([]);
     for (const check of [checks.strandedRepairQueue, checks.idleRepairQueue, checks.gateLiveInvariants, checks.greenMainSlo]) {
-      expect(check.mock.calls.map(([slug]) => slug)).toEqual(['oddsmith', 'papercusp']);
+      expect((check.mock.calls as Array<[string]>).map(([slug]) => slug)).toEqual(['oddsmith', 'papercusp']);
     }
     for (const check of [checks.releaseTriggerFreeze, checks.releaseTriggerFireStale]) {
-      expect(check.mock.calls.map(([slug]) => slug)).toEqual(['papercusp', 'sidestage']);
+      expect((check.mock.calls as Array<[string]>).map(([slug]) => slug)).toEqual(['papercusp', 'sidestage']);
     }
   });
 });

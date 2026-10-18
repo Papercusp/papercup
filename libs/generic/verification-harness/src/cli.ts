@@ -25,6 +25,7 @@ import {
   deriveVerdict,
   formatRunRetentionLine,
   formatSummaryLine,
+  assertEvidenceRootPlacement,
   linkLatest,
   pruneForHarness,
   pruneRunsWithReport,
@@ -85,6 +86,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
     retainedArtifacts.push(file);
   }
   const contract = await readContract(runDir);
+  assertEvidenceRootPlacement(contract.name, evidenceRoot);
   const plan = JSON.parse(await readFile(path.join(runDir, 'plan.json'), 'utf8')) as StoredPlan;
   const raw = await readFile(path.join(runDir, 'phases.jsonl'), 'utf8');
   const recorded = new Map<string, Partial<PhaseResult>>();
@@ -132,6 +134,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
 
 export async function retainRunsCommand(argv: string[]) {
   const evidenceRoot = flag(argv, '--evidence-root');
+  assertEvidenceRootPlacement(path.basename(evidenceRoot), evidenceRoot);
   return pruneRunsWithReport(evidenceRoot, undefined, undefined, { dryRun: argv.includes('--dry-run') });
 }
 
