@@ -30,6 +30,7 @@ import orientTool from './orient';
 import * as pipelineHealth from '../pipeline-health';
 // Production boot registers compound folds before serving coord:orient.
 import '../../fleet/assignments';
+import './whoami';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-orient-obligations-${RUN}`;
