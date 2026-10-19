@@ -42,7 +42,7 @@ describe('Native hiring controls with the real shared primitives', () => {
     const submit = screen.getByRole('button', { name: 'Create role' });
     const uiClick = vi.fn();
     submit.addEventListener('click', uiClick);
-    evaluate(clickWorkbenchButton('Create role', scope));
+    evaluate(clickWorkbenchButton('Create role'));
     // A direct API substitution can send the same payload. Require the
     // rendered control's event as well as the resulting product request.
     expect(uiClick).toHaveBeenCalledOnce();
