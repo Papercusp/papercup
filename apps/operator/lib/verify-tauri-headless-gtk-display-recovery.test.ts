@@ -42,9 +42,9 @@ const SCRIPT =
   process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
 
-/** Same outer boot-attempt loop extraction as verify-tauri-headless-bind-retry.test.ts. */
+/** Anchor on the counter so deadline preflight before it does not hide the loop. */
 function bootLoop(): string {
-  const loop = src.match(/while :; do\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
+  const loop = src.match(/\n  BOOT_ATTEMPTS=\$\(\(BOOT_ATTEMPTS \+ 1\)\)([\s\S]*?)\ndone/)?.[1];
   expect(loop, 'the boot-attempt loop must still be findable').toBeTruthy();
   return loop!;
 }

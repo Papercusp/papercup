@@ -9,10 +9,9 @@
  * before the final taken check and held until normal teardown or the
  * --boot-only keeper has released the display and its derived ports.
  *
- * This is intentionally a static wiring guard: exercising two full Tauri
- * boots would be too expensive and environment-dependent for the unit suite,
- * while the race-prevention properties are the ordering and lifetime
- * invariants checked below.
+ * Reservation ordering and lifetime have static wiring guards. Display
+ * readiness also exercises the production startup function with controlled
+ * process fixtures, without opening an X display or booting Tauri.
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

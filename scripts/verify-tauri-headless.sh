@@ -3203,7 +3203,7 @@ start_display_server() {
   done
   if [ -n "${display_failure:-}" ]; then
     echo "FATAL: Xvfb :$DISPLAY_NUM $display_failure — see $WORK/xvfb.log and $WORK/xdpyinfo.log" >&2
-    tail -40 "$WORK/xvfb.log" "$WORK/xdpyinfo.log" >&2 2>/dev/null || true
+    tail -n 40 "$WORK/xvfb.log" "$WORK/xdpyinfo.log" >&2 2>/dev/null || true
     exit 1
   fi
   start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox
