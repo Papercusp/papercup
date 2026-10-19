@@ -34,6 +34,20 @@ describe('parked audit scorecard execution configuration', () => {
     expect(() => parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profile }, request))
       .toThrow('parked-audit-scorecard-live-profile-mismatch');
   });
+  it('uses the same scoped profile for R7 and honors each suite opt-out independently', () => {
+    const orientation = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-orientation.e2e.test.ts';
+    const result = parkedAuditScorecardEnvironment(group, { ...request, files: [orientation] });
+    expect(result.PAPERCUSP_PARKED_ORIENTATION_LIVE).toBe('1');
+    expect(result.PAPERCUSP_PARKED_SEARCH_LIVE).toBeUndefined();
+    expect(result.PAPERCUSP_SID).toBe(request.actorId);
+    expect(result.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe('packages/operator-core/test/parked-agent-audit.live-profile.json');
+    expect(parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_PARKED_ORIENTATION_LIVE: '0' },
+      { ...request, files: [orientation] })).toEqual({});
+    const mixed = parkedAuditScorecardEnvironment({ ...group, PAPERCUSP_PARKED_SEARCH_LIVE: '0' },
+      { ...request, files: [suite, orientation] });
+    expect(mixed.PAPERCUSP_PARKED_ORIENTATION_LIVE).toBe('1');
+    expect(mixed.PAPERCUSP_PARKED_SEARCH_LIVE).toBeUndefined();
+  });
 });
 
 const native = {
