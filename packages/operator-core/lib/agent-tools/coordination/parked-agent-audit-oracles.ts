@@ -12,6 +12,36 @@ export interface FollowupState {
   hasCompletionEvidence: boolean;
 }
 
+/** Select only the explicitly requested scorecard suite, before Vitest loads its profile. */
+export function parkedAuditScorecardEnvironment(env: NodeJS.ProcessEnv, request: {
+  files: readonly string[]; actorId?: string; workspaceId?: string;
+}): Record<string, string> {
+  const suite = 'packages/operator-core/lib/agent-tools/coordination/parked-agent-audit.e2e.test.ts';
+  if (!/^scorecard-check-[a-f0-9]{40}(?:-|$)/.test(env.PAPERCUSP_TEST_RUN_GROUP ?? '')
+    || !request.files.some(file => file === suite || file.endsWith('/' + suite))
+    || env.PAPERCUSP_PARKED_SEARCH_LIVE === '0') return {};
+  // Attribution is supplied by scorecards:emit's authenticated caller, never
+  // inferred from a ledger workspace or the operator process's stale identity.
+  if (!request.actorId?.trim() || !request.workspaceId?.trim() || request.workspaceId === '*') {
+    throw new Error('parked-audit-scorecard-authenticated-scope-required');
+  }
+  const profile = 'packages/operator-core/test/parked-agent-audit.live-profile.json';
+  if (env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE !== undefined
+    && env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE !== profile) {
+    throw new Error('parked-audit-scorecard-live-profile-mismatch');
+  }
+  return {
+    PAPERCUSP_SID: request.actorId,
+    PAPERCUSP_WORKSPACE: request.workspaceId,
+    PAPERCUSP_APP_OPERATION_LIVE_PROFILE: profile,
+    PAPERCUSP_PARKED_SEARCH_LIVE: '1',
+    // These separate opt-ins own the retained census/native measurements.
+    // A scorecard check must not repeat either of those operations.
+    PAPERCUSP_PARKED_AUDIT_LIVE: '0',
+    PAPERCUSP_PARKED_CURRENT_LIVE: '0',
+  };
+}
+
 /** Keep a failed MCP child's structured refusal visible in the test failure. */
 export function parkedAuditToolFailure(error: unknown): never {
   if (error instanceof Error) {
