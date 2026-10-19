@@ -1309,7 +1309,7 @@ describe('writeSuCodexHome', () => {
     expect(() => ensureSuCodexHomeConfig(input)).toThrow('injected config read failure');
     const repaired = ensureSuCodexHomeConfig({ ...input, recordedSqliteHome: first.sqliteHome });
     configWriteFault.readCode = null;
-    expect(repaired).toMatchObject({ repaired: true, sqliteHome: first.sqliteHome });
+    expect(repaired).toMatchObject({ repaired: false, configUnreadable: true, sqliteHome: first.sqliteHome });
     expect(parseToml(readFileSync(first.configPath, 'utf8')).sqlite_home).toBe(first.sqliteHome);
     expect(readFileSync(database, 'utf8')).toBe('native state');
     expect(readFileSync(transcript, 'utf8')).toBe('native transcript');

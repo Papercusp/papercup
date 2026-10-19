@@ -260,7 +260,7 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
 
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
-function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null): string {
+function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null, allowUnreadableConfig = false): string {
   if (recordedHome && (!isAbsolute(recordedHome) || recordedHome.includes('\0'))) {
     throw new Error('Cannot repair Codex home: recorded sqlite_home must be an absolute path');
   }
@@ -274,7 +274,7 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
     // host-owned directory. Only the exact launch receipt can recover its
     // state binding when the host cannot read it; never guess from TMPDIR.
     const code = (error as NodeJS.ErrnoException).code;
-    if (recordedHome && (code === 'EACCES' || code === 'EPERM')) return recordedHome;
+    if (allowUnreadableConfig && recordedHome && (code === 'EACCES' || code === 'EPERM')) return recordedHome;
     throw error;
   }
   if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
@@ -1770,13 +1770,24 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
   sqliteHome: string;
   configPath: string;
   repaired: boolean;
+  /** The native runtime owns config.toml; an exact receipt allowed a safe no-op. */
+  configUnreadable?: boolean;
   identityRepaired: boolean;
   promptRepaired: boolean;
   reason?: 'no-home';
 } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
-  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome);
   const configPath = join(codexHome, 'config.toml');
+  let configUnreadable = false;
+  if (existsSync(configPath)) {
+    try { readFileSync(configPath, 'utf8'); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (opts.recordedSqliteHome && (code === 'EACCES' || code === 'EPERM')) configUnreadable = true;
+      else throw error;
+    }
+  }
+  const sqliteHome = preservedCodexSqliteHome(codexHome, opts.sessionKey, opts.recordedSqliteHome, configUnreadable);
   if (!existsSync(codexHome)) {
     if (!opts.recoverMissingHome || !opts.promptText?.trim()) {
       return { codexHome, sqliteHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, reason: 'no-home' };
@@ -1784,6 +1795,12 @@ function ensureSuCodexHomeConfigImpl(opts: SuCodexConfigInput & {
     mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     if (!opts.denyAmbientContext) inheritUserCodexHome(codexHome);
     ensureCodexSkillWatchRoots({ codexHome });
+  }
+  // The file is already being replaced by the native runtime. The exact
+  // session receipt proves which SQLite companion belongs to this launch, but
+  // the host must not race the runtime by rewriting its private config.
+  if (configUnreadable) {
+    return { codexHome, sqliteHome, configPath, repaired: false, identityRepaired: false, promptRepaired: false, configUnreadable: true };
   }
   // The recorded home can be repaired without the original launch options.
   // Reuse its existing diagnostics rather than granting ambient inheritance.

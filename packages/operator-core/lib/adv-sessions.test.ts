@@ -555,7 +555,9 @@ describe('exact session launch receipt', () => {
   it('requires both the owner and requested ADV id without borrowing the newest receipt', async () => {
     advSessionRowsMock.mockResolvedValue([{ launch_spec: { codexSqliteHome: '/original-state' } }]);
     expect(await readSuLaunchSpecByOwner('su-exact-owner', 123)).toEqual({ codexSqliteHome: '/original-state' });
-    const [query, ...values] = advSessionRowsMock.mock.calls.at(-1)!;
+    const call = (advSessionRowsMock.mock.calls as unknown[][]).at(-1) ?? [];
+    const query = call[0];
+    const values = call.slice(1);
     expect((query as readonly string[]).join(' ')).toContain('AND (');
     expect((query as readonly string[]).join(' ')).toMatch(/\bid =/);
     expect(values).toContain('su-exact-owner');
