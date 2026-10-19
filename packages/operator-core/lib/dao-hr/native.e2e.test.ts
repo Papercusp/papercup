@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { assertCompletionResponse, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, workbenchEquitySnapshot, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -97,7 +97,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const equitySnapshot = async (title: 'Cap table' | 'My equity') => {
       const section = 'document.querySelector(' + JSON.stringify('section[aria-label="' + title + '"]') + ')';
       await wait('!!' + section + '?.querySelector(\'[role="table"]\')');
-      return await value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>("(()=>{const section=" + section + ";const rows=[...section.querySelectorAll('[role=table] [role=row]')];return {marker:section.querySelector('[role=note]')?.innerText,blockNumber:section.innerText.match(/block (\\d+)/)?.[1],headings:[...rows[0].children].map(cell=>cell.innerText.trim()),rows:rows.slice(1).map(row=>[...row.firstElementChild.children].map(cell=>cell.innerText.trim()))}})()");
+      return await value<{ marker: string; blockNumber: string; headings: string[]; rows: string[][] }>(workbenchEquitySnapshot(title));
     };
     const workspaceDto = async () => {
       const url = '/api/discovery/pots?potId=' + encodeURIComponent(slug) + '&includeLocalViews=true';
