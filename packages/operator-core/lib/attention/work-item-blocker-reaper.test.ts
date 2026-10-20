@@ -34,7 +34,14 @@ import {
   updateExternalBlockerHistory,
   type ExternalBlockerRecord,
 } from '../external-blockers';
-import { defaultBlockerReapDeps, sweepWorkItemBlockerDefaults, type BlockerReapDeps } from './work-item-blocker-reaper';
+import {
+  decideStrandedRepair,
+  defaultBlockerReapDeps,
+  STRANDED_BLOCKED_REPAIR_ACTOR,
+  sweepWorkItemBlockerDefaults,
+  type BlockerReapDeps,
+  type StrandedBlockedCandidate,
+} from './work-item-blocker-reaper';
 
 const NOW = new Date('2026-10-02T12:00:00.000Z');
 const PAST = '2026-10-01T12:00:00.000Z';
@@ -400,5 +407,143 @@ describe('the re-check sweep follows up every clear (event-wait-settlement-2026-
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('decideStrandedRepair (pure, event-wait-settlement-2026-10-20 P-005)', () => {
+  const cleared = (clearedAt: string, over: Record<string, unknown> = {}) =>
+    ({ ...blocker({ kind: 'event', ref: 'event:x', decideBy: undefined, defaultAction: undefined }),
+      status: 'cleared', clearedAt, ...over });
+
+  it('repairs an item that was already blocked when its last blocker was cleared', () => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-01T00:00:00.000Z',
+      blockers: [cleared('2026-10-01T06:00:00.000Z'), cleared('2026-10-01T09:00:00.000Z')] }))
+      .toEqual({ repair: true, lastClearedAt: '2026-10-01T09:00:00.000Z' });
+  });
+
+  it('leaves an item that was moved into blocked AFTER its last clear', () => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-02T00:00:00.000Z',
+      blockers: [cleared('2026-10-01T09:00:00.000Z')] })).toEqual({ repair: false, why: 'reblocked-after-clear' });
+  });
+
+  it.each([
+    { name: 'an active blocker remains', blockers: [cleared('2026-10-01T09:00:00.000Z'), blocker()], why: 'active-blocker' },
+    { name: 'no blocker at all', blockers: [], why: 'no-blocker' },
+    { name: 'a non-array history', blockers: { status: 'cleared' }, why: 'no-blocker' },
+    { name: 'no parseable clear time', blockers: [cleared('not-a-date', { updatedAt: 'nope' })], why: 'no-clear-time' },
+  ])('leaves it when $name', ({ blockers, why }) => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-01T00:00:00.000Z', blockers })).toEqual({ repair: false, why });
+  });
+
+  it('leaves it when the state-change time is unknown', () => {
+    expect(decideStrandedRepair({ stateChangedAt: null, blockers: [cleared('2026-10-01T09:00:00.000Z')] }))
+      .toEqual({ repair: false, why: 'no-state-time' });
+  });
+
+  it('falls back to updatedAt for a non-active record without clearedAt', () => {
+    expect(decideStrandedRepair({ stateChangedAt: '2026-10-01T00:00:00.000Z',
+      blockers: [cleared(undefined as unknown as string, { status: 'superseded', updatedAt: '2026-10-01T03:00:00.000Z' })] }))
+      .toEqual({ repair: true, lastClearedAt: '2026-10-01T03:00:00.000Z' });
+  });
+});
+
+describe('the re-check sweep recovers missed fires and stranded items (event-wait-settlement-2026-10-20 P-005)', () => {
+  function passDeps() {
+    const fake = fakeDeps({});
+    const settledKeys: string[] = [];
+    const repairedIds: string[] = [];
+    const followUps: unknown[] = [];
+    const stranded: StrandedBlockedCandidate[] = [];
+    fake.deps.listMissedFireKeys = vi.fn(async () => ({ keys: ['release:deployed:abc123', 'work-item:done:WI-1'], truncatedByLimit: false }));
+    fake.deps.settleFiredKey = vi.fn(async (key: string) => { settledKeys.push(key); return 2; });
+    fake.deps.listStrandedBlocked = vi.fn(async () => stranded);
+    fake.deps.repairStranded = vi.fn(async (c: StrandedBlockedCandidate) => { repairedIds.push(c.id); return 'cleared' as const; });
+    fake.deps.followUp = vi.fn(async (items) => { followUps.push(...items); });
+    return { deps: fake.deps, settledKeys, repairedIds, followUps, stranded };
+  }
+  const strandedItem = (id: string, over: Partial<StrandedBlockedCandidate> = {}): StrandedBlockedCandidate => ({
+    id, harness: 'h', family: 'feature', holder: 'su-holder', stateChangedAt: '2026-10-01T00:00:00.000Z',
+    blockers: [{ kind: 'event', ref: 'event:x', status: 'cleared', clearedAt: '2026-10-01T09:00:00.000Z' }], ...over,
+  });
+
+  it('AUTO-BAR-R-9-P-005: settles every key whose fire the emit missed, once per key', async () => {
+    const t = passDeps();
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(t.settledKeys).toEqual(['release:deployed:abc123', 'work-item:done:WI-1']);
+    expect(out.recovered).toEqual({ keys: 2, settled: 4, failed: 0, truncatedByLimit: false });
+  });
+
+  it('a key that fails to settle is counted and the pass continues', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const t = passDeps();
+      t.deps.settleFiredKey = vi.fn(async (key: string) => {
+        if (key === 'release:deployed:abc123') throw new Error('lock timeout');
+        return 1;
+      });
+      const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+      expect(out.recovered).toEqual({ keys: 2, settled: 1, failed: 1, truncatedByLimit: false });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a dry run lists missed fires and stranded items but settles and repairs nothing', async () => {
+    const t = passDeps();
+    t.stranded.push(strandedItem('WI-stranded'));
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps, dryRun: true });
+    expect(out.recovered.keys).toBe(2);
+    expect(t.settledKeys).toEqual([]);
+    expect(out.repaired).toMatchObject({ examined: 1, reopened: 1 });
+    expect(t.repairedIds).toEqual([]);
+  });
+
+  it('AUTO-BAR-R-10-P-005: reopens a stranded item and tells its holder through the shared follow-up', async () => {
+    const t = passDeps();
+    t.stranded.push(strandedItem('WI-stranded'));
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(t.repairedIds).toEqual(['WI-stranded']);
+    expect(out.repaired).toEqual({ examined: 1, reopened: 1, skipped: {}, truncatedByLimit: false });
+    expect(t.followUps).toEqual([expect.objectContaining({
+      featureId: 'WI-stranded', status: 'open', holder: 'su-holder', restored: true, activeRemaining: 0,
+      cleared: [], clearedBy: STRANDED_BLOCKED_REPAIR_ACTOR,
+    })]);
+  });
+
+  it('only decides-eligible items reach the restore, and each refusal is counted by its reason', async () => {
+    const t = passDeps();
+    t.stranded.push(
+      strandedItem('WI-reblocked', { stateChangedAt: '2026-10-02T00:00:00.000Z' }),
+      strandedItem('WI-dependency'),
+      strandedItem('WI-ok'),
+    );
+    t.deps.repairStranded = vi.fn(async (c: StrandedBlockedCandidate) => {
+      t.repairedIds.push(c.id);
+      return c.id === 'WI-dependency' ? 'live-dependency' as const : 'cleared' as const;
+    });
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(t.repairedIds).toEqual(['WI-dependency', 'WI-ok']);
+    expect(out.repaired).toEqual({ examined: 3, reopened: 1,
+      skipped: { 'reblocked-after-clear': 1, 'live-dependency': 1 }, truncatedByLimit: false });
+    expect(t.followUps).toHaveLength(1);
+  });
+
+  it('the production follow-up messages the holder about a repair without inventing a cleared blocker', async () => {
+    const t = passDeps();
+    t.stranded.push(strandedItem('WI-stranded'));
+    t.deps.followUp = defaultBlockerReapDeps.followUp;
+    for (const spy of Object.values(followUp)) spy.mockClear();
+    await sweepWorkItemBlockerDefaults({ now: NOW, deps: t.deps });
+    expect(followUp.sendMessage).toHaveBeenCalledTimes(1);
+    const opts = (followUp.sendMessage.mock.calls[0] as unknown as [unknown, { to: string[]; summary: string; body: string }])[1];
+    expect(opts.to).toEqual(['su-holder']);
+    expect(opts.summary).toBe('Returned to open: WI-stranded was still blocked with no active blocker');
+    expect(opts.body).toContain(`clearedBy ${STRANDED_BLOCKED_REPAIR_ACTOR}`);
+  });
+
+  it('a pass whose deps are absent is skipped, so a fake sweep stays inert', async () => {
+    const out = await sweepWorkItemBlockerDefaults({ now: NOW, deps: fakeDeps({}).deps });
+    expect(out.recovered).toEqual({ keys: 0, settled: 0, failed: 0, truncatedByLimit: false });
+    expect(out.repaired).toEqual({ examined: 0, reopened: 0, skipped: {}, truncatedByLimit: false });
   });
 });
