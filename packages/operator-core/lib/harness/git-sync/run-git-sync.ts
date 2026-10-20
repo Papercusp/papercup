@@ -8105,6 +8105,15 @@ async function runGitSyncPass(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
   } else if (!reconcileSuperprojectOrigin) {
+    // WI-6554700010018483: the stale objects/maintenance.lock reclaim otherwise
+    // runs only inside reconcileAndPushOneRepo, which this branch never calls, so a
+    // bridged superproject (the canonical papercusp repo) kept git auto-gc disabled.
+    // Best-effort, exactly like the legacy call: a failed check never fails the sync.
+    try {
+      await clearStaleMaintenanceLock(runGit, repo, log, opts.isGitLockOpen ? { isOpen: opts.isGitLockOpen } : {});
+    } catch (e) {
+      log(`[git-sync] ${repo}: objects/maintenance.lock check failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
     // EI-20232774599730947: a bridged/p2p-only member is truly commit-only at
     // this layer. GitHub ingress + admission and the P2P worktree bridge own
     // remote-to-worktree flow; fetching/merging origin here is both redundant
