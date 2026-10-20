@@ -1472,6 +1472,41 @@ describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
       rmSync(provenanceDir, { recursive: true, force: true });
     }
   });
+
+  it("writes the kickoff ledger under the bootstrap response home, not the parent env home", () => {
+    const parentHome = mkdtempSync(join(tmpdir(), "su-parent-home-"));
+    const childHome = mkdtempSync(join(tmpdir(), "su-child-home-"));
+    const parentDir = join(parentHome, "turn-provenance");
+    const childDir = join(childHome, "turn-provenance");
+    const previousHome = process.env.PAPERCUSP_HOME;
+    try {
+      process.env.PAPERCUSP_HOME = parentHome;
+      const result = finalizeFreshSuArgs(
+        "claude",
+        [],
+        {
+          envelopeEnv: {
+            PAPERCUSP_SID: "su-child-home-1",
+            PAPERCUSP_HOME: childHome,
+          },
+        },
+        parseArgs(["--no-picker", "--agent=claude"]),
+        {
+          PAPERCUSP_KICKOFF_PROMPT: KICK,
+          PAPERCUSP_HOME: parentHome,
+        },
+      );
+
+      expect(result.kickoffSeeded).toBe(true);
+      expect(existsSync(join(childDir, "su-child-home-1.jsonl"))).toBe(true);
+      expect(existsSync(join(parentDir, "su-child-home-1.jsonl"))).toBe(false);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousHome;
+      rmSync(parentHome, { recursive: true, force: true });
+      rmSync(childHome, { recursive: true, force: true });
+    }
+  });
 });
 
 // resolveKickoffText — the SPAWN-SAFE env fallback the desktop docs-agent launcher
