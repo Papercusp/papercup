@@ -455,14 +455,95 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     ).toThrow(/started acceptance BAR contract; template_data cannot be cleared/);
   });
 
-  it('BOUNDARY — a skewed write that CARRIES a contract is not a drop and passes through', () => {
-    const next = started({ method: 'Replayed from the newer peer.' });
+  // WI-6554700010018489 — a skewed write that CARRIES a contract used to pass through
+  // unread. It is now judged against the RAW stored row with the same BAR comparison.
+  it('allows a skewed METHOD-only write that carries the contract, canonicalized from the raw stored row', () => {
     const result = guardAcceptanceBarTemplateDataWrite({
       slug: 'acceptance-subject-plan',
       storedTemplateData: writtenByNewerBuild(),
-      nextTemplateData: next,
+      nextTemplateData: {
+        ...started({
+          method: 'Replayed from the newer peer.',
+          barProvenance: { lifecycle: 'legacy-backfilled', declaredAt: '2030-01-01T00:00:00.000Z', declaredBy: 'spoofed' },
+        }),
+        barSetHash: 'c'.repeat(64),
+        barContract: { ...contract, seededBy: 'spoofed-seeder', adoptionEpoch: 9 },
+        proposedBy: 'spoofed-proposer',
+      },
     });
-    expect(result.data.barContract).toMatchObject(contract);
+    expect(result.started).toBe(true);
+    expect(result.data.criteria).toMatchObject([
+      { method: 'Replayed from the newer peer.', barHash: 'a'.repeat(64), barProvenance: criterion().barProvenance },
+    ]);
+    // Server-owned values come from the stored row, never the caller.
+    expect(result.data.barContract).toEqual(contract);
+    expect(result.data.barSetHash).toBe('b'.repeat(64));
+    expect(result.data.proposedBy).toBe('seed-author');
+    expect(result.changes).toEqual([{ barKey: 'R-1', kind: 'provenance', fields: ['barProvenance'] }]);
+  });
+
+  it('allows an unchanged skewed replay (no changes reported)', () => {
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: writtenByNewerBuild(),
+      nextTemplateData: started(),
+    });
+    expect(result).toMatchObject({ started: true, changed: false, changes: [] });
+    expect(result.data.barContract).toEqual(contract);
+  });
+
+  it('REFUSES a skewed write that carries the contract but changes BAR meaning', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: writtenByNewerBuild(),
+        nextTemplateData: started({ model: 'A weaker outcome.' }),
+      }),
+    ).toThrow(/cannot validate .*refusing a write that changes BAR meaning \(changes: R-1:model\).*WI-6554700010018489/);
+  });
+
+  it('REFUSES a skewed BAR meaning change even with an authenticated amendment (fails closed)', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: writtenByNewerBuild(),
+        nextTemplateData: started({ barHash: 'd'.repeat(64), model: 'Amended outcome.' }),
+        actorId: 'amend-author',
+        amendment: { actorId: 'amend-author', reason: 'A real amendment on an older build.' },
+      }),
+    ).toThrow(/refusing a write that changes BAR meaning \(changes: R-1:model\|barHash\)/);
+  });
+
+  it('REFUSES a skewed write that removes or adds a bar', () => {
+    const stored = writtenByNewerBuild();
+    const removed = { ...started(), criteria: [] };
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({ slug: 'acceptance-subject-plan', storedTemplateData: stored, nextTemplateData: removed }),
+    ).toThrow(/changes BAR meaning|template_data cannot be cleared/);
+    const added = { ...started(), criteria: [criterion(), criterion({ key: 'r-2', barKey: 'R-2', barHash: 'e'.repeat(64) })] };
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({ slug: 'acceptance-subject-plan', storedTemplateData: stored, nextTemplateData: added }),
+    ).toThrow(/changes BAR meaning \(changes: R-2:bar\)/);
+  });
+
+  it('REFUSES a skewed write that changes the server-owned subjectPlan', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: writtenByNewerBuild(),
+        nextTemplateData: { ...started(), subjectPlan: 'another-plan' },
+      }),
+    ).toThrow(/kind and subjectPlan are server-owned/);
+  });
+
+  it('REFUSES a skewed write when the stored criteria cannot be compared at all', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: { ...writtenByNewerBuild(), criteria: 'not-a-list' },
+        nextTemplateData: started(),
+      }),
+    ).toThrow(/stored criteria are not a list of records/);
   });
 
   it('corrects a pre-implementation label through an authenticated amendment without rewriting its declaration', () => {
