@@ -7062,9 +7062,17 @@ export function decodeControl(payload) {
       // (headed sessions keep their terminal — the owner-mandated alternative
       // to kill+resume). GATED like a turn (never mid-turn, never over a
       // half-typed owner line). `data` = the target server name (default
-      // 'papercusp-su' applied by the handler).
+      // 'papercusp-su' applied by the handler). `force:true` is additive: it
+      // tells the macro to press Reconnect even when the row still says
+      // connected, which is the connected-but-toolless failure mode.
       if (o.mode === 'mcp-reconnect')
-        return { mode: 'mcp-reconnect', data: String(o.data ?? ''), gated: true, ...decodeOwnerIdentity(o) };
+        return {
+          mode: 'mcp-reconnect',
+          data: String(o.data ?? ''),
+          ...(o.force === true ? { force: true } : {}),
+          gated: true,
+          ...decodeOwnerIdentity(o),
+        };
       return {
         mode: 'turn',
         data: String(o.data ?? ''),
@@ -8993,7 +9001,8 @@ export function mcpDialogRowSelected(visible, test) {
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
  *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on.
+ *      no-op the watchdog relies on. `force:true` skips that short circuit and
+ *      presses the existing Reconnect action for connected-but-toolless sessions.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -9014,6 +9023,7 @@ export async function runMcpReconnectMacro({
   reconnectBudgetMs = MCP_RECONNECT_MACRO_DEFAULTS.reconnectBudgetMs,
   maxArrows = MCP_RECONNECT_MACRO_DEFAULTS.maxArrows,
   closeWaitMs = MCP_RECONNECT_MACRO_DEFAULTS.closeWaitMs,
+  force = false,
 }) {
   const ESC = '\x1b';
   const DOWN = '\x1b[B';
@@ -9101,7 +9111,7 @@ export async function runMcpReconnectMacro({
     await closeOut();
     return { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
   };
-  if (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName)) {
+  if (!force && (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName))) {
     return alreadyConnected();
   }
 
@@ -9977,6 +9987,49 @@ export function coldResetModeForAgent(agent, childArgs = null) {
     if (!hasPersona) return 'recycle';
   }
   return 'reset';
+}
+
+// Keep this threshold aligned with psu-launcher's launch-time persona guard.
+// A path that exists but contains a truncated render is just as unusable as a
+// deleted path, and killing the current child before discovering that would
+// turn a recoverable refresh failure into a dead session.
+const MIN_PERSONA_BYTES = 2_000;
+
+/** Extract Claude's persona path from either supported argv spelling. */
+function systemPromptFileFromArgs(args = []) {
+  if (!Array.isArray(args)) return null;
+  for (let i = 0; i < args.length; i++) {
+    const token = String(args[i] ?? '');
+    if (token === '--system-prompt-file') {
+      const value = String(args[i + 1] ?? '').trim();
+      return value || null;
+    }
+    if (token.startsWith('--system-prompt-file=')) {
+      const value = token.slice('--system-prompt-file='.length).trim();
+      return value || null;
+    }
+  }
+  return null;
+}
+
+/** True when a persona render is present and large enough for launch. */
+function usablePersonaFile(path) {
+  if (typeof path !== 'string' || !path.trim()) return false;
+  try {
+    const stat = statSync(path);
+    return stat.isFile() && stat.size >= MIN_PERSONA_BYTES;
+  } catch {
+    return false;
+  }
+}
+
+/** Prefer the live child's GC-protected render, then the original launch path. */
+function fallbackPersonaFile(liveArgs, originalArgs) {
+  for (const argv of [liveArgs, originalArgs]) {
+    const path = systemPromptFileFromArgs(argv);
+    if (usablePersonaFile(path)) return path;
+  }
+  return null;
 }
 
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
@@ -15139,10 +15192,11 @@ export function hostThroughPty(o) {
           }
           const serverName = String(msg.data ?? '').trim() || 'papercusp-su';
           const tap = makeOutputTap();
-          appendHostEvent(ownerId, 'mcp-reconnect-started', { serverName });
+          appendHostEvent(ownerId, 'mcp-reconnect-started', { serverName, force: msg.force === true });
           try {
             const result = await runMcpReconnectMacro({
               serverName,
+              force: msg.force === true,
               write: (b) => child.write(b),
               readTap: tap.read,
               resetTap: tap.reset,
@@ -16506,12 +16560,13 @@ export function hostThroughPty(o) {
           personaRefreshReason = `threw: ${e?.message ?? String(e)}`;
         }
       }
+      const personaRefreshFailed = !personaFile && Boolean(personaRefreshReason);
       // Record a refresh that did not happen, so a persistently-failing one is visible
       // rather than looking exactly like the staleness bug. The two EXPECTED skips
       // (a host with no refresh wired, a backend that has no prompt file to swap) are
       // not events — per-respawn noise for a known condition just buries real ones.
       if (
-        !personaFile &&
+        personaRefreshFailed &&
         personaRefreshReason &&
         personaRefreshReason !== 'not-wired' &&
         !personaRefreshReason.startsWith('unsupported-agent')
@@ -16545,6 +16600,14 @@ export function hostThroughPty(o) {
         }
         recycling = false;
         return settleQuotaRecovery(false, IDENTITY_ACTIVATION_REFUSED_REASON);
+      }
+      // A refresh failure is fail-soft only while there is still a usable render
+      // to inherit. The original launch argv is not necessarily the live child's
+      // argv: a prior successful refresh may have moved the successor to a new
+      // path, while launch-context GC is free to delete the original. Prefer the
+      // live child's GC-protected path, then the original path if it still exists.
+      if (personaRefreshFailed && (!agentHint || agentHint === 'claude')) {
+        personaFile = fallbackPersonaFile(liveChildArgs, args);
       }
       let recycleArgs;
       let nativeId;
@@ -16594,6 +16657,31 @@ export function hostThroughPty(o) {
         recycleArgs = prepareChildArgs(minted.args);
         nativeId = minted.nativeId;
         launchContextPath = minted.launchContextPath ?? null;
+        // Do not stop a healthy predecessor for a successor that will fail at
+        // CLI startup. This is the missing-file half of the fail-soft contract:
+        // when a refresh failed and both inherited candidates were collected,
+        // leave the current child alive so a later retry can render or recover a
+        // usable persona. The same preflight also catches a truncated render.
+        const successorPromptFile = systemPromptFileFromArgs(recycleArgs);
+        if (successorPromptFile && !usablePersonaFile(successorPromptFile)) {
+          appendHostEvent(ownerId, 'respawn-failed', {
+            mode: respawnMode,
+            reason: 'persona-file-missing',
+          });
+          try {
+            if (!recycleChild.personaFileMissingWarned) {
+              recycleChild.personaFileMissingWarned = true;
+              writeTerminalDiagnostic(
+                `psu-pty-host: ${respawnMode} refused for ${ownerId}: successor persona file is ` +
+                `missing or truncated; keeping the current child alive for retry\n`,
+              );
+            }
+          } catch {
+            /* diagnostic only */
+          }
+          recycling = false;
+          return settleQuotaRecovery(false, 'persona-file-missing');
+        }
         // Codex's carry mint adds a visible, non-user-authored lineage marker.
         // Feed that rendered text to the native transcript (AGENTS.md alone is
         // system context and does not solve the owner's missing-history view),

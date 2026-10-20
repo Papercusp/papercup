@@ -3412,6 +3412,32 @@ export function decodeControl(payload: any): {
     expectedHostCodeVersion?: undefined;
     expiresAtMs?: undefined;
 } | {
+    ownerId: any;
+    gated: boolean;
+    force?: boolean | undefined;
+    mode: string;
+    data: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
+} | {
+    ownerId?: undefined;
+    gated: boolean;
+    force?: boolean | undefined;
+    mode: string;
+    data: string;
+    observationVersion?: undefined;
+    expectedAdvSessionId?: undefined;
+    expectedNativeSessionId?: undefined;
+    expectedHostStartedAt?: undefined;
+    expectedChildGeneration?: undefined;
+    expectedHostCodeVersion?: undefined;
+    expiresAtMs?: undefined;
+} | {
     requireNativeTurnStart?: boolean | undefined;
     expectedChildGeneration?: any;
     expectedHostStartedAt?: any;
@@ -4727,7 +4753,8 @@ export function mcpDialogRowSelected(visible: any, test: any): any;
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
  *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on.
+ *      no-op the watchdog relies on. `force:true` skips that short circuit and
+ *      presses the existing Reconnect action for connected-but-toolless sessions.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -4736,7 +4763,7 @@ export function mcpDialogRowSelected(visible: any, test: any): any;
  *   5. wait for the target row to read connected; Esc Esc out either way.
  * Returns { ok, step, detail } — the caller appendHostEvent()s it durably.
  */
-export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sleep, crDelayMs, settleMs, paintBudgetMs, reconnectBudgetMs, maxArrows, closeWaitMs, }: {
+export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sleep, crDelayMs, settleMs, paintBudgetMs, reconnectBudgetMs, maxArrows, closeWaitMs, force, }: {
     serverName: any;
     write: any;
     readTap: any;
@@ -4748,6 +4775,7 @@ export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sle
     reconnectBudgetMs?: number | undefined;
     maxArrows?: number | undefined;
     closeWaitMs?: number | undefined;
+    force?: boolean | undefined;
 }): Promise<{
     ok: boolean;
     step: string;
