@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
 import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
-import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS } from './push-snapshot';
+import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
+import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
 import { readPushIncidentAttribution, type PushInput } from './push-channel';
 
@@ -367,6 +368,44 @@ describe('shared snapshot-backed push channel', () => {
       expect(await corroboratePushSources(root, Array(65).fill(sources[0]), signal)).toBe(false);
       expect(await corroboratePushSources(undefined, sources, signal)).toBe(false);
       expect(await corroboratePushSources(root, [{ ...sources[0]!, path: '../outside' }], signal)).toBe(false);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  // plan-item-code-anchors-2026-10-20#P-001 root cause: every symbol in a workspace carried that
+  // workspace's package.json as a full-content proof source, so ANY manifest edit (a script, a
+  // version, a dependency) suppressed every push for the package. Resolution reads only `name`.
+  it('pins a workspace manifest by its name only, so unrelated package.json edits keep the push', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'code-intel-manifest-'));
+    const manifest = JSON.stringify({ name: '@fx/pkg', scripts: { test: 'vitest' } });
+    const files: Record<string, string> = { 'pkg/package.json': manifest,
+      'pkg/lib/target.ts': 'export function target() {}',
+      'pkg/app/use.ts': 'import { target } from "../lib/target"; target();' };
+    const paths = Object.keys(files);
+    const signal = new AbortController().signal;
+    const write = (path: string, text: string) => writeFile(join(root, path), text);
+    try {
+      for (const path of paths) { await mkdir(dirname(join(root, path)), { recursive: true }); await write(path, files[path]!); }
+      const built = buildSymbolSnapshot({ files: paths, readSource: (file: string) => files[file] ?? null,
+        resolveModule: (file: string, spec: string) => relativeSymbolModule(file, spec, new Set(paths)),
+        workspacePackages: [['@fx/pkg', ['pkg']]] });
+      const sources = built.symbols.find((symbol: { name: string }) => symbol.name === 'target')!.sources as PushProofSource[];
+      expect(sources.map(source => source.path)).toContain('pkg/package.json');
+      const push = () => { const d = deps();
+        d.legs = () => new Map([['first-touch', () => [{ ...fact, sourceHashes: sources }]]]);
+        return codeIntelPushText({ ...input, root }, 0, d); };
+      expect(await push()).toContain('Static consumer');
+      await write('pkg/package.json', JSON.stringify({ name: '@fx/pkg', version: '2.0.0', scripts: { test: 'vitest run' } }, null, 2));
+      expect(await corroboratePushSources(root, sources, signal)).toBe(true);
+      expect(await push()).toContain('Static consumer');
+      for (const text of [JSON.stringify({ name: '@fx/renamed' }), '{ not json', '[]']) {
+        await write('pkg/package.json', text);
+        expect(await corroboratePushSources(root, sources, signal)).toBe(false);
+        expect(await push()).toBe('');
+      }
+      await write('pkg/package.json', manifest);
+      expect(await corroboratePushSources(root, sources, signal)).toBe(true);
+      const unknown = sources.map(source => source.path.endsWith('package.json') ? { ...source, digest: 'unknown-v9' } : source);
+      expect(await corroboratePushSources(root, unknown as PushProofSource[], signal)).toBe(false);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

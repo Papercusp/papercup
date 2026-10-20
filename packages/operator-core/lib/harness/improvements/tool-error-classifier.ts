@@ -172,7 +172,7 @@ export const PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN =
  *  Preserve its proven abbreviated capture message as caller input as well;
  *  the generic shell-command-rejected code can also describe unrelated bugs. */
 export const NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN =
-  'rm -f style (commands are not permitted|cleanup[^.]*not permitted)|^Rejected rm -f style commands; use safer approach$';
+  'rm -f style (commands are not permitted|cleanup[^.]*not permitted)|rm -f cleanup (was )?disallowed by (the )?command guard before invocation|^Rejected rm -f style commands; use safer approach$';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.

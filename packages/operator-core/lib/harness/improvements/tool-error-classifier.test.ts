@@ -592,6 +592,24 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }
   });
 
+  it('classifies the long git-sync native cleanup refusal as caller control flow', () => {
+    const message =
+      'Background git-sync shell command was rejected because rm -f cleanup was disallowed by command guard before invocation. ' +
+      'No git-sync process started. Retry without destructive cleanup.';
+    expect(classifyToolError('rejected', 'handler_error', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode: 'rejected',
+      status: 'handler_error',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'The git-sync command starts after replacing rm -f cleanup with an allowed cleanup form.',
+        actual: message,
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
     const errorCode = 'resolver_owner_mismatch_or_not_executing';
     const message = 'The bulk-resolve run is stopped and no report was written.';
