@@ -454,5 +454,55 @@
     { "path": "/tmp/machine-first-route-guards-final-20261019.err", "sha256": "6327afa3c7eba5f0d0c05e35fd6a7df21e58dba96dc95397d8368d090bae8535" },
     { "path": "/tmp/machine-first-route-diagnostic-typecheck-final-20261019.log", "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
   ],
+  "publisherEnablementFollowup": {
+    "date": "2026-10-20",
+    "workItem": "WI-6554700010018171",
+    "scope": "Current publisher refusal and maintained prerequisite detector only; does not verify the original cancellation cause, corrected fixture browser journey, current archive or shipment.",
+    "configuration": {
+      "portalMatchesMaintainedPublisher": true,
+      "portalIndexSha256": "ce95e26ef3f2ec725113f88391a58ad49d7f9880ff165d1a85007e924ab39dc8",
+      "manifestUrlSha256": "6aedc60f67f3046a8efacc74d5f70ba06fbde0bdee43278f272cf96ec70659e8",
+      "permanentReleasePrefixChanged": false
+    },
+    "publicRead": {
+      "nativeStatus": 403,
+      "curlUserAgentStatus": 403,
+      "browserUserAgentStatus": 403,
+      "allThreeResponseBodiesSha256": "cb0daf1f5b86bb7a94ab2d000a064bdb5355bbc73140d16e5da1dccec345e6e8",
+      "bucketCannotBeViewed": true,
+      "qualification": "The documented user-agent-only refusal does not explain these identical native, curl and browser results."
+    },
+    "authenticatedReads": {
+      "s3GetObject": { "exit": 254, "errorCode": "NotEntitled" },
+      "s3HeadObject": { "exit": 254, "httpStatus": 403 },
+      "cloudflareManagedDomain": {
+        "httpStatus": 403,
+        "success": false,
+        "errorCode": 10042,
+        "message": "Please enable R2 through the Cloudflare Dashboard."
+      },
+      "qualification": "Cloudflare requires R2 enablement before object/domain inspection succeeds. Why this account reached that state and when it changed remain unconfirmed."
+    },
+    "maintainedPreflight": {
+      "implementation": "portal/e2e/served-artifact.ts:probeUtilityPublisher",
+      "integration": "portal/e2e/portal-utility-welcome.spec.ts:beforeAll",
+      "behavior": "Explicit served/immutable/signup download runs attach a masked status/manifest receipt and fail before local fixture servers and browser fixtures when the publisher prerequisite fails. The exported probe can also run before an external private-runtime launcher.",
+      "directProbe": { "ok": false, "status": 403, "reason": "publisher-http-error", "manifestSha256": null },
+      "noPrivateRuntimeOrBrowserLaunchedForDirectProbe": true,
+      "testCommand": "npx vitest run tests/served-artifact.test.ts tests/utility-download-route.test.ts",
+      "testResult": { "filesPassed": 2, "testsPassed": 74, "exit": 0 },
+      "typecheckCommand": "npx tsc --noEmit --incremental false",
+      "typecheckExit": 0,
+      "diffCheckExit": 0,
+      "sourceAtVerification": {
+        "e2e/served-artifact.ts": "b60a80ecac7a557ed0c19cb48afedb59aa38120f61c12ebf4379b5940e50ad08",
+        "tests/served-artifact.test.ts": "d7db328547723adc0ebd55b83154338cad5f32d9fed07b7856f0f8f3d16e5da5",
+        "e2e/portal-utility-welcome.spec.ts": "23ed076ece2f28a8c1ff0cf163a1a674a543c567758de7942d17bd04f92fd9cd"
+      },
+      "qualification": "Unit prerequisites and live publisher refusal verified; the new Playwright hook and corrected browser journey have not run against an available publisher."
+    },
+    "externalMutations": 0,
+    "next": "Resolve the Cloudflare R2 enablement requirement with Avi; account/billing changes require explicit authorization. Preserve the permanent release address. After availability is restored, run the maintained probe and exact Portal resolver before one focused corrected-fixture browser case."
+  },
   "authorization": "SELF/AUTO continues. Owner turn11, plan D-003 and current R7 authorize required compatible archive publication and verified shipment; additional blanket publication approval was retracted in post1191208. Preserve artifact-specific controls. No implementation fanout or peer/live-gate monitoring."
 }
