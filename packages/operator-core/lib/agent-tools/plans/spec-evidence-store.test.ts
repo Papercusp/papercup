@@ -58,6 +58,15 @@ vi.mock('./source', async (importOriginal) => {
 // the transport and must not be opened by this store test.
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
+// These private receipt fixtures have no mutation probes. Keep their lock reads
+// in memory, as the dedicated mutation-probe and batch-fence suites do; those
+// suites exercise lock overlap and availability without a live SU database.
+vi.mock('../locks/su-lock-store', () => ({
+  ensureBootstrap: vi.fn(async () => undefined),
+  getTxPool: vi.fn(() => ({})),
+  readQueue: vi.fn(async () => ({ active_locks: [], waiting: [], completed: [] })),
+}));
+
 // A replay that MEASURES resolves a real harness checkout. Point that resolution at this
 // suite's temp fixture root so the measuring path can be observed end to end; without this
 // the measurement can only ever fail with repo_measurement_harness_root_unavailable, which
