@@ -96,6 +96,7 @@ export {
   type ResolvedCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 import { withPlanLock, bumpUpdatedDate, type PlanWritePreimage } from './agent-tools/plans/with-plan-lock';
+import { selectOrphanedAcceptanceBarWitness } from './acceptance-bar-contract-restore';
 import {
   withAcceptanceBarAmendmentTransaction,
   acceptanceBarAmendmentKey,
@@ -3872,6 +3873,18 @@ export interface AmendRubricInput {
   approvalRef?: string;
   approvedBy?: string;
   approvedAt?: string;
+  /**
+   * WI-6554700010018395 — the acceptance BAR recovery path. Opt in to restoring an
+   * ORPHANED started contract (the subject plan still pins this rubric, but its live
+   * template_data lost barContract): the single immutable snapshot of the pinned
+   * revision is substituted as the stored rubric, and this amendment writes it back as
+   * the next revision through the ordinary started-contract transaction. The orphaning
+   * revision's content is discarded from the live row (it stays in plan_revisions);
+   * criteria passed alongside are classified against the restored contract, so a BAR
+   * meaning change still needs outside-lineage approval. Refused on a rubric that still
+   * has its contract.
+   */
+  restoreOrphanedBarContract?: boolean;
   /** Test-only rollback probe; production callers should omit it. */
   faultInjection?: 'after-decision' | 'after-rubric' | 'after-projection' | 'after-rebind';
   /** Workspace root used to validate structured test checks and cited paths. */
@@ -3894,10 +3907,12 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     !input.criterionEvidencePlane &&
     input.methodRef === undefined &&
     input.classRef === undefined &&
-    input.composes === undefined
+    input.composes === undefined &&
+    // WI-6554700010018395: a bare restore re-writes the substituted pinned contract.
+    !input.restoreOrphanedBarContract
   ) {
     throw new Error(
-      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, classRef, and/or composes',
+      'amendRubric: nothing to amend — pass criteria, criterion, criterionClass, criterionEvidencePlane, methodRef, classRef, composes, and/or restoreOrphanedBarContract',
     );
   }
   if (
@@ -4729,6 +4744,81 @@ export function buildAcceptanceBarAmendmentCandidate(
   };
 }
 
+type AcceptanceAmendmentTx = Parameters<Parameters<typeof withAcceptanceBarAmendmentTransaction>[1]>[0];
+
+/**
+ * WI-6554700010018395: read the subject pin and the immutable snapshot(s) naming the
+ * pinned rubric revision inside the amendment's locked transaction, and let the pure
+ * selector decide. Any refusal throws its code — a restore never falls back to
+ * amending the orphan as if it were a fresh rubric.
+ */
+async function resolveOrphanedAcceptanceBarRestore(
+  tx: AcceptanceAmendmentTx,
+  args: {
+    rubricScope: { workspaceId: string; harnessSlug: string };
+    subjectScope: { workspaceId: string; harnessSlug: string };
+    rubricSlug: string;
+    subjectPlan: string;
+    currentRevision: number;
+    storedTemplateData: unknown;
+  },
+): Promise<{ templateData: Record<string, unknown>; pinnedRevision: number; witnessSeq: number; barSetHash: string }> {
+  const [pinRow] = await tx<Array<{
+    acceptance_bar_rubric_slug: string | null;
+    acceptance_bar_rubric_revision: number | string | null;
+    acceptance_bar_set_hash: string | null;
+    acceptance_bar_epoch: number | string | null;
+    acceptance_bar_cohort: string | null;
+    acceptance_bar_seeded_at: Date | string | null;
+    acceptance_bar_seeded_by: string | null;
+  }>>`
+    SELECT acceptance_bar_rubric_slug, acceptance_bar_rubric_revision, acceptance_bar_set_hash,
+           acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_seeded_at, acceptance_bar_seeded_by
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${args.subjectScope.workspaceId}
+       AND harness_slug = ${args.subjectScope.harnessSlug}
+       AND plan_slug = ${args.subjectPlan}`;
+  const pinnedRevision = pinRow?.acceptance_bar_rubric_revision == null
+    ? null
+    : Number(pinRow.acceptance_bar_rubric_revision);
+  // Bounded like getRubricAtRevision: only rows carrying the exact enriched marker are
+  // candidates, and a third match is already ambiguous.
+  const marker = `"rubricRevision": ${pinnedRevision},`;
+  const snapshots = pinnedRevision == null || !Number.isInteger(pinnedRevision)
+    ? []
+    : await tx<Array<{ seq: number | string; content_snapshot: string }>>`
+        SELECT seq, content_snapshot FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${args.rubricScope.workspaceId}
+           AND harness_slug = ${args.rubricScope.harnessSlug}
+           AND plan_slug = ${args.rubricSlug}
+           AND position(${marker} in content_snapshot) > 0
+         ORDER BY seq LIMIT 3`;
+  const selection = selectOrphanedAcceptanceBarWitness({
+    rubricSlug: args.rubricSlug,
+    currentRevision: args.currentRevision,
+    storedTemplateData: args.storedTemplateData,
+    pin: {
+      rubricSlug: pinRow?.acceptance_bar_rubric_slug ?? null,
+      rubricRevision: pinnedRevision,
+      barSetHash: pinRow?.acceptance_bar_set_hash ?? null,
+      epoch: pinRow?.acceptance_bar_epoch == null ? null : Number(pinRow.acceptance_bar_epoch),
+      cohort: pinRow?.acceptance_bar_cohort ?? null,
+      seededAt: pinRow?.acceptance_bar_seeded_at == null ? null : String(pinRow.acceptance_bar_seeded_at),
+      seededBy: pinRow?.acceptance_bar_seeded_by ?? null,
+    },
+    candidates: snapshots.map((snapshot) => {
+      const parsed = parseRubricRevisionSnapshot(snapshot.content_snapshot);
+      return {
+        seq: Number(snapshot.seq),
+        ...(parsed?.rubricRevision !== undefined ? { rubricRevision: parsed.rubricRevision } : {}),
+        templateData: parsed?.templateData ?? null,
+      };
+    }),
+  });
+  if (!selection.ok) throw new Error(`${selection.code}: ${selection.detail}`);
+  return selection;
+}
+
 async function amendAcceptanceBarRubric(
   input: AmendRubricInput,
   rubricScope: { workspaceId: string; harnessSlug: string },
@@ -4790,9 +4880,26 @@ async function amendAcceptanceBarRubric(
                AND harness_slug = ${subjectScope.harnessSlug}
                AND plan_slug = ${subjectPlanHint}
              FOR UPDATE`;
-      const rubricRow = rubricRows[0];
+      const lockedRubricRow = rubricRows[0];
       const subjectRow = subjectRows[0];
-      if (!rubricRow || !subjectRow) return null;
+      if (!lockedRubricRow || !subjectRow) return null;
+      // WI-6554700010018395 — the acceptance BAR recovery path. The orphan's live
+      // template_data has no contract to amend; the pinned revision's immutable snapshot
+      // IS the adopted contract, so it stands in as the stored rubric for every comparison,
+      // guard and projection below. The row identity (content, version, CAS) stays live.
+      const orphanRestore = input.restoreOrphanedBarContract
+        ? await resolveOrphanedAcceptanceBarRestore(tx, {
+            rubricScope,
+            subjectScope,
+            rubricSlug: input.rubricId,
+            subjectPlan: subjectPlanHint,
+            currentRevision: Number(lockedRubricRow.version),
+            storedTemplateData: lockedRubricRow.template_data,
+          })
+        : null;
+      const rubricRow: typeof lockedRubricRow = orphanRestore
+        ? { ...lockedRubricRow, template_data: orphanRestore.templateData as typeof lockedRubricRow.template_data }
+        : lockedRubricRow;
       const stored = rubricFromLockedPlan(input.rubricId, rubricRow.content, rubricRow.template_data, rubricScope);
       if (!stored || stored.kind !== 'acceptance' || stored.subjectPlan !== subjectPlanHint ||
           (stored.subjectHarnessSlug && stored.subjectHarnessSlug !== subjectScope.harnessSlug)) return null;
@@ -5200,7 +5307,9 @@ async function amendAcceptanceBarRubric(
 
       // An identical canonical contract can repair an older writer's projection
       // without creating an amendment, rubric revision, or fresh proof cohort.
-      const projectionOnly = canonicalUnchanged && changedBars.length === 0 && !provenanceChanged;
+      // A restore must WRITE even when it changes nothing against the restored contract:
+      // the live row is the orphan, so "unchanged" here still means "rewrite the row".
+      const projectionOnly = !orphanRestore && canonicalUnchanged && changedBars.length === 0 && !provenanceChanged;
       if (projectionOnly && !preview) {
         if (requirementsRerender.rerendered.length === 0) return {
           rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
@@ -5249,7 +5358,7 @@ async function amendAcceptanceBarRubric(
         };
       }
 
-      if (changedBars.length === 0 && !provenanceChanged && requirementsRerender.rerendered.length === 0 && !preview) return {
+      if (!orphanRestore && changedBars.length === 0 && !provenanceChanged && requirementsRerender.rerendered.length === 0 && !preview) return {
         rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
         subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
         changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
@@ -5462,6 +5571,12 @@ async function amendAcceptanceBarRubric(
             ? [`Approval: not required — every change is additive (${additivity.additiveBars.join(', ')})`]
             : []),
         `Rubric revision: ${oldRubricRevision} → ${nextRubricRevision}`,
+        ...(orphanRestore
+          ? [
+              `Restored-Contract-From: rubric revision ${orphanRestore.pinnedRevision} (plan_revisions seq ${orphanRestore.witnessSeq}, BAR set ${orphanRestore.barSetHash})`,
+              `Orphaned-Revision-Discarded: ${oldRubricRevision} (retained in plan_revisions; re-apply its intent through rubrics:amend)`,
+            ]
+          : []),
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
         'Prior evidence, grades, vetting, author verdicts, and ship verdicts remain audit history and are revision-ineligible.',
@@ -5776,7 +5891,10 @@ export async function previewAcceptanceBarAmendment(
 ): Promise<AcceptanceBarAmendmentPreview | null> {
   const current = await getRubric(input.rubricId);
   if (!current) return null;
-  if (current.kind !== 'acceptance' || !current.barContract || !current.barSetHash) {
+  // An orphan restore previews the cross-plan transaction against the pinned witness;
+  // the locked transaction refuses it if no admissible witness exists.
+  const restoring = input.restoreOrphanedBarContract === true && current.kind === 'acceptance';
+  if (!restoring && (current.kind !== 'acceptance' || !current.barContract || !current.barSetHash)) {
     const revisionHint = current.revision ? `:${current.revision}` : ':<current revision from rubrics:get>';
     throw new Error(
       `invalid_args: rubrics:amend dryRun previews only the cross-plan transaction for a started acceptance ` +
@@ -5925,7 +6043,13 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
   // returns methodOnly only after comparing the rebuilt hashes, and those writes
   // then continue on the ordinary single-plan path below.
   const currentForRouting = await getRubric(input.rubricId);
-  if (currentForRouting?.kind === 'acceptance' && currentForRouting.barContract) {
+  if (input.restoreOrphanedBarContract && currentForRouting?.kind !== 'acceptance') {
+    throw new Error(
+      `acceptance_bar_restore_not_acceptance: rubric '${input.rubricId}' is not an acceptance rubric; ` +
+        'restoreOrphanedBarContract applies only to an orphaned started acceptance BAR contract',
+    );
+  }
+  if (currentForRouting?.kind === 'acceptance' && (currentForRouting.barContract || input.restoreOrphanedBarContract)) {
     const amended = await amendAcceptanceBarRubric(input, scope);
     // A null reread still refuses. Only an explicit, locked method-only result
     // may use the ordinary writer, which refreshes the dependent revision pins.
