@@ -28,6 +28,10 @@ const NATIVE_SOURCE_INPUTS = [
   'scripts/fixtures/dao-workbench-identity.mjs',
   'scripts/lib/batch-watchdog.mjs', 'scripts/lib/verify-tauri-assertion-env.mjs',
   'scripts/tauri-surface-verify-reports.mts', 'scripts/source-preview.mjs',
+  'scripts/mutation-probe.sh', 'scripts/mutation-probe-admission.sh',
+  'scripts/mutation-probe-window-gate.mjs', 'scripts/lib/mutation-probe-window.mjs',
+  'libs/test-config/src/admin-test-runs-reporter.ts', 'libs/test-config/src/verifier-source.ts',
+  'libs/test-config/src/mutation-descriptor.ts',
   'scripts/with-documenso-sandbox.mjs',
 ];
 

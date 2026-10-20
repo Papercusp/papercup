@@ -137,12 +137,13 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       await field('Action arguments (JSON array)', JSON.stringify(args)); await click('Prepare unsigned wallet transaction');
       return signWallet((await response('prepare-equity')).unsignedTransaction);
     };
-    const chainSnapshot = await rpc('evm_snapshot');
+    let chainSnapshot: string | undefined;
     try {
       expect(/^verify-tauri-isolated-\d+$/.test(ws)).toBe(true);
       const receipt = JSON.parse(readFileSync(process.env.VERIFY_TAURI_SOURCE_RECEIPT!, 'utf8'));
       const health = await readNativeHostHealth(privateEnv);
       expect(health.health.sha).toBe(receipt.sourceCommit.slice(0, 12));
+      chainSnapshot = await rpc('evm_snapshot');
       const home = join(process.env.PAPERCUSP_HOME!, slug); mkdirSync(home, { recursive: true });
       await insertHiveIfAbsent({ workspaceId: ws, homeSlug: slug, pubkeyBase64: fixture.hive.publicKey, keychainId: 'hive:' + ws + ':' + slug,
         title: 'Native DAO HR', description: 'Non-binding isolated hiring verification' }, sql);
@@ -172,6 +173,9 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       const signed = await authorHivePolicy({ workspaceId: ws, potHomeSlug: slug, policy: { membership: 'open',
         finance: { equity: { chainId: 1, equity: config.equity, governor: config.governor, timelock: config.timelock } } } });
       expect(signed.ok).toBe(true);
+      // A previous calibrated leg may finish as the candidate. Read the new
+      // admin scope before navigating to this leg's freshly registered DAO.
+      await reload();
       await native('navigate', '/daos', '--json'); await wait("!!document.querySelector('[data-testid=dao-workspace]')");
       await bindFinanceWallet(config.accounts[0]);
       await navigate({ peopleTab: 'hiring' }); await textHas('Create a role');
@@ -299,7 +303,10 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
         equityObservation: { blockNumber: cap.blockNumber, balances, capRows: cap.rows, myRows: mine.rows, capDto, myDto } };
       writeFileSync(config.resultPath, JSON.stringify(final), { mode: 0o600 });
     } finally {
-      try { expect(await rpc('evm_revert', [chainSnapshot]), 'Restore the owned test chain between native probe legs').toBe(true); }
+      try {
+        if (chainSnapshot !== undefined)
+          expect(await rpc('evm_revert', [chainSnapshot]), 'Restore the owned test chain between native probe legs').toBe(true);
+      }
       finally { await browser.close(); await sql.end(); }
     }
   }, 600_000);

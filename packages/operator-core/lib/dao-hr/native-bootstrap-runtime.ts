@@ -19,7 +19,7 @@ const execNativeFile = promisify(execFile);
 /** Each calibrated leg gets independent app rows; the test chain is reverted too. */
 export function nativeJourneyScope(env: NodeJS.ProcessEnv) {
   const phase = env.PAPERCUSP_MUTATION_PROBE === '1' ? env.PAPERCUSP_MUTATION_PHASE : undefined;
-  assert.ok(phase === undefined || ['baseline', 'copy-baseline', 'mutant'].includes(phase), 'Unknown native mutation leg');
+  assert.ok(env.PAPERCUSP_MUTATION_PROBE !== '1' || ['baseline', 'copy-baseline', 'mutant'].includes(phase ?? ''), 'Unknown native mutation leg');
   const suffix = phase ? '-' + phase : '';
   return { daoSlug: 'workbench-native' + suffix, personId: (name: string) => 'PER-native-' + name + suffix };
 }

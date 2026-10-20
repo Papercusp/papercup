@@ -23,6 +23,7 @@ describe('native bootstrap admission and lifecycle', () => {
     expect(new Set(scopes.map(scope => scope.personId('candidate'))).size).toBe(4);
     expect(scopes[0].daoSlug).toBe('workbench-native');
     expect(() => nativeJourneyScope({ PAPERCUSP_MUTATION_PROBE: '1', PAPERCUSP_MUTATION_PHASE: '../foreign' })).toThrow('Unknown native mutation leg');
+    expect(() => nativeJourneyScope({ PAPERCUSP_MUTATION_PROBE: '1' })).toThrow('Unknown native mutation leg');
     expect(nativeJourneyScope({ PAPERCUSP_MUTATION_PHASE: 'mutant' }).daoSlug).toBe('workbench-native');
   });
 
