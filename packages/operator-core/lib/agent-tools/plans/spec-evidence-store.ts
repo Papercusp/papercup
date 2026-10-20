@@ -1352,7 +1352,7 @@ interface PriorTestRunBindingRow {
 /** Resolve the selector and append one idempotent exact evidence binding. */
 export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
   const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const writeBinding = (): Promise<BindSpecEvidenceResult> => withWorkspace(scope.workspaceId, async (tx) => {
     // P-022 / D-018: a caller with no plan gets the harness's shared ad-hoc spec scope
     // rather than being forced to invent a plan slug. Everything downstream then runs
     // unchanged, which is the point: no PK, FK, index or freshness invariant moves.
@@ -1990,6 +1990,17 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       ...(duplicateLiveTestRunAdvisory ? { advisory: duplicateLiveTestRunAdvisory } : {}),
     };
   });
+  // Pin explicitly retained bytes before accepting a receipt binding. The
+  // standing cleaner renews this same finite lease while the item stays open.
+  if (/^docs\/evidence\/.+\.json$/.test(input.evidenceRef)) {
+    const repository = await resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug);
+    if (existsSync(resolve(repository, input.evidenceRef))) {
+      const { withWorkItemEvidenceRetention } = await import('../../storage/retention-pins');
+      return withWorkItemEvidenceRetention({ harness_slug: scope.harnessSlug, work_item_id: input.workItemId,
+        evidence_ref: input.evidenceRef }, { repositories: new Map([[scope.harnessSlug, repository]]) }, writeBinding);
+    }
+  }
+  return writeBinding();
 }
 
 export type FingerprintState = 'current' | 'stale' | 'unknown' | 'not-applicable';
