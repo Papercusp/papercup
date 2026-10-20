@@ -108,6 +108,12 @@ describe('blind reviewer confinement — gate decisions', () => {
     expect(read('testing:runs', runs).allowed).toBe(true);
     const execute = { harness: 'papercusp', files: ['lib/probe.test.ts'], timeoutMs: 120000, maxFailures: 5 };
     expect(read('testing:run', execute).allowed).toBe(true);
+    // WI-6554700010018202: a foreground timeout hands back a detached run id the reviewer must poll.
+    expect(read('testing:run-status', { runId: '36ac0764-7ce6-424e-99f1-ec233bed8e7b' }).allowed).toBe(true);
+    for (const args of [{}, { runId: '' }, { runId: '../x' }, { runId: 7 },
+      { runId: 'abc', workItemId: 'WI-123' }, { runId: 'abc', harness: 'papercusp' }]) {
+      expect(read('testing:run-status', args).allowed).toBe(false);
+    }
     for (const args of [{ ...execute, files: ['lib/other.test.ts'] }, { ...execute, files: [] },
       { ...execute, files: ['lib/probe.test.ts', 'lib/other.test.ts'] }, { ...execute, harness: 'other' },
       { ...execute, evidence: { workItemId: 'WI-123', bindings: [] } },
@@ -118,6 +124,7 @@ describe('blind reviewer confinement — gate decisions', () => {
       expect(read('testing:run', args).allowed).toBe(false);
     }
     expect(evaluate('testing:run').allowed).toBe(false); // A frozen legacy ceiling stays closed.
+    expect(evaluate('testing:run-status').allowed).toBe(false);
     for (const args of [{ ...docs, slugs: ['other-guide'] }, { ...docs, harness: 'other' },
       { ...docs, source: true }, { ...docs, slug: docs.slugs[0], slugs: undefined }]) {
       expect(read('docs:get', args).allowed).toBe(false);
@@ -208,6 +215,7 @@ describe('mintBlindGapReviewer', () => {
     expect(ctx[KEY]).toMatchObject({ denyProductReadsOutside: { ...productReads, harness: 'papercusp' } });
     expect(args.brief).toContain("docs:get { harness: 'engineering', slugs: ['agent-insights/product-guide'] }");
     expect(args.brief).toContain("testing:runs { harness: 'papercusp', filePath: 'lib/probe.test.ts'");
+    expect(args.brief).toContain("testing:run-status { runId: '<that id>' }");
   });
 
   it.each([{ testFiles: ['../outside.test.ts'] }, { docsHarness: '*' }, { testFiles: ['lib/source.ts'] }])('refuses an invalid product boundary before launch: %j', async productReads => {

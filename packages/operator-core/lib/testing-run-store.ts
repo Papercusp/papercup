@@ -2670,6 +2670,7 @@ export interface HarnessTestRunIdQuery {
 
 export interface HarnessTestRunEvidence {
   id: number;
+  framework?: string;
   file_path: string;
   status: string;
   finished_at: string | Date | null;
@@ -2695,7 +2696,7 @@ export async function readHarnessTestRunEvidence(params: HarnessTestRunIdQuery):
     const requestedTestRunIds = params.testRunIds === undefined ? null : params.testRunIds;
     const resultLimit = requestedTestRunIds === null ? 200 : Math.max(1, requestedTestRunIds.length);
     const rows = await sql`
-      SELECT id, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
+      SELECT id, framework, workspace_id, harness_slug, run_group_id, file_path, status, finished_at,
              commit_sha, worktree_dirty,
              to_jsonb(test_runs)->'execution_details' AS execution_details,
              to_jsonb(test_runs)->'configuration_snapshot' AS configuration_snapshot

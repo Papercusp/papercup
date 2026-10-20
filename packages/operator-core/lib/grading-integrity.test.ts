@@ -45,6 +45,7 @@ import {
   type DispatchPendingGradingAuditsDeps,
   type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
+import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
 
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type ReadEvidence = NonNullable<DispatchPendingGradingAuditsDeps['readEvidence']>;
@@ -1755,7 +1756,7 @@ describe('dispatchPendingGradingAudits', () => {
     await dispatchPendingGradingAudits({ targetIds: ['EI-pinned-audit'], ctx: { ...ctx, gradingLaunch: profile } as never, harness: 'papercusp' }, d);
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({
-      ...profile, independent: true, members: [{ role: 'judge', ...profile }],
+      ...profile, independent: true, members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], ...profile }],
     }), expect.objectContaining({ ownerId: GRADING_AUDIT_DISPATCH_ACTOR }));
   });
 
@@ -1877,7 +1878,7 @@ describe('dispatchPendingGradingAudits', () => {
         independent: true,
         account: 'auto',
         count: 1,
-        members: [{ role: 'judge', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], account: 'auto' }],
         label: 'grading-audit:EI-audit-1',
         idempotencyKey: 'grading-audit:EI-audit-1',
       }),
@@ -2561,7 +2562,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         agent: 'codex',
         account: 'auto',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(
           /^grading-audit:EI-live-terminal-auditor:recovery:[a-f0-9]{16}$/,
         ),
@@ -2883,7 +2884,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect(d.launch.mock.calls[1]).toEqual([
         expect.objectContaining({
           independent: true, agent: 'codex', account: 'auto',
-          members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+          members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
           idempotencyKey: expect.stringContaining(':recovery:'),
         }),
         auditorCtx,
@@ -3074,7 +3075,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         agent: 'codex',
         account: 'auto',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-weekly-limit:recovery:[a-f0-9]{16}$/),
       }),
     );
@@ -3175,7 +3176,7 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({
         agent: 'codex',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
       }),
     );
   });
@@ -3267,7 +3268,7 @@ describe('dispatchPendingGradingAudits', () => {
       expect.objectContaining({
         agent: 'codex',
         account: 'auto',
-        members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
+        members: [{ role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK], agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' }],
         idempotencyKey: expect.stringMatching(/^grading-audit:EI-gateway-500:recovery:[a-f0-9]{16}$/),
       }),
     );

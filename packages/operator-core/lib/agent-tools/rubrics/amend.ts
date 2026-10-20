@@ -55,6 +55,8 @@ const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
 const REVIEWER_MODEL_NOT_ALLOWED_CODE = 'reviewer_model_not_allowed';
 const REVIEWER_MODEL_NOT_ALLOWED_NEXT =
   'Choose an agent/model pair present in the workspace expert model allowlist, or update that allowlist before retrying. rubrics:amend never substitutes an unavailable reviewer.';
+const ACCEPTANCE_BAR_CONTRACT_REFUSAL_NEXT =
+  'Correct the acceptance BAR contract before retrying: requiredTestLayers must use a recorded layer (unit, integration, e2e, llm, or browser), the check must cover every declared layer, and an automated BAR must declare its test layer.';
 const PROPOSE_RUBRIC_INVALID_ARGS_PREFIX = 'invalid_args: proposeRubric:';
 const PROPOSE_RUBRIC_INVALID_ARGS_NEXT =
   'Correct the rubric input described in the error, then retry. For off-scale criterion instructions, use the rubric’s effective ratingScale or revise the procedure prose.';
@@ -72,6 +74,25 @@ function proposeRubricInvalidArgsRefusal(error: unknown): {
     code: 'invalid_args',
     error: message,
     next: PROPOSE_RUBRIC_INVALID_ARGS_NEXT,
+  };
+}
+
+function acceptanceBarContractRefusal(error: unknown): {
+  ok: false;
+  code: string;
+  error: string;
+  next: string;
+} | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = message.match(
+    /^(acceptance_bar_amendment_(?:test_layers_missing|test_layer_unrecordable|check_layer_mismatch)):/,
+  );
+  if (!match) return null;
+  return {
+    ok: false,
+    code: match[1]!,
+    error: message,
+    next: ACCEPTANCE_BAR_CONTRACT_REFUSAL_NEXT,
   };
 }
 
@@ -494,7 +515,7 @@ export default defineTool({
     'Patch a rubric criterion/requirement, acceptance criteria, evidence plane, or refs; include an amendment field (approvalRef alone is not a patch). Use rubrics:propose for standard criterion/key/rating changes. Started BAR meaning changes require outside-lineage approval (see chaining).',
   guidance: {
     returns:
-      "The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies. { ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). Missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`), required outside-lineage approval (`acceptance_bar_approval_required`), and unavailable reviewer models (`reviewer_model_not_allowed`) return { ok:false, code, error, next } as domain refusals and make no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
+      "The subject Decision, BAR/spec revisions, and rebind commit atomically; prior proof and grades remain history; the shrink guard applies. { ok, rubric, completeness, replicationSqlCheck, methodLint, idempotencyKey }. methodLint is a non-blocking advisory for acceptance methods that prescribe native shell commands (judges cannot run shell; MCP tools such as testing:run stay valid). Missing live BAR mapping (`acceptance_bar_amendment_no_live_discharge_mapping`), invalid BAR contract fields (`acceptance_bar_amendment_test_layers_missing`, `acceptance_bar_amendment_test_layer_unrecordable`, `acceptance_bar_amendment_check_layer_mismatch`), required outside-lineage approval (`acceptance_bar_approval_required`), and unavailable reviewer models (`reviewer_model_not_allowed`) return { ok:false, code, error, next } as domain refusals and make no write. An amend or dry-run preview still running after ~40s returns { ok:true, pending:true, receipt } instead of timing out: the work continues server-side; poll rubrics:amend-status { rubricRef, idempotencyKey } and do not re-issue while it reads running. A dry run with reviewPreviewPost adds review { state, conversationId, previewPostRef, screenedOut, next }. The resolver loads the immutable preview in the same workspace and checks every changed BAR hash against the current delta; authorship/time come from the reviewer post.",
     when: 'A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.',
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
@@ -621,7 +642,7 @@ export default defineTool({
         try {
           preview = await previewAcceptanceBarAmendment(input);
         } catch (error) {
-          const refusal = noLiveDischargeMappingRefusal(error);
+          const refusal = noLiveDischargeMappingRefusal(error) ?? acceptanceBarContractRefusal(error);
           if (refusal) return { ...refusal, dryRun: true };
           throw error;
         }
@@ -681,7 +702,7 @@ export default defineTool({
       });
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);
       if (settled.kind === 'rejected') {
-        const refusal = proposeRubricInvalidArgsRefusal(settled.error);
+        const refusal = proposeRubricInvalidArgsRefusal(settled.error) ?? acceptanceBarContractRefusal(settled.error);
         if (refusal) return { data: { ...refusal, dryRun: true } };
         throw settled.error;
       }
@@ -800,6 +821,7 @@ async function executeAmend(input: AmendRubricInput, rubricRef: string): Promise
   } catch (error) {
     const refusal =
       noLiveDischargeMappingRefusal(error) ??
+      acceptanceBarContractRefusal(error) ??
       acceptanceBarApprovalRequiredRefusal(error) ??
       proposeRubricInvalidArgsRefusal(error);
     if (refusal) return refusal;

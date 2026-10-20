@@ -12670,7 +12670,13 @@ export function hostThroughPty(o) {
           agent: env.PAPERCUSP_AGENT,
           isResume: isResumeLaunch,
           hasResolver: Boolean(resolveRespawnNativeId),
-          nativeId: initialNativeId,
+          // A resolver can expose a transient startup id for a fresh Codex
+          // child before its first tagged turn. That id is not an adopted
+          // native binding: calling onRespawn here would publish ownership
+          // before the kickoff is accepted (WI-10007305). Keep the resolver
+          // available for the post-submission proof, while only an explicitly
+          // adopted id participates in this pre-submission gate.
+          nativeId: adoptedCarryRespawn?.nativeId ?? null,
         });
         kickoffCarryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
           (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)

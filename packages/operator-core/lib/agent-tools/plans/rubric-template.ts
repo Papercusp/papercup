@@ -221,7 +221,7 @@ export const rubricCriterionCheckSchema = z.discriminatedUnion('kind', [
         .min(1)
         .max(50)
         .describe(
-          'Vitest test files that must pass for this criterion (repo-root-relative preferred; ' +
+          'Vitest files or maintained Portal browser Playwright specs that must pass for this criterion (repo-root-relative preferred; ' +
             'workspace-relative accepted when unambiguous). Validated to resolve against the live ' +
             'tree at propose time; actually RUN at grading time.',
         ),

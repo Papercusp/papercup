@@ -79,6 +79,7 @@ import {
   fetchGatewayOwnerExecution,
   type GatewayOwnerExecution,
 } from './inference-gateway/observability';
+import { GRADING_INTEGRITY_JUDGE_STACK } from './judge-identity-stack';
 
 /** The meta-rubric every grading audit grades against (proposed by P-013). */
 export const GRADING_INTEGRITY_RUBRIC_REF = 'grading-integrity';
@@ -2983,12 +2984,16 @@ export async function dispatchPendingGradingAudits(
               useFallback
                 ? {
                     ...(harnessResolved ? { role: 'judge' } : {}),
+                    ...(harnessResolved ? { stack: [...GRADING_INTEGRITY_JUDGE_STACK] } : {}),
                     agent: GRADING_AUDIT_FALLBACK.agent,
                     model: GRADING_AUDIT_FALLBACK.model,
                     effort: GRADING_AUDIT_FALLBACK.effort,
                     account: GRADING_AUDIT_FALLBACK.account,
                   }
-                : { ...(harnessResolved ? { role: 'judge' } : {}), account: GRADING_AUDIT_ACCOUNT },
+                : {
+                    ...(harnessResolved ? { role: 'judge', stack: [...GRADING_INTEGRITY_JUDGE_STACK] } : {}),
+                    account: GRADING_AUDIT_ACCOUNT,
+                  },
             ],
             label: `grading-audit:${issueId}`,
             idempotencyKey: currentIdempotencyKey,
