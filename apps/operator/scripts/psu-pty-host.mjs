@@ -5818,6 +5818,7 @@ export function makeCarryRearmController({
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {(resubmits: number) => void} [opts.onResubmit]
  * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
+ * @param {() => string | null} [opts.abortReason]
  */
 export function makeSubmitVerifier({
   lastOutputAt,
@@ -5835,6 +5836,7 @@ export function makeSubmitVerifier({
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   onResubmit = () => {},
   onExhausted = () => {},
+  abortReason = () => null,
 } = {}) {
   const getOut = typeof lastOutputAt === 'function' ? lastOutputAt : () => 0;
   const getIn = typeof lastInputAt === 'function' ? lastInputAt : () => 0;
@@ -5876,8 +5878,12 @@ export function makeSubmitVerifier({
         }
       };
       for (; i < polls; i++) {
+        const beforeWait = abortReason();
+        if (beforeWait) return { polls: i, resubmits, aborted: beforeWait, exhausted: false };
         if (isQuotaBlocked()) return quotaAbort();
         await sleep(pollMs);
+        const afterWait = abortReason();
+        if (afterWait) return { polls: i + 1, resubmits, aborted: afterWait, exhausted: false };
         // The first submit can itself paint the quota wall. Read the live
         // detector after each wait, before either retrying or declaring failure.
         if (isQuotaBlocked()) return quotaAbort();
@@ -11605,12 +11611,14 @@ export function hostThroughPty(o) {
       inputAtStart = submittedAtMs,
       // WI-10004943: turnWriteContext() captured when the write STARTED.
       writeContext = null,
+      abortReason = () => null,
     } = {},
   ) => {
     const marker = leadingTurnOriginMarker(text);
     const nativeProofAvailable = Boolean(marker) &&
       nativeTurnVerifierSupport(env.PAPERCUSP_AGENT, env).supported;
     const verifier = makeSubmitVerifier({
+      abortReason,
       lastOutputAt: () => activity.snapshot().lastOutputAt ?? 0,
       lastInputAt: () => activity.snapshot().lastInputAt ?? 0,
       inputAtStart,
@@ -11745,6 +11753,7 @@ export function hostThroughPty(o) {
     abortBeforeWrite = null,
     prepareBeforeWrite = null,
     onSubmitted = null,
+    abortSubmission = () => null,
     // WI-10004943 (d): when set (ms, measured from this call), a kickoff whose
     // budget expires while the Codex footer still reads `Starting` is HELD for
     // the session frame up to this ceiling instead of being dropped.
@@ -12326,6 +12335,7 @@ export function hostThroughPty(o) {
             return { delivered: false, reason: 'superseded', attempts };
           }
           let submitVerification = await verifySubmitted(label, {
+            abortReason: abortSubmission,
             terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
             text,
             submittedAtMs: turnWriteStartedAt,
@@ -12377,6 +12387,7 @@ export function hostThroughPty(o) {
               return { delivered: false, reason: 'superseded', attempts };
             }
             submitVerification = await verifySubmitted(label, {
+              abortReason: abortSubmission,
               terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
               text,
               submittedAtMs: turnWriteStartedAt,
@@ -12394,6 +12405,11 @@ export function hostThroughPty(o) {
           // deliberately disable generic fatal exhaustion and own the verdict
           // themselves. Only callers that opt into this verifier as authority
           // may turn its negative/unknown result into a delivery drop.
+          const submissionAbort = abortSubmission();
+          if (submissionAbort) {
+            dropReason = submissionAbort;
+            break;
+          }
           const verificationFailure = submitVerificationRequired || submitVerification.aborted === 'quota-blocked'
             ? submitVerificationFailureReason(submitVerification)
             : null;
@@ -12619,6 +12635,7 @@ export function hostThroughPty(o) {
       let kickoffChild = child;
       let kickoffSubmittedAtMs = null;
       let kickoffCarryBinding = null;
+      let kickoffBindingFailure = null;
       const injectLaunchKickoff = () => {
         const identityRefusal = continuationIdentityRefusal({
           mode: 'launch-kickoff',
@@ -12655,9 +12672,14 @@ export function hostThroughPty(o) {
           (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
           ? prepareCarryBinding(initialNativeId, Date.now() + kickoffBudgetMs)
           : null;
+        kickoffBindingFailure = null;
+        void kickoffCarryBinding?.then((binding) => {
+          if (!binding.ok && binding.reason === 'successor-native-id-missing') kickoffBindingFailure = binding.reason;
+        });
         return injectTurnAtPrompt({
           text: launchKickoff,
           label,
+          abortSubmission: () => kickoffBindingFailure,
           onSubmitted: (submission) => {
             kickoffSubmittedAtMs = submission.submittedAtMs;
             // Forget startup/replayed capacity copy so an identical NEW error
@@ -12682,6 +12704,7 @@ export function hostThroughPty(o) {
             ),
           }),
           prepareBeforeWrite: async ({ deadline }) => {
+            if (kickoffBindingFailure) return { ok: false, reason: kickoffBindingFailure };
             if (kickoffCarryBinding && launchKickoffRequiresPreSubmissionNativeBinding({
               agent: env.PAPERCUSP_AGENT,
               isResume: isResumeLaunch,
@@ -17097,6 +17120,10 @@ export function hostThroughPty(o) {
       const respawnBinding = needsNativeReanchor && (nativeId || resolveRespawnNativeId)
         ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
         : null;
+      let carryBindingFailure = null;
+      void respawnBinding?.then((binding) => {
+        if (!binding.ok && binding.reason === 'successor-native-id-missing') carryBindingFailure = binding.reason;
+      });
       if (!carryText) {
         if (respawnBinding) {
           const binding = await respawnBinding;
@@ -17142,6 +17169,7 @@ export function hostThroughPty(o) {
       let carryNativeSubmission = null;
       let carryResult = await injectTurnAtPrompt({
         text: carryText,
+        abortSubmission: () => carryBindingFailure,
         label: drillId ? `carry-drill ${drillId} first prompt` : 'recycle carry-note',
         // A fresh child can be output-quiet before its input handler exists.
         // Apply the same backend-aware boot proof as a scripted resume/port.
@@ -17176,6 +17204,7 @@ export function hostThroughPty(o) {
         // MCP endpoint is still reconnecting. Keep the carry out of the composer
         // until the closed-loop reconnect check proves papercusp-su ready.
         prepareBeforeWrite: async ({ deadline }) => {
+          if (carryBindingFailure) return { ok: false, reason: carryBindingFailure };
           if (respawnBinding && launchKickoffRequiresPreSubmissionNativeBinding({
             agent: env.PAPERCUSP_AGENT,
             isResume: resumeQuotaConversation,

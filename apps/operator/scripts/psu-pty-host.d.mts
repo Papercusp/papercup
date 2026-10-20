@@ -2151,8 +2151,9 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {(resubmits: number) => void} [opts.onResubmit]
  * @param {(details: {polls: number, resubmits: number, outputObservedAfterResubmit: boolean}) => void} [opts.onExhausted]
+ * @param {() => string | null} [opts.abortReason]
  */
-export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, requireNativeConfirmation, inputAtStart: inputBaseline, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, }?: {
+export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuotaBlocked, isSubmitted, requireNativeConfirmation, inputAtStart: inputBaseline, quietMs, pollMs, polls, maxResubmits, now, sleep, onResubmit, onExhausted, abortReason, }?: {
     lastOutputAt?: (() => number) | undefined;
     writeCr?: ((data: string) => void) | undefined;
     lastInputAt?: (() => number) | undefined;
@@ -2172,6 +2173,7 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
         resubmits: number;
         outputObservedAfterResubmit: boolean;
     }) => void) | undefined;
+    abortReason?: (() => string | null) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
      *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | 'quota-blocked' | null;
@@ -2182,6 +2184,7 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, isQuota
         resubmits: number;
         aborted: string;
         exhausted: boolean;
+        confirmed?: undefined;
     } | {
         polls: number;
         resubmits: number;
