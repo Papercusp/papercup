@@ -12,8 +12,8 @@ import { register, authenticatedAccount, accountToken } from '../../../../script
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
 import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
 import { checkNativeLedger } from '../../../../scripts/tauri-surface-verify-reports.mts';
-import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, NATIVE_BOOTSTRAP_TIMEOUT_MS,
-  NATIVE_BOOTSTRAP_TEARDOWN_MS, NATIVE_VERIFIER_PHASE_BUDGETS } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, nativeBootstrapBudgets,
+  assertNativeMutationProof, NATIVE_BOOTSTRAP_TEARDOWN_MS } from './native-bootstrap-runtime';
 import { assertNativeHireResult } from './native-hire-result';
 
 const NATIVE_SOURCE_INPUTS = [
@@ -33,7 +33,8 @@ const NATIVE_SOURCE_INPUTS = [
 
 describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined native hire bootstrap', () => {
   it('runs the isolated native hire journey with actual provider accounts, hosted wallet routes and signed V2 chain', async ({ onTestFinished }) => {
-    const verifierDeadline = Date.now() + NATIVE_BOOTSTRAP_TIMEOUT_MS - NATIVE_BOOTSTRAP_TEARDOWN_MS;
+    const budgets = nativeBootstrapBudgets(process.env);
+    const verifierDeadline = Date.now() + budgets.timeoutMs - NATIVE_BOOTSTRAP_TEARDOWN_MS;
     const cancellation = new AbortController();
     let verifier: Promise<number | null> | undefined;
     onTestFinished(async () => {
@@ -127,13 +128,19 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
         verifier = runNativeVerifier('bash', [join(sourceRoot, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
           join(sourceRoot, 'scripts/tauri-surface-verify-dao-hr.mts')], { cwd: sourceRoot,
           signal: cancellation.signal, timeoutMs: verifierDeadline - Date.now(),
-          phaseBudgetsMs: NATIVE_VERIFIER_PHASE_BUDGETS, logFd: fd,
+          phaseBudgetsMs: budgets.phaseBudgetsMs, logFd: fd,
           env: { ...env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready', VERIFY_TAURI_WINDOW: '1440x1000',
             NODE_OPTIONS: (env.NODE_OPTIONS || '') + ' --import=' + join(sourceRoot, 'scripts/fixtures/dao-workbench-identity.mjs') },
           stdio: ['ignore', fd, fd] });
         code = await verifier;
       } finally { closeSync(fd); }
       expect(code, 'Native boot/journey log: ' + logPath).toBe(0);
+      if (env.PAPERCUSP_DAO_HR_NATIVE_MUTATION === '1') {
+        const proof = assertNativeMutationProof(readFileSync(logPath, 'utf8'));
+        writeFileSync(logPath + '.mutation.json', JSON.stringify(proof), { mode: 0o600 });
+        console.log('DAO_HR_NATIVE_MUTATION_RESULT=' + JSON.stringify(proof));
+        return;
+      }
       const result = JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
       assertNativeHireResult(result);
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
@@ -146,5 +153,5 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       if (sourceDirectory) rmSync(sourceDirectory, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
-  }, NATIVE_BOOTSTRAP_TIMEOUT_MS);
+  }, nativeBootstrapBudgets(process.env).timeoutMs);
 });
