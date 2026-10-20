@@ -2088,9 +2088,8 @@ export async function writeWithScratchQuota(
     admissionSubphaseTimingsMs?: Record<string, number>;
   }) => {
     timings.dataLeaseWaitMs = (timings.dataLeaseWaitMs ?? 0) + info.waitedMs;
-    // Keep the historical aggregate useful to callers that only inspect quotaWaitMs, while
-    // preserving the precise data-lease duration in its own field.
-    timings.quotaWaitMs += info.waitedMs;
+    // Data-lease admission is separate from quota admission. Keep it in its dedicated
+    // timing field so callers can tell payload protection from quota contention.
     if (opts.captureSubphaseTimings) {
       const subphases = timings.awaitSubphaseTimingsMs ??= {};
       for (const [name, elapsedMs] of Object.entries(info.admissionSubphaseTimingsMs ?? {})) {
@@ -2103,6 +2102,10 @@ export async function writeWithScratchQuota(
   let reservation: ScratchQuotaReservation | undefined;
   let markerPresentAfterWrite = true;
   let writeFailure: unknown;
+  // A write may wait for or initiate one shared recovery pass. If the same
+  // reservation still does not fit after that pass, refuse it instead of
+  // repeatedly rescanning an unreclaimable tree forever.
+  let quotaRecoveryAttempted = false;
   try {
     for (;;) {
       const outcome = await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
@@ -2180,10 +2183,19 @@ export async function writeWithScratchQuota(
       }
       if (outcome === SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED) {
         const recovery = entry.recovering;
-        if (recovery) await timed('quotaWaitMs', () => recovery);
+        if (recovery) {
+          quotaRecoveryAttempted = true;
+          await timed('quotaWaitMs', () => recovery);
+        }
         continue;
       }
       if (outcome === SCRATCH_QUOTA_RECOVERY_REQUIRED) {
+        if (quotaRecoveryAttempted) {
+          throw new ScratchQuotaError(
+            `scratch reservation: workspace ${opts.workspaceId} remains over quota after recovery`,
+          );
+        }
+        quotaRecoveryAttempted = true;
         const recovery = ensureQuotaRecovery();
         if (recovery.started) await recovery.promise;
         else await timed('quotaWaitMs', () => recovery.promise);
@@ -2244,9 +2256,15 @@ export async function writeWithScratchQuota(
             // reservation performs a complete reconciliation instead of trusting stale bytes.
             invalidateLocalScratchUsage(opts.workspaceId);
           }
+          // A fresh shared ledger now includes this settled payload and every reservation that
+          // preceded it. The existing per-run index already tracks the reservation delta; retain
+          // it when the ledger was fresh. The stale-ledger case still needs an async reconciliation
+          // to account for changes made by another process before this reservation.
           if (reservation!.sharedStateStale) {
-            entry.refreshDeferred = true;
             entry.runBytesValid = false;
+            entry.refreshDeferred = true;
+          } else {
+            entry.refreshDeferred = false;
           }
           return;
         }
