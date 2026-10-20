@@ -22,7 +22,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -220,10 +220,15 @@ beforeEach(async () => {
 });
 
 describe('admission lifecycle (P-003)', () => {
-  it.each(['merged', 'merged-after-comment', 'merged-after-default-change', 'wrong-fork', 'wrong-head', 'wrong-base', 'closed',
+  it.each(['merged', 'merged-after-comment', 'merged-after-default-change', 'merged-submodule-close', 'wrong-fork', 'wrong-head', 'wrong-base', 'closed',
     'base-already-fixed', 'merge-lacks-fix', 'reopened', 'completion-changed', 'tested-then-merged', 'tested-then-open'])(
     'reconciles completion after publication and merge, refusing unrelated evidence: %s', async (scenario) => {
-      const root = mkdtempSync(join(tmpdir(), 'admission-late-completion-'));
+      const container = mkdtempSync(join(tmpdir(), 'admission-late-completion-'));
+      // WI-6554700010018378: the pot repository is a submodule of the checkout the fix
+      // was closed in, so its receipt is rooted at the superproject with prefixed paths.
+      const submoduleClose = scenario === 'merged-submodule-close';
+      const root = submoduleClose ? join(container, 'pot') : container;
+      if (submoduleClose) mkdirSync(root);
       const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
       try {
         git('init', '-q', '-b', 'main');
@@ -254,6 +259,13 @@ describe('admission lifecycle (P-003)', () => {
           git('merge', '--no-ff', '-qm', 'later merge', 'later');
           merge = git('rev-parse', 'HEAD');
         }
+        if (submoduleClose) {
+          const sp = (...args: string[]) => execFileSync('git', ['-C', container, ...args], { encoding: 'utf8' }).trim();
+          sp('init', '-q', '-b', 'staging');
+          sp('-c', 'advice.addEmbeddedRepo=false', 'add', 'pot');
+        }
+        const receiptRoot = submoduleClose ? container : root;
+        const receiptPath = submoduleClose ? 'pot/bug.txt' : 'bug.txt';
         const source = await connect(TRACKER);
         tickets[TRACKER]!.set('LATE-PR', ticket('LATE-PR'));
         await sync(source);
@@ -264,9 +276,9 @@ describe('admission lifecycle (P-003)', () => {
         expect(await correlateAdmissionStandingPr(sql, publication)).toEqual({ linked: [], failed: [] });
         const payload = { ...(await item(id)).payload as Record<string, unknown>, _completionEvidence: {
           summary: 'Late completion of the merged fix.',
-          settlementManifest: { version: 1, generation: 1, evidenceHash: 'd'.repeat(64), repositoryRoot: root,
-            headSha: head, normalizedPaths: ['bug.txt'],
-            contentIdentity: [{ path: 'bug.txt', workingTreeBlobSha: blob, headBlobSha: blob }], residualPaths: [] },
+          settlementManifest: { version: 1, generation: 1, evidenceHash: 'd'.repeat(64), repositoryRoot: receiptRoot,
+            headSha: head, normalizedPaths: [receiptPath],
+            contentIdentity: [{ path: receiptPath, workingTreeBlobSha: blob, headBlobSha: blob }], residualPaths: [] },
         } };
         await sql`UPDATE harness_shared.work_items SET item_kind = 'bug', status = 'done', authority = 'committed',
           payload = ${sql.json(payload)} WHERE workspace_id = ${WS} AND feature_id = ${id}`;
@@ -327,7 +339,8 @@ describe('admission lifecycle (P-003)', () => {
         // A changed completion can be reconciled on its next pass, after a fresh audit.
         if (scenario !== 'completion-changed') await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
         const receipt = ((await item(id)).payload as Record<string, unknown>).standingPr;
-        if (scenario === 'merged' || scenario === 'merged-after-comment' || scenario === 'merged-after-default-change') {
+        if (scenario === 'merged' || scenario === 'merged-after-comment' || scenario === 'merged-after-default-change'
+          || scenario === 'merged-submodule-close') {
           expect(receipt).toMatchObject({ url: publication.url, testedSha: head, targetSha: target, mergedSha: merge });
           const comments = callsFor('LATE-PR').filter(([capability, text]) => capability === 'ticket.comment'
             && String(text).includes(publication.url));
@@ -356,7 +369,7 @@ describe('admission lifecycle (P-003)', () => {
             && String(text).includes(publication.url))).toHaveLength(1);
         } else expect(receipt).toBeUndefined();
         if (scenario === 'reopened') expect(callsFor('LATE-PR').some(([, text]) => String(text).includes('Completed'))).toBe(false);
-      } finally { rmSync(root, { recursive: true, force: true }); }
+      } finally { rmSync(container, { recursive: true, force: true }); }
     },
   );
 
