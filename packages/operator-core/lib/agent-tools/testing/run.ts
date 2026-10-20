@@ -2512,7 +2512,7 @@ export function runWithTestProcessDeadline<T>(opts: {
 }
 
 /** Spawn a bounded test process, capturing its diagnostics. */
-function runTestProcess(
+export function runTestProcess(
   command: string,
   commandArgs: string[],
   args: string[],
