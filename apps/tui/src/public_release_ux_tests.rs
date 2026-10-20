@@ -34,31 +34,64 @@ fn composing() -> App {
 #[test]
 fn r14_p002_registry_reuse_and_required_screen_states_remain_explicit() {
     let contract = include_str!("../PUBLIC_RELEASE_UX.md");
-    let ir: serde_json::Value =
-        serde_json::from_str(include_str!("../../../docs/mockups/pui-public-release-ux.ir.json"))
-            .unwrap();
-    assert!(contract.contains("design-registry lookup for ecosystem ratatui returned no components"));
+    let ir: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/mockups/pui-public-release-ux.ir.json"
+    ))
+    .unwrap();
+    assert!(
+        contract.contains("design-registry lookup for ecosystem ratatui returned no components")
+    );
     for source in [
-        "app.rs", "ui.rs", "plans_board.rs", "su_session.rs", "session_config.rs",
-        "card_view.rs", "semantic_tool_cards.rs", "agent_chats.rs", "tutorial.rs",
+        "app.rs",
+        "ui.rs",
+        "plans_board.rs",
+        "su_session.rs",
+        "session_config.rs",
+        "card_view.rs",
+        "semantic_tool_cards.rs",
+        "agent_chats.rs",
+        "tutorial.rs",
     ] {
-        assert!(contract.contains(&format!("src/{source}")), "missing reuse route: {source}");
-        assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(source).is_file());
+        assert!(
+            contract.contains(&format!("src/{source}")),
+            "missing reuse route: {source}"
+        );
+        assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join(source)
+            .is_file());
     }
     assert_eq!(ir["ecosystem"], "ratatui");
     for state in [
-        "first-run", "session-picker", "settings-palette", "approval",
-        "error-recovery", "attachment-picker", "about-support", "too-small",
+        "first-run",
+        "session-picker",
+        "settings-palette",
+        "approval",
+        "error-recovery",
+        "attachment-picker",
+        "about-support",
+        "too-small",
     ] {
         assert!(ir["states"][state].is_object(), "missing state: {state}");
     }
     for requirement in [
-        "First-run UX", "Chat UX", "Task-list/editor UX", "Session-picker UX",
-        "Settings/command palette UX", "Approval UX", "Error/recovery UX",
-        "Compact-terminal UX", "Launcher conflict", "Release matrix", "Keyboard and copy",
+        "First-run UX",
+        "Chat UX",
+        "Task-list/editor UX",
+        "Session-picker UX",
+        "Settings/command palette UX",
+        "Approval UX",
+        "Error/recovery UX",
+        "Compact-terminal UX",
+        "Launcher conflict",
+        "Release matrix",
+        "Keyboard and copy",
     ] {
         let crosswalk = contract.split("## Acceptance crosswalk").nth(1).unwrap();
-        assert!(crosswalk.contains(&format!("| {requirement} |")), "missing crosswalk: {requirement}");
+        assert!(
+            crosswalk.contains(&format!("| {requirement} |")),
+            "missing crosswalk: {requirement}"
+        );
     }
 }
 
@@ -66,8 +99,10 @@ fn r14_p002_registry_reuse_and_required_screen_states_remain_explicit() {
 fn r14_p002_switcher_owns_typing_and_escape_restores_the_composer() {
     let mut app = composing();
     let draft = app.chat_input.clone();
-    assert!(matches!(press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL),
-        Action::FetchSessionSwitcher { .. }));
+    assert!(matches!(
+        press(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL),
+        Action::FetchSessionSwitcher { .. }
+    ));
     for key in ['q', 'o', '2'] {
         press(&mut app, KeyCode::Char(key), KeyModifiers::NONE);
     }
@@ -124,7 +159,10 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
         app.update(Event::Resize(width, height));
         let draft = app.chat_input.clone();
         assert!(render(&app, width, height).contains("未送信"));
-        assert_eq!(press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL), Action::FetchContextProjection);
+        assert_eq!(
+            press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL),
+            Action::FetchContextProjection
+        );
         assert_eq!(app.tab, Tab::PlansBoard);
         assert!(!app.chat_composing);
         assert!(render(&app, width, height).contains("Context"));
@@ -144,13 +182,16 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
 fn r14_p002_blocking_question_owns_answer_keys_before_composer_and_navigation() {
     let mut app = composing();
     app.agent_chat_id = Some("r14-chat".into());
-    app.card_state.apply_snapshot(serde_json::from_value(json!({
-        "runId": "r14-run", "version": 1, "workspaceId": "r14-workspace",
-        "openCards": [{"correlationId":"r14-question", "prompt":"Keep or change?",
-            "presentation":{"kind":"radio","options":[
-                {"id":"keep","label":"Keep"},{"id":"change","label":"Change"}
-            ]}}]
-    })).unwrap());
+    app.card_state.apply_snapshot(
+        serde_json::from_value(json!({
+            "runId": "r14-run", "version": 1, "workspaceId": "r14-workspace",
+            "openCards": [{"correlationId":"r14-question", "prompt":"Keep or change?",
+                "presentation":{"kind":"radio","options":[
+                    {"id":"keep","label":"Keep"},{"id":"change","label":"Change"}
+                ]}}]
+        }))
+        .unwrap(),
+    );
     let draft = app.chat_input.clone();
     assert!(render(&app, 80, 24).contains("Keep or change?"));
     let action = press(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
@@ -169,7 +210,10 @@ fn r14_p002_too_small_frame_holds_hidden_input_until_resize() {
     let draft = app.chat_input.clone();
     app.update(Event::Resize(79, 19));
     assert!(render(&app, 79, 19).contains("Terminal too small"));
-    assert_eq!(press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE), Action::None);
+    assert_eq!(
+        press(&mut app, KeyCode::Char('x'), KeyModifiers::NONE),
+        Action::None
+    );
     assert_eq!(app.chat_input, draft);
     assert!(!app.should_quit);
     app.update(Event::Resize(80, 24));
