@@ -184,6 +184,39 @@ describe('test-files router', () => {
     }
   });
 
+  it('rewrites package-relative private inputs to repository-relative paths in the frozen verifier', async () => {
+    const file = 'lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+    const resolved = resolve(REPO_ROOT, 'packages/operator-core', file);
+    const oldOptions = process.env.NODE_OPTIONS;
+    const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+    const frozen = vi.fn(async () => 7);
+    const preflight = vi.fn(async () => ({
+      url: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp', source: 'operator-env-file',
+    }));
+    const restricted = vi.fn(() => ({ verdict: 'admit' }));
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      expect(await main([file], {
+        preflightPrivateIntegrationPgImpl: preflight,
+        restrictedHoldPreflightImpl: restricted,
+        runPrivateVerifierImpl: frozen,
+      })).toBe(7);
+      expect(restricted).toHaveBeenCalledExactlyOnceWith({ repoRoot: REPO_ROOT, files: [resolved] });
+      expect(frozen).toHaveBeenCalledWith(expect.objectContaining({
+        inputs: expect.arrayContaining(['packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts']),
+        command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
+          'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts'],
+      }));
+    } finally {
+      if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
+      warning.mockRestore();
+    }
+  });
+
   it.each(['restricted_write_held', 'restricted_hold_state_unknown'])(
     'refuses private proof %s before PG admission, source copying or any test child', async error => {
       const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
