@@ -3847,7 +3847,7 @@ async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: Tes
         root,
         error: 'aborted',
         hint: outcome.hostShutdownDetached
-          ? `the operator host is shutting down; request ${runId} was released while its confined router continues under systemd ownership. Read its eventual exact test ledger row with testing:runs { runGroup: '${runId}', source: 'local', latestPerFile: false }`
+          ? `the operator host is shutting down; request ${runId} was released while its confined router continues under systemd ownership, but only until its scope runtime limit (the original foreground budget). Poll testing:run-status { runId: '${runId}' }: foreground.verdict is running, recorded (read rows with testing:runs { runGroup: '${runId}', source: 'local', latestPerFile: false }) or lost (the scope ended with no ledger row; re-run it)`
           : 'the caller canceled this foreground test run; its router/Vitest process group was terminated',
         routerOutput: outcome.output.slice(-2000),
       };
