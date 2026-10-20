@@ -158,7 +158,7 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
         let mut app = composing();
         app.update(Event::Resize(width, height));
         let draft = app.chat_input.clone();
-        assert!(render(&app, width, height).contains("未送信"));
+        assert!(render(&app, width, height).contains("second line"));
         assert_eq!(
             press(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL),
             Action::FetchContextProjection
@@ -173,7 +173,7 @@ fn r14_p002_context_round_trip_preserves_draft_in_compact_and_wide_frames() {
         assert_eq!(app.tab, Tab::Operator);
         assert!(app.chat_composing);
         assert_eq!(app.chat_input, draft);
-        assert!(render(&app, width, height).contains("未送信"));
+        assert!(render(&app, width, height).contains("second line"));
         assert!(!app.should_quit);
     }
 }
@@ -183,13 +183,13 @@ fn r14_p002_blocking_question_owns_answer_keys_before_composer_and_navigation() 
     let mut app = composing();
     app.agent_chat_id = Some("r14-chat".into());
     app.card_state.apply_snapshot(
-        serde_json::from_value(json!({
+        crate::card_view::SnapshotEnvelope::from_json(&json!({
             "runId": "r14-run", "version": 1, "workspaceId": "r14-workspace",
-            "openCards": [{"correlationId":"r14-question", "prompt":"Keep or change?",
+            "snapshot": {"openCards": [{"correlationId":"r14-question", "prompt":"Keep or change?",
                 "presentation":{"kind":"radio","options":[
                     {"id":"keep","label":"Keep"},{"id":"change","label":"Change"}
-                ]}}]
-        }))
+                ]}}]}
+        }).to_string())
         .unwrap(),
     );
     let draft = app.chat_input.clone();
@@ -217,6 +217,6 @@ fn r14_p002_too_small_frame_holds_hidden_input_until_resize() {
     assert_eq!(app.chat_input, draft);
     assert!(!app.should_quit);
     app.update(Event::Resize(80, 24));
-    assert!(render(&app, 80, 24).contains("未送信"));
+    assert!(render(&app, 80, 24).contains("second line"));
     assert_eq!(app.chat_input, draft);
 }
