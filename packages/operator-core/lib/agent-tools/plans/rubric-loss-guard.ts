@@ -415,6 +415,22 @@ function deriveProvenance(
 }
 
 /**
+ * True when the stored document, read WITHOUT this build's schema, is an acceptance
+ * rubric carrying a server-owned barContract object. Used only to fail closed when the
+ * strict parse cannot see a contract the raw row plainly has (WI-6554700010018464).
+ */
+function rawStoredHasStartedBarContract(stored: unknown): boolean {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return false;
+  const raw = stored as { kind?: unknown; barContract?: unknown };
+  return (
+    raw.kind === 'acceptance' &&
+    typeof raw.barContract === 'object' &&
+    raw.barContract !== null &&
+    !Array.isArray(raw.barContract)
+  );
+}
+
+/**
  * Guard every template_data persistence path after a subject's BAR contract has
  * started.  BAR meaning changes are rejected unless the caller is the canonical
  * amendment operation; provenance/approver fields are canonicalized from the
@@ -427,11 +443,16 @@ export function guardAcceptanceBarTemplateDataWrite(
 ): AcceptanceBarWriteGuardResult {
   const storedParsed = rubricTemplateDataSchema.safeParse(args.storedTemplateData);
   const nextParsed = rubricTemplateDataSchema.safeParse(args.nextTemplateData);
+  // WI-6554700010018464: a started contract is judged from the RAW stored document as
+  // well as the parsed one. A stored rubric written by a NEWER build can fail this
+  // build's strict schema (measured: d740fc3802 rejected R-6's `check.all` probe set),
+  // and the parsed-only test then read "no contract" and let a generic writer drop it.
+  const storedRawHasStartedContract = rawStoredHasStartedBarContract(args.storedTemplateData);
   if (!nextParsed.success) {
     // The registry/schema writer will provide the richer validation diagnostic;
     // this guard only adds the important started-BAR refusal for a destructive
     // clear or malformed direct upgrade.
-    if (storedParsed.success && storedParsed.data.barContract) {
+    if ((storedParsed.success && storedParsed.data.barContract) || storedRawHasStartedContract) {
       throw new Error(
         `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract; ` +
           'template_data cannot be cleared or replaced with an unvalidated shape outside rubrics:amend',
@@ -470,6 +491,21 @@ export function guardAcceptanceBarTemplateDataWrite(
         `writes are refused until the orphaned contract is repaired through the acceptance BAR recovery path: ` +
         `rubrics:amend { rubricRef:'${args.slug}', restoreOrphanedBarContract:true, reason, dryRun:true } ` +
         `(WI-6554700010018395), then apply without dryRun`,
+    );
+  }
+  if (!storedParsed.success && storedRawHasStartedContract && !(next as { barContract?: unknown }).barContract) {
+    // Version skew: this build cannot read the stored rubric, so it can neither verify
+    // nor re-attach the started contract. Refuse rather than persist a document that
+    // silently drops it (the 2026-10-18 strip of the cloud-monitoring rubric).
+    // A write that CARRIES a contract (e.g. a federated replay of the newer peer's own
+    // row) is not a drop and still passes through unchanged.
+    const issue = storedParsed.error.issues[0];
+    const where = issue ? `${issue.path.join('.') || '(root)'}: ${issue.message}` : 'unknown field';
+    throw new Error(
+      `invalid_args: rubric '${args.slug}' has a started acceptance BAR contract that this build cannot ` +
+        `validate (stored template_data fails this build's rubric schema at ${where}); refusing a ` +
+        'template_data write that would drop the contract. Retry on a build whose rubric schema reads ' +
+        'the stored rubric (version skew, WI-6554700010018464).',
     );
   }
   if (!storedParsed.success || storedParsed.data.kind !== 'acceptance' || !storedParsed.data.barContract) {

@@ -413,6 +413,58 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     expect(result.data.barContract).toMatchObject({ subjectPlanRevision: 8, seededBy: 'seed-author' });
   });
 
+  // WI-6554700010018464 — the 2026-10-18 strip. rubrics:propose sends criteria WITHOUT
+  // the server-owned barContract/barSetHash; the guard must re-attach the stored one.
+  const proposeShaped = (overrides: Record<string, unknown> = {}) => {
+    const { barContract: _contract, barSetHash: _setHash, ...rest } = started(overrides);
+    return rest;
+  };
+  /** A stored rubric written by a NEWER build: a field this build's strict schema rejects. */
+  const writtenByNewerBuild = () => ({ ...started(), fieldFromANewerBuild: { all: [] } });
+
+  it('re-attaches the stored contract when a propose-shaped write omits it', () => {
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: started(),
+      nextTemplateData: proposeShaped({ method: 'Improved method.' }),
+      subjectPlan: { revision: 8, adoptionEpoch: 1, cohort: 'post-epoch' },
+    });
+    expect(result.started).toBe(true);
+    expect(result.data.barContract).toMatchObject({ seededAt: contract.seededAt, seededBy: 'seed-author' });
+    expect(result.data.criteria).toMatchObject([{ method: 'Improved method.', barKey: 'R-1' }]);
+  });
+
+  it('REFUSES a propose-shaped write that would drop a contract this build cannot parse (version skew)', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: writtenByNewerBuild(),
+        nextTemplateData: proposeShaped(),
+        subjectPlan: { revision: 8, adoptionEpoch: 1, cohort: 'post-epoch' },
+      }),
+    ).toThrow(/started acceptance BAR contract that this build cannot validate.*would drop the contract/);
+  });
+
+  it('REFUSES a malformed write over a contract this build cannot parse', () => {
+    expect(() =>
+      guardAcceptanceBarTemplateDataWrite({
+        slug: 'acceptance-subject-plan',
+        storedTemplateData: writtenByNewerBuild(),
+        nextTemplateData: null,
+      }),
+    ).toThrow(/started acceptance BAR contract; template_data cannot be cleared/);
+  });
+
+  it('BOUNDARY — a skewed write that CARRIES a contract is not a drop and passes through', () => {
+    const next = started({ method: 'Replayed from the newer peer.' });
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: writtenByNewerBuild(),
+      nextTemplateData: next,
+    });
+    expect(result.data.barContract).toMatchObject(contract);
+  });
+
   it('corrects a pre-implementation label through an authenticated amendment without rewriting its declaration', () => {
     const stored = started();
     const corrected = guardAcceptanceBarTemplateDataWrite({

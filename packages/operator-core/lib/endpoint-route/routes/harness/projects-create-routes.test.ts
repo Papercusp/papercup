@@ -64,10 +64,14 @@ const byPath = (path: string) => {
 
 const fromRepoRoute = byPath('/harness/pots/from-repo');
 const createHiveRoute = byPath('/harness/pots');
-const deleteProjectRoute = (routes as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>).find(
+type DeleteRoute = { path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> };
+const foundDeleteProjectRoute = (routes as DeleteRoute[]).find(
   (x) => x.path === '/harness/projects/:slug' && x.method === 'DELETE',
 );
-if (!deleteProjectRoute) throw new Error('no DELETE route for /harness/projects/:slug');
+if (!foundDeleteProjectRoute) throw new Error('no DELETE route for /harness/projects/:slug');
+// Re-bound as a non-optional const: module-scope narrowing does not reach the
+// removeProject closure below (TS18048).
+const deleteProjectRoute: DeleteRoute = foundDeleteProjectRoute;
 
 async function post(
   route: { path: string; handler: (req: Request, ctx: unknown) => Promise<Response> },
