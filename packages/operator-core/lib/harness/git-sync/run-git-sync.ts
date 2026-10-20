@@ -73,6 +73,7 @@ import {
   type FileAttribution,
   type AttributionRosterEntry,
 } from './git-sync-attribution';
+import { attributionScopeLabel, resolveAttributionRepo } from './attribution-repo';
 
 /**
  * Per-call options a git runner must forward to the git child.
@@ -1488,6 +1489,12 @@ export interface GitSyncConfig {
    *  does not extend to submodules, each an independent GitHub repo the bridge never
    *  touches. Non-legacy callers also require owning-hive authorization at each push. */
   pushSubmoduleOrigins?: boolean;
+  /** WI-6554700010018380: working-copy submodules with no pot fork (set by
+   *  `applyIntegrationPushTarget`). Neither they nor anything nested under them is
+   *  committed, merged or pushed: nothing could publish such a commit, and committing it
+   *  locally leaves the superproject pinning an unresolvable gitlink. Edits inside stay
+   *  in the working tree. */
+  unforkedSubmodules?: string[];
   /** pot-review-integration-mode P-016: a working-copy pot merges the MAIN repository's
    *  branch into its staging each tick (set by `applyIntegrationPushTarget`). Applied to
    *  the SUPERPROJECT only — submodules are the main repositories' own and never absorb. */
@@ -5233,7 +5240,9 @@ export interface AttributedGroupFailure {
  * (the caller falls through to the catch-all) rather than ever touching the shared index.
  */
 /** One repo's attributed phase in one tick, as carried on GitSyncOutcome.attribution
- *  (WI-6554700010018198). `scope` uses the same labels as skippedPaths. */
+ *  (WI-6554700010018198). `scope` is the repo label git_sync_commit_attribution uses
+ *  ('superproject' or the submodule path from the top-level root; WI-6554700010018409), which
+ *  differs from skippedPaths' install-relative label only for a submodule install. */
 export interface AttributionTally {
   scope: string;
   agentGroupCount: number;
@@ -7464,7 +7473,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
 async function runGitSyncPass(
   slug: string,
   opts: RunGitSyncOpts,
-  onAttribution: (t: AttributionTally) => void,
+  emitAttribution: (t: AttributionTally) => void,
 ): Promise<GitSyncOutcome> {
   /**
    * An action-level stall guard can abort the owning fire while a git child is
@@ -7658,6 +7667,14 @@ async function runGitSyncPass(
   // single-commit behavior. Read ONCE; per-repo maps are derived below (super + each submodule).
   const roster = opts.loadRoster ? await opts.loadRoster() : [];
 
+  // WI-6554700010018409: a tally carries the same repo label as git_sync_commit_attribution.
+  // Scopes here are relative to `repo`, so a submodule install (slug `<top>/<submodule>`)
+  // would report its own root as 'superproject'. Only an attributed phase emits a tally, and
+  // that needs a non-empty roster, so an install without one pays no extra git calls.
+  const installRepo = roster.length > 0 ? await resolveAttributionRepo(repo, runGit) : null;
+  const onAttribution = (t: AttributionTally): void =>
+    emitAttribution({ ...t, scope: attributionScopeLabel(installRepo, t.scope) });
+
   /** One phase's collected results — JSON-serializable so it checkpoints as a step output. */
   interface PhaseCollect {
     dirtyPathCount: number;
@@ -7810,6 +7827,17 @@ async function runGitSyncPass(
             // measures nothing — this stays null, and null never implies an all-clear.
             out.strandedSubmodules = census;
           });
+      const unforked = cfg.unforkedSubmodules ?? [];
+      if (unforked.length) {
+        const kept = subPaths.filter((p) => !unforked.some((u) => p === u || p.startsWith(`${u}/`)));
+        if (kept.length !== subPaths.length) {
+          log(
+            `[git-sync] ${slug}: skipping ${subPaths.length - kept.length} submodule(s) with no pot fork ` +
+              `(${unforked.join(', ')}) — no commit, merge or push inside them (WI-6554700010018380)`,
+          );
+        }
+        subPaths = kept;
+      }
       out.submodulePaths = [...subPaths];
     }
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
