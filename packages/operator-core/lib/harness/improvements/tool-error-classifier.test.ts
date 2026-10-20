@@ -1107,6 +1107,34 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       .toBe('structural');
   });
 
+  it('classifies invalid or stale acceptance BAR approval receipts as caller state, including review-wrapper errors', () => {
+    const approvalErrors = [
+      'acceptance_bar_approval_invalid_receipt',
+      'acceptance_bar_approval_stale_or_mismatched: R-10 hash mismatch',
+      'acceptance_bar_approval_unparseable: the approval post must contain JSON',
+      'acceptance_bar_approval_incomplete: the applied amendment changes R-10',
+      'acceptance_bar_approval_ambiguous_preview_pointer',
+      'acceptance_bar_approval_preview_self_reference',
+      'acceptance_bar_approval_preview_unreadable',
+      'acceptance_bar_approval_author_mismatch',
+      'acceptance_bar_preview_unparseable: referenced preview thread-post:42 must contain the approval JSON receipt',
+    ];
+    for (const error of approvalErrors) {
+      expect(classifyToolError('handler_error', 'error', error)).toBe('caller');
+      expect(classifyToolError(
+        'handler_error',
+        'error',
+        `acceptance_bar_amendment_review_preview_invalid: thread-post:1189801 does not carry this preview's approval (${error})`,
+      )).toBe('caller');
+    }
+    // A preview wrapper around an unknown or infrastructure failure remains structural.
+    expect(classifyToolError(
+      'handler_error',
+      'error',
+      'acceptance_bar_amendment_review_preview_invalid: thread-post:1189801 does not carry this preview\'s approval (database unavailable)',
+    )).toBe('structural');
+  });
+
   it('classifies a missing sandbox desktop lease as caller input, not a structural tool bug', () => {
     expect(
       classifyToolError(

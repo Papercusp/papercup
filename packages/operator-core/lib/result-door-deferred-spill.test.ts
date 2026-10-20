@@ -142,6 +142,16 @@ describe('result-door deferred spill (WI-10004533)', () => {
     const path = (result._meta?.resultDoor as { spillPath?: string })?.spillPath;
     expect(parseScratchReference(readFileSync(path!))!.payload.toString()).toContain(original);
   });
+  it('gives scratch-quota admission the full bounded spill-write budget', async () => {
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota');
+
+    await applyResultDoorAsync(oversized(), OPTS);
+
+    expect(writer).toHaveBeenCalledWith(
+      expect.objectContaining({ mutexTimeoutMs: 30_000 }),
+      expect.any(Function),
+    );
+  });
   it('with a collector, the synchronous door performs NO filesystem write — the spill lands only when awaited', async () => {
     const deferred: Promise<void>[] = [];
     const out = applyResultDoor(oversized(), { ...OPTS, deferredScratchWrites: deferred });

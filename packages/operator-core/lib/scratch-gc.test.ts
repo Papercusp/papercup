@@ -1248,8 +1248,15 @@ describe('cross-process scratch quota coordination', () => {
     let gc: ReturnType<typeof startScratchChild> | undefined;
     try {
       await writer.waitForMessage('writer-ready');
-      const lockPathEntries = readdirSync(join(sandbox, 'fs-mutex-locks'));
-      expect(lockPathEntries.some((entry) => entry.endsWith('.lock'))).toBe(true);
+      const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+      const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+      const dataReadersRoot = join(
+        sandbox,
+        'fs-mutex-locks',
+        `papercusp-scratch-data-${mutexDigest}.readers`,
+      );
+      const readerEntries = readdirSync(dataReadersRoot);
+      expect(readerEntries.some((entry) => entry.endsWith('.lock'))).toBe(true);
       gc = startScratchChild(gcScript, commonEnv);
       await gc.waitForMessage('gc-started');
       const gcFinishedBeforeWriter = await Promise.race([
@@ -2036,13 +2043,15 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
   });
 
-  it('reports the request trace ID of the process-local scratch mutex holder when filesystem mutexes are disabled', async () => {
+  it('does not hold the process-local quota mutex during payload I/O when filesystem mutexes are disabled', async () => {
     process.env.PAPERCUSP_DISABLE_FS_MUTEX = '1';
     const holderTraceId = '21f43fb8-4354-4f61-8ba7-ec03098d0e22';
     let releaseHolder!: () => void;
     let startedHolder!: () => void;
+    let startedWaiter!: () => void;
     const holderGate = new Promise<void>((resolve) => { releaseHolder = resolve; });
     const holderStarted = new Promise<void>((resolve) => { startedHolder = resolve; });
+    const waiterStarted = new Promise<void>((resolve) => { startedWaiter = resolve; });
     const holder = writeWithScratchQuota({
       workspaceId: 'ws-Q',
       filePath: join(makeRunDir('ws-Q', 'mutex', UUID(40), 16), 'holder.bin'),
@@ -2062,16 +2071,12 @@ describe('deferred scratch quota recovery', () => {
         filePath: join(makeRunDir('ws-Q', 'mutex', UUID(41), 16), 'waiter.bin'),
         bytes: 1,
         onTiming: (row) => timings.push(row),
-      }, async () => {});
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(timings.find((row) => row.progress)?.progress?.mutexWaitOwner).toMatchObject({
-        layer: 'process-local',
-        operation: 'write',
-        requestTraceId: holderTraceId,
-      });
+      }, async () => { startedWaiter(); });
+      await waiterStarted;
+      expect(timings.some((row) => row.progress?.mutexWaitOwner?.requestTraceId === holderTraceId)).toBe(false);
+      await waiter;
       releaseHolder();
       await holder;
-      await waiter;
     } finally {
       releaseHolder();
       vi.useRealTimers();

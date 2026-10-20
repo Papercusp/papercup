@@ -23,6 +23,7 @@ const createHiveHarness = vi.fn();
 const loadHarnessRegistry = vi.fn();
 const mutateHarnessRegistry = vi.fn();
 const teardownPotLearningLoop = vi.fn();
+const scaffoldHarnessSchema = vi.fn();
 
 vi.mock('../../../agent-tools/pot/_create_from_repo', () => ({
   createPotFromRepo: (...a: unknown[]) => createHiveFromRepo(...a),
@@ -40,6 +41,9 @@ vi.mock('../../../harness-registry', async (orig) => ({
 }));
 vi.mock('../../../pot/provision-learning-loop', () => ({
   teardownPotLearningLoop: (...a: unknown[]) => teardownPotLearningLoop(...a),
+}));
+vi.mock('../../../scaffold-harness-schema', () => ({
+  scaffoldHarnessSchema: (...a: unknown[]) => scaffoldHarnessSchema(...a),
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
@@ -92,6 +96,7 @@ beforeEach(() => {
   mutateHarnessRegistry.mockReset().mockImplementation(async (mutator: (reg: { projects: Array<{ slug: string; path: string }> }) => unknown) => {
     await mutator({ projects: [{ slug: 'gone', path: '/tmp/gone' }] });
   });
+  scaffoldHarnessSchema.mockReset().mockResolvedValue(undefined);
   teardownPotLearningLoop.mockReset().mockResolvedValue({
     potSlug: 'gone',
     gymAutoloop: true,
@@ -354,5 +359,42 @@ describe('DELETE /api/harness/projects/:slug — explicit uninstall retirement s
     expect(body).toEqual({ error: 'not found' });
     expect(teardownPotLearningLoop).not.toHaveBeenCalled();
     expect(mutateHarnessRegistry).not.toHaveBeenCalled();
+  });
+});
+
+// WI-6554700010018437: a registered project whose schema went missing had no supported
+// repair (409 on re-register; DELETE operator-only; no scaffold CLI on hosted guests).
+describe('POST /api/harness/projects — re-register same slug + same folder re-provisions', () => {
+  const createProjectRoute = (routes as Array<{ path: string; method: string; handler: (req: Request, ctx: unknown) => Promise<Response> }>).find(
+    (x) => x.path === '/harness/projects' && x.method === 'POST',
+  )!;
+
+  it('re-runs the idempotent schema scaffold and reports reprovisioned:true (200)', async () => {
+    const { status, body } = await post(createProjectRoute, { slug: 'gone', path: '/tmp/gone/' });
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ ok: true, reprovisioned: true, project: { slug: 'gone', path: '/tmp/gone' }, provisioning: { ok: true } });
+    expect(scaffoldHarnessSchema).toHaveBeenCalledTimes(1);
+    expect(scaffoldHarnessSchema).toHaveBeenCalledWith('gone');
+    expect(mutateHarnessRegistry).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed re-provision as ok:false with a non-2xx status (never a silent success)', async () => {
+    scaffoldHarnessSchema.mockRejectedValueOnce(new Error('permission denied for database'));
+    const { status, body } = await post(createProjectRoute, { slug: 'gone', path: '/tmp/gone' });
+    expect(status).toBe(500);
+    expect(body).toMatchObject({ ok: false, reprovisioned: true, provisioning: { ok: false, error: 'permission denied for database' } });
+  });
+
+  it('keeps 409 for the same slug at a DIFFERENT folder, without touching the schema', async () => {
+    const { status, body } = await post(createProjectRoute, { slug: 'gone', path: '/tmp/elsewhere' });
+    expect(status).toBe(409);
+    expect(body).toEqual({ error: 'slug already exists' });
+    expect(scaffoldHarnessSchema).not.toHaveBeenCalled();
+  });
+
+  it('keeps 409 for the same slug with no folder (GitHub URL / fresh-dir entries)', async () => {
+    const { status } = await post(createProjectRoute, { slug: 'gone', githubUrl: 'https://github.com/x/y' });
+    expect(status).toBe(409);
+    expect(scaffoldHarnessSchema).not.toHaveBeenCalled();
   });
 });

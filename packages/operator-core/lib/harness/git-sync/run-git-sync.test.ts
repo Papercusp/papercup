@@ -82,6 +82,8 @@ import {
 import { isVerbatimCheckIgnorePath } from './check-ignore-argv';
 import { dependencyGenerationRootRecord } from '../../release/dependency-generation-prebuild';
 import type { AttributionRosterEntry, FileAttribution } from './git-sync-attribution';
+import { resolveAttributionRepo } from './attribution-repo';
+import { runGitLocal } from '../docs/git-runner';
 import type { ContentDetector } from '../../content-lint/registry';
 import { emitGitSyncCommittedEvent } from './git-sync-events';
 import { gitSyncScopePayloadFilter } from '../../agent-tools/events/git-sync-await-scope';
@@ -4313,6 +4315,46 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
   });
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  // WI-6554700010018409: AttributionTally.scope must carry the repo label that
+  // git_sync_commit_attribution uses for the same commits (resolveAttributionRepo).
+  it('labels attribution tallies with each repo label from a superproject install', async () => {
+    const sub = join(repo, 'libs/sub');
+    writeFileSync(join(sub, 'sub-new.txt'), 'sub-v2\n');
+    writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      loadRoster: async () => [
+        {
+          agent: 'cup-7',
+          agentLabel: 'Cup Seven',
+          intent: 'wire the parser',
+          files: [join(sub, 'sub-new.txt'), join(repo, 'super-new.txt')],
+        },
+      ],
+    });
+    const scopes = (out.attribution ?? []).map((t) => t.scope).sort();
+    expect(scopes).toEqual(['libs/sub', 'superproject']);
+    for (const t of out.attribution ?? []) expect(t.agentCommitCount).toBe(1);
+    expect(await resolveAttributionRepo(sub, runGitLocal)).toBe('libs/sub');
+  });
+
+  it("labels a submodule install's tally with its submodule path, not 'superproject'", async () => {
+    const sub = join(repo, 'libs/sub');
+    git(sub, 'checkout', 'main');
+    writeFileSync(join(sub, 'sub-new.txt'), 'sub-v2\n');
+    const out = await runGitSync('test/libs/sub', {
+      repoPath: sub,
+      loadRoster: async () => [
+        { agent: 'cup-7', agentLabel: 'Cup Seven', intent: 'wire the parser', files: [join(sub, 'sub-new.txt')] },
+      ],
+    });
+    expect(out.attribution).toEqual([
+      { scope: 'libs/sub', agentGroupCount: 1, agentCommitCount: 1, failedGroups: 0, error: null },
+    ]);
+    // The same label the commit-attribution recorder writes for this repo's commits.
+    expect(out.attribution?.[0]?.scope).toBe(await resolveAttributionRepo(sub, runGitLocal));
+  });
 
   it('pushes the submodule branch to origin FIRST, then bumps+pushes the superproject pointer', () => {
     // dirty the submodule AND the superproject
