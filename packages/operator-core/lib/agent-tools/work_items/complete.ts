@@ -1700,14 +1700,14 @@ export function unresolvedPathsInCompletion(
   // roots. Keep the old whole-root rule as the fallback, so an unqualified path cannot
   // borrow existence from an unrelated checkout.
   const primaryRoot = repoRoots[0]!;
-  const hasQualifiedSecondaryPath = declared.slice(0, MAX_PATHS_PROBED).some((raw) => {
+  const hasQualifiedCheckoutPath = declared.slice(0, MAX_PATHS_PROBED).some((raw) => {
     const declaredPath = raw.trim();
     return (
       !nodePath.isAbsolute(declaredPath) &&
-      repoRoots.slice(1).some((root) => declaredPath.startsWith(`${nodePath.basename(root)}/`))
+      repoRoots.some((root) => declaredPath.startsWith(`${nodePath.basename(root)}/`))
     );
   });
-  if (hasQualifiedSecondaryPath) {
+  if (hasQualifiedCheckoutPath) {
     let everyPathResolves = true;
     for (const raw of declared.slice(0, MAX_PATHS_PROBED)) {
       const declaredPath = raw.trim();
@@ -1748,6 +1748,26 @@ export function unresolvedPathsInCompletion(
           );
         });
         if (qualifiedRootHit) continue;
+
+        // A qualified path may name the primary checkout while a bare path in the same
+        // completion belongs to a secondary checkout. This occurs when an agent runs from
+        // a sibling repo and also records a superproject evidence file. Once any explicit
+        // checkout-qualified path is present, accept a bare path only when exactly one
+        // candidate root contains it; two matches are ambiguous and remain a warning.
+        const hasQualifiedPrefix = repoRoots.some((root) =>
+          declaredPath.startsWith(`${nodePath.basename(root)}/`),
+        );
+        if (!hasQualifiedPrefix) {
+          const bareRootHits = repoRoots.filter((root) => {
+            const candidate = nodePath.resolve(root, declaredPath);
+            return (
+              candidate !== root &&
+              candidate.startsWith(root + nodePath.sep) &&
+              exists(candidate)
+            );
+          });
+          if (bareRootHits.length === 1) continue;
+        }
         everyPathResolves = false;
         break;
       } catch {
