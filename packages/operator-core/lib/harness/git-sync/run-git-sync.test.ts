@@ -4236,6 +4236,26 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lock)).toBe(false);
   });
 
+  it('a bridged commit-only sync also reclaims an orphaned objects/maintenance.lock (WI-6554700010018483)', async () => {
+    // The canonical papercusp repo is a bridged hive: its superproject never reaches
+    // reconcileAndPushOneRepo, which is where the legacy reclaim lives.
+    const lock = join(repo, '.git', 'objects', 'maintenance.lock');
+    writeFileSync(lock, '');
+    const oldSeconds = (Date.now() - STALE_MAINTENANCE_LOCK_MS - 60_000) / 1000;
+    utimesSync(lock, oldSeconds, oldSeconds);
+    writeFileSync(join(repo, 'maintenance-lock-bridged.txt'), 'edit\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: { ...cfg, push: false, reconcileSuperprojectOrigin: false },
+      isGitLockOpen: async () => false,
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.pushed).toEqual([]);
+    expect(existsSync(lock)).toBe(false);
+  });
+
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {
     // a second clone pushes a conflicting change to origin/main
     const other = join(root, 'other');
