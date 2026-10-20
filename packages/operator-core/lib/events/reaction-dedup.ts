@@ -18,7 +18,7 @@ export type { ReactionClaim };
  * `'budget_denied'` is a deliberate policy drop, kept distinct from `'failed'`
  * so the two never debounce or count against each other.
  */
-export type ReactionOutcomeStatus = 'fired' | 'failed' | 'budget_denied';
+export type ReactionOutcomeStatus = 'fired' | 'failed' | 'budget_denied' | 'completed' | 'needs_reconciliation';
 
 /**
  * Atomically claim a reaction's dedup id. Returns true if THIS call won the claim

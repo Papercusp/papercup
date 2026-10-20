@@ -4,11 +4,11 @@
  * Serializable-friendly: it takes the JSON-shaped payload a durable runner
  * enqueued (the live event isn't serializable, so the host extracts a
  * serializable `parent` scope + a precomputed dedup id). It:
- *   1. claims the dedup id (idempotency) — already claimed ⇒ a re-delivery ⇒ no-op;
+ *   1. claims the dedup id; only a recorded completion makes replay a no-op;
  *   2. dispatches via the injected `fire` port (the host rebuilds its call scope
  *      from `payload.parent`);
- *   3. on dispatch failure, releases the claim and rethrows, so the durable
- *      runner retries and the released claim lets the retry re-fire.
+ *   3. records completion, or retains uncertainty for reconciliation. A claim
+ *      without a completion never authorizes a second non-idempotent effect.
  *
  * Generic over the serializable parent shape; the only requirement is a
  * `workspaceId` to scope the claim.
