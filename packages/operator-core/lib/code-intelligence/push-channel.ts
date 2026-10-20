@@ -11,7 +11,7 @@ import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { liveLockHoldingsStrict, type LiveLockHolding } from '../agent-tools/locks/live-lock-paths';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
-import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
+import { corroboratePushSources, peekPushSnapshot, safeSnapshotPath, type PushProofSource, type PushSnapshot, type SnapshotSymbol } from './push-snapshot';
 import { FACT_FILE_ANCHOR_PREFIX, foldCodeNotesForPaths, isCodeNoteKey, isFactFileAnchor, type AgentFact } from '../agent-facts/store';
 import type { FactDependencyStaleness } from '../agent-tools/facts/dependency-staleness';
 import {
@@ -55,7 +55,7 @@ export interface PushFact {
   text: string;
   citedPaths: readonly string[];
   suggestedCall?: string;
-  sourceHashes?: readonly { path: string; sha256: string }[];
+  sourceHashes?: readonly PushProofSource[];
 }
 /** Measured attribution supplied by the incident caller. Static reach alone is
  * never upgraded to a change or work-item claim; callers must provide these
@@ -106,7 +106,7 @@ export async function readPushIncidentAttribution(input: PushInput, paths: strin
         AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
         AND p.path = ANY(${paths}::text[])
       )
-      SELECT id, state, title, relation, array_agg(path ORDER BY path) AS paths
+      SELECT id, state, title, relation, array_agg(path ORDER BY path COLLATE "C") AS paths
       FROM attributed GROUP BY id, state, title, relation
       ORDER BY relation, id LIMIT 8`;
     // Bound distinct relationships, not matched files: one broad work item
