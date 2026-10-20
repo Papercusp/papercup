@@ -13,6 +13,32 @@
 import { existsSync, statSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { WORKSPACE_HOST_DATA_ROOT } from '@papercusp/deployment-driver';
+import { RETIRED_HARNESS_SLUG_ALIASES } from './operator-home-harness';
+
+/**
+ * Refuse a RETIRED harness slug at registration (WI-6554700010018316, fix 2).
+ *
+ * The registry folds a retired slug (`papercup`, `papercup-hive`) to its current
+ * name on every READ (harness-registry `canonicalizeLegacyPapercup`, plus
+ * RETIRED_HARNESS_SLUG_ALIASES on resolution). Registering under one stored
+ * `papercup` and scaffolded `harness_papercup`, but every reader then saw
+ * `papercusp`: the typed name looked ignored, and `harness_papercusp` (with its
+ * `agent_chats` view) never existed, so the first session launch 500'd
+ * "relation agent_chats does not exist" (measured on avi-test, 2026-10-20).
+ * Refuse the name up front instead of letting the read side silently rename it.
+ */
+export function retiredSlugRefusal(
+  slug: string,
+): { status: 400; code: 'retired_slug'; error: string; canonicalSlug: string } | null {
+  if (!Object.prototype.hasOwnProperty.call(RETIRED_HARNESS_SLUG_ALIASES, slug)) return null;
+  const canonicalSlug = RETIRED_HARNESS_SLUG_ALIASES[slug];
+  return {
+    status: 400,
+    code: 'retired_slug',
+    error: `'${slug}' is a retired project name; the registry reads it as '${canonicalSlug}', so it cannot be registered under that name. Choose a different name.`,
+    canonicalSlug,
+  };
+}
 
 export type RegistrationPathVerdict =
   | { ok: true }

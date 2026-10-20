@@ -2,7 +2,32 @@ import { mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkRegistrationPath, type RegistrationPathDeps } from './registration-path';
+import { checkRegistrationPath, retiredSlugRefusal, type RegistrationPathDeps } from './registration-path';
+import { RETIRED_HARNESS_SLUG_ALIASES } from './operator-home-harness';
+
+describe('retiredSlugRefusal (WI-6554700010018316 fix 2)', () => {
+  it('refuses every retired alias and names the slug the registry reads it as', () => {
+    const entries = Object.entries(RETIRED_HARNESS_SLUG_ALIASES);
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [retired, canonical] of entries) {
+      const r = retiredSlugRefusal(retired);
+      expect(r).toMatchObject({ status: 400, code: 'retired_slug', canonicalSlug: canonical });
+      expect(r?.error).toContain(`'${retired}'`);
+      expect(r?.error).toContain(`'${canonical}'`);
+    }
+  });
+
+  it('accepts the canonical slug and ordinary names', () => {
+    expect(retiredSlugRefusal('papercusp')).toBeNull();
+    expect(retiredSlugRefusal('my-project')).toBeNull();
+  });
+
+  it('does not mistake inherited Object properties for retired slugs', () => {
+    expect(retiredSlugRefusal('constructor')).toBeNull();
+    expect(retiredSlugRefusal('tostring')).toBeNull();
+    expect(retiredSlugRefusal('__proto__')).toBeNull();
+  });
+});
 
 function fsError(code: string): Error {
   return Object.assign(new Error(`${code}: simulated`), { code });
