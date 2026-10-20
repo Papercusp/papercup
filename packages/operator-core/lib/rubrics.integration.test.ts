@@ -2406,6 +2406,66 @@ describe('template_data persistence boundary — the set-template-data door', ()
       .rejects.toThrow(/missing its server-owned barContract/);
   });
 
+  it('restores an orphaned started BAR contract from the pinned revision snapshot (WI-6554700010018395)', async () => {
+    const seeded = await seedBarContract('orphan-restore-subject', { authorMethods: true });
+    const started = await rubrics.getRubric(seeded.rubricSlug);
+    if (!started?.revision || !started.barContract || !started.barSetHash) {
+      throw new Error(`seeded rubric '${seeded.rubricSlug}' did not start a contract`);
+    }
+    const [pinBefore] = await db.adminSql`SELECT acceptance_bar_rubric_revision, acceptance_bar_set_hash
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+      AND plan_slug=${seeded.subject}`;
+    expect(Number(pinBefore!.acceptance_bar_rubric_revision)).toBe(started.revision);
+    expect(pinBefore!.acceptance_bar_set_hash).toBe(started.barSetHash);
+
+    // A healthy contract is not a restore target: the flag is not a general rewrite door.
+    await expect(rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'restorer', reason: 'not orphaned', restoreOrphanedBarContract: true,
+    })).rejects.toThrow(/acceptance_bar_restore_not_orphaned/);
+
+    // What a whole-document propose on a pre-guard build left behind (2026-10-18, :3070
+    // d740fc3802): the next revision with the server-owned contract fields gone.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = (template_data - 'barContract' - 'barSetHash')
+               || jsonb_build_object('criteria', (
+                    SELECT jsonb_agg(c - 'barProvenance') FROM jsonb_array_elements(template_data->'criteria') c)),
+             version = version + 1
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.rubricSlug}`;
+    const orphan = await rubrics.getRubric(seeded.rubricSlug);
+    expect(orphan?.barContract).toBeUndefined();
+    expect(orphan?.revision).toBe(started.revision + 1);
+    // Without the opt-in the guard still refuses every write to the orphan, and now names the door.
+    await expect(rubrics.amendRubric({
+      rubricId: seeded.rubricSlug,
+      criterion: { key: started.criteria[0]!.key, field: 'method', mode: 'append', text: 'extra' },
+    })).rejects.toThrow(/restoreOrphanedBarContract/);
+
+    const restored = await rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'restorer', reason: 'restore the pinned contract',
+      restoreOrphanedBarContract: true,
+    });
+    expect(restored?.revision).toBe(started.revision + 2);
+    expect(restored?.barSetHash).toBe(started.barSetHash);
+    expect(restored?.barContract?.adoptionEpoch).toBe(started.barContract.adoptionEpoch);
+    expect(restored?.barContract?.cohort).toBe(started.barContract.cohort);
+    expect(restored?.criteria.map((c) => [c.barKey, c.barHash])).toEqual(
+      started.criteria.map((c) => [c.barKey, c.barHash]),
+    );
+    expect(restored?.criteria.every((c) => c.barProvenance !== undefined)).toBe(true);
+    const [pinAfter] = await db.adminSql`SELECT acceptance_bar_rubric_revision, acceptance_bar_set_hash, content
+      FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+      AND plan_slug=${seeded.subject}`;
+    expect(Number(pinAfter!.acceptance_bar_rubric_revision)).toBe(started.revision + 2);
+    expect(pinAfter!.acceptance_bar_set_hash).toBe(started.barSetHash);
+    expect(String(pinAfter!.content)).toContain(`Restored-Contract-From: rubric revision ${started.revision}`);
+
+    // Restored means restored: a second restore is refused, ordinary amendment works again.
+    await expect(rubrics.amendRubric({
+      rubricId: seeded.rubricSlug, actorId: 'restorer', reason: 'again', restoreOrphanedBarContract: true,
+    })).rejects.toThrow(/acceptance_bar_restore_not_orphaned/);
+  });
+
   it('resolves a legacy current revision after an in-place subject pin advance, still failing closed on grading drift (WI-10006667)', async () => {
     const seeded = await seedBarContract('legacy-subject-pin-advance');
     const current = await rubrics.getRubric(seeded.rubricSlug);
