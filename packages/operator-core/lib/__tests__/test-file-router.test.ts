@@ -964,6 +964,13 @@ describe('evaluateMatch — the false-green refusal (P-009)', () => {
 });
 
 describe('workspace test launcher — explicit paths use the owning-config guard', () => {
+  it('keeps operator-core focused runs on the workspace launcher so caller flags are deduplicated', () => {
+    const packageJson = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: { test?: string };
+    };
+    expect(packageJson.scripts?.test).toBe('node ../../scripts/workspace-test.mjs --passWithNoTests');
+  });
+
   it('routes a mixed workspace request instead of letting Vitest silently narrow it', () => {
     const invocation = workspaceTestInvocation([
       '--passWithNoTests',
@@ -3261,23 +3268,41 @@ describe('warnIfInstallInFlight (EI-19304880034803985 — the HANG-path hint)', 
 });
 
 describe('direct test-files CLI install reader lease (EI-24946572521324679)', () => {
-  it('takes the repo reader lease and propagates the marker for an unmarked CLI run', async () => {
+  it('reports reader-admission waits and propagates the marker for an unmarked CLI run', async () => {
     const lockName = repoLockName();
     const otherLockName = 'npm-install-aaaaaaaaaaaa';
     const env = { PAPERCUSP_INSTALL_MUTEX_HELD: otherLockName };
     const args = ['packages/operator-core/lib/__tests__/test-file-router.test.ts'];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const run = vi.fn(async () => {
       expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe([otherLockName, lockName].join(','));
       return 7;
     });
-    const acquireReadLease = vi.fn(async (_name, withLease) => withLease());
+    const acquireReadLease = vi.fn(async (_name, withLease, options) => {
+      options?.onWaiting?.({ owner: '{"pid":17,"phase":"install"}', elapsedMs: 30_000 });
+      return withLease();
+    });
 
-    await expect(runTestFilesCli(args, { env, acquireReadLease, run })).resolves.toBe(7);
+    try {
+      await expect(runTestFilesCli(args, { env, acquireReadLease, run })).resolves.toBe(7);
 
-    expect(acquireReadLease).toHaveBeenCalledOnce();
-    expect(acquireReadLease).toHaveBeenCalledWith(lockName, expect.any(Function));
-    expect(run).toHaveBeenCalledWith(args);
-    expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(otherLockName);
+      expect(acquireReadLease).toHaveBeenCalledOnce();
+      expect(acquireReadLease).toHaveBeenCalledWith(
+        lockName,
+        expect.any(Function),
+        expect.objectContaining({
+          onWaiting: expect.any(Function),
+          waitingNoticeIntervalMs: 30_000,
+        }),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        'TEST_FILE_INSTALL_READER_WAIT elapsedMs=30000 waitedSec=30 holder={"pid":17,"phase":"install"}',
+      );
+      expect(run).toHaveBeenCalledWith(args);
+      expect(env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe(otherLockName);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('bypasses nested acquisition when the matching repo marker is already present', async () => {
