@@ -4328,7 +4328,11 @@ export async function setWorkItemState(
   // whether that prior state was literally 'blocked'. work_items:complete has no
   // `force` arg (WI-4530), so the refusal always points callers at
   // work_items:set_state { force: true } instead.
-  const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked';
+  // An owner park keeps the item out of the claimable lane just like `blocked`.
+  // Treating blocked -> needs-human as an unblock made the plan-lane guard reject
+  // a valid classification when the linked plan item was already needs-human.
+  const isUnblockingTransition =
+    wi.state === 'blocked' && state !== 'blocked' && state !== 'needs-human';
   const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
   // EI-6554700010011175: a terminal close must not strand an announced event
   // gate that still has live waiters. The announcement is deliberately durable
