@@ -4669,6 +4669,24 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     // ── adv-session handle ───────────────────────────────────────────────
     let fresh = await getSession(handle.advSessionId).catch(() => null);
+    // The delivery subscriber is the authority for the wake target. A stale or
+    // corrupted adv-session handle can resolve to another owner's row; using that
+    // row's native session/config data would resume or inject the wake into the
+    // wrong conversation, while the provenance ledger remains keyed to the
+    // subscriber (EI-26532418294401270). Park before any host lookup or process
+    // side effect so the retry/reconciliation path can repair the binding.
+    if (
+      fresh?.coordOwnerId !== null &&
+      fresh?.coordOwnerId !== undefined &&
+      fresh.coordOwnerId !== d.subscriberId
+    ) {
+      return {
+        kind: 'park',
+        reason:
+          `captured adv-session #${handle.advSessionId} belongs to ${fresh.coordOwnerId}, not wake subscriber ${d.subscriberId}; ` +
+          'parked before wake injection or resume (EI-26532418294401270)',
+      };
+    }
     const sessionIsAlive = async (
       row: Awaited<ReturnType<typeof getSession>>,
       candidateHandle: Extract<WakeHandle, { kind: 'adv-session' }>,

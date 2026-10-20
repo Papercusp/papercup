@@ -5194,6 +5194,30 @@ describe('executeWake — the liveness ladder', () => {
     expect(spawnDetached).not.toHaveBeenCalled();
   });
 
+  it('parks a captured adv-session whose owner differs from the wake subscriber before any side effect', async () => {
+    const foreignOwner = 'su-foreign-session';
+    const getSession = vi.fn(async () => session({ coordOwnerId: foreignOwner }));
+    const findPsuHost = vi.fn(async () => ({ sock: '/tmp/foreign.sock', ownerId: foreignOwner }));
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ subscriberId: 'su-abc', wakeHandle: advHandle() }),
+      deps({
+        getSession: getSession as never,
+        findPsuHost: findPsuHost as never,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({
+      kind: 'park',
+      reason:
+        'captured adv-session #42 belongs to su-foreign-session, not wake subscriber su-abc; ' +
+        'parked before wake injection or resume (EI-26532418294401270)',
+    });
+    expect(findPsuHost).not.toHaveBeenCalled();
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
   it('claude resume spawn failure (detached returns no pid) → error outcome (the pump retries with backoff)', async () => {
     const out = await executeWake(
       work({ wakeHandle: advHandle() }),
