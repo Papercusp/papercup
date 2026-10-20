@@ -9,7 +9,7 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
@@ -5333,7 +5333,9 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
   writeFileSync(
     childScript,
     "const i=process.argv.indexOf('--system-prompt-file');" +
-      "process.stdout.write('BOOT:'+process.pid+' SPF:'+(i>=0?process.argv[i+1]:'NONE')+'\\n');" +
+      "const inline=process.argv.find(a=>a.startsWith('--system-prompt-file='));" +
+      "const prompt=i>=0?process.argv[i+1]:(inline?inline.slice('--system-prompt-file='.length):'NONE');" +
+      "process.stdout.write('BOOT:'+process.pid+' SPF:'+prompt+'\\n');" +
       "process.stdin.setEncoding('utf8');let b='';" +
       "process.stdin.on('data',d=>{b+=d;let i2;while((i2=b.indexOf('\\n'))>=0){const line=b.slice(0,i2);b=b.slice(i2+1);" +
       "if(line==='QUIT'){process.exit(0);}}});" +
@@ -5351,8 +5353,15 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
    *  `mint` defaults to the REAL one. A refused respawn never boots a second child, so
    *  it is observed through its `respawn-failed` host event instead of a second BOOT. */
   async function driveRespawn(
-    refreshed: string | null | { reason: string },
+    refreshed: string | null | { reason: string } | Array<string | null | { reason: string }>,
     mint?: (a: string[]) => unknown,
+    options: {
+      inlinePromptFlag?: boolean;
+      deleteInheritedBeforeRecycle?: boolean;
+      restoreAndRetry?: boolean;
+      recycleAgainAfterFirst?: boolean;
+      deleteOriginalAfterFirst?: boolean;
+    } = {},
   ) {
     // Import the pure mint helper independently of the invoking operator's
     // endpoint. Tool-driven test runs may inherit a full MCP URL; validating
@@ -5369,10 +5378,29 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     })();
     const ownerId = `su-persona-refresh-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
-    const stale = `/tmp/launch-context/session-STALE-${process.pid}.md`;
-    const refusal = refreshed !== null && typeof refreshed === 'object' ? refreshed : null;
-    const refreshPersonaFile = async () =>
-      refusal ? { promptFile: null, reason: refusal.reason } : { promptFile: refreshed as string | null };
+    const stale = `/tmp/launch-context/session-STALE-${process.pid}-${Math.floor(performance.now())}.md`;
+    const refreshValues = Array.isArray(refreshed) ? refreshed : [refreshed];
+    let refreshIndex = 0;
+    const createdPromptFiles: string[] = [];
+    const ensurePromptFixture = (path: unknown) => {
+      if (typeof path !== 'string' || existsSync(path)) return;
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, 'P'.repeat(2_000));
+      createdPromptFiles.push(path);
+    };
+    ensurePromptFixture(stale);
+    for (const value of refreshValues) {
+      if (typeof value === 'string') ensurePromptFixture(value);
+    }
+    const refusal = refreshValues[0] !== null && typeof refreshValues[0] === 'object'
+      ? refreshValues[0]
+      : null;
+    const refreshPersonaFile = async () => {
+      const value = refreshValues[Math.min(refreshIndex++, refreshValues.length - 1)];
+      return value !== null && typeof value === 'object'
+        ? { promptFile: null, reason: value.reason }
+        : { promptFile: value as string | null };
+    };
     const { captured, io } = fakeIo();
     const hostEvents = (): Array<Record<string, unknown>> => {
       try {
@@ -5388,7 +5416,9 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     let exitCode: number | null = null;
     const done = hostThroughPty({
       command: execPath,
-      args: [childScript, '--system-prompt-file', stale],
+      args: options.inlinePromptFlag
+        ? [childScript, `--system-prompt-file=${stale}`]
+        : [childScript, '--system-prompt-file', stale],
       cwd: '/tmp',
       // PAPERCUSP_AGENT=claude so the REAL mint synthesizes a --session-id for this
       // resume-shaped argv instead of no-op'ing (the 2026-07-18 mint gap).
@@ -5406,8 +5436,22 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       expect(captured()).toContain(`SPF:${stale}`);
     }, { timeout: 5000 });
 
+    if (options.deleteInheritedBeforeRecycle) unlinkSync(stale);
     await controlInject(sock, 'recycle', '');
-    if (refusal) {
+    if (options.deleteInheritedBeforeRecycle) {
+      await vi.waitFor(() => {
+        expect(hostEvents()).toContainEqual(
+          expect.objectContaining({ kind: 'respawn-failed', reason: 'persona-file-missing' }),
+        );
+      }, { timeout: 5000 });
+      if (options.restoreAndRetry) {
+        writeFileSync(stale, 'P'.repeat(2_000));
+        await controlInject(sock, 'recycle', '');
+        await vi.waitFor(() => {
+          expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(2);
+        }, { timeout: 5000 });
+      }
+    } else if (refusal) {
       await vi.waitFor(() => {
         expect(hostEvents().some((e) => e.kind === 'respawn-failed')).toBe(true);
       }, { timeout: 5000 });
@@ -5415,12 +5459,22 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       await vi.waitFor(() => {
         expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(2);
       }, { timeout: 5000 });
+      if (options.recycleAgainAfterFirst) {
+        if (options.deleteOriginalAfterFirst) unlinkSync(stale);
+        await controlInject(sock, 'recycle', '');
+        await vi.waitFor(() => {
+          expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(3);
+        }, { timeout: 5000 });
+      }
     }
 
     const spfs = [...captured().matchAll(/SPF:(\S+)/g)].map((m) => m[1]);
     await rawInject(sock, 'QUIT\n');
     await done;
     expect(exitCode).toBe(0);
+    for (const path of createdPromptFiles) {
+      try { unlinkSync(path); } catch { /* already removed by the test */ }
+    }
     return { spfs, stale, events: hostEvents() };
   }
 
@@ -5428,13 +5482,29 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
     'boots the successor on the REFRESHED render, not the predecessor\'s',
     async () => {
       const fresh = `/tmp/launch-context/session-refresh-FRESH-${process.pid}.md`;
-      const { spfs, stale } = await driveRespawn(fresh);
+      const { spfs, stale } = await driveRespawn(fresh, undefined, { inlinePromptFlag: true });
       expect(spfs).toHaveLength(2);
       expect(spfs[0]).toBe(stale);
       // The whole point: the successor must NOT be running the file its predecessor
       // ran. This is the assertion that goes red if the seam is ever unwired.
       expect(spfs[1]).toBe(fresh);
       expect(spfs[1]).not.toBe(stale);
+    },
+    30_000,
+  );
+
+  it(
+    'reuses the live child render when a later refresh fails after the original was collected',
+    async () => {
+      const fresh = `/tmp/launch-context/session-refresh-LIVE-${process.pid}.md`;
+      const { spfs, stale } = await driveRespawn([fresh, null], undefined, {
+        recycleAgainAfterFirst: true,
+        deleteOriginalAfterFirst: true,
+      });
+      expect(spfs).toHaveLength(3);
+      expect(spfs[0]).toBe(stale);
+      expect(spfs[1]).toBe(fresh);
+      expect(spfs[2]).toBe(fresh);
     },
     30_000,
   );
@@ -5448,6 +5518,22 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       const { spfs, stale } = await driveRespawn(null);
       expect(spfs).toHaveLength(2);
       expect(spfs.every((s) => s === stale)).toBe(true);
+    },
+    30_000,
+  );
+
+  it(
+    'KEEPS the current child alive when refresh fails and the inherited render is missing, then retries',
+    async () => {
+      const { spfs, stale, events } = await driveRespawn(null, undefined, {
+        deleteInheritedBeforeRecycle: true,
+        restoreAndRetry: true,
+      });
+      expect(spfs).toHaveLength(2);
+      expect(spfs.every((s) => s === stale)).toBe(true);
+      expect(events).toContainEqual(
+        expect.objectContaining({ kind: 'respawn-failed', reason: 'persona-file-missing' }),
+      );
     },
     30_000,
   );
