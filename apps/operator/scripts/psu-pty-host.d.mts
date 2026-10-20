@@ -941,15 +941,16 @@ export function carryTurnProofRequiresNativeId(agent: any): boolean;
  * kickoff is submitted. Requiring the startup flock before that write creates a
  * deadlock: catalog discovery can complete while the host waits forever for an
  * id that only the kickoff can mint. Fresh Codex still gets the stronger native
- * transcript proof after submission; resumed/carry threads retain the binding
- * gate because they already have an authoritative native identity.
- * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean }} [options]
+ * transcript proof after submission. A fresh carry has the same lifecycle;
+ * resumed threads and already-discovered identities retain the binding gate.
+ * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean, nativeId?: string | null }} [options]
  *   Typed explicitly: inferred from `= {}` the declaration dropped `agent`, so every
  *   caller passing it was a TS2353. */
-export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, }?: {
+export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, nativeId, }?: {
     agent?: string | null;
     isResume?: boolean;
     hasResolver?: boolean;
+    nativeId?: string | null;
 }): boolean;
 /** WI-6554700010009740: does the native turn-start proof, not the generic
  * submit verifier, own this carry's delivery verdict? Since c727419b0a the

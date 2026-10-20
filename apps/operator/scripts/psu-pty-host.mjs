@@ -2400,16 +2400,16 @@ export function carryTurnProofRequiresNativeId(agent) {
  * kickoff is submitted. Requiring the startup flock before that write creates a
  * deadlock: catalog discovery can complete while the host waits forever for an
  * id that only the kickoff can mint. Fresh Codex still gets the stronger native
- * transcript proof after submission; resumed/carry threads retain the binding
- * gate because they already have an authoritative native identity.
- * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean }} [options]
+ * transcript proof after submission. A fresh carry has the same lifecycle;
+ * resumed threads and already-discovered identities retain the binding gate.
+ * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean, nativeId?: string | null }} [options]
  *   Typed explicitly: inferred from `= {}` the declaration dropped `agent`, so every
  *   caller passing it was a TS2353. */
 export function launchKickoffRequiresPreSubmissionNativeBinding({
-  agent, isResume = false, hasResolver = false,
+  agent, isResume = false, hasResolver = false, nativeId = null,
 } = {}) {
   return Boolean(hasResolver) && (
-    String(agent ?? '').trim().toLowerCase() !== 'codex' || Boolean(isResume)
+    String(agent ?? '').trim().toLowerCase() !== 'codex' || Boolean(isResume) || Boolean(nativeId)
   );
 }
 
@@ -12618,6 +12618,7 @@ export function hostThroughPty(o) {
       let freshChildRetries = 0;
       let kickoffChild = child;
       let kickoffSubmittedAtMs = null;
+      let kickoffCarryBinding = null;
       const injectLaunchKickoff = () => {
         const identityRefusal = continuationIdentityRefusal({
           mode: 'launch-kickoff',
@@ -12640,17 +12641,19 @@ export function hostThroughPty(o) {
         // WI-10007230: owner input can cancel carry before its prewrite hook.
         // Bind the already-spawned child independently, then share this exact
         // report with the submission gate rather than superseding its retry.
-        // A fresh Codex role also needs its native id registered before its
-        // first provider request: accepted operations attest against that id.
-        // Reuse the exact-child carry gate instead of racing a detached hook.
+        // Discover/report independently even if owner input cancels the carry.
+        // Fresh Codex may create that id only on the first submitted turn.
+        const initialNativeId = adoptedCarryRespawn?.nativeId ??
+          currentNativeSessionId(kickoffChild.pid, resolveRespawnNativeId);
         const needsInitialBinding = launchKickoffRequiresPreSubmissionNativeBinding({
           agent: env.PAPERCUSP_AGENT,
           isResume: isResumeLaunch,
           hasResolver: Boolean(resolveRespawnNativeId),
+          nativeId: initialNativeId,
         });
-        const carryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
+        kickoffCarryBinding = (adoptedCarryRespawn || needsInitialBinding) &&
           (adoptedCarryRespawn?.nativeId || resolveRespawnNativeId)
-          ? prepareCarryBinding(adoptedCarryRespawn?.nativeId ?? null, Date.now() + kickoffBudgetMs)
+          ? prepareCarryBinding(initialNativeId, Date.now() + kickoffBudgetMs)
           : null;
         return injectTurnAtPrompt({
           text: launchKickoff,
@@ -12679,8 +12682,13 @@ export function hostThroughPty(o) {
             ),
           }),
           prepareBeforeWrite: async ({ deadline }) => {
-            if (carryBinding) {
-              const binding = await carryBinding;
+            if (kickoffCarryBinding && launchKickoffRequiresPreSubmissionNativeBinding({
+              agent: env.PAPERCUSP_AGENT,
+              isResume: isResumeLaunch,
+              hasResolver: Boolean(initialNativeId || resolveRespawnNativeId),
+              nativeId: initialNativeId || currentNativeSessionId(kickoffChild.pid, resolveRespawnNativeId),
+            })) {
+              const binding = await kickoffCarryBinding;
               if (!binding.ok) return binding;
               if (adoptedCarryRespawn) adoptedCarryRespawn.nativeId = binding.nativeId;
             }
@@ -12869,11 +12877,18 @@ export function hostThroughPty(o) {
             nativeRef: proof.nativeRef ?? null,
           });
         }
+        // The first carry write may be what minted the id. Join the SAME
+        // exact-child report after native proof, without reporting twice or
+        // announcing compaction before trusted mapping confirmation.
+        if (proof.persisted && kickoffCarryBinding) {
+          const binding = await kickoffCarryBinding;
+          if (adoptedCarryRespawn && binding.nativeId) adoptedCarryRespawn.nativeId = binding.nativeId;
+        }
         // Fresh Codex creates its rollout UUID as part of accepting this first
         // tagged turn. Bind/report that exact proof after submission; probing
         // before the write is the deadlock guarded by
         // launchKickoffRequiresPreSubmissionNativeBinding().
-        if (env.PAPERCUSP_AGENT === 'codex' && proof.persisted) {
+        if (env.PAPERCUSP_AGENT === 'codex' && proof.persisted && !adoptedCarryRespawn) {
           const proofNativeId = currentNativeSessionId(kickoffChild.pid, resolveRespawnNativeId) ||
             (/^rollout-.*-([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})\.jsonl$/i
               .exec(basename(proof.nativeRef ?? ''))?.[1] ?? null);
@@ -13028,7 +13043,7 @@ export function hostThroughPty(o) {
             nativeId: adoptedCarryRespawn.nativeId ?? null,
             proof,
             alreadyReported: confirmedCarryChild === adoptedCarryChild,
-            report: onRespawn,
+            report: kickoffCarryBinding ? () => false : onRespawn,
             emit: emitCompacted,
             timeoutMs: respawnReportTimeoutMs,
             isCurrent: () => child === adoptedCarryChild && !recycling && !shuttingDown && !hostCleanedUp,
@@ -17076,6 +17091,9 @@ export function hostThroughPty(o) {
       const needsNativeReanchor = respawnMode === 'carry-respawn' ||
         (respawnMode === 'recycle' && !resumeQuotaConversation &&
           env.PAPERCUSP_AGENT === 'codex' && Boolean(resolveRespawnNativeId));
+      if (needsNativeReanchor && !nativeId) {
+        nativeId = currentNativeSessionId(child.pid, resolveRespawnNativeId);
+      }
       const respawnBinding = needsNativeReanchor && (nativeId || resolveRespawnNativeId)
         ? prepareCarryBinding(nativeId, Date.now() + recycleCarryInjectBudgetMs, respawnReported)
         : null;
@@ -17158,7 +17176,12 @@ export function hostThroughPty(o) {
         // MCP endpoint is still reconnecting. Keep the carry out of the composer
         // until the closed-loop reconnect check proves papercusp-su ready.
         prepareBeforeWrite: async ({ deadline }) => {
-          if (respawnBinding) {
+          if (respawnBinding && launchKickoffRequiresPreSubmissionNativeBinding({
+            agent: env.PAPERCUSP_AGENT,
+            isResume: resumeQuotaConversation,
+            hasResolver: Boolean(nativeId || resolveRespawnNativeId),
+            nativeId: nativeId || currentNativeSessionId(child.pid, resolveRespawnNativeId),
+          })) {
             const binding = await respawnBinding;
             if (!binding.ok) return binding;
             nativeId = binding.nativeId;
@@ -17308,11 +17331,17 @@ export function hostThroughPty(o) {
           }
         }
       }
+      if (carryResult.delivered && turnStartProof?.persisted && respawnBinding) {
+        const binding = await respawnBinding;
+        if (binding.nativeId) nativeId = binding.nativeId;
+        respawnReported = binding.ok;
+      }
       if (respawnMode === 'carry-respawn' && !drillId && carryResult.delivered) {
         const carryChild = child;
         const announcement = await announceVerifiedCarryRespawn({
           ownerId, agent: env.PAPERCUSP_AGENT, nativeId, proof: turnStartProof,
-          alreadyReported: respawnReported, report: onRespawn, emit: emitCompacted,
+          alreadyReported: respawnReported,
+          report: respawnBinding ? () => false : onRespawn, emit: emitCompacted,
           timeoutMs: respawnReportTimeoutMs,
           isCurrent: () => child === carryChild && !recycling && !shuttingDown && !cleaned,
         });
