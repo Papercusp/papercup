@@ -57,6 +57,32 @@ export async function markReactionFailed(dedupId: string, error: string): Promis
   `;
 }
 
+/** Legacy `fired` means presumed dispatching, so it is deliberately uncertain. */
+export async function reactionOutcome(dedupId: string): Promise<'completed' | 'uncertain'> {
+  const { sql } = getOrgPg();
+  const [row] = await sql<Array<{ status: string }>>`
+    SELECT status FROM harness_shared.event_reactions WHERE dedup_id = ${dedupId}
+  `;
+  return row?.status === 'completed' ? 'completed' : 'uncertain';
+}
+
+export async function completeReaction(dedupId: string): Promise<void> {
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    UPDATE harness_shared.event_reactions SET status = 'completed', error_message = NULL
+     WHERE dedup_id = ${dedupId} RETURNING dedup_id
+  `;
+  if (!rows.length) throw new Error(`reaction completion receipt missing: ${dedupId}`);
+}
+
+export async function markReactionUncertain(dedupId: string, reason: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.event_reactions SET status = 'needs_reconciliation', error_message = ${reason}
+     WHERE dedup_id = ${dedupId} AND status <> 'completed'
+  `;
+}
+
 /**
  * Record a reaction that FAILED, whether or not it ever claimed a row (P-030 b).
  *
