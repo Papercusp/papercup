@@ -303,8 +303,15 @@ const create = defineTool({
       } catch { /* best-effort — registration proceeds without API coords */ }
     } else if (rawPath) {
       path = resolve(rawPath);
-      if (!existsSync(path)) {
-        return Response.json({ error: 'path does not exist' }, { status: 400 });
+      // existsSync conflates "missing" with "the operator cannot stat it" (a 0700
+      // home on a hosted workspace) — report them apart (WI-6554700010018316).
+      const { checkRegistrationPath } = await import('../../../harness/registration-path');
+      const verdict = checkRegistrationPath(path);
+      if (!verdict.ok) {
+        return Response.json(
+          { error: verdict.error, code: verdict.code, ...(verdict.hint ? { hint: verdict.hint } : {}) },
+          { status: verdict.status },
+        );
       }
     } else {
       return Response.json(
