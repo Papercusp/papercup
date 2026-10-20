@@ -125,7 +125,7 @@ function reviewerModelNotAllowedRefusal(error: unknown): {
 
 /** The amendment fields exactly as requested, so a routed reviewer can reproduce the preview. */
 function amendmentPatch(args: z.infer<typeof rubricsAmendArgs>): Record<string, unknown> {
-  const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes'] as const;
+  const fields = ['requirement', 'criteria', 'criterion', 'criterionClass', 'criterionEvidencePlane', 'methodRef', 'classRef', 'composes', 'restoreOrphanedBarContract'] as const;
   return Object.fromEntries(fields.filter((field) => args[field] !== undefined).map((field) => [field, args[field]]));
 }
 
@@ -391,6 +391,10 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .optional()
       .describe('optimistic CAS for the subject-plan revision'),
     idempotencyKey: z.string().min(1).max(200).optional().describe('stable replay token for a started-BAR amendment'),
+    restoreOrphanedBarContract: z
+      .literal(true)
+      .optional()
+      .describe('BAR recovery: restore an orphaned started contract from the subject-pinned rubric revision snapshot'),
     approvalRef: z
       .string()
       .min(1)
@@ -441,7 +445,8 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       args.criterionClass !== undefined ||
       args.methodRef !== undefined ||
       args.classRef !== undefined ||
-      args.composes !== undefined;
+      args.composes !== undefined ||
+      args.restoreOrphanedBarContract !== undefined;
     if (!hasPatch) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -584,6 +589,7 @@ export default defineTool({
         ? { expectedSubjectPlanRevision: args.expectedSubjectPlanRevision }
         : {}),
       ...(args.idempotencyKey !== undefined ? { idempotencyKey: args.idempotencyKey } : {}),
+      ...(args.restoreOrphanedBarContract ? { restoreOrphanedBarContract: true } : {}),
       ...(args.approvalRef !== undefined ? { approvalRef: args.approvalRef } : {}),
       ...(args.approvedBy !== undefined ? { approvedBy: args.approvedBy } : {}),
       ...(args.approvedAt !== undefined ? { approvedAt: args.approvedAt } : {}),

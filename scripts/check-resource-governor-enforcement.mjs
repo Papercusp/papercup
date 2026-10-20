@@ -502,7 +502,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("profile.tauriPID === Number(env.VERIFY_TAURI_PID)") &&
         source.includes("execFileSync('npm', ['run', 'test:file', '--', ...testFiles],") &&
         source.includes("const testEnv = nativeTestDatabaseEnvironment(profile);") &&
-        source.includes("{ cwd: sourceRoot, stdio: 'inherit', env: { ...testEnv,") &&
+        source.includes("const env = { ...testEnv, PAPERCUSP_TEST_RUN_COMMIT: receipt.sourceCommit,") &&
         source.includes("assert.equal(env.PAPERCUSP_SKIP_PG_DISCOVERY, '1'") &&
         source.includes("PAPERCUSP_TEST_PG_ADMIN_URL: address.toString()") &&
         source.includes("recordedDataDir === dataDir && port === address.port") &&
@@ -1757,35 +1757,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for packages/operator-core/lib/release/dependency-admission-prediction.ts (WI-10004151): its only start is one execFile('bash', [dependency-generation.sh, '--predict-ref', <ref>]) per explicit `release:repair-queue { op:'admit' }` call, made inside that admit and awaited to completion. The --predict-ref mode is read-only against the generation store and the live trees: it fingerprints the ref's dependency inputs, checks for an existing selector or a live-tree match, and otherwise stages ONLY the ref's lockfiles into a scratch root (removed before it returns) for the dependency-lock-equivalence.mjs comparison. It never installs, never copies node_modules, never publishes, and takes no generation lock. The call is bounded by DEPENDENCY_PREDICTION_TIMEOUT_MS (30s, measured 12.6s at load ~90) plus a 4 MiB maxBuffer, after which the prediction degrades to verdict 'unknown' rather than waiting. It holds nothing resident and creates no independent queue. It is the same shape as the repair-head-admission.ts bypass it sits beside: a resident Governor lease here would gate the frozen lineage's own repair door behind the capacity the gate is trying to recover.",
   },
   {
-    path: "apps/operator/bin/release/dependency-lock-equivalence.mjs",
-    code: "resource-start-outside-admission",
-    disposition: "bypass",
-    reason:
-      "P-016 reviewed bypass disposition for dependency-lock-equivalence.mjs (WI-10004151): its one child start is a synchronous, read-only git metadata probe used to compare immutable lockfile inputs. execFileSync is awaited, bounded to 64 MiB output, and retains no child, worker or queue after the comparison. The release admission path already owns the parent operation; adding a second local lease would double-count the same frozen repair check.",
-    matchesSource: (source) =>
-      resourceStartCallCount(source) === 1 &&
-      source.includes("const runGit = (root, args) => execFileSync('git', ['-C', root, ...args], {") &&
-      source.includes("maxBuffer: 64 * 1024 * 1024") &&
-      source.includes("stdio: ['ignore', 'pipe', 'pipe']") &&
-      source.includes("export function createGitInputManifestReader(git = runGit)"),
-  },
-  {
-    path: "packages/operator-core/lib/agent-chat-stream.ts",
-    code: "resource-start-outside-admission",
-    disposition: "upstream",
-    reason:
-      "P-016 reviewed upstream disposition for agent-chat-stream.ts: the native child is started only inside the shared runner's injected spawn seam, after reserveHostedAgentSlot has started a durable hosted-agent reservation. Exit/error handlers settle that reservation and the catch path settles failed starts, so the child inherits the parent host admission rather than opening a second root lease.",
-    matchesSource: (source) =>
-      resourceStartCallCount(source) === 1 &&
-      source.includes("const reservation = await reserveHostedAgentSlot(") &&
-      source.includes("randomUUID()") &&
-      source.includes("await reservation?.start();") &&
-      source.includes("const child = opts.spawnProcess ? await opts.spawnProcess(command, args, options) : spawn(command, args, options);") &&
-      source.includes("child.once('exit', release);") &&
-      source.includes("child.once('error', release);") &&
-      source.includes("await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));"),
-  },
-  {
     path: "scripts/check-integration-teardown-nullsafe.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -2559,6 +2530,41 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     },
   },
 ]);
+
+// These reviewed rows belong to the P-014/P-013 inventory prefixes rather than
+// the P-016 release lane. Keep them in the shared bypass registry without
+// inflating P016_DISPOSITION_REGISTRY or its exact lane census.
+const SUPPLEMENTAL_REVIEWED_DISPOSITIONS = Object.freeze([
+  {
+    path: "apps/operator/bin/release/dependency-lock-equivalence.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-014 reviewed bypass disposition for dependency-lock-equivalence.mjs (WI-10004151): its one child start is a synchronous, read-only git metadata probe used to compare immutable lockfile inputs. execFileSync is awaited, bounded to 64 MiB output, and retains no child, worker or queue after the comparison. The release admission path already owns the parent operation; adding a second local lease would double-count the same frozen repair check.",
+    matchesSource: (source) =>
+      resourceStartCallCount(source) === 1 &&
+      source.includes("const runGit = (root, args) => execFileSync('git', ['-C', root, ...args], {") &&
+      source.includes("maxBuffer: 64 * 1024 * 1024") &&
+      source.includes("stdio: ['ignore', 'pipe', 'pipe']") &&
+      source.includes("export function createGitInputManifestReader(git = runGit)"),
+  },
+  {
+    path: "packages/operator-core/lib/agent-chat-stream.ts",
+    code: "resource-start-outside-admission",
+    disposition: "upstream",
+    reason:
+      "P-013 reviewed upstream disposition for agent-chat-stream.ts: the native child is started only inside the shared runner's injected spawn seam, after reserveHostedAgentSlot has started a durable hosted-agent reservation. Exit/error handlers settle that reservation and the catch path settles failed starts, so the child inherits the parent host admission rather than opening a second root lease.",
+    matchesSource: (source) =>
+      resourceStartCallCount(source) === 1 &&
+      source.includes("const reservation = await reserveHostedAgentSlot(") &&
+      source.includes("randomUUID()") &&
+      source.includes("await reservation?.start();") &&
+      source.includes("const child = opts.spawnProcess ? await opts.spawnProcess(command, args, options) : spawn(command, args, options);") &&
+      source.includes("child.once('exit', release);") &&
+      source.includes("child.once('error', release);") &&
+      source.includes("await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));"),
+  },
+]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
     `${path}::${code}`,
@@ -2568,6 +2574,10 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
+  ...SUPPLEMENTAL_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason, matchesSource }) => [
+    `${path}::${code}`,
+    { disposition, reason, ...(matchesSource ? { matchesSource } : {}) },
+  ]),
   [
     "packages/operator-core/lib/agent-tools/coordination/inbox-visibility.ts::unbounded-resident-queue",
     {
