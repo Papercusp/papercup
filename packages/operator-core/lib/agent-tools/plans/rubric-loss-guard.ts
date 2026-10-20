@@ -467,7 +467,9 @@ export function guardAcceptanceBarTemplateDataWrite(
     throw new Error(
       `invalid_args: rubric '${args.slug}' belongs to a subject that already adopted an acceptance BAR ` +
         `contract, but the stored rubric is missing its server-owned barContract; generic template_data ` +
-        `writes are refused until the orphaned contract is repaired through the acceptance BAR recovery path`,
+        `writes are refused until the orphaned contract is repaired through the acceptance BAR recovery path: ` +
+        `rubrics:amend { rubricRef:'${args.slug}', restoreOrphanedBarContract:true, reason, dryRun:true } ` +
+        `(WI-6554700010018395), then apply without dryRun`,
     );
   }
   if (!storedParsed.success || storedParsed.data.kind !== 'acceptance' || !storedParsed.data.barContract) {

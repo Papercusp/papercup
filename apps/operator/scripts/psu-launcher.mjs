@@ -2575,9 +2575,13 @@ export function tagKickoffProvenance(
     const sha256 = createHash("sha256")
       .update(String(text).replace(/\r\n?/g, "\n").trim(), "utf8")
       .digest("hex");
+    const scopedHome =
+      typeof env?.PAPERCUSP_HOME === "string"
+        ? env.PAPERCUSP_HOME.trim()
+        : "";
     const dir =
       env.PAPERCUSP_TURN_PROVENANCE_DIR ||
-      papercuspPath("turn-provenance");
+      (scopedHome ? join(scopedHome, "turn-provenance") : papercuspPath("turn-provenance"));
     mkdirSync(dir, { recursive: true });
     const safe = String(sid)
       .replace(/[^a-zA-Z0-9._-]/g, "_")
@@ -2672,18 +2676,23 @@ export function scriptedOmpSetupEnv(backend, args, env = process.env) {
  */
 export function routeFreshKickoff(backend, res, args, env = process.env) {
   const kickoffOrigin = consumeInternalKickoffOrigin(env);
+  // The bootstrap response is the source of truth for the child environment.
+  // Keep the provenance write on that same envelope: a launcher can be started
+  // under one workspace while bootstrap selects another, and runWrapper exports
+  // the response env to the child hook.
+  const launchEnv = { ...env, ...(res?.envelopeEnv ?? {}) };
+  delete launchEnv.PAPERCUSP_INTERNAL_KICKOFF_ORIGIN;
   const kickoffArgs = kickoffPositionalArgs(res, {
     ...args,
-    kickoffPromptText: resolveKickoffText(args, env),
+    kickoffPromptText: resolveKickoffText(args, launchEnv),
   });
   if (!kickoffArgs.length) {
     return { positionalArgs: [], managedKickoff: null, kickoffSeeded: false };
   }
 
-  const sidForTag =
-    res?.envelopeEnv?.PAPERCUSP_SID || env?.PAPERCUSP_SID || null;
+  const sidForTag = launchEnv.PAPERCUSP_SID || null;
   const tagged = kickoffArgs.map((text) =>
-    tagKickoffProvenance(text, sidForTag, env, Date.now(), kickoffOrigin),
+    tagKickoffProvenance(text, sidForTag, launchEnv, Date.now(), kickoffOrigin),
   );
   return {
     positionalArgs: [],
