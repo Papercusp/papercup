@@ -3795,7 +3795,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // The cursor points to a manifest-bearing scratch file, not the JSON body;
               // offer plaintext line windows and retain the validated byte-page path.
               `Use capability:read cursor.args (byte_offset+byte_limit; no raw). ` +
-              `Plaintext: raw:true+offset/limit lines (long selected lines require byte pages). ` +
+              // The long-line caveat belongs to the plaintext branch only. The JSON
+              // branch already routes the reader to byte pages ("JSON at
+              // response.data[...]": response.data exists only in byte-page mode), and
+              // its pointer is length-pinned by result-door-encoding-contract.test.ts.
+              // Adding these 41 chars to both branches broke that ceiling (WI-6554700010018572).
+              `Plaintext: raw:true+offset/limit lines${parsedJsonBody ? '' : ' (long selected lines require byte pages)'}. ` +
               `file_path-only truncates long lines; Scratch ref, not JSON; ` +
               `response.data canonical base64; runtime codec; decoded.length===byte_length; ` +
               `follow next_cursor; ` +
