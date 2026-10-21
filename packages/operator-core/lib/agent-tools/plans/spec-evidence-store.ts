@@ -38,6 +38,7 @@ import {
   defaultBlobBatchReader,
   fingerprintRepoFileSetAtCommit,
   listCommittedGlobMatches,
+  locateCommittedBlobs,
   repoFileSetFingerprint,
   REPO_FILE_SET_READ_LIMITS,
   REPO_FIXTURE_READ_LIMITS,
@@ -48,6 +49,7 @@ import {
 } from './committed-tree-reader';
 import {
   MEASUREMENT_PIN_DETAILS_KEY,
+  defaultGitRunner,
   buildMeasurementPin,
   diffMeasuredFiles,
   readMeasurementPin,
@@ -390,6 +392,74 @@ async function expandedRepoSourcePathsAtRoot(
 ): Promise<string[]> {
   const globPaths = await expandRepoMeasurementGlobsAtRoot(root, parsed.sourceGlobs ?? []);
   return [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
+}
+
+/**
+ * Detect the narrow class of tests whose subject is a repository tree rather than the
+ * first-ring imports from the test file.  A directory read alone is not enough: ordinary
+ * fixtures often inspect one directory.  The detector requires all three signals of a
+ * broad census: a root collection (`APP_ROOTS`, `REPO_ROOT`, `SCAN_DIRS`, ...), a directory
+ * or glob read, and a traversal helper (`walk`, `scanTree`, ...).  AST identifiers keep
+ * comments and string fixtures from self-triggering this guard.
+ */
+export function detectBroadRepoTreeScan(source: string): boolean {
+  const file = ts.createSourceFile('repo-measurement.test.ts', source, ts.ScriptTarget.Latest, true);
+  let hasRootCollection = false;
+  let hasDirectoryRead = false;
+  let hasTraversal = false;
+  const expressionName = (expression: ts.Expression): string | null => {
+    if (ts.isIdentifier(expression)) return expression.text;
+    if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
+    return null;
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const name = node.text.toUpperCase();
+      if (/ROOTS?$|(?:DIRS|DIRECTORIES)$/.test(name) && name.length > 4) hasRootCollection = true;
+      if (/^(?:WALK|SCAN(?:TREE|DIRECTORY|FILES)?|VISIT)$/i.test(node.text)) hasTraversal = true;
+    }
+    if (ts.isCallExpression(node)) {
+      const name = expressionName(node.expression);
+      if (name && /^(?:READDIR|READDIRSYNC|GLOB|GLOBSYNC|FASTGLOB)$/i.test(name)) hasDirectoryRead = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return hasRootCollection && hasDirectoryRead && hasTraversal;
+}
+
+async function readCommittedMeasurementText(
+  root: string,
+  commit: string,
+  path: string,
+): Promise<string | null> {
+  const locations = await locateCommittedBlobs(root, commit, [path]);
+  const location = locations.get(path);
+  if (!location || !location.isFile) return null;
+  const repoPath = location.repo === '.' ? path : path.slice(location.repo.length + 1);
+  return defaultGitRunner(join(root, location.repo), ['show', `${location.commitSha}:${repoPath}`]);
+}
+
+/**
+ * A tree-plane repo-files measurement must name the files its test-side tree walk can see.
+ * Without explicit sourceGlobs, the normal first-ring source derivation is a false witness
+ * for a broad scanner, so the read path fails closed instead of reporting current proof.
+ */
+async function broadRepoTreeScanGuard(
+  root: string,
+  recipe: RepoFilesEvidenceMeasurement,
+  commit: string | null,
+): Promise<string | null> {
+  if (recipe.sourceGlobs?.length || !recipe.testPaths?.length) return null;
+  for (const path of recipe.testPaths) {
+    const source = await (commit
+      ? readCommittedMeasurementText(root, commit, path)
+      : readFile(resolve(root, path), 'utf8')).catch(() => null);
+    if (source !== null && detectBroadRepoTreeScan(source)) {
+      return `repo_measurement_broad_tree_scan_requires_source_globs:${path}`;
+    }
+  }
+  return null;
 }
 
 /** Resolve the bounded source file set recorded by a repo-files measurement. */
@@ -4024,6 +4094,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             : hasRepoFixturePaths(recipe)
               ? await measurementCommitFor(fixtureRoot)
               : null;
+          const broadTreeScanRefusal = await broadRepoTreeScanGuard(
+            measurementRoot,
+            recipe,
+            measuredAtCommit,
+          );
+          if (broadTreeScanRefusal) throw new Error(broadTreeScanRefusal);
           // Same single read as before; the per-file hashes it now also returns are what
           // name the moved paths below at zero extra IO. Under a batch probe snapshot the
           // pre-read fence is decided locally; its post-read half runs after this loop.
