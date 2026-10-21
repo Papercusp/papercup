@@ -366,12 +366,16 @@ describe('identity-bounded optional recall (R-19)', () => {
     [...(block ?? '').matchAll(/Recall (user|harness|hive) note \d/g)].map((match) => match[1]!);
 
   it('sheds the recall, before any admission is spent, when the applied identity cannot be read', async () => {
-    const admit = vi.fn(admitted);
+    let admissions = 0;
+    const admit = <U>(work: () => Promise<U>): Promise<MidTurnAdmissionOutcome<U>> => {
+      admissions += 1;
+      return admitted(work);
+    };
     const run = vi.fn(async () => 'memory');
     await expect(withIdentityBoundedMemoryAdmission(async () => {
       throw new Error('applied identity artifact unreadable');
     }, run, admit)).resolves.toEqual({ admitted: false, reason: 'identity_unreadable' });
-    expect(admit).not.toHaveBeenCalled();
+    expect(admissions).toBe(0);
     expect(run).not.toHaveBeenCalled();
   });
 
