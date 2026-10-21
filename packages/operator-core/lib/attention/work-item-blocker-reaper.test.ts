@@ -593,7 +593,7 @@ describe('backfillUnprovableWaitRecheckDates (P-006)', () => {
     return { deps, writes, classify };
   }
 
-  it('selects broad-key and free-text event/gate rows, sets recheckAt, and clears none', async () => {
+  it('AUTO-BAR-R-12-P-006: selects broad-key and free-text event/gate rows, sets recheckAt, and clears none', async () => {
     const mixed = [
       { ...row({ ref: 'coord:inbox-wake:su-a' }), legacyNote: 'kept' },
       row({ kind: 'gate', ref: 'waiting on the vendor reply' }),

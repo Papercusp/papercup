@@ -2291,7 +2291,7 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
     ['work-item:status:WI-9', 'event', /change notification/],
     ['waiting on the vendor reply', 'gate', /not a catalogued event key/],
     ['gate-red-streak:papercusp / WI-212675', 'gate', /not a catalogued event key/],
-  ])('refuses %s as a %s wait no fire can prove, names the options, and writes nothing', async (ref, kind, why) => {
+  ])('AUTO-BAR-R-11-P-006: refuses %s as a %s wait no fire can prove, names the options, and writes nothing', async (ref, kind, why) => {
     openItem();
     const out = await one({ id: 'WI-1', kind, ref, summary: 'blocked', nextVerb: 'events:await' });
 
@@ -2303,7 +2303,7 @@ describe('work_items:set_blocker write-time wait admission (P-006)', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
-  it('refuses a proving key whose fire latch already records a fire, as already satisfied (R-20)', async () => {
+  it('AUTO-BAR-R-20-P-006: refuses a proving key whose fire latch already records a fire, as already satisfied', async () => {
     openItem();
     firedKeys.set('release:deployed:abc123def', '2026-10-20T12:00:00.000Z');
     const out = await one({ id: 'WI-1', kind: 'event', ref: 'release:deployed:abc123def', summary: 'wait for deploy' });

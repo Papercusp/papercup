@@ -721,7 +721,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
   // event-wait-settlement-2026-10-20 P-006 (D-001 item 2; R-11, R-20): a durable park's trigger
   // is refused at write when no fire can prove it, or when it already fired — before anything
   // is released. (Previously both were accepted and only stamped reachability:'blocked'.)
-  it('refuses a durable park whose trigger is a broad wake, names the options, and releases nothing', async () => {
+  it('AUTO-BAR-R-11-P-006: refuses a durable park whose trigger is a broad wake, names the options, and releases nothing', async () => {
     reachabilityM.mockResolvedValueOnce({
       verdict: 'unknown', basis: 'unmeasured', authoritative: false,
       evidence: 'trigger "coord:inbox-wake:me" may wake a consumer but cannot establish the specific release condition',
@@ -739,7 +739,7 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
     expect(holdM).not.toHaveBeenCalled();
   });
 
-  it('refuses a durable park whose proving trigger already fired, as already satisfied (R-20)', async () => {
+  it('AUTO-BAR-R-20-P-006: refuses a durable park whose proving trigger already fired, as already satisfied', async () => {
     reachabilityM.mockResolvedValueOnce({
       verdict: 'reachable', basis: 'fired', authoritative: true,
       evidence: 'event fired at 2026-10-20T12:00:00.000Z', firedAt: '2026-10-20T12:00:00.000Z',
