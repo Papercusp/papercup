@@ -5,6 +5,7 @@
 import { expect } from 'vitest';
 import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
+import { runWithWorkspace } from '../../../workspace-als';
 
 export type Dispatched = Awaited<ReturnType<typeof dispatchProjectedTool>>;
 export type Called = { d: Dispatched; payload: Record<string, unknown> | null };
@@ -23,7 +24,10 @@ export function makeCaller(harness: string, runId: string) {
   return async function call(tool: string, args: Record<string, unknown>): Promise<Called> {
     const projected = lookupByMcpName(tool);
     expect(projected, `${tool} must be registered in the projection registry`).toBeTruthy();
-    const d = await dispatchProjectedTool(projected!, tool, { harness, ...args }, ctx, {});
+    // The MCP transport runs every call inside the caller's workspace ALS, and the plan gates
+    // read activeWorkspaceId(), not ctx.workspaceId.
+    const d = await runWithWorkspace(DEFAULT_WORKSPACE_ID, () =>
+      dispatchProjectedTool(projected!, tool, { harness, ...args }, ctx, {}));
     const content = (d.result as { content?: Array<{ text?: string }> } | undefined)?.content;
     const structured = (d.result as { structuredContent?: unknown } | undefined)?.structuredContent;
     let payload: Record<string, unknown> | null = null;
