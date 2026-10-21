@@ -213,5 +213,27 @@
       "sha256": "453514fa0fd6c2838b7339bae27b1185e60cf8baeda949c7de1cdd149d6277b3"
     }
   ],
+  "capturedWorkerPublication": {
+    "candidateSha": "a8efa2abff0f7f6a38570ee9f79ee8e26d493218",
+    "observedRemoteStagingSha": "7395c59c0032f6810f995a1ecf7966c92ac83448",
+    "candidateIsRemoteStagingAncestor": true,
+    "captureArtifacts": [
+      "docs/evidence/enterprise-tooling-source-qualification-2026-10-21.json",
+      "docs/evidence/enterprise-p012-fixture-source-qualification-2026-10-21.json"
+    ],
+    "scope": "repository-worker-vite-original-sources",
+    "uniqueCapturedPaths": 2348,
+    "conflictingCapturedHashes": [],
+    "candidateMissingPaths": [],
+    "candidateMismatchedHashes": [],
+    "preparedAdmissionPaths": 52,
+    "preparedAdmissionMismatches": [],
+    "verification": "Read-only SHA256 comparison of retained capture hashes and prepared input hashes against immutable Git blobs, recursively following recorded submodule gitlinks; git ls-remote verified the remote staging tip and git merge-base verified candidate ancestry. No passing tests were replayed.",
+    "observedRemoteTipMismatches": [
+      "packages/operator-core/lib/capability-envelope/session-confinement-store.ts",
+      "packages/operator-core/lib/capability-envelope/session-confinement.ts"
+    ],
+    "limits": "The qualified source pin is the named candidate, not the later remote tip. This is publication/source identity only; config/main-process closure, runtime admission, isolation, business/native acceptance, provider approval, storage clearance and shipment are not established."
+  },
   "boundary": "No export, dependency snapshot, build, runtime, provider, reviewer, deploy or gate action."
 }

@@ -11,7 +11,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
-import { evaluateSessionConfinement } from './capability-envelope/session-confinement';
+import { evaluateSessionConfinement, validScratchPlanBoundary } from './capability-envelope/session-confinement';
+import { blindReviewScratchPrefix } from './blind-review-scratch-plans';
 import type { BlindReviewBrief } from './blind-review-brief';
 import { BLIND_REVIEW_TOOL } from './blind-review-gate';
 import {
@@ -182,6 +183,113 @@ describe('blind reviewer confinement — gate decisions', () => {
   });
 });
 
+/**
+ * verification-system-improvements-2026-10-10#D-050 (WI-6554700010018458): the reviewer may
+ * author and exercise its OWN scratch plans, so a plan that ships plan-tool behaviour can be
+ * reviewed. The reviewed plan, cross-plan selectors and every other plan-text family stay
+ * refused.
+ */
+describe('blind reviewer scratch plans (D-050)', () => {
+  const PREFIX = blindReviewScratchPrefix('abc123def456');
+  const SCRATCH = { scratchPrefix: PREFIX, reviewedSlug: SLUG, harness: 'papercusp' };
+  const SCRATCH_CONFINEMENT = blindReviewerConfinement(SLUG, undefined, SCRATCH);
+  const plan = (toolName: string, args?: unknown) => evaluateSessionConfinement({ toolName, args, confinement: SCRATCH_CONFINEMENT });
+  const MINE = `${PREFIX}probe`;
+  const ADMITTED: Array<[string, Record<string, unknown>]> = [
+    ['plans:new', { slug: MINE, title: 'Probe', harness: 'papercusp', verificationProfile: 'general', content: '# Probe' }],
+    ['plans:add-item', { slug: MINE, text: 'Do x', importance: 'high', items: [{ text: 'Do y', blockedBy: ['P-001'] }] }],
+    ['plans:set-status', { slug: MINE, item: 'P-001', status: 'done', note: 'checked' }],
+    ['plans:audit', { slug: MINE, items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'lib/x.ts' }] }] }],
+    ['plans:get', { slug: MINE, heading: 'Items', itemIds: ['P-001'] }],
+    ['plans:set-plan-status', { slug: MINE, status: 'shipped', dryRun: true }],
+  ];
+
+  it('admits the reviewer\'s own scratch plans through every scratch verb', () => {
+    for (const [tool, args] of ADMITTED) expect(plan(tool, args).allowed, tool).toBe(true);
+  });
+
+  it('refuses the reviewed plan, an unprefixed slug, a bare prefix and a missing slug on every scratch verb', () => {
+    for (const [tool, args] of ADMITTED) {
+      for (const slug of [SLUG, 'other-plan-2026-10-20', PREFIX, `${PREFIX}${SLUG}`, `x${MINE}`, undefined]) {
+        const decision = plan(tool, { ...args, slug });
+        expect(decision.allowed, `${tool} ${String(slug)}`).toBe(false);
+        expect(decision.matchedGlob).toBe('outside-exact-scratch-plan');
+      }
+      expect(plan(tool, undefined).allowed, `${tool} without args`).toBe(false);
+    }
+  });
+
+  it('refuses a scratch call that names the reviewed plan in any field, so the ledger probe stays exact', () => {
+    expect(plan('plans:new', { slug: MINE, title: 'Probe', content: `copy of ${SLUG}` }).allowed).toBe(false);
+    expect(plan('plans:add-item', { slug: MINE, text: `see ${SLUG}#P-001` }).allowed).toBe(false);
+  });
+
+  it('refuses cross-plan selectors, out-of-list keys and a foreign harness', () => {
+    const refused: Array<[string, Record<string, unknown>]> = [
+      ['plans:get', { slug: MINE, slugs: ['other-plan-2026-10-20'] }],
+      ['plans:get', { slug: MINE, priorAttemptRefs: ['WI-1'] }],
+      ['plans:get', { slug: MINE, operationalBrief: true }],
+      ['plans:get', { slug: MINE, itemIds: ['other-plan#P-001'] }],
+      ['plans:get', { slug: MINE, decisionId: 'other-plan#D-001' }],
+      ['plans:get', { slug: MINE, harness: 'other' }],
+      ['plans:new', { slug: MINE, title: 'x', workspaceId: 'default' }],
+      ['plans:new', { slug: MINE, title: 'x', force: true }],
+      ['plans:add-item', { slug: MINE, text: 'x', items: [{ slug: 'other-plan-2026-10-20', text: 'y' }] }],
+      ['plans:add-item', { slug: MINE, text: 'x', items: [{ text: 'y', harness: 'other' }] }],
+      ['plans:add-item', { slug: MINE, text: 'x', blockedBy: ['other#P-001'] }],
+      ['plans:set-status', { slug: MINE, items: [{ slug: 'other-plan-2026-10-20', item: 'P-001', status: 'done' }] }],
+      ['plans:set-status', { slug: MINE, item: 'P-001', status: 'done', verification: { workItemId: 'WI-1' } }],
+      ['plans:audit', { slug: MINE, findings: [{ summary: 'x', disposition: 'filed', ref: 'WI-1' }] }],
+      ['plans:audit', { slug: MINE, phase: 'activation', sourceRanges: [{ session: 'claude:s1' }] }],
+      ['plans:audit', { slug: MINE, classRef: 'plan-class-feature-ship' }],
+      ['plans:audit', { slug: MINE, items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'work-item', ref: 'WI-1' }] }] }],
+      ['plans:set-plan-status', { slug: MINE, status: 'shipped' }],
+      ['plans:set-plan-status', { slug: MINE, status: 'shipped', dryRun: false }],
+      ['plans:set-plan-status', { slug: MINE, status: 'shipped', dryRun: true, force: { reason: 'x' } }],
+      ['plans:set-plan-status', { slug: MINE, status: 'shipped', dryRun: true, slugs: [MINE] }],
+    ];
+    for (const [tool, args] of refused) {
+      const decision = plan(tool, args);
+      expect(decision.allowed, `${tool} ${JSON.stringify(args)}`).toBe(false);
+      expect(decision.matchedGlob).toBe('outside-exact-scratch-plan');
+    }
+  });
+
+  it('keeps every other plan, rubric and evidence family refused with the boundary in place', () => {
+    for (const tool of ['plans:items', 'plans:search', 'plans:list', 'plans:get-spec-evidence', 'plans:set-archived',
+      'cross_harness:plans_get', 'rubrics:get', 'scorecards:list', 'scorecards:emit', 'mcp__papercusp-su__plans_new']) {
+      const decision = plan(tool, { slug: MINE });
+      expect(decision.allowed, tool).toBe(false);
+      expect(decision.matchedGlob).toBe('outside-exact-ceiling');
+    }
+  });
+
+  it('admits the scratch verbs only together with the boundary', () => {
+    expect(evaluate('plans:new').allowed).toBe(false);
+    expect(evaluateSessionConfinement({ toolName: 'plans:new', args: { slug: MINE, title: 'x' }, confinement: CONFINEMENT }).matchedGlob)
+      .toBe('outside-exact-ceiling');
+    // A boundary that fails validation denies every tool, not just the plan verbs.
+    const broken = { ...SCRATCH_CONFINEMENT, denyPlansOutside: { ...SCRATCH, scratchPrefix: 'blind-' } };
+    for (const tool of ['plans:new', 'coord:whoami']) {
+      expect(evaluateSessionConfinement({ toolName: tool, args: { slug: 'blind-x' }, confinement: broken }).allowed, tool).toBe(false);
+    }
+    // Listing executes nothing, so the boundary does not hide the verbs from the catalog.
+    expect(evaluateSessionConfinement({ toolName: 'plans:new', confinement: SCRATCH_CONFINEMENT, purpose: 'listing' }).allowed).toBe(true);
+  });
+
+  it('mints a fresh prefix that can never match an ordinary plan slug', () => {
+    expect(blindReviewScratchPrefix()).toMatch(/^blind-review-scratch-[a-f0-9]{12}-$/);
+    expect(blindReviewScratchPrefix()).not.toBe(blindReviewScratchPrefix());
+    expect(validScratchPlanBoundary(SCRATCH)).toBe(true);
+    for (const scratchPrefix of ['blind-review-scratch-', 'blind-review-scratch-ab-', 'plan-', 'blind-review-scratch-ABC123def456-']) {
+      expect(validScratchPlanBoundary({ ...SCRATCH, scratchPrefix }), scratchPrefix).toBe(false);
+    }
+    expect(validScratchPlanBoundary({ ...SCRATCH, extra: true })).toBe(false);
+    expect(validScratchPlanBoundary({ ...SCRATCH, harness: 'all' })).toBe(false);
+    expect(Object.isFrozen(SCRATCH_CONFINEMENT.denyPlansOutside)).toBe(true);
+  });
+});
+
 describe('buildBlindReviewerKickoff', () => {
   it('carries the owner words, the run hint and the post call, and no plan text', () => {
     const kickoff = buildBlindReviewerKickoff(BRIEF, 'Boot it with scripts/verify-tauri-headless.sh');
@@ -254,18 +362,38 @@ describe('mintBlindGapReviewer', () => {
     expect(ctx.ownerId).toBe(BLIND_GAP_REVIEW_ACTOR);
     expect(ctx.isSuperuser).toBe(false);
     expect(ctx.principal).toEqual({ kind: 'system', slug: BLIND_GAP_REVIEW_ACTOR, workspaceId: 'ws-1' });
-    expect(ctx[KEY]).toEqual(blindReviewerConfinement(SLUG));
+    expect(result.scratchPrefix).toMatch(/^blind-review-scratch-[a-f0-9]{12}-$/);
+    expect(ctx[KEY]).toEqual(blindReviewerConfinement(SLUG, undefined,
+      { scratchPrefix: result.scratchPrefix!, reviewedSlug: SLUG, harness: 'papercusp' }));
+  });
+
+  it('attaches a fresh scratch-plan boundary before launch and names its prefix in the kickoff (D-050)', async () => {
+    const d = deps();
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const [args, ctx] = d.handler.mock.calls[0] as unknown as [{ brief: string }, Record<PropertyKey, unknown>];
+    const confinement = ctx[KEY] as ReturnType<typeof blindReviewerConfinement>;
+    expect(confinement.denyPlansOutside).toEqual({ scratchPrefix: result.scratchPrefix, reviewedSlug: SLUG, harness: 'papercusp' });
+    expect(confinement.denyOutside).toEqual(expect.arrayContaining(['plans:new', 'plans:get', 'plans:set-plan-status']));
+    expect(confinement.denyOutside).not.toContain('plans:items');
+    expect(args.brief).toContain(`${result.scratchPrefix}probe`);
+    expect(args.brief).toContain('dryRun: true');
+    const second = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, deps().deps);
+    expect(second.ok && second.scratchPrefix).not.toBe(result.scratchPrefix);
   });
 
   it('binds the reviewer door to the spawning product runtime instead of the stable catalog', async () => {
     const d = deps();
-    await mintBlindGapReviewer(
+    const result = await mintBlindGapReviewer(
       { slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } },
       d.deps,
     );
+    const scratchPrefix = result.ok ? result.scratchPrefix! : '';
     expect(d.handler).toHaveBeenCalledWith(
       expect.objectContaining({ mcpTarget: 'spawn-host' }),
-      expect.objectContaining({ [KEY]: blindReviewerConfinement(SLUG) }),
+      expect.objectContaining({ [KEY]: blindReviewerConfinement(SLUG, undefined,
+        { scratchPrefix, reviewedSlug: SLUG, harness: 'papercusp' }) }),
     );
   });
 
