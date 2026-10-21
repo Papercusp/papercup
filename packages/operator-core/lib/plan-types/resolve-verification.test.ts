@@ -34,7 +34,8 @@ function itemTypeRow(id: string, modules: string[], revision = 1, extra: Partial
     origin: 'pack',
     source_listing_id: 'listing-1',
     retired_at: null,
-    definition: { schemaVersion: 1, id, revision, title: id, modules },
+    // Every listed set names generic-core: a set without it is refused (R-9, definition-floor.test.ts).
+    definition: { schemaVersion: 1, id, revision, title: id, modules: ['generic-core', ...modules] },
     ...extra,
   };
 }

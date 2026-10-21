@@ -37,12 +37,22 @@ import {
   type VerificationResolver,
 } from '../plan-verification-profile';
 import { builtinItemTypeId, builtinKindOf, builtinPlanTypeId } from './builtin-catalog';
-import { normalizeModules, type PlanTypeDefinition, type TypeReference } from './definitions';
+import { FLOOR_MODULE, normalizeModules, type PlanTypeDefinition, type TypeReference } from './definitions';
 import { buildTypeRegistrySnapshot, type RegisteredDefinition, type TypeRegistrySnapshot } from './registry';
 import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
 
 /** The strictest module set: what an unresolvable type is held to. */
 export const STRICTEST_MODULES: readonly VerificationModule[] = Object.freeze([...VERIFICATION_MODULES]);
+
+/**
+ * The resolution-time half of the generic-core floor (R-9). While the parse floor and
+ * `normalizeModules` hold, every resolved set already includes generic-core. If either ever
+ * regresses, or a definition reaches the resolver some other way, the item fails safe to the
+ * full catalog instead of losing its generic checks.
+ */
+export function holdToFloor(modules: VerificationModule[]): VerificationModule[] {
+  return modules.includes(FLOOR_MODULE) ? modules : [...STRICTEST_MODULES];
+}
 
 /** The plan type a plan resolves through: its declared `type:` slug, else its profile's first-party type. */
 export function planTypeIdFor(plan: VerificationPlanInput): string {
@@ -133,6 +143,7 @@ export function createRegistryVerificationResolver(
         ? normalizeModules([...resolved.definition.modules, ...domainModules])
         : [...STRICTEST_MODULES];
     }
+    modules = holdToFloor(modules);
     return {
       profile,
       profileSource,

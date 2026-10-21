@@ -28,7 +28,8 @@ let fx: PlanPgFixture;
 let admin: postgres.Sql;
 
 function itemTypeDef(id: string, revision: number, modules: string[] = []) {
-  return { schemaVersion: 1, id, revision, title: `${id} r${revision}`, modules };
+  // Every listed set names generic-core: a set without it is refused (R-9, definition-floor.test.ts).
+  return { schemaVersion: 1, id, revision, title: `${id} r${revision}`, modules: ['generic-core', ...modules] };
 }
 
 async function insertItemType(

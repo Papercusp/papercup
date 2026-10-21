@@ -17,10 +17,14 @@
  * registry row in it. Revisions are positive integers, as for rubrics, so a range is a plain
  * min/max comparison.
  *
- * Validation here is about SHAPE. Floors that compare a definition with the platform belong
- * to the authoring tools (P-005), for example "a definition may never drop generic-core"
- * (P-003). The schema already makes generic-core implied: `normalizeModules` always prepends
- * it, so a stored definition can never resolve without it.
+ * Validation here is about SHAPE, plus one platform floor that every write path shares: no
+ * item type may drop the generic-core checks (R-9, `validateDefinitionFloor`). An absent
+ * `modules` field means generic-core alone; a listed set that leaves generic-core out is
+ * REFUSED, not repaired, so what an author wrote is what gets stored. Define (P-005), pack
+ * install (P-006) and the registry loader (raw rows) all go through `parseItemTypeDefinition`.
+ * A plan type carries no module list (its items resolve through item types), so the strict
+ * plan-type schema refuses any attempt to declare one. Floors that compare a definition with
+ * another (an `extends` parent, a pinned revision) belong to the authoring tools (P-005).
  */
 import { z } from 'zod';
 import { VERIFICATION_MODULES, type VerificationModule } from './verification-modules';
@@ -47,6 +51,9 @@ export function isFirstPartyTypeId(id: string): boolean {
 const typeIdSchema = z.string().regex(TYPE_ID_PATTERN, 'a type id is <namespace>/<name> in lowercase, e.g. acme/legal-review');
 const revisionSchema = z.number().int().min(1);
 const moduleSchema = z.enum(VERIFICATION_MODULES);
+
+/** The module no definition may drop (R-9): the generic checks every plan item is held to. */
+export const FLOOR_MODULE = 'generic-core' as const satisfies VerificationModule;
 
 /** A reference to an item type: an exact revision, a range, or (both bounds absent) the latest. */
 export const typeReferenceSchema = z
@@ -100,8 +107,11 @@ export const itemTypeDefinitionSchema = z
     description: z.string().max(4000).default(''),
     /** The item type this one refines. The authoring tools (P-005) resolve and floor it. */
     extends: typeReferenceSchema.optional(),
-    /** Verification modules. generic-core is implied and cannot be removed. */
-    modules: z.array(moduleSchema).default([]),
+    /**
+     * Verification modules. Absent means generic-core alone; a listed set must name
+     * generic-core (`validateDefinitionFloor`), which can never be dropped.
+     */
+    modules: z.array(moduleSchema).default([FLOOR_MODULE]),
     completion: completionSchema.optional(),
     /** Citation kinds that may verify an item of this type, e.g. code, test, artifact. */
     citations: z.array(z.string().min(1)).optional(),
@@ -167,10 +177,25 @@ function issuesOf(error: z.ZodError): string[] {
   return error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`);
 }
 
-/** Validate an item-type definition and normalize its module set. */
+/**
+ * The generic-core floor (R-9): the issues that refuse a module set leaving generic-core out,
+ * or none. It judges the set AS WRITTEN, before `normalizeModules` would add generic-core back,
+ * so a definition that drops it is refused rather than silently stored as something else.
+ */
+export function validateDefinitionFloor(definition: { modules: readonly string[] }): string[] {
+  if (definition.modules.includes(FLOOR_MODULE)) return [];
+  return [`modules: must include ${FLOOR_MODULE}; no item type may drop the generic-core checks`];
+}
+
+/**
+ * Validate an item-type definition, hold it to the generic-core floor and normalize its module
+ * set. The one gate define (P-005), pack install (P-006) and the registry loader share.
+ */
 export function parseItemTypeDefinition(input: unknown): DefinitionParse<ItemTypeDefinition> {
   const parsed = itemTypeDefinitionSchema.safeParse(input);
   if (!parsed.success) return { ok: false, issues: issuesOf(parsed.error) };
+  const floor = validateDefinitionFloor(parsed.data);
+  if (floor.length > 0) return { ok: false, issues: floor };
   return { ok: true, definition: { ...parsed.data, modules: normalizeModules(parsed.data.modules) } };
 }
 
