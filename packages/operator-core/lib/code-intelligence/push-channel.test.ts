@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
-import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
+import { codeIntelPushText, CODE_INTEL_PUSH_TURN_CHARS, PUSH_LEG_FLAGS, firstTouchPaths, normalizePushCall, shellReadPaths, snapshotFirstTouchLeg, snapshotInterfaceLeg, snapshotIncidentLeg, snapshotGrepLeg, grepLookupSubject, type FirstTouchContext, type PushChannelDeps, type PushFact } from './push-channel';
 import { corroboratePushSources, parsePushSnapshot, PUSH_SNAPSHOT_MAX_AGE_MS, type PushProofSource } from './push-snapshot';
 import { buildSymbolSnapshot, relativeSymbolModule } from '../../../../scripts/lib/code-intel-symbol-snapshot.mjs';
 import { dependencySnapshotPath } from './dependency-snapshot-path';
@@ -327,6 +327,98 @@ describe('shared snapshot-backed push channel', () => {
     for (const tool of ['overwrite', 'Rewrite', 'docs:rewrite', 'unread']) {
       expect(firstTouchPaths({ ...input, calls: [{ tool, toolInput: { file_path: 'lib/target.ts' } }] })).toEqual([]);
     }
+  });
+
+  describe('WI-6554700010018441: wrapped and shell reads are first touches', () => {
+    const rooted = { ...input, root: '/repo' };
+    const touch = (tool: string, toolInput: unknown, base: PushInput = rooted) => firstTouchPaths({ ...base, calls: [{ tool, toolInput }] });
+
+    it('unwraps tools:invoke to the capability call it dispatched, in object and serialized form', () => {
+      for (const tool of ['mcp__papercusp-su__tools_invoke', 'tools:invoke']) {
+        for (const name of ['capability:read', 'capability:edit', 'capability:write']) {
+          expect(touch(tool, { name, args: { file_path: '/repo/lib/target.ts' } })).toEqual(['lib/target.ts']);
+          expect(touch(tool, JSON.stringify({ name, args: { file_path: 'lib/target.ts' } }))).toEqual(['lib/target.ts']);
+        }
+      }
+      expect(normalizePushCall({ tool: 'tools:invoke', toolInput: { name: 'capability:read', args: { file_path: 'x' } }, toolResponse: 'r' }))
+        .toEqual({ tool: 'capability:read', toolInput: { file_path: 'x' }, toolResponse: 'r' });
+    });
+
+    it('a wrapper that dispatched no file tool, or carries no name, is not a touch', () => {
+      expect(touch('tools:invoke', { name: 'coord:send', args: { file_path: 'lib/target.ts' } })).toEqual([]);
+      expect(touch('tools:invoke', { args: { file_path: 'lib/target.ts' } })).toEqual([]);
+      expect(touch('tools:invoke', '{"name":"capability:read"')).toEqual([]);
+      // The wrapper's own name is not reclassified as anything else.
+      expect(normalizePushCall({ tool: 'tools:invoke', toolInput: null })).toEqual({ tool: 'tools:invoke', toolInput: null });
+    });
+
+    it.each([
+      ["sed -n '1,40p' lib/target.ts"],
+      ['cat lib/target.ts'],
+      ['head -n 20 lib/target.ts'],
+      ['head -20 lib/target.ts | grep foo'],
+      ['tail -n 5 /repo/lib/target.ts'],
+      ['sed -n -e 1,5p ./lib/target.ts'],
+      ['cd /repo || exit 1; cat "lib/target.ts"'],
+      ['cd /repo/lib && cat target.ts'],
+    ])('reads lib/target.ts from a shell read: %s', command => {
+      for (const tool of ['Bash', 'mcp__papercusp-su__capability_bash', 'capability:bash', 'exec_command']) {
+        expect(touch(tool, { command })).toEqual(['lib/target.ts']);
+      }
+      expect(touch('mcp__papercusp-su__tools_invoke', { name: 'capability:bash', args: { cmd: command } })).toEqual(['lib/target.ts']);
+    });
+
+    it('resolves relative operands against a capability:bash cwd, absolute or root-relative', () => {
+      expect(touch('capability:bash', { cmd: 'cat target.ts', cwd: '/repo/lib' })).toEqual(['lib/target.ts']);
+      expect(touch('capability:bash', { cmd: 'cat target.ts', cwd: 'lib' })).toEqual(['lib/target.ts']);
+    });
+
+    it.each([
+      ['cat "$F"'],
+      ['cat lib/*.ts'],
+      ['cat ~/lib/target.ts'],
+      ['grep -rn foo lib/target.ts | head -5'],
+      ['cat > lib/target.ts <<EOF'],
+      ['cat <<EOF'],
+      ['cd "$ROOT" && cat lib/target.ts'],
+      ['cd lib && cat ../../outside.ts'],
+      ['cat /etc/passwd'],
+      ['ls lib/target.ts'],
+    ])('does not guess a path from: %s', command => {
+      expect(touch('Bash', { command })).toEqual([]);
+    });
+
+    it('never treats a sed script or a head/tail option value as a file', () => {
+      expect(shellReadPaths("sed -n '1,5p' a.ts", '/r')).toEqual(['/r/a.ts']);
+      expect(shellReadPaths("sed -e 's/x/y/' -n a.ts b.ts", '/r')).toEqual(['/r/a.ts', '/r/b.ts']);
+      expect(shellReadPaths('head -n 20 a.ts', '/r')).toEqual(['/r/a.ts']);
+      expect(shellReadPaths('tail --lines 20 a.ts', '/r')).toEqual(['/r/a.ts']);
+      expect(shellReadPaths('cat a.ts', undefined)).toEqual([]);
+      expect(shellReadPaths('cat ' + 'a'.repeat(4001), '/r')).toEqual([]);
+    });
+
+    it('without a registered root, an absolute shell operand is not a snapshot path', () => {
+      expect(touch('Bash', { command: 'cat /repo/lib/target.ts' }, input)).toEqual([]);
+    });
+
+    it('every registered leg receives the call a tools:invoke wrapper dispatched, not the wrapper', async () => {
+      const seen: Array<string | undefined> = [];
+      const d = deps();
+      d.legs = () => new Map([['incident', (legInput: PushInput) => { seen.push(...legInput.calls.map(call => call.tool)); return []; }]]);
+      await codeIntelPushText({ ...input, calls: [
+        { tool: 'mcp__papercusp-su__tools_invoke', toolInput: { name: 'testing:run', args: { files: ['lib/target.test.ts'] } }, toolResponse: 'r' },
+        { tool: 'Read', toolInput: { file_path: 'lib/target.ts' } },
+      ] }, 0, d);
+      expect(seen).toEqual(['testing:run', 'Read']);
+    });
+
+    it('the grep leg sees a search dispatched through tools:invoke', () => {
+      expect(grepLookupSubject({ tool: 'mcp__papercusp-su__tools_invoke',
+        toolInput: { name: 'capability:bash', args: { cmd: 'grep -rn "export function firstTouchPaths" packages' } } }))
+        .toBe('firstTouchPaths');
+      expect(grepLookupSubject({ tool: 'tools:invoke', toolInput: { name: 'Grep', args: { pattern: 'firstTouchPaths' } } }))
+        .toBe('firstTouchPaths');
+    });
   });
 
   it.each([false, true])('answers a literal grep with a unique snapshot symbol and aliases (serialized native input: %s)', serialized => {

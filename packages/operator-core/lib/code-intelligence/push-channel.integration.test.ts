@@ -167,6 +167,25 @@ describe('push ledger cross-worker budget, dedupe and workspace isolation', () =
       expect(await recorded('session-read')).toEqual([{ leg: 'first-touch', subject: 'pkg/lib/target.ts' }]);
     });
 
+    it.each([
+      ['tools:invoke-wrapped capability:read', () => ({ tool: 'mcp__papercusp-su__tools_invoke',
+        toolInput: JSON.stringify({ name: 'capability:read', args: { file_path: join(root, 'pkg/lib/target.ts') } }) })],
+      ['shell sed range read', () => ({ tool: 'Bash', toolInput: { command: `cd ${root} || exit 1; sed -n '1,20p' pkg/lib/target.ts` } })],
+      ['tools:invoke-wrapped capability:bash cat', () => ({ tool: 'mcp__papercusp-su__tools_invoke',
+        toolInput: { name: 'capability:bash', args: { cmd: 'cat lib/target.ts', cwd: join(root, 'pkg') } } })],
+    ])('SPEC-P-001-FIRST-READ (WI-6554700010018441): a first read via %s records one first-touch answer', async (label, call) => {
+      const owner = 'session-read-' + label.replace(/\W+/g, '-');
+      expect(await replay(owner, [call()])).toContain('pkg/lib/target.ts: 1 static file importers');
+      expect(await replay(owner, [call()])).toBe('');
+      expect(await recorded(owner)).toEqual([{ leg: 'first-touch', subject: 'pkg/lib/target.ts' }]);
+    });
+
+    it('SPEC-P-001 (WI-6554700010018441): a symbol search dispatched through tools:invoke records its grep answer', async () => {
+      const wrapped = { tool: 'mcp__papercusp-su__tools_invoke', toolInput: { name: 'capability:bash', args: { cmd: 'rg -n "target" pkg' } } };
+      expect(await replay('session-search-wrapped', [wrapped])).toContain('target: definition pkg/lib/target.ts:1');
+      expect(await recorded('session-search-wrapped')).toEqual([{ leg: 'grep', subject: 'target' }]);
+    });
+
     it('SPEC-P-001-CAUSE (D-012): a search after a workspace package.json edit still records its grep answer', async () => {
       await writeFile(join(root, 'pkg/package.json'),
         JSON.stringify({ name: '@fx/pkg', version: '2.0.0', scripts: { test: 'vitest run' } }, null, 2));
