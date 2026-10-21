@@ -127,4 +127,12 @@ export function scopeArg() {
 }
 
 /** The historic no-scope default: the four original prose surfaces (EI-6984). */
-export const DEFAULT_SCOPE: readonly string[] = ['escalations', 'brainstorm', 'turns', 'decisions'];
+export const DEFAULT_SCOPE: readonly string[] = ['escalations', 'brainstorm', 'turns', 'decisions', 'plan'];
+
+/** Planned work participates in discovery, including work-item-only callers. */
+export function resolveSearchScope(scope?: readonly string[]): string[] {
+  const selected = scope?.includes(SCOPE_ALL)
+    ? SEARCH_SOURCES.map(source => source.name)
+    : scope?.length ? [...scope] : [...DEFAULT_SCOPE];
+  return selected.includes('work_item') && !selected.includes('plan') ? [...selected, 'plan'] : selected;
+}
