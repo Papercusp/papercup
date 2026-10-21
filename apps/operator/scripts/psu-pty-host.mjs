@@ -9365,6 +9365,9 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     state(id) {
       return getState(id);
     },
+    supersededReason(id) {
+      return getState(id) === 'superseded' ? entries.get(id)?.reason : undefined;
+    },
     /** True when `id` is retained within the TTL, including refused writes. `id` may be
      *  undefined/empty (a message with no delivery row) — always false then, so
      *  callers can pass it through unconditionally. */
@@ -9372,11 +9375,11 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
       return getState(id) !== null;
     },
     /** Record the early ACK commitment while the detached gated pipeline runs. */
-    markPending(id) {
+    markPending(id, interruptible = false) {
       if (!id) return;
       const current = entries.get(id);
       if (current?.state === 'completed' || current?.state === 'cancelled' || current?.state === 'superseded' || current?.writeStarted) return;
-      entries.set(id, { ...current, state: 'pending', at: now() });
+      entries.set(id, { ...current, state: 'pending', at: now(), interruptible: current?.interruptible || interruptible });
     },
     /** Record the point at which the gated pipeline committed its delivery. */
     markCompleted(id) {
@@ -9386,10 +9389,20 @@ export function makeDeliveryDedup({ ttlMs = DELIVERY_DEDUP_TTL_MS, now = Date.no
     },
     /** A written but unconfirmed turn belongs to a child that no longer exists.
      * Preserve its original TTL and suppress repasting without claiming success. */
-    markSuperseded(id) {
+    markSuperseded(id, reason = 'deferred-native-turn-start-superseded') {
       const current = entries.get(id);
       if (current?.state !== 'pending') return;
-      entries.set(id, { ...current, state: 'superseded', writeStarted: true });
+      entries.set(id, { ...current, state: 'superseded', writeStarted: true, reason });
+    },
+    /** Revoke pending work turns immediately, without cancelling lifecycle operations. */
+    interruptPending() {
+      const ids = [];
+      for (const [id, entry] of entries) {
+        if (entry.state !== 'pending' || !entry.interruptible) continue;
+        this.markSuperseded(id, 'deferred-owner-stop');
+        ids.push(id);
+      }
+      return ids;
     },
     /** Request cancellation for exact pending IDs. This is not a receipt: the
      *  gate pipeline must still observe the request at its atomic first-write
@@ -10926,6 +10939,10 @@ export function hostThroughPty(o) {
   let lastMachineTurnSubmittedAtMs = 0;
   let ownerComposerGate;
   let ownerStopRequested = false;
+  // Terminal interrupts cancel work already admitted at that boundary. They
+  // must not become an implicit loop:end that vetoes every later wake until
+  // the human happens to press Enter (WI-6554700010018590).
+  let ownerStopGeneration = 0;
   // The first discovery write observes execution before the rest of the host
   // is wired. Initialize its retained state before that synchronous write.
   let nativeExecutionFence = null;
@@ -10967,6 +10984,7 @@ export function hostThroughPty(o) {
     childStartedAtMs = Date.now();
     childOutputBytes = 0;
     lastMachineTurnSubmittedAtMs = 0;
+    ownerStopRequested = false;
     return spawned;
   };
   let child;
@@ -13332,6 +13350,10 @@ export function hostThroughPty(o) {
   // pipeline is pending and after it commits, so a retry cannot inject a second
   // real turn while an early ACK is still only acceptance.
   const deliveryDedup = makeDeliveryDedup();
+  const interruptScopedCoalesceKey = message => {
+    const key = turnCoalesceKey(message.data, message.routineId, ownerId);
+    return key == null ? null : `${key}:owner-stop:${ownerStopGeneration}`;
+  };
   const nativeStartPending = new Map();
   const nativeStartProof = (pending) => {
     if (pending.child !== child) return { available: false, started: false };
@@ -14274,6 +14296,7 @@ export function hostThroughPty(o) {
       const payload = Buffer.concat(chunks);
       if (!payload.length) return { ok: false, reason: 'empty-payload' };
       const msg = decodeControl(payload);
+      const ownerStopGenerationAtReceive = ownerStopGeneration;
       // EI-153: MISDELIVERY guard — the sender's addressed-recipient assertion
       // (decodeOwnerIdentity) is checked against THIS host's own registered
       // ownerId before anything else runs. This is leg-independent of *why* a
@@ -14518,7 +14541,8 @@ export function hostThroughPty(o) {
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
         if (duplicateState === 'superseded') {
-          return { ok: false, reason: 'deferred-native-turn-start-superseded' };
+          return { ok: false, reason: deliveryDedup.supersededReason(msg.deliveryId) ??
+            'deferred-native-turn-start-superseded' };
         }
         const pendingStart = nativeStartPending.get(msg.deliveryId);
         if (duplicateState === 'pending' && pendingStart && nativeStartProof(pendingStart).started) {
@@ -14550,7 +14574,7 @@ export function hostThroughPty(o) {
         // already claimed its slot is deliberately not resurrected.
         const pendingLoopKey =
           duplicateState === 'pending' && msg.mode === 'turn' && msg.routineId
-            ? turnCoalesceKey(msg.data, msg.routineId, ownerId)
+            ? interruptScopedCoalesceKey(msg)
             : null;
         const pendingLoopMetadata =
           msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
@@ -14586,6 +14610,16 @@ export function hostThroughPty(o) {
       // resume-headless, a second process on this live session.
       if ((msg.mode === 'turn' || msg.mode === 'reset') && currentChildUnbindable()) {
         return refuseUnbindableDelivery(msg.mode, 'admission');
+      }
+      if (msg.mode === 'turn' && ownerStopRequested) {
+        // Only a fresh delivery can resume the session. Retries of interrupted
+        // work return its retained refusal above; already-queued pipelines keep
+        // their earlier generation and still fail the final pre-write fence.
+        ownerStopRequested = false;
+        appendHostEvent(ownerId, 'owner-stop-cleared', {
+          reason: 'independent-wake', deliveryId: msg.deliveryId ?? null,
+          ownerStopGeneration,
+        });
       }
       // SHUTDOWN (WI-6638) — wind this session down and EXIT, closing its tab.
       //
@@ -14701,7 +14735,7 @@ export function hostThroughPty(o) {
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
-      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId, ownerId) : null;
+      const coalesceKey = msg.mode === 'turn' ? interruptScopedCoalesceKey(msg) : null;
         const coalesceMetadata = msg.mode === 'turn' ? turnCoalesceMetadata(msg) : undefined;
       const coalescedDeliveryIds = new Set(msg.deliveryId ? [msg.deliveryId] : []);
       const claimCoalesced = () => {
@@ -14722,7 +14756,7 @@ export function hostThroughPty(o) {
         // pending waiter's one write, but it is NOT completed until that parent
         // pipeline commits. If the parent defers or errors, the parent outcome
         // clears this ID too so the durable pump can retry it.
-        if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
+        if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId, true);
         return { ok: true, reason: 'coalesced-into-pending-turn' };
       }
       // EI-18679050054551625 (WI-5872 follow-up #2): everything from here down —
@@ -15287,7 +15321,9 @@ export function hostThroughPty(o) {
           return { ok: false, reason: preWriteProvenanceRejection };
         }
         if (msg.mode === 'turn') {
-          if (ownerStopRequested) return { ok: false, reason: 'deferred-owner-stop' };
+          if (ownerStopGeneration !== ownerStopGenerationAtReceive) {
+            return { ok: false, reason: 'deferred-owner-stop' };
+          }
           if (reconcileNativeStartPending()) return { ok: false, reason: 'deferred-native-turn-start' };
           // A wake addressed the parked child before THIS delivery resumed the
           // same conversation. Bind it to that exact replacement, including a
@@ -15420,7 +15456,7 @@ export function hostThroughPty(o) {
               anchor: { fileIdentity: null, markerStartOffset: null, markerEndOffset: null, scannedEndOffset: null } };
             nativeStartPending.set(deliver.deliveryId, pending);
             const proof = await waitForNativeTurnStart({ probe: () => nativeStartProof(pending),
-              isCurrent: () => child === target && !ownerStopRequested,
+              isCurrent: () => child === target && ownerStopGeneration === ownerStopGenerationAtReceive,
               timeoutMs: positiveNumber(env.PAPERCUSP_PSU_PTY_NATIVE_START_TIMEOUT_MS, 10_000) });
             appendHostEvent(ownerId, proof.started ? 'native-turn-start-confirmed' : 'native-turn-start-unverified', {
               deliveryId: deliver.deliveryId, childGeneration, reason: proof.reason,
@@ -15481,7 +15517,7 @@ export function hostThroughPty(o) {
       // commitment; keep every ID in this coalesced waiter pending until the
       // detached pipeline reaches its write/recycle commitment, or clear the
       // complete set when the attempt is terminally refused.
-      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId);
+      if (msg.deliveryId) deliveryDedup.markPending(msg.deliveryId, msg.mode === 'turn' || msg.mode === 'reset');
       // Fire the gated pipeline and forget it (from the ACK's point of view) —
       // its own try/catch/finally above already handles every expected outcome
       // and durably records it; this outer .catch exists only so a genuinely
@@ -15507,6 +15543,13 @@ export function hostThroughPty(o) {
           }
           if (!coalescedDeliveryIds.size) return;
           for (const deliveryId of coalescedDeliveryIds) {
+            if (deliveryOutcome?.reason === 'deferred-owner-stop') {
+              // Keep the exact refusal as a dedup tombstone. Clearing pending
+              // here let every durable retry ACK acceptance, fail again off-
+              // socket, and eventually claim an inbox-only delivery as success.
+              deliveryDedup.markSuperseded(deliveryId, 'deferred-owner-stop');
+              continue;
+            }
             const rearmOwnsDelivery =
               deliveryId === msg.deliveryId &&
               deliveryOutcome?.reason === 'deferred-busy-gate' &&
@@ -16024,8 +16067,13 @@ export function hostThroughPty(o) {
         return;
       }
       ownerComposerGate.observe(input);
-      if (text.includes('\x03') || text === '\x1b') ownerStopRequested = true;
-      else if (text.includes('\r') || text.includes('\n')) ownerStopRequested = false;
+      if (text.includes('\x03') || text === '\x1b') {
+        ownerStopRequested = true;
+        ownerStopGeneration++;
+        const interruptedDeliveryIds = deliveryDedup.interruptPending();
+        for (const id of interruptedDeliveryIds) nativeStartPending.delete(id);
+        appendHostEvent(ownerId, 'owner-stop-requested', { ownerStopGeneration, interruptedDeliveryIds });
+      } else if (text.includes('\r') || text.includes('\n')) ownerStopRequested = false;
     }
     if (text.includes('\r') || text.includes('\n')) activeManagedCodexStartupUpdateDialog?.complete();
     try {
