@@ -230,6 +230,10 @@ function normalize(s: string): string {
  *  scanning `renderRelayQuoteSuffix` should see the owner's actual words,
  *  not the platform's internal tag. */
 function displayQuote(text: string): string {
+  if (text.startsWith('⟦dialog-answer-source:human⟧')) {
+    const answer = text.indexOf('\nAnswer: ');
+    return answer >= 0 ? text.slice(answer + '\nAnswer: '.length) : text.slice(text.indexOf('\n') + 1);
+  }
   return text.startsWith(OWNER_DIALOG_TURN_MARKER)
     ? text.slice(OWNER_DIALOG_TURN_MARKER.length).replace(/^\n/, '')
     : text;

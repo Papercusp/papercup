@@ -504,6 +504,14 @@ describe('resolveRelayProvenance — platform-verified tiers (mocked stores)', (
           timestamp: '2026-09-02T20:14:00.000Z',
           message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }] },
         },
+        {
+          type: 'attachment',
+          sessionId: 'sess-1',
+          timestamp: '2026-09-02T20:14:00.000Z',
+          attachment: { type: 'hook_additional_context', hookEvent: 'PostToolUse', content: [
+            '⟦dialog-answer-provenance⟧ {"source":"human","sessionId":"sess-1","toolUseId":"toolu_ask"}\nHuman terminal submission.\nAnswer: ' + answer,
+          ] },
+        },
       ]),
     );
     const r = await resolveRelayProvenance(IDENTITY, { relayOf: OWNER_TURN_SENTINEL });
