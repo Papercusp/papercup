@@ -47,7 +47,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 // Keep the interactive bootstrap independent of operator packages while using
 // the same dependency-free signature as the governed turn taxonomy.
-import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
+import { makeModelCapacityDetector, modelCapacityLineMatch, modelCapacityRetryAfterMs } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from '../../../packages/operator-core/lib/psu-launch-log.mjs';
 import { controlPlaneTempCandidates } from '../../../packages/operator-core/lib/control-plane-temp.mjs';
 import {
@@ -1923,16 +1923,23 @@ export function nativeTurnCompletedInTranscript({
   return completed;
 }
 
+/** @typedef {{code: string, retryable: boolean, retryAfterMs: number|null, atMs: number}} NativeExecutionFailure */
+/** @typedef {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null,
+ * pendingTools: number, failure?: NativeExecutionFailure}} NativeExecutionObservation */
+
 /** Normalized execution evidence, independent of provider error wording.
  * Tool calls remain active until their matching result; PTY repaint is not progress.
  * @param {any[]} rows
  * @param {{agent: string, receivedAtMs?: number, nowMs?: number}} options
+ * @returns {NativeExecutionObservation}
  */
 export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs = Date.now() }) {
   const classify = TURN_ROW_CLASSIFIERS[agent];
   let phase = 'unknown';
   let turnStartedAt = null;
   let lastProgressAt = null;
+  /** @type {NativeExecutionFailure|undefined} */
+  let failure;
   const pendingTools = new Set();
   if (!classify || !Number.isFinite(receivedAtMs)) return { phase, turnStartedAt, lastProgressAt, pendingTools: 0 };
   for (const row of rows) {
@@ -1952,6 +1959,15 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
           && ['error', 'aborted'].includes(String(message.stopReason).toLowerCase());
     if (failed || verdict === 'turn-completed') {
       phase = failed ? 'failed' : 'settled';
+      failure = undefined;
+      if (failed) {
+        const error = row.payload?.error;
+        const text = String(typeof error === 'string' ? error : error?.message ?? '').slice(0, 2048);
+        const code = String(error?.codex_error_info ?? error?.code ?? row.payload?.type
+          ?? row.subtype ?? message?.stopReason ?? 'native_error').replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 120);
+        const retryable = code === 'server_overloaded' || modelCapacityLineMatch(text) != null;
+        failure = { code, retryable, retryAfterMs: retryable ? modelCapacityRetryAfterMs(text) : null, atMs: at };
+      }
       // An aborted model does not prove its external tool effects stopped.
       // Keep unmatched calls visible until their results arrive.
       if (!failed) pendingTools.clear();
@@ -1959,6 +1975,7 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       continue;
     }
     if (verdict === 'turn-started') {
+      failure = undefined;
       // Claude/OMP user rows prove acceptance, not model execution. Their
       // first assistant/tool record supplies positive work evidence; gateway
       // operation leases cover silent reasoning before that record lands.
@@ -1991,7 +2008,7 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
       if (phase === 'running') lastProgressAt = at;
     }
   }
-  return { phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size };
+  return { phase, turnStartedAt, lastProgressAt, pendingTools: pendingTools.size, ...(failure ? { failure } : {}) };
 }
 
 /**
@@ -2001,8 +2018,8 @@ export function nativeExecutionFromRows(rows, { agent, receivedAtMs = 0, nowMs =
  * deliberately one-way: missing or unreadable evidence cannot create a
  * running verdict, but it also cannot erase positive evidence already seen for
  * the current turn.
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
  */
 export function retainRunningNativeExecution(previous, current) {
   if (previous?.phase !== 'running' || current.phase !== 'unknown') return current;
@@ -8919,6 +8936,25 @@ export function mcpConnectedVerdict(visible, name) {
   return false;
 }
 
+/**
+ * Keep a forced no-op from entering the host's recovered event lane.
+ * @param {{ ok: boolean, step: string, detail?: string }} result
+ * @param {boolean} force
+ * @returns {{ ok: boolean, event: 'mcp-reconnect-completed' | 'mcp-reconnect-failed', step: string, detail: string }}
+ */
+export function classifyMcpReconnectHostOutcome(result, force = false) {
+  const forceShortCircuited = force === true && result?.step === 'already-connected';
+  const ok = result?.ok === true && !forceShortCircuited;
+  return {
+    ok,
+    event: ok ? 'mcp-reconnect-completed' : 'mcp-reconnect-failed',
+    step: forceShortCircuited ? 'force-short-circuited' : String(result?.step ?? 'unknown'),
+    detail: forceShortCircuited
+      ? 'force requested but reconnect macro returned already-connected'
+      : String(result?.detail ?? ''),
+  };
+}
+
 /** A scripted, fresh headless role must have its signed MCP server before its
  * first task turn. Claude does not reliably retry a failed startup catalog fetch. */
 export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }) {
@@ -9030,9 +9066,8 @@ export function mcpDialogRowSelected(visible, test) {
  * scripted fake TUI. Steps (each bounded, each verified off the screen):
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
- *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on. `force:true` skips that short circuit and
- *      presses the existing Reconnect action for connected-but-toolless sessions.
+ *      Already-connected is a benign no-op only for non-forced requests.
+ *      `force:true` bypasses every connected-state exit and presses Reconnect.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -9139,7 +9174,9 @@ export async function runMcpReconnectMacro({
   }
   const alreadyConnected = async () => {
     await closeOut();
-    return { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
+    return force
+      ? { ok: false, step: 'force-short-circuited', detail: 'force requested but connected status short-circuited navigation' }
+      : { ok: true, step: 'already-connected', detail: 'target reads connected — nothing to heal' };
   };
   if (!force && (targetRowStatus(frame) === 'connected' || mcpConnectedVerdict(frame, serverName))) {
     return alreadyConnected();
@@ -9148,6 +9185,7 @@ export async function runMcpReconnectMacro({
   // (3) cursor onto the target row — skipped when /mcp opened straight into
   // the server's detail view (WI-10006598): there is no row to select, and
   // the action rows below belong to the target already.
+  let reconnectSubmitted = false;
   let inDetail = mcpDialogShowsServerDetail(frame, serverName);
   if (!inDetail) {
     const onTarget = () => mcpDialogRowSelected(visible(), (l) => l.includes(serverName));
@@ -9158,7 +9196,7 @@ export async function runMcpReconnectMacro({
       await sleep(settleMs);
       const v = visible();
       // The server can finish connecting while we navigate.
-      if (mcpConnectedVerdict(v, serverName)) return alreadyConnected();
+      if (!force && mcpConnectedVerdict(v, serverName)) return alreadyConnected();
       if (mcpDialogShowsServerDetail(v, serverName)) {
         inDetail = true;
         break;
@@ -9173,6 +9211,14 @@ export async function runMcpReconnectMacro({
       resetTap();
       write(CR);
       await sleep(settleMs);
+      const afterTargetEnter = visible();
+      // Some Claude versions reconnect directly from the target row instead
+      // of opening a detail view. Count only a fresh connected target-row
+      // repaint as that action result; a detail status is not proof by itself.
+      if (mcpDialogRowSelected(afterTargetEnter, (line) => line.includes(serverName)) &&
+          targetRowStatus(afterTargetEnter) === 'connected') {
+        reconnectSubmitted = true;
+      }
     }
   }
 
@@ -9189,16 +9235,18 @@ export async function runMcpReconnectMacro({
     if (sel) {
       resetTap();
       write(CR);
+      reconnectSubmitted = true;
     }
     // not found selected ⇒ fall through — the connected-wait below still judges it
   }
 
-  // (5) did it connect? (list-row OR detail-status shape — mcpConnectedVerdict —
-  // OR the dialog closed itself and printed the success line.) mcpConnectedVerdict
-  // alone can never accept that line: `\bconnected\b` has no word boundary inside
-  // "Reconnected", so a real success used to time out here (WI-10003453).
+  // (5) did it connect? For force mode, the connected verdict must be a fresh
+  // repaint after submitting Reconnect; a connected marker from before the
+  // action is not proof the heal happened. The dialog's explicit success line
+  // remains sufficient on every path (WI-10003453).
   const done = await waitFor(
-    (v) => directReconnectSucceeded(v) || mcpConnectedVerdict(v, serverName),
+    (v) => directReconnectSucceeded(v) ||
+      (!force || reconnectSubmitted) && mcpConnectedVerdict(v, serverName),
     reconnectBudgetMs,
   );
   if (done && directReconnectSucceeded(done)) {
@@ -10977,6 +11025,7 @@ export function hostThroughPty(o) {
   // is wired. Initialize its retained state before that synchronous write.
   let nativeExecutionFence = null;
   let lastNativeExecution = null;
+  let surfacedNativeFailure = null;
   // WI-10005178: the child's PTY size, so its cursor-positioned output can be
   // replayed onto the same grid (renderTerminalScreen). onResize keeps the child
   // at these dims too.
@@ -11365,13 +11414,36 @@ export function hostThroughPty(o) {
   });
   const writeMeta = () => {
     try {
+      const execution = currentNativeExecution();
+      if (execution.phase === 'failed' && execution.failure) {
+        const nativeSessionId = env.PAPERCUSP_AGENT === 'codex'
+          ? currentNativeSessionId(child.pid, resolveRespawnNativeId) : null;
+        // The submit clock is published after the ordered PTY writes. A fast
+        // terminal error can already be visible on both sides of that update;
+        // its stable identity must not include the mutable observation floor.
+        const key = `${execution.childGeneration}:${nativeSessionId ?? ''}:${execution.failure.atMs}`;
+        if (surfacedNativeFailure !== key) {
+          surfacedNativeFailure = key;
+          appendHostEvent(ownerId, 'native-turn-failed', {
+            agent: env.PAPERCUSP_AGENT, nativeSessionId,
+            ...execution,
+          });
+          if (!bridgeTty) {
+            const diagnostic = `[psu] native-turn-failed agent=${env.PAPERCUSP_AGENT} code=${execution.failure.code}`
+              + ` retryable=${execution.failure.retryable} retryAfterMs=${execution.failure.retryAfterMs ?? 'unknown'}\n`;
+            terminalOutput.write(diagnostic);
+            normalizedLog?.push(diagnostic);
+            normalizedLog?.flush();
+          }
+        }
+      }
       metadataWriter.write(JSON.stringify({ ...baseMeta, ...activity.snapshot(), ...quotaBlockDetector.snapshot(),
         ...authBlockDetector.snapshot(),
         ...(env.PAPERCUSP_AGENT === 'codex' ? {
           nativeSessionId: currentNativeSessionId(child.pid, resolveRespawnNativeId),
           childGeneration,
         } : {}),
-        execution: currentNativeExecution(),
+        execution,
       }));
     } catch {
       /* best-effort — discovery degrades to the base contract */
@@ -15272,10 +15344,12 @@ export function hostThroughPty(o) {
               resetTap: tap.reset,
               crDelayMs: turnSubmitCrDelayForAgent(agent, env),
             });
-            appendHostEvent(ownerId, result.ok ? 'mcp-reconnect-completed' : 'mcp-reconnect-failed', {
+            const outcome = classifyMcpReconnectHostOutcome(result, msg.force === true);
+            appendHostEvent(ownerId, outcome.event, {
               serverName,
-              step: result.step,
-              detail: result.detail,
+              force: msg.force === true,
+              step: outcome.step,
+              detail: outcome.detail,
             });
             // P-006 (completing the class): this is a FOURTH routine host
             // diagnostic that writes straight into the owner's TUI — it fires on
@@ -15285,10 +15359,10 @@ export function hostThroughPty(o) {
             // the next reader. writeHostDiagnostic is itself fail-soft, so the
             // local try/catch it replaces is redundant.
             writeHostDiagnostic(
-              `psu-pty-host: mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
-                `(${serverName}: ${result.step} — ${result.detail})\n`,
+              `psu-pty-host: mcp-reconnect ${outcome.ok ? 'OK' : 'FAILED'} for ${ownerId} ` +
+                `(${serverName}: ${outcome.step} — ${outcome.detail})\n`,
             );
-            return { ok: result.ok, reason: result.ok ? 'delivered' : 'mcp-reconnect-failed', detail: result.detail };
+            return { ok: outcome.ok, reason: outcome.ok ? 'delivered' : 'mcp-reconnect-failed', detail: outcome.detail };
           } finally {
             tap.close();
           }

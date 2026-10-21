@@ -265,6 +265,24 @@ async function copyOmpFile(src: string, dst: string, contents?: Uint8Array): Pro
   }
 }
 
+/**
+ * Publish generated executable scripts with a same-directory rename. The
+ * installer can run while another session invokes one of these shims; writing
+ * directly to the live path truncates its inode and can make Linux reject an
+ * overlapping launch with ETXTBSY.
+ */
+async function writeExecutableAtomically(filePath: string, contents: string): Promise<void> {
+  const tempPath = filePath + '.psu-install.' + process.pid + '.' + crypto.randomUUID() + '.tmp';
+  try {
+    await fs.writeFile(tempPath, contents, { mode: 0o755 });
+    await fs.chmod(tempPath, 0o755);
+    await fs.rename(tempPath, filePath);
+  } catch (error) {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 async function ompRuntimeImports(source: string): Promise<string[]> {
   // Use the existing compiler's import metadata: prose in strings/comments can
   // contain "from '...'", and TypeScript-only imports never load at runtime.
@@ -1910,9 +1928,7 @@ export async function writeShim(
         )}"$psu_reexecs)" >&2\n` +
         '  launcher="$(resolve_launcher)" || exit $?\n' +
         'done\n');
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  // writeFile honors mode only on creation; chmod to guarantee on overwrite.
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -1965,8 +1981,7 @@ async function writeDispatcherShim(
     projectHistoryHelp +
     '    exit 2 ;;\n' +
     'esac\n';
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2006,8 +2021,7 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
     'fi\n' +
     'model_args=("--model=$spec")\n' +
     `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup "\${model_args[@]}"\n`;
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2077,9 +2091,7 @@ export async function writeRipgrepShim(
     '\n' +
     '# exec -a rg: the claude binary dispatches to its embedded ripgrep purely on argv[0].\n' +
     'exec -a rg "${_cc}" "$@"\n';
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  // writeFile honors mode only on creation; chmod to guarantee on overwrite.
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2111,8 +2123,7 @@ async function writeSentinelDeepShim(shimPath: string, psuShimPath: string): Pro
     'fi\n' +
     'model_args=("--model=$spec")\n' +
     `exec ${JSON.stringify(psuShimPath)} --no-picker --agent=claude --role=papercup-deep "\${model_args[@]}"\n`;
-  await fs.writeFile(shimPath, body, { mode: 0o755 });
-  await fs.chmod(shimPath, 0o755);
+  await writeExecutableAtomically(shimPath, body);
   return true;
 }
 
@@ -2189,8 +2200,7 @@ async function writeMacTutorialApp(appPath: string): Promise<boolean> {
     '[ -d "/Applications/iTerm.app" ] && TERM_APP="iTerm.app"\n' +
     'open -na "$TERM_APP" "$TMP"\n';
   const execPath = path.join(macosDir, 'papercusp-tutorial');
-  await fs.writeFile(execPath, executable, { mode: 0o755 });
-  await fs.chmod(execPath, 0o755);
+  await writeExecutableAtomically(execPath, executable);
   return true;
 }
 

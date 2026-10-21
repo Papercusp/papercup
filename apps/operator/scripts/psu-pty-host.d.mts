@@ -715,21 +715,20 @@ export function nativeTurnCompletedInTranscript({ agent, env, transcriptPath, re
     home?: string;
     nowMs?: number;
 }): boolean;
+/** @typedef {{code: string, retryable: boolean, retryAfterMs: number|null, atMs: number}} NativeExecutionFailure */
+/** @typedef {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null,
+ * pendingTools: number, failure?: NativeExecutionFailure}} NativeExecutionObservation */
 /** Normalized execution evidence, independent of provider error wording.
  * Tool calls remain active until their matching result; PTY repaint is not progress.
  * @param {any[]} rows
  * @param {{agent: string, receivedAtMs?: number, nowMs?: number}} options
+ * @returns {NativeExecutionObservation}
  */
 export function nativeExecutionFromRows(rows: any[], { agent, receivedAtMs, nowMs }: {
     agent: string;
     receivedAtMs?: number;
     nowMs?: number;
-}): {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-};
+}): NativeExecutionObservation;
 /**
  * Preserve a verified running turn when a bounded transcript tail no longer
  * contains its start row. The caller must scope `previous` to the same child
@@ -737,25 +736,10 @@ export function nativeExecutionFromRows(rows: any[], { agent, receivedAtMs, nowM
  * deliberately one-way: missing or unreadable evidence cannot create a
  * running verdict, but it also cannot erase positive evidence already seen for
  * the current turn.
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}|null} previous
- * @param {{phase: string, turnStartedAt: number|null, lastProgressAt: number|null, pendingTools: number}} current
+ * @param {NativeExecutionObservation|null} previous
+ * @param {NativeExecutionObservation} current
  */
-export function retainRunningNativeExecution(previous: {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-} | null, current: {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-}): {
-    phase: string;
-    turnStartedAt: number | null;
-    lastProgressAt: number | null;
-    pendingTools: number;
-};
+export function retainRunningNativeExecution(previous: NativeExecutionObservation | null, current: NativeExecutionObservation): NativeExecutionObservation;
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
  * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number,
  *   nativeSessionId?: string|null}} options
@@ -772,6 +756,7 @@ export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs, nativeS
     turnStartedAt: number | null;
     lastProgressAt: number | null;
     pendingTools: number;
+    failure?: NativeExecutionFailure;
 };
 /** Positive native work always vetoes a quiet-PTY inject. Unknown evidence
  * retains the existing bounded prompt gate; it is never certified as idle.
@@ -4707,6 +4692,22 @@ export function mcpDialogShowsServerDetail(visible: any, name: any): boolean;
  *  only one server). Scans freshest-line-first; the first decisive row wins.
  *  Pure — exported for tests. */
 export function mcpConnectedVerdict(visible: any, name: any): boolean;
+/**
+ * Keep a forced no-op from entering the host's recovered event lane.
+ * @param {{ ok: boolean, step: string, detail?: string }} result
+ * @param {boolean} force
+ * @returns {{ ok: boolean, event: 'mcp-reconnect-completed' | 'mcp-reconnect-failed', step: string, detail: string }}
+ */
+export function classifyMcpReconnectHostOutcome(result: {
+    ok: boolean;
+    step: string;
+    detail?: string;
+}, force?: boolean): {
+    ok: boolean;
+    event: "mcp-reconnect-completed" | "mcp-reconnect-failed";
+    step: string;
+    detail: string;
+};
 /** A scripted, fresh headless role must have its signed MCP server before its
  * first task turn. Claude does not reliably retry a failed startup catalog fetch. */
 export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }: {
@@ -4763,9 +4764,8 @@ export function mcpDialogRowSelected(visible: any, test: any): any;
  * scripted fake TUI. Steps (each bounded, each verified off the screen):
  *   1. type `/mcp`, settle, CR (separate keystroke — paste-detector, WI-2930).
  *   2. wait for the dialog to paint (target server name visible).
- *      Already-connected ⇒ close + ok('already-connected') — the benign-misfire
- *      no-op the watchdog relies on. `force:true` skips that short circuit and
- *      presses the existing Reconnect action for connected-but-toolless sessions.
+ *      Already-connected is a benign no-op only for non-forced requests.
+ *      `force:true` bypasses every connected-state exit and presses Reconnect.
  *   3. arrow-down until the ❯ cursor sits on the target row (re-parse after
  *      every keypress; bounded), then Enter.
  *   4. if a reconnect action row paints, cursor onto it the same way + Enter
@@ -5924,6 +5924,19 @@ export type KickoffMarkerAnchor = {
     markerStartOffset: number | null;
     markerEndOffset: number | null;
     scannedEndOffset: number | null;
+};
+export type NativeExecutionFailure = {
+    code: string;
+    retryable: boolean;
+    retryAfterMs: number | null;
+    atMs: number;
+};
+export type NativeExecutionObservation = {
+    phase: string;
+    turnStartedAt: number | null;
+    lastProgressAt: number | null;
+    pendingTools: number;
+    failure?: NativeExecutionFailure;
 };
 export type SnapshotReadFile = (path: string, encoding: "utf8") => string | Buffer;
 export type SnapshotReadDir = (path: string) => ReadonlyArray<unknown>;
