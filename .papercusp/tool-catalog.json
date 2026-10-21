@@ -33258,7 +33258,7 @@
           "POST"
         ]
       },
-      "description": "Native checks: planTerminalCensus:{slug} measures canonical terminal state; gitScratchPlacement:{ref} uses an exact empty committed tree to measure production scratch-clone placement/root refusal and cleanup; syncBatchCoverageAccounting:{} runs the R-17 slot-accounting probe and controls. Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
+      "description": "Native checks execute and record directly: planTerminalCensus:{slug}, gitScratchPlacement:{ref}, syncBatchCoverageAccounting:{} (see each arg). Register completed non-Vitest runs in test_runs; bind returned IDs with plans:bind-spec-evidence. Evidence-file mode records an already-completed check; archivedMutation never reruns it. Commit docs/evidence/*.json with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and assertions; pass expectedSha256. Mutation probes require exact MUTATION_PROBE_EVIDENCE_JSON records; shared .papercusp/scratch is refused. archivedMutation restores failed-case identities from a committed raw log after validating its hash and scoped receipt; rawLogCommit pins redacted logs. Legacy NULL-execution receipts restore only when scope, outcome, timestamps, and committed bytes match. Evidence limit: 262144 bytes; pin bulky logs by SHA-256. Verdict uses exitCode + assertions; idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],
@@ -33321,7 +33321,7 @@
       "guidance": {
         "when": "A completed Playwright, Cargo, node, shell, desktop, or other operational acceptance run needs a numeric ledger record; or historical mutation case identities need recovery.",
         "notWhen": "Not for Vitest (use testing:run), temporary logs, or checks that did not run.",
-        "chaining": "Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. The planTerminalCensus variant executes directly and returns the same numeric ledger IDs."
+        "chaining": "Run check → commit docs/evidence JSON → testing:record-run → bind returned IDs with plans:bind-spec-evidence. Native variants execute directly and return the same numeric ledger IDs."
       }
     },
     {
