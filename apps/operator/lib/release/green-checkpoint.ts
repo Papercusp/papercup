@@ -10485,6 +10485,12 @@ export function sanitizeForkNodeOptions(
  *   {@link GREEN_CHECKPOINT_FORK_HEAP_MB} so the 8 concurrent forks can't each bloat to
  *   128 GiB and ENOMEM the box — the memory-pressure flake that held `main` ~16h.
  */
+/** WI-6554700010018666: the key the governed-admission client reads. It must equal
+ *  GOVERNED_ADMISSION_DATABASE_URL_ENV in operator-core resource-governor/execution.ts
+ *  (pinned by green-checkpoint-governed-admission-env.test.ts). Kept local so the gate
+ *  module does not import the governor runtime. */
+export const GOVERNED_ADMISSION_DATABASE_URL_ENV = "PAPERCUSP_GOVERNED_ADMISSION_DATABASE_URL";
+
 export function buildGreenCheckpointEnv(
   base: string | null,
   source: NodeJS.ProcessEnv = process.env,
@@ -10512,6 +10518,12 @@ export function buildGreenCheckpointEnv(
   // Targeted repair tasks bypass affected-tests, so their Git reads need the same
   // optional-lock policy as the ordinary suite. A killed status must not strand index.lock.
   applyGitOptionalLocksDefault(env);
+  // WI-6554700010018666: the suite stays DSN-free, but its governed admission must persist
+  // to the OPERATOR database the governor reads. Without this the admission client fell
+  // through to the discovery file (the installed Papercusp Server's cluster) and every
+  // affected-test task failed 28P01 before running. Only the admission client reads this key.
+  const governedAdmissionUrl = gateOperatorPgEnv(source).HARNESS_ADMIN_DATABASE_URL;
+  if (governedAdmissionUrl) env[GOVERNED_ADMISSION_DATABASE_URL_ENV] = governedAdmissionUrl;
   // WI-10005212: deleted first so a host-leaked value can never back-date a non-frozen run.
   delete env.PAPERCUSP_FROZEN_CANDIDATE_OPENED_AT_MS;
   if (frozenCandidateOpenedAtMs !== undefined) {
