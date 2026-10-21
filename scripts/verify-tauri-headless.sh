@@ -1118,7 +1118,7 @@ preflight_verifier_copy_memory() {
     const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
     const limit = readTaskCgroupMemoryMaxMb();
     if (!(Number.isFinite(limit) && limit > 0)) {
-      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; launch with the tracked capability:bash test runner");
+      console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). require_task_confinement alone does not reserve memory.");
       process.exit(2);
     }
     console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
@@ -1816,7 +1816,7 @@ snapshot_verifier_pinned_deps() {
       const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
       const limit = readTaskCgroupMemoryMaxMb();
       if (!(Number.isFinite(limit) && limit > 0)) {
-        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max");
+        console.error("VERIFY_TAURI_COPY_MEMORY_UNBOUNDED: independent snapshots require a finite task memory.max; use a test-classified capability:bash command (isolated e2e: cd apps/operator && npm run test:e2e:isolated -- ...). require_task_confinement alone does not reserve memory.");
         process.exit(2);
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
