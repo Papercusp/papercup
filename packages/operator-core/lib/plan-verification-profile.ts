@@ -27,6 +27,8 @@
  * vocabulary is owned by `@papercusp/plan-parser` (the item keyword is plan text,
  * P-002); that generic lib imports nothing from operator-core.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type { AdequacyCriterion } from './agent-tools/plans/spec-test-adequacy';
 import {
   isDeliverableKind,
@@ -288,13 +290,55 @@ export function describeVerificationProfile(plan: {
   return `Verification profile '${plan.verificationProfile}' (${source})`;
 }
 
+// ---------------------------------------------------------------------------
+// The resolver seam (plan-item-types-registry-cupboard-2026-10-20 P-001).
+// ---------------------------------------------------------------------------
+
+/** A whole resolver: the legacy constants below, or the registry (plan-types/resolve-verification.ts). */
+export type VerificationResolver = (plan: VerificationPlanInput, item: VerificationItemInput) => VerificationResolution;
+
 /**
- * Resolve the verification modules for one plan item. A declared deliverable wins.
- * Otherwise today's non-code signals decide, and otherwise the profile default does.
- * A declared value outside the known vocabulary is ignored, so it can neither throw
- * nor invent a module set.
+ * The resolver in force for the current async context. Pinned through `pinModuleState`: if
+ * this module were loaded twice, two storages would let an override set through one copy go
+ * unseen by gates reading the other, and a census would compare legacy with legacy.
+ */
+const resolverState = pinModuleState('@papercusp/operator-core.verification-resolver', () => ({
+  storage: new AsyncLocalStorage<VerificationResolver>(),
+}));
+
+/**
+ * Run `fn` with `resolver` answering every `resolveVerification` call inside it, including
+ * calls made by the real gates it awaits. The registry census uses this to evaluate the same
+ * gates under the legacy resolver and under the registry. Outside such a scope the legacy
+ * resolver answers (P-002 makes the registry the default).
+ */
+export function withVerificationResolver<T>(resolver: VerificationResolver, fn: () => T): T {
+  return resolverState.storage.run(resolver, fn);
+}
+
+/** The resolver override in force here, or null when the legacy resolver answers. */
+export function activeVerificationResolver(): VerificationResolver | null {
+  return resolverState.storage.getStore() ?? null;
+}
+
+/**
+ * Resolve the verification modules for one plan item through the resolver in force: an
+ * override installed by `withVerificationResolver`, otherwise the legacy resolver.
  */
 export function resolveVerification(
+  plan: VerificationPlanInput,
+  item: VerificationItemInput,
+): VerificationResolution {
+  const override = resolverState.storage.getStore();
+  return override ? override(plan, item) : resolveVerificationLegacy(plan, item);
+}
+
+/**
+ * The legacy resolver: today's constants. A declared deliverable wins. Otherwise today's
+ * non-code signals decide, and otherwise the profile default does. A declared value outside
+ * the known vocabulary is ignored, so it can neither throw nor invent a module set.
+ */
+export function resolveVerificationLegacy(
   plan: VerificationPlanInput,
   item: VerificationItemInput,
 ): VerificationResolution {
