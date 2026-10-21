@@ -769,10 +769,20 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     // can never answer. Without the pin, this route makes the probe infer
     // READER_REQUIRED=1 and die at the descriptor preflight, exactly as the
     // live :3070 did. The other route variables are blanked so an ambient
-    // gate-host PAPERCUSP_HONO_PORT cannot win the selection instead.
+    // gate-host PAPERCUSP_HONO_PORT cannot win the selection instead. The
+    // reader override and requirement are cleared here as well (the pin
+    // clears them too). MEASURED: when an outer mutation probe exported
+    // READER_HEALTH_URL, the inherited override let the unpinned mutant pass
+    // (verdict=survived, test_runs:21490908).
     const { status, out } = runProbe(
       ['--file', subject, '--mutate', 's/GOOD/BAD/', '--test', 'grep -q GOOD {}'],
-      { PAPERCUSP_OPERATOR_BASE: '', PAPERCUSP_HONO_PORT: '', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' },
+      {
+        PAPERCUSP_OPERATOR_BASE: '',
+        PAPERCUSP_HONO_PORT: '',
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: undefined,
+      },
     );
 
     expect(out).not.toContain('reader preflight failed');

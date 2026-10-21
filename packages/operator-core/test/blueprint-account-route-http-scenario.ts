@@ -279,10 +279,11 @@ export async function prepareBlueprintAccountRouteScenario(input: { workspace: s
       assert.equal(row.first_gateway_request.outcome, 'ok');
       assert.equal(row.first_gateway_request.servingAccountId, first.cache.servingAccountId);
       assert.ok(row.account_route.resolvedAccountIds.includes(first.cache.servingAccountId));
-      // Startup telemetry retains Claude's client-side [1m] marker, while the
-      // provider body and launch route use the bare Anthropic model id. Preserve
-      // the raw evidence and compare the canonical model plane explicitly.
-      assert.equal(row.first_gateway_request.model, first.model);
+      // Startup telemetry, the persisted launch route, and provider request can
+      // carry Claude's client-side [1m] marker on different surfaces. Preserve
+      // each raw value, but compare across sources at the canonical API-model seam.
+      assert.equal(spawnObservedGatewayModel(row.first_gateway_request),
+        spawnObservedGatewayModel({ provider: row.first_gateway_request.provider, model: first.model ?? null }));
       assert.equal(spawnObservedGatewayModel(row.first_gateway_request), spawnRouteGatewayModel(row.account_route));
       assert.equal(row.first_gateway_request.effort, row.account_route.launchedEffort);
       assert.equal(childConfig.model, row.account_route.launchedModel);

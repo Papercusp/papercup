@@ -40,6 +40,7 @@ import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, readdir, realpath, rm, unlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path';
+import { isUnderAnyPath, unpublishedNestedPotCheckouts } from './nested-pot-checkouts';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { scanProcForOpenFile } from './proc-open-file-scan';
 import { projectDirForSlug } from '../../operator-notes';
@@ -1495,6 +1496,11 @@ export interface GitSyncConfig {
    *  locally leaves the superproject pinning an unresolvable gitlink. Edits inside stay
    *  in the working tree. */
   unforkedSubmodules?: string[];
+  /** WI-6554700010018602: submodules that are ANOTHER registered pot's checkout with its own
+   *  git-sync (set by git-sync-action via `resolveNestedPotCheckouts`). That pot publishes
+   *  them through its own delivery route, so this tick never commits, merges or pushes
+   *  inside them, and leaves their gitlink unstaged while its HEAD is on no `origin` ref. */
+  nestedPotCheckouts?: string[];
   /** pot-review-integration-mode P-016: a working-copy pot merges the MAIN repository's
    *  branch into its staging each tick (set by `applyIntegrationPushTarget`). Applied to
    *  the SUPERPROJECT only — submodules are the main repositories' own and never absorb. */
@@ -7838,6 +7844,17 @@ async function runGitSyncPass(
         }
         subPaths = kept;
       }
+      const nested = cfg.nestedPotCheckouts ?? [];
+      if (nested.length) {
+        const kept = subPaths.filter((p) => !isUnderAnyPath(p, nested));
+        if (kept.length !== subPaths.length) {
+          log(
+            `[git-sync] ${slug}: skipping ${subPaths.length - kept.length} nested pot checkout(s) ` +
+              `(${nested.join(', ')}) owned by their own pot's git-sync — no commit, merge or push inside them (WI-6554700010018602)`,
+          );
+        }
+        subPaths = kept;
+      }
       out.submodulePaths = [...subPaths];
     }
     const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
@@ -7942,6 +7959,16 @@ async function runGitSyncPass(
   const superprojectExcludePaths = protectedPaths.filter(
     (path) => !submodulePaths.some((s) => path === s || path.startsWith(`${s}/`)),
   );
+  // WI-6554700010018602: a nested pot checkout's gitlink is staged only once its HEAD is on
+  // an `origin` ref (.gitmodules resolves through origin, never the pot's fork). Until its
+  // own delivery route publishes it, pinning that HEAD would leave this superproject
+  // pointing at a commit nobody can fetch.
+  for (const nestedPath of await unpublishedNestedPotCheckouts(runGit, repo, cfg.nestedPotCheckouts ?? [])) {
+    log(
+      `[git-sync] ${slug}: holding gitlink ${nestedPath} — nested pot checkout HEAD is on no origin ref yet (WI-6554700010018602)`,
+    );
+    superprojectExcludePaths.push(nestedPath);
+  }
   const superprojectProtectedHoldings = protectedHoldings.filter(
     (holding) => !submodulePaths.some((s) => holding.path === s || holding.path.startsWith(`${s}/`)),
   );

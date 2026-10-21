@@ -7,6 +7,7 @@ import { openClaudeDialog, observeClaudeDialogWrites, finishClaudeDialog } from 
 import { parseClaudeLine, stampTurnProvenance } from '../../../packages/operator-core/lib/search/session-ingest';
 import { classifyRecordedTurn, parseTurnRefs, parseUserTurns, verifyTurnRefs } from '../../../packages/operator-core/lib/turn-provenance/turn-ref';
 import { claudeDialogProvenanceAttachment } from '../../../packages/operator-core/lib/transcript-wire';
+import { parseHumanTurns } from '../../../packages/operator-core/lib/agent-tools/coordination/relay-provenance-resolve';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -18,7 +19,7 @@ const ANSWER = 'The user answered: "Route?"="Recommended".';
 
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), 'dialog-provenance-')); roots.push(home);
-  const env = { ...process.env, HOME: home, PAPERCUSP_SID: OWNER,
+  const env = { PATH: process.env.PATH ?? '', HOME: home, PAPERCUSP_SID: OWNER,
     PAPERCUSP_TURN_PROVENANCE_DIR: join(home, '.papercusp', 'turn-provenance'),
     PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' };
   const writes: unknown[] = [];
@@ -46,6 +47,7 @@ describe('Claude dialog answer provenance', () => {
     expect(indexed.text).toBe(raw.text);
     const expected = source === 'automatic' ? 'agent-injected' : 'owner-dialog';
     expect(classifyRecordedTurn(raw.text).verdict).toBe(expected);
+    expect(parseHumanTurns(row)).toHaveLength(source === 'human' ? 1 : 0);
     const file = join(f.home, 'transcript.jsonl'); writeFileSync(file, row + '\n');
     const verified = await verifyTurnRefs(OWNER, parseTurnRefs(`[turn:dialog-n@${TS}]`), { filePath: file, sessionId: SESSION });
     expect(verified[0].verdict).toBe(expected);

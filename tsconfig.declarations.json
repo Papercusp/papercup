@@ -332,6 +332,7 @@
     "apps/operator/scripts/psu-pty-host.mjs",
     // WI-10007614: the asynchronous TTY bridge and offline customer diagnostics.
     "apps/operator/scripts/psu-terminal-output.mjs",
+    "apps/operator/scripts/hooks/cc/dialog-answer-provenance.mjs",
     // Live terminal repair is imported by its conventional TypeScript regression.
     "apps/operator/scripts/psu-terminal-repair.mjs",
     "apps/operator/scripts/psu-terminal-diagnostics.mjs",
