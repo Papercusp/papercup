@@ -57,13 +57,16 @@ afterAll(async () => {
 
 describe('migration 1541', () => {
   it('created both registry tables', async () => {
-    const [row] = await admin<Array<{ items: string | null; plans: string | null }>>`
-      SELECT to_regclass('harness_shared.plan_item_type_definitions')::text AS items,
-             to_regclass('harness_shared.plan_type_definitions')::text AS plans`;
-    expect(row).toEqual({
-      items: 'harness_shared.plan_item_type_definitions',
-      plans: 'harness_shared.plan_type_definitions',
-    });
+    // Read the catalog by schema + name: `to_regclass(...)::text` drops the schema prefix
+    // whenever harness_shared is on the search_path, so it is not a stable assertion target.
+    const rows = await admin<Array<{ relname: string }>>`
+      SELECT c.relname
+        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'harness_shared'
+         AND c.relkind = 'r'
+         AND c.relname IN ('plan_item_type_definitions', 'plan_type_definitions')
+       ORDER BY c.relname`;
+    expect(rows.map((r) => r.relname)).toEqual(['plan_item_type_definitions', 'plan_type_definitions']);
   });
 });
 
