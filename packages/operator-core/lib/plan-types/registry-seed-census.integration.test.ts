@@ -33,11 +33,12 @@ import {
 import { PLAN_CLASSES_BY_PROFILE, PLAN_CLASS_RUBRIC_REFS } from '../plan-class-refs';
 import { BUILTIN_CATALOG, builtinItemTypeId, type TypeCatalog } from './builtin-catalog';
 import { loadTypeRegistry } from './registry';
-import { createRegistryVerificationResolver } from './resolve-verification';
+import { createRegistryVerificationResolver, STRICTEST_MODULES } from './resolve-verification';
 import {
   LEGACY_VERIFICATION_RESOLVER,
   diffPlanVerdictCensus,
   enumerateResolverInputs,
+  enumerateUnregisteredTypeInputs,
   listCensusPopulation,
   runPlanVerdictCensus,
 } from './census';
@@ -166,6 +167,21 @@ describe('resolver parity', () => {
     expect(inputs.length).toBeGreaterThan(1000);
     for (const { plan, item } of inputs) {
       expect(registry(plan, item), JSON.stringify({ plan, item })).toEqual(resolveVerificationLegacy(plan, item));
+    }
+  });
+
+  it('an unregistered namespaced item type diverges from legacy only by failing safe to the strictest set (R-6)', async () => {
+    const registry = createRegistryVerificationResolver(await loadTypeRegistry(admin, { workspaceId: WS }));
+    const inputs = enumerateUnregisteredTypeInputs('acme/legal-review');
+    expect(inputs.length).toBeGreaterThan(100);
+    for (const { plan, item } of inputs) {
+      const resolved = registry(plan, item);
+      const label = JSON.stringify({ plan, item });
+      expect(resolved.modules, label).toEqual([...STRICTEST_MODULES]);
+      expect(resolved.codeDeliverable, label).toBe(true);
+      expect(resolved.deliverableSource, label).toBe('declared');
+      expect(resolved.itemType, label).toBe('acme/legal-review');
+      expect(resolved.deliverable, label).toBeNull();
     }
   });
 
