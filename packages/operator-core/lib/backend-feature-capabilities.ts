@@ -106,7 +106,7 @@ export const BACKEND_FEATURE_CAPABILITIES: BackendFeatureMatrix = {
     // client-native-features-adoption-2026-10-21 D-003/D-005): managed homes set
     // multi_agent/goals false and run on a catalog stripped of multi_agent fields.
     'native-subagents': unsupported(
-      'Papercusp fleet/work_items delegation; psu --allow-subagents opts one launch in with -c features.multi_agent=true',
+      'Papercusp fleet/work_items delegation; psu --allow-subagents opts a new session in with -c features.multi_agent=true (resume/fork keep the setting the session was created with)',
       'Codex multi_agent subagents are denied by default in managed sessions: they fan out work outside the orchestrator spawn graph, so delegation goes through Papercusp work_items/fleets unless the launch explicitly opts in',
     ),
     'native-app-server': supported('codex app-server / --remote TUI transport'),
