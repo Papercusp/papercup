@@ -35,12 +35,14 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 import routes from './membership';
 
-const membershipRoute = (routes as Array<{
+const foundMembershipRoute = (routes as Array<{
   path: string;
   method: string;
   handler: (req: Request, ctx: unknown) => Promise<Response>;
 }>).find((route) => route.path === '/harness/:slug/membership' && route.method === 'POST');
-if (!membershipRoute) throw new Error('no POST route for /harness/:slug/membership');
+if (!foundMembershipRoute) throw new Error('no POST route for /harness/:slug/membership');
+// A hoisted function declaration does not see the narrowing above, so bind the narrowed value.
+const membershipRoute = foundMembershipRoute;
 
 async function postMembership(slug: string, body: unknown) {
   const req = new Request(`http://127.0.0.1/api/harness/${slug}/membership`, {
