@@ -17,7 +17,9 @@
 import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { ZodTypeAny } from 'zod';
-import type { Principal, RouteDiagnostics } from '@papercusp/agent-mcp';
+import type { Principal } from '@papercusp/agent-mcp';
+// RouteDiagnostics lives in tooldef and agent-mcp does not re-export it.
+import type { RouteDiagnostics } from '@papercusp/tooldef';
 import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal';
 import { AgentIdentityRequiredError } from '../auth/identity-required-error';
 import { principalFromCookie } from '../auth/principal/from-cookie';
