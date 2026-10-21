@@ -126,7 +126,7 @@ export function scopeArg() {
   );
 }
 
-/** The historic no-scope default: the four original prose surfaces (EI-6984). */
+/** Default prose discovery includes saved plans, including drafts. */
 export const DEFAULT_SCOPE: readonly string[] = ['escalations', 'brainstorm', 'turns', 'decisions', 'plan'];
 
 /** Planned work participates in discovery, including work-item-only callers. */

@@ -107,10 +107,8 @@ export default defineTool({
       }
     };
     const limit = args.limit ?? 5;
-    // EI-6984: 'work_item' (and now the session/coord corpora) are opt-in only,
-    // kept OUT of the historic no-scope default (unscoped callers keep the same
-    // 4-source result shape they've always gotten) — but an EXPLICIT
-    // scope:['all'] means "every source", so it expands to all seven.
+    // Planned work participates by default and alongside work-item discovery.
+    // Explicit all expands to the complete registered source set.
     const scope = resolveSearchScope(args.scope);
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
       .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))

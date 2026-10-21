@@ -84,8 +84,7 @@ export default defineTool({
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
     const mode = args.mode ?? 'hybrid';
-    // Historic no-scope default stays the 4 original surfaces; an EXPLICIT
-    // scope:['all'] expands to every registered source (EI-6984 precedent).
+    // Share planned-work inclusion with fulltext and work-item discovery.
     const scope = resolveSearchScope(args.scope);
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name))
       .map(s => s.name === 'report' ? createReportSearchSource(resolveViewer(ctx))

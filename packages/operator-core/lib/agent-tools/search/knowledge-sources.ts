@@ -84,7 +84,7 @@ export function createPlanSearchSource(audience: KnowledgeAudience = {}): Search
         return [{ key: `plan:${harness}:${slug}#${item.id}`, score: Number(r.rank), row: {
           source: 'plan', source_id: `${harness}:${slug}#${item.id}`, scope: harness,
           excerpt: item.text, highlight: item.text, score: Number(r.rank), rankers: [ranker],
-          meta: { title: item.text, planTitle: r.title, status: 'draft', planSlug: slug,
+          meta: { title: item.text, planTitle: String(r.title ?? slug), status: 'draft', planSlug: slug,
             itemId: item.id, itemStatus: item.status,
             path: `/admin/plans?plan=${encodeURIComponent(slug)}&harness=${encodeURIComponent(harness)}` },
         } }];
