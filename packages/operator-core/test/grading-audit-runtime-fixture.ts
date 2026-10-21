@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getBuildInfo } from '../lib/build-info';
+import { readVerifierSourceReceiptSync } from '../lib/verifier-source';
 import { absCgroupDir, walkCgroupTree } from '../lib/task-manager/cgroup-read';
 import { killTask } from '../lib/task-manager/control';
 import { getTask, listTasks } from '../lib/task-manager/store';
@@ -52,7 +53,14 @@ async function main() {
   mkdirSync(output, { recursive: true });
   symlinkSync(join(root, 'node_modules'), join(sourceRoot, 'node_modules'), 'dir');
   const prepared = preparePrivateOperatorApiBundle(root, output);
-  const evaluatorBuild = getBuildInfo();
+  const parentBuild = getBuildInfo();
+  // The maintained archive builder stamps twelve source characters. The
+  // unbundled worker's Git abbreviation is independently configurable.
+  const selected = process.env.VERIFY_TAURI_SOURCE_RECEIPT
+    ? readVerifierSourceReceiptSync(root) : null;
+  if (selected) assert.ok(parentBuild.sha && selected.sourceCommit.startsWith(parentBuild.sha),
+    'unbundled worker and prepared bundle must share the selected source');
+  const evaluatorBuild = { ...parentBuild, sha: selected?.sourceCommit.slice(0, 12) ?? parentBuild.sha };
   assert.ok(evaluatorBuild.sha && evaluatorBuild.sha !== 'unknown');
   const deps: GradingAuditRuntimeDeps = {
     currentSource: () => ({ schemaVersion: 1, sourceRoot, bundlePath: prepared.path,
