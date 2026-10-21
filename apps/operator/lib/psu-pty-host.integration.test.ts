@@ -18,6 +18,7 @@ import { execPath } from 'node:process';
 import { execFileSync, spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
+import { openClaudeDialog, finishClaudeDialog } from '../scripts/hooks/cc/dialog-answer-provenance.mjs';
 import {
   hostThroughPty as hostThroughPtyProduction,
   socketPathFor,
@@ -148,6 +149,33 @@ function fakeIo() {
 
 const FLATTENED_CODEX_READY_FOOTER =
   '› Ask Codex to do anythingReady · GPT-5.6-Sol high · Context 100% left';
+
+it('attributes real PTY dialog submissions to machine control or human terminal input', async () => {
+  const ownerId = `su-dialog-host-${process.pid}-${Date.now()}`;
+  const dir = mkdtempSync(join(tmpdir(), 'dialog-host-'));
+  const env = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', PAPERCUSP_TURN_PROVENANCE_DIR: dir });
+  const { captured, io } = fakeIo();
+  const stdin = Object.assign(new EventEmitter(), { isTTY: true, setRawMode() {}, resume() {}, pause() {} });
+  const done = hostThroughPty({ command: execPath,
+    args: ['-e', "let n=0;process.stdin.setRawMode(true);process.stdin.on('data',d=>{if(d.toString().includes('QUIT'))process.exit(0);process.stdout.write('DIALOG_KEY_'+(++n)+'\\n')});process.stdout.write('DIALOG_READY\\n')"],
+    cwd: process.cwd(), env, ownerId, io: { ...io, stdin }, bridgeTty: true, signalSource: new EventEmitter(),
+  });
+  try {
+    await vi.waitFor(() => expect(captured()).toContain('DIALOG_READY'), { timeout: 5000 });
+    openClaudeDialog(ownerId, 'native-session', 'machine-question', env);
+    await rawInject(socketPathFor(ownerId), '\r');
+    await vi.waitFor(() => expect(captured()).toContain('DIALOG_KEY_1'), { timeout: 3000 });
+    expect(finishClaudeDialog(ownerId, 'native-session', 'machine-question', 'first option', env)).toContain('"source":"automatic"');
+    openClaudeDialog(ownerId, 'native-session', 'human-question', env);
+    stdin.emit('data', Buffer.from('\r'));
+    await vi.waitFor(() => expect(captured()).toContain('DIALOG_KEY_2'), { timeout: 3000 });
+    expect(finishClaudeDialog(ownerId, 'native-session', 'human-question', 'second option', env)).toContain('"source":"human"');
+  } finally {
+    stdin.emit('data', Buffer.from('QUIT'));
+    await done;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 12000);
 const FLATTENED_CODEX_STARTING_FOOTER =
   '› Ask Codex to do anythingStarting · GPT-5.6-Sol high · Context 100% left';
 
