@@ -484,6 +484,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     readGradingAuditTasks: vi.fn(async () => []) as never,
     readGradingAuditTarget: vi.fn(async () => null) as never,
     cancelGradingAuditAwait: vi.fn(async () => undefined) as never,
+    // WI-6554700010018536: hermetic by default — the production reader queries the
+    // recipient's held work-items, modes and loop. Only the dedicated seam cases override.
+    prepareInboxWakeHeldWorkReminder: vi.fn(async () => ''),
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
     // WI-6860: hermetic by default — the real getLoopStatus opens a live PG
@@ -1641,6 +1644,62 @@ describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
   });
 });
 
+describe('executeWake inbox-wake held-work reminder seam (WI-6554700010018536)', () => {
+  const REMINDER = 'REMINDER (held work): you still hold 2 unfinished work-item(s) [WI-1, WI-2].';
+  // The pty write receives the injected text as a Buffer: decode every write.
+  const written = (write: { mock: { calls: unknown[][] } }): string =>
+    write.mock.calls.map((c) => Buffer.from(c[1] as Uint8Array).toString('utf8')).join('');
+
+  it('reads the reminder for an inbox-wake key at delivery time and carries it into the injected text', async () => {
+    const prep = vi.fn(async () => REMINDER);
+    const findPty = vi.fn(() => ({ id: 'pty-inbox' }));
+    const write = vi.fn((..._args: unknown[]) => true);
+    const d = work({ eventKey: 'coord:inbox-wake:su-abc', wakeHandle: advHandle() });
+    const out = await executeWake(
+      d,
+      deps({ prepareInboxWakeHeldWorkReminder: prep, findPty: findPty as never, write: write as never }),
+    );
+    expect(prep).toHaveBeenCalledWith({ ownerId: 'su-abc', workspaceId: d.workspaceId });
+    expect(out.kind === 'delivered' ? 'delivered' : JSON.stringify(out)).toBe('delivered');
+    const text = written(write);
+    expect(text).toContain('NOTE (inbox-wake)');
+    expect(text).toContain(REMINDER);
+  });
+
+  it('does NOT read the reminder for a non-inbox-wake key', async () => {
+    const prep = vi.fn(async () => REMINDER);
+    const write = vi.fn((..._args: unknown[]) => true);
+    await executeWake(
+      work({ eventKey: 'work-item:done:WI-9', wakeHandle: advHandle() }),
+      deps({
+        prepareInboxWakeHeldWorkReminder: prep,
+        findPty: vi.fn(() => ({ id: 'pty-x' })) as never,
+        write: write as never,
+      }),
+    );
+    expect(prep).not.toHaveBeenCalled();
+    const text = written(write);
+    expect(text).toContain('work-item:done:WI-9'); // positive control: the wake WAS written
+    expect(text).not.toContain('REMINDER (held work)');
+  });
+
+  it('a reminder-prep throw never breaks the wake (fail-soft)', async () => {
+    const prep = vi.fn(async () => {
+      throw new Error('pg down');
+    });
+    const out = await executeWake(
+      work({ eventKey: 'coord:inbox-wake:su-abc', wakeHandle: advHandle() }),
+      deps({
+        prepareInboxWakeHeldWorkReminder: prep,
+        findPty: vi.fn(() => ({ id: 'pty-y' })) as never,
+        write: vi.fn(() => true) as never,
+      }),
+    );
+    expect(prep).toHaveBeenCalled();
+    expect(out.kind).toBe('delivered');
+  });
+});
+
 describe('wakeTurnText', () => {
   it('carries the key, summary, note and a bounded payload on one line', () => {
     const t = wakeTurnText(work({ payload: { x: 'y'.repeat(1000) } }));
@@ -1927,6 +1986,27 @@ describe('wakeTurnText', () => {
   // cursor-free coord:inbox VIEW before re-doing possibly-already-handled mail;
   // every OTHER key is untouched. D-013 keeps the agent-facing cursor out of
   // coord:inbox, so this note must never reintroduce a since_ts call shape.
+  // WI-6554700010018536: the held-work reminder follows the reconcile NOTE on an
+  // inbox-wake key, stays on the one collapsed line, and is ignored on any other key.
+  it('WI-6554700010018536: an inbox-wake key appends the held-work reminder after the NOTE', () => {
+    const reminder = 'REMINDER (held work): you still hold 1 unfinished work-item(s) [WI-7].';
+    const t = wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc', inboxWakeHeldWorkReminder: reminder }));
+    expect(t.indexOf('NOTE (inbox-wake)')).toBeGreaterThan(-1);
+    expect(t.indexOf(reminder)).toBeGreaterThan(t.indexOf('NOTE (inbox-wake)'));
+    expect(t).not.toContain('\n');
+  });
+
+  it('WI-6554700010018536: the reminder is ignored on a non-inbox-wake key and absent ⇒ byte-identical', () => {
+    const reminder = 'REMINDER (held work): you still hold 1 unfinished work-item(s) [WI-7].';
+    const other = wakeTurnText(work({ eventKey: 'work-item:done:WI-9', inboxWakeHeldWorkReminder: reminder }));
+    expect(other).not.toContain('REMINDER (held work)');
+    expect(other).toBe(wakeTurnText(work({ eventKey: 'work-item:done:WI-9' })));
+    const inboxBase = wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc' }));
+    expect(wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc', inboxWakeHeldWorkReminder: undefined }))).toBe(
+      inboxBase,
+    );
+  });
+
   it('EI-16648/D-013: an inbox-wake key stamps the cursor-free coord:inbox note', () => {
     const t = wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc' }));
     expect(t).toContain('coord:inbox-wake:su-abc'); // base wake still present

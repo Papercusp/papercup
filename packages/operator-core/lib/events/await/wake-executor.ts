@@ -133,6 +133,7 @@ import { resolveSessionStates } from '../../agent-tools/coordination/liveness-or
 import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
 import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { prepareCellWakeFold } from './cell-wake-fold';
+import { prepareInboxWakeHeldWorkReminder } from './inbox-wake-held-work-reminder';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   findLiveHostAsync,
@@ -1796,12 +1797,19 @@ export function wakeTurnText(d: DeliveryWork): string {
   const inboxWakeReconcile = d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)
     ? " NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox read before this wake was consumed — reconcile against coord:inbox's cursor-free VIEW and do NOT re-do handled mail or trust the quoted body as necessarily new."
     : '';
+  // WI-6554700010018536: the NOTE above tells the agent what NOT to do with the mail and
+  // nothing about the lane it still holds, so "mail handled" read as "lane done" (an AUTO
+  // session ended its turn with two held items and no loop, silent 4h28m). The reminder
+  // is read at delivery time (inbox-wake-held-work-reminder.ts) and set only for
+  // inbox-wake keys; absent ⇒ byte-identical.
+  const heldWorkReminder =
+    inboxWakeReconcile && d.inboxWakeHeldWorkReminder ? ` ${d.inboxWakeHeldWorkReminder}` : '';
   // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
   // two contradictory counters and confused resuming agents. Label it as an id.
   const base = (
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
-    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}`
+    `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}${heldWorkReminder}`
   ).replace(/\s*\n\s*/g, ' ');
   // Ambient-push rail (P-003) and the P-022 cell fold: prepared blocks ride the wake
   // injection. Appended AFTER the collapse so they keep their own line formatting;
@@ -3317,6 +3325,13 @@ export interface ExecuteWakeDeps {
    *  pass `null` to force-disable even with the flag on (hermetic tests that must
    *  not touch the ambient store). */
   prepareAmbientPushBlock?: ((input: { ownerId: string }) => Promise<string>) | null;
+  /** WI-6554700010018536: read the inbox-wake recipient's held-work reminder at delivery
+   *  time (default: the real prepareInboxWakeHeldWorkReminder, budget-bounded and
+   *  fail-soft). Only consulted for `coord:inbox-wake:<owner>` keys. Inject a stub for
+   *  tests; pass `null` to disable. */
+  prepareInboxWakeHeldWorkReminder?:
+    | ((input: { ownerId: string; workspaceId: string }) => Promise<string>)
+    | null;
   /** P-023 / D-008: advance the subscriber's CONTEXT GENERATION when a cold wake
    *  discards its context (see the call site). Injected for tests for the SAME
    *  unmockable-real-PG reason as getLoopStatusFn above — the default reaches
@@ -4624,6 +4639,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       if (fold) d.cellWakeFoldBlock = fold;
     } catch {
       /* a fold must never break a wake */
+    }
+
+    // WI-6554700010018536 — remind an inbox-wake recipient of the work it still holds, read
+    // HERE (delivery time) for the same fire→delivery staleness reason as the fold above.
+    // Same fail-soft contract: the helper is budget-bounded and returns '' on any fault.
+    if (d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX) && deps.prepareInboxWakeHeldWorkReminder !== null) {
+      try {
+        const prepare = deps.prepareInboxWakeHeldWorkReminder ?? prepareInboxWakeHeldWorkReminder;
+        const reminder = await prepare({ ownerId: d.subscriberId, workspaceId: d.workspaceId });
+        if (reminder) d.inboxWakeHeldWorkReminder = reminder;
+      } catch {
+        /* a reminder must never break a wake */
+      }
     }
 
     let handle = d.wakeHandle;
