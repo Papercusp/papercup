@@ -17,10 +17,21 @@
  * Read at DELIVERY time, not fire time: a held-work list taken when the message was sent goes stale
  * across the fire→delivery gap exactly like the quoted body does. Every read is bounded and every
  * failure degrades to '' — a reminder must never delay or break a wake.
+ *
+ * WHICH WORKSPACE (WI-6554700010018671): the await/delivery plane is pinned to
+ * DEFAULT_COORD_WORKSPACE (WI-3575), so a delivery row's workspace_id is the literal 'default' for
+ * every wake — never the recipient's tenant. Held work-items and registered modes live under the
+ * tenant, so reading them under the delivery's workspace returned nothing and the reminder never
+ * fired live (measured 2026-10-21, delivery #927561). The tenant is resolved from the recipient's
+ * own session row; the delivery workspace is used only when it is a concrete non-coordination id
+ * and the session lookup found nothing. No tenant ⇒ no reminder (never guess another tenant).
  */
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { workspaceForCoordOwner } from '../../adv-sessions';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
+import { concreteWorkspaceIdOrNull } from '../../workspace-registry';
 import { readHeldWorkItems, type HeldWorkItem } from './wake-source-predicate';
 
 /** How many held ids the reminder names before summarising the rest. */
@@ -62,6 +73,8 @@ export function inboxWakeHeldWorkReminderText(f: InboxWakeHeldWorkFacts): string
 
 /** IO seams, injectable for tests. */
 export interface InboxWakeHeldWorkDeps {
+  /** The recipient session's own tenant workspace (its most recent adv-session row), or null. */
+  resolveRecipientWorkspace: (ownerId: string) => Promise<string | null>;
   readHeldWorkItems: (ownerId: string, workspaceId: string) => Promise<HeldWorkItem[]>;
   getModes: (workspaceId: string, ownerId: string) => Promise<Array<{ mode: string }>>;
   getLoopActive: (ownerId: string) => Promise<boolean | null>;
@@ -69,6 +82,7 @@ export interface InboxWakeHeldWorkDeps {
 }
 
 const defaultDeps: InboxWakeHeldWorkDeps = {
+  resolveRecipientWorkspace: (ownerId) => workspaceForCoordOwner(ownerId),
   readHeldWorkItems: (ownerId, workspaceId) => readHeldWorkItems(ownerId, workspaceId),
   getModes: (workspaceId, ownerId) => getModes(workspaceId, ownerId),
   getLoopActive: async (ownerId) => {
@@ -79,23 +93,39 @@ const defaultDeps: InboxWakeHeldWorkDeps = {
 };
 
 /**
- * The reminder for one inbox-wake recipient at delivery time, or ''. Reads held work first (the
- * cheapest exit: most recipients hold nothing). A failed or slow mode/loop read drops only the
- * autonomy sentence, never the held-work one; a failed or slow held-work read yields ''.
+ * The delivery row's workspace when it names a real tenant; null for the coordination namespace
+ * every delivery is pinned to today (WI-3575), and for '*' / blank / malformed values. Pure.
+ */
+export function tenantFromDeliveryWorkspace(deliveryWorkspaceId: string | null | undefined): string | null {
+  const ws = concreteWorkspaceIdOrNull(deliveryWorkspaceId);
+  return ws === DEFAULT_COORD_WORKSPACE ? null : ws;
+}
+
+/**
+ * The reminder for one inbox-wake recipient at delivery time, or ''. Resolves the recipient's tenant
+ * first (see "WHICH WORKSPACE" above), then reads held work (the cheapest exit: most recipients hold
+ * nothing). A failed or slow mode/loop read drops only the autonomy sentence, never the held-work
+ * one; a failed or slow tenant or held-work read yields ''.
  */
 export async function prepareInboxWakeHeldWorkReminder(input: {
   ownerId: string;
-  workspaceId: string;
+  /** The delivery row's workspace_id — the coordination namespace, NOT the recipient's tenant. */
+  deliveryWorkspaceId: string;
   deps?: Partial<InboxWakeHeldWorkDeps>;
 }): Promise<string> {
   const deps: InboxWakeHeldWorkDeps = { ...defaultDeps, ...input.deps };
-  const { ownerId, workspaceId } = input;
+  const { ownerId } = input;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), deps.budgetMs);
   });
   const within = <T>(p: Promise<T>): Promise<T | 'timeout'> => Promise.race([p, timedOut]);
   try {
+    const resolved = await within(deps.resolveRecipientWorkspace(ownerId).catch(() => null));
+    if (resolved === 'timeout') return '';
+    const workspaceId =
+      concreteWorkspaceIdOrNull(resolved) ?? tenantFromDeliveryWorkspace(input.deliveryWorkspaceId);
+    if (!workspaceId) return '';
     const held = await within(deps.readHeldWorkItems(ownerId, workspaceId));
     if (held === 'timeout' || held.length === 0) return '';
     const [modes, loopActive] = await Promise.all([

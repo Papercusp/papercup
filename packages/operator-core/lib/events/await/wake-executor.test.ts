@@ -1659,7 +1659,9 @@ describe('executeWake inbox-wake held-work reminder seam (WI-6554700010018536)',
       d,
       deps({ prepareInboxWakeHeldWorkReminder: prep, findPty: findPty as never, write: write as never }),
     );
-    expect(prep).toHaveBeenCalledWith({ ownerId: 'su-abc', workspaceId: d.workspaceId });
+    // WI-6554700010018671: the delivery workspace is passed as the coordination namespace it is,
+    // never as the recipient's tenant — the helper resolves the tenant itself.
+    expect(prep).toHaveBeenCalledWith({ ownerId: 'su-abc', deliveryWorkspaceId: d.workspaceId });
     expect(out.kind === 'delivered' ? 'delivered' : JSON.stringify(out)).toBe('delivered');
     const text = written(write);
     expect(text).toContain('NOTE (inbox-wake)');

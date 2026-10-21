@@ -3330,7 +3330,7 @@ export interface ExecuteWakeDeps {
    *  fail-soft). Only consulted for `coord:inbox-wake:<owner>` keys. Inject a stub for
    *  tests; pass `null` to disable. */
   prepareInboxWakeHeldWorkReminder?:
-    | ((input: { ownerId: string; workspaceId: string }) => Promise<string>)
+    | ((input: { ownerId: string; deliveryWorkspaceId: string }) => Promise<string>)
     | null;
   /** P-023 / D-008: advance the subscriber's CONTEXT GENERATION when a cold wake
    *  discards its context (see the call site). Injected for tests for the SAME
@@ -4644,10 +4644,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // WI-6554700010018536 — remind an inbox-wake recipient of the work it still holds, read
     // HERE (delivery time) for the same fire→delivery staleness reason as the fold above.
     // Same fail-soft contract: the helper is budget-bounded and returns '' on any fault.
+    // d.workspaceId is the coordination namespace (WI-3575), not the recipient's tenant: the
+    // helper resolves the tenant itself (WI-6554700010018671 — passing it as the tenant read
+    // every recipient's held work under 'default' and the reminder never fired).
     if (d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX) && deps.prepareInboxWakeHeldWorkReminder !== null) {
       try {
         const prepare = deps.prepareInboxWakeHeldWorkReminder ?? prepareInboxWakeHeldWorkReminder;
-        const reminder = await prepare({ ownerId: d.subscriberId, workspaceId: d.workspaceId });
+        const reminder = await prepare({ ownerId: d.subscriberId, deliveryWorkspaceId: d.workspaceId });
         if (reminder) d.inboxWakeHeldWorkReminder = reminder;
       } catch {
         /* a reminder must never break a wake */
