@@ -366,6 +366,10 @@ function withScratchWorkspaceDataReadLease<T>(
 ): Promise<T> {
   const mutexName = scratchWorkspaceDataMutexName(workspaceId);
   const lockRootDir = scratchQuotaMutexLockRoot();
+  // Measure admission on the same performance.now() clock as the quota mutex and every other
+  // ScratchWriteTimings phase. fs-mutex reports waitedMs from Date.now(), so mixing the two put
+  // the lease wait on a different clock from the totalMs it is a part of.
+  const admissionStartedAt = performance.now();
   return withFsMutex(mutexName, run, {
     mode: 'read',
     intent: {
@@ -380,7 +384,7 @@ function withScratchWorkspaceDataReadLease<T>(
     onWaiting,
     onAcquired: onAcquired
       ? (info) => onAcquired({
-          waitedMs: info.waitedMs,
+          waitedMs: Math.max(0, performance.now() - admissionStartedAt),
           localWaitMs: 0,
           fsMutexAdmissionMs: info.waitedMs,
         })
@@ -960,6 +964,13 @@ interface ScratchUsageEntry {
   refreshDiagnostics: ScratchQuotaRecoveryDiagnostics | null;
   /** One shared pressure recovery; subsequent writers await it before touching disk. */
   recovering: Promise<void> | null;
+  /**
+   * Bumped whenever this process starts a usage refresh or a quota recovery. A writer compares it
+   * across its data-lease wait to tell "waited behind this process's own quota maintenance"
+   * (quota admission) from "waited behind GC/another process" (payload-lease contention), even
+   * when the maintenance started after the writer began waiting.
+   */
+  maintenanceEpoch: number;
   writes: Map<symbol, { filePath: string; bytes: number; reserved: boolean }>;
   /** Changes on reservations and deferred write settlement so walks reject mixed snapshots. */
   writeGeneration: number;
@@ -986,7 +997,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
   if (!entry) {
     entry = {
       bytes: 0, measuredAt: 0, refreshing: null, refreshDiagnostics: null,
-      recovering: null, writes: new Map(),
+      recovering: null, maintenanceEpoch: 0, writes: new Map(),
       writeGeneration: 0, refreshDeferred: false, runBytesByPath: new Map(), runBytesValid: false,
       sharedUpdatedAt: null,
     };
@@ -995,6 +1006,7 @@ function usageEntry(workspaceId: string): ScratchUsageEntry {
     // The cache is module-pinned across HMR. Initialize fields added by newer module versions.
     entry.refreshDiagnostics ??= null;
     entry.recovering ??= null;
+    entry.maintenanceEpoch ??= 0;
     entry.writes ??= new Map();
     entry.writeGeneration ??= 0;
     entry.refreshDeferred ??= false;
@@ -1414,6 +1426,7 @@ async function treeStatsAsync(
 export function refreshScratchUsage(workspaceId: string, now: () => number = Date.now): Promise<void> {
   const entry = usageEntry(workspaceId);
   if (entry.refreshing) return entry.refreshing;
+  entry.maintenanceEpoch += 1;
   const diagnostics = newScratchQuotaRecoveryDiagnostics();
   entry.refreshDiagnostics = diagnostics;
   const targetBytes = WORKSPACE_QUOTA_BYTES - SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES;
@@ -1846,6 +1859,7 @@ const SCRATCH_WRITE_PROGRESS_AFTER_MS = 5_000;
 const SCRATCH_USAGE_REFRESH_REQUIRED = Symbol('scratch-usage-refresh-required');
 const SCRATCH_QUOTA_RECOVERY_REQUIRED = Symbol('scratch-quota-recovery-required');
 const SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED = Symbol('scratch-quota-recovery-wait-required');
+const SCRATCH_PAYLOAD_WRITTEN = Symbol('scratch-payload-written');
 
 interface ScratchQuotaReservation {
   sharedStateStale: boolean;
@@ -2037,12 +2051,14 @@ export async function writeWithScratchQuota(
   };
   /**
    * Quota recovery is the one path that needs an exclusive data lease. It is deliberately
-   * started after the short quota reservation callback returns: recovery acquires data → quota,
-   * while writers acquire quota → data(read) → quota(settlement). Holding the quota mutex while
-   * trying to acquire the data mutex would deadlock a payload writer that is settling.
+   * started after the writer has released its data read lease: recovery acquires data → quota,
+   * and writers acquire data(read) → quota(reservation), keep the read lease through payload I/O,
+   * then take quota(settlement) after releasing it. Holding the quota mutex while trying to
+   * acquire the data mutex would deadlock a payload writer that is settling, so no path does.
    */
   const ensureQuotaRecovery = (): { promise: Promise<void>; started: boolean } => {
     if (entry.recovering) return { promise: entry.recovering, started: false };
+    entry.maintenanceEpoch += 1;
     let recovery!: Promise<void>;
     recovery = (async () => {
       await timed('quotaRecoveryMs', async () => {
@@ -2112,7 +2128,7 @@ export async function writeWithScratchQuota(
   let lastQuotaRefusal: ScratchQuotaError | undefined;
   try {
     for (;;) {
-      const outcome = await withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
+      const reserve = () => withScratchWorkspaceMutex(opts.workspaceId, 'write', async () => {
         const cachedState = await readSharedScratchQuotaState(opts.workspaceId, observeAwait);
         if (!cachedState) {
           // A whole-tree measurement can take seconds. Drop the mutex before starting the
@@ -2182,6 +2198,69 @@ export async function writeWithScratchQuota(
           markerBytes,
         } satisfies ScratchQuotaReservation;
       }, onMutexWaiting, recordMutexWait, opts.requestTraceId, opts.mutexTimeoutMs, recordMutexWait);
+      let outcome: Awaited<ReturnType<typeof reserve>> | typeof SCRATCH_PAYLOAD_WRITTEN;
+      try {
+        // Hold the shared data read lease from BEFORE the reservation until the payload is on
+        // disk. Quota recovery measures the tree under the exclusive data lease and republishes
+        // the shared ledger from what it saw, which counts only its own process's in-flight
+        // writes. A reservation published while its writer held no lease was invisible to that
+        // walk until the payload landed, so another process's recovery dropped it and admitted a
+        // second writer past quota (WI-6554700010018533). Lock order is data → quota for every
+        // path, so taking the read lease first cannot deadlock against recovery or GC.
+        //
+        // Waiting for this lease behind this process's own usage refresh or quota recovery IS
+        // quota admission, so it is attributed like a quota-mutex wait (refresh owner →
+        // refreshWaitMs, followers → quotaWaitMs). The maintenance epoch also catches a refresh or
+        // recovery that started while this writer was already waiting. Any other exclusive holder
+        // (GC, retention, another process) stays payload-lease contention in dataLeaseWaitMs.
+        const maintenanceActiveAtRequest = Boolean(entry.recovering || entry.refreshing);
+        const maintenanceEpochAtRequest = entry.maintenanceEpoch;
+        outcome = await withScratchWorkspaceDataReadLease(
+          opts.workspaceId,
+          'write',
+          async () => {
+            const reserved = await reserve();
+            if (
+              reserved === SCRATCH_USAGE_REFRESH_REQUIRED ||
+              reserved === SCRATCH_QUOTA_RECOVERY_WAIT_REQUIRED ||
+              reserved === SCRATCH_QUOTA_RECOVERY_REQUIRED
+            ) {
+              // Refresh adoption and recovery both need the exclusive data lease. Release ours
+              // before waiting on either of them.
+              return reserved;
+            }
+            const landed = reserved as ScratchQuotaReservation;
+            reservation = landed;
+            // The quota mutex is intentionally NOT held here. The shared data read lease keeps
+            // retention/GC/quota eviction from deleting or sizing the payload while it is written.
+            await timed('writeMs', () => write(observeAwait));
+            if (landed.markerBytes > 0) {
+              try {
+                await observeAwait('marker-probe', 'after-write', () => lstatAsync(landed.markerPath));
+              } catch {
+                markerPresentAfterWrite = false;
+              }
+            }
+            return SCRATCH_PAYLOAD_WRITTEN;
+          },
+          onMutexWaiting,
+          (info) => {
+            if (maintenanceActiveAtRequest || entry.maintenanceEpoch !== maintenanceEpochAtRequest) {
+              recordMutexWait(info);
+            } else {
+              recordDataLeaseWait(info);
+            }
+          },
+          opts.requestTraceId,
+          opts.mutexTimeoutMs,
+        );
+      } catch (error) {
+        // Before a reservation lands, a failure aborts the write with nothing to settle. Once it
+        // has landed, the payload or the lease failed and the reservation is rolled back below.
+        if (!reservation) throw error;
+        writeFailure = error;
+        break;
+      }
       if (outcome === SCRATCH_USAGE_REFRESH_REQUIRED) {
         await timed('refreshWaitMs', () => refreshScratchUsage(opts.workspaceId));
         continue;
@@ -2206,34 +2285,9 @@ export async function writeWithScratchQuota(
         else await timed('quotaWaitMs', () => recovery.promise);
         continue;
       }
-      reservation = outcome as ScratchQuotaReservation;
-      break;
-    }
-
-    try {
-      await withScratchWorkspaceDataReadLease(
-        opts.workspaceId,
-        'write',
-        async () => {
-          // The quota mutex is intentionally NOT held here. The shared data read lease keeps
-          // retention/GC/quota eviction from deleting or sizing the payload while it is written.
-          await timed('writeMs', () => write(observeAwait));
-          if (reservation!.markerBytes > 0) {
-            try {
-              await observeAwait('marker-probe', 'after-write', () => lstatAsync(reservation!.markerPath));
-            } catch {
-              markerPresentAfterWrite = false;
-            }
-          }
-        },
-        onMutexWaiting,
-        recordDataLeaseWait,
-        opts.requestTraceId,
-        opts.mutexTimeoutMs,
-      );
+      // SCRATCH_PAYLOAD_WRITTEN: the reservation landed and the payload was written under it.
       succeeded = true;
-    } catch (error) {
-      writeFailure = error;
+      break;
     }
 
     // Settle the reservation only after payload I/O has released the shared data lease. This is
