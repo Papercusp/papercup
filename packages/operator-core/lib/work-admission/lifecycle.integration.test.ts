@@ -39,7 +39,9 @@ import { claimWorkItem, getWorkItem, mergeWorkItemPayload, setWorkItemStateWithA
 import { activeExternalBlockers, applyExternalBlockerUpdate } from '../external-blockers';
 import { setAdmissionRule } from './admission-rules';
 import { writeBacksForWorkItem } from './write-back-ledger';
-import { applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr, reconcileAdmissionLifecycle } from './lifecycle';
+import {
+  applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr, reconcileAdmissionLifecycle, STANDING_PR_AUDIT_REFUSED,
+} from './lifecycle';
 import { auditGit } from './pr-delivery-audit';
 import type { Pr, PrHost } from '../pr-host/types';
 import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
@@ -335,9 +337,17 @@ describe('admission lifecycle (P-003)', () => {
           });
           expect((await writeBacksForWorkItem(sql, WS, id)).some(w => w.lifecycleKey?.startsWith('complete:'))).toBe(true);
         }
-        await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
+        let pass = await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
         // A changed completion can be reconciled on its next pass, after a fresh audit.
-        if (scenario !== 'completion-changed') await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
+        if (scenario !== 'completion-changed') pass = await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
+        // WI-6554700010018378: a merged standing PR the delivery audit refuses is reported with
+        // its reason, never a silent `false`; an accepted one reports no refusal.
+        const refusals = pass.skipped.filter(s => s.workItemId === id && s.code === STANDING_PR_AUDIT_REFUSED);
+        // ('merge-lacks-fix' never reaches the audit: its candidate fails the merge-parents check.)
+        if (scenario === 'base-already-fixed') {
+          expect(refusals).toHaveLength(1);
+          expect(refusals[0]!.reason).toContain(`${publication.url}: fail: `);
+        } else if (scenario.startsWith('merged') || scenario === 'tested-then-merged') expect(refusals).toEqual([]);
         const receipt = ((await item(id)).payload as Record<string, unknown>).standingPr;
         if (scenario === 'merged' || scenario === 'merged-after-comment' || scenario === 'merged-after-default-change'
           || scenario === 'merged-submodule-close') {

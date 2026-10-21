@@ -68,6 +68,8 @@ export function sourceClosedRef(recordId: string): string {
 
 /** Most admissions one reconcile pass reads for a data source. */
 export const LIFECYCLE_RECONCILE_MAX = 500;
+/** A completed admitted bug whose merged standing PR(s) the delivery audit refused (WI-6554700010018378). */
+export const STANDING_PR_AUDIT_REFUSED = 'standing-pr-audit-refused';
 
 const COMPLETED_STATES: ReadonlySet<string> = new Set(['done', 'resolved', 'closed']);
 const HOLD_STATES: ReadonlySet<string> = new Set(['needs-human', 'blocked']);
@@ -225,7 +227,10 @@ function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: S
   let projects: Promise<ProjectEntry[]> | undefined;
   let host: Promise<StandingPrReconcileDeps['host']> | undefined;
   const listings = new Map<string, ReturnType<NonNullable<PrHost['listPrs']>>>();
-  return async (workItemId: string, harness: string, item: LifecycleWorkItem): Promise<boolean> => {
+  // `refused` hears each merged standing PR the delivery audit rejected, so a declined
+  // receipt is reported with its reason instead of vanishing as `false`.
+  return async (workItemId: string, harness: string, item: LifecycleWorkItem,
+    refused: (reason: string) => void = () => {}): Promise<boolean> => {
     if (!COMPLETED_STATES.has(item.state) || standingPrOf(item.payload)?.mergedSha) return false;
     const evidence = (item.payload as Record<string, unknown> | null)?.[TERMINAL_COMPLETION_EVIDENCE_KEY];
     const parsed = CompletionSettlementManifestSchema.safeParse((evidence as Record<string, unknown> | undefined)?.settlementManifest);
@@ -291,7 +296,10 @@ function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: S
       const verdict = await inspectPrDeliveryRow({ id: workItemId, harness, ruleId: '', state: row.status,
         authority: row.authority, payload: { ...row.payload, standingPr: receipt } }, project, { git, host: reader });
       if (verdict.verdict === 'unknown') throw new Error(verdict.reason);
-      if (verdict.verdict !== 'pass' || verdict.prUrl !== receipt.url) continue;
+      if (verdict.verdict !== 'pass' || verdict.prUrl !== receipt.url) {
+        refused(`${receipt.url}: ${verdict.verdict}: ${verdict.reason}`);
+        continue;
+      }
       const linked = await correlateAdmissionStandingPr(sql, { workspaceId, harnesses: [harness],
         repositoryRoot: project.path, ...receipt, workItemId, workItemHarness: physical, expectedPayload: row.payload });
       if (linked.failed.length) throw new Error(linked.failed[0]!.error);
@@ -418,7 +426,8 @@ export interface LifecycleDeps {
 export interface LifecycleReconcileResult {
   workItems: number;
   written: Array<{ workItemId: string; key: string }>;
-  skipped: Array<{ workItemId: string; key: string; code: string }>;
+  /** `standing-pr-audit-refused` carries the delivery audit's reason for each refused merged PR. */
+  skipped: Array<{ workItemId: string; key: string; code: string; reason?: string }>;
   failed: Array<{ workItemId: string; key?: string; error: string }>;
 }
 
@@ -472,7 +481,11 @@ export async function reconcileAdmissionLifecycle(
     if (resolveAdmissionLifecycle(entry.lifecycle).complete
       && COMPLETED_STATES.has(item.state) && !standingPrOf(item.payload)?.mergedSha) {
       try {
-        await reconcilePr(workItemId, entry.harness, item);
+        const refusals: string[] = [];
+        const linked = await reconcilePr(workItemId, entry.harness, item, (reason) => refusals.push(reason));
+        if (!linked && refusals.length) {
+          result.skipped.push({ workItemId, key: 'standing-pr', code: STANDING_PR_AUDIT_REFUSED, reason: refusals.join('; ') });
+        }
         // Host/Git reads can overlap a reopen or a new completion. Plan provider
         // writes from the current item even when the correlation CAS refused it.
         item = await getItem(workItemId, entry.harness);
