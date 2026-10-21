@@ -18621,7 +18621,7 @@
           "POST"
         ]
       },
-      "description": "COLD carry-note. Read {read:true,ownerId?,harness?}; write {did,left,insight,next}, {note} or {checkpoint}. Clips are reported. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. rowsMode:'merge' preserves; rowsMode:'replace' retires; empty list with replace clears. `confirmShrink` is accepted by `work_items:checkpoint` only.",
+      "description": "COLD carry-note only: writing it does NOT request a carry-respawn; call session:request-compaction separately when fresh context is needed. Read {read:true,ownerId?,harness?}; write {did,left,insight,next}, {note} or {checkpoint}. Clips are reported. carry mode belongs to loop:arm; loop:checkpoint does not accept a `carry` argument. rowsMode:'merge' preserves; rowsMode:'replace' retires; empty list with replace clears. `confirmShrink` is accepted by `work_items:checkpoint` only.",
       "capabilities": [
         "routines:write"
       ],
