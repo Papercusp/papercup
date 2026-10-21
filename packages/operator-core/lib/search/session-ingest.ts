@@ -429,11 +429,15 @@ export function parseClaudeLine(line: string, options: TurnTextParseOptions = {}
     return null;
   }
   const dialogProvenance = claudeDialogProvenanceAttachment(obj);
-  if (dialogProvenance) return {
-    ts: parseTs(obj.timestamp), speaker: 'user', text: cleanMessageText(dialogProvenance, 'user', options),
-    cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
-    sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : null,
-  };
+  if (dialogProvenance) {
+    const text = cleanMessageText(dialogProvenance, 'user', options);
+    if (!text) return null;
+    return {
+      ts: parseTs(obj.timestamp), speaker: 'user', text,
+      cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
+      sessionId: typeof obj.sessionId === 'string' ? obj.sessionId : null,
+    };
+  }
   const queuedCommand = parseClaudeQueuedCommand(obj, options);
   if (queuedCommand) return queuedCommand;
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
@@ -1782,6 +1786,13 @@ export function stampTurnProvenance(row: TurnRow): void {
   // their own CLASSIFY_HEAD_CHARS bound, so passing the full text cannot widen
   // the match onto an owner's mid-body quote of an envelope.
   const { verdict, origin } = classifyRecordedTurn(row.text);
+  // Keep historical dialog decisions discoverable in owner-candidate searches,
+  // without affirming human authorship from the client's answer wording.
+  if (verdict === 'unknown' && origin === 'unverified-dialog') {
+    row.turn_origin = origin;
+    row.turn_origin_verdict = UNENROLLED_ORIGIN_VERDICT;
+    return;
+  }
   // Native CLI file surfaces cannot enroll their own user rows.  A clean row
   // therefore proves neither owner authorship nor machine authorship: the
   // classifier's owner-typed residual is an unsafe database assertion here.

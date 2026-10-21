@@ -3,8 +3,8 @@
  * AUTO being enabled is deliberately not evidence of who answered it. */
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ORIGINAL_WRITE = Symbol.for('papercusp.claudeDialogOriginalWrite');
 export const DIALOG_PROVENANCE_MARKER = '⟦dialog-answer-provenance⟧';
@@ -82,7 +82,7 @@ export function finishClaudeDialog(ownerId, sessionId, toolUseId, response, env 
 }
 
 // Invoked by the existing combined hook; no operator or database dependency.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try {
     const event = JSON.parse(readFileSync(0, 'utf8'));
     const ownerId = process.env.PAPERCUSP_SID;

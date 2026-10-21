@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { openClaudeDialog, observeClaudeDialogWrites, finishClaudeDialog } from '../scripts/hooks/cc/dialog-answer-provenance.mjs';
 import { parseClaudeLine, stampTurnProvenance } from '../../../packages/operator-core/lib/search/session-ingest';
-import { classifyRecordedTurn, parseTurnRefs, parseUserTurns, verifyTurnRefs } from '../../../packages/operator-core/lib/turn-provenance/turn-ref';
+import { classifyRecordedTurn, OWNER_CANDIDATE_TURN_VERDICTS, parseTurnRefs, parseUserTurns, verifyTurnRefs } from '../../../packages/operator-core/lib/turn-provenance/turn-ref';
 import { claudeDialogProvenanceAttachment } from '../../../packages/operator-core/lib/transcript-wire';
 import { parseHumanTurns } from '../../../packages/operator-core/lib/agent-tools/coordination/relay-provenance-resolve';
 
@@ -85,7 +85,8 @@ describe('Claude dialog answer provenance', () => {
       turn_idx: 0, ts: TS, owner: OWNER, harness_slug: 'papercusp', cwd: null, speaker: 'user', text: legacy,
       turn_origin_verdict: 'owner-dialog' };
     stampTurnProvenance(row);
-    expect(row.turn_origin_verdict).toBe('unknown');
+    expect(row.turn_origin_verdict).toBe('unenrolled-origin');
+    expect(OWNER_CANDIDATE_TURN_VERDICTS).toContain(row.turn_origin_verdict);
   });
 
   it('accepts source receipts only as matching-session PostToolUse hook attachments', () => {

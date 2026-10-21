@@ -205,7 +205,7 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
     return { verdict: 'owner-dialog', origin: null };
   }
   if (t.startsWith(`${DIALOG_ANSWER_SOURCE_PREFIX}unknown⟧`)) {
-    return { verdict: 'unknown', origin: null };
+    return { verdict: 'unknown', origin: 'unverified-dialog' };
   }
   // A malformed or truncated turn-origin envelope is still machine-originated
   // evidence. Never let a bad nonce or partial carry marker fall through to the
@@ -213,7 +213,7 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
   const malformedOrigin = t.match(/^\s*⟦turn-origin:([^\s⟧]*)/u);
   if (malformedOrigin) return { verdict: 'agent-injected', origin: malformedOrigin[1] || null };
   if (t.trimStart().startsWith(OWNER_DIALOG_TURN_MARKER)) {
-    return { verdict: 'unknown', origin: null };
+    return { verdict: 'unknown', origin: 'unverified-dialog' };
   }
   // Both predicates apply the head bound themselves — see
   // CLASSIFY_HEAD_CHARS in ./machine-surface-catalogue.

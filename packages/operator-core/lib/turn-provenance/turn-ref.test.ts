@@ -110,7 +110,7 @@ describe('classifyRecordedTurn', () => {
   it('does not treat a legacy dialog marker as proof of human authorship', () => {
     expect(
       classifyRecordedTurn(`${OWNER_DIALOG_TURN_MARKER}\nThe user answered: "Ship?"="yes".`),
-    ).toEqual({ verdict: 'unknown', origin: null });
+    ).toEqual({ verdict: 'unknown', origin: 'unverified-dialog' });
   });
 
   it('system-notification banners and compaction continuations are machine-surface', () => {
@@ -334,7 +334,7 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
       }),
     );
     expect(turns).toEqual([{ ts, text: dialogAnswerText(answer) }]);
-    expect(classifyRecordedTurn(turns[0].text)).toEqual({ verdict: 'unknown', origin: null });
+    expect(classifyRecordedTurn(turns[0].text)).toEqual({ verdict: 'unknown', origin: 'unverified-dialog' });
   });
 
   // Regression guard for the same change: an ordinary (non-dialog) tool_result
